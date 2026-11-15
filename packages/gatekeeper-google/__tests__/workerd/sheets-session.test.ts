@@ -55,6 +55,10 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   async getBranch(): Promise<BranchView> {
     return { branch: null };
   }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
 }
 
 const METADATA = spreadsheetMetadata("sheet-1", "Budget", [

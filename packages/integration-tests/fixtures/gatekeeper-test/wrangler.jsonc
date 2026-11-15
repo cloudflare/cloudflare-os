@@ -34,6 +34,12 @@
         "TestGatekeeper",
         "TestControl"
       ]
+    },
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "BranchTestGatekeeper"
+      ]
     }
   ]
 }

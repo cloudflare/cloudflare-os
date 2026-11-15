@@ -260,6 +260,10 @@ class TestApprovalQueue extends RpcTarget {
   async getBranch(): Promise<BranchView> {
     return { branch: null };
   }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
 }
 
 /** Keeps the controller a subscription binds, where the Overseer would store it. */

@@ -60,6 +60,10 @@ class TestAuthorizer extends RpcTarget implements ObservationAuthorizer {
   async getBranch(): Promise<BranchView> {
     return { branch: null };
   }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
 }
 
 /**

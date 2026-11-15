@@ -311,8 +311,9 @@ describe("decision handoff using the existing execution row", () => {
     await s.visit(async impl => {
       impl.storage.activeAgents.delete(CHAT);
       modelLookup(impl, async () => ({profile: USER, aiModel: MODEL}));
-      // Only the rule-setting path reads this record; applying the external effect is stubbed below.
-      fakeGatekeeper(impl);
+      // The gatekeeper's apply is stubbed; the kernel records each action as applied.
+      const apply = vi.fn(async () => {});
+      fakeGatekeeper(impl, apply);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
       const actionKind = {tag: "edit", label: "Edits"};
@@ -322,9 +323,6 @@ describe("decision handoff using the existing execution row", () => {
         }});
         if (i) impl.addChatMessages(CHAT, MODEL.profile, [{type: "action", actionId: 7 + i}]);
       }
-      const apply = vi.spyOn(impl, "applyPendingAction").mockImplementation(async record => {
-        impl.storage.actions.put({...record, state: "approved"});
-      });
       let background: Promise<unknown> | undefined;
       using client = await decisionClient(impl, USER, {ctx: {
         id: impl.ctx.id, exports: impl.ctx.exports,

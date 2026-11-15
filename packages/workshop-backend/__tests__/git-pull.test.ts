@@ -156,7 +156,7 @@ describe("Git pull consumption through the Overseer delegate", () => {
         parents: [], author: {name: "A", email: "a@b"}, message: "huge", timestamp: new Date(0),
       });
       cache.markPushClosure(GATEKEEPER + 1, 1, [commit]);
-      const out = await cache.buildPackForAction(GATEKEEPER + 1, 1);
+      const out = await cache.buildPackForActions(GATEKEEPER + 1, [1]);
       const seen: string[] = [];
 
       for await (const object of decodePackStream(out, {

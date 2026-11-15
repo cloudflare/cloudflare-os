@@ -1076,7 +1076,7 @@ export type BranchView = {
  * `[restore](params)` method (see `ApprovalQueue.bindHook()`), e.g. for its worker's push handler
  * to deliver events through. They keep restoring until the connection is removed from the
  * workspace, and reach whatever `[restore]()` returns: return a target narrowed to the stub's
- * purpose, never the Gatekeeper itself (which answers Overseer-only calls such as `applyAction()`),
+ * purpose, never the Gatekeeper itself (which answers Overseer-only calls such as `applyActions()`),
  * and keep the stubs within the gatekeeper's own worker.
  */
 export interface Gatekeeper<Session> extends DurableObject {
@@ -1269,6 +1269,46 @@ export interface Gatekeeper<Session> extends DurableObject {
   // gatekeeper can look up the action details in its own storage.
 
   /**
+   * `actions` were approved: apply them, in the order given.
+   *
+   * The list is complete. A view's actions fall in two groups: the staged actions, and those on
+   * the branch and its ancestors (see `BranchView`). From each group, the list names every action
+   * the Workshop holds pending with an ID up to the highest it names there. A gatekeeper may
+   * therefore work from the view and those two bounds instead of from each action: an action it
+   * knows the Workshop accepted (`ApprovalQueue.submitAction()` returned) that falls within them
+   * is on the list. Actions submitted before the gatekeeper implemented this method belong to
+   * neither group: one is applied only when a list names it, ahead of the rest, in ID order.
+   *
+   * Every action named is one the Workshop holds, so naming it confirms it (see
+   * `ApprovalQueue.submitAction()`). A record still waiting for its `submitAction()` reply is
+   * applied if the list names it and left alone if not. An action named here that the
+   * gatekeeper does not hold is left out of the result.
+   *
+   * Implementing this method is how a gatekeeper declares that it has adopted branches: every
+   * action it submits is recorded on its queue's branch, and the Workshop applies every pending
+   * action on the connection through this method, never through `applyAction()`.
+   *
+   * Stop at the first action that cannot be applied, and report it. Nothing after it may be
+   * applied: later actions are often built on earlier ones, and an action is only ever skipped by
+   * being rejected (`rejectAction()`), never by being passed over.
+   *
+   * May return before the end of the list, with no failure, to bound the call's duration. The
+   * Workshop calls again with what is left, as long as a call applied something. A call that
+   * applies nothing and reports no failure says nothing in the list is left to apply.
+   *
+   * Throwing tells the Workshop nothing about what was applied, and it will call again later. A
+   * repeated call applies whatever is still pending and must not repeat an effect.
+   *
+   * `cache.buildPack(actions)` builds one pack for the pushes of the actions it names, which
+   * must be among this call's. `cache`'s read view is `branch`'s (see `GitCache`).
+   */
+  applyActions?(branch: BranchView, actions: number[], cache: RpcStub<GitCache>)
+      : Promise<ApplyActionsResult>;
+
+  /**
+   * @deprecated Implement `applyActions()` instead. Called only for a gatekeeper that does not
+   * implement it, once for each action.
+   *
    * Action was approved. This call should apply the action (or schedule it to be applied).
    *
    * If this throws an exception, the user will be informed that the action failed and given the
@@ -1290,7 +1330,7 @@ export interface Gatekeeper<Session> extends DurableObject {
    * ignore this parameter (and can even omit the parameter from their `applyAction()`
    * declaration).
    */
-  applyAction(action: number, cache: RpcStub<GitCache>): Promise<void>;
+  applyAction?(action: number, cache: RpcStub<GitCache>): Promise<void>;
 
   /**
    * Indicates that an action was rejected by the user. The gatekeeper should clean up any
@@ -1304,8 +1344,11 @@ export interface Gatekeeper<Session> extends DurableObject {
    * This is sometimes needed by gatekeepers that simulate actions as if they had been approved --
    * the session may be in a state that is difficult to roll back without confusing the Gadget.
    * The Overseer will take care of the restart, possibly after rejecting other actions.
+   *
+   * `rejected` lists other pending actions that can no longer be applied without this one and
+   * were rejected along with it. The Workshop records them as rejected too.
    */
-  rejectAction(action: number): Promise<void | {restart?: boolean}>;
+  rejectAction(action: number): Promise<void | {restart?: boolean, rejected?: number[]}>;
 
   /**
    * For a gatekeeper from GatekeeperVendor.createResource(): a user approved its creation, so
@@ -1351,6 +1394,24 @@ export interface Gatekeeper<Session> extends DurableObject {
   revertAction(action: number):
       Promise<void | {message?: string, canRetry?: boolean, restart?: boolean}>;
 }
+
+/** What a call to `Gatekeeper.applyActions()` did. */
+export type ApplyActionsResult = {
+  /** The actions this call applied, in the order applied. */
+  applied: number[];
+
+  /**
+   * Present when the call stopped at an action it could not apply. Every later action in the
+   * list was left unapplied because of it.
+   */
+  failed?: {
+    action: number,
+    /** Shown to the user. */
+    message: string,
+    /** False when applying again cannot succeed, so the action can only be rejected. */
+    retryable: boolean,
+  };
+};
 
 export interface ObservationAuthorizer extends RpcTarget {
   /**
@@ -1500,16 +1561,45 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    * hours or days later, but this shouldn't cause any problems.
    *
    * `action` is a sequential integer action ID assigned by the gatekeeper. It will be passed back
-   * to the Gatekeeper's applyAction() or rejectAction() when the action is later approved or
-   * rejected.
+   * to the Gatekeeper's applyActions() (or applyAction()) or rejectAction() when the action is
+   * later approved or rejected.
    *
    * `description` describes the action in a way that can direct UI representation and policy
    * enforcement details.
+   *
+   * Simulation is sound only if the gatekeeper simulates nothing the Workshop does not hold. The
+   * record must exist before this call, since its ID is the argument, and the Workshop may apply
+   * the action before the gatekeeper sees this call return. So:
+   *
+   * 1. Store the action before submitting it, in a state nothing reads. Until rule 2 holds, it is
+   *    not simulated, no other action may depend on it, and nothing derived from it is returned
+   *    to a caller.
+   * 2. It becomes visible when this call returns, or when the Workshop shows it holds it: a
+   *    `rejectAction()` naming it, an `applyActions()` whose list names it, or `holdsAction()`
+   *    answering yes.
+   * 3. If this call throws, the action was not accepted: nothing was recorded. Delete the record,
+   *    and whatever was created for it, unless rule 2 already made it visible. The Workshop will
+   *    not call `rejectAction()` for it.
+   * 4. An unconfirmed record found when the facet starts stays unread until it is settled: its
+   *    submission died with the previous activation, but the Workshop may have recorded it. Ask
+   *    `holdsAction()` through the next session's queue, and let that session neither read nor
+   *    submit until the answer is in. Make the record visible if the Workshop holds the action,
+   *    and delete it if not. If the Workshop names it first, rule 2 settles it.
+   *
+   * A connection's action IDs must be unique and increase in the order this method is called
+   * (see `BranchView`).
    *
    * TODO: It would be nice if we can link this with the output gate so that if the submission
    *   does not complete, any SQL writes performed just before submit() are rolled back...
    */
   submitAction(action: number, description: ActionDescription): Promise<void>;
+
+  /**
+   * Whether the Workshop holds, pending, the action this connection submitted as `action`. For
+   * settling a record whose `submitAction()` call was cut off by a restart, so that the
+   * gatekeeper never learned whether it was accepted (see `submitAction()`, rule 4).
+   */
+  holdsAction(action: number): Promise<boolean>;
 
   /**
    * Notifies the overseer that the gadget (or an agent) has requested to register a persistent
@@ -1819,7 +1909,7 @@ export type ActionDescription = {
    * will cause `submitAction()` to throw an exception.
    *
    * Even when the action is successfully submitted, the Gatekeeper is obliged -- as always -- not
-   * to actually transmit any data until the action is approved and applied with `applyAction()`.
+   * to actually transmit any data until the action is approved and applied (`applyActions()`).
    * As always, though, the Gatekeeper is expected to simulate the effects of the action
    * immediately. E.g. if the agent queries the state of the remote repo, the Gatekeeper should
    * indicate that the push has completed.
@@ -2036,6 +2126,9 @@ export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
  * 2. Objects queued for push to this gatekeeper by a submitted, not-yet-applied action (see
  *    `ActionDescription.pushedCommits`). These objects are NOT believed to be on the remote
  *    already, but are planned to pushed to it assuming the submitted action is later approved.
+ *    For a gatekeeper that implements `Gatekeeper.applyActions()`, only the actions visible in
+ *    the stub's view count: a session's (see `BranchView`), or the applying call's. Actions it
+ *    submitted before implementing that method count in every view.
  *
  * This is intended to assist the Gatekeeper in simulation: If the Gatekeeper provides an API to
  * the agent/Gadget by which the caller can read back a specific commit, the Gatekeeper should
@@ -2101,13 +2194,15 @@ export interface GitCache extends RpcTarget {
   advertiseCommit(commitId: GitOid): Promise<void>;
 
   /**
-   * Build a packfile carrying the applying action's full pending-push closure.
+   * Build a packfile carrying the full pending-push closure of the applying actions.
    *
-   * Only the action-scoped stub passed to `Gatekeeper.applyAction()` supports this; calling it on
-   * any other stub (e.g. one obtained via `ObservationAuthorizer.getGitCache()` during a session)
-   * throws. It takes no arguments: the commit list is the applying action's own
-   * `ActionDescription.pushedCommits`, combined with the closure of objects that the overseer
-   * believes the remote may not already have.
+   * Only an apply-time stub supports this; calling it on any other stub (e.g. one obtained via
+   * `ObservationAuthorizer.getGitCache()` during a session) throws. On the stub passed to
+   * `Gatekeeper.applyActions()`, `actions` is required and names actions from that call's list:
+   * the pack carries the pushes of all of them, so several pushes can share one pack. On the stub
+   * passed to `Gatekeeper.applyAction()` it is ignored: the pack carries that action's pushes.
+   * The commit list is the actions' own `ActionDescription.pushedCommits`, combined with the
+   * closure of objects that the overseer believes the remote may not already have.
    *
    * The stream contains a packfile with the standard SHA-1 trailer, suitable for feeding directly
    * into a send-pack request. The overseer completes the closure itself, pulling any
@@ -2115,7 +2210,7 @@ export interface GitCache extends RpcTarget {
    * is no longer available (e.g. its gatekeeper was disconnected), the call fails with an error
    * naming the gatekeeper to reconnect.
    */
-  buildPack(): Promise<ReadableStream<Uint8Array>>;
+  buildPack(actions?: number[]): Promise<ReadableStream<Uint8Array>>;
 
   /**
    * Consumes a standard git packfile, storing each object in it as `put()` would, and returns

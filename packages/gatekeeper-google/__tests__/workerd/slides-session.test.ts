@@ -48,6 +48,10 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   async getBranch(): Promise<BranchView> {
     return { branch: null };
   }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
 }
 
 const IMAGE_URL = "https://lh7-us.googleusercontent.com/slidesz/thumb-token";

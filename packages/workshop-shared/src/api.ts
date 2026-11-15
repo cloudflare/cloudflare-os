@@ -3173,6 +3173,13 @@ export type ActionLogEntry = {
   autoApproved?: boolean;
 
   /**
+   * Why the last attempt to apply the action failed, as its gatekeeper reported it; cleared once
+   * it applies. `retryable` is false when applying again cannot succeed, so the action can only be
+   * rejected. Also kept on an action rejected because its gatekeeper turned out not to hold it.
+   */
+  applyError?: {message: string, retryable: boolean};
+
+  /**
    * True for the creation queued by createExternalResource. Approving it requires one of the
    * approver's accounts for the gatekeeper's vendor (see GatekeeperClient.getCreationSpec()), in
    * which the resource is created.
@@ -3529,12 +3536,17 @@ export interface Overseer extends RpcTarget {
    * Approve an action that is currently in the "pending" state. The action will be performed on
    * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
    * approver chose to make it.
+   *
+   * On a connection whose gatekeeper applies actions as a list (`Gatekeeper.applyActions()`),
+   * the pending actions with no chat on that connection apply first, and then the action's
+   * chat's earlier actions there, since its gatekeeper simulated it on top of them.
    */
   approveAction(id: number, creation?: CreationApproval): Promise<void>;
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
-   * be approved in the future.
+   * be approved in the future. The pending actions its gatekeeper reports it had to reject along
+   * with it are rejected too.
    */
   rejectAction(id: number): Promise<void>;
 

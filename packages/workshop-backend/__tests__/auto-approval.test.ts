@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
+import { AutoApprovalDrainer, AutoApprovalStorage, ApplyActionListFn, autoApprovalRule }
     from "../src/auto-approval.js";
 import type { ActionRecord, StoredActionDescription }
     from "../src/storage-schema/overseer-storage.js";
@@ -22,6 +22,18 @@ function getAction(storage: AutoApprovalStorage, id: number): ActionRecord & {ty
   let record = storage.actions.get(id);
   if (!record || record.type !== "action") throw new Error(`No action ${id}`);
   return record;
+}
+
+// Applies one action, as the routine that applies a list does for each in turn.
+type ApplyPendingActionFn = (
+    record: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo,
+    autoApproved: boolean) => Promise<void>;
+
+// The routine that applies a list, for a gatekeeper that applies one action at a time.
+function sequentially(applyFn: ApplyPendingActionFn): ApplyActionListFn {
+  return async (_gatekeeperId, select) => {
+    for (let {record, resolvedBy} of select()) await applyFn(record, resolvedBy, true);
+  };
 }
 
 // No decision in flight anywhere, which is every case but the one that claims one.
@@ -94,7 +106,7 @@ describe("AutoApprovalDrainer.drain", () => {
     putAction(storage, 3);
 
     let { applyFn, calls } = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING).drain(GK);
+    await new AutoApprovalDrainer(storage, sequentially(applyFn), NONE_DECIDING).drain(GK);
 
     expect(calls).toEqual([1, 2, 3]);
     for (let id of [1, 2, 3]) {
@@ -113,7 +125,7 @@ describe("AutoApprovalDrainer.drain", () => {
     putAction(storage, 3);
 
     let { applyFn, calls } = makeImmediateApply(storage);
-    let drainer = new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING);
+    let drainer = new AutoApprovalDrainer(storage, sequentially(applyFn), NONE_DECIDING);
     await drainer.drain(GK);
 
     // Only the action before the gate is applied; the gate and everything behind it stay pending.
@@ -140,7 +152,7 @@ describe("AutoApprovalDrainer.drain", () => {
     putAction(storage, 1);
 
     let apply = makeControlledApply(storage);
-    let drainer = new AutoApprovalDrainer(storage, apply.applyFn, NONE_DECIDING);
+    let drainer = new AutoApprovalDrainer(storage, sequentially(apply.applyFn), NONE_DECIDING);
 
     let first = drainer.drain(GK);   // starts, calls apply(1), parks mid-apply
     let second = drainer.drain(GK);  // must coalesce, not start a second apply
@@ -167,7 +179,7 @@ describe("AutoApprovalDrainer.drain", () => {
 
     let deciding = new Set([2]);
     let { applyFn, calls } = makeImmediateApply(storage);
-    let drainer = new AutoApprovalDrainer(storage, applyFn, id => deciding.has(id));
+    let drainer = new AutoApprovalDrainer(storage, sequentially(applyFn), id => deciding.has(id));
     await drainer.drain(GK);
 
     // Not #2, and not #3 behind it either: applying past an action that is still being decided
@@ -194,7 +206,7 @@ describe("AutoApprovalDrainer.drain", () => {
     putAction(storage, 1);
 
     let apply = makeControlledApply(storage);
-    let drainer = new AutoApprovalDrainer(storage, apply.applyFn, NONE_DECIDING);
+    let drainer = new AutoApprovalDrainer(storage, sequentially(apply.applyFn), NONE_DECIDING);
 
     let first = drainer.drain(GK);   // parks mid-apply on action 1
 
@@ -233,7 +245,7 @@ describe("AutoApprovalDrainer.drain", () => {
     }
 
     let { applyFn, calls } = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING).drain(GK);
+    await new AutoApprovalDrainer(storage, sequentially(applyFn), NONE_DECIDING).drain(GK);
 
     expect(calls).toEqual(eligible);
   });
@@ -247,7 +259,7 @@ describe("AutoApprovalDrainer.drain", () => {
     }
 
     let { applyFn, calls } = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING).drain(GK);
+    await new AutoApprovalDrainer(storage, sequentially(applyFn), NONE_DECIDING).drain(GK);
 
     expect(calls).toEqual(Array.from({ length: gateId }, (_, i) => i));
     expect(getAction(storage, gateId).state).toBe("pending");
@@ -272,7 +284,7 @@ describe("AutoApprovalDrainer.drain", () => {
 
     // The apply persists a resolved state, which must not throw on the backfilled index.
     let { applyFn, calls } = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING).drain(GK);
+    await new AutoApprovalDrainer(storage, sequentially(applyFn), NONE_DECIDING).drain(GK);
 
     expect(calls).toEqual([1, 3]);
     expect(getAction(storage, 1).state).toBe("approved");
@@ -291,7 +303,7 @@ describe("AutoApprovalDrainer.drain", () => {
       if (record.id === 2) throw new Error("apply failed");
       return inner.applyFn(record, resolvedBy, autoApproved);
     };
-    await new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING).drain(GK);
+    await new AutoApprovalDrainer(storage, sequentially(applyFn), NONE_DECIDING).drain(GK);
 
     expect(inner.calls).toEqual([1]);
     expect(getAction(storage, 2).state).toBe("pending");
@@ -307,7 +319,7 @@ describe("AutoApprovalDrainer.drain", () => {
     putAction(storage, 1);
 
     let apply = makeControlledApply(storage);
-    let drainer = new AutoApprovalDrainer(storage, apply.applyFn, NONE_DECIDING);
+    let drainer = new AutoApprovalDrainer(storage, sequentially(apply.applyFn), NONE_DECIDING);
     let first = drainer.drain(GK);   // snapshots pending = [1]
 
     putAction(storage, 2);           // arrives mid-drain, with no accompanying drain() call
@@ -325,7 +337,7 @@ describe("AutoApprovalDrainer.drain", () => {
     storage.containsRestrictedData.put(true);
 
     let apply = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, apply.applyFn, NONE_DECIDING).drain(GK);
+    await new AutoApprovalDrainer(storage, sequentially(apply.applyFn), NONE_DECIDING).drain(GK);
 
     expect(apply.calls).toEqual([]);
     expect(getAction(storage, 1).state).toBe("pending");

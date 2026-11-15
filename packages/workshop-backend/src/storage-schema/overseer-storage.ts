@@ -56,6 +56,16 @@ export type GatekeeperRecord = {
   creationSpec?: GatekeeperCreationSpec;
 
   /**
+   * Set the first time the gatekeeper is found to implement Gatekeeper.applyActions(): the
+   * highest action ID recorded by then. The connection's pending actions up to it are its
+   * leftovers, recorded on no branch of the gatekeeper's: each is visible in every view and
+   * applied ahead of the rest, by name (see OverseerImpl.adoptsBranches). Absent while the
+   * gatekeeper applies one action at a time, so that every pending action is visible in every
+   * view. TODO: Remove once no leftover is pending.
+   */
+  leftoversThrough?: number;
+
+  /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
    * by binding name. Seeded from the AgentSpawnerConfig.env the spawner was created with, then
    * edited like a gadget's (see GadgetRecord.bindings), and read when an agent is spawned.
@@ -496,9 +506,9 @@ export type ActionRecord = {
   createdAt: Date;
 
   /**
-   * When the record last changed state: an action's approval/rejection, a hook's enable/disable
-   * toggle or deletion. Absent while nothing has happened since creation (and on legacy records
-   * from before it was tracked).
+   * When the record last changed state: an action's approval/rejection or a failure to apply it,
+   * a hook's enable/disable toggle or deletion. Absent while nothing has happened since creation
+   * (and on legacy records from before it was tracked).
    */
   appliedAt?: Date;
 
@@ -519,6 +529,15 @@ export type ActionRecord = {
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  applyError?: {message: string, retryable: boolean};  // see ActionLogEntry.applyError
+
+  /**
+   * The reconciliation mark: set on each action a Gatekeeper.applyActions() call names, before
+   * the call, and cleared once the call's result is recorded for it. Found already set when a
+   * call begins, it means an earlier call that named the action lost its result, so the action
+   * may have been applied then (see OverseerImpl.applyActionList).
+   */
+  applying?: true;
 } | {
   type: "observation";
 

@@ -130,6 +130,10 @@ export class FixtureQueue extends RpcTarget {
   async getBranch(): Promise<BranchView> {
     return { branch: null };
   }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
+  }
 }
 
 /** Actions this gatekeeper can be asked to take. */

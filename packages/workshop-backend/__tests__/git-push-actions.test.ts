@@ -192,4 +192,71 @@ describe("push authorization through the Overseer chokepoints", () => {
       await expect(cache.buildPack()).rejects.toThrow(/action-scoped/);
     });
   });
+  // A queued push for each of three callers on a gatekeeper that has adopted branches: one on
+  // chat 1's branch, one on chat 2's, one staged. Returns their heads.
+  async function queueBranchPushes(impl: any): Promise<string[]> {
+    let { base } = await seedPushableHistory(impl);
+    let tree = await impl.gitCache.putFromGatekeeper(GATEKEEPER, "tree", new Uint8Array(0));
+    let heads = await Promise.all(["chat 1", "chat 2", "staged"].map(message =>
+        storeLocal(impl, "commit", commitPayload(tree, [base], message))));
+    let callers = [{ from: "user", chatId: 1 }, { from: "user", chatId: 2 }, { from: "user" }];
+    for (let [i, head] of heads.entries()) {
+      await impl.submitAction(GATEKEEPER, i + 1, pushDescription([head]), callers[i]);
+    }
+    return heads;
+  }
+
+  it("limits a session's view of queued pushes to its own once the gatekeeper adopts branches",
+      async () => {
+    await inOverseer("push-branch-view", async impl => {
+      let { GitCacheImpl } = await import("../src/git-cache.js");
+      let viewOf = (branch: string | null) => new GitCacheImpl(impl.gitCache, GATEKEEPER,
+          undefined, impl.pushVisibleTo(GATEKEEPER, branch));
+      let heads = await queueBranchPushes(impl);
+      // Not adopted: every session sees every queued push, as every pending action.
+      for (let head of heads) expect(await viewOf("chat:1").has(head)).toBe(true);
+
+      impl.getGatekeeperFacet = async () => ({ applyActions() {} });
+      await impl.adoptsBranches(GATEKEEPER);
+      // Adopted with these pending, they are leftovers, which every view still sees.
+      for (let head of heads) expect(await viewOf("chat:1").has(head)).toBe(true);
+
+      for (let action of [1, 2, 3]) {
+        let record = Array.from(impl.storage.actions.list())
+            .find((a: any) => a.type === "action" && a.action === action) as any;
+        impl.gitCache.clearPushMarks(record.id);
+        impl.storage.actions.put({ ...record, state: "rejected" });
+      }
+      // Queued again, after adopting.
+      let fresh = await queueBranchPushes(impl);
+      expect(await Promise.all(fresh.map(head => viewOf("chat:1").has(head))))
+          .toStrictEqual([true, false, true]);
+      expect(await Promise.all(fresh.map(head => viewOf(null).has(head))))
+          .toStrictEqual([false, false, true]);
+    });
+  });
+
+  it("packs the pushes of the actions applyActions() names, in one pack", async () => {
+    await inOverseer("push-apply-list", async impl => {
+      impl.getGatekeeperFacet = async () => ({ applyActions() {} });
+      await impl.adoptsBranches(GATEKEEPER);
+      let heads = await queueBranchPushes(impl);
+      let objects: unknown[] = [];
+      impl.getGatekeeperFacet = async () => ({
+        async applyActions(_view: unknown, actions: number[], cache: any) {
+          expect(actions).toStrictEqual([3, 1]);
+          await expect(cache.buildPack()).rejects.toThrow(/needs the actions/);
+          await expect(cache.buildPack([2])).rejects.toThrow(/not among/);
+          objects = await decodePack(await collect(await cache.buildPack([1, 3])));
+          return { applied: actions };
+        },
+      });
+      let chatPush = Array.from(impl.storage.actions.list())
+          .find((a: any) => a.type === "action" && a.action === 1) as any;
+      await impl.applyPendingAction(chatPush, USER, false);
+      expect(objects).toHaveLength(2);
+      expect(impl.storage.gitObjectMetadata.get(heads[0])!.onRemote).toStrictEqual([GATEKEEPER]);
+      expect(impl.storage.gitObjectMetadata.get(heads[1])!.onRemote).toStrictEqual([]);
+    });
+  });
 });

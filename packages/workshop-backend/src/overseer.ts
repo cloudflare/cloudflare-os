@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, type BranchView, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, type BranchId, type BranchView, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -86,7 +86,7 @@ import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRule, type ApplyItem } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -297,6 +297,11 @@ type PreparedScratchWorktree = {
 // shape to call it — same optional-method-on-a-stub pattern as user.ts's SingletonAccountStub.
 type CatalogGatekeeperFacet =
     Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "getAgentCatalog">>>;
+
+// Each apply method is optional on Gatekeeper, which implements one or the other; adoptsBranches()
+// says which. A facet is viewed through this derived shape to call the one it implements.
+type ApplyingGatekeeperFacet =
+    Fetcher<Gatekeeper<any> & Required<Pick<Gatekeeper<any>, "applyActions" | "applyAction">>>;
 
 function defaultBlueprintBindingTitle(record: GatekeeperRecord, bindingName?: string): string {
   return record.resourceTitle || bindingName || "Connection";
@@ -618,6 +623,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         },
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
+        applyError: record.applyError,
         creation: record.action === "create" || undefined,
       };
     case "bindHook":
@@ -799,6 +805,14 @@ class OverseerImpl implements AgentHooks {
 
   // Actions with a decision in flight (see claimDecision).
   #deciding = new Set<number>();
+
+  // The highest action ID each connection has submitted since this object started (see
+  // submitAction).
+  #lastSubmitted = new Map<WorkpieceId, number>();
+
+  // Each connection's look for Gatekeeper.applyActions() in flight before a submission (see
+  // beforeSubmission), settling to its failure, if it failed.
+  #adoptionLooks = new Map<WorkpieceId, Promise<{error: unknown} | undefined>>();
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
@@ -1635,9 +1649,7 @@ class OverseerImpl implements AgentHooks {
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
-        this.storage,
-        (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved),
+        this.storage, (gatekeeperId, select) => this.applyActionList(gatekeeperId, true, select),
         id => this.#deciding.has(id));
     this.cacheWarmer = new ChatCacheWarmer(ctx.id.toString(), (chatId, resent) =>
         this.#addRequestCost(
@@ -5411,10 +5423,10 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Marks a pending action as "being decided", so that only one approval or rejection of it can be
-  // in progress at a time. Throws "Action is not pending" if the action was already approved or
-  // rejected, or if another approval or rejection of it is still in progress. The mark is removed
-  // when the returned handle is disposed, so callers hold it with `using`.
+  // Marks pending actions as "being decided", so that only one approval or rejection of each can be
+  // in progress at a time. Throws "Action is not pending" if one was already approved or rejected,
+  // or if another approval or rejection of it is still in progress, and then marks none. The marks
+  // are removed when the returned handle is disposed, so callers hold it with `using`.
   //
   // Why this is needed: approving or rejecting an action first calls its gatekeeper, and only
   // records the action as approved or rejected after that call returns. While the call is being
@@ -5424,83 +5436,115 @@ class OverseerImpl implements AgentHooks {
   // the "is it pending?" check and reach the gatekeeper a second time.
   //
   // This method is synchronous, so no other request can run between the check and setting the
-  // mark. Callers must call it before they contact the gatekeeper. Since it checks the action's
-  // state itself, it can come earlier than that, as in applyPendingAction.
-  claimDecision(id: number): Disposable {
-    if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
-      throw new Error(`Action is not pending: ${id}`);
+  // mark. Callers must call it before they contact the gatekeeper. Since it checks the actions'
+  // state itself, it can come earlier than that, as in applyActionList.
+  claimDecision(...ids: number[]): Disposable {
+    for (let id of ids) {
+      if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
+        throw new Error(`Action is not pending: ${id}`);
+      }
     }
-    this.#deciding.add(id);
-    return {[Symbol.dispose]: () => { this.#deciding.delete(id); }};
+    for (let id of ids) this.#deciding.add(id);
+    return {[Symbol.dispose]: () => { for (let id of ids) this.#deciding.delete(id); }};
   }
 
-  // Apply a single pending action: invoke the gatekeeper, mark it approved, and persist (the put
-  // auto-notifies subscribeToActions). Shared by manual approval (`approveAction`) and the
-  // auto-approval drain (`drainAutoApprovals`). Refuses, as not pending, an action decided since
-  // the caller read it or whose decision is still in flight (see claimDecision).
-  //
-  // `resolvedBy`/`autoApproved` are required (not defaulted) so that no apply path can omit how the
-  // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
-  // requiring them here guarantees the audit log always records the resolving user and whether it
-  // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
-  // A creation also needs `creation`: the verifier of the account the approver chose to create it
-  // in, and what they chose in that account's creation configurator.
+  // Whether the gatekeeper implements Gatekeeper.applyActions(), which is how it declares that it
+  // has adopted branches. A missing member should read as undefined, but Workers RPC refuses the
+  // read with the TypeError matched here; both mean no, and any other failure propagates. The
+  // first yes records where the connection's leftovers end (GatekeeperRecord.leftoversThrough).
+  // A session asks once, before recording its first submission (ApprovalQueueImpl), so that no
+  // action submitted after adopting is taken for a leftover; so does every apply.
+  // TODO: Remove with the last gatekeeper that does not implement applyActions().
+  async adoptsBranches(gatekeeperId: number, facet?: Fetcher<Gatekeeper<any>>): Promise<boolean> {
+    facet ??= await this.getGatekeeperFacet(gatekeeperId);
+    let method: unknown;
+    try {
+      method = await facet.applyActions;
+    } catch (error) {
+      if (error instanceof TypeError &&
+          error.message === `The RPC receiver does not implement the method "applyActions".`) {
+        return false;
+      }
+      throw error;
+    }
+    if (method === undefined) return false;
+    (method as Partial<Disposable>)[Symbol.dispose]?.();  // a stub of the method
+    let record = this.storage.gatekeepers.get(gatekeeperId);
+    if (record && record.leftoversThrough === undefined) {
+      record.leftoversThrough = this.storage.nextActionId.get() - 1;
+      this.storage.gatekeepers.put(record);
+    }
+    return true;
+  }
+
+  // Before a session records a submission on the connection: its first looks for applyActions()
+  // there, while the connection has no leftovers mark (see adoptsBranches). Every submission
+  // meanwhile waits for that look, whichever session it comes from, so that submissions are still
+  // recorded in the order they arrive. Only the sessions that asked see the look fail.
+  async beforeSubmission(gatekeeperId: WorkpieceId, firstOfSession: boolean): Promise<void> {
+    let look = this.#adoptionLooks.get(gatekeeperId);
+    if (look === undefined && firstOfSession &&
+        this.storage.gatekeepers.get(gatekeeperId)?.leftoversThrough === undefined) {
+      look = this.adoptsBranches(gatekeeperId).then(() => undefined, (error: unknown) => ({error}));
+      this.#adoptionLooks.set(gatekeeperId, look);
+      void look.then(() => this.#adoptionLooks.delete(gatekeeperId));
+    }
+    if (look === undefined) return;
+    let failed = await look;
+    if (failed && firstOfSession) throw failed.error;
+  }
+
+  // Whether a session reading through `branch` on the connection sees the queued pushes of the
+  // pending action with kernel ID `actionId` (see GitCache): those of the actions in its view, and
+  // of leftovers, which every view sees. A gatekeeper that has not adopted branches shows every
+  // session every pending action, so its sessions see every queued push.
+  pushVisibleTo(gatekeeperId: number, branch: BranchId | null): (actionId: number) => boolean {
+    return actionId => {
+      let through = this.storage.gatekeepers.get(gatekeeperId)?.leftoversThrough;
+      let record = this.storage.actions.get(actionId);
+      if (through === undefined || record === undefined || actionId <= through) return true;
+      let actionBranch = branchOf(record.caller);
+      return actionBranch === null || actionBranch === branch;
+    };
+  }
+
+  // Approve a single pending action, as `resolvedBy` and (for an auto-approval) automatically:
+  // what Overseer.approveAction() does, after its checks. A creation also needs `creation`: the
+  // verifier of the account the approver chose to create it in, and what they chose in that
+  // account's creation configurator. Any other action is applied through applyActionList(),
+  // together with the actions it must follow for a gatekeeper that has adopted branches.
   async applyPendingAction(record: ActionRecord & {type: "action"},
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
                                        configuration: string | null}): Promise<void> {
+    if (record.action !== "create") {
+      return this.applyActionList(record.gatekeeperId, autoApproved, adopted =>
+          this.#approvalList(record, adopted).map(record => ({record, resolvedBy})));
+    }
     using _decision = this.claimDecision(record.id);
     let id = record.gatekeeperId;
-    // A created resource exists only once its creation applies, and that stays pending until then.
-    if (record.action !== "create" && this.creationPending(id)) {
-      throw new Error("This resource doesn't exist yet. Approve its creation first.");
-    }
-    let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
-    let created: {class: GatekeeperClass, resourceUrl: string} | undefined;
-    if (record.action === "create") {
-      if (!creation) throw new Error("Choose one of your accounts to create this resource in.");
-      // applyCreation is optional on Gatekeeper; GatekeeperVendor.createResource()'s gatekeepers
-      // implement it.
-      created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
-          Required<Pick<Gatekeeper<any>, "applyCreation">>>)
-          .applyCreation(creation.creator, creation.configuration);
-    } else {
-      // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
-      // happen long after the session that queued it, so the queue-time stub is gone) -- the
-      // binding that makes buildPack() serve exactly this action's pending-push closure.
-      await gatekeeper.applyAction(record.action,
-          new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
-    }
-    record.state = "approved";
-    record.appliedAt = new Date();
-    record.resolvedBy = resolvedBy;
-    record.autoApproved = autoApproved;
+    let gatekeeper = await this.getGatekeeperFacet(id);
+    if (!creation) throw new Error("Choose one of your accounts to create this resource in.");
+    // applyCreation is optional on Gatekeeper; GatekeeperVendor.createResource()'s gatekeepers
+    // implement it.
+    let created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
+        Required<Pick<Gatekeeper<any>, "applyCreation">>>)
+        .applyCreation(creation.creator, creation.configuration);
     // A creation switches the gatekeeper to the real resource's class in the same durable step
     // that records the approval. (Re-read: the connection may have been removed meanwhile, which
     // leaves the card's URL as the only pointer to the created resource.)
-    if (created) record.resourceUrl = created.resourceUrl;
-    let gatekeeperRecord = created && this.storage.gatekeepers.get(id);
-    if (created && gatekeeperRecord) {
+    let gatekeeperRecord = this.storage.gatekeepers.get(id);
+    if (gatekeeperRecord) {
       gatekeeperRecord.class = created.class;
       gatekeeperRecord.resourceUrl = created.resourceUrl;
       if (gatekeeperRecord.creationSpec?.type === "gatekeeper") {
         gatekeeperRecord.creationSpec.resourceUrl = created.resourceUrl;
       }
     }
-    // One durable step for the completion record and the mark conversion (pushed objects are
-    // now proven on the remote), so a crash between the push and here strands nothing locally
-    // -- the remote side of that window is the gatekeeper's applyAction idempotency
-    // responsibility.
-    this.storage.transaction(() => {
-      this.gitCache.convertPushMarksToOnRemote(record.id);
-      this.storage.actions.put(record);
+    this.#recordApproval(record.id, resolvedBy, autoApproved, approved => {
+      approved.resourceUrl = created.resourceUrl;
       if (gatekeeperRecord) this.storage.gatekeepers.put(gatekeeperRecord);
     });
-    // No await between the decision write and the durable execution claim. This also covers
-    // auto-approval, rather than relying on a client's continuation after this promise resolves.
-    if (record.caller.from === "agent" && record.description.awaitDecision) {
-      this.resumeAgentAfterDecision(record.caller.chatId, record.id);
-    }
     if (gatekeeperRecord) {
       // Restart the facet on the new class before anything else reaches it.
       this.ctx.facets.abort(`gatekeeper${id}`,
@@ -5511,8 +5555,239 @@ class OverseerImpl implements AgentHooks {
         this.#gatekeepersPendingRestart.add(id);
       }
     }
+  }
+
+  // The pending actions approving `record` applies, in order. For a gatekeeper that has adopted
+  // branches, that is what staging holds on the connection and the record's branch's actions up to
+  // it, leftovers first, then staged actions, then the branch's: Gatekeeper.applyActions()
+  // promises a list complete within its bounds, and the gatekeeper simulated the record on top of
+  // the others. Otherwise it is the record alone, as before branches. The record goes in as read,
+  // so the claim refuses it if it was decided since.
+  #approvalList(record: ActionRecord & {type: "action"}, adopted: boolean)
+      : (ActionRecord & {type: "action"})[] {
+    if (!adopted) return [record];
+    let branch = branchOf(record.caller);
+    let through = this.storage.gatekeepers.get(record.gatekeeperId)?.leftoversThrough ?? 0;
+    let group = (other: ActionRecord) =>
+        other.id <= through ? 0 : branchOf(other.caller) === null ? 1 : 2;
+    let list = [...this.storage.actions.pendingByGatekeeper.get(record.gatekeeperId)].filter(
+        (other): other is ActionRecord & {type: "action"} =>
+            other.type === "action" && other.id !== record.id &&
+            (branchOf(other.caller) === branch ? other.id < record.id
+                                               : branchOf(other.caller) === null));
+    return [...list, record].toSorted((a, b) => group(a) - group(b) || a.id - b.id);
+  }
+
+  // The one routine that applies pending actions: on one connection, those `select` picks, in
+  // order, each as approved by its `resolvedBy`. Shared by manual approval (applyPendingAction)
+  // and the auto-approval drain (drainAutoApprovals). `select` learns whether the gatekeeper has
+  // adopted branches (see adoptsBranches) and runs just before its actions are claimed (see
+  // claimDecision), so it picks from them as they are then. Stops at the first action that fails,
+  // recording the error on it (ActionRecord.applyError), and throws.
+  //
+  // A gatekeeper that has adopted branches is handed the actions as lists (#applyRun). Any other
+  // is handed them one at a time (Gatekeeper.applyAction()).
+  //
+  // `autoApproved` is required (not defaulted), like each action's `resolvedBy`, so that no apply
+  // path can omit how the gate was cleared: this is the chokepoint where an action transitions to
+  // "approved", so requiring them here guarantees the audit log always records the resolving user
+  // and whether it was applied automatically. For an auto-approval, `resolvedBy` is the user who
+  // enabled the rule.
+  async applyActionList(gatekeeperId: number, autoApproved: boolean,
+                        select: (adopted: boolean) => ApplyItem[]): Promise<void> {
+    let facet = await this.getGatekeeperFacet(gatekeeperId);
+    let adopted = await this.adoptsBranches(gatekeeperId, facet);
+    let gatekeeper = facet as unknown as ApplyingGatekeeperFacet;
+    let items = select(adopted);
+    using _decision = this.claimDecision(...items.map(item => item.record.id));
+    if (items.length === 0) return;
+    // A created resource exists only once its creation applies, and that stays pending until
+    // then. So no creation is among the items.
+    if (this.creationPending(gatekeeperId)) {
+      throw new Error("This resource doesn't exist yet. Approve its creation first.");
+    }
+    if (adopted) {
+      for (let run of this.#viewRuns(gatekeeperId, items)) {
+        if (!await this.#applyRun(gatekeeper, gatekeeperId, run.branch, run.items, autoApproved)) {
+          return;
+        }
+      }
+      return;
+    }
+    for (let {record, resolvedBy, eligible} of items) {
+      if (eligible?.() === false) return;
+      try {
+        // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
+        // happen long after the session that queued it, so the queue-time stub is gone) -- the
+        // binding that makes buildPack() serve exactly this action's pending-push closure.
+        await gatekeeper.applyAction(record.action as number,
+            new GitCacheImpl(this.gitCache, gatekeeperId, record.id));
+      } catch (error) {
+        this.#settlePending(record.id, {message: stringifyError(error), retryable: true});
+        throw error;
+      }
+      this.#recordApproval(record.id, resolvedBy, autoApproved);
+    }
+  }
+
+  // Cuts a list for a gatekeeper that has adopted branches into the calls that apply it, each
+  // read through one view. Staged actions and leftovers, which every view sees, may lead a call;
+  // one branch's actions follow. (A leftover is applied by name, whatever the view.)
+  #viewRuns(gatekeeperId: number, items: ApplyItem[])
+      : {branch: BranchId | null, items: ApplyItem[]}[] {
+    let through = this.storage.gatekeepers.get(gatekeeperId)?.leftoversThrough ?? 0;
+    let runs: {branch: BranchId | null, items: ApplyItem[]}[] = [];
+    for (let item of items) {
+      let branch = item.record.id <= through ? null : branchOf(item.record.caller);
+      let run = runs.at(-1);
+      if (run === undefined || (run.branch !== null && run.branch !== branch)) {
+        runs.push(run = {branch, items: []});
+      }
+      run.branch ??= branch;
+      run.items.push(item);
+    }
+    return runs;
+  }
+
+  // Applies one view's list through Gatekeeper.applyActions(), calling again with what is left
+  // while a call applies something, and settles each action a call names from its result. Those
+  // reported applied are approved. The failed one keeps the error and stays pending, as does
+  // everything after the point the call reached: the failed action, else the last one applied,
+  // else, when the call applied nothing, the end of the list. The gatekeeper no longer holds one
+  // before that point that the call did not report. If an earlier call that named it left its
+  // mark (ActionRecord.applying), that call applied it and lost its result: approved. Otherwise
+  // the gatekeeper never kept it (see ApprovalQueue.submitAction()): rejected.
+  //
+  // Each call names what is still pending, up to the first action no longer eligible (see
+  // ApplyItem): the gatekeeper may have reported one rejected meanwhile (see rejectAction()).
+  // Returns whether nothing was left for want of eligibility.
+  async #applyRun(gatekeeper: ApplyingGatekeeperFacet, gatekeeperId: number,
+                  branch: BranchId | null, items: ApplyItem[], autoApproved: boolean)
+      : Promise<boolean> {
+    let complete = true;
+    for (;;) {
+      items = items.filter(({record: {id}}) => this.storage.actions.get(id)?.state === "pending");
+      let stop = items.findIndex(item => item.eligible?.() === false);
+      if (stop >= 0) {
+        items = items.slice(0, stop);
+        complete = false;
+      }
+      if (items.length === 0) return complete;
+      let resumed = new Set<number>();
+      this.storage.transaction(() => {
+        for (let {record: {id}} of items) {
+          let record = this.storage.actions.get(id);
+          if (record?.type !== "action") continue;
+          if (record.applying) {
+            resumed.add(id);
+          } else {
+            record.applying = true;
+            this.storage.actions.put(record);
+          }
+        }
+      });
+      // No creation is pending (see applyActionList), so each action is the gatekeeper's number.
+      let named = new Map(items.map(({record}, i) => [record.action as number, {i, id: record.id}]));
+      let {applied, failed} = await gatekeeper.applyActions({branch}, [...named.keys()],
+          new GitCacheImpl(this.gitCache, gatekeeperId,
+              new Map([...named].map(([action, {id}]) => [action, id])),
+              this.pushVisibleTo(gatekeeperId, branch)));
+      let appliedAt = new Set(applied.flatMap(action => named.get(action)?.i ?? []));
+      let failedAt = failed && named.get(failed.action)?.i;
+      let reached = failedAt ?? (appliedAt.size > 0 ? Math.max(...appliedAt)
+                                                   : failed ? -1 : items.length - 1);
+      let rest: ApplyItem[] = [];
+      for (let [i, item] of items.entries()) {
+        let {record: {id}, resolvedBy} = item;
+        if (appliedAt.has(i)) {
+          this.#recordApproval(id, resolvedBy, autoApproved);
+        } else if (i === failedAt) {
+          this.#settlePending(id, {message: String(failed!.message),
+                                   retryable: failed!.retryable !== false});
+        } else if (i > reached) {
+          // Not reached, so this call applied nothing more. Only a mark this call set is its own
+          // to clear: an earlier call's says that call may have applied the action.
+          if (!resumed.has(id)) this.#settlePending(id);
+          rest.push(item);
+        } else if (resumed.has(id)) {
+          this.#recordApproval(id, resolvedBy, autoApproved);
+        } else {
+          this.recordRejection(id, resolvedBy, {
+            message: "Its connection no longer held this action when it was approved.",
+            retryable: false,
+          });
+        }
+      }
+      if (failed) throw new Error(String(failed.message));
+      if (appliedAt.size === 0) return complete;
+      items = rest;
+    }
+  }
+
+  // These three record what became of a pending action, and leave one decided meanwhile alone (see
+  // rejectAction()).
+  //
+  // Records a pending action as approved (applied), with how its gate was cleared. Converts its
+  // push marks in the same durable step (pushed objects are now proven on the remote), so a crash
+  // between the push and here strands nothing locally -- the remote side of that window is the
+  // gatekeeper's idempotency responsibility. `within` makes further changes in that step.
+  #recordApproval(id: number, resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+                  within?: (record: ActionRecord & {type: "action"}) => void): void {
+    let record = this.storage.actions.get(id);
+    if (record?.type !== "action" || record.state !== "pending") return;
+    record.state = "approved";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    record.autoApproved = autoApproved;
+    delete record.applyError;
+    delete record.applying;
+    this.storage.transaction(() => {
+      this.gitCache.convertPushMarksToOnRemote(id);
+      within?.(record);
+      this.storage.actions.put(record);
+    });
+    // No await between the decision write and the durable execution claim. This also covers
+    // auto-approval, rather than relying on a client's continuation after this promise resolves.
+    if (record.caller.from === "agent" && record.description.awaitDecision) {
+      this.resumeAgentAfterDecision(record.caller.chatId, id);
+    }
     // Also when a rule applies it: a user's "always approve" answers a pending request that way.
     this.traceAgentActionApproval(record, "approved");
+  }
+
+  // Records a pending action as rejected by `resolvedBy`, with the error that showed it could not
+  // apply, if one did. Its pending-push marks are removed in the same durable step (nothing was
+  // transmitted, so nothing became proven). An agent's turn finds the rejection when it resumes.
+  recordRejection(id: number, resolvedBy: AiChatAuthorInfo,
+                  applyError?: {message: string, retryable: boolean}): void {
+    let record = this.storage.actions.get(id);
+    if (record?.type !== "action" || record.state !== "pending") return;
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    if (applyError) record.applyError = applyError;
+    delete record.applying;
+    this.storage.transaction(() => {
+      this.gitCache.clearPushMarks(id);
+      this.storage.actions.put(record);
+    });
+    this.traceAgentActionApproval(record, "denied");
+    if (record.caller.from === "agent") {
+      this.resumeAgentAfterDecision(record.caller.chatId, id);
+    }
+  }
+
+  // Leaves a pending action pending after an apply, clearing its reconciliation mark
+  // (ActionRecord.applying), and records why it failed to apply, if it did.
+  #settlePending(id: number, applyError?: {message: string, retryable: boolean}): void {
+    let record = this.storage.actions.get(id);
+    if (record?.type !== "action" || record.state !== "pending") return;
+    delete record.applying;
+    if (applyError) {
+      record.applyError = applyError;
+      record.appliedAt = new Date();
+    }
+    this.storage.actions.put(record);
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -6491,6 +6766,8 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
+  // A throw means nothing was recorded (ApprovalQueue.submitAction(), rule 3): every refusal
+  // comes before the write, and nothing after it may throw.
   async submitAction(gatekeeperId: number, action: number | "create",
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
@@ -6550,6 +6827,18 @@ class OverseerImpl implements AgentHooks {
       this.storage.actions.put(record);
     });
     this.#associateAction(caller, actionId);
+
+    // A connection's action IDs must increase in submission order (see BranchView). Checked
+    // against this activation's submissions only, which is enough for a log.
+    if (typeof action === "number") {
+      let last = this.#lastSubmitted.get(gatekeeperId) ?? -Infinity;
+      if (action <= last) {
+        this.logger.warn("gatekeeper submitted an action ID out of order", {
+          event: "action.submit.out-of-order", gatekeeperId,
+        });
+      }
+      this.#lastSubmitted.set(gatekeeperId, Math.max(action, last));
+    }
 
     // Same auto-approval gate the drainer uses, named because awaitDecision uses it too. The drain
     // is deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
@@ -12806,20 +13095,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let profile = await this.#getClientProfile();
 
     using _decision = this.impl.claimDecision(id);
-    await gatekeeper.rejectAction(action.action);
-
-    action.state = "rejected";
-    action.appliedAt = new Date();
-    action.resolvedBy = profile;
-    // A rejected push's pending-push marks are removed in the same durable step as the state
-    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
-    this.impl.storage.transaction(() => {
-      this.impl.gitCache.clearPushMarks(action.id);
-      this.impl.storage.actions.put(action);
-    });
-    this.impl.traceAgentActionApproval(action, "denied");
-    if (action.caller.from === "agent") {
-      this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
+    let result = await gatekeeper.rejectAction(action.action);
+    this.impl.recordRejection(id, profile);
+    // So are the pending actions the gatekeeper says it rejected along with this one, even one an
+    // apply has claimed: that apply only records what the gatekeeper then reports about it.
+    let rejected = result?.rejected;
+    if (Array.isArray(rejected)) {
+      // Materialized first: rejecting one changes the index.
+      let pending =
+          Array.from(this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
+      for (let other of pending) {
+        if (other.type === "action" && typeof other.action === "number" &&
+            rejected.includes(other.action)) {
+          this.impl.recordRejection(other.id, profile);
+        }
+      }
     }
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
@@ -14511,7 +14801,8 @@ class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationA
   }
 
   async getGitCache(): Promise<GitCache> {
-    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
+    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId, undefined,
+        this.impl.pushVisibleTo(this.gatekeeperId, branchOf(this.caller)));
   }
 
   async requireLive(): Promise<void> {
@@ -14628,12 +14919,25 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   async getGitCache(): Promise<GitCache> {
-    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
+    return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId, undefined,
+        this.impl.pushVisibleTo(this.gatekeeperId, branchOf(this.caller)));
   }
 
-  submitAction(action: number, description: ActionDescription): Promise<void> {
+  // Whether this session has looked for Gatekeeper.applyActions() yet (see adoptsBranches).
+  #adoptionChecked = false;
+
+  async submitAction(action: number, description: ActionDescription): Promise<void> {
+    await this.impl.beforeSubmission(this.gatekeeperId, !this.#adoptionChecked);
+    this.#adoptionChecked = true;
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
+  }
+
+  // Answers from the pending actions: the apply or rejection that decided any other named it to
+  // the gatekeeper.
+  async holdsAction(action: number): Promise<boolean> {
+    return [...this.impl.storage.actions.pendingByGatekeeper.get(this.gatekeeperId)]
+        .some(record => record.type === "action" && record.action === action);
   }
 
   bindHook<Hook extends RpcTarget>(

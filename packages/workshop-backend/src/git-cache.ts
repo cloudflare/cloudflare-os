@@ -56,8 +56,9 @@
 // Over this store sit the gatekeeper-facing semantics:
 //
 // - `GitCacheImpl` is the per-gatekeeper `GitCache` RPC stub (workshop-shared/gatekeeper.ts).
-//   Every stub is scoped to the gatekeeper it was minted for; the stub passed to `applyAction()`
-//   is additionally bound to the applying action, which is what enables `buildPack()`.
+//   Every stub is scoped to the gatekeeper it was minted for; the stub passed to `applyActions()`
+//   or `applyAction()` is additionally bound to the applying actions, which is what enables
+//   `buildPack()`.
 // - `gitObjectMetadata` records, per oid, which gatekeepers' remotes provably possess the object
 //   (`onRemote`), which merely claim to (`pullableFrom`), and which queued actions plan to push
 //   it (`pendingPush`). The two source sets differ in evidentiary grade: `onRemote` is entered
@@ -859,7 +860,8 @@ export class WorkspaceGitCache {
   /**
    * The read behind `GitCache.get()` (and, via `statForGatekeeper()`, `has()`/`stat()`), the
    * gatekeeper's scoped view: answers exactly
-   * `onRemote(G) ∪ pendingPush(G)` for gatekeeper G and null for everything else. A pendingPush
+   * `onRemote(G) ∪ pendingPush(G)` for gatekeeper G and null for everything else, where
+   * `visible`, when given, limits pendingPush(G) to the marks of the actions it accepts. A pendingPush
    * object that is locally absent is pulled through from its recorded sources on demand (that
    * is what lets G simulate a queued cross-remote push); an absent onRemote object is not
    * pulled -- G's own remote has it, and null tells G to ask its remote itself.
@@ -868,9 +870,10 @@ export class WorkspaceGitCache {
    * including a legacy inline blob over MAX_BUFFERED_BLOB_SIZE (at most 8 MB), which
    * `GitCache.get()` streams by size: it is inflated once, not again by a reader.
    */
-  async readForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid, hints?: GitPullHints)
+  async readForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid, hints?: GitPullHints,
+                          visible?: (actionId: number) => boolean)
       : Promise<GatekeeperObject | null> {
-    if (!await this.#heldForGatekeeper(gatekeeperId, oid, hints)) return null;
+    if (!await this.#heldForGatekeeper(gatekeeperId, oid, hints, visible)) return null;
     let object = this.#readLocalShallow(oid);
     if (object === undefined) return null;
     if (object.payload === undefined) return { type: "blob", reader: this.openLocalBlob(oid)! };
@@ -881,21 +884,24 @@ export class WorkspaceGitCache {
    * `GitCache.stat()`/`has()`: `readForGatekeeper()`'s view, answering type and size without
    * reading the object whole (a chunked blob's come from its index row).
    */
-  async statForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid)
+  async statForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid,
+                          visible?: (actionId: number) => boolean)
       : Promise<{ type: GitObjectType, size: number } | null> {
-    return await this.#heldForGatekeeper(gatekeeperId, oid)
+    return await this.#heldForGatekeeper(gatekeeperId, oid, undefined, visible)
         ? this.#statLocal(oid) ?? null : null;
   }
 
   // Whether an object is in the gatekeeper's view and held, after pulling it through if it is
   // a pendingPush object (see readForGatekeeper).
-  async #heldForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid, hints?: GitPullHints)
+  async #heldForGatekeeper(gatekeeperId: WorkpieceId, oid: GitOid, hints?: GitPullHints,
+                           visible?: (actionId: number) => boolean)
       : Promise<boolean> {
     validateGitOid(oid);
     let meta = this.storage.gitObjectMetadata.get(oid);
     if (meta === undefined) return false;
     let onRemote = meta.onRemote.includes(gatekeeperId);
-    let pendingPush = meta.pendingPush.some(p => p.gatekeeperId === gatekeeperId);
+    let pendingPush = meta.pendingPush.some(
+        p => p.gatekeeperId === gatekeeperId && (visible?.(p.actionId) ?? true));
     if (!onRemote && !pendingPush) return false;
 
     if (!this.hasLocalObject(oid) && pendingPush) {
@@ -1729,18 +1735,19 @@ export class WorkspaceGitCache {
   }
 
   /**
-   * `GitCache.buildPack()`: composes the undeltified packfile carrying the applying action's
-   * full pending-push closure. Completes the closure first: any marked object absent from the
-   * store is faulted in from its recorded sources (batched by type), and a faulted tree's
+   * `GitCache.buildPack()`: composes the undeltified packfile carrying the applying actions'
+   * full pending-push closures, each object once. Completes them first: any marked object absent
+   * from the store is faulted in from its recorded sources (batched by type), and a faulted tree's
    * arrival propagates marks to its children, which may fault in turn -- repeating until no
    * marked object is absent. A mid-stream provenance loss fails the apply with the "reconnect"
    * error from the pull delegate.
    */
-  async buildPackForAction(gatekeeperId: WorkpieceId, actionId: number)
+  async buildPackForActions(gatekeeperId: WorkpieceId, actionIds: number[])
       : Promise<ReadableStream<Uint8Array>> {
+    let marked = () => [...new Map(actionIds.flatMap(actionId => this.#recordsMarkedFor(actionId))
+        .map(mark => [mark.oid, mark])).values()];
     for (;;) {
-      let missing = this.#recordsMarkedFor(actionId)
-          .filter(mark => !this.hasLocalObject(mark.oid));
+      let missing = marked().filter(mark => !this.hasLocalObject(mark.oid));
       if (missing.length === 0) break;
       // One batched fetch per expected type (a fetch's hints carry a single type).
       let byType = new Map<GitObjectType, GitOid[]>();
@@ -1757,7 +1764,7 @@ export class WorkspaceGitCache {
       // rather than silently not delivering, so this terminates.
     }
 
-    const marks = this.#recordsMarkedFor(actionId), cache = this;
+    const marks = marked(), cache = this;
     async function* objects(): AsyncGenerator<PackEntrySource> {
       for (const mark of marks) yield await cache.packEntry(mark.oid, { type: mark.type });
     }
@@ -1887,20 +1894,24 @@ export class WorkspaceGitCache {
  * The `GitCache` stub handed to gatekeepers (see workshop-shared/gatekeeper.ts for the
  * interface contract). Minted per gatekeeper -- the identity scopes both metadata attribution
  * (put/advertise record this gatekeeper as the source) and the read view. The overseer
- * additionally binds the stub passed to `applyAction()` to the applying action, which is what
- * makes `buildPack()` available; session-scoped stubs (from
- * `ObservationAuthorizer.getGitCache()`) have no action and `buildPack()` throws.
+ * additionally binds an apply-time stub to the actions it applies, `applying`, which is what
+ * makes `buildPack()` available: the action passed to `applyAction()`, by its kernel ID, or the
+ * list passed to `applyActions()`, from the gatekeeper's action numbers to kernel IDs.
+ * Session-scoped stubs (from `ObservationAuthorizer.getGitCache()`) have none and `buildPack()`
+ * throws. `visible`, when given, limits the read view's queued pushes to those of the pending
+ * actions it accepts, by kernel ID.
  */
 @validateRpc()
 export class GitCacheImpl extends RpcTarget implements GitCache {
   constructor(private cache: WorkspaceGitCache, private gatekeeperId: WorkpieceId,
-              private actionId?: number) {
+              private applying?: number | Map<number, number>,
+              private visible?: (actionId: number) => boolean) {
     super();
   }
 
   async get(id: GitOid, hints?: GitPullHints)
       : Promise<{ type: GitObjectType, content: Uint8Array | ReadableStream<Uint8Array> } | null> {
-    let object = await this.cache.readForGatekeeper(this.gatekeeperId, id, hints);
+    let object = await this.cache.readForGatekeeper(this.gatekeeperId, id, hints, this.visible);
     if (object === null) return null;
     // A Uint8Array iff at most MAX_BUFFERED_BLOB_SIZE, as the interface promises. Over it is a
     // chunked blob's reader, or, rarely, a whole legacy inline blob or the tree of a very large
@@ -1914,11 +1925,11 @@ export class GitCacheImpl extends RpcTarget implements GitCache {
   }
 
   async has(id: GitOid): Promise<boolean> {
-    return await this.cache.statForGatekeeper(this.gatekeeperId, id) !== null;
+    return await this.cache.statForGatekeeper(this.gatekeeperId, id, this.visible) !== null;
   }
 
   async stat(id: GitOid): Promise<{ type: GitObjectType, size: number } | null> {
-    return await this.cache.statForGatekeeper(this.gatekeeperId, id);
+    return await this.cache.statForGatekeeper(this.gatekeeperId, id, this.visible);
   }
 
   async put(type: GitObjectType, content: Uint8Array): Promise<GitOid> {
@@ -1929,13 +1940,24 @@ export class GitCacheImpl extends RpcTarget implements GitCache {
     this.cache.advertiseCommit(this.gatekeeperId, commitId);
   }
 
-  async buildPack(): Promise<ReadableStream<Uint8Array>> {
-    if (this.actionId === undefined) {
+  async buildPack(actions?: number[]): Promise<ReadableStream<Uint8Array>> {
+    let applying = this.applying;
+    if (applying === undefined) {
       throw new Error(
           "buildPack() is only available on the action-scoped GitCache stub passed to " +
-          "applyAction(); a session-time stub has no action.");
+          "applyActions() or applyAction(); a session-time stub has no action.");
     }
-    return this.cache.buildPackForAction(this.gatekeeperId, this.actionId);
+    if (typeof applying === "number") {
+      return this.cache.buildPackForActions(this.gatekeeperId, [applying]);
+    }
+    if (actions === undefined) {
+      throw new Error("buildPack() on the stub passed to applyActions() needs the actions to pack.");
+    }
+    return this.cache.buildPackForActions(this.gatekeeperId, actions.map(action => {
+      let id = applying.get(action);
+      if (id === undefined) throw new Error(`Action ${action} is not among those being applied.`);
+      return id;
+    }));
   }
 
   async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
