@@ -201,9 +201,9 @@ describe("AdminSettings records each admin's change before making it", () => {
       { setting: "banner", key: "text", before: "", after: "Down at noon" },
     ]);
 
-    await inDo(admin => admin.setGatewayModelMode("claude-fable-5-1", "disabled", ACTOR));
+    await inDo(admin => admin.setGatewayModelMode("claude-fable-5-2", "disabled", ACTOR));
     expect(records()[1]!.changes).toStrictEqual(
-        [{ setting: "modelModes", key: "claude-fable-5-1", after: "disabled" }]);
+        [{ setting: "modelModes", key: "claude-fable-5-2", after: "disabled" }]);
   });
 
   it("keeps an excerpt of an over-long value, and cuts an over-long key", async () => {

@@ -509,7 +509,7 @@ describe("admin config update notice", () => {
 
 describe("ADMIN_CONFIG_SEED", () => {
   const SEED = {
-    modelModes: { "claude-fable-5-1": "hidden" },
+    modelModes: { "claude-fable-5-2": "hidden" },
     modelSettings: { "@cf/zai-org/glm-5.2": { reasoning: "high", compactionInputBudget: 200000 } },
     addedModels: [
       { provider: "cloudflare", id: "@cf/test/added", name: "Added", contextWindow: 131072 },
