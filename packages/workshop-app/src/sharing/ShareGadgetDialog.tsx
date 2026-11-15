@@ -1,3 +1,4 @@
+import { CaretLeftIcon } from '@phosphor-icons/react'
 import { useRef, useState } from 'react'
 import type { CollaboratorInfo } from '@gadgets/workshop-shared/api'
 import { resolveSiteName } from '@gadgets/workshop-shared/api'
@@ -6,6 +7,7 @@ import { CopyLinkButton } from '@/blocks/CopyLinkButton'
 import { InviteField } from '@/blocks/InviteField'
 import { RemovalDialog } from '@/blocks/RemovalDialog'
 import { ShareAudienceCard } from '@/blocks/ShareAudienceCard'
+import { ShareAudiencePage } from '@/blocks/ShareAudiencePage'
 import { ShareList } from '@/blocks/ShareList'
 import { ShareNote } from '@/blocks/ShareNote'
 import { SharePersonRow } from '@/blocks/SharePersonRow'
@@ -32,6 +34,7 @@ import { useInvite } from './useInvite'
 import { useRemoval } from './useRemoval'
 import { useSharing } from './useSharing'
 import { useGadgetView } from './useGadgetView'
+import { useViewPreview } from './useViewPreview'
 import { useUserSearch } from './useUserSearch'
 
 export type ShareGadgetDialogProps = {
@@ -99,14 +102,21 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
   const view = useGadgetView(workspaceId, gadgetId, open)
   const { services } = useServices()
   const vendors = services.status === 'ready' ? services.vendors : []
-  const resources = (ready?.requirements ?? []).map((need) => {
-    const vendor = vendors.find(({ id }) => id === need.vendorId)?.description
-    return {
+  // Those someone using it live confirms their access to: a service that sets up an account by
+  // itself, such as Scheduled Tasks, asks nothing of anyone.
+  const resources = (ready?.requirements ?? []).flatMap((need) => {
+    const vendor = vendors.find(({ id }) => id.toLowerCase() === need.vendorId.toLowerCase())?.description
+    if (!vendor || vendor.autoProvisionsAccount) return []
+    return [{
       key: String(need.gatekeeperId),
       title: need.resourceTitle,
-      service: { name: vendor?.displayName ?? need.vendorId, logoUrl: vendor?.logo?.url, color: vendor?.color },
-    }
+      service: { name: vendor.displayName, logoUrl: vendor.logo?.url, color: vendor.color },
+    }]
   })
+  // The dialog's second page: what they see, with the snapshot running while it is shown.
+  const [seeing, setSeeing] = useState(false)
+  const preview = useViewPreview(workspaceId, gadgetId, open && seeing && viewsAvailable)
+  const when = view.takenAt && inSentence(formatActivity(view.takenAt))
 
   const invite = useInvite({
     session,
@@ -169,17 +179,33 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
       onClosed={() => {
         invite.reset()
         setProblem(undefined)
+        setSeeing(false)
       }}
-      title={`Share “${title}”`}
-      description={`People you add get this gadget on its own, without the rest of ${workspaceTitle}.`}
+      title={seeing ? (
+        <span className="flex items-center gap-1">
+          <Button variant="ghost" icon={CaretLeftIcon} aria-label="Back to who has access" onClick={() => setSeeing(false)} />
+          What people see
+        </span>
+      ) : `Share “${title}”`}
+      description={seeing ? undefined : `People you add get this gadget on its own, without the rest of ${workspaceTitle}.`}
       footer={(
         <>
-          <CopyLinkButton link={copied ?? page} title={title} labelled disabled={linkOn && copied === undefined} />
+          {!seeing && <CopyLinkButton link={copied ?? page} title={title} labelled disabled={linkOn && copied === undefined} />}
           <Button variant="primary" onClick={() => onOpenChange(false)}>Done</Button>
         </>
       )}
     >
-      {!ready ? (
+      {seeing ? (
+        <ShareAudiencePage
+          title={title}
+          preview={viewsAvailable ? preview.ui : undefined}
+          frameRef={preview.frame}
+          onReload={preview.reload}
+          when={when}
+          updateFailed={view.updateFailed}
+          resources={resources}
+        />
+      ) : !ready ? (
         <SharingPending snapshot={snapshot as Exclude<SharingSnapshot, { status: 'ready' }>} onRetry={() => session.start()} />
       ) : (
         <>
@@ -268,10 +294,10 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
               picture={view.picture}
               viewsAvailable={viewsAvailable}
               viewers={holders.filter((person) => levelOf(person, gadgetId) === 'view').length}
-              takenAt={view.takenAt}
-              when={view.takenAt && inSentence(formatActivity(view.takenAt))}
+              when={when}
               updateFailed={view.updateFailed}
-              resources={resources}
+              services={[...new Set(resources.map(({ service }) => service.name))]}
+              onOpen={() => setSeeing(true)}
             />
           )}
         </>

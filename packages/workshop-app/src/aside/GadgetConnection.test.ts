@@ -29,7 +29,7 @@ afterEach(() => {
   received = undefined
 })
 
-const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' }) } = {}) => {
+const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' }), view = false } = {}) => {
   const disposed: string[] = []
   const servers: { [Symbol.dispose]: () => void }[] = []
   const lease = (name: string) => ({ [Symbol.dispose]: () => disposed.push(name) })
@@ -42,7 +42,14 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
   let presence: PresenceSubscriber | undefined
   let chats: AiChatSubscriber | undefined
   let workpieces: WorkpiecesSubscriber | undefined
+  const viewHandle: GadgetHandle = {
+    getUiBundle: vi.fn<GadgetHandle['getUiBundle']>(async () => ({ jsCode: 'renderView()' })),
+    connectToGadget: vi.fn<GadgetHandle['connectToGadget']>(async () => breakable('view server')),
+    openView: () => { throw new Error('A view has no view.') },
+    ...breakable('view'),
+  }
   const gadget: GadgetHandle = {
+    openView: vi.fn<GadgetHandle['openView']>(() => viewHandle),
     getUiBundle: vi.fn<GadgetHandle['getUiBundle']>(() => bundle),
     connectToGadget: vi.fn<GadgetHandle['connectToGadget']>(async () => {
       const server = breakable(`server ${servers.length}`)
@@ -68,12 +75,12 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
     ...breakable('overseer'),
   }
   const onEscape = vi.fn<() => void>()
-  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape })
+  const connection = new GadgetConnection(() => overseer, 41, view ? { view, viewerId: 'me', onEscape } : { chatId: 3, viewerId: 'me', onEscape })
   const frame = {} as Window
   connection.showIn(() => frame)
   /** The stub named `name` can no longer reach what it did, as when the workspace restarted. */
   const breaks = (name: string) => onBroken.get(name)?.forEach((callback) => callback(new Error('Durable Object reset')))
-  return { connection, overseer, gadget, frame, disposed, onEscape, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
+  return { connection, overseer, gadget, viewHandle, frame, disposed, onEscape, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
 }
 
 const handshake = (source: unknown, origin = 'null') => {
@@ -93,6 +100,19 @@ describe('GadgetConnection', () => {
     const ui = connection.getSnapshot().ui
     expect(ui.status === 'ready' && ui.page).toContain(encodeURIComponent('render()'))
     connection.stop()
+  })
+
+  it('shows the owner’s view of the gadget, through the gadget, and lets both go', async () => {
+    const { connection, gadget, viewHandle, disposed } = setUp({ view: true })
+    connection.start()
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    expect(gadget.openView).toHaveBeenCalledOnce()
+    expect(gadget.getUiBundle).not.toHaveBeenCalled()
+    expect(viewHandle.getUiBundle).toHaveBeenCalledWith(undefined)
+    const ui = connection.getSnapshot().ui
+    expect(ui.status === 'ready' && ui.page).toContain(encodeURIComponent('renderView()'))
+    connection.stop()
+    expect(disposed).toEqual(expect.arrayContaining(['view', 'gadget', 'overseer']))
   })
 
   it('says when the gadget has no UI, and why one could not be loaded', async () => {

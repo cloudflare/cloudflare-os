@@ -12,6 +12,7 @@ import { AccessMenu } from '@/blocks/AccessMenu'
 import { InviteField } from '@/blocks/InviteField'
 import { RemovalDialog, type RemovalDialogProps } from '@/blocks/RemovalDialog'
 import { ShareAudienceCard } from '@/blocks/ShareAudienceCard'
+import { ShareAudiencePage } from '@/blocks/ShareAudiencePage'
 import { ShareList } from '@/blocks/ShareList'
 import { ShareNote } from '@/blocks/ShareNote'
 import { SharePersonRow } from '@/blocks/SharePersonRow'
@@ -177,6 +178,14 @@ const AUDIENCE = [
   { key: 'budget', title: 'Q3 budget', service: { name: 'Google Drive' } },
 ]
 
+// A gadget's page, as its view would load into the frame: a short list, laid out for a window.
+const VIEW_PAGE = `<!doctype html><meta charset="utf-8"><style>
+body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#fbfaf8;color:#1f1f1f;padding:40px 56px}
+h1{font-size:30px;margin:0 0 4px}p{color:#8a8a8a;margin:0 0 24px}
+li{list-style:none;display:flex;gap:14px;align-items:center;padding:14px 18px;margin:0 0 10px;background:#fff;border:1px solid #ece9e4;border-radius:14px;font-size:17px}
+i{width:20px;height:20px;border-radius:50%;border:2px solid #cfcac2}b{background:#f6821f;border-color:#f6821f}ul{padding:0;margin:0}
+</style><h1>Today</h1><p>3 tasks remaining</p><ul><li><i class="b" style="background:#f6821f;border-color:#f6821f"></i><s>Review Q3 marketing strategy</s></li><li><i></i>Design the new landing page</li><li><i></i>Call Sarah about the API</li><li><i></i>Fix the bug on mobile Safari</li></ul>`
+
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full max-w-md flex-col gap-3">{children}</div>
 
 const LEVELS = [
@@ -308,13 +317,22 @@ export const SharingPreview = () => (
     <Section title="ShareWorkspaceDialog (invite by username, Grace or Katherine, say; a name that changes nothing says why without asking; remove from a member's menu, which asks first and lists who they let in)">
       {(['owner', 'member', 'restricted', 'ownerOnly', 'ownerOnlyMember', 'failing'] as const).map((setup) => <DialogDemo key={setup} setup={setup} kind="workspace" />)}
     </Section>
-    <Section title="ShareAudienceCard (what people a gadget is shared with see of it, under who has it: closed, a line; opened, the picture large, then Can view, a snapshot from when the owner last opened it, and Can use, live with their own accounts for each connection. With viewers; with none yet; where the deployment gives no snapshots; and after an update failed)">
+    <Section title="ShareAudienceCard (what people a gadget is shared with see of it, in a line under who has it, which opens what they see: with viewers; with none yet; where the deployment gives no snapshots; after an update failed)">
       <Column>
-        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={2} takenAt={new Date(Date.now() - 12 * 60_000)} when="12 min ago" resources={AUDIENCE} defaultOpen />
-        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={0} takenAt={new Date(Date.now() - 12 * 60_000)} when="12 min ago" resources={AUDIENCE} />
-        <ShareAudienceCard picture={SCREEN} viewsAvailable={false} viewers={0} resources={AUDIENCE} />
-        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={1} takenAt={new Date(Date.now() - 26 * 3_600_000)} when="yesterday" updateFailed resources={AUDIENCE.slice(0, 1)} />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={2} when="12 min ago" services={['BigQuery', 'Google Drive']} onOpen={() => {}} />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={0} when="12 min ago" services={['BigQuery', 'Google Drive']} onOpen={() => {}} />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable={false} viewers={0} services={['Google Drive']} onOpen={() => {}} />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={1} when="yesterday" updateFailed services={['Google Drive']} onOpen={() => {}} />
       </Column>
+    </Section>
+    <Section title="ShareAudiencePage (the share dialog's page of what people see: the snapshot, running as viewers get it at half size, then Can view and Can use. Running; taking it; it could not be shown; the last update failed; and where the deployment gives no snapshots)">
+      <div className="flex flex-wrap items-start gap-6">
+        <Column><ShareAudiencePage title="Tasks" preview={{ status: 'ready', page: VIEW_PAGE, load: 1 }} when="12 min ago" resources={AUDIENCE} /></Column>
+        <Column><ShareAudiencePage title="Tasks" preview={{ status: 'loading' }} resources={AUDIENCE.slice(1)} /></Column>
+        <Column><ShareAudiencePage title="Tasks" preview={{ status: 'failed', message: 'The workspace didn’t answer.' }} onReload={() => {}} resources={AUDIENCE.slice(1)} /></Column>
+        <Column><ShareAudiencePage title="Tasks" preview={{ status: 'ready', page: VIEW_PAGE, load: 2 }} when="yesterday" updateFailed resources={AUDIENCE.slice(1)} /></Column>
+        <Column><ShareAudiencePage title="Tasks" resources={AUDIENCE} /></Column>
+      </div>
     </Section>
     <Section title="ShareGadgetDialog (share to use or only to view; anyone with the link, on or off, and the copied link follows; change or take away what each person has)">
       {(['owner', 'member', 'ownerOnly', 'failing'] as const).map((setup) => <DialogDemo key={setup} setup={setup} kind="gadget" />)}

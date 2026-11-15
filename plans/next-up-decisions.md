@@ -313,27 +313,35 @@ Sharing a dashboard built on a data warehouse with a team that has no access to 
 should let them see what the owner sees, without letting them reach the warehouse. The person
 sharing takes that responsibility, knowingly.
 
-- **Two ways to hold a gadget, chosen per person.** "Can use" opens it live, reaching each
-  connection with the person's own account; "Can view" is a snapshot of the owner's data as they
-  last left it, reaching nothing, so nothing is asked of the viewer. The kernel already has this
-  as shared views (`CollaboratorGrant.viewOnly`, `GadgetView`), where an admin turns it on.
-- **Show the sharer what people get, before they invite.** From Option B (the old share dialog
-  design): a card under who has it, with the gadget's picture, "Viewers see a snapshot · 2 people
-  · from 12 min ago", opening to the picture large and the two tiers, each saying what it costs
-  the recipient. From Max's #1077 the tiers ("Everyone with access" / "People with access to these
-  resources") and listing each connection with its service. The card appears only for a gadget
-  that reads from connections: anyone else simply uses it.
-- **Honest about freshness.** The snapshot is replaced each time the owner opens the gadget
-  (`viewTakenAt`), and a failed update says so (`viewUpdateFailedAt`) rather than implying it is
-  current. "Always up to date" from Option B was not true of the kernel, so it is not said.
-- **What waits on #1077.** Max's PR takes snapshots further: everyone shared a gadget sees a
-  fresh, refreshable snapshot first (`getGadgetSnapshot`) and can verify their accounts to go
-  live, with no admin switch. It is open and changes `overseer.ts` in ways that conflict with this
-  branch, so it is not brought in. Once it lands: the card's picture becomes the live snapshot
-  (interactive, refreshable, full screen), "Can view" becomes the default for anyone who cannot
-  verify, and the recipient's own view (a "Snapshot · Refresh · Use it live" bar) is built on
-  `GadgetSnapshotClient`. "Ask the agent to fix it" (Option B, and unwired in #1077) needs a way
-  to start a chat with a draft, which the app does not have yet.
+- **Two ways to hold a gadget, chosen per person.** "Can use" opens it live, with the owner's
+  data, once the person confirms with their own account on each service that they can see what
+  it reads (observer verification: their account is checked, never used in the owner's place);
+  "Can view" is a snapshot of the owner's data, reaching nothing, so nothing is asked of the
+  viewer. The kernel has this as shared views (`CollaboratorGrant.viewOnly`, `GadgetView`), where
+  an admin turns it on.
+- **Show the sharer what people get: the real thing, not a picture.** The reason both prototypes
+  put a preview in the dialog (Option B's card, Max's `ShareSnapshotPreview` in #1077) is that a
+  gadget's screen is code, rendered from whatever is in its storage. Nobody can know from a
+  description whether the snapshot shows the numbers, or an empty state because the UI reads
+  through a binding the copy does not have. So a card under who has it ("Viewers see a snapshot ·
+  2 people · from 12 min ago", with the gadget's picture) opens the dialog's second page, "What
+  people see": the owner's view itself (`GadgetClient.openView()`, which takes it again first),
+  running in a frame at 0.6 scale, as #1077 does, so a page laid out for a window reads as itself.
+  It can be used, since what is done in the copy is overwritten when it is next taken. Under it the
+  two tiers, each saying what it costs the recipient, with the connections listed by service. The
+  card appears only for a gadget that reads from a connection that needs a sign-in.
+- **Honest about freshness.** The snapshot is taken again when the owner opens the gadget or this
+  page (`viewTakenAt`), and a failed update says so (`viewUpdateFailedAt`). "Always up to date"
+  from Option B is not true of the kernel, so it is not said.
+- **Not done.** "Ask the agent to fix it", for a snapshot that comes out empty (Option B, unwired
+  in #1077): it needs a way to start a chat with a draft, which the app does not have yet. And
+  #1077's refreshable per-person snapshot for every recipient, which is a kernel change of its own.
+
+**The workspace invite.** Its note said whoever opens it "uses their own Skills, Scheduled Tasks
+and Google Drive accounts with it". Both halves were wrong: their accounts are only checked, and
+Skills and Scheduled Tasks set themselves up. It now names only services that need a sign-in:
+"Anyone who joins confirms with their own Google account that they can see what this workspace
+reads. If they can't, give them access in Google first."
 
 No kernel change.
 

@@ -45,6 +45,8 @@ export type GadgetHandle = {
   getUiBundle(chatId?: number): Promise<UiBundle | null>
   /** Its server side, for its page to call. */
   connectToGadget(chatId?: number): Promise<Disposable & Breakable>
+  /** The owner's view of it, which people given only that see (`GadgetClient.openView`). */
+  openView(): GadgetHandle
 } & Disposable & Breakable
 
 /** The part of a workspace's Overseer the pane uses, and the lease that must be disposed. */
@@ -67,6 +69,11 @@ export type GadgetConnectionOptions = {
    * what is shown stays as it is, and `reconnect()` follows once it is back.
    */
   connection?: { readonly down: boolean }
+  /**
+   * Shows the owner's view of the gadget instead of the gadget (`GadgetClient.openView`): the copy
+   * of its storage, reaching nothing, that people who can't use it live see. Not with `chatId`.
+   */
+  view?: boolean
 }
 
 // Not a latency budget: past this, the reply is taken to be never coming, and a retry is offered.
@@ -174,6 +181,8 @@ export class GadgetConnection {
   #loads = 0
   #overseer: GadgetOverseer | undefined
   #gadget: GadgetHandle | undefined
+  // The gadget itself, when what is shown is its view (`view`), which is opened through it.
+  #viewed: GadgetHandle | undefined
   #subscriptions: Promise<Disposable>[] = []
   #refresh: ReturnType<typeof setTimeout> | undefined
   // The page's connection to the gadget's server side, and which handshake made it: one that is
@@ -267,7 +276,9 @@ export class GadgetConnection {
 
   #open(run: number, quietly: boolean) {
     const overseer = (this.#overseer = this.open())
-    const gadget = (this.#gadget = overseer.getGadget(this.workpieceId))
+    const opened = overseer.getGadget(this.workpieceId)
+    if (this.options.view) this.#viewed = opened
+    const gadget = (this.#gadget = this.options.view ? opened.openView() : opened)
     const changed = () => {
       if (run !== this.#run) return
       clearTimeout(this.#refresh)
@@ -304,8 +315,9 @@ export class GadgetConnection {
       )
     }
     this.#gadget?.[Symbol.dispose]()
+    this.#viewed?.[Symbol.dispose]()
     this.#overseer?.[Symbol.dispose]()
-    this.#gadget = this.#overseer = undefined
+    this.#gadget = this.#viewed = this.#overseer = undefined
   }
 
   #publish(snapshot: Partial<GadgetSnapshot>) {

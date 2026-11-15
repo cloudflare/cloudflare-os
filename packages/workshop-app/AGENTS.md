@@ -346,13 +346,18 @@ plain and tested. A link's key travels only in a fragment (`#share=`), which `Sh
 redeems before anything beneath it opens the workspace, and then removes from the address. The
 dialogs say what came of an invite under the field, not in a toast.
 
-A gadget is shared to use (live, each person reaching its connections with an account of their
-own) or, where the deployment serves owner's views (`sharedViewsAvailable`), only to view: a
-snapshot of the owner's data as they last left it, which reaches nothing. For one that reads from
-connections, the dialog shows what people will see under who has it (`ShareAudienceCard`, read by
-`useGadgetView`): the gadget's picture, who sees a snapshot and from when, and opened, each way of
-holding it with the connections a live user needs accounts for. This replaces the line that only
-listed those connections.
+A gadget is shared to use (live, with the owner's data, once each person confirms with their own
+account on each service that they can see what it reads) or, where the deployment serves owner's
+views (`sharedViewsAvailable`), only to view: a snapshot of the owner's data, which reaches
+nothing. For one that reads from a connection needing a sign-in, a card under who has it
+(`ShareAudienceCard`, read by `useGadgetView`) says who sees a snapshot and from when, and opens
+the dialog's second page, "What people see" (`ShareAudiencePage`): the owner's view itself,
+running (`useViewPreview`, a `GadgetConnection` with `view`, over `GadgetClient.openView()`, which
+takes it again first), drawn at 0.6 scale, then each way of holding it with the connections a live
+user confirms access to. A gadget's screen is code over its storage, so only the running copy shows
+whether a snapshot holds the data or an empty state. The workspace's dialog names the services
+whose accounts joining asks to confirm (`RequirementsNote`, `signInServices`), leaving out those
+that set themselves up.
 
 ## The Library
 
