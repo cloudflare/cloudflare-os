@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRefusal, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRefusal, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -19,7 +19,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
+import { type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
 import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, newPasskeyChallenge } from './admin-writes.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
 import { isDeploymentAdmin } from './auth/config.js';
@@ -2169,8 +2169,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     return { target: checked, reason, access, expiresAt };
   }
 
-  async inspectWorkspace(workspaceId: string, reason: string, options: AdminInspectOptions = {})
-      : Promise<RpcStub<AdminWorkspaceView>> {
+  async inspectWorkspace(workspaceId: string, reason: string,
+      options: AdminWorkspaceInspectOptions = {}): Promise<RpcStub<AdminWorkspaceView>> {
+    let requested = options.access ?? "metadata";
     let { target: id, reason: trimmedReason, access, expiresAt } =
         await this.#openTerms(reason, options, () => {
           try {
@@ -2179,7 +2180,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
             throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
           }
         });
-    if (access === "off") {
+    // No view is opened while the level in force is "off", and none for content while it is
+    // below "content". A view for content needs no grant yet: each of its calls looks for one.
+    let refused = access === "off" ? ADMIN_ACCESS_ERROR_CODES.accessOff
+        : requested === "content" && access !== "content" ? ADMIN_ACCESS_ERROR_CODES.contentOff
+        : undefined;
+    if (refused !== undefined) {
       // Refused before any workspace is reached, so its title and owner come from the directory.
       // Appended without a retention, as a view's records are: the directory read awaits, and a
       // retention an admin raised meanwhile must not be pruned to the one read above.
@@ -2188,20 +2194,20 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
         kind: "workspace", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
         via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId,
         workspaceTitle: listing.title, method: "inspectWorkspace",
-        args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, access: "off",
-        refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+        args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, requested, access,
+        exposed: "metadata", refused,
       });
-      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
+      throw createAdminAccessError(refused);
     }
 
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openForAdmin(id, trimmedReason, { via: this.via, expiresAt });
+    return this.#openForAdmin(id, trimmedReason, { via: this.via, access: requested, expiresAt });
   }
 
   // Mint the view. A workspace that turns out not to exist leaves the directory (see
   // #dropIfMissing()).
-  async #openForAdmin(id: DurableObjectId, reason: string, terms: AdminViewTerms) {
+  async #openForAdmin(id: DurableObjectId, reason: string, terms: AdminWorkspaceViewTerms) {
     try {
       return await this.overseers.get(id).openForAdmin(
           this.adminUserId, reason, this.#sessionId, terms);
@@ -2269,9 +2275,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {
     let limit = adminListLimit(options.limit);
-    let { kind, admin, method, workspace, owner, since, cursor } = options;
+    let { kind, admin, method, workspace, owner, exposed, since, cursor } = options;
     return await this.audits.getByName("").list(
-        { kind, admin, method, workspace, owner, since, cursor, limit },
+        { kind, admin, method, workspace, owner, exposed, since, cursor, limit },
         await this.#retentionDays());
   }
 

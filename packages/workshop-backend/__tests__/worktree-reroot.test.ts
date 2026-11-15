@@ -517,7 +517,7 @@ describe("an admin view of a re-rooted worktree", () => {
     impl.storage.ownerId.put("owner-user-do");
     impl.ownerProfileId = USER.id;
     return await instance.openForAdmin(ADMIN, "Reroot check", crypto.randomUUID(),
-        { via: "api", expiresAt: new Date(Date.now() + 60_000) });
+        { via: "api", access: "metadata", expiresAt: new Date(Date.now() + 60_000) });
   }
 
   // What a listing should hold for the worktree: its pin's two commits, and each path an accept

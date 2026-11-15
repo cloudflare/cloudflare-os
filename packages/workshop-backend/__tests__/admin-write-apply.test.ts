@@ -582,7 +582,7 @@ describe("the entry of a write in the workspace's action log", () => {
 
     // At "metadata", the deployment's level here.
     let view = await ws.instance.openForAdmin(ADMIN, "Looking into ticket 42", "view-session", {
-      via: "api", expiresAt: new Date(Date.now() + 60 * 1000),
+      via: "api", access: "metadata", expiresAt: new Date(Date.now() + 60 * 1000),
     });
     let { entries } = await view.listActions();
     expect(entries).toHaveLength(1);

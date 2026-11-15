@@ -1,19 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
-  MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
-  type ActionLogEntry, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
-  type CommitInfo, type GatekeeperCreationSpec,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
+  MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
+  type ActionLogEntry, type AdminChatState, type AiChatMetadata, type BlueprintGadgetSummary,
+  type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AUDIT_EXCERPT_CONTEXT, adminAccessPolicy, adminAuditStatsDays, adminAuditValue,
-  adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewLifetimeMs,
-  adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId, cutAdminAuditText,
-  lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, namedUser,
-  redactAdminAuditArgs,
+  ADMIN_AUDIT_EXCERPT_CONTEXT, ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy,
+  adminAuditStatsDays, adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange,
+  adminViewLifetimeMs, adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId,
+  blueprintHoldsContent, chatHoldsContent, chatStateHoldsContent, commitHoldsContent,
+  creationHoldsContent, cutAdminAuditText, hookHoldsContent, lowerAdminWorkspaceAccess,
+  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, namedUser, redactAdminAuditArgs,
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent, withholdChatContent,
-  withholdCommitContent, withholdCreationContent, withholdHookContent,
+  withholdChatStateContent, withholdCommitContent, withholdCreationContent, withholdHookContent,
+  workpieceHoldsContent,
   type AdminViewTerms,
 } from "../src/admin-access.js";
 import { serializeAdminConfig } from "../src/admin-config.js";
@@ -285,6 +287,23 @@ describe("view calls", () => {
         .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
     expect(() => assertAdminViewLive(terms(), ADMIN, adminEnv)).not.toThrow();
   });
+
+  it("classifies every recorded method, the open as one that answers with metadata alone", () => {
+    expect(Object.keys(ADMIN_METHOD_ANSWERS).toSorted())
+        .toStrictEqual([...ADMIN_WORKSPACE_METHODS].toSorted());
+    // The open and the seventeen view methods.
+    expect(Object.keys(ADMIN_METHOD_ANSWERS)).toHaveLength(18);
+    // A view is opened for content without a grant being looked for.
+    expect(ADMIN_METHOD_ANSWERS.inspectWorkspace).toBe("metadata");
+    let mixed = Object.entries(ADMIN_METHOD_ANSWERS)
+        .filter(([, answer]) => answer === "mixed").map(([method]) => method);
+    expect(mixed.toSorted()).toStrictEqual([
+      "describe", "getChatState", "getCommitLog", "listActions", "listBlueprints", "listChats",
+      "listGatekeepers",
+    ]);
+    expect(new Set(Object.values(ADMIN_METHOD_ANSWERS)))
+        .toStrictEqual(new Set(["metadata", "mixed"]));
+  });
 });
 
 describe("cutAdminAuditText", () => {
@@ -407,6 +426,16 @@ describe("withholding content", () => {
     expect(hook.description.description).toBe("what it does");
   });
 
+  it("drops each queued call's argument summary on a copy", () => {
+    let state = chatState(["first summary", "second summary"]);
+    let before = structuredClone(state);
+    expect(withholdChatStateContent(state)).toStrictEqual({
+      ...before,
+      queuedCalls: before.queuedCalls.map(({ argsSummary: _argsSummary, ...call }) => call),
+    });
+    expect(state).toStrictEqual(before);
+  });
+
   it("empties a commit's message on a copy", () => {
     let commit = commitInfo("Fix the parser\n");
     let before = structuredClone(commit);
@@ -452,6 +481,120 @@ function commitInfo(message: string): CommitInfo {
     author: { name: "Owner", email: "owner@example.test" }, timestamp: new Date(1700000000_000),
   };
 }
+
+// A chat's state with a recorded turn, a pending action and one queued call per summary.
+function chatState(summaries: string[]): AdminChatState {
+  return {
+    turn: {
+      modelId: "m", initiator: { type: "user", id: "u", name: "U" }, callbackInitiated: false,
+      resumeAttempts: 1, paused: true,
+    },
+    lastMessageAt: new Date(0),
+    queuedCalls: summaries.map((argsSummary, callId) =>
+        ({ callId, methodName: "run", initiatorModelId: null, argsSummary })),
+    pendingActionIds: [4],
+  };
+}
+
+// Answers as a view returns them, for the *HoldsContent() predicates.
+function chatMeta(extra: Partial<AiChatMetadata> = {}): AiChatMetadata {
+  return { id: 1, title: "t", started: new Date(0), lastActive: new Date(0), ...extra } as
+      AiChatMetadata;
+}
+function logEntry(type: ActionLogEntry["type"], description: object): ActionLogEntry {
+  return {
+    id: 1, resourceTitle: "r", createdAt: new Date(0), state: "approved", type,
+    ...(type === "bindHook" ? { enabled: true } : {}), description,
+  } as unknown as ActionLogEntry;
+}
+function boundHook(description: string): BoundHookInfo {
+  return {
+    id: 1, gatekeeperId: 2, gadgetId: 3, enabled: true,
+    description: { title: "Hook", description },
+  } as unknown as BoundHookInfo;
+}
+function gadgetSummary(extra: Partial<WorkpieceSummary> = {}): WorkpieceSummary {
+  return { id: "g", type: "gadget", title: "G", ...extra } as WorkpieceSummary;
+}
+const STEERS = [{ text: "secret", author: { id: "u", name: "U" } }];
+const FIELDS = [{ label: "To", value: "x@example.com" }];
+
+describe("whether an answer holds content", () => {
+  it("finds a queued steer in a chat", () => {
+    let full = chatMeta({ queuedSteers: STEERS } as Partial<AiChatMetadata>);
+    expect(chatHoldsContent(full)).toBe(true);
+    expect(chatHoldsContent(chatMeta({ queuedSteers: [] }))).toBe(false);
+    expect(chatHoldsContent(chatMeta())).toBe(false);
+    expect(chatHoldsContent(withholdChatContent(full))).toBe(false);
+  });
+
+  it("finds a queued call's argument summary in a chat's state", () => {
+    let full = chatState(["", "summary"]);
+    expect(chatStateHoldsContent(full)).toBe(true);
+    expect(chatStateHoldsContent(chatState([]))).toBe(false);
+    expect(chatStateHoldsContent(chatState(["", ""]))).toBe(false);
+    expect(chatStateHoldsContent(withholdChatStateContent(full))).toBe(false);
+  });
+
+  it("finds a commit's message", () => {
+    let full = commitInfo("Fix the parser\n");
+    expect(commitHoldsContent(full)).toBe(true);
+    expect(commitHoldsContent(commitInfo(""))).toBe(false);
+    expect(commitHoldsContent(withholdCommitContent(full))).toBe(false);
+  });
+
+  it("finds a description or a field in an action log entry", () => {
+    for (let type of ["action", "observation"] as const) {
+      let full = logEntry(type, { title: "T", description: "body", fields: FIELDS });
+      expect(actionHoldsContent(full)).toBe(true);
+      expect(actionHoldsContent(logEntry(type, { title: "T", description: "", fields: FIELDS })))
+          .toBe(true);
+      expect(actionHoldsContent(logEntry(type, { title: "T", description: "" }))).toBe(false);
+      expect(actionHoldsContent(logEntry(type, { title: "T", description: "", fields: [] })))
+          .toBe(false);
+      expect(actionHoldsContent(withholdActionContent(full))).toBe(false);
+    }
+    let bound = logEntry("bindHook", { title: "Hook", description: "what it does" });
+    expect(actionHoldsContent(bound)).toBe(true);
+    expect(actionHoldsContent(logEntry("bindHook", { title: "Hook", description: "" })))
+        .toBe(false);
+    expect(actionHoldsContent(withholdActionContent(bound))).toBe(false);
+  });
+
+  it("finds a blueprint's id", () => {
+    let full = blueprintSummary("bp-1");
+    expect(blueprintHoldsContent(full)).toBe(true);
+    expect(blueprintHoldsContent(blueprintSummary(""))).toBe(false);
+    expect(blueprintHoldsContent(withholdBlueprintContent(full))).toBe(false);
+  });
+
+  it("finds a hook's description", () => {
+    expect(hookHoldsContent(boundHook("what it does"))).toBe(true);
+    expect(hookHoldsContent(boundHook(""))).toBe(false);
+    expect(hookHoldsContent(withholdHookContent(boundHook("what it does")))).toBe(false);
+  });
+
+  it("finds the configuration an agent suggested for a connection", () => {
+    let spec: GatekeeperCreationSpec = {
+      type: "gatekeeper", vendorId: "vendor", typeUrlPattern: "https://*",
+      resourceUrl: "https://example.com/thing", configuration: "what the agent suggested",
+    };
+    expect(creationHoldsContent(spec)).toBe(true);
+    expect(creationHoldsContent({ ...spec, configuration: "" })).toBe(false);
+    expect(creationHoldsContent(withholdCreationContent(spec))).toBe(false);
+    expect(creationHoldsContent({ type: "ambient", vendorId: "library", accountId: 3 }))
+        .toBe(false);
+  });
+
+  it("finds the blueprint a gadget follows", () => {
+    let upstream = { blueprintId: "bp-1", commitId: "c" };
+    expect(workpieceHoldsContent(gadgetSummary({ upstream }))).toBe(true);
+    expect(workpieceHoldsContent(gadgetSummary({ upstream: {} }))).toBe(false);
+    expect(workpieceHoldsContent(gadgetSummary())).toBe(false);
+    expect(workpieceHoldsContent({ id: "w", type: "worktree", title: "W" } as WorkpieceSummary))
+        .toBe(false);
+  });
+});
 
 describe("adminAuditValue", () => {
   it("keeps strings as themselves and writes anything else as JSON", () => {
