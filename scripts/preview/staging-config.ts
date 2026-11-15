@@ -355,6 +355,8 @@ function applyBackend(
     PUBLIC_BASE_URL: baseUrl,
     // On, so that admin writes and their passkeys can be tried on a preview (docs/admin-access.md).
     ADMIN_WORKSPACE_WRITES: "on",
+    // The most the bound allows, so that grants and content reads can be tried on a preview.
+    ADMIN_WORKSPACE_ACCESS_MAX: "content",
   };
   config.previews = {
     observability: previewObservability(config),

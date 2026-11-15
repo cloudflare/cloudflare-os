@@ -42,10 +42,11 @@ function isBlank(raw: unknown): boolean {
   return raw === undefined || raw === null || String(raw).trim() === "";
 }
 
-/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off" or "metadata", in any
- * case and trimmed; "metadata" while it is unset or blank. Any other value misconfigures a
- * security bound, so it fails closed to "off" and is logged as an error (once per isolate per
- * value, never the value itself). */
+/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off", "metadata" or "content",
+ * in any case and trimmed; "metadata" while it is unset or blank, so content is allowed only where
+ * the variable says so. A value that is not a level misconfigures a security bound, so it fails
+ * closed to "off" and is logged as an error (once per isolate per value, never the value
+ * itself). */
 export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAccess {
   let raw: unknown = env.ADMIN_WORKSPACE_ACCESS_MAX;
   if (isBlank(raw)) return "metadata";
@@ -57,8 +58,8 @@ export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAcce
   if (!reportedInvalidAccessMax.has(raw)) {
     reportedInvalidAccessMax.add(raw);
     logger.error(
-        "ADMIN_WORKSPACE_ACCESS_MAX is not off or metadata, so admin access to workspaces and " +
-            "users is off",
+        "ADMIN_WORKSPACE_ACCESS_MAX is not off, metadata or content, so admin access to " +
+            "workspaces and users is off",
         { event: "admin.access.config.invalid" });
   }
   return "off";

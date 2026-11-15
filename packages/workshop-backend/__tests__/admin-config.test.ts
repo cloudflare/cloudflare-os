@@ -623,7 +623,7 @@ describe("admin config admin access", () => {
   // The environment's bounds are applied where the choice is enforced, never here, so a stored
   // choice outside today's bounds is kept for when they change.
   it("keeps a stored choice whatever the environment's bounds", () => {
-    for (let level of ["off", "metadata"] as const) {
+    for (let level of ["off", "metadata", "content"] as const) {
       expect(normalizeAdminConfig({ adminWorkspaceAccess: level }).adminWorkspaceAccess).toBe(level);
     }
     for (let days of [1, 7, 365, MAX_ADMIN_AUDIT_RETENTION_DAYS]) {
@@ -641,6 +641,11 @@ describe("admin config admin access", () => {
     // The mirror's path: readAdminConfig() parses what the KV key holds.
     expect(parseAdminConfig(JSON.stringify({ adminWorkspaceAccess: "full" })).adminWorkspaceAccess)
         .toBe("off");
+  });
+
+  it("keeps a stored content level through the mirror", () => {
+    let mirror = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, adminWorkspaceAccess: "content" });
+    expect(parseAdminConfig(mirror).adminWorkspaceAccess).toBe("content");
   });
 
   it("defaults an access level that was never stored", () => {

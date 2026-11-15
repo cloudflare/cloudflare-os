@@ -8,6 +8,7 @@ import { getAuthGatekeeperAllowlist, isPasswordAuthEnabled } from "./auth/config
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { readAdminConfig } from "./admin-config.js";
+import { adminAccessPolicy } from "./admin-access.js";
 import { siteLogoImage } from "./site-logo.js";
 
 const logger = createWorkshopLogger("workshop.deployment.config");
@@ -65,6 +66,9 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
     bannerColor: config.banner.color,
     accentColor: config.accentColor,
     webPushPublicKey: env.NOTIFICATION_WEB_PUSH_PUBLIC_KEY,
+    // All a member's client learns of the admin access settings: whether a content grant can be
+    // given. The level, its bound and the retention stay with the admins.
+    ...(adminAccessPolicy(config, env).access === "content" && { adminContentGrants: true }),
     backendVersion: backendVersion(env),
   };
 }

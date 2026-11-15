@@ -21,7 +21,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
-import { getDevServerConfig } from "./dev-server-config.ts";
+import { devAdmins, getDevServerConfig } from "./dev-server-config.ts";
 import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
@@ -573,9 +573,12 @@ for (const gk of gatekeepers) {
 
   config.services = config.services || [];
 
-  // For local testing, create an account named "admin" to test admin features.
+  // For local testing, create an account named "admin" to test admin features. ADMINS in the
+  // shell, comma-separated usernames, replaces that list: `ADMINS=admin,grace pnpm dev-server`
+  // gives a second admin, which approving a request for content access needs. Local development
+  // only: no deployment path reads it.
   config.vars = config.vars || {};
-  config.vars.ADMINS = ["admin"];
+  config.vars.ADMINS = devAdmins(process.env.ADMINS);
   // A local instance, where `cf-os api` may act as anyone. Never set by a deployment.
   config.vars.WORKSHOP_ENVIRONMENT = "development";
 
