@@ -53,8 +53,8 @@ const RETRY_DELAY = 1000
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const failed = (error: unknown) => ({ status: 'failed', message: messageOf(error) }) as const
 
-/** What the server calls as the workspace's workpieces change: here, the one gadget. */
-class SummaryListener extends RpcTarget implements WorkpiecesSubscriber {
+/** What the server calls as the workspace's workpieces change: here, the one gadget (`null` once it is gone, or with `ready` once all were listed). */
+export class SummaryListener extends RpcTarget implements WorkpiecesSubscriber {
   constructor(private readonly id: number, private readonly changed: (summary: GadgetSummary | null, ready?: true) => void) {
     super()
   }

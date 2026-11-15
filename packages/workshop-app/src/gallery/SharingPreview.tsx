@@ -11,6 +11,7 @@ import type {
 import { AccessMenu } from '@/blocks/AccessMenu'
 import { InviteField } from '@/blocks/InviteField'
 import { RemovalDialog, type RemovalDialogProps } from '@/blocks/RemovalDialog'
+import { ShareAudienceCard } from '@/blocks/ShareAudienceCard'
 import { ShareList } from '@/blocks/ShareList'
 import { ShareNote } from '@/blocks/ShareNote'
 import { SharePersonRow } from '@/blocks/SharePersonRow'
@@ -114,11 +115,19 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
       links = []
       return []
     }),
+    // What people will see of it: no picture drawn here, and a snapshot taken a little while ago.
+    getGadget: () => ({ getThumbnail: () => later(() => null), [Symbol.dispose]: () => {} }),
+    subscribeToWorkpieces: (listener: { entry: (summary: object) => void }) => {
+      listener.entry({ id: GADGET, type: 'gadget', title: 'Launch checklist', viewTakenAt: new Date(Date.now() - 12 * 60_000) })
+      return Promise.resolve({ [Symbol.dispose]: () => {} })
+    },
     onRpcBroken: () => {},
     [Symbol.dispose]: () => {},
   } as unknown as SharingOverseer
   const api = {
     openWorkspace: () => overseer,
+    listGatekeeperVendors: () => later(() => [{ id: 'google', description: { displayName: 'Google Drive', color: '#ffffff' }, supportedResources: [] }]),
+    listAddableGatekeepers: () => later(() => []),
     searchUsers: (query: string, exclude: string[]) => later(() =>
       DIRECTORY.filter(({ id, name }) => !exclude.includes(id) && name.toLowerCase().includes(query.toLowerCase()))),
   }
@@ -159,6 +168,14 @@ const DialogDemo = ({ setup, kind }: { setup: keyof typeof SETUPS; kind: 'worksp
     </>
   )
 }
+
+// A gadget's screen, as the server draws it: a page of its own colours.
+const SCREEN = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 80"><rect width="128" height="80" fill="#f7f5f2"/><rect x="10" y="10" width="54" height="6" rx="3" fill="#1f1f1f"/><rect x="10" y="22" width="80" height="3" rx="1.5" fill="#9a9a9a"/><rect x="10" y="34" width="34" height="34" rx="4" fill="#f6821f"/><rect x="48" y="34" width="34" height="34" rx="4" fill="#ffd9b8"/><rect x="86" y="34" width="34" height="34" rx="4" fill="#e8e4de"/></svg>')}`
+
+const AUDIENCE = [
+  { key: 'warehouse', title: 'Analytics warehouse', service: { name: 'BigQuery' } },
+  { key: 'budget', title: 'Q3 budget', service: { name: 'Google Drive' } },
+]
 
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full max-w-md flex-col gap-3">{children}</div>
 
@@ -290,6 +307,14 @@ export const SharingPreview = () => (
   <>
     <Section title="ShareWorkspaceDialog (invite by username, Grace or Katherine, say; a name that changes nothing says why without asking; remove from a member's menu, which asks first and lists who they let in)">
       {(['owner', 'member', 'restricted', 'ownerOnly', 'ownerOnlyMember', 'failing'] as const).map((setup) => <DialogDemo key={setup} setup={setup} kind="workspace" />)}
+    </Section>
+    <Section title="ShareAudienceCard (what people a gadget is shared with see of it, under who has it: closed, a line; opened, the picture large, then Can view, a snapshot from when the owner last opened it, and Can use, live with their own accounts for each connection. With viewers; with none yet; where the deployment gives no snapshots; and after an update failed)">
+      <Column>
+        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={2} takenAt={new Date(Date.now() - 12 * 60_000)} when="12 min ago" resources={AUDIENCE} defaultOpen />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={0} takenAt={new Date(Date.now() - 12 * 60_000)} when="12 min ago" resources={AUDIENCE} />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable={false} viewers={0} resources={AUDIENCE} />
+        <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={1} takenAt={new Date(Date.now() - 26 * 3_600_000)} when="yesterday" updateFailed resources={AUDIENCE.slice(0, 1)} />
+      </Column>
     </Section>
     <Section title="ShareGadgetDialog (share to use or only to view; anyone with the link, on or off, and the copied link follows; change or take away what each person has)">
       {(['owner', 'member', 'ownerOnly', 'failing'] as const).map((setup) => <DialogDemo key={setup} setup={setup} kind="gadget" />)}

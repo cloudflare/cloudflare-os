@@ -306,3 +306,33 @@ with a few waiting the newest pushed the oldest off screen, where the agent stil
   all.
 
 No kernel change: it is all the chat's history and `approveAction` / `rejectAction` as they were.
+
+## 12. Sharing: a snapshot, or live
+
+Sharing a dashboard built on a data warehouse with a team that has no access to the warehouse
+should let them see what the owner sees, without letting them reach the warehouse. The person
+sharing takes that responsibility, knowingly.
+
+- **Two ways to hold a gadget, chosen per person.** "Can use" opens it live, reaching each
+  connection with the person's own account; "Can view" is a snapshot of the owner's data as they
+  last left it, reaching nothing, so nothing is asked of the viewer. The kernel already has this
+  as shared views (`CollaboratorGrant.viewOnly`, `GadgetView`), where an admin turns it on.
+- **Show the sharer what people get, before they invite.** From Option B (the old share dialog
+  design): a card under who has it, with the gadget's picture, "Viewers see a snapshot · 2 people
+  · from 12 min ago", opening to the picture large and the two tiers, each saying what it costs
+  the recipient. From Max's #1077 the tiers ("Everyone with access" / "People with access to these
+  resources") and listing each connection with its service. The card appears only for a gadget
+  that reads from connections: anyone else simply uses it.
+- **Honest about freshness.** The snapshot is replaced each time the owner opens the gadget
+  (`viewTakenAt`), and a failed update says so (`viewUpdateFailedAt`) rather than implying it is
+  current. "Always up to date" from Option B was not true of the kernel, so it is not said.
+- **What waits on #1077.** Max's PR takes snapshots further: everyone shared a gadget sees a
+  fresh, refreshable snapshot first (`getGadgetSnapshot`) and can verify their accounts to go
+  live, with no admin switch. It is open and changes `overseer.ts` in ways that conflict with this
+  branch, so it is not brought in. Once it lands: the card's picture becomes the live snapshot
+  (interactive, refreshable, full screen), "Can view" becomes the default for anyone who cannot
+  verify, and the recipient's own view (a "Snapshot · Refresh · Use it live" bar) is built on
+  `GadgetSnapshotClient`. "Ask the agent to fix it" (Option B, and unwired in #1077) needs a way
+  to start a chat with a draft, which the app does not have yet.
+
+No kernel change.

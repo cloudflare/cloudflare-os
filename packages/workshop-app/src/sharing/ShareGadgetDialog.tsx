@@ -5,6 +5,7 @@ import { AccessMenu, type AccessChoice } from '@/blocks/AccessMenu'
 import { CopyLinkButton } from '@/blocks/CopyLinkButton'
 import { InviteField } from '@/blocks/InviteField'
 import { RemovalDialog } from '@/blocks/RemovalDialog'
+import { ShareAudienceCard } from '@/blocks/ShareAudienceCard'
 import { ShareList } from '@/blocks/ShareList'
 import { ShareNote } from '@/blocks/ShareNote'
 import { SharePersonRow } from '@/blocks/SharePersonRow'
@@ -13,7 +14,9 @@ import { Dialog } from '@/components/Dialog'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useServerConfig } from '@/rpc/serverConfig'
-import { RequirementsNote, SharingPending } from './SharingParts'
+import { useServices } from '@/connections/useServices'
+import { formatActivity } from '@/workspaces/formatActivity'
+import { SharingPending } from './SharingParts'
 import type { SharingSnapshot } from './SharingSession'
 import {
   accessBeyondGadget,
@@ -28,6 +31,7 @@ import {
 import { useInvite } from './useInvite'
 import { useRemoval } from './useRemoval'
 import { useSharing } from './useSharing'
+import { useGadgetView } from './useGadgetView'
 import { useUserSearch } from './useUserSearch'
 
 export type ShareGadgetDialogProps = {
@@ -44,7 +48,9 @@ export type ShareGadgetDialogProps = {
 /**
  * Who one gadget is shared with, apart from its workspace: people given it on its own, to use it
  * live or, where the deployment allows, only to see the owner's view of it, and whether anyone who
- * can sign in may open it from its link.
+ * can sign in may open it from its link. For one that reads from connections, a card under them
+ * shows what they will see (`ShareAudienceCard`): a snapshot, or the gadget live with accounts of
+ * their own.
  */
 export const ShareGadgetDialog = (props: ShareGadgetDialogProps) => (
   <GadgetSharing key={`${props.workspaceId}/${props.gadgetId}`} {...props} />
@@ -61,6 +67,9 @@ const LINK: readonly AccessChoice<'on' | 'off'>[] = [
   { value: 'on', label: 'Can use', hint: 'Anyone with the link can open it' },
   { value: 'off', label: 'No access', hint: 'Only people you add can open it' },
 ]
+
+// "Just now" and "Yesterday" mid-sentence, after "from".
+const inSentence = (when: string) => (when === 'Just now' || when === 'Yesterday' ? when.toLowerCase() : when)
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -85,6 +94,19 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
   const holders = holdersOf(collaborators, gadgetId)
   const viewsAvailable = ready?.metadata.sharedViewsAvailable === true
   const siteName = resolveSiteName(config?.siteName)
+  // What people will see of it, for one that reads from connections: anyone it reaches nothing for
+  // simply uses it.
+  const view = useGadgetView(workspaceId, gadgetId, open)
+  const { services } = useServices()
+  const vendors = services.status === 'ready' ? services.vendors : []
+  const resources = (ready?.requirements ?? []).map((need) => {
+    const vendor = vendors.find(({ id }) => id === need.vendorId)?.description
+    return {
+      key: String(need.gatekeeperId),
+      title: need.resourceTitle,
+      service: { name: vendor?.displayName ?? need.vendorId, logoUrl: vendor?.logo?.url, color: vendor?.color },
+    }
+  })
 
   const invite = useInvite({
     session,
@@ -194,7 +216,6 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
               Only you can share this gadget
             </ShareNote>
           )}
-          <RequirementsNote requirements={ready.requirements} what="it" />
           {problem && <ShareNote tone="error">{problem}</ShareNote>}
           <ShareList label="Who has access">
             {standing && (
@@ -242,6 +263,17 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
               )
             })}
           </ShareList>
+          {standing?.canShare && resources.length > 0 && (
+            <ShareAudienceCard
+              picture={view.picture}
+              viewsAvailable={viewsAvailable}
+              viewers={holders.filter((person) => levelOf(person, gadgetId) === 'view').length}
+              takenAt={view.takenAt}
+              when={view.takenAt && inSentence(formatActivity(view.takenAt))}
+              updateFailed={view.updateFailed}
+              resources={resources}
+            />
+          )}
         </>
       )}
       {removal.dialog && <RemovalDialog {...removal.dialog} />}
