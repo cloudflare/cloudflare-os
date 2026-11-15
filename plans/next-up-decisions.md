@@ -421,3 +421,30 @@ so a Google account showed Drive edits and nothing of Gmail.
 workspace holds, not only those a gadget binds, since connections added to a chat (where Google
 edits happen) were missing, so their rules could be set from a request but never seen again. It
 also reports an ambient connection's vendor. Integration test in `auto-approval-policy.test.ts`.
+
+## 15. Seeing a gadget's code
+
+Code should be there for whoever wants it, and out of the way of whoever does not: most people
+using the Workshop never need it, but "what is this actually doing?" deserves an answer, and
+checking what the agent wrote is how trust is earned. So it is quiet, not hidden.
+
+- **Where.** A fourth tab on the gadget's own page, Code, after Settings, Connections and
+  Automations, so it sits with everything else about the gadget, and a View code row in the side
+  pane's More, above Gadget settings. Only for whoever builds in the workspace: someone a gadget is
+  shared with to use has no more business in its code than in its settings.
+- **What.** The code as last kept (the head commit). Read only: the Workshop's way to change code
+  is to ask in a chat, so an editor here would be a second, worse way. The line under it says so.
+- **For someone who isn't a programmer.** The files every gadget has lead the list and say what
+  they are in plain words: client, "What it shows"; server, "What it keeps and does"; README,
+  "What it is". Folders head the files in them.
+- **Detail.** Line numbers that stay put while a long line scrolls across, never wrapped (code's
+  indentation is its shape), copying never takes the numbers, Copy for the file, its length,
+  each file its own address (`?file=`, in place in the history), the arrow keys stepping through
+  the files. Colour is mostly the text's own, with a few quiet hues, keywords leaning to the
+  brand's orange, as tokens in `theme.css` for both themes. The parsers (Lezer, already the
+  old frontend's) load only when code is shown. A picture or other non-text file says why it is
+  not shown, rather than showing bytes.
+
+Not done: a chat's proposed changes (the old frontend's diff view). The chat already shows what
+changed, as steps and the gadget itself; a diff can come once someone asks for it. No kernel
+change: `listTree` and `readFilesAtCommit` already exist.

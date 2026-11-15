@@ -3,6 +3,7 @@ import { CaretLeftIcon, ExportIcon, PlusIcon, ShapesIcon, TrashIcon, UserCircleG
 import { ofGadget } from '@/automations/automations'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BindingRow } from '@/blocks/BindingRow'
+import { GadgetCodeView } from '@/blocks/GadgetCodeView'
 import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -25,12 +26,14 @@ import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { Listed } from './GadgetSettings'
 import { useBlueprintDescription, useGadgetSettings } from './useGadgetSettings'
+import { useGadgetCode } from './useGadgetCode'
 import { usePublishPicture } from './usePublishPicture'
 
 export const GADGET_SETTINGS_TABS = [
   { value: 'settings', label: 'Settings' },
   { value: 'connections', label: 'Connections' },
   { value: 'automations', label: 'Automations' },
+  { value: 'code', label: 'Code' },
 ] as const
 
 export type GadgetSettingsTab = (typeof GADGET_SETTINGS_TABS)[number]['value']
@@ -42,6 +45,9 @@ export type GadgetSettingsPaneProps = {
   initialTitle?: string
   tab: GadgetSettingsTab
   onTabChange: (tab: GadgetSettingsTab) => void
+  /** On the Code tab, the path of the file to show; none, the first. */
+  file?: string
+  onShowFile: (path: string) => void
   onBack: () => void
   /** It was deleted: go somewhere that still is. */
   onDeleted: () => void
@@ -69,7 +75,7 @@ const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
  * deleting it; what it is connected to; and the automations that run its code.
  */
 export const GadgetSettingsPane = ({
-  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenConnections, link, automationLink, onOpenBlueprint,
+  workspaceId, workpieceId, initialTitle, tab, onTabChange, file, onShowFile, onBack, onDeleted, onOpenConnections, link, automationLink, onOpenBlueprint,
 }: GadgetSettingsPaneProps) => {
   const own = useMemo(() => ofGadget(workpieceId), [workpieceId])
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
@@ -82,7 +88,13 @@ export const GadgetSettingsPane = ({
   const gadget = snapshot.status === 'ready' ? snapshot.gadget : undefined
   const title = gadget?.title ?? initialTitle
   const description = useBlueprintDescription(gadget?.upstream?.blueprintId)
-  useDocumentTitle(title ? `Settings · ${title}` : 'Gadget settings')
+  useDocumentTitle(title ? `${tab === 'code' ? 'Code' : 'Settings'} · ${title}` : 'Gadget settings')
+  // Its code is for whoever builds in its workspace, as changing it is; anyone else is shown its
+  // settings. Until the workspaces are read, a link to its code is taken at its word.
+  const readsCode = workspaces.status === 'ready' ? builds : tab === 'code'
+  const tabs = GADGET_SETTINGS_TABS.filter(({ value }) => value !== 'code' || readsCode)
+  const shownTab = tab === 'code' && !readsCode ? 'settings' : tab
+  const code = useGadgetCode(workspaceId, gadget?.commitId, file, shownTab === 'code')
 
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
@@ -149,7 +161,7 @@ export const GadgetSettingsPane = ({
         </div>
         {snapshot.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the gadget…</p>}
         {snapshot.status === 'ready' && (
-          <Tabs value={tab} onValueChange={onTabChange} tabs={[...GADGET_SETTINGS_TABS]} aria-label="Gadget settings" className="gap-6">
+          <Tabs value={shownTab} onValueChange={onTabChange} tabs={tabs} aria-label="Gadget settings" className="gap-6">
             <Tabs.Panel value="settings" className="flex flex-col gap-2">
               <SettingsGroup label="Gadget">
                 {builds && (
@@ -222,6 +234,15 @@ export const GadgetSettingsPane = ({
                 ))}
               </section>
             </Tabs.Panel>
+            {readsCode && (
+              // Wider than the settings, as code is: a line of it reads whole.
+              <Tabs.Panel value="code" className="flex flex-col gap-3 lg:-mx-24">
+                <GadgetCodeView files={code.files} shown={code.shown} onShow={onShowFile} file={code.file} onRetry={code.retry} />
+                <p className="px-4 text-sm/5 text-kumo-subtle">
+                  The code as it was last kept. To change it, ask in a chat: what the agent writes shows here once it’s kept.
+                </p>
+              </Tabs.Panel>
+            )}
             <Tabs.Panel value="automations" className="flex flex-col gap-8">
               {tab === 'automations' && (
                 <AutomationsTab

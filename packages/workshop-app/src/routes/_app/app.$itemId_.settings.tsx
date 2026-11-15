@@ -6,7 +6,10 @@ import { useAutomationLink } from '../-automationLink'
 const validateTab = (value: unknown): GadgetSettingsTab | undefined =>
   GADGET_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'settings')?.value
 
-/** A gadget's own settings, from its More or full screen: with `?tab=`, what it is connected to, or its automations. */
+/**
+ * A gadget's own settings, from its More or full screen: with `?tab=`, what it is connected to, its
+ * automations, or its code, where `?file=` names the file shown.
+ */
 export const Route = createFileRoute('/_app/app/$itemId_/settings')({
   params: {
     parse: ({ itemId }) => {
@@ -16,13 +19,16 @@ export const Route = createFileRoute('/_app/app/$itemId_/settings')({
     },
     stringify: ({ itemId }) => ({ itemId }),
   },
-  validateSearch: (search: Record<string, unknown>): { tab?: GadgetSettingsTab } => ({ tab: validateTab(search.tab) }),
+  validateSearch: (search: Record<string, unknown>): { tab?: GadgetSettingsTab; file?: string } => {
+    const tab = validateTab(search.tab)
+    return tab === 'code' && typeof search.file === 'string' ? { tab, file: search.file } : { tab }
+  },
   component: GadgetSettings,
 })
 
 function GadgetSettings() {
   const { itemId } = Route.useParams()
-  const { tab = 'settings' } = Route.useSearch()
+  const { tab = 'settings', file } = Route.useSearch()
   const initialTitle = useLocation({ select: (location) => location.state.gadgetTitle })
   const navigate = useNavigate()
   const router = useRouter()
@@ -38,6 +44,9 @@ function GadgetSettings() {
       workpieceId={workpieceId}
       initialTitle={initialTitle}
       tab={tab}
+      file={file}
+      // In place too: going back leaves the code, not each file looked at.
+      onShowFile={(path) => navigate({ to: '/app/$itemId/settings', params: { itemId }, search: { tab: 'code', file: path }, replace: true })}
       // In place, so that going back leaves the settings rather than going through their tabs.
       onTabChange={(next) => navigate({ to: '/app/$itemId/settings', params: { itemId }, search: { tab: next === 'settings' ? undefined : next }, replace: true })}
       onBack={() => {

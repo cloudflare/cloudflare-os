@@ -147,10 +147,11 @@ const AppFrame = () => {
     absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: fromChat } }).href)
 
   // A gadget's own settings, which the way back from comes back to.
-  const openSettings = (output: AsideOutput, title: string) =>
+  const openSettings = (output: AsideOutput, title: string, tab?: 'code') =>
     navigate({
       to: '/app/$itemId/settings',
       params: { itemId: itemPageId(output.workspaceId, { kind: 'output', workpieceId: output.workpieceId }) },
+      search: { tab },
       state: { fromItem: true, gadgetTitle: title },
     })
   let asideElement: ReactNode = null

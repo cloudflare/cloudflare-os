@@ -506,6 +506,18 @@ that run it are on Connections. A gadget the viewer cannot open shows `GadgetNoA
 page and on its settings, rather than an error: Request access writes a message with the link, and
 a blueprint card appears only when its blueprint is known.
 
+Its code is the Code tab (`?tab=code&file=`), for whoever builds in its workspace, and the side
+pane's More has View code to go there. It is the code as last kept, its head commit, read with
+`listTree` and `readFilesAtCommit` (`useGadgetCode`, which keeps what it read of the last few
+commits, as commits never change), and only read: changes are asked for in a chat. `gadgetCode.ts`
+lists the files (plain, tested): its screen and server side first, each saying in a few words what
+it is to the gadget ("What it shows", "What it keeps and does"), then its README, the rest of its
+root, and folders. `GadgetCodeView` lays them down the side of the file shown, a row across the top
+on a narrow screen, with the arrow keys stepping through them. `CodeView` shows it with line numbers
+that stay put as it scrolls across, never wrapped, plain at once and coloured once `highlightCode`
+(Lezer's parsers, imported only then) has read it, in the `--color-code-*` tokens of `theme.css`.
+Selecting it copies the code alone. Each switch of file is in place in the history.
+
 A gadget is saved as a file with `gadgets/GadgetExports` (`GadgetClient.export`, as the chat it is
 shown from proposes it): from the pane's More, Export shows the formats in the menu's place, read
 each time it opens (`components/useMenuPages`, as the composer's Model does), and a pill at the

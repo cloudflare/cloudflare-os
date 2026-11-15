@@ -32,7 +32,8 @@ export type AsidePaneProps = {
   /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
   narrow?: boolean
   /** Goes to a gadget's own settings, from the pane's more. */
-  onOpenSettings?: (output: AsideOutput, title: string) => void
+  /** Goes to a gadget's own settings, or with `code`, to its code. */
+  onOpenSettings?: (output: AsideOutput, title: string, tab?: 'code') => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -149,6 +150,10 @@ export const AsidePane = (props: AsidePaneProps) => {
     onShare: shareable ? () => setSharing(true) : undefined,
     // Not for one the viewer cannot open, whose settings they could not see either.
     onOpenSettings: gadget && onOpenSettings && snapshot.ui.status !== 'denied' ? () => onOpenSettings(gadget, title) : undefined,
+    // Its code is for whoever builds where it was made, as its settings page shows it.
+    onViewCode: gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
+      ? () => onOpenSettings(gadget, title, 'code')
+      : undefined,
     exports,
     narrow,
   }

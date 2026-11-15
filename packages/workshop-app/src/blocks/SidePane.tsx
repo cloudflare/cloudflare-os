@@ -2,7 +2,7 @@ import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, t
 import { AnimatePresence, animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CaretLeftIcon, CaretRightIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, ExportIcon, GearSixIcon, XIcon,
+  CaretLeftIcon, CaretRightIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, ExportIcon, CodeIcon, GearSixIcon, XIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -78,6 +78,8 @@ export type SidePaneProps = Placement & {
   onShare?: () => void
   /** Goes to the one shown's own settings: a gadget's. */
   onOpenSettings?: () => void
+  /** Goes to the code of the one shown: a gadget's, on its settings page. */
+  onViewCode?: () => void
   /** Saves the one shown as a file of a kind it offers, such as a gadget as a PDF. */
   exports?: SidePaneExports
   /**
@@ -112,7 +114,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, openIn, onShare, onOpenSettings, exports, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, openIn, onShare, onOpenSettings, onViewCode, exports, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -193,7 +195,7 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || openIn || onShare || onOpenSettings || exports))) && (
+            {(beside || (active && (onReload || onDownload || openIn || onShare || onOpenSettings || onViewCode || exports))) && (
               <HeaderBubble>
                 <MoreMenu
                   title={active?.title}
@@ -203,6 +205,7 @@ export const SidePane = (props: SidePaneProps) => {
                   onDownload={onDownload}
                   exports={active ? exports : undefined}
                   onOpenSettings={onOpenSettings}
+                  onViewCode={onViewCode}
                   onHide={beside?.onHide}
                 />
               </HeaderBubble>
@@ -270,13 +273,13 @@ export const SidePane = (props: SidePaneProps) => {
   )
 }
 
-type MoreMenuProps = Pick<SidePaneProps, 'onShare' | 'onReload' | 'openIn' | 'onDownload' | 'exports' | 'onOpenSettings'> & {
+type MoreMenuProps = Pick<SidePaneProps, 'onShare' | 'onReload' | 'openIn' | 'onDownload' | 'exports' | 'onOpenSettings' | 'onViewCode'> & {
   title?: string
   onHide?: () => void
 }
 
 /** More that can be done with the one shown; Export shows the formats it offers in the menu's place. */
-const MoreMenu = ({ title, onShare, onReload, openIn, onDownload, exports, onOpenSettings, onHide }: MoreMenuProps) => {
+const MoreMenu = ({ title, onShare, onReload, openIn, onDownload, exports, onOpenSettings, onViewCode, onHide }: MoreMenuProps) => {
   const { page, show, rows, onOpenChangeComplete } = useMenuPages<'more' | 'export'>('more')
   const exporting = exports?.progress?.status === 'exporting'
   const formats = exports?.formats
@@ -329,6 +332,7 @@ const MoreMenu = ({ title, onShare, onReload, openIn, onDownload, exports, onOpe
                 <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
               </DropdownMenu.Item>
             )}
+            {onViewCode && <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>}
             {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
             {onHide && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={onHide}>Hide pane</DropdownMenu.Item>}
           </>

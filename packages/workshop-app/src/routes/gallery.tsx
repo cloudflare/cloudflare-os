@@ -24,6 +24,7 @@ import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { BlueprintsPreview } from '@/gallery/BlueprintsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { CodePreview } from '@/gallery/CodePreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
@@ -358,6 +359,7 @@ function Gallery() {
       <SharingPreview />
       <ConnectionsPreview />
       <GadgetSettingsPreview />
+      <CodePreview />
       <SkillsPreview />
       <AutomationsPreview />
       <BlueprintsPreview />
