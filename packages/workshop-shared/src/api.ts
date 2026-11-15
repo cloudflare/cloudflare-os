@@ -4197,6 +4197,14 @@ export type AiChatMetadata = {
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
+  /**
+   * An opaque random ID for the chat. Unlike `id`, a small integer anyone could guess, it can name
+   * the chat to a gadget: the agent spawner that created the chat hands it to the gadget
+   * (`SpawnedAgent.getChatToken()`), whose UI passes it to `GadgetHost.openAgentChat()` to show the
+   * chat. It grants no access to the chat. Absent on chats created before it was introduced.
+   */
+  chatToken?: string;
+
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
 

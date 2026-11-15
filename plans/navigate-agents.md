@@ -83,6 +83,12 @@ prompt form), managing its action approvals, and so on. None of those are part o
   - It shares `#createSpawnedChat` with `spawnCallableAgent`.
   - It returns `await this.impl.ctx.restore({type: "spawnedAgent", ...})`.
   - `AgentSpawnerBindingImpl.spawnAgent` forwards to it, as the binding's other two methods do.
+  - **The validator would break persistence.** `capnweb-validate` wraps a returned stub that is
+    typed as an interface in a validating `Proxy`, and Workers RPC can't persist a `Proxy`: the
+    gadget would get a stub it can't store, whose methods it can't call. So the queue method
+    skips validation (`@skipRpcValidation()`, as `user.ts` does for the same reason), since only
+    the binding calls it, and the binding's `spawnAgent` is typed to return `any`, so its
+    arguments are still validated while the stub passes through.
 - **`SpawnedAgentImpl`:**
   - `getAgent()` returns the same `AgentSelfLoopback` that `spawnCallableAgent` builds, from the
     params. Factor that construction into one helper. The call path (`deliverAgentCallback`)
