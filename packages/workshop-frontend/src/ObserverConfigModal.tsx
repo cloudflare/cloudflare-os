@@ -50,7 +50,7 @@ function accountLabel(account: AccountInfo | undefined, accountId: number): stri
 // preferred because it reflects the resources currently available to that account; vendor metadata
 // is the fallback used before an account has been connected. Non-grantable resources require no
 // OAuth scope expansion.
-function requiredResourceUrlPatterns(
+function requiredResourceTypeIds(
   need: ObserverBindingNeed,
   vendor: GatekeeperVendorInfo | undefined,
   account?: AccountInfo,
@@ -65,9 +65,9 @@ function requiredResourceUrlPatterns(
 
 // Older account records may not list which resources were granted. Ask the gatekeeper to check
 // instead of assuming the account has access.
-function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
+function missingResourceTypeIds(account: AccountInfo, required: string[]): string[] {
   const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
-  return granted === undefined ? required : required.filter(pattern => !granted.includes(pattern))
+  return granted === undefined ? required : required.filter(typeId => !granted.includes(typeId))
 }
 
 interface ObserverConfigModalProps {
@@ -204,7 +204,7 @@ export default function ObserverConfigModal({
       if (vendor?.description.autoProvisionsAccount) {
         await authenticatedApi.provisionAmbientAccount(vendorId)
       } else {
-        const required = requiredResourceUrlPatterns(need, vendor)
+        const required = requiredResourceTypeIds(need, vendor)
         await openConnectWindow(await authenticatedApi.connectAccount(
           vendorId,
           required.length > 0 ? required : undefined,
@@ -234,12 +234,12 @@ export default function ObserverConfigModal({
   }
 
   const handleGrantResourceAccess = async (need: ObserverBindingNeed, account: AccountInfo) => {
-    const required = requiredResourceUrlPatterns(
+    const required = requiredResourceTypeIds(
       need,
       vendorsById.get(need.vendorId),
       account,
     )
-    const missing = missingResourceUrlPatterns(account, required)
+    const missing = missingResourceTypeIds(account, required)
     if (missing.length === 0) return
     setGranting(account.id)
     try {
@@ -284,12 +284,12 @@ export default function ObserverConfigModal({
   }
   const accountSatisfies = (need: ObserverBindingNeed, account: AccountInfo | undefined) => {
     if (!account?.credentialsValid) return false
-    const required = requiredResourceUrlPatterns(
+    const required = requiredResourceTypeIds(
       need,
       vendorsById.get(need.vendorId),
       account,
     )
-    return missingResourceUrlPatterns(account, required).length === 0
+    return missingResourceTypeIds(account, required).length === 0
   }
   const allSatisfied = needs.every(need => accountSatisfies(need, accountFor(need.gatekeeperId)))
 
@@ -337,8 +337,8 @@ export default function ObserverConfigModal({
                 const vendor = matching[0]?.vendor ?? vendorInfo?.description
                 const vendorName = vendor?.displayName || need.vendorId || 'service'
                 const chosen = accountFor(need.gatekeeperId)
-                const required = requiredResourceUrlPatterns(need, vendorInfo, chosen)
-                const missing = chosen ? missingResourceUrlPatterns(chosen, required) : []
+                const required = requiredResourceTypeIds(need, vendorInfo, chosen)
+                const missing = chosen ? missingResourceTypeIds(chosen, required) : []
 
                 return (
                   <div key={need.gatekeeperId} className="rounded-xl border border-kumo-line bg-kumo-base p-4">

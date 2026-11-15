@@ -210,7 +210,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                 vendorName={target.vendor.description.displayName}
                 connecting={starting?.kind === 'connect'}
                 reconnectingAccountId={starting?.kind === 'reconnect' ? starting.accountId : null}
-                requiredResourceUrlPatterns={required}
+                requiredResourceTypeIds={required}
                 grantingAccountId={starting?.kind === 'grant' ? starting.accountId : null}
                 onSelect={setChosen}
                 onConnect={() => void startFlow({ kind: 'connect' }, async () => {

@@ -38,7 +38,7 @@ export function AccountChooser({
   resourceTitle,
   connecting,
   reconnectingAccountId,
-  requiredResourceUrlPatterns,
+  requiredResourceTypeIds,
   grantingAccountId = null,
   onSelect,
   onConnect,
@@ -52,7 +52,7 @@ export function AccountChooser({
   resourceTitle?: string
   connecting: boolean
   reconnectingAccountId: number | null
-  requiredResourceUrlPatterns?: string[] | ((account: AccountOption) => string[])
+  requiredResourceTypeIds?: string[] | ((account: AccountOption) => string[])
   grantingAccountId?: number | null
   onSelect: (id: number) => void
   onConnect: () => void
@@ -78,8 +78,8 @@ export function AccountChooser({
           const expired = !account.credentialsValid
           const reconnecting = reconnectingAccountId === account.id
           const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
-          const required = typeof requiredResourceUrlPatterns === 'function'
-            ? requiredResourceUrlPatterns(account) : requiredResourceUrlPatterns
+          const required = typeof requiredResourceTypeIds === 'function'
+            ? requiredResourceTypeIds(account) : requiredResourceTypeIds
           const accountMissing =
             required && granted !== undefined
               ? required.filter(p => !granted.includes(p))

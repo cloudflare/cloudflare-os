@@ -239,12 +239,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
   }, [isAuthenticated, authenticatedApi])
 
-  const handleConnectAccount = useCallback(async (vendorId: string, resourceUrlPatterns?: string[]) => {
+  const handleConnectAccount = useCallback(async (vendorId: string, resourceTypeIds?: string[]) => {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
       const outcome = await openConnectWindow(
-        await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+        await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (err) {
       if (err instanceof AuthPopupCancelledError) return
@@ -257,12 +257,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
   const handleGrantAccountResources = useCallback(async (
     accountId: number,
-    resourceUrlPatterns: string[],
+    resourceTypeIds: string[],
   ) => {
-    if (!authenticatedApi || resourceUrlPatterns.length === 0) return
+    if (!authenticatedApi || resourceTypeIds.length === 0) return
     setGrantingAccountId(accountId)
     try {
-      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
+      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceTypeIds)
       if (flow) {
         const outcome = await openConnectWindow(flow, authenticatedApi)
         toasts.add({ title: outcome === 'connected' ? 'Access granted.' : 'Grant the additional access in the pop-up window.', variant: 'success' })
@@ -276,7 +276,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
               grantedResourceTypeIds: [
                 ...new Set([
                   ...(getGrantedResourceTypeIds(account.description, account.supportedResources) ?? []),
-                  ...resourceUrlPatterns,
+                  ...resourceTypeIds,
                 ]),
               ],
             },
@@ -1416,8 +1416,8 @@ function BindingField({
   grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
-  onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
-  onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
+  onConnectAccount: (vendorId: string, resourceTypeIds?: string[]) => void
+  onGrantAccountResources: (accountId: number, resourceTypeIds: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
@@ -1597,8 +1597,8 @@ function BlueprintGatekeeperBindingField({
   grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
-  onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
-  onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
+  onConnectAccount: (vendorId: string, resourceTypeIds?: string[]) => void
+  onGrantAccountResources: (accountId: number, resourceTypeIds: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
@@ -1630,18 +1630,18 @@ function BlueprintGatekeeperBindingField({
       matchesResourceUrlPattern(resource?.urlPattern ?? binding.typeUrlPattern, (value as any).resourceUrl)
     ? (value as any).resourceUrl as string
     : undefined
-  const requiredResourceUrlPatterns = resource?.grantable ? [getResourceTypeId(resource)] : []
-  const missingResourceUrlPatternsFor = (accountId: number) => {
+  const requiredResourceTypeIds = resource?.grantable ? [getResourceTypeId(resource)] : []
+  const missingResourceTypeIdsFor = (accountId: number) => {
     const account = matchingAccounts.find(account => account.id === accountId)
     const granted = account ? getGrantedResourceTypeIds(account.description, account.supportedResources) : undefined
     return granted === undefined
       ? []
-      : requiredResourceUrlPatterns.filter(pattern => !granted.includes(pattern))
+      : requiredResourceTypeIds.filter(typeId => !granted.includes(typeId))
   }
-  const missingResourceUrlPatterns = selectedAccount
-    ? missingResourceUrlPatternsFor(selectedAccount.id)
+  const missingResourceTypeIds = selectedAccount
+    ? missingResourceTypeIdsFor(selectedAccount.id)
     : []
-  const hasMissingResourceGrants = missingResourceUrlPatterns.length > 0
+  const hasMissingResourceGrants = missingResourceTypeIds.length > 0
 
   // The parent component re-renders frequently and passes us fresh inline callbacks each time.
   // Stash them in refs so effects below can call the latest versions without re-running every
@@ -1774,7 +1774,7 @@ function BlueprintGatekeeperBindingField({
         resourceTitle={resource.title}
         connecting={connectingVendor === vendor.id}
         reconnectingAccountId={reconnectingAccountId}
-        requiredResourceUrlPatterns={requiredResourceUrlPatterns}
+        requiredResourceTypeIds={requiredResourceTypeIds}
         grantingAccountId={grantingAccountId}
         onSelect={(id) => onChange({
           accountId: id,
@@ -1782,9 +1782,9 @@ function BlueprintGatekeeperBindingField({
         } as any)}
         onConnect={() => onConnectAccount(
           vendor.id,
-          requiredResourceUrlPatterns.length > 0 ? requiredResourceUrlPatterns : undefined,
+          requiredResourceTypeIds.length > 0 ? requiredResourceTypeIds : undefined,
         )}
-        onGrantAccess={(id) => onGrantAccountResources(id, missingResourceUrlPatternsFor(id))}
+        onGrantAccess={(id) => onGrantAccountResources(id, missingResourceTypeIdsFor(id))}
         onReconnect={onReconnectAccount}
       />
 

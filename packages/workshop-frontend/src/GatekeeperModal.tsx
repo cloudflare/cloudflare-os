@@ -204,7 +204,7 @@ function connectionForResources(
 
 // The grantable resource type IDs a connection requires before its configurator can load: one
 // for each type the configurator may return.
-function requiredResourceUrlPatterns(connection: ConnectionType, account?: AccountOption): string[] {
+function requiredResourceTypeIds(connection: ConnectionType, account?: AccountOption): string[] {
   return resourcesForAccount(connection, account)
     .filter(resource => resource.grantable)
     .map(getResourceTypeId)
@@ -569,12 +569,12 @@ export default function GatekeeperModal({
   // rest. (An undefined granted set means a legacy account predating grant tracking; treat it as
   // fully granted.)
   const requiredGrants = accountResources.filter(resource => resource.grantable).map(getResourceTypeId)
-  const grantedPatterns = selectedAccount
+  const grantedTypeIds = selectedAccount
     ? getGrantedResourceTypeIds(selectedAccount.description, selectedAccount.supportedResources)
     : undefined
-  const missingGrants = grantedPatterns === undefined
+  const missingGrants = grantedTypeIds === undefined
     ? []
-    : requiredGrants.filter(pattern => !grantedPatterns.includes(pattern))
+    : requiredGrants.filter(typeId => !grantedTypeIds.includes(typeId))
   const acceptedResourceUrlPatterns = accountResources
     .filter(resource => !missingGrants.includes(getResourceTypeId(resource)))
     .map(resource => resource.urlPattern)
@@ -661,10 +661,10 @@ export default function GatekeeperModal({
     else setSelectedAccountId(null)
   }
 
-  const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
+  const handleConnectAccount = async (vendorId: string, resourceTypeIds?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+      const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       if (error instanceof AuthPopupCancelledError) return
@@ -678,7 +678,7 @@ export default function GatekeeperModal({
 
   const handleGrantResourceAccess = async (accountId: number) => {
     const account = matchingAccounts.find(a => a.id === accountId)
-    const required = selectedConnection && account ? requiredResourceUrlPatterns(selectedConnection, account) : []
+    const required = selectedConnection && account ? requiredResourceTypeIds(selectedConnection, account) : []
     if (!required.length) return
     const granted = account ? getGrantedResourceTypeIds(account.description, account.supportedResources) : undefined
     const missing = granted === undefined ? [] : required.filter(p => !granted.includes(p))
@@ -893,12 +893,12 @@ export default function GatekeeperModal({
                     resourceTitle={selectedConnection.resourceUrlPattern ? selectedConnection.title : undefined}
                     connecting={connectingVendor === selectedConnection.vendorId}
                     reconnectingAccountId={reconnectingAccountId}
-                    requiredResourceUrlPatterns={account => requiredResourceUrlPatterns(selectedConnection, account)}
+                    requiredResourceTypeIds={account => requiredResourceTypeIds(selectedConnection, account)}
                     grantingAccountId={grantingAccountId}
                     onSelect={handleSelectAccount}
                     onConnect={() => {
                       if (!selectedConnection.vendorId) return
-                      const required = requiredResourceUrlPatterns(selectedConnection)
+                      const required = requiredResourceTypeIds(selectedConnection)
                       // No grantable requirement -> request authorization for everything
                       handleConnectAccount(selectedConnection.vendorId, required.length ? required : undefined)
                     }}
