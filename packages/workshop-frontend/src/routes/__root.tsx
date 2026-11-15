@@ -23,6 +23,7 @@ import {
 } from '../features/native-app/DeviceSessionHandoff'
 import { NativeAppBridge } from '../features/native-app/NativeAppBridge'
 import { PageUpdateNotice } from '../features/stale-session/PageUpdateNotice'
+import { ReportIssueProvider } from '../features/issue-reports/ReportIssueHost'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -136,10 +137,12 @@ function RootComponent() {
               <BrowserPushBridge />
               <NativeAppBridge />
               <PageUpdateNotice />
-              <AuthenticatedShell
-                authenticatedApi={authenticatedApi}
-                isWorkspaceEditor={isWorkspaceEditor}
-              />
+              <ReportIssueProvider>
+                <AuthenticatedShell
+                  authenticatedApi={authenticatedApi}
+                  isWorkspaceEditor={isWorkspaceEditor}
+                />
+              </ReportIssueProvider>
             </UnreadStateBridge>
           </Toasty>
         </TooltipProvider>
