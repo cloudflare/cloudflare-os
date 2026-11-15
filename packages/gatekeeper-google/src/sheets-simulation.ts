@@ -25,6 +25,7 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
+import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import type { SheetArea } from "./sheets-api";
 import {
   DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, mergeFormat, type Axis, type BaseFormats, type BaseSizes,
@@ -201,7 +202,27 @@ function replayStep(grid: Grid, change: QueuedChange): SimulationStep<Grid> {
   }
 }
 
-/** Replays queued changes over a read, stopping at the first that no longer applies. */
+/**
+ * Creates a store that replays queued changes over the grid a read fetched, stopping at the first
+ * that no longer applies. The grid is its one entity, folded under the spreadsheet's own ID. Fold
+ * each grid a read builds once, with the changes queued when it was fetched: the store finds a
+ * fold by its grid, so it then reuses none, and is owed no `forget()` when a change is applied or
+ * rejected.
+ */
+export function createReplay(): SimulationStore<string, Grid, Grid, QueuedChange> {
+  return createSimulationStore<string, Grid, Grid, QueuedChange>({
+    initial: grid => grid,
+    // A grid is always given: every fold has one for its base, and no change deletes it.
+    reduce: (grid, change) => replayStep(grid!, change),
+  });
+}
+
+/**
+ * Replays queued changes over a grid with nothing remembered, stopping at the first that no longer
+ * applies: what the store of `createReplay()` folds, and how many of the changes had an effect.
+ * One grid may be replayed again under the same IDs with other changes, which a store would
+ * answer from what it remembers of the grid.
+ */
 export function replayChanges(
   base: Grid, changes: readonly QueuedChange[],
 ): SimulationResult<Grid, QueuedChange> {
