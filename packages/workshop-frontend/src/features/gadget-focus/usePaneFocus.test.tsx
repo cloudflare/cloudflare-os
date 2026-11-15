@@ -79,6 +79,7 @@ describe('usePaneFocus', () => {
     await render({})
     expect(paneFocus).toStrictEqual({
       focus: { gadgetId: 3, gadgetTitle: 'Budget' },
+      offerId: expect.any(Number),
       pendingChatId: undefined,
     })
 
@@ -286,6 +287,64 @@ describe('usePaneFocus', () => {
       await openChip({ gadgetId: 3, spot: q4 })
       await render({ gadget: gadget(3, 'Budget 2027') })
       expect(paneFocus?.focus.gadgetTitle).toBe('Budget 2027')
+    })
+  })
+
+  // A dismissed chip comes back for a new offer.
+  describe('makes a new offer', () => {
+    const offerId = () => paneFocus!.offerId
+
+    it('for another spot, or for going between none and one, but not for the same one again', async () => {
+      await render({})
+      let last = offerId()
+      for (const [focus, isNew] of [
+        [q3, true],
+        [{ ...q3, label: 'Q3 › B7', context: '1,204,331' }, false],
+        [q4, true],
+        [null, true],
+        [null, false],
+      ] as const) {
+        await report(focus)
+        expect(offerId() !== last).toBe(isNew)
+        last = offerId()
+      }
+    })
+
+    it('not for a new frame restored to the spot', async () => {
+      await render({ anchor: q3.anchor })
+      await report(q3)
+      const last = offerId()
+      await reset()
+      expect(offerId()).toBe(last)
+      await report(q3)
+      expect(offerId()).toBe(last)
+    })
+
+    it("when a sent message's chip is opened, even for the spot already shown", async () => {
+      await render({ anchor: q3.anchor })
+      await report(q3)
+      const last = offerId()
+      await openChip({ gadgetId: 3, spot: q3 })
+      expect(offerId()).not.toBe(last)
+    })
+
+    it("when the gadget moves from a spot a sent message's chip opened back to the one it reported", async () => {
+      await render({})
+      await report(q3)
+      await openChip({ gadgetId: 3, spot: q4 })
+      await reset()
+      const last = offerId()
+      await report(q3)
+      expect(offerId()).not.toBe(last)
+    })
+
+    it('when the gadget is selected again after another', async () => {
+      await render({})
+      await report(q3)
+      const last = offerId()
+      await render({ gadget: trips })
+      await render({ gadget: budget })
+      expect(offerId()).not.toBe(last)
     })
   })
 

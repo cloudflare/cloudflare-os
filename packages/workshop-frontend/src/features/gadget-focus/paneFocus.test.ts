@@ -13,15 +13,15 @@ describe('focusLabel', () => {
 
 describe('focusForChat', () => {
   it("offers an accepted gadget's focus to any chat, and to a new one", () => {
-    const pane = { focus: budget, pendingChatId: undefined }
-    expect(focusForChat(pane, 5)).toBe(budget)
-    expect(focusForChat(pane, null)).toBe(budget)
+    const pane = { focus: budget, offerId: 1, pendingChatId: undefined }
+    expect(focusForChat(pane, 5)).toBe(pane)
+    expect(focusForChat(pane, null)).toBe(pane)
   })
 
   // The server refuses the whole message otherwise.
   it("offers a pending gadget's focus only to the chat it is pending in", () => {
-    const pane = { focus: budget, pendingChatId: 5 }
-    expect(focusForChat(pane, 5)).toBe(budget)
+    const pane = { focus: budget, offerId: 1, pendingChatId: 5 }
+    expect(focusForChat(pane, 5)).toBe(pane)
     expect(focusForChat(pane, 6)).toBeUndefined()
     expect(focusForChat(pane, null)).toBeUndefined()
   })

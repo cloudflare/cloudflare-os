@@ -17,7 +17,6 @@ import type {
   ChatMessageOptions,
   GatekeeperClient,
   OutputFormatOffer,
-  WorkpieceId,
   Overseer,
   SlashCommandChoice,
   SlashCommandRequest,
@@ -62,7 +61,7 @@ import {
 import { useComposerResources } from "./useComposerResources";
 import { useComposerEditorLayout } from "./useComposerEditorLayout";
 import { FocusChip } from "../../gadget-focus/FocusChip";
-import { messageFocusOf, type TitledFocus } from "../../gadget-focus/paneFocus";
+import { messageFocusOf, type FocusOffer } from "../../gadget-focus/paneFocus";
 import styles from "./ChatComposer.module.css";
 
 // A capsule's text begins with an em space, which reserves the box the mirror paints the vendor
@@ -83,7 +82,7 @@ export const ChatComposer = ({
   createCapsuleGatekeeper,
   getOverseer,
   onSend,
-  focus,
+  focusOffer,
   isAgentActive,
   models,
   selectedModel,
@@ -127,7 +126,7 @@ export const ChatComposer = ({
    * What the user is focused on, sent with the message unless they dismiss its chip for that
    * message. Offer only a focus the message's chat accepts. A slash command never carries it.
    */
-  focus?: TitledFocus;
+  focusOffer?: FocusOffer;
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
   selectedModel: SelectedModel;
@@ -211,11 +210,10 @@ export const ChatComposer = ({
     }));
   };
   const [isSending, setIsSending] = useState(false);
-  // The gadget whose focus the user dismissed for the message being written. Another gadget's
-  // focus is a new offer.
-  const [dismissedFocusGadget, setDismissedFocusGadget] = useState<WorkpieceId | null>(null);
-  const offeredFocus = focus && focus.gadgetId !== dismissedFocusGadget && !selectedSlashCommand
-    ? focus
+  // The focus offer the user dismissed for the message being written.
+  const [dismissedFocusOffer, setDismissedFocusOffer] = useState<number | null>(null);
+  const offeredFocus = focusOffer && focusOffer.offerId !== dismissedFocusOffer && !selectedSlashCommand
+    ? focusOffer
     : undefined;
   // Set by Stop until the agent goes idle: a steer sent meanwhile would be refused.
   const [isStopping, setIsStopping] = useState(false);
@@ -542,11 +540,11 @@ export const ChatComposer = ({
         capsules: capsuleSpecifiers,
         attachments: readyAttachments.length ? readyAttachments : undefined,
         formats: formatRefs,
-        focus: offeredFocus && typeof message === "string" ? messageFocusOf(offeredFocus) : undefined,
+        focus: offeredFocus && typeof message === "string" ? messageFocusOf(offeredFocus.focus) : undefined,
       });
       clearSentAttachments(attachmentsSnapshot);
       // A dismissal is for one message.
-      if (mountedRef.current) setDismissedFocusGadget(null);
+      if (mountedRef.current) setDismissedFocusOffer(null);
       if (!completeDraftSend(draftSend)) return;
       replaceComposerDocument({ text: "", capsules: [], formats: [], command: null });
     } finally {
@@ -785,10 +783,10 @@ export const ChatComposer = ({
         {offeredFocus && (
           <div className="flex px-3 pt-2.5">
             <FocusChip
-              focus={offeredFocus}
+              focus={offeredFocus.focus}
               disabled={isSending}
               onDismiss={() => {
-                setDismissedFocusGadget(offeredFocus.gadgetId);
+                setDismissedFocusOffer(offeredFocus.offerId);
                 // The button goes away with the chip, so keyboard focus moves on to the message.
                 composerTextareaRef.current?.focus();
               }}

@@ -186,10 +186,12 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
 - `at` means something only for the gadget `w` names. It is ignored and dropped when the URL has
   no `w`, or when that workpiece cannot be selected.
 - Selecting another workpiece drops `at`.
-- URL writes are debounced, so a drag-selection doesn't rewrite the URL per event (browsers
-  rate-limit `replaceState`). A pending write is cancelled when the selected workpiece or the
-  workspace changes, and when `at` is set from elsewhere (a transcript chip, a followed link), so
-  an old report never overwrites a newer target. A change to `at` counts as our own only if it is
+- URL writes are throttled, so a drag-selection doesn't rewrite the URL per event (browsers
+  rate-limit `replaceState`). A report after a quiet spell is written at once; for 300 ms after a
+  write, later reports are held, and the last of them is written when that time is up, which holds
+  the next ones in turn. A held report is dropped, and the hold ended, when the selected workpiece
+  or the workspace changes, and when `at` is set from elsewhere (a transcript chip, a followed
+  link), so an old report never overwrites a newer target, and the next report is written at once. A change to `at` counts as our own only if it is
   the one our last write made and hasn't yet come back through the URL.
 - The reported `GadgetFocus` is kept in React state for the composer. `onFocusReset` clears it
   and leaves the URL alone, so the chip never shows a label from old code while the new frame is
@@ -293,7 +295,14 @@ Frontend:
   nothing. What it remembers is kept in memory only: a closed pane is still stored as closed, with
   no workpiece, and one no longer visible (deleted, or a draft of another chat) falls through to
   the default.
-- Dismissing the chip sends that message with no focus at all. The chip returns for the next one.
+- Dismissing the chip sends that message with no focus at all. It turns down that focus only: the
+  chip returns for the next message, and before then for any new focus signal, which is the gadget
+  reporting another spot (or going between no spot and one), a transcript chip being clicked (even
+  one naming the dismissed spot), or the gadget being selected again after another. A report
+  naming the same spot again, perhaps with a new label or context, is not one, and nor is a new
+  frame restored to the spot. `usePaneFocus` numbers the offers, since the composer remounts per
+  chat and can't see these events. A gadget that reports on every small movement brings the chip
+  back soon after a dismissal; that is accepted.
 - The transcript draws the same chip on a sent message. Clicking it sets `w` to that gadget and,
   if the focus has a spot, `at` to its anchor, in one navigation. That selects the gadget and
   navigates its frame. The composer's chip then shows the clicked chip's spot, context included,
@@ -399,9 +408,10 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   clears the anchor, but not after a newer report, and not when it arrives from a frame that has
   since been replaced; malformed and oversized reports are dropped.
 - **URL** (frontend unit tests, on the route and on `useFocusUrl`, the hook `GadgetEditor` keeps
-  the URL with): `at` parses and round-trips; a report writes `w` with it; `at`
-  without a selectable `w` is dropped; switching workpiece drops it, and a write still pending
-  from the previous gadget never lands.
+  the URL with): `at` parses and round-trips; a report writes `w` with it, at once after a quiet
+  spell and only the last of a burst after that; `at` without a selectable `w` is dropped;
+  switching workpiece drops it, a write still pending from the previous gadget never lands, and
+  the next gadget's first report isn't held.
 - **Export** (`browser-export.test.ts`): a UI that calls both methods still exports.
 - **Options struct**: the existing suites, unchanged apart from call sites.
 - **What the model is sent** (`integration-tests`, scripted model): a gadget-level focus and a
@@ -409,7 +419,7 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   turn, and replaying the chat afterwards produces the same bytes; hostile label, anchor and
   context text cannot break out of the block; a bad `gadgetId` or an oversized string is refused.
 - **Chips** (frontend tests): shown whenever the pane shows a gadget; the label gains the spot
-  when one is reported; dismissal lasts one message. On a single-pane layout, offered with the
+  when one is reported; dismissal lasts one message, and until a new focus signal. On a single-pane layout, offered with the
   pane closed after it showed a gadget, with the spot last reported or opened from a transcript
   chip; not after it showed activity or a worktree, nor for a gadget selected since, nor before it
   has been open in the workspace; following the layout across the breakpoint; and for a gadget
@@ -444,9 +454,10 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   regardless, and a gadget version that doesn't know it returns false.
 - **Collaborators.** Focus is per browser. A message records its sender's focus; nobody sees
   anyone else's.
-- **A chip clicked while a report waits to be written.** If the frame has just moved from the
-  spot `at` names, a click on a chip for that spot leaves `at` unchanged, so the frame is not
-  sent back. The composer keeps what the frame reported, which is what it shows.
+- **A chip clicked while a report waits to be written.** A report after a quiet spell is written
+  at once, so this needs reports within 300 ms of a write. If the frame has moved on from the spot
+  that write put in `at` and is held, a click on a chip for that spot leaves `at` unchanged, so
+  the frame is not sent back. The composer keeps what the frame reported, which is what it shows.
 - **Callers outside this repository** of `newChat()` and `sendChatMessage()` (the internal repo)
   need the options struct too.
 

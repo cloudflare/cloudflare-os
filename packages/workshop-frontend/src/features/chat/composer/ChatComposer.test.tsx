@@ -613,11 +613,12 @@ describe("ChatComposer", () => {
 
   describe("focus chip", () => {
     type ComposerProps = Parameters<typeof ChatComposer>[0];
-    const budget = {
+    const budgetFocus = {
       gadgetId: 3,
       gadgetTitle: "Budget",
       spot: { anchor: "sheet/q3/cell/B7", label: "Q3 › cell B7", context: "1,204,331" },
     };
+    const budget = { focus: budgetFocus, offerId: 1 };
 
     beforeEach(() => {
       container = document.createElement("div");
@@ -651,12 +652,12 @@ describe("ChatComposer", () => {
 
     it("shows the gadget and the spot, and sends them without the title", async () => {
       const onSend = vi.fn<ComposerProps["onSend"]>();
-      await render({ onSend, focus: budget });
+      await render({ onSend, focusOffer: budget });
 
       expect(container!.textContent).toContain("Budget › Q3 › cell B7");
       await send("Why is this so low?");
       expect(onSend).toHaveBeenCalledExactlyOnceWith("Why is this so low?", "model-a", {
-        focus: { gadgetId: 3, spot: budget.spot },
+        focus: { gadgetId: 3, spot: budgetFocus.spot },
       });
     });
 
@@ -665,7 +666,7 @@ describe("ChatComposer", () => {
       const onSend = vi.fn<ComposerProps["onSend"]>(
         () => new Promise<void>((resolve) => { finishSend = resolve; }),
       );
-      await render({ onSend, focus: { gadgetId: 3, gadgetTitle: "Budget" } });
+      await render({ onSend, focusOffer: { focus: { gadgetId: 3, gadgetTitle: "Budget" }, offerId: 1 } });
 
       await act(async () => dismissButton()!.click());
       expect(dismissButton()).toBeNull();
@@ -682,12 +683,16 @@ describe("ChatComposer", () => {
       });
     });
 
-    it("offers another gadget's focus after one was dismissed", async () => {
-      await render({ focus: budget });
+    it("turns down only the offer dismissed, whatever the next one names", async () => {
+      await render({ focusOffer: budget });
       await act(async () => dismissButton()!.click());
-      await render({ focus: { gadgetId: 4, gadgetTitle: "Trips" } });
+      // The same offer, with the spot's label updated by a repeat report.
+      const relabeled = { ...budgetFocus, spot: { ...budgetFocus.spot, label: "Q3 › B7" } };
+      await render({ focusOffer: { focus: relabeled, offerId: 1 } });
+      expect(dismissButton()).toBeNull();
 
-      expect(container!.textContent).toContain("Trips");
+      await render({ focusOffer: { focus: relabeled, offerId: 2 } });
+      expect(container!.textContent).toContain("Budget › Q3 › B7");
       expect(dismissButton()).not.toBeNull();
     });
 
@@ -702,7 +707,7 @@ describe("ChatComposer", () => {
         listSlashCommands: vi.fn<() => Promise<SlashCommandChoice[]>>(async () => [skill]),
       } as unknown as RpcStub<Overseer>;
       const onSend = vi.fn<ComposerProps["onSend"]>();
-      await render({ onSend, focus: budget, getOverseer: () => overseer });
+      await render({ onSend, focusOffer: budget, getOverseer: () => overseer });
 
       const add = container!.querySelector<HTMLButtonElement>('[aria-label="Add to conversation"]')!;
       await act(async () => add.click());

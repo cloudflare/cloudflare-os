@@ -66,14 +66,30 @@ afterEach(async () => {
 })
 
 describe('useFocusUrl', () => {
-  it('writes a report to `at` with `w`, once the reports stop', async () => {
+  it('writes a report to `at` with `w` at once, and only the last of a burst after it', async () => {
     await render({})
-    focus!.onFocusChange({ anchor: 'cell/B6', label: 'B6' })
-    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS / 2)
-    focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
-    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+    focus!.onFocusChange({ anchor: 'cell/B5', label: 'B5' })
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B5' }]])
 
-    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B7' }]])
+    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS / 2)
+    focus!.onFocusChange({ anchor: 'cell/B6', label: 'B6' })
+    focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+    expect(replaceSearch).toHaveBeenCalledOnce()
+    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS / 2)
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B5' }], [{ w: 1, at: 'cell/B7' }]])
+    await render({})
+
+    // That write holds back reports in turn, until they pause.
+    focus!.onFocusChange({ anchor: 'cell/B8', label: 'B8' })
+    expect(replaceSearch).toHaveBeenCalledTimes(2)
+    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+    expect(replaceSearch).toHaveBeenLastCalledWith({ w: 1, at: 'cell/B8' })
+    await render({})
+
+    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+    focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
+    expect(replaceSearch).toHaveBeenCalledTimes(4)
+    expect(replaceSearch).toHaveBeenLastCalledWith({ w: 1, at: 'cell/C1' })
   })
 
   it('gives the frame `at` only for the gadget `w` names', async () => {
@@ -98,40 +114,45 @@ describe('useFocusUrl', () => {
     expect(replaceSearch.mock.calls).toEqual([[{ at: undefined }]])
   })
 
-  it('never lands a report pending from the previously selected gadget', async () => {
+  it('never lands a report pending from the previously selected gadget, nor holds back the next', async () => {
     await render({ search: { w: 1 } })
+    focus!.onFocusChange({ anchor: 'cell/B6', label: 'B6' })
     focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
     await render({ search: { w: 2 }, selectedGadgetId: 2 })
+    focus!.onFocusChange({ anchor: 'trip/t_9', label: 'Lisbon' })
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
 
-    expect(replaceSearch).not.toHaveBeenCalled()
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B6' }], [{ w: 2, at: 'trip/t_9' }]])
   })
 
   it('never lands a report pending from the previous workspace', async () => {
     await render({ search: { w: 1 } })
+    focus!.onFocusChange({ anchor: 'cell/B6', label: 'B6' })
     focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
     await render({ workspaceId: 'budget' })
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
 
-    expect(replaceSearch).not.toHaveBeenCalled()
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B6' }]])
   })
 
   it('lets `at` set elsewhere win over a pending report', async () => {
     await render({ search: { w: 1, at: 'cell/B7' } })
+    focus!.onFocusChange({ anchor: 'cell/C0', label: 'C0' })
     focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
     await render({ search: { w: 1, at: 'cell/D4' } })
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
 
-    expect(replaceSearch).not.toHaveBeenCalled()
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/C0' }]])
   })
 
   it('lets `at` removed elsewhere win over a pending report', async () => {
     await render({ search: { w: 1, at: 'cell/B7' } })
+    focus!.onFocusChange({ anchor: 'cell/C0', label: 'C0' })
     focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
     await render({ search: { w: 1 } })
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
 
-    expect(replaceSearch).not.toHaveBeenCalled()
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/C0' }]])
   })
 
   it('lets `at` set elsewhere back to an anchor it wrote win over a pending report', async () => {
@@ -140,17 +161,18 @@ describe('useFocusUrl', () => {
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
     await render({})
     await render({ search: { w: 1, at: 'cell/D4' } })
+    // A write that leaves `at` as it is, so it expects nothing back from the URL.
+    focus!.onFocusChange({ anchor: 'cell/D4', label: 'D4' })
     focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
     await render({ search: { w: 1, at: 'cell/B7' } })
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
 
-    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B7' }]])
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B7' }], [{ w: 1, at: 'cell/D4' }]])
   })
 
   it('keeps a newer report pending when its own earlier write lands', async () => {
     await render({ search: { w: 1 } })
     focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
-    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
     focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
     await render({})
     vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
@@ -166,8 +188,26 @@ describe('useFocusUrl', () => {
 
     await render({ search: { w: 1, at: 'cell/B7' } })
     focus!.onFocusChange(null)
-    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
     expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: undefined }]])
+  })
+
+  it('clears `at` on a null report before its own write of one has come back', async () => {
+    await render({})
+    focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+    focus!.onFocusChange(null)
+    vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: 'cell/B7' }], [{ w: 1, at: undefined }]])
+  })
+
+  it("never takes the previous workspace's unacknowledged write as this one's", async () => {
+    await render({ search: { w: 1, at: 'cell/B7' } })
+    focus!.onFocusChange(null)
+    // Another workspace whose URL names the same spot, before the clear has come back.
+    await render({ workspaceId: 'budget', search: { w: 1, at: 'cell/B7' } })
+    focus!.onFocusChange(null)
+
+    expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: undefined }], [{ w: 1, at: undefined }]])
   })
 
   it('gives no focus without a selected gadget', async () => {

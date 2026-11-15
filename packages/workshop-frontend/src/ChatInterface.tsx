@@ -5737,7 +5737,7 @@ function ChatInterface({
             }
             getOverseer={getOverseer}
             onSend={handleNewChatSend}
-            focus={focusForChat(paneFocus, null)}
+            focusOffer={focusForChat(paneFocus, null)}
             isAgentActive={false}
             models={availableModels}
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
@@ -6832,7 +6832,7 @@ function ChatInterface({
                     }
                     getOverseer={getOverseer}
                     onSend={handleSend}
-                    focus={focusForChat(paneFocus, selectedChatId)}
+                    focusOffer={focusForChat(paneFocus, selectedChatId)}
                     isAgentActive={isAgentActive}
                     models={availableModels}
                     selectedModel={selectedModel === null ? null : {

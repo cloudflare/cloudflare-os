@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react'
-import type { WorkpieceId } from '@gadgets/workshop-shared/api'
+import type { GadgetFocus, WorkpieceId } from '@gadgets/workshop-shared/api'
 import type { GadgetUIFocus } from '../../GadgetUI'
 
 /**
- * How long reports must pause before one is written: browsers rate-limit replaceState, and a
- * drag-selection reports per event.
+ * How long after a write further reports are held back, the last of them written when it ends:
+ * browsers rate-limit replaceState, and a drag-selection reports per event.
  */
 export const FOCUS_URL_WRITE_DELAY_MS = 300
 
@@ -47,19 +47,30 @@ export const useFocusUrl = ({
   replaceSearchRef.current = replaceSearch
   const atRef = useRef(at)
   atRef.current = at
-  const pendingWriteRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Open for FOCUS_URL_WRITE_DELAY_MS after a write, holding the latest report since. A report
+  // that finds it closed is written at once.
+  const holdRef = useRef<{
+    timer: ReturnType<typeof setTimeout>
+    pending: { focus: GadgetFocus | null } | null
+  } | null>(null)
   // A write that changes `at` and hasn't yet come back through the URL, to tell it apart from `at`
   // being set elsewhere.
   const unacknowledgedWriteRef = useRef<{ at: string | undefined } | null>(null)
 
+  // Also ends the hold, so the next report, which may be the first from another gadget, isn't
+  // held back behind a write it has nothing to do with.
   const cancelPendingWrite = () => {
-    if (pendingWriteRef.current === null) return
-    clearTimeout(pendingWriteRef.current)
-    pendingWriteRef.current = null
+    if (holdRef.current === null) return
+    clearTimeout(holdRef.current.timer)
+    holdRef.current = null
   }
 
-  // A report from the previous gadget, or workspace, must never land on this one.
-  useEffect(() => cancelPendingWrite, [workspaceId, selectedGadgetId])
+  // A report from the previous gadget, or workspace, must never land on this one, nor its write be
+  // taken for this one's.
+  useEffect(() => () => {
+    cancelPendingWrite()
+    unacknowledgedWriteRef.current = null
+  }, [workspaceId, selectedGadgetId])
 
   // `at` set elsewhere (a followed link) is newer than any report still waiting to be written.
   useEffect(() => {
@@ -74,20 +85,30 @@ export const useFocusUrl = ({
   }, [at, selectionSettled, atApplies])
 
   if (selectedGadgetId === null) return undefined
+  const write = (focus: GadgetFocus | null) => {
+    // A write that leaves `at` as it is never comes back as a change.
+    if (focus?.anchor !== atRef.current) unacknowledgedWriteRef.current = { at: focus?.anchor }
+    // `w` too, since `at` means nothing without it: with no `w` the editor picks a gadget from this
+    // browser's state, so a copied link could open on another.
+    replaceSearchRef.current({ w: selectedGadgetId, at: focus?.anchor })
+    const hold: NonNullable<typeof holdRef.current> = {
+      timer: setTimeout(() => {
+        holdRef.current = null
+        if (hold.pending) write(hold.pending.focus)
+      }, FOCUS_URL_WRITE_DELAY_MS),
+      pending: null,
+    }
+    holdRef.current = hold
+  }
   return {
     anchor: atApplies ? at : undefined,
     onFocusChange: focus => {
-      cancelPendingWrite()
-      // A gadget that reports only null doesn't need `w` pinned.
-      if (focus === null && atRef.current === undefined) return
-      pendingWriteRef.current = setTimeout(() => {
-        pendingWriteRef.current = null
-        // A write that leaves `at` as it is never comes back as a change.
-        if (focus?.anchor !== atRef.current) unacknowledgedWriteRef.current = { at: focus?.anchor }
-        // `w` too, since `at` means nothing without it: with no `w` the editor picks a gadget from
-        // this browser's state, so a copied link could open on another.
-        replaceSearchRef.current({ w: selectedGadgetId, at: focus?.anchor })
-      }, FOCUS_URL_WRITE_DELAY_MS)
+      // A gadget that reports only null doesn't need `w` pinned. `at` may not yet show our last
+      // write, which a null report must still clear.
+      const at = unacknowledgedWriteRef.current ? unacknowledgedWriteRef.current.at : atRef.current
+      const report = focus === null && at === undefined ? null : { focus }
+      if (holdRef.current) holdRef.current.pending = report
+      else if (report) write(report.focus)
     },
   }
 }

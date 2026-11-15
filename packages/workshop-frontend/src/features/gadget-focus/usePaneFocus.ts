@@ -16,6 +16,7 @@ export type PaneView = 'workpiece' | 'activity' | null
  * Returns the `GadgetUI` focus to give that frame, wrapping `uiFocus` (from `useFocusUrl`), and
  * the focus the pane offers a message: the gadget whenever the pane is showing it, with the spot
  * once the current frame has reported one, or once a sent message's chip has sent it there.
+ * Each new focus signal is a new offer (see `FocusOffer`).
  * Call `onFocusOpened` with that chip's focus as it opens it, and `onWorkspaceChange` when the
  * editor moves to another workspace, whose pane has shown nothing yet.
  */
@@ -58,11 +59,18 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
   const showsOpened = opened !== null && opened.gadgetId === gadget?.id && opened.spot.anchor === uiFocus?.anchor
   if (showsOpened && !opened.shown) setOpened({ ...opened, shown: true })
   if (!showsOpened && opened?.shown) setOpened(null)
+  // The anchor is the selected gadget's last report, which a frame reset leaves, so a new frame
+  // restored to the spot is the same offer.
+  const [offer, setOffer] = useState<{ id: number; gadgetId: WorkpieceId | undefined; anchor: string | undefined }>(
+    () => ({ id: 0, gadgetId: gadget?.id, anchor: undefined }))
+  if (offer.gadgetId !== gadget?.id) setOffer({ id: offer.id + 1, gadgetId: gadget?.id, anchor: undefined })
   const onFocusOpened = ({ gadgetId, spot }: MessageFocus) => {
     // A click that leaves `at` as it is sends the frame nowhere, so its report still stands.
-    if (spot && !(gadgetId === gadget?.id && spot.anchor === uiFocus?.anchor)) {
-      setOpened({ gadgetId, spot, shown: false })
-    }
+    const opens = spot && !(gadgetId === gadget?.id && spot.anchor === uiFocus?.anchor) ? spot : undefined
+    // Opening a chip asks for its focus, even one just dismissed, and a spot it opens is the one the
+    // gadget's next report moves from.
+    setOffer(current => ({ ...current, id: current.id + 1, anchor: opens ? opens.anchor : current.anchor }))
+    if (opens) setOpened({ gadgetId, spot: opens, shown: false })
   }
   if (gadget === undefined) return { uiFocus, paneFocus: undefined, onFocusOpened, onWorkspaceChange }
   const gadgetId = gadget.id
@@ -73,6 +81,9 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
       onFocusChange: focus => {
         uiFocus.onFocusChange(focus)
         setReported(focus && { gadgetId, spot: focus })
+        setOffer(current => current.gadgetId === gadgetId && current.anchor !== focus?.anchor
+          ? { id: current.id + 1, gadgetId, anchor: focus?.anchor }
+          : current)
         // A report from the gadget being left mustn't cancel the spot the click is opening.
         setOpened(current => current?.gadgetId === gadgetId ? null : current)
       },
@@ -84,6 +95,7 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
     paneFocus: showsGadget
       ? {
           focus: { gadgetId, gadgetTitle: gadget.title, ...(spot && { spot }) },
+          offerId: offer.id,
           pendingChatId: gadget.chatId,
         }
       : undefined,
