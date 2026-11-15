@@ -133,15 +133,15 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   const usable = (account: AccountEvent) => account.credentialsValid &&
     required.every(p => getGrantedResourceTypeIds(account.description, account.supportedResources)?.includes(p) ?? true)
   const selected = matching.find(a => a.id === chosen) ?? matching.find(usable)
-  const configuratorPattern = resource?.creationConfigurator ? getResourceTypeId(resource) : null
+  const configuratorTypeId = resource?.creationConfigurator ? getResourceTypeId(resource) : null
   const configuratorAccountId =
-    configuratorPattern !== null && selected && usable(selected) ? selected.id : null
+    configuratorTypeId !== null && selected && usable(selected) ? selected.id : null
 
   useEffect(() => {
-    if (configuratorAccountId === null || configuratorPattern === null) return
+    if (configuratorAccountId === null || configuratorTypeId === null) return
     let cancelled = false
     let started: GatekeeperUiFrame | undefined
-    authenticatedApi.startCreationConfigurator(configuratorAccountId, configuratorPattern)
+    authenticatedApi.startCreationConfigurator(configuratorAccountId, configuratorTypeId)
       .then(frame => {
         if (cancelled) return disposeConfiguratorFrame(frame)
         started = frame
@@ -160,7 +160,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
       setConfigurator(null)
       setCollecting(false)
     }
-  }, [authenticatedApi, configuratorAccountId, configuratorPattern])
+  }, [authenticatedApi, configuratorAccountId, configuratorTypeId])
 
   // SandboxedResourceConfigurator re-registers its collector whenever this changes identity, so a
   // fresh callback per render would loop: unregister, re-register, re-render.
@@ -170,10 +170,10 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   const current = configurator?.accountId === configuratorAccountId ? configurator : null
   const frame = current && 'frame' in current ? current.frame : null
   const configured =
-    configuratorPattern === null || (frame && configuratorReady === true && collector)
+    configuratorTypeId === null || (frame && configuratorReady === true && collector)
 
   const approve = async (accountId: number) => {
-    if (configuratorPattern === null) return onChoose({ accountId })
+    if (configuratorTypeId === null) return onChoose({ accountId })
     const attempt = {}
     collectAttempt.current = attempt
     setCollecting(true)
@@ -194,7 +194,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
     <Dialog.Root open onOpenChange={open => { if (!open) onCancel() }}>
       <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0 sm:w-[480px]" size="base">
         <Dialog.Title className="shrink-0 px-6 pt-6 text-lg font-semibold">
-          {configuratorPattern === null
+          {configuratorTypeId === null
             ? 'Choose an account to create it in'
             : 'Choose where to create it'}
         </Dialog.Title>
