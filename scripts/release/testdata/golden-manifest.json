@@ -1460,6 +1460,11 @@
           "type": "r2_bucket"
         },
         {
+          "bucket_name": "$R2_ISSUE_IMAGES_NAME",
+          "name": "ISSUE_IMAGES",
+          "type": "r2_bucket"
+        },
+        {
           "name": "BROWSER",
           "type": "browser"
         },
@@ -1524,6 +1529,12 @@
             "AdminAuditDurableObject"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "IssueReportsDurableObject"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [

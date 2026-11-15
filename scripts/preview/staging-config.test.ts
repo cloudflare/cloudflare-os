@@ -233,13 +233,14 @@ test("the backend's per-preview resources carry no ids, so wrangler provisions t
   const previews = previewsOf(configs, "workshop-backend");
 
   assert.deepEqual(previews.kv_namespaces, [{ binding: "BLUEPRINTS" }, { binding: "AVATARS" }]);
-  assert.deepEqual(previews.r2_buckets, [{ binding: "BLUEPRINT_CONTENT" }]);
+  assert.deepEqual(previews.r2_buckets,
+      [{ binding: "BLUEPRINT_CONTENT" }, { binding: "ISSUE_IMAGES" }]);
   assert.deepEqual(previews.worker_loaders, [{ binding: "LOADER" }]);
   assert.deepEqual(previews.ai, { binding: "WORKERS_AI" });
   assert.deepEqual(previews.browser, { binding: "BROWSER" });
 
   // An id or bucket name here would point the preview at the shared baseline resource, so every
-  // preview would read and write one another's blueprints.
+  // preview would read and write one another's blueprints and issue report images.
   for (const resource of [...(previews.kv_namespaces ?? []), ...(previews.r2_buckets ?? [])]) {
     assert.deepEqual(Object.keys(resource), ["binding"], JSON.stringify(resource));
   }

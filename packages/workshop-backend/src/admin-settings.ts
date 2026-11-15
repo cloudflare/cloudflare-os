@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminApprovalRefusal, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminApprovalRefusal, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -19,7 +19,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
+import { type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
 import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, needsSecondAdmin, newPasskeyChallenge } from './admin-writes.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
 import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
@@ -652,6 +652,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         chosen: config.adminAuditRetentionDays,
         min: minAdminAuditRetentionDays(this.env),
       },
+      issueReportRetentionDays: {
+        effective: policy.issueReportRetentionDays,
+        chosen: config.issueReportRetentionDays,
+        min: minIssueReportRetentionDays(this.env),
+      },
       adminWorkspaceWrites: adminWorkspaceWritesEnabled(this.env),
     };
   }
@@ -687,6 +692,21 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           `${MAX_ADMIN_AUDIT_RETENTION_DAYS}.`);
     }
     await this.#mutateAdminConfig(actor, config => ({ ...config, adminAuditRetentionDays: days }));
+  }
+
+  /**
+   * Set how many days admins choose to keep issue reports for, recording the change `actor`
+   * makes. Throws unless a whole number from the minimum ISSUE_REPORT_RETENTION_MIN_DAYS sets to
+   * MAX_ISSUE_REPORT_RETENTION_DAYS.
+   */
+  async setIssueReportRetentionDays(days: number, actor: AdminSettingActor): Promise<void> {
+    let min = minIssueReportRetentionDays(this.env);
+    if (!Number.isInteger(days) || days < min || days > MAX_ISSUE_REPORT_RETENTION_DAYS) {
+      throw new Error(`The issue report retention must be a whole number of days from ${min}, ` +
+          `the fewest this deployment's ISSUE_REPORT_RETENTION_MIN_DAYS allows, to ` +
+          `${MAX_ISSUE_REPORT_RETENTION_DAYS}.`);
+    }
+    await this.#mutateAdminConfig(actor, config => ({ ...config, issueReportRetentionDays: days }));
   }
 
   // --- Admin passkeys ---
@@ -2312,6 +2332,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setAdminAuditRetentionDays(days: number): Promise<void> {
     return this.admin.setAdminAuditRetentionDays(days, this.#actor("setAdminAuditRetentionDays"));
+  }
+
+  setIssueReportRetentionDays(days: number): Promise<void> {
+    return this.admin.setIssueReportRetentionDays(days, this.#actor("setIssueReportRetentionDays"));
   }
 
   // --- Writes to workspaces, approved with a passkey ---

@@ -95,8 +95,9 @@ export default defineConfig({
         },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },
-        // Where a blueprint's content is published to and read back from.
-        r2Buckets: ['BLUEPRINT_CONTENT'],
+        // Where a blueprint's content is published to and read back from, and where the images
+        // of issue reports are kept.
+        r2Buckets: ['BLUEPRINT_CONTENT', 'ISSUE_IMAGES'],
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
           TEST_USER: { className: 'UserDurableObject', useSQLite: true },
@@ -110,6 +111,9 @@ export default defineConfig({
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
           // The Overseer and AdminSettings also reach it through `ctx.exports`.
           TEST_ADMIN_AUDIT: { className: 'AdminAuditDurableObject', useSQLite: true },
+          // Addressed by name in its own suite; it asks AdminSettings for its retention through
+          // `ctx.exports`.
+          TEST_ISSUE_REPORTS: { className: 'IssueReportsDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
         },
       },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS } from "@gadgets/workshop-shared/api";
+import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS, DEFAULT_ISSUE_REPORT_RETENTION_DAYS, MAX_ISSUE_REPORT_RETENTION_DAYS } from "@gadgets/workshop-shared/api";
 import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "../src/storage-schema/admin-settings-storage.js";
 
@@ -661,6 +661,42 @@ describe("admin config admin access", () => {
       expect(normalizeAdminConfig({ adminAuditRetentionDays: stored as number })
           .adminAuditRetentionDays, String(stored)).toBe(90);
     }
+  });
+});
+
+describe("admin config issue report retention", () => {
+  it("defaults to 90 days, also for a config stored without it", () => {
+    expect(DEFAULT_ADMIN_CONFIG.issueReportRetentionDays).toBe(90);
+    expect(parseAdminConfig(null).issueReportRetentionDays)
+        .toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+    expect(parseAdminConfig(JSON.stringify({ adminAuditRetentionDays: 400 }))
+        .issueReportRetentionDays).toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+  });
+
+  // As for the audit retention: the environment's floor is applied where the choice is enforced.
+  it("keeps a stored choice whatever the environment's floor, through the mirror too", () => {
+    for (let days of [1, 7, 365, MAX_ISSUE_REPORT_RETENTION_DAYS]) {
+      expect(normalizeAdminConfig({ issueReportRetentionDays: days }).issueReportRetentionDays)
+          .toBe(days);
+    }
+    let mirror = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, issueReportRetentionDays: 120 });
+    expect(parseAdminConfig(mirror).issueReportRetentionDays).toBe(120);
+  });
+
+  it("reads a malformed stored retention as the default, and leaves the audit one alone", () => {
+    for (let stored of [0, -1, 1.5, MAX_ISSUE_REPORT_RETENTION_DAYS + 1, NaN, "30", null]) {
+      let config = normalizeAdminConfig(
+          { issueReportRetentionDays: stored as number, adminAuditRetentionDays: 400 });
+      expect(config.issueReportRetentionDays, String(stored)).toBe(90);
+      expect(config.adminAuditRetentionDays, String(stored)).toBe(400);
+    }
+  });
+
+  it("is recorded as a setting change, and is not a seed field", () => {
+    expect(diffAdminConfig(configWith(), configWith({ issueReportRetentionDays: 120 })))
+        .toEqual([{ setting: "issueReportRetentionDays", before: "90", after: "120" }]);
+    // A seed that names it is no seed at all, as for any field outside the Models tab's.
+    expect(parseAdminConfigSeed({ issueReportRetentionDays: 120 })).toEqual({});
   });
 });
 

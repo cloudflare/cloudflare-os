@@ -10,7 +10,8 @@
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
   DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS, DEFAULT_BANNER_COLOR,
-  DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+  DEFAULT_ISSUE_REPORT_RETENTION_DAYS, DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
+  DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
   type AdminPasskey, type AdminWorkspaceAccess,
   type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
@@ -158,6 +159,9 @@ export type AdminConfig = {
   /** How many days admins chose to keep admin audit records. Held at or above
    * ADMIN_AUDIT_RETENTION_MIN_DAYS wherever it is enforced. */
   adminAuditRetentionDays: number;
+  /** How many days admins chose to keep issue reports from their filing. Held at or above
+   * ISSUE_REPORT_RETENTION_MIN_DAYS wherever it is enforced. */
+  issueReportRetentionDays: number;
 };
 
 /**
@@ -215,6 +219,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
   adminWorkspaceAccess: DEFAULT_ADMIN_WORKSPACE_ACCESS,
   adminAuditRetentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+  issueReportRetentionDays: DEFAULT_ISSUE_REPORT_RETENTION_DAYS,
 };
 
 /**

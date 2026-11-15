@@ -10,7 +10,7 @@
 // here — it stays env-var driven so it can't be changed by a compromised admin session. Everything
 // here is enabled by default; the admin UI opts things *out*.
 
-import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
+import { AdminSettingChange, AiModelProvider, AmbientGatekeeperMode, BlueprintBinding, BlueprintMetadata, BlueprintOutput, DEFAULT_BANNER_COLOR, GatewayModel, GatewayModelCapabilities, GatewayModelMode, GatewayModelSettings, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, OutputFormatOffer, REASONING_LEVELS, SUGGESTED_MODELS, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isGatewayModelMode, isOutputIcon, isReasoningLevel } from "@gadgets/workshop-shared/api";
 import { SupportedResource, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import { adminSettingChange } from "./admin-access.js";
 import { sanitizeBlueprintOutput } from "./blueprint-archive.js";
@@ -460,15 +460,17 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     adminWorkspaceAccess: p.adminWorkspaceAccess === undefined
       ? DEFAULT_ADMIN_CONFIG.adminWorkspaceAccess
       : isAdminWorkspaceAccess(p.adminWorkspaceAccess) ? p.adminWorkspaceAccess : "off",
-    adminAuditRetentionDays: isAdminAuditRetention(p.adminAuditRetentionDays)
-      ? p.adminAuditRetentionDays
-      : DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays,
+    adminAuditRetentionDays: retentionDays(p.adminAuditRetentionDays,
+        MAX_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays),
+    issueReportRetentionDays: retentionDays(p.issueReportRetentionDays,
+        MAX_ISSUE_REPORT_RETENTION_DAYS, DEFAULT_ADMIN_CONFIG.issueReportRetentionDays),
   };
 }
 
-function isAdminAuditRetention(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 &&
-      value <= MAX_ADMIN_AUDIT_RETENTION_DAYS;
+// A stored retention: `value` when it is a whole number of days from 1 to `max`, else `fallback`.
+function retentionDays(value: unknown, max: number, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= max
+      ? value : fallback;
 }
 
 // The lists whose entries have ids, by the field naming each entry's id. A list whose entries have

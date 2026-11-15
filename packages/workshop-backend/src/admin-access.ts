@@ -15,9 +15,11 @@ import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
   ADMIN_WORKSPACE_ACCESS_LEVELS, ADMIN_WRITE_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
   DEFAULT_ADMIN_COMMIT_LOG_DEPTH, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  DEFAULT_ISSUE_REPORT_RETENTION_DAYS,
   MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
   MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError, createAdminWriteError,
+  MAX_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ISSUE_REPORT_RETENTION_DAYS, createAdminAccessError,
+  createAdminWriteError,
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminFileContent,
   type AdminSettingChange, type AdminSettingRecord, type AdminVia, type AdminViewAccess,
@@ -35,10 +37,10 @@ const logger = createWorkshopLogger("workshop.admin.access");
 
 // --- The environment's bounds ---
 
-// The raw values already reported as invalid, so that each is logged once per isolate rather than
-// on every request that reads it.
+// The raw values already reported as invalid (a retention floor's with its variable's name), so
+// that each is logged once per isolate rather than on every request that reads it.
 const reportedInvalidAccessMax = new Set<unknown>();
-const reportedInvalidRetentionMin = new Set<unknown>();
+const reportedInvalidRetentionMin = new Set<string>();
 const reportedInvalidWrites = new Set<unknown>();
 
 function isBlank(raw: unknown): boolean {
@@ -68,26 +70,39 @@ export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAcce
   return "off";
 }
 
+// A retention floor read from the variable `name`: a positive whole number (string or number),
+// `max` when larger; `fallback` while it is unset or blank, and when it is anything else (logged
+// as an error once per isolate per variable and value, never the value itself).
+function minRetentionDays(name: string, raw: unknown, fallback: number, max: number): number {
+  if (isBlank(raw)) return fallback;
+  let days = Number(String(raw).trim());
+  if (Number.isSafeInteger(days) && days >= 1) return Math.min(days, max);
+
+  let reported = `${name}=${String(raw)}`;
+  if (!reportedInvalidRetentionMin.has(reported)) {
+    reportedInvalidRetentionMin.add(reported);
+    logger.error(
+        `${name} is not a positive whole number of days, so the default minimum retention applies`,
+        { event: "admin.access.config.invalid" });
+  }
+  return fallback;
+}
+
 /** The fewest days ADMIN_AUDIT_RETENTION_MIN_DAYS lets admins keep audit records for: a positive
  * whole number (string or number), MAX_ADMIN_AUDIT_RETENTION_DAYS when larger;
  * DEFAULT_ADMIN_AUDIT_RETENTION_DAYS while it is unset or blank, and when it is anything else
  * (logged as an error once per isolate per value). */
 export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
-  let raw: unknown = env.ADMIN_AUDIT_RETENTION_MIN_DAYS;
-  if (isBlank(raw)) return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
-  let days = Number(String(raw).trim());
-  if (Number.isSafeInteger(days) && days >= 1) {
-    return Math.min(days, MAX_ADMIN_AUDIT_RETENTION_DAYS);
-  }
+  return minRetentionDays("ADMIN_AUDIT_RETENTION_MIN_DAYS", env.ADMIN_AUDIT_RETENTION_MIN_DAYS,
+      DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_RETENTION_DAYS);
+}
 
-  if (!reportedInvalidRetentionMin.has(raw)) {
-    reportedInvalidRetentionMin.add(raw);
-    logger.error(
-        "ADMIN_AUDIT_RETENTION_MIN_DAYS is not a positive whole number of days, so the default " +
-            "minimum retention applies",
-        { event: "admin.access.config.invalid" });
-  }
-  return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
+/** The fewest days ISSUE_REPORT_RETENTION_MIN_DAYS lets admins keep issue reports for: parsed and
+ * bounded exactly as minAdminAuditRetentionDays() parses its variable, with
+ * DEFAULT_ISSUE_REPORT_RETENTION_DAYS and MAX_ISSUE_REPORT_RETENTION_DAYS. */
+export function minIssueReportRetentionDays(env: Cloudflare.Env): number {
+  return minRetentionDays("ISSUE_REPORT_RETENTION_MIN_DAYS", env.ISSUE_REPORT_RETENTION_MIN_DAYS,
+      DEFAULT_ISSUE_REPORT_RETENTION_DAYS, MAX_ISSUE_REPORT_RETENTION_DAYS);
 }
 
 /** Whether ADMIN_WORKSPACE_WRITES lets admins change workspaces: only "on", in any case and
@@ -141,17 +156,23 @@ export type AdminAccessPolicy = {
   /** How many days the audit log keeps a record: the chosen retention, at least
    * minAdminAuditRetentionDays(). */
   retentionDays: number;
+  /** How many days an issue report is kept from its filing: the chosen retention, at least
+   * minIssueReportRetentionDays(). */
+  issueReportRetentionDays: number;
 };
 
 /** The policy `config` and the environment give. Every enforcement point computes it from a config
  * it has just read; none holds one from earlier. `config` is a normalized one, so its chosen level
  * is a level (see normalizeAdminConfig()). */
 export function adminAccessPolicy(
-    config: Pick<AdminConfig, "adminWorkspaceAccess" | "adminAuditRetentionDays">,
+    config: Pick<AdminConfig,
+        "adminWorkspaceAccess" | "adminAuditRetentionDays" | "issueReportRetentionDays">,
     env: Cloudflare.Env): AdminAccessPolicy {
   return {
     access: lowerAdminWorkspaceAccess(config.adminWorkspaceAccess, maxAdminWorkspaceAccess(env)),
     retentionDays: Math.max(config.adminAuditRetentionDays, minAdminAuditRetentionDays(env)),
+    issueReportRetentionDays:
+        Math.max(config.issueReportRetentionDays, minIssueReportRetentionDays(env)),
   };
 }
 

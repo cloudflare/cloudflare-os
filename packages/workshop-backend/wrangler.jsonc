@@ -40,6 +40,10 @@
     {
       "binding": "BLUEPRINT_CONTENT",
       "bucket_name": "gadgets-blueprint-content"
+    },
+    {
+      "binding": "ISSUE_IMAGES",
+      "bucket_name": "gadgets-issue-images"
     }
   ],
   "worker_loaders": [
@@ -81,6 +85,12 @@
       "tag": "v4",
       "new_sqlite_classes": [
         "AdminAuditDurableObject"
+      ]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": [
+        "IssueReportsDurableObject"
       ]
     }
   ]
