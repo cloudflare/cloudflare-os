@@ -964,6 +964,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           ...(item.output ? {output: item.output} : {})}
       : item.kind === "chat"
       ? {...common, kind: "chat", chatId: item.chatId}
+      : item.kind === "external"
+      ? {...common, kind: "external", subjectId: item.subjectId}
       : {...common, kind: "file", chatId: item.chatId, fileId: item.fileId,
           ...(item.mimeType ? {mimeType: item.mimeType} : {})});
   }

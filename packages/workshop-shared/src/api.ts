@@ -310,11 +310,15 @@ export interface UnreadThread extends ChatReadState, ChatTimelineHead {
   unjoined?: true;
 }
 
-/** Identifies something the user can star: an app (a gadget), a chat, or a file attached in a chat. */
+/**
+ * Identifies something the user can star: an app (a gadget), a chat, a file attached in a chat, or
+ * a file in a connected service that the workspace worked on (by its ResourceSubject.id).
+ */
 export type FavoriteItemRef =
   | { kind: "app"; workspaceId: string; workpieceId: WorkpieceId }
   | { kind: "chat"; workspaceId: string; chatId: number }
-  | { kind: "file"; workspaceId: string; chatId: number; fileId: string };
+  | { kind: "file"; workspaceId: string; chatId: number; fileId: string }
+  | { kind: "external"; workspaceId: string; subjectId: string };
 
 /** What starring an item records about it, so a list of favorites can show it. */
 export type FavoriteItemSpec = FavoriteItemRef & {

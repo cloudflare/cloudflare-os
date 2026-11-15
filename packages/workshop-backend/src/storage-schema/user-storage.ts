@@ -229,6 +229,7 @@ export function favoriteKey(item: FavoriteItemRef): string {
     case "app": return `${item.workspaceId}:app:${item.workpieceId}`;
     case "chat": return `${item.workspaceId}:chat:${item.chatId}`;
     case "file": return `${item.workspaceId}:file:${item.chatId}:${item.fileId}`;
+    case "external": return `${item.workspaceId}:external:${item.subjectId}`;
   }
 }
 
@@ -322,7 +323,7 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // Outputs page is one cheap read of the user's own DO. Entries are meaningful only while the
       // corresponding `gadgets` record exists; `syncWorkspaceOutputs()` and the `gadgets` deletion
       // paths keep the two in step.
-      // The apps and files the user has starred (AuthenticatedApi.setFavorite()), each with the
+      // The apps, chats and files the user has starred (AuthenticatedApi.setFavorite()), each with the
       // title and kind it had when starred so the Library can list them without opening workspaces.
       favorites: collection<FavoriteItem>()({
         primaryKey: favoriteKey,

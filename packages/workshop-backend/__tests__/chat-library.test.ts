@@ -90,6 +90,18 @@ describe("favorites", () => {
     expect((await user.listFavorites()).map(f => f.kind)).toEqual(["file"]);
   });
 
+  it("stars a connected service's file by its subject, keeping only its title", async () => {
+    const {user, workspaceId} = await setup();
+    await user.setFavorite({kind: "external", workspaceId, subjectId: "doc-1", title: "Plan",
+      // A field an external file doesn't define is not stored.
+      mimeType: "text/plain"}, true);
+    expect(await user.listFavorites()).toEqual([{kind: "external", workspaceId, subjectId: "doc-1",
+      title: "Plan", starred: expect.any(Date)}]);
+
+    await user.setFavorite({kind: "external", workspaceId, subjectId: "doc-1", title: "Plan"}, false);
+    expect(await user.listFavorites()).toEqual([]);
+  });
+
   it("refuses to star something in a workspace the user doesn't have", async () => {
     const {user} = await setup();
     await runInDurableObject(user, instance =>
