@@ -538,6 +538,14 @@ export type ActionRecord = {
    * may have been applied then (see OverseerImpl.applyActionList).
    */
   applying?: true;
+
+  /**
+   * Set by the version 10 migration on each staged action then pending: one that, before staging
+   * applied actions at once, was waiting for a user's review. Staging holds it, and what follows
+   * it on its connection, until a user decides it (see OverseerImpl.#stagedRun). Meaningless once
+   * it is decided.
+   */
+  heldForReview?: true;
 } | {
   type: "observation";
 
@@ -1426,6 +1434,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
       //   8 = the actions collection's pendingByBranch index exists and is backfilled.
+      //   9 = no pending action is on a connection the workspace no longer has.
+      //  10 = staged actions pending from before staging applied at once are marked
+      //       ActionRecord.heldForReview.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)

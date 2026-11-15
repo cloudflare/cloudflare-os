@@ -3573,8 +3573,8 @@ export interface Overseer extends RpcTarget {
   /**
    * Applies the pending actions with no chat (see WorkspaceMetadata.stagedActions), one connection
    * at a time, as they stood when the call began. Those normally apply as soon as they are
-   * submitted; they wait for this while the workspace has read restricted data, and behind one that
-   * failed to apply. The first that fails to apply stops it with a "failed" outcome, leaving that
+   * submitted; they wait for this while the workspace has read restricted data, behind one that
+   * was waiting for a user's review before they did, and behind one that failed to apply. The first that fails to apply stops it with a "failed" outcome, leaving that
    * action pending with its ActionLogEntry.applyError and those after it on its connection pending;
    * calling again retries it.
    */

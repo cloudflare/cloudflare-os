@@ -15,8 +15,8 @@ import type {
   AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
-  chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
-  type LegacyAgentSpawnerConfig, type OverseerStorage,
+  chatKeyPrefix, STAGING_KEY, type AgentSpawnerBindingProps, type BindingRecord,
+  type GadgetRecord, type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 9;
+export const OVERSEER_STORAGE_VERSION = 10;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -462,5 +462,23 @@ export function migrateToRejectedOrphans(host: OverseerMigrationHost): void {
   });
   host.logger.info("rejected the pending actions of removed connections", {
     event: "storage.migration.orphan-rejection.completed",
+  });
+}
+
+/**
+ * Version 9 -> 10: marks each staged action still pending ActionRecord.heldForReview. Before
+ * staging applied actions at once, such an action was waiting for a user's review, so it is held
+ * for one rather than applied, unreviewed, by the next apply on its connection.
+ */
+export function migrateToHeldStaging(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 9) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let record of Array.from(host.storage.actions.pendingByBranch.get(STAGING_KEY))) {
+      if (record.type === "action") host.storage.actions.put({...record, heldForReview: true});
+    }
+    host.storage.version.put(10);
+  });
+  host.logger.info("held the staged actions pending from before staging applied at once", {
+    event: "storage.migration.staging-hold.completed",
   });
 }

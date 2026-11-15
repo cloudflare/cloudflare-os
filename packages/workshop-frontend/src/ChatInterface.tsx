@@ -4641,8 +4641,9 @@ function ChatInterface({
   );
 
   // Outside any chat, the tray holds the requests no chat made that are waiting (while the
-  // workspace has read restricted data, or behind one that failed), and this bar under it accepts
-  // or discards them, as a chat's bar does the chat's.
+  // workspace has read restricted data, or behind one left from before they applied at once or
+  // one that failed), and this bar under it accepts or discards them, as a chat's bar does the
+  // chat's.
   const stagingBar = selectedChatId === null && trayPending.length > 0
     ? <StagedChangesBar overseer={overseer} count={trayPending.length} />
     : null;

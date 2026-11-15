@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApplyActionsResult, BranchView } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer";
 import type { UserDurableObject } from "../src/user";
-import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
+import {
+  OVERSEER_STORAGE_VERSION, migrateToHeldStaging,
+} from "../src/storage-schema/overseer-migrations";
 import {
   chatKeyPrefix, type ActionRecord, type GatekeeperCaller,
 } from "../src/storage-schema/overseer-storage";
@@ -113,6 +115,16 @@ const states = (impl: Impl, ...actions: number[]) =>
 // Staging holds what it is given while the workspace has read restricted data (see
 // OverseerImpl.#stagedRun), which tests of what a chat's accept does with staging rely on.
 const holdStaging = (impl: Impl) => impl.storage.containsRestrictedData.put(true);
+
+// Stands in for an upgrade from before staging applied at once: what `arrange` submits is pending
+// then, and the version-10 migration marks what of it is staged (see migrateToHeldStaging).
+async function upgradeWith(impl: Impl, arrange: () => Promise<unknown>) {
+  holdStaging(impl);
+  await arrange();
+  impl.storage.containsRestrictedData.put(false);
+  impl.storage.version.put(9);
+  migrateToHeldStaging(impl);
+}
 
 const enableRule = (impl: Impl) =>
   impl.storage.autoApproveTags.put({gatekeeperId: GK, actionKind: EDITS, enabledBy: RULE_OWNER});
@@ -570,6 +582,105 @@ describe("staging", () => {
       await expect(accept).resolves.toBe(true);
       expect(applied).toEqual([1, 2]);
       expect(record(impl, 1)).toMatchObject({autoApproved: true});
+    });
+  });
+});
+
+describe("staging pending from before it applied at once", () => {
+  const HOOK: GatekeeperCaller = {from: "hook", gadgetId: 9};
+
+  it("is held, with what follows it, through rules and auto-accepts, until staging is accepted",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await upgradeWith(impl, async () => {
+        await impl.submitAction(GK, 1, description(true), STAGED);
+        await impl.submitAction(GK, 2, description(true), HOOK);
+      });
+      enableRule(impl);
+      await impl.submitAction(GK, 3, description(true), STAGED);
+      await impl.drainAutoApprovals(GK);
+      await impl.submitAction(GK, 4, description(true), CHAT_A);
+      await impl.autoAcceptBranch(1);
+      await impl.submitAction(GK, 5, description(true, true), {from: "agent", chatId: 2});
+      expect(impl.consumeCapturedActions(2)?.awaitDecision).toBe(true);
+      expect(states(impl, 1, 2, 3, 4, 5)).toEqual(Array(5).fill("pending"));
+      expect(gatekeeper.applied).toEqual([]);
+    });
+    using overseer = await client();
+    expect((await overseer.getMetadata()).stagedActions).toBe(3);
+    expect(await overseer.acceptStagedActions()).toEqual({outcome: "applied"});
+    await visit(async impl => {
+      expect(gatekeeper.applied).toEqual([1, 2, 3]);
+      expect(states(impl, 1, 2, 3, 4)).toEqual(["approved", "approved", "approved", "pending"]);
+      expect(record(impl, 1)).toMatchObject({resolvedBy: USER, autoApproved: false});
+      await impl.submitAction(GK, 6, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(gatekeeper.applied).toEqual([1, 2, 3, 6]);
+    });
+  });
+
+  it("is rejected by a discard, after which staging applies at once again", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await upgradeWith(impl, () => impl.submitAction(GK, 1, description(), STAGED));
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
+    });
+    using overseer = await client();
+    await overseer.discardStagedActions();
+    await visit(async impl => {
+      expect(gatekeeper.rejected).toEqual([2, 1]);
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(gatekeeper.applied).toEqual([3]);
+    });
+  });
+
+  it("is released by denying it, and what followed it applies in order at the next apply",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    let held = 0;
+    await visit(async impl => {
+      await upgradeWith(impl, () => impl.submitAction(GK, 1, description(), STAGED));
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      held = record(impl, 1).id;
+    });
+    using overseer = await client();
+    await overseer.rejectAction(held);
+    await visit(async impl => {
+      expect(states(impl, 1, 2)).toEqual(["rejected", "pending"]);
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(gatekeeper.applied).toEqual([2, 3]);
+    });
+  });
+
+  it("is applied by accepting a chat on its connection, ahead of the chat's own", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await upgradeWith(impl, () => impl.submitAction(GK, 1, description(), STAGED));
+      await impl.submitAction(GK, 2, description(), CHAT_A);
+      await expect(impl.acceptBranch(1, impl.branchSnapshot(1), USER)).resolves.toBe(true);
+      expect(gatekeeper.applied).toEqual([1, 2]);
+      expect(record(impl, 1)).toMatchObject({resolvedBy: USER, autoApproved: false});
+    });
+  });
+
+  it("is nothing in a workspace that had none", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await upgradeWith(impl, () => impl.submitAction(GK, 1, description(), CHAT_A));
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2)).toEqual(["pending", "approved"]);
     });
   });
 });

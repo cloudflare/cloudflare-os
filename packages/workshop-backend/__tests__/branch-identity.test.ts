@@ -11,7 +11,8 @@ import {
   STAGING_KEY, makeOverseerStorage, type ActionRecord, type GatekeeperCaller,
 } from "../src/storage-schema/overseer-storage.js";
 import {
-  migrateToBranchIndex, migrateToRejectedOrphans, type OverseerMigrationHost,
+  migrateToBranchIndex, migrateToHeldStaging, migrateToRejectedOrphans,
+  type OverseerMigrationHost,
 } from "../src/storage-schema/overseer-migrations.js";
 import { createWorkshopLogger } from "../src/observability.js";
 import { makeMockStorage } from "./mock-storage.js";
@@ -107,5 +108,44 @@ describe("the orphan rejection migration", () => {
     expect([1, 2, 3].map(id => storage.actions.get(id)?.state))
         .toEqual(["pending", "rejected", "rejected"]);
     expect(idsOn(storage, "chat:3")).toEqual([1]);
+  });
+});
+
+describe("the staging hold migration", () => {
+  const migrate = (raw: ReturnType<typeof makeMockStorage>) => {
+    let storage = makeOverseerStorage(raw);
+    storage.version.put(9);
+    migrateToHeldStaging({
+      storage, ctx: {storage: raw}, logger: createWorkshopLogger("test.staging-hold-migration"),
+    } as OverseerMigrationHost);
+    expect(storage.version.get()).toBe(10);
+    return storage;
+  };
+
+  it("marks the staged actions still pending, and only those", () => {
+    let raw = makeMockStorage();
+    let storage = makeOverseerStorage(raw);
+    CALLERS.forEach(([caller], i) => storage.actions.put(pendingAction(i + 1, caller)));
+    storage.actions.put(pendingAction(7, {from: "user"}, "approved"));
+    storage.actions.put(pendingAction(8, {from: "hook", gadgetId: 9}, "rejected"));
+
+    migrate(raw);
+
+    let held = [...storage.actions.list()]
+        .filter(record => record.type === "action" && record.heldForReview);
+    expect(held.map(record => record.id)).toEqual([3, 4, 6]);
+    expect(idsOn(storage, STAGING_KEY)).toEqual([3, 4, 6]);
+  });
+
+  it("leaves a workspace with nothing staged as it was", () => {
+    let raw = makeMockStorage();
+    let storage = makeOverseerStorage(raw);
+    storage.actions.put(pendingAction(1, {from: "agent", chatId: 3}));
+    storage.actions.put(pendingAction(2, {from: "user"}, "approved"));
+    let before = [...storage.actions.list()];
+
+    migrate(raw);
+
+    expect([...storage.actions.list()]).toEqual(before);
   });
 });

@@ -753,8 +753,12 @@ is that **every chat is built on it.**
   automatically, along with whatever it reports could not apply without it: nobody is watching
   that apply, and nothing could be done with the action but deny it. The error is kept and a
   notification raised (decision 7).
-- **At upgrade.** Actions already pending with no chat are simply staged actions. Nothing a user
-  was never asked about is applied by the upgrade, because "apply at once" acts only at submit.
+- **At upgrade.** Actions already pending with no chat were waiting for a user's review, so they
+  are not applied unreviewed: a migration marks them, and staging holds each one, and what follows
+  it on its connection, until a user decides it. Accepting staging applies them, and discarding it
+  or denying one rejects them; no rule releases them. A chat's accept applies them along with the
+  chat's actions, as it does whatever else staging holds on its connections, since its action list
+  shows them.
 - **No restart.** A gadget does not restart when holding begins or ends: its sessions were
   submitting to staging throughout.
 - **Reviewing it.** The gadget view and the Activity page show `build` users what staging holds,

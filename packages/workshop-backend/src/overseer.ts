@@ -30,8 +30,9 @@ import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor }
 import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToBranchIndex, migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget,
-  migrateToRejectedOrphans, migrateToSpawnerBindings, migrateToWorkpieceTypes,
+  migrateToBranchIndex, migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToHeldStaging,
+  migrateToMultiGadget, migrateToRejectedOrphans, migrateToSpawnerBindings,
+  migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -1689,6 +1690,7 @@ class OverseerImpl implements AgentHooks {
       migrateToFrozenGadgetGrants(this);
       migrateToBranchIndex(this);
       migrateToRejectedOrphans(this);
+      migrateToHeldStaging(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -6159,8 +6161,10 @@ class OverseerImpl implements AgentHooks {
   // soon as they are submitted, whoever's code submitted them and whatever their autoApprovable
   // verdict, because the user chose to run that code outside any chat. Staging holds them only
   // while the workspace has read restricted data, where every action needs a user's review, until
-  // a user accepts them (acceptStagedActions), and behind one that failed to apply, which the next
-  // apply on the connection retries (see #applyStaged).
+  // a user accepts them (acceptStagedActions), behind one that was waiting for a user's review
+  // before staging applied at once (ActionRecord.heldForReview), until a user decides it, and
+  // behind one that failed to apply, which the next apply on the connection retries (see
+  // #applyStaged).
   //
   // Nothing applies while a decision on a chat's action there is in flight: staging goes first
   // when a list is taken, but an apply already under way is not overtaken (see
@@ -6174,7 +6178,7 @@ class OverseerImpl implements AgentHooks {
       return items;
     }
     for (let record of this.#branchList(gatekeeperId, null, true)) {
-      if (this.#deciding.has(record.id)) break;
+      if (this.#deciding.has(record.id) || record.heldForReview) break;
       items.push({record, resolvedBy: this.#owner, eligible: () => !restricted()});
     }
     return items;
