@@ -515,8 +515,9 @@ pane's More has View code to go there. It is the code as last kept, its head com
 commits, as commits never change), and only read: changes are asked for in a chat. `gadgetCode.ts`
 lists the files (plain, tested): its screen and server side first, each saying in a few words what
 it is to the gadget ("What it shows", "What it keeps and does"), then its README, the rest of its
-root, and folders. `GadgetCodeView` lays them down the side of the file shown, a row across the top
-on a narrow screen, with the arrow keys stepping through them. `CodeView` shows it with line numbers
+root, and folders. `CodeBrowser` lays them down the side of the file shown, by its own width
+(container queries, not the window's): where it is narrow, as beside a chat, the list is a drawer
+the file's header opens. The arrow keys step through them. `CodeView` shows it with line numbers
 that stay put as it scrolls across, never wrapped, plain at once and coloured once `highlightCode`
 (Lezer's parsers, imported only then) has read it, in the `--color-code-*` tokens of `theme.css`.
 Selecting it copies the code alone. Each switch of file is in place in the history.
@@ -577,8 +578,15 @@ asks, with a port it posts. Only messages from the pane's own frame are listened
 chat, a gadget shows that chat's proposed changes. It is loaded again when its code changes: a
 change to its files in that chat, the chat's changes being accepted or thrown away, or its head
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
-the one shown is connected: going to another tab and back starts it over. Worktrees only say what
-they are, for now.
+the one shown is connected: going to another tab and back starts it over.
+
+A worktree (a repository an agent checked out, `WorktreeSummary`) is called that, and shown as its
+code (`WorktreeView` over `CodeBrowser`, read by `aside/useWorktree`): as kept (`pinBase`), the
+files changed since it was made (`listChangedPaths` from `baseCommit`) marked with a brand dot and
+listed first, and above them a line of how many changed and its agent's commits (`getCommitLog`
+from `headCommit`, back to `baseCommit`), which open into a list. A gadget's file roles are left
+off, as a repository's `client.ts` is not a gadget's screen. A chat's Scratch space, the worktree
+its uploads go into, is not listed: what was sent there is under Files.
 
 A file is shown as what it is (`aside/filePreview.ts`, tested; `FileView` draws each kind): an
 image, a PDF in the browser's own viewer, audio, video, Markdown, and text or code as written.

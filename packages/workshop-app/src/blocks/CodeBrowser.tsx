@@ -1,7 +1,7 @@
-import { Fragment, useEffect, useState, type KeyboardEvent } from 'react'
+import { Fragment, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
   CheckIcon, CopyIcon, FileCodeIcon, FileCssIcon, FileHtmlIcon, FileImageIcon, FileJsIcon, FileMdIcon, FileTextIcon, FileTsIcon,
-  FolderSimpleIcon, WarningCircleIcon, XIcon,
+  FolderSimpleIcon, SidebarSimpleIcon, WarningCircleIcon, XIcon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
@@ -9,16 +9,18 @@ import { CodeView } from '@/components/CodeView'
 import { codeLanguage } from '@/files/codeLanguage'
 
 /** One file of the code, as listed. */
-export type GadgetCodeFile = {
+export type CodeBrowserFile = {
   path: string
   /** What it is to the gadget, in a few words: "What it shows". */
   role?: string
+  /** Changed since it was made, as a worktree's files can be: marked, and listed apart. */
+  changed?: true
 }
 
-export type GadgetCodeViewProps = {
+export type CodeBrowserProps = {
   files:
     | { status: 'loading' }
-    | { status: 'ready'; files: GadgetCodeFile[] }
+    | { status: 'ready'; files: CodeBrowserFile[] }
     | { status: 'failed'; message: string }
   /** The path of the file shown. */
   shown?: string
@@ -31,6 +33,10 @@ export type GadgetCodeViewProps = {
     | { status: 'failed'; message: string }
   /** Reads it all again, after it failed. */
   onRetry?: () => void
+  /** What it says when there are no files. */
+  empty?: ReactNode
+  /** Its size and frame: a card of its own unless told otherwise. */
+  className?: string
 }
 
 const ICONS = {
@@ -75,20 +81,31 @@ const CopyCode = ({ text, name }: { text: string; name: string }) => {
   )
 }
 
-const Notice = ({ children, role }: { children: React.ReactNode; role?: 'status' | 'alert' }) => (
+const Notice = ({ children, role }: { children: ReactNode; role?: 'status' | 'alert' }) => (
   <div role={role} className="grid h-full place-items-center p-8 text-center text-base/6 text-kumo-subtle">{children}</div>
 )
 
+// The mark of a file changed since it was made: the brand's colour, as small as a full stop.
+const ChangedMark = () => <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-kumo-brand" />
+
 /**
- * A gadget's code, to read: its files listed down the side, its screen and server side first, each
- * of those with what it is to the gadget in a few words, and grouped by folder; beside them the one
- * shown, its name, how long it is, Copy, and the code itself (`CodeView`). On a narrow screen the
- * files are a row across the top that scrolls sideways, by name alone. The arrow keys move through
- * the files, showing each.
+ * Code to read, file by file: the files listed down the side, each with what it is to the gadget
+ * in a few words where it says, those changed since it was made marked and first, the rest grouped
+ * by folder; beside them the one shown, its name, how long it is, Copy, and the code itself
+ * (`CodeView`). It lays itself out by its own width, not the window's: where it is narrow, as
+ * beside a chat, the list is a drawer the file's header opens over the code, which choosing a file
+ * closes. The arrow keys move through the files, showing each.
  */
-export const GadgetCodeView = ({ files, shown, onShow, file, onRetry }: GadgetCodeViewProps) => {
+export const CodeBrowser = ({ files, shown, onShow, file, onRetry, empty, className }: CodeBrowserProps) => {
   const list = files.status === 'ready' ? files.files : []
   const { folder, name } = split(shown ?? '')
+  const changedCount = list.filter((each) => each.changed).length
+  // The drawer, where there is no room for the list beside the code.
+  const [listing, setListing] = useState(false)
+  const show = (path: string) => {
+    onShow(path)
+    setListing(false)
+  }
 
   const step = (event: KeyboardEvent<HTMLElement>) => {
     const by = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key]
@@ -110,89 +127,120 @@ export const GadgetCodeView = ({ files, shown, onShow, file, onRetry }: GadgetCo
     )
   }
   if (files.status === 'ready' && list.length === 0) {
-    return <p className="rounded-3xl bg-kumo-tint px-5 py-4 text-base/6 text-kumo-subtle">It has no code yet. Once a chat writes some and it’s kept, it shows here.</p>
+    return <p className="rounded-3xl bg-kumo-tint px-5 py-4 text-base/6 text-kumo-subtle">{empty ?? 'There’s no code here yet.'}</p>
   }
 
-  // Files in a folder follow their folder's name; a run in one folder is headed once.
-  let lastFolder = ''
+  // Changed files lead under their own heading; the rest follow their folder's name, a run in one
+  // folder headed once.
+  let lastHeading = ''
   return (
-    <div className="flex h-[min(72vh,760px)] min-h-96 flex-col overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line md:flex-row">
-      <nav
-        aria-label="Files"
-        onKeyDown={step}
-        className="flex shrink-0 gap-1 overflow-x-auto border-b border-kumo-line bg-kumo-tint p-2 md:w-56 md:flex-col md:overflow-x-visible md:overflow-y-auto md:border-e md:border-b-0"
-      >
-        {files.status === 'loading' && <p role="status" className="appears-late px-3 py-2 text-sm text-kumo-subtle">Reading its files…</p>}
-        {list.map(({ path, role }) => {
-          const parts = split(path)
-          const heading = parts.folder && parts.folder !== lastFolder ? parts.folder : undefined
-          lastFolder = parts.folder
-          const Icon = iconOf(path)
-          const current = path === shown
-          return (
-            <Fragment key={path}>
-              {heading && (
-                <p className="hidden items-center gap-2 px-3 pt-3 pb-1 text-xs font-medium text-kumo-subtle md:flex">
-                  <FolderSimpleIcon aria-hidden="true" className="size-3.5" />
-                  {heading}
-                </p>
-              )}
-              <button
-                type="button"
-                data-path={path}
-                aria-current={current ? 'true' : undefined}
-                tabIndex={current || (!shown && path === list[0]?.path) ? 0 : -1}
-                title={path}
-                onClick={() => onShow(path)}
-                className={cn(
-                  'flex shrink-0 items-center gap-2.5 rounded-xl px-3 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring md:py-2',
-                  parts.folder && 'md:ps-5',
-                  current ? 'bg-kumo-base text-kumo-default shadow-xs ring-1 ring-kumo-line' : 'text-kumo-default hover:bg-kumo-fill',
-                )}
-              >
-                <Icon aria-hidden="true" className={cn('size-4 shrink-0', current ? 'text-kumo-default' : 'text-kumo-subtle')} />
-                <span className="flex min-w-0 flex-col">
-                  <span className="truncate text-sm/5 whitespace-nowrap">{parts.name}</span>
-                  {role && <span className="hidden truncate text-xs/4 text-kumo-subtle md:block">{role}</span>}
-                </span>
-              </button>
-            </Fragment>
-          )
-        })}
-      </nav>
-      <section aria-label={shown ? `${shown}` : 'File'} className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {shown && (
-          <header className="flex h-12 shrink-0 items-center gap-3 border-b border-kumo-line ps-4 pe-1.5">
-            <h3 className="min-w-0 flex-1 truncate text-sm/5">
-              {folder && <span className="text-kumo-subtle">{folder}/</span>}
-              <span className="font-medium text-kumo-default">{name}</span>
-            </h3>
-            {file.status === 'text' && (
-              <>
-                <span className="shrink-0 text-sm text-kumo-subtle tabular-nums">{LINES.format(file.text.split('\n').length - (file.text.endsWith('\n') ? 1 : 0))} lines</span>
-                <CopyCode text={file.text} name={name} />
-              </>
-            )}
-          </header>
-        )}
-        <div className="min-h-0 flex-1 bg-kumo-base">
-          {file.status === 'text' ? (
-            // Keyed by the file, so that each opens at its top.
-            <CodeView key={shown} text={file.text} language={shown ? codeLanguage(shown) : undefined} label={shown ?? 'Code'} className="h-full bg-kumo-base" />
-          ) : file.status === 'other' ? (
-            <Notice>{file.message}</Notice>
-          ) : file.status === 'failed' ? (
-            <Notice role="alert">
-              <span className="flex flex-col items-center gap-3">
-                Couldn’t read {name || 'it'}: {file.message}
-                {onRetry && <Button onClick={onRetry}>Try again</Button>}
-              </span>
-            </Notice>
-          ) : (
-            <Notice role="status"><span className="appears-late">Reading {name || 'it'}…</span></Notice>
+    <div className={cn('@container flex h-[min(72vh,760px)] min-h-96 overflow-hidden rounded-3xl bg-kumo-base ring-1 ring-kumo-line', className)}>
+      <div className="flex min-w-0 flex-1">
+        <nav
+          aria-label="Files"
+          onKeyDown={step}
+          className={cn(
+            'shrink-0 flex-col gap-0.5 overflow-y-auto bg-kumo-tint p-2',
+            listing ? 'flex w-full' : 'hidden',
+            '@xl:flex @xl:w-60 @xl:border-e @xl:border-kumo-line',
           )}
-        </div>
-      </section>
+        >
+          {listing && (
+            <div className="flex items-center justify-between ps-3 pb-1 @xl:hidden">
+              <span className="text-sm font-medium text-kumo-default">{LINES.format(list.length)} files</span>
+              <Button variant="ghost" icon={XIcon} aria-label="Back to the code" onClick={() => setListing(false)} />
+            </div>
+          )}
+          {files.status === 'loading' && <p role="status" className="appears-late px-3 py-2 text-sm text-kumo-subtle">Reading its files…</p>}
+          {list.map(({ path, role, changed }) => {
+            const parts = split(path)
+            const group = changed ? 'changed' : parts.folder
+            const heading = group && group !== lastHeading ? group : undefined
+            // After the changed ones, the first at the root starts a group of its own.
+            const unchangedStart = !changed && lastHeading === 'changed' && !parts.folder
+            lastHeading = group
+            const Icon = iconOf(path)
+            const current = path === shown
+            return (
+              <Fragment key={path}>
+                {heading === 'changed' ? (
+                  <p className="flex items-center gap-2 px-3 pt-1 pb-1 text-xs font-medium text-kumo-subtle">
+                    <ChangedMark />
+                    Changed · {changedCount}
+                  </p>
+                ) : heading ? (
+                  <p className="flex items-center gap-2 px-3 pt-3 pb-1 text-xs font-medium text-kumo-subtle">
+                    <FolderSimpleIcon aria-hidden="true" className="size-3.5" />
+                    {heading}
+                  </p>
+                ) : unchangedStart ? (
+                  <p className="px-3 pt-3 pb-1 text-xs font-medium text-kumo-subtle">Everything else</p>
+                ) : null}
+                <button
+                  type="button"
+                  data-path={path}
+                  aria-current={current ? 'true' : undefined}
+                  tabIndex={current || (!shown && path === list[0]?.path) ? 0 : -1}
+                  title={path}
+                  onClick={() => show(path)}
+                  className={cn(
+                    'flex shrink-0 items-center gap-2.5 rounded-xl px-3 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring',
+                    parts.folder && !changed && 'ps-5',
+                    current ? 'bg-kumo-base text-kumo-default shadow-xs ring-1 ring-kumo-line' : 'text-kumo-default hover:bg-kumo-fill',
+                  )}
+                >
+                  <Icon aria-hidden="true" className={cn('size-4 shrink-0', current ? 'text-kumo-default' : 'text-kumo-subtle')} />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm/5 whitespace-nowrap">{parts.name}</span>
+                    {role ? <span className="truncate text-xs/4 text-kumo-subtle">{role}</span>
+                      : changed && parts.folder ? <span className="truncate text-xs/4 text-kumo-subtle">{parts.folder}</span> : null}
+                  </span>
+                </button>
+              </Fragment>
+            )
+          })}
+        </nav>
+        <section aria-label={shown ?? 'File'} className={cn('min-h-0 min-w-0 flex-1 flex-col', listing ? 'hidden @xl:flex' : 'flex')}>
+          {shown && (
+            <header className="flex h-12 shrink-0 items-center gap-2 border-b border-kumo-line ps-1.5 pe-1.5 @xl:ps-4">
+              {/* Where the list is not beside the code, the way to it. */}
+              <span className="@xl:hidden">
+                <Button variant="ghost" icon={SidebarSimpleIcon} aria-label={`All ${LINES.format(list.length)} files`} title="Files" aria-expanded={listing} onClick={() => setListing(true)} />
+              </span>
+              <h3 className="flex min-w-0 flex-1 items-center gap-2 text-sm/5">
+                {list.find((each) => each.path === shown)?.changed && <ChangedMark />}
+                <span className="truncate">
+                  {folder && <span className="text-kumo-subtle">{folder}/</span>}
+                  <span className="font-medium text-kumo-default">{name}</span>
+                </span>
+              </h3>
+              {file.status === 'text' && (
+                <>
+                  <span className="hidden shrink-0 text-sm text-kumo-subtle tabular-nums @md:inline">{LINES.format(file.text.split('\n').length - (file.text.endsWith('\n') ? 1 : 0))} lines</span>
+                  <CopyCode text={file.text} name={name} />
+                </>
+              )}
+            </header>
+          )}
+          <div className="min-h-0 flex-1 bg-kumo-base">
+            {file.status === 'text' ? (
+              // Keyed by the file, so that each opens at its top.
+              <CodeView key={shown} text={file.text} language={shown ? codeLanguage(shown) : undefined} label={shown ?? 'Code'} className="h-full bg-kumo-base" />
+            ) : file.status === 'other' ? (
+              <Notice>{file.message}</Notice>
+            ) : file.status === 'failed' ? (
+              <Notice role="alert">
+                <span className="flex flex-col items-center gap-3">
+                  Couldn’t read {name || 'it'}: {file.message}
+                  {onRetry && <Button onClick={onRetry}>Try again</Button>}
+                </span>
+              </Notice>
+            ) : (
+              <Notice role="status"><span className="appears-late">Reading {name || 'it'}…</span></Notice>
+            )}
+          </div>
+        </section>
+      </div>
     </div>
   )
 }

@@ -464,3 +464,16 @@ made thing says it at once. But "Or start from a blueprint" over cropped crumbs 
 featured and then All blueprints as a card of its own, a fan of their pictures that spreads when
 pointed at; the cards come in a beat apart.
 
+## 17. Worktrees and the scratch space
+
+A worktree keeps its name: whoever works with one knows the word, and nothing else says it as
+well. It opens beside its chat as code, the Code tab's browser with what the agent did put first:
+how many files changed and its commits in a line, the changed files marked and leading the list.
+Only what is kept shows; the line under the summary says what the chat is changing now shows once
+kept. In a pane too narrow for the list beside the code, the list is a drawer from the file's
+header, so the code keeps the width.
+
+The scratch space is not a place to show. It is where a chat's uploads are put for the agent, and
+what was sent is already under Files, in the message and the Library. Files the agent makes there
+should come to the chat as files of their own, as a Google Doc it made does; that is still to do.
+

@@ -1,4 +1,4 @@
-import type { TreeNode } from '@gadgets/workshop-shared/api'
+import type { CommitInfo, TreeNode } from '@gadgets/workshop-shared/api'
 
 /** One file of a gadget's code, as its Code tab lists it. */
 export type CodeFile = {
@@ -8,6 +8,8 @@ export type CodeFile = {
   kind: 'file' | 'executable' | 'symlink' | 'submodule'
   /** What it is to the gadget, in a few words, for the files every gadget has. */
   role?: string
+  /** Changed since it was made, for a worktree. */
+  changed?: true
 }
 
 // The files every gadget is made of, by name without extension, and what each is to it.
@@ -55,3 +57,21 @@ export const codeFiles = (tree: readonly TreeNode[]): CodeFile[] => {
 /** The file shown first: the one asked for, if it is there, else the first listed. */
 export const shownFile = (files: readonly CodeFile[], asked: string | undefined) =>
   files.find(({ path }) => path === asked) ?? files[0]
+
+/**
+ * A worktree's files, the ones changed since it was made (`changed`, from `listChangedPaths`)
+ * marked and first, each group in the order given.
+ */
+export const withChanged = (files: readonly CodeFile[], changed: ReadonlySet<string>): CodeFile[] => {
+  const marked = files.map((file) => (changed.has(file.path) ? { ...file, changed: true as const } : file))
+  return [...marked.filter((file) => file.changed), ...marked.filter((file) => !file.changed)]
+}
+
+/**
+ * The commits made since `baseCommit`, newest first, from a log read back from the head
+ * (`getCommitLog`): every one up to `baseCommit`, which is left out, as it is where it started.
+ */
+export const commitsSince = (log: readonly CommitInfo[], baseCommit: string): CommitInfo[] => {
+  const at = log.findIndex(({ oid }) => oid === baseCommit)
+  return at === -1 ? [...log] : log.slice(0, at)
+}

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { TreeNode } from '@gadgets/workshop-shared/api'
 import { codeLanguage } from '@/files/codeLanguage'
 import { highlightLines } from '@/components/highlightCode'
-import { codeFiles, shownFile } from './gadgetCode'
+import { codeFiles, commitsSince, shownFile, withChanged } from './gadgetCode'
 
 const file = (name: string): TreeNode => ({ name, kind: 'file' })
 
@@ -60,5 +60,24 @@ describe('highlightLines', () => {
     expect(lines[0]).toContainEqual({ text: '1', kind: 'number' })
     expect(lines[0]).toContainEqual({ text: '// one', kind: 'comment' })
     expect(lines[1]).toContainEqual({ text: '"two"', kind: 'string' })
+  })
+})
+
+describe('withChanged', () => {
+  it('marks what changed and puts it first, keeping each group’s order', () => {
+    const files = codeFiles([file('a.ts'), file('b.ts'), file('c.ts')])
+    expect(withChanged(files, new Set(['c.ts', 'a.ts']))).toEqual([
+      { path: 'a.ts', kind: 'file', changed: true },
+      { path: 'c.ts', kind: 'file', changed: true },
+      { path: 'b.ts', kind: 'file' },
+    ])
+  })
+})
+
+describe('commitsSince', () => {
+  const commit = (oid: string) => ({ oid, parents: [], message: oid, author: { name: 'A', email: 'a@x' }, timestamp: new Date(0) })
+  it('keeps the commits made after the base, leaving the base out', () => {
+    expect(commitsSince([commit('c'), commit('b'), commit('a')], 'a').map(({ oid }) => oid)).toEqual(['c', 'b'])
+    expect(commitsSince([commit('a')], 'a')).toEqual([])
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FileAtCommit } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import { codeFiles, shownFile, type CodeFile } from './gadgetCode'
@@ -33,9 +33,9 @@ const keep = <T,>(cache: Map<string, T>, key: string, read: () => T) => {
   return made
 }
 
-const stateOf = (file: CodeFile, read: FileAtCommit | undefined): CodeFileState => {
-  if (file.kind === 'symlink') return { status: 'other', message: 'It’s a link to another file, so there’s nothing in it to show.' }
-  if (file.kind === 'submodule') return { status: 'other', message: 'It’s another project’s code, kept apart, so there’s nothing here to show.' }
+const stateOf = (kind: CodeFile['kind'], read: FileAtCommit | undefined): CodeFileState => {
+  if (kind === 'symlink') return { status: 'other', message: 'It’s a link to another file, so there’s nothing in it to show.' }
+  if (kind === 'submodule') return { status: 'other', message: 'It’s another project’s code, kept apart, so there’s nothing here to show.' }
   switch (read?.kind) {
     case 'text': return { status: 'text', text: read.text }
     case 'blob': return { status: 'other', message: 'It isn’t text, so it isn’t shown here.' }
@@ -48,16 +48,26 @@ const stateOf = (file: CodeFile, read: FileAtCommit | undefined): CodeFileState 
  * A gadget's code as it was last kept (`commitId`, its head; `Overseer.listTree` and
  * `readFilesAtCommit`): its files, and the text of the one shown, which is `asked` when that is
  * among them, else the first, and a way to read again what failed. Nothing is read until
- * `active`, or while the commit is unknown.
+ * `active`, or while the commit is unknown. `arrange`, which should keep its identity between
+ * renders, orders and marks the files listed, as a worktree's are by what changed.
  */
-export const useGadgetCode = (workspaceId: string, commitId: string | undefined, asked: string | undefined, active: boolean) => {
+export const useGadgetCode = (
+  workspaceId: string,
+  commitId: string | undefined,
+  asked: string | undefined,
+  active: boolean,
+  arrange?: (files: CodeFile[]) => CodeFile[],
+) => {
   const { api, reconnecting } = useApi()
   const [files, setFiles] = useState<{ commitId?: string; state: CodeFilesState }>({ state: { status: 'loading' } })
   const [text, setText] = useState<{ key?: string; state: CodeFileState }>({ state: { status: 'loading' } })
   // Bumped to read again what failed, which the caches have let go of.
   const [attempt, setAttempt] = useState(0)
-  const ready = files.commitId === commitId && files.state.status === 'ready' ? files.state.files : undefined
+  const read = files.commitId === commitId && files.state.status === 'ready' ? files.state.files : undefined
+  const ready = useMemo(() => (read && arrange ? arrange(read) : read), [read, arrange])
   const shown = ready && shownFile(ready, asked)
+  const shownPath = shown?.path
+  const shownKind = shown?.kind
 
   useEffect(() => {
     if (!active || !commitId || reconnecting) return
@@ -77,27 +87,28 @@ export const useGadgetCode = (workspaceId: string, commitId: string | undefined,
   }, [api, reconnecting, workspaceId, commitId, active, attempt])
 
   useEffect(() => {
-    if (!active || !commitId || !shown || reconnecting) return
-    const key = `${commitId}\n${shown.path}`
+    if (!active || !commitId || shownPath === undefined || shownKind === undefined || reconnecting) return
+    const key = `${commitId}\n${shownPath}`
     let current = true
     let overseer: ReturnType<typeof api.openWorkspace> | undefined
-    const reading = shown.kind === 'file' || shown.kind === 'executable'
+    const reading = shownKind === 'file' || shownKind === 'executable'
       ? keep(texts, key, () => {
         overseer = api.openWorkspace(workspaceId)
-        return overseer.readFilesAtCommit(commitId, [shown.path]).then((entries) => entries.find(([path]) => path === shown.path)?.[1])
+        return overseer.readFilesAtCommit(commitId, [shownPath]).then((entries) => entries.find(([path]) => path === shownPath)?.[1])
       })
       : Promise.resolve(undefined)
     reading.then(
-      (read) => current && setText({ key, state: stateOf(shown, read) }),
+      (read) => current && setText({ key, state: stateOf(shownKind, read) }),
       (error: unknown) => {
         texts.delete(key)
         if (current) setText({ key, state: { status: 'failed', message: messageOf(error) } })
       },
     ).finally(() => overseer?.[Symbol.dispose]())
     return () => { current = false }
-  }, [api, reconnecting, workspaceId, commitId, shown, active, attempt])
+  }, [api, reconnecting, workspaceId, commitId, shownPath, shownKind, active, attempt])
 
-  const filesState: CodeFilesState = !commitId ? { status: 'loading' } : files.commitId === commitId ? files.state : { status: 'loading' }
+  const filesState: CodeFilesState = !commitId || files.commitId !== commitId ? { status: 'loading' }
+    : ready ? { status: 'ready', files: ready } : files.state
   const textState: CodeFileState = shown && text.key === `${commitId}\n${shown.path}` ? text.state : { status: 'loading' }
   const retry = () => {
     setFiles({ state: { status: 'loading' } })

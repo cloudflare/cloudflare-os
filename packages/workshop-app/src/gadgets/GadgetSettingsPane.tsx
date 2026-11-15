@@ -3,7 +3,7 @@ import { CaretLeftIcon, ExportIcon, PlusIcon, ShapesIcon, TrashIcon, UserCircleG
 import { ofGadget } from '@/automations/automations'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BindingRow } from '@/blocks/BindingRow'
-import { GadgetCodeView } from '@/blocks/GadgetCodeView'
+import { CodeBrowser } from '@/blocks/CodeBrowser'
 import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -237,7 +237,7 @@ export const GadgetSettingsPane = ({
             {readsCode && (
               // Wider than the settings, as code is: a line of it reads whole.
               <Tabs.Panel value="code" className="flex flex-col gap-3 lg:-mx-24">
-                <GadgetCodeView files={code.files} shown={code.shown} onShow={onShowFile} file={code.file} onRetry={code.retry} />
+                <CodeBrowser files={code.files} shown={code.shown} onShow={onShowFile} file={code.file} onRetry={code.retry} empty="It has no code yet. Once a chat writes some and it’s kept, it shows here." />
                 <p className="px-4 text-sm/5 text-kumo-subtle">
                   The code as it was last kept. To change it, ask in a chat: what the agent writes shows here once it’s kept.
                 </p>
