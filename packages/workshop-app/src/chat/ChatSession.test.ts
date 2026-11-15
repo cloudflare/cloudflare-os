@@ -1037,6 +1037,24 @@ describe('ChatSession', () => {
       expect(fake.mergeChanges).not.toHaveBeenCalled()
     })
 
+    it('keeps them after another chat’s, bringing in what that one kept when it merges cleanly', async () => {
+      const { fake, endTurn } = await workingOn([changes(1)])
+      fake.mergeChanges.mockResolvedValueOnce({ outcome: 'stale' })
+      await endTurn()
+      await vi.waitFor(() => expect(fake.mergeChanges).toHaveBeenCalledTimes(2))
+      expect(fake.updateChatFromMainline).toHaveBeenCalledExactlyOnceWith(0)
+    })
+
+    it('asks when what another chat kept conflicts with them, naming the files', async () => {
+      const { fake, session, endTurn } = await workingOn([changes(1)])
+      fake.mergeChanges.mockResolvedValueOnce({ outcome: 'stale' })
+      fake.updateChatFromMainline.mockResolvedValueOnce({ conflictPaths: ['TRACKER/client.js'] })
+      await endTurn()
+      await vi.waitFor(() => expect(ready(session).keep?.changes.conflicts).toEqual(['TRACKER/client.js']), { timeout: 3000 })
+      expect(ready(session).keep?.changes.mainline).toBe(true)
+      expect(fake.mergeChanges).toHaveBeenCalledOnce()
+    })
+
     it('reports an accept that failed', async () => {
       const { fake, session, endTurn } = await workingOn([changes(1)])
       fake.mergeChanges.mockRejectedValueOnce(new Error('Gadget is locked'))

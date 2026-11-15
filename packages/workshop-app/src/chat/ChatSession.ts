@@ -26,7 +26,7 @@ import { ActionUpdates, ChatSubscriber, GadgetTitles, type ChatEvents, type Gadg
  */
 export type KeepAsk = {
   changes: ProposedChanges
-  /** Someone else is in the workspace, or another chat has changes waiting to the same gadgets. */
+  /** Someone else is in the workspace, whose work in progress keeping them could overtake. */
   shared: boolean
 }
 
@@ -926,7 +926,7 @@ export class ChatSession {
       const [chats, collaborators] = await Promise.all([overseer.listChats(), overseer.listCollaborators()])
       chat = chats.find(({ id }) => id === this.chatId)
       if (!chat?.proposedChangeWorkpieces?.length || chat.activeAgent) return
-      alone = acceptsAlone(chat, chats, collaborators.length > 0)
+      alone = acceptsAlone(chat, collaborators.length > 0)
     } catch {
       // What cannot be checked is left proposed, and asked about.
       alone = false
@@ -938,12 +938,23 @@ export class ChatSession {
     // have it take that turn's changes unchecked.
     if (run !== this.#run || this.#agentActive) return
     const messages = [...this.#messages.values()]
-    const ask = () => this.#askToKeep({ changes: proposedChanges(messages, epoch), shared: !alone })
+    // `conflicts`: those bringing in what was kept elsewhere left, which the message recording it
+    // may not have brought yet.
+    const ask = (conflicts: string[] = []) => {
+      const changes = proposedChanges([...this.#messages.values()], epoch)
+      const brought = conflicts.length ? { ...changes, mainline: true, conflicts: [...new Set([...changes.conflicts, ...conflicts])] } : changes
+      this.#askToKeep({ changes: brought, shared: !alone })
+    }
     if (!alone || !complete || !proposesOnlyCode(messages, epoch)) return ask()
     try {
-      // A stale outcome (another chat's accept landed first) leaves the changes proposed.
-      const { outcome } = await overseer.mergeChanges(this.chatId)
-      if (outcome === 'stale' && run === this.#run) ask()
+      if ((await overseer.mergeChanges(this.chatId)).outcome === 'merged' || run !== this.#run || this.#agentActive) return
+      // Another chat's changes to these gadgets were kept first. What it kept is brought in, as
+      // keeping by hand does, and these are kept on top of it if that left no conflicts.
+      const { conflictPaths } = await overseer.updateChatFromMainline(this.chatId)
+      if (run !== this.#run || this.#agentActive) return
+      if (conflictPaths.length) return ask(conflictPaths)
+      // Stale again: yet another was kept meanwhile, which is left to the user.
+      if ((await overseer.mergeChanges(this.chatId)).outcome === 'stale' && run === this.#run) ask()
     } catch (error) {
       if (run !== this.#run) return
       this.#actionError = `The changes couldn’t be accepted: ${messageOf(error)}`

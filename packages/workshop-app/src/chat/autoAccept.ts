@@ -4,16 +4,13 @@ type Changes = Extract<AiChatMessage, { type: 'changes' }>
 
 /**
  * Whether a chat's changes can be accepted without anyone asking, as far as the workspace goes:
- * it has some, its agent is not working, and the viewer is the only one working on what they
- * change. Nobody else is in the workspace (`shared`), and no other chat has changes waiting to
- * the same workpieces, which accepting these would leave behind.
+ * it has some, its agent is not working, and nobody else is in the workspace (`shared`), whose work
+ * in progress keeping them could overtake. Another chat with changes waiting to the same gadgets
+ * does not stop it: chats are kept as they finish, and a chat kept after another brings in what
+ * that one kept first (see `ChatSession`).
  */
-export const acceptsAlone = (chat: AiChatMetadata, chats: readonly AiChatMetadata[], shared: boolean) => {
-  const proposed = chat.proposedChangeWorkpieces ?? []
-  if (chat.activeAgent || proposed.length === 0 || shared) return false
-  return !chats.some(({ id, proposedChangeWorkpieces = [] }) =>
-    id !== chat.id && proposedChangeWorkpieces.some((workpiece) => proposed.includes(workpiece)))
-}
+export const acceptsAlone = (chat: AiChatMetadata, shared: boolean) =>
+  !chat.activeAgent && (chat.proposedChangeWorkpieces?.length ?? 0) > 0 && !shared
 
 /**
  * The batches of changes a chat still proposes: those after the merge that opened its epoch

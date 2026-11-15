@@ -336,3 +336,46 @@ sharing takes that responsibility, knowingly.
   to start a chat with a draft, which the app does not have yet.
 
 No kernel change.
+
+## 13. Accepting changes, and changes that go ahead on their own
+
+Two different things wait for the user, and the design keeps them apart because they carry
+different risks:
+
+- **A chat's changes to its gadgets** (code) are like a git worktree: proposed in the chat, then
+  kept into what everyone uses. Undoable, and invisible to anyone outside the workspace.
+- **A connection's changes to the world** (a Doc edited, an email sent) are approvals, one action
+  at a time. Some cannot be taken back.
+
+**Keeping a chat's changes: the default is to keep them, without asking.** Already the behaviour
+(`chat/autoAccept.ts`), and now simpler: chats are kept as they finish. The old rule held a chat
+back whenever another chat had changes waiting to the same gadget, which meant a person with two
+chats on one tracker was asked about both, for no risk to either. Now the first to finish is kept;
+the second, when its turn ends, brings in what the first kept and is kept on top of it if that
+merges cleanly. Only three things still ask: a conflict (named by file, "Look over the conflicts
+before keeping them"); a binding, a blueprint update or a bring-in the user asked for, which are
+theirs to decide; and a workspace someone else is in, whose work in progress keeping could
+overtake. A non-technical user never sees the words merge, branch or worktree. Undo stays one
+click, on the answer that ended the turn.
+
+Not done, and why: letting the agent resolve conflicts on its own. It can (the markers are in its
+files), but the user then keeps code neither of them looked at. The question names the files, and
+"ask the agent to combine them" is one message away. Worth revisiting once there is a way to start
+a turn with a drafted message.
+
+**Changes through a connection: ask first, unless the user said otherwise, in one place.** The
+kernel has three ways for an action to go ahead unasked: a rule per kind of change on a connection
+in a workspace (`setAutoApprovedActionKind`), a chat in Auto, and a gadget in Auto. Only the first
+is surfaced: "Always approve" on a request, and now each account's page (§14), where every rule can
+be seen and taken back. A chat's or a gadget's Auto is not offered: it is a second and third place
+to look when something went ahead unexpectedly, and a rule already covers "stop asking me about
+Doc edits". Every rule is still off while a workspace has read sensitive data, which the page says.
+
+**Proposed next (kernel): a default per account.** "Automatic for Doc edits" is a choice about the
+user's Google account more than about one workspace. To make it one: record which account a
+connection came through (`GatekeeperCreationSpec.accountId`, as ambient connections already do),
+keep a per-account default set of kinds in the user's object, and seed a workspace's rules from it
+when the user connects that account there. The page's groups would then read "New workspaces: Ask
+first / Automatic" above the per-workspace overrides. Not built: it adds a mechanism beside the
+rules, and changes who a rule in a shared workspace belongs to, which wants a kernel reviewer's eye first.
+

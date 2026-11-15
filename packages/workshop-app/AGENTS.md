@@ -130,11 +130,13 @@ changes (saved edits, accepted, discarded) follows the artefacts, as a divider. 
 when adding a kind.
 
 A chat's changes are accepted on their own once its turn ends (`ChatSession`, rules in
-`chat/autoAccept.ts`), so the agent's code takes effect as it is written, but only while the
-viewer is the only one working on them: nobody else is in the workspace, and no other chat has
-changes waiting to the same gadgets. Only code is: a binding the chat proposes is the user's to
-grant, and a blueprint's update or the latest accepted changes brought into the chat were asked
-for to be looked at first. Those stay proposed. The viewer's own accepts are not marked in the
+`chat/autoAccept.ts`), so the agent's code takes effect as it is written, but only while nobody
+else is in the workspace, whose work in progress it could overtake. Chats are worktrees, kept as
+they finish: another chat with changes waiting to the same gadgets does not hold one back, and a
+chat kept after another brings in what that one kept (`updateChatFromMainline`) and is kept on top
+of it when that merges cleanly, else asks, naming the files that conflict. Only code is kept: a
+binding the chat proposes is the user's to grant, and a blueprint's update or the latest accepted
+changes the user brought into the chat were asked for to be looked at first. Those stay proposed. The viewer's own accepts are not marked in the
 conversation, as they are what is expected; someone else's are.
 
 What cannot be kept on its own is asked about once the turn has ended (`ChatSnapshot.keep`,

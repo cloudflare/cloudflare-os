@@ -29,6 +29,6 @@ export const keepReason = ({ changes, shared }: KeepAsk): string => {
   if (changes.conflicts.length) return 'Look over the conflicts before keeping them.'
   if (changes.bindings.length) return 'What a gadget can reach is yours to decide.'
   if (changes.updates.length || changes.mainline) return 'An update waits for you to look it over first.'
-  if (shared) return 'Others work on these gadgets too, so changes wait for you.'
+  if (shared) return 'Others work in this workspace too, so changes wait for you.'
   return 'They couldn’t be kept on their own.'
 }
