@@ -8,9 +8,13 @@ import type * as Kumo from '@cloudflare/kumo'
 import type * as Router from '@tanstack/react-router'
 import { DEFAULT_SITE_NAME, type AdminApi, type AdminResourceVendor, type AdminSettingsView, type AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import type * as ServerConfigContext from './ServerConfigContext'
+import type * as AuditPanel from './features/admin-audit/AdminAuditPanel'
+import type * as ReportsPanel from './features/admin-reports/AdminReportsPanel'
 import type * as PasskeysCard from './features/admin-writes/AdminPasskeysCard'
 
 type CardProps = ComponentProps<typeof PasskeysCard.AdminPasskeysCard>
+type AuditPanelProps = ComponentProps<typeof AuditPanel.AdminAuditPanel>
+type ReportsPanelProps = ComponentProps<typeof ReportsPanel.AdminReportsPanel>
 
 const mocks = vi.hoisted(() => {
   // The AdminApi the page is handed. The passkeys card is replaced below and calls nothing, so a
@@ -31,10 +35,14 @@ const mocks = vi.hoisted(() => {
       whoami: vi.fn<() => Promise<AiChatAuthorInfo>>(async () => ({ type: 'user', id: 'alice', name: 'Alice' })),
       getAdminApi: vi.fn<() => Promise<typeof admin>>(async () => admin),
     },
-    search: { tab: 'access' },
+    search: { tab: 'access' } as Record<string, unknown>,
     addToast: vi.fn<(toast: { title: string; variant: string }) => void>(),
+    navigate: vi.fn<(to: unknown) => Promise<void>>(async () => {}),
     // What the page handed the passkeys card, one entry for each time it rendered.
     cardProps: [] as unknown[],
+    // What the page last handed the Audit panel and the Reports panel.
+    auditProps: undefined as unknown,
+    reportsProps: undefined as unknown,
   }
 })
 
@@ -50,7 +58,7 @@ vi.mock('./AuthContext', () => ({
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof Router>()),
   useSearch: () => mocks.search,
-  useNavigate: () => vi.fn<() => Promise<void>>(),
+  useNavigate: () => mocks.navigate,
 }))
 
 // A name the settings do not hold, so that a card named after it took the shell's name rather than
@@ -66,6 +74,20 @@ vi.mock('./features/admin-writes/AdminPasskeysCard', () => ({
   AdminPasskeysCard: (props: CardProps) => {
     mocks.cardProps.push(props)
     return <div data-testid="passkeys-card" />
+  },
+}))
+
+vi.mock('./features/admin-audit/AdminAuditPanel', () => ({
+  AdminAuditPanel: (props: AuditPanelProps) => {
+    mocks.auditProps = props
+    return <div data-testid="audit-panel" />
+  },
+}))
+
+vi.mock('./features/admin-reports/AdminReportsPanel', () => ({
+  AdminReportsPanel: (props: ReportsPanelProps) => {
+    mocks.reportsProps = props
+    return <div data-testid="reports-panel" />
   },
 }))
 
@@ -108,37 +130,39 @@ const PASSKEY_METHODS = [
 const cards = () => [...document.querySelectorAll('[data-testid="passkeys-card"]')]
 const lastCardProps = () => mocks.cardProps.at(-1)
 
+let root: Root | undefined
+let container: HTMLDivElement | undefined
+
+// Renders the page and waits for its settings and the admin's profile.
+const renderPage = async (view: Partial<AdminSettingsView>) => {
+  mocks.admin.getSettings.mockResolvedValue(view)
+  container = document.body.appendChild(document.createElement('div'))
+  root = createRoot(container)
+  await act(async () => {
+    root!.render(<AdminPage />)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  return container
+}
+
+beforeEach(() => {
+  // The page's tabs measure themselves with one, and jsdom has none.
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+})
+
+afterEach(() => {
+  act(() => root?.unmount())
+  container?.remove()
+  mocks.search = { tab: 'access' }
+  mocks.cardProps.length = 0
+  mocks.auditProps = undefined
+  mocks.reportsProps = undefined
+  vi.clearAllMocks()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
 describe('AdminPage passkeys card', () => {
-  let root: Root | undefined
-  let container: HTMLDivElement | undefined
-
-  // Renders the page and waits for its settings and the admin's profile.
-  const renderPage = async (view: Partial<AdminSettingsView>) => {
-    mocks.admin.getSettings.mockResolvedValue(view)
-    container = document.body.appendChild(document.createElement('div'))
-    root = createRoot(container)
-    await act(async () => {
-      root!.render(<AdminPage />)
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-    return container
-  }
-
-  beforeEach(() => {
-    // The page's tabs measure themselves with one, and jsdom has none.
-    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
-  })
-
-  afterEach(() => {
-    act(() => root?.unmount())
-    container?.remove()
-    mocks.search.tab = 'access'
-    mocks.cardProps.length = 0
-    vi.clearAllMocks()
-    vi.restoreAllMocks()
-    vi.unstubAllGlobals()
-  })
-
   it('mounts the card after the user-search card, for the signed-in admin, while writes are on', async () => {
     const page = await renderPage(settingsView({ adminWorkspaceWrites: true }))
 
@@ -176,7 +200,7 @@ describe('AdminPage passkeys card', () => {
   })
 
   it('keeps the card to the Access tab', async () => {
-    mocks.search.tab = 'general'
+    mocks.search = { tab: 'general' }
 
     await renderPage(settingsView({ adminWorkspaceWrites: true }))
 
@@ -185,7 +209,7 @@ describe('AdminPage passkeys card', () => {
   })
 
   it('names the card after the saved site name while another is typed and not saved', async () => {
-    mocks.search.tab = 'general'
+    mocks.search = { tab: 'general' }
     const page = await renderPage(settingsView({ adminWorkspaceWrites: true }))
     const field = page.querySelector<HTMLInputElement>(`input[placeholder="${DEFAULT_SITE_NAME}"]`)!
     await act(async () => {
@@ -194,7 +218,7 @@ describe('AdminPage passkeys card', () => {
     })
     expect(field.value).toBe('Unsaved name')
 
-    mocks.search.tab = 'access'
+    mocks.search = { tab: 'access' }
     await act(async () => root!.render(<AdminPage />))
 
     expect(cards()).toHaveLength(1)
@@ -270,4 +294,95 @@ it.each([
     vi.clearAllMocks()
     vi.unstubAllGlobals()
   }
+})
+
+const tabs = (page: HTMLElement) => [...page.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)
+const selectedTab = (page: HTMLElement) => page.querySelector('[role="tab"][aria-selected="true"]')?.textContent
+const reportsPanel = (page: HTMLElement) => page.querySelector('[data-testid="reports-panel"]')
+const reportsProps = () => mocks.reportsProps as ReportsPanelProps
+
+describe('AdminPage Reports tab', () => {
+  it('lists the tab after Audit and mounts its panel with the retention the settings carry', async () => {
+    mocks.search = { tab: 'reports' }
+
+    const page = await renderPage(settingsView({
+      adminWorkspaceWrites: false,
+      issueReportRetentionDays: { effective: 120, chosen: 30, min: 120 },
+    }))
+
+    expect(tabs(page)).toEqual(['General', 'Gatekeepers', 'Formats', 'Models', 'Access', 'Audit', 'Reports'])
+    expect(selectedTab(page)).toBe('Reports')
+    expect(reportsPanel(page)).not.toBeNull()
+    expect(reportsProps().retention).toEqual({ effective: 120, chosen: 30, min: 120 })
+    // The page's own capability, not a second one minted for the panel.
+    expect(reportsProps().admin).toBe(mocks.admin)
+    expect(mocks.authenticatedApi.getAdminApi).toHaveBeenCalledTimes(1)
+  })
+
+  // A backend with no issue report store, which the router can serve this frontend beside.
+  it('has no tab, and shows General for a link to it, on a backend whose settings lack the retention', async () => {
+    mocks.search = { tab: 'reports' }
+    const { issueReportRetentionDays: _, ...older } = settingsView({ adminWorkspaceWrites: false })
+
+    const page = await renderPage(older)
+
+    expect(tabs(page)).toEqual(['General', 'Gatekeepers', 'Formats', 'Models', 'Access', 'Audit'])
+    expect(selectedTab(page)).toBe('General')
+    expect(reportsPanel(page)).toBeNull()
+    expect(mocks.reportsProps).toBeUndefined()
+  })
+
+  it('keeps the panel to its tab', async () => {
+    mocks.search = { tab: 'audit' }
+
+    const page = await renderPage(settingsView({ adminWorkspaceWrites: false }))
+
+    expect(reportsPanel(page)).toBeNull()
+    expect(page.querySelector('[data-testid="audit-panel"]')).not.toBeNull()
+  })
+
+  it('hands the panel its filters and the open report from the URL, and no other tab’s filter', async () => {
+    mocks.search = {
+      tab: 'reports', status: 'withAdmin', priority: 'high', reporter: 'rita', workspace: 'ws-1', report: 'r-1',
+      admin: 'ada', kind: 'write',
+    }
+
+    await renderPage(settingsView({ adminWorkspaceWrites: false }))
+
+    expect(reportsProps().filter).toEqual({ status: 'withAdmin', priority: 'high', reporter: 'rita', workspace: 'ws-1' })
+    expect(reportsProps().reportId).toBe('r-1')
+  })
+
+  it('hands the Audit panel its own filters, and none of the Reports tab’s', async () => {
+    mocks.search = { tab: 'audit', admin: 'ada', kind: 'write', workspace: 'ws-1', status: 'new', report: 'r-1' }
+
+    await renderPage(settingsView({ adminWorkspaceWrites: false }))
+
+    expect((mocks.auditProps as AuditPanelProps).filter).toEqual({ admin: 'ada', kind: 'write', workspace: 'ws-1' })
+  })
+
+  it('writes a change of filter to the URL under the tab, in place, which closes the open report', async () => {
+    mocks.search = { tab: 'reports', status: 'new', report: 'r-1' }
+    await renderPage(settingsView({ adminWorkspaceWrites: false }))
+
+    act(() => reportsProps().onFilterChange({ priority: 'low' }))
+
+    expect(mocks.navigate.mock.calls).toEqual([[
+      { to: '/admin', search: { tab: 'reports', priority: 'low' }, replace: true },
+    ]])
+  })
+
+  it('re-reads the settings after the panel changed one, and hands it the retention then held', async () => {
+    mocks.search = { tab: 'reports' }
+    await renderPage(settingsView({ adminWorkspaceWrites: false }))
+    mocks.admin.getSettings.mockResolvedValue(settingsView({
+      adminWorkspaceWrites: false,
+      issueReportRetentionDays: { effective: 180, chosen: 180, min: 90 },
+    }))
+
+    await act(async () => { await reportsProps().onSettingsChanged() })
+
+    expect(mocks.admin.getSettings).toHaveBeenCalledTimes(2)
+    expect(reportsProps().retention).toEqual({ effective: 180, chosen: 180, min: 90 })
+  })
 })
