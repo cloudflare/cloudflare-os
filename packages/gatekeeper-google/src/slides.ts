@@ -29,8 +29,8 @@ import type {
 import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, newSlidePlace,
-  replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
+  batchSlides, conflictReason, createReplay, instantiatedPlaceholders, mintObjectId, movedOrder,
+  newSlidePlace, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
   type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
@@ -227,14 +227,6 @@ export class GoogleSlidesGatekeeperImpl
   }
 }
 
-/** A read with queued changes applied, and the first that no longer applies. */
-function replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
-  let result = replayChanges(base, changes);
-  return result.kind === "complete"
-    ? { deck: result.value }
-    : { deck: result.partial, conflict: conflictReason(result.unsupported, result.reason) };
-}
-
 function asError(error: unknown): never {
   if (error instanceof ChangeConflict) {
     throw new Error(`${error.message.charAt(0).toUpperCase()}${error.message.slice(1)}.`);
@@ -265,6 +257,10 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SlidesChangeQueue;
+  // Replays the queued changes over the deck of each read, as one entity under the presentation's
+  // ID. Each read builds its own deck and folds it once, so no fold is reused, and none is to be
+  // forgotten when a change is applied or rejected.
+  #replay = createReplay();
 
   constructor(
     api: PresentationReader,
@@ -285,6 +281,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     this.#approvalQueue[Symbol.dispose]();
   }
 
+  /** A read with queued changes applied, and the first that no longer applies. */
+  #replayed(base: Deck, changes: readonly QueuedChange[]): { deck: Deck; conflict?: string } {
+    let { entity, stopped } = this.#replay.fold(this.#presentationId, base, changes);
+    // The fold of a fetched deck always holds one: no queued change deletes the deck.
+    let deck = entity!;
+    return stopped ? { deck, conflict: conflictReason(stopped.record, stopped.reason) } : { deck };
+  }
+
   /**
    * The slide order, every master and layout, and the content of the slides among `pages`, with
    * queued changes applied. A slide that no longer exists, or never did, is absent from
@@ -299,7 +303,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        ...replayed({
+        ...this.#replayed({
           order,
           slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(pages, changes), order),
           ...mastersOf(outline),
@@ -339,7 +343,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
           ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
         ]);
-        let { deck, conflict } = replayed(
+        let { deck, conflict } = this.#replayed(
           { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
         return {
           // Less any master, and its layouts, a queued deletion leaves with no slide, as Google

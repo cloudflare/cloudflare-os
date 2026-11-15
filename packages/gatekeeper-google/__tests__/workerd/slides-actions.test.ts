@@ -406,6 +406,28 @@ describe.each(RUNS)("Google Slides changes ($name)", run => {
     expect(provider.batches).toEqual([]);
   });
 
+  it("shows the whole sentence naming the first change that no longer applies, and refuses with it", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper(run);
+    await slides.edit([{ slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }]);
+    let { actionId } = await slides.queued("deleteSlide", "s3");
+
+    provider.edit(d => { d.slides!.pop(); });
+
+    // The sentence names the deletion, not the edit queued before it, which still shows.
+    let conflict = `Queued change ${actionId} no longer applies, so it and the changes queued after ` +
+      'it are not shown: slide "s3" no longer exists.';
+    let outline = await slides.outline();
+    expect(outline.slides.map(s => s.title)).toEqual(["Q4 review", "Revenue"]);
+    expect(outline.queuedChangeConflict).toBe(conflict);
+    let [s1] = await slides.slides("s1");
+    expect(shapeText(s1, "t1")).toBe("Q4 review");
+    expect(s1.queuedChangeConflict).toBe(conflict);
+    let blocked = await slides.call("duplicateSlide", "s2");
+    expect(blocked.error).toBe(`${conflict} No more changes can be queued until it is rejected.`);
+    expect(blocked.actionId).toBeUndefined();
+  });
+
   it("guards a whole-text replacement on the text it replaced", async () => {
     let provider = new SlidesProvider(deck()).install();
     let slides = gatekeeper(run);

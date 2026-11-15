@@ -12,9 +12,8 @@
  */
 
 import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
-import {
-  replaySimulation, type SimulationResult, type SimulationStep,
-} from "@gadgets/gatekeeper-kit/simulation";
+import type { SimulationStep } from "@gadgets/gatekeeper-kit/simulation";
+import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import type { RestPage, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
 import { designDeck, pageOf, slideIdOf, type DesignChange } from "./slides-design";
 import { ChangeConflict } from "./slides-text";
@@ -341,11 +340,21 @@ function step(deck: Deck, action: SlidesAction): SimulationStep<Deck> {
 /** One journal entry visible to replay. */
 export type QueuedChange = { readonly id: number; readonly action: SlidesAction };
 
-/** Replays queued changes over a read, stopping at the first that no longer applies. */
-export function replayChanges(
-  base: Deck, changes: readonly QueuedChange[],
-): SimulationResult<Deck, QueuedChange> {
-  return replaySimulation(base, changes, (deck, change) => step(deck, change.action));
+/**
+ * Creates a store that replays queued changes over the deck a read fetched, stopping at the first
+ * that no longer applies. The deck is its one entity, folded under the presentation's own ID,
+ * because a change may move, add or delete slides in the one order, a batch applies across its
+ * slides or not at all, and a change that no longer applies hides every change queued after it,
+ * on whatever slide. Fold each deck a read builds once, with the changes queued when it was
+ * fetched: the store finds a fold by its deck, so it then reuses none, and is owed no `forget()`
+ * when a change is applied or rejected.
+ */
+export function createReplay(): SimulationStore<string, Deck, Deck, QueuedChange> {
+  return createSimulationStore<string, Deck, Deck, QueuedChange>({
+    initial: deck => deck,
+    // A deck is always given: every fold has one for its base, and no change deletes it.
+    reduce: (deck, change) => step(deck!, change.action),
+  });
 }
 
 /**
