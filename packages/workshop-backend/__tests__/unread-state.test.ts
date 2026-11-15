@@ -136,6 +136,79 @@ it.each([false, true])("reports the source notification default without enrollin
 });
 
 describe("one-way chat fanout enrollment", () => {
+  it.each([false, true])("keeps approval-only cursors pending after bulk read until enrollment catches up (later messages: %s)", async laterMessages => {
+    const fixture = await setup(undefined, false, false);
+    using _publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
+    let approval: ChatMessageProgress | undefined;
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        approval = args[2] ?? undefined;
+        await user.messageArrived(...args);
+      });
+      try {
+        write(impl, 0, "Approval required");
+        impl.storage.chatNotifications.put({...event(0), kind: "permissionRequested", chatId: 1, userId: fixture.user.id.toString()});
+        await impl.deliverDirtyChats();
+        expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toEqual([]);
+      } finally { restore(); }
+    });
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({readThroughSequence: -1, unreadMessageCount: 1, readStatePending: true});
+    await drained(fixture);
+    await fixture.user.markAllRead();
+    if (laterMessages) {
+      await append(fixture, 1, "Unattended first page");
+      await append(fixture, 2, "Unattended tail page");
+    }
+    await evictDurableObject(fixture.user);
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({readThroughSequence: 0, unreadMessageCount: 0, readStatePending: true});
+    const states: ChatReadState[] = [];
+    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
+      async updated(state: UserUnreadState) { states.push(...state.chats); }
+      async summaryUpdated() {}
+      async chatUpdated(_workspaceId: string, _chatId: number, state: ChatReadState | null) {
+        if (state) states.push(state);
+      }
+    }
+    using callback = new RpcStub(new Subscriber());
+    using _subscription = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, callback);
+    await vi.waitFor(() => expect(states.at(-1)?.readStatePending).toBe(true));
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptDelivery(impl, async () => { throw new Error("Catch-up delayed"); });
+      try {
+        impl.enrollChatParticipant(1, fixture.profile.id);
+        await expect(impl.deliverDirtyChats()).rejects.toThrow("Catch-up delayed");
+      } finally { restore(); }
+    });
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0].readStatePending).toBe(true);
+    await withImpl(fixture.workspace, impl => impl.deliverDirtyChats());
+    await vi.waitFor(() => expect(states.some(state => !state.readStatePending)).toBe(true));
+    const [ready] = await fixture.user.getWorkspaceUnreadState(fixture.workspaceId);
+    expect(ready).toMatchObject({readThroughSequence: 0, unreadMessageCount: laterMessages ? 2 : 0, notificationsEnabled: false});
+    expect(ready.readStatePending).toBeUndefined();
+    // An older one-off packet cannot undo readiness after the full catch-up.
+    await fixture.user.messageArrived(fixture.workspaceId, 1, approval!);
+    expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([ready]);
+  });
+
+  it.each([false, true])("settles approval-only catch-up with an explicit read command (rewind: %s)", async rewind => {
+    const fixture = await setup(undefined, false, false);
+    using _publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Approval required");
+      impl.storage.chatNotifications.put({...event(0), kind: "permissionRequested", chatId: 1, userId: fixture.user.id.toString()});
+      await impl.deliverDirtyChats();
+      write(impl, 1, "Unattended result");
+      await impl.deliverDirtyChats();
+    });
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0].readStatePending).toBe(true);
+    await setRead(fixture, 0, rewind);
+    const [ready] = await fixture.user.getWorkspaceUnreadState(fixture.workspaceId);
+    expect(ready).toMatchObject({readThroughSequence: rewind ? -1 : 0, unreadMessageCount: rewind ? 2 : 1});
+    expect(ready.readStatePending).toBeUndefined();
+  });
+
   it.each([false, true])("distinguishes a preference-only row until delayed enrollment catches up (enabled: %s)", async enabled => {
     const fixture = await setup(undefined, false, false);
     await withImpl(fixture.workspace, async impl => {

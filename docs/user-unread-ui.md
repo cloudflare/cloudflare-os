@@ -23,7 +23,8 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   it in view. Failed history loads keep automatic receipts paused; Jump to first unread retries
   the load, and explicit Mark thread read can release it. First-open enrollment may arrive after
   history; catch-up still positions before acknowledging that page. Jump remains available as the pointer
-  advances. Preference-only rows do not authorize viewport receipts while initial catch-up is pending.
+  advances. Preference-only and approval-only rows do not authorize viewport receipts while initial
+  catch-up is pending, even after Mark all read consumes their locally known activity.
   Live horizon changes and reconnect snapshots never initiate another scroll; automatic
   positioning happens only on thread entry, and subsequent jumps require the explicit button.
 - Automatic reads require a visible document, focused window, visible chat pane and an item's

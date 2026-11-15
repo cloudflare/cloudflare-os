@@ -246,7 +246,7 @@ export type ChatReadState = {
   workspaceId: string;
   /** The chat's ID within its workspace. */
   chatId: number;
-  /** Visible messages the user hasn't read, including in muted chats. Zero means fully read once initialized. */
+  /** Visible messages the user hasn't read, including in muted chats. Zero means fully read once catch-up completes. */
   unreadMessageCount: number;
   /**
    * Sequence of the last timeline record the user has read, inclusive: any visible messages after
@@ -255,9 +255,9 @@ export type ChatReadState = {
    */
   readThroughSequence: number;
   /**
-   * True when this row contains only a notification preference and read tracking is not yet
-   * initialized. Wait for catch-up before acknowledging the viewport. Absent on initialized
-   * rows and older servers.
+   * True while initial enrollment catch-up is pending. Preferences and one-off approvals can
+   * create a row before ordinary updates are enrolled. Wait for catch-up before acknowledging
+   * the viewport. Absent after catch-up, an explicit read command, and on older servers.
    */
   readStatePending?: true;
   /**

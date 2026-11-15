@@ -69,6 +69,8 @@ export type ChatMessageProgress = {
   notificationBaseline?: number;
   /** Participation default for new chats. Absent on existing chats, which stay subscribed by default. */
   hasParticipated?: boolean;
+  /** Whether this is enrolled fanout, rather than a one-off approval. Absent on legacy chats. */
+  fanoutEnrolled?: boolean;
   /** The chat's current title and latest-message preview, for the inbox. */
   head: ChatTimelineHead;
   /**
@@ -750,6 +752,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
         old.notificationsEnabled === cursor.notificationsEnabled &&
         old.hasParticipated === cursor.hasParticipated &&
+        old.fanoutEnrolled === cursor.fanoutEnrolled &&
         old.notifiedEventIds?.join() === cursor.notifiedEventIds?.join() && old.deleted === cursor.deleted &&
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
@@ -811,7 +814,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #readState(cursor: ChatReadCursor): ChatReadState {
     return {workspaceId: cursor.workspaceId, chatId: cursor.chatId,
       readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount,
-      ...(cursor.readThroughVisibleSequence === undefined ? {readStatePending: true as const} : {}),
+      ...(cursor.readThroughVisibleSequence === undefined || cursor.fanoutEnrolled === false
+        ? {readStatePending: true as const} : {}),
       notificationsEnabled: this.#chatNotificationsEnabled(cursor),
       notificationsEnabledOverride: cursor.notificationsEnabled};
   }
@@ -878,6 +882,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
     let cursor = {...current, ...this.#mergeHead(current, position),
       readThroughSequence: through, readThroughVisibleSequence: visible,
+      fanoutEnrolled: true,
       latestVisibleSequence: latest, unreadCount: latest - visible,
       notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline};
     let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(
@@ -1121,6 +1126,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       cursor = {...cursor, readThroughSequence: progress.head.latestSequence, readThroughVisibleSequence};
     }
     cursor = {...cursor, ...this.#mergeHead(cursor, progress), latestVisibleSequence: latest,
+      fanoutEnrolled: cursor.fanoutEnrolled === true ? true : progress.fanoutEnrolled ?? cursor.fanoutEnrolled,
       unreadCount: latest - readThroughVisibleSequence};
     let hadNotifications = this.#notificationChats.has(key);
     let changed = this.ctx.storage.transactionSync(() => {

@@ -1333,6 +1333,7 @@ class OverseerImpl implements AgentHooks {
               } : {}),
               head: head!, headUpdatedAt: meta.lastActive,
               hasParticipated: participants === undefined ? undefined : participatingUsers?.includes(userId) ?? false,
+              fanoutEnrolled: participants?.has(userId),
               notifications: notifications.filter(event => event.userId === userId &&
                 start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence &&
                 event.sequence > (start.notificationBaseline ?? -1))

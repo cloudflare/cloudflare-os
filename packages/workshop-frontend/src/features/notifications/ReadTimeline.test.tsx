@@ -234,6 +234,33 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
   });
 
+  it("waits for first-open catch-up after an approval was marked all read and activity continued on older pages", async () => {
+    visibleBottom = 350;
+    await render(<p>Conversation list</p>);
+    const approval: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: -1, unreadMessageCount: 1,
+        notificationsEnabled: false, readStatePending: true}]};
+    await update(approval);
+    // Mark all read consumes only the approval's locally known head. Later unattended messages
+    // have not reached this User DO when the user opens the tail page.
+    await update({...approval, chats: [{...approval.chats[0], readThroughSequence: 0, unreadMessageCount: 0}]});
+    await render(<View oldest={2} />);
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(loadEarlier).not.toHaveBeenCalled();
+    const caughtUp = snapshot(2, 0);
+    await updateChat({...caughtUp, unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{...caughtUp.chats[0], notificationsEnabled: false}]});
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith(true);
+    expect(markChatRead).not.toHaveBeenCalled();
+    await render(<View />);
+    await settle();
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
+  });
+
   it("keeps a New divider for messages received while the tab was hidden", async () => {
     visibleBottom = 450;
     await render(); await update(snapshot(1, 2)); await settle();

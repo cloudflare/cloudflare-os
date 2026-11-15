@@ -139,6 +139,11 @@ export type ChatReadCursor = {
   notificationsEnabled?: boolean;
   /** Participation default for new chats; absent on existing chats, which stay subscribed by default. */
   hasParticipated?: boolean;
+  /**
+   * False after one-off approvals until enrolled fanout or a full read command catches up. Once
+   * true it stays true; absent on legacy cursors, which are already enrolled.
+   */
+  fanoutEnrolled?: boolean;
   /** Sequence of the last record the user has read, inclusive; -1 if they haven't read anything. */
   readThroughSequence: number;
   /**

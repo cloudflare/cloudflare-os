@@ -240,15 +240,16 @@ user's own User DO (`notificationMute`), so it applies only to them and is delet
 While it lasts, the User DO sends the workspace's finished tasks to no tab and no device. Permission
 requests still come through, since a task waiting on the user stays stuck until they answer.
 
-Each chat also has a private **Mute notifications** / **Unmute notifications** choice in its
-thread menu. Chat muting suppresses both completion and permission alerts, clears queued alerts,
+Each chat also has private **Enable notifications**, **Mute notifications**, and **Unmute notifications**
+controls in its thread menu. Chat muting suppresses both completion and permission alerts, clears queued alerts,
 and removes the chat from the unread inbox and badge totals, including workspace and app badges.
 Read history and the unread divider remain available when the user opens the chat. Notifications
 default off for new chats until that user first sends a message or slash command, except permission
 requests still alert before participation without enabling inbox entries or badges. Existing chats
 stay subscribed by default, and an explicit choice always wins. Turning notifications on preserves unread history and alerts only
-about future activity. For new chats, ordinary unread updates reach the User DO only after creating,
-opening, participating in, or setting a preference for that chat. Opening enrolls updates without
+about future activity. For new chats, ordinary unread updates reach the User DO only after opening,
+participating in, or setting a preference for that chat. A normal chat's creator is enrolled by their
+first message; agent-spawned chats start with nobody enrolled. Opening enrolls updates without
 enabling notifications; muting keeps that enrollment. Approval requests can alert an untouched chat
 without enrolling it. See [user-owned unread state](user-unread-state.md).
 

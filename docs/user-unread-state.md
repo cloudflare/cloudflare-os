@@ -15,8 +15,9 @@ batch coalesces a user's message with a later agent response or retries after ev
 latches participation independently of the workspace's fanout enrollment list.
 
 For new chats, the workspace's existing `notificationParticipants` list is permanent fanout
-enrollment: creating, first opening, participating in, or explicitly setting a chat preference
-adds the user. Opening the workspace or receiving an approval does not. Ordinary updates only
+enrollment: first opening, participating in, or explicitly setting a chat preference adds the user.
+A normal chat's creator is enrolled by their first message; agent-spawned chats start with nobody
+enrolled. Opening the workspace or receiving an approval does not enroll the user. Ordinary updates only
 reach enrolled users; muting never removes them. First enrollment queues a snapshot through the
 existing dirty journal, retaining numbered unread history without replaying earlier alerts.
 Opening alone leaves notifications off. Only new chats initialize this list; an absent list keeps
@@ -104,9 +105,12 @@ The existing source fanout carries inbox metadata with the count; title changes 
 same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
 change read horizons, including on preference-only rows whose read tracking has not started.
 Preference changes accept only the source default and alert receipt, leaving the read positions,
-count and paired inbox head to ordinary fanout. Queries and updates label preference-only rows
-`readStatePending`; the timeline waits for initialized catch-up before acknowledging the viewport.
-This flag is derived from the existing cursor, including after eviction, without new stored state.
+count and paired inbox head to ordinary fanout. Queries and updates label preference-only and
+approval-only rows `readStatePending`; the timeline waits for enrollment catch-up before
+acknowledging the viewport. The cursor persists whether it has received enrolled fanout, so a
+one-off approval followed by Mark all read cannot make stale state ready for automatic receipts.
+An enrolled snapshot or an explicit read command clears this flag, even if no counts changed;
+later one-off retries cannot restore it. Legacy cursors remain ready without a migration.
 The existing admission callback can repair metadata
 skipped during denied admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
 Every live tracked cursor stores a head and both visible positions, supplied by message fanout,
@@ -118,7 +122,7 @@ Three targeted local queries avoid transferring the full thread state for every 
 - `getUnreadThreads()` returns unread rows with notifications enabled, including display metadata, newest first.
 - `getWorkspaceUnreadState(workspaceId)` returns local thread horizons/counts and notification
   preferences for that workspace, including read rows, to merge into its ordinary thread list.
-  Missing rows contribute zero; preference-only rows report `readStatePending` until catch-up.
+  Missing rows contribute zero; preference-only and approval-only rows report `readStatePending` until catch-up.
 - `getUnreadSummary()` returns badge totals and nonzero per-workspace rollups, excluding muted chats
   and without thread rows. Per-chat queries still return actual unread counts for muted chats.
 
