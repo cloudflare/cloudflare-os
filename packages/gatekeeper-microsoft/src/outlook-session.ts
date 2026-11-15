@@ -14,6 +14,7 @@ import { validateRpc } from "capnweb-validate";
 import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
+import { simulatedList } from "@gadgets/gatekeeper-kit/simulation-store";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
@@ -26,7 +27,7 @@ import {
 } from "./outlook-content";
 import { MailApi, MESSAGE_SELECT, idPath, isMailId, mailboxPath, parseMessage, type GraphAddress, type GraphAttachment, type GraphFolder, type GraphMessage } from "./outlook-graph";
 import { mailUnits } from "./outlook-observers";
-import { OutlookOverlay, preview } from "./outlook-overlay";
+import { messageStore, messageView, OutlookOverlay, preview, type MoveDestination } from "./outlook-overlay";
 import { kqlPhrase, listingRequest, odataString, passesFilters, type ListingFilters } from "./outlook-query";
 import { folderPath as walkFolderPath } from "./outlook-resolve";
 import {
@@ -635,7 +636,6 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     if (options?.since !== undefined) filters.since = isoDate(options.since, "since");
     if (options?.focused !== undefined) filters.focused = options.focused === true;
 
-    const overlay = ctx.overlay();
     const known = await ctx.wellKnown();
     // A pending folder holds nothing yet but what pending moves put there, and has no Graph path.
     const pendingFolder = filters.folderId !== undefined && isProvisional(filters.folderId);
@@ -644,9 +644,48 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     const listedFolder = filters.folderId ?? ctx.scope.folder?.id ?? (request?.path === "/messages" ? undefined : known.inbox);
 
     // Messages pending a move into this folder are fetched and guarded like any other, then listed first.
-    const movedIn = listedFolder === undefined ? [] : [...overlay.moved].filter(([, to]) => to === listedFolder).map(([id]) => id);
+    const movedIn = listedFolder === undefined ? [] : [...ctx.overlay().moved].filter(([, to]) => to === listedFolder).map(([id]) => id);
+
+    // Pending changes are folded into a row as it is served, from the actions pending at that
+    // `next()`: a row can wait in the cursor long after its page was read.
+    const resolve = (id: string) => ctx.host.resolve(id);
+    let pending = ctx.host.pending();
+    let view = messageView(pending, resolve);
+    // Where each pending move goes, by the folder ID its action holds. The fold is synchronous,
+    // so they are read ahead of it, and once for the walk: a folder created part way through
+    // keeps the ID this listing was asked for.
+    const destinations = new Map<string, MoveDestination>();
+    const readDestinations = async () => {
+      const unread = new Map<string, string>();
+      for (const { action } of pending) {
+        if (action.kind === "moveMessages" && !destinations.has(action.payload.to.id)) unread.set(action.payload.to.id, resolve(action.payload.to.id));
+      }
+      for (const [named, id] of unread) destinations.set(named, { id, path: await ctx.folderPath(id).catch(() => "") });
+    };
+    await readDestinations();
+    // Drafts pending creation are listed in Drafts.
     const drafts = listedFolder !== undefined && listedFolder === known.drafts
-      ? overlay.pendingDrafts({ id: known.drafts, path: await ctx.folderPath(known.drafts) }, await ctx.mailbox()) : [];
+      ? { folder: { id: known.drafts, path: await ctx.folderPath(known.drafts) }, mailbox: await ctx.mailbox() } : undefined;
+    const list = simulatedList({
+      store: messageStore({ destination: id => destinations.get(id) ?? { id, path: "" }, ...(drafts ? { drafts } : {}) }),
+      view: () => view,
+      id: row => row.id,
+      compare: (a, b) => b.receivedAt.localeCompare(a.receivedAt),
+      created: () => drafts ? pending.flatMap(({ action }) => action.kind === "createDraft" ? [action.payload.ref] : []) : [],
+    });
+    // A row is left out only when a pending move files it in another folder than the listed
+    // one. Where Exchange files a row is never compared with the listed folder: a search
+    // folder lists messages of other folders, and a message read for a move that was decided
+    // before it is served is still the listing's to show, as it was read.
+    const shown = (row: MessageInfo) => list.overlay(row)
+      .filter(folded => listedFolder === undefined || folded.folderId === listedFolder || folded.folderId === row.folderId);
+    // The rows as Exchange holds them.
+    const rows = async (messages: readonly GraphMessage[]) => {
+      const [mailbox, domains] = await Promise.all([ctx.mailbox(), ctx.orgDomains()]);
+      const infos: MessageInfo[] = [];
+      for (const message of messages) infos.push(await ctx.info(message, mailbox, domains));
+      return infos;
+    };
 
     const walk = ctx.gate.lease();
     const units = await ctx.units();
@@ -656,9 +695,18 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
       pageSize: size,
       remotePageSize: size,
       dispose: () => walk[Symbol.dispose](),
+      refresh: async () => {
+        pending = ctx.host.pending();
+        await readDestinations();
+        view = messageView(pending, resolve);
+        list.refresh();
+      },
+      overlay: shown,
       inject: {
-        items: drafts,
-        compare: (a, b) => b.receivedAt.localeCompare(a.receivedAt),
+        ...list.inject,
+        // A draft created since the listing began is still listed, as the listing read it:
+        // the page it would be on may have been read before Exchange held it.
+        revalidate: row => list.inject.revalidate(row) ?? (resolve(row.id) !== row.id ? row : null),
         identity: info => info.id,
       },
       fetchPage: async (token, perPage) => {
@@ -671,19 +719,16 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
             moved = moved.filter(message => passesFilters(filters, { ...message, flagStatus: message.flag.status }));
           }
         }
-        if (request === undefined) return { items: await ctx.infos(moved, overlay) };
+        if (request === undefined) return { items: await rows(moved) };
         const page = await ctx.mail(mail => mail.page(token ?? request.path, parseMessage, "message",
           token ? undefined : { ...request.query, $select: MESSAGE_SELECT, $top: perPage }));
         const kept: GraphMessage[] = [];
         for (const message of page.items) {
-          if (overlay.hides(message.id) || movedIn.includes(message.id)) continue;
-          // Moved out of the listed folder by a pending action.
-          const to = overlay.moved.get(message.id);
-          if (listedFolder !== undefined && to !== undefined && to !== listedFolder) continue;
+          if (movedIn.includes(message.id)) continue;
           if (!passesFilters(filters, { ...message, flagStatus: message.flag.status })) continue;
           if (await ctx.covers(message)) kept.push(message);
         }
-        return { items: await ctx.infos([...moved, ...kept], overlay), ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
+        return { items: await rows([...moved, ...kept]), ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
       },
       authorizePage: (items, { terminal }) => items.length === 0
         ? ctx.observe("Listed Outlook messages", `Listed messages in ${where}${terminal ? "; there were no more" : ""}.`,

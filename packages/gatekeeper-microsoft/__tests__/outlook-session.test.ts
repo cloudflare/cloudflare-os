@@ -2,7 +2,7 @@
 // client, parsing, guard, overlay, observations and staging all run: what each binding shows, what
 // it refuses and in which words, and what it proposes.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RpcStub } from "cloudflare:workers";
 import type { ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
@@ -72,7 +72,11 @@ const MESSAGES: Message[] = [
 ];
 
 type Call = { method: string; path: string; body?: unknown };
-type FakeOptions = { omitFromBatch?: string };
+type FakeOptions = {
+  omitFromBatch?: string;
+  /** Messages a folder's listing returns besides its own, each under the folder that holds it, as a search folder lists them. */
+  alsoLists?: Record<string, string[]>;
+};
 
 /** Graph, faked at `fetch`. Listings ignore `$filter`, as a misbehaving Graph would, so the guard has to drop what the binding doesn't cover. */
 function fakeGraph(options: FakeOptions = {}) {
@@ -124,7 +128,10 @@ function fakeGraph(options: FakeOptions = {}) {
       const found = folderBy(decodeURIComponent(folder[1]!));
       if (!found) return { status: 404, body: {} };
       if (folder[2] === "/childFolders") return { status: 200, body: { value: FOLDERS.filter(child => child.parentId === found.id).map(folderRow) } };
-      if (folder[2] === "/messages") return { status: 200, body: { value: MESSAGES.filter(message => message.folder === found.id).map(messageRow) } };
+      if (folder[2] === "/messages") {
+        const listed = MESSAGES.filter(message => message.folder === found.id || options.alsoLists?.[found.id]?.includes(message.id));
+        return { status: 200, body: { value: listed.map(messageRow) } };
+      }
       return { status: 200, body: folderRow(found) };
     }
     if (rest === "/messages") {
@@ -184,6 +191,9 @@ function session(scope: OutlookScope, access: OutlookAccessLevel = "read", optio
   const observations: ObservationDescription[] = [];
   const submitted: { kind: keyof OutlookActions; payload: OutlookActions[keyof OutlookActions] }[] = [];
   let sequence = 0;
+  // What each temporary ID stands for, once a test says an action created it.
+  const bound = new Map<string, string>();
+  let refused = false;
   const host: OutlookSessionHost = {
     scope, access,
     owner: async () => ME,
@@ -191,7 +201,7 @@ function session(scope: OutlookScope, access: OutlookAccessLevel = "read", optio
     read: op => op(graph.api),
     cached: (_key, _ttl, load) => load(),
     pending: () => submitted.map((action, index) => ({ id: index + 1, action: action as OutlookAction })) as never,
-    resolve: id => id,
+    resolve: id => bound.get(id) ?? id,
     allocate: () => `~${++sequence}`,
     submit: async (_queue, kind, payload) => {
       submitted.push({ kind, payload });
@@ -203,7 +213,13 @@ function session(scope: OutlookScope, access: OutlookAccessLevel = "read", optio
   };
   const queue = {
     dup() { return queue; },
-    authorizeObservation: async (description: ObservationDescription) => { observations.push(description); },
+    authorizeObservation: async (description: ObservationDescription) => {
+      if (refused) {
+        refused = false;
+        throw new Error("The read was refused.");
+      }
+      observations.push(description);
+    },
     [Symbol.dispose]() {},
   } as unknown as RpcStub<ApprovalQueue>;
   const observers: ObserverStrategy = {
@@ -215,7 +231,9 @@ function session(scope: OutlookScope, access: OutlookAccessLevel = "read", optio
   };
   const ctx = new OutlookContext(host, queue, observers);
   const reader = access === "read" ? new OutlookReaderImpl(ctx) : new OutlookSessionImpl(ctx);
-  return { reader, writer: reader as OutlookSessionImpl, graph, observations, submitted };
+  /** Refuses the next observation, once, recording nothing. */
+  const refuseNext = () => { refused = true; };
+  return { reader, writer: reader as OutlookSessionImpl, graph, observations, submitted, bound, refuseNext };
 }
 
 const whole = (access: OutlookAccessLevel = "read"): OutlookScope => ({ mailbox: { kind: "me" }, access });
@@ -400,5 +418,333 @@ describe("resolving a binding URL", () => {
     expect(own.mailbox).toEqual({ kind: "me" });
     const shared = await resolveOutlookUrl(api, `https://outlook.office.com/mail/${SUPPORT.address}/inbox`, "send", ME.email!, ME.objectId);
     expect(shared.mailbox).toEqual({ kind: "shared", id: SUPPORT.id, address: SUPPORT.address });
+  });
+});
+
+const ARCHIVE = "AAMkArchive0";
+const DRAFT = { to: ["grace@contoso.com"], subject: "Mine", body: "Hello" };
+const ids = (rows: readonly MessageInfo[]) => rows.map(row => row.id);
+const sending = (options: SessionOptions = {}) => session(whole("send"), "send", options);
+/** Sets the clock `minutes` after the fake's messages were received, so a draft created then sorts ahead of them. */
+function clock(minutes: number) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(Date.UTC(2026, 9, 17, 12, minutes)));
+}
+
+/** A session with one draft pending creation. */
+async function oneDraft(options: SessionOptions = {}) {
+  const made = sending(options);
+  clock(1);
+  return { ...made, draft: await made.writer.createDraft(DRAFT) };
+}
+/** A session with three drafts pending creation, each a minute after the one before. */
+async function threeDrafts() {
+  const made = sending();
+  const drafts: MessageInfo[] = [];
+  for (const [index, subject] of ["First", "Middle", "Last"].entries()) {
+    clock(index + 1);
+    drafts.push(await made.writer.createDraft({ ...DRAFT, subject }));
+  }
+  return { ...made, first: drafts[0]!, middle: drafts[1]!, last: drafts[2]! };
+}
+
+describe("a listing with changes pending", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  describe("a row that waits in the cursor", () => {
+    it("shows a change queued after a row's page was read", async () => {
+      const { reader, writer } = sending();
+      const cursor = await reader.listMessages({ pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      await writer.markRead([EVE], false);
+      const page = (await cursor.next())!;
+      expect(ids(page)).toEqual([EVE]);
+      expect(page[0]).toMatchObject({ isRead: false, pending: "update" });
+    });
+
+    it("stops showing a change decided after a row's page was read", async () => {
+      const { reader, writer, submitted } = sending();
+      await writer.markRead([EVE], false);
+      const cursor = await reader.listMessages({ pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      submitted.length = 0;
+      const page = (await cursor.next())!;
+      expect(ids(page)).toEqual([EVE]);
+      expect(page[0]).toMatchObject({ isRead: true });
+      expect(page[0]).not.toHaveProperty("pending");
+    });
+
+    it("leaves out a row a move queued after its page was read takes elsewhere", async () => {
+      const { reader, writer } = sending();
+      const cursor = await reader.listMessages({ pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      await writer.archive([EVE]);
+      expect(ids(await all(cursor))).toEqual([EVE_INVOICE, MANY]);
+    });
+
+    it("lists a row again once the move that took it elsewhere is decided", async () => {
+      const { reader, writer, submitted } = sending();
+      await writer.archive([EVE]);
+      const cursor = await reader.listMessages({ pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      submitted.length = 0;
+      const rest = await all(cursor);
+      expect(ids(rest)).toEqual([EVE, EVE_INVOICE, MANY]);
+      expect(rest[0]).not.toHaveProperty("pending");
+    });
+
+    it("leaves out a draft Exchange holds once a pending action deletes it", async () => {
+      const { reader, writer, draft } = await oneDraft({ ownDrafts: [USER_DRAFT] });
+      const cursor = await reader.listMessages({ folderId: "drafts", pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([draft.id]);
+      await writer.deleteDraft(USER_DRAFT);
+      expect(await all(cursor)).toEqual([]);
+    });
+
+    it("shows a move queued after a row's page was read where the listing spans the mailbox, under its folder's path", async () => {
+      const { reader, writer } = session({ ...fromAda(), access: "send" }, "send");
+      const cursor = await reader.listMessages({ pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      await writer.archive(["AAMkAdaVend1"]);
+      const page = (await cursor.next())!;
+      expect(ids(page)).toEqual(["AAMkAdaVend1"]);
+      expect(page[0]).toMatchObject({ folderId: ARCHIVE, folder: "Archive", pending: "move" });
+    });
+  });
+
+  describe("a refused page, retried", () => {
+    it("folds a refused page's rows again when it is retried", async () => {
+      const { reader, writer, graph, submitted, refuseNext } = sending();
+      await writer.markRead([EVE], false);
+      const cursor = await reader.listMessages();
+      const reads = () => graph.calls.filter(call => call.path.endsWith("/mailFolders/inbox/messages")).length;
+      refuseNext();
+      await expect(cursor.next()).rejects.toThrow();
+      const read = reads();
+      submitted.length = 0;
+      const page = (await cursor.next())!;
+      expect(ids(page)).toEqual([ADA, EVE, EVE_INVOICE, MANY]);
+      expect(page[1]).toMatchObject({ isRead: true });
+      expect(page[1]).not.toHaveProperty("pending");
+      expect(read).toBe(1);
+      expect(reads()).toBe(read);
+    });
+
+    it("drops a pending draft from a refused page's retry once its creation is rejected", async () => {
+      const { reader, submitted, refuseNext } = await oneDraft();
+      const cursor = await reader.listMessages({ folderId: "drafts" });
+      refuseNext();
+      await expect(cursor.next()).rejects.toThrow();
+      submitted.length = 0;
+      expect(ids((await cursor.next())!)).toEqual([USER_DRAFT]);
+    });
+
+    it("lists a draft once when its creation is approved before a refused page is retried", async () => {
+      const { reader, submitted, bound, refuseNext, draft } = await oneDraft();
+      const cursor = await reader.listMessages({ folderId: "drafts" });
+      refuseNext();
+      await expect(cursor.next()).rejects.toThrow();
+      submitted.length = 0;
+      bound.set(draft.id, "AAMkNewDraft");
+      // The page was read before Exchange held the draft, so the stand-in is the only row that lists it.
+      const page = (await cursor.next())!;
+      expect(ids(page)).toEqual([draft.id, USER_DRAFT]);
+      expect(page[0]).toMatchObject({ pending: "draft" });
+    });
+  });
+
+  describe("drafts pending creation", () => {
+    it("lists pending drafts newest first, ahead of the drafts Exchange holds", async () => {
+      const { reader, first, middle, last } = await threeDrafts();
+      expect(ids(await all(await reader.listMessages({ folderId: "drafts" })))).toEqual([last.id, middle.id, first.id, USER_DRAFT]);
+    });
+
+    it("lists pending drafts in Drafts alone", async () => {
+      const { reader } = await oneDraft();
+      expect(ids(await all(await reader.listMessages()))).toEqual([ADA, EVE, EVE_INVOICE, MANY]);
+    });
+
+    it("shows a pending draft as edited after the listing began", async () => {
+      const { reader, writer, middle } = await threeDrafts();
+      const cursor = await reader.listMessages({ folderId: "drafts", pageSize: 1 });
+      expect(await cursor.next()).toHaveLength(1);
+      await writer.updateDraft(middle.id, { subject: "Edited" });
+      const page = (await cursor.next())!;
+      expect(ids(page)).toEqual([middle.id]);
+      expect(page[0]).toMatchObject({ subject: "Edited", pending: "draft" });
+    });
+
+    it("drops a pending draft deleted after the listing began", async () => {
+      const { reader, writer, middle } = await threeDrafts();
+      const cursor = await reader.listMessages({ folderId: "drafts", pageSize: 1 });
+      expect(await cursor.next()).toHaveLength(1);
+      await writer.deleteDraft(middle.id);
+      const rest = await all(cursor);
+      expect(ids(rest)).not.toContain(middle.id);
+      expect(rest).toHaveLength(2);
+      expect(rest[0]).toMatchObject({ pending: "draft" });
+      expect(rest[1]!.id).toBe(USER_DRAFT);
+    });
+
+    it("serves a pending draft approved after the listing began as it was read, and drops one rejected", async () => {
+      const { reader, submitted, bound, middle } = await threeDrafts();
+      const cursor = await reader.listMessages({ folderId: "drafts", pageSize: 1 });
+      expect(await cursor.next()).toHaveLength(1);
+      // The middle draft's creation is approved, the other's rejected.
+      submitted.length = 0;
+      bound.set(middle.id, "AAMkNewDraft");
+      const rest = await all(cursor);
+      expect(rest).toHaveLength(2);
+      expect(ids(rest)).toEqual([middle.id, USER_DRAFT]);
+      expect(rest[0]).toMatchObject({ subject: "Middle", pending: "draft" });
+    });
+  });
+
+  describe("messages a pending move brings in", () => {
+    it("reads the messages a pending move brings in first, from where they are going", async () => {
+      const { reader, writer } = sending();
+      await writer.move([ADA, EVE], VENDORS);
+      const cursor = await reader.listMessages({ folderId: VENDORS, pageSize: 1 });
+      const pages = [await cursor.next(), await cursor.next(), await cursor.next()].map(page => page!);
+      expect(pages.map(ids)).toEqual([[ADA], [EVE], ["AAMkAdaVend1"]]);
+      for (const moved of [pages[0]![0], pages[1]![0]]) expect(moved).toMatchObject({ folderId: VENDORS, folder: "Inbox/Vendors", pending: "move" });
+      expect(ids(await all(await reader.listMessages()))).toEqual([EVE_INVOICE, MANY]);
+    });
+
+    it("still lists a message whose move into the folder was decided before it was served, as Exchange held it", async () => {
+      const { reader, writer, submitted } = sending();
+      await writer.move([ADA, EVE], VENDORS);
+      const cursor = await reader.listMessages({ folderId: VENDORS, pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      submitted.length = 0;
+      const rest = await all(cursor);
+      expect(ids(rest)).toEqual([EVE, "AAMkAdaVend1"]);
+      expect(rest[0]).toMatchObject({ folderId: INBOX, folder: "Inbox" });
+      expect(rest[0]).not.toHaveProperty("pending");
+    });
+
+    it("folds what a pending move brings into a folder not yet created when it is served", async () => {
+      const { reader, writer, submitted } = sending();
+      const folder = await writer.createFolder("inbox", "Acme");
+      await writer.move([ADA, EVE], folder.id);
+      const cursor = await reader.listMessages({ folderId: folder.id, pageSize: 1 });
+      expect(ids((await cursor.next())!)).toEqual([ADA]);
+      // The move is decided; the folder still waits.
+      submitted.length = 1;
+      const rest = await all(cursor);
+      expect(ids(rest)).toEqual([EVE]);
+      expect(rest[0]).toMatchObject({ folderId: INBOX, folder: "Inbox" });
+      expect(rest[0]).not.toHaveProperty("pending");
+    });
+  });
+
+  describe("what is read once, and what is never compared", () => {
+    it("does not list a draft created or a move into the folder queued after the listing began", async () => {
+      const drafts = await oneDraft();
+      const inDrafts = await drafts.reader.listMessages({ folderId: "drafts", pageSize: 1 });
+      expect(ids((await inDrafts.next())!)).toEqual([drafts.draft.id]);
+      clock(2);
+      await drafts.writer.createDraft({ ...DRAFT, subject: "Later" });
+      expect(ids(await all(inDrafts))).toEqual([USER_DRAFT]);
+
+      const moves = sending();
+      await moves.writer.move([ADA], VENDORS);
+      const inVendors = await moves.reader.listMessages({ folderId: VENDORS, pageSize: 1 });
+      expect(ids((await inVendors.next())!)).toEqual([ADA]);
+      await moves.writer.move([EVE], VENDORS);
+      expect(ids(await all(inVendors))).toEqual(["AAMkAdaVend1"]);
+    });
+
+    it("lists what a folder's listing returns from another folder", async () => {
+      const { reader } = session(whole(), "read", { alsoLists: { [VENDORS]: [EVE] } });
+      const listed = await all(await reader.listMessages({ folderId: VENDORS }));
+      expect(ids(listed)).toEqual([EVE, "AAMkAdaVend1"]);
+      expect(listed[0]).toMatchObject({ folderId: INBOX });
+    });
+
+    it("lists a message moved away and back wherever Exchange lists it", async () => {
+      const { reader, writer } = sending({ alsoLists: { [VENDORS]: [EVE] } });
+      await writer.archive([EVE]);
+      await writer.move([EVE], INBOX);
+      const listed = await all(await reader.listMessages({ folderId: VENDORS }));
+      expect(ids(listed)).toEqual([EVE, "AAMkAdaVend1"]);
+      expect(listed[0]).toMatchObject({ folderId: INBOX });
+      expect(listed[0]).not.toHaveProperty("pending");
+    });
+
+    it("lists a message moved away and back once, first, as not moved", async () => {
+      const { reader, writer } = sending();
+      await writer.archive([ADA]);
+      await writer.move([ADA], INBOX);
+      const listed = await all(await reader.listMessages());
+      expect(ids(listed)).toEqual([ADA, EVE, EVE_INVOICE, MANY]);
+      expect(listed[0]).toMatchObject({ folderId: INBOX });
+      expect(listed[0]).not.toHaveProperty("pending");
+    });
+
+    it("reads the folders pending moves name once for a walk", async () => {
+      const { reader, writer, graph } = sending();
+      await writer.archive([EVE]);
+      const cursor = await reader.listMessages({ pageSize: 1 });
+      const before = graph.calls.length;
+      expect(ids(await all(cursor))).toEqual([ADA, EVE_INVOICE, MANY]);
+      expect(graph.calls.slice(before).filter(call => call.path.endsWith(`/mailFolders/${ARCHIVE}`))).toEqual([]);
+    });
+  });
+
+  describe("what stays the gatekeeper's", () => {
+    it("filters a listing on what Exchange holds, whatever is pending", async () => {
+      const { reader, writer } = sending();
+      await writer.move([ADA], VENDORS);
+      await writer.markRead([ADA, EVE], false);
+      // Neither the message the move brings in nor the folder's own row is from this sender.
+      expect(await all(await reader.listMessages({ folderId: VENDORS, from: "eve@fabrikam.com" }))).toEqual([]);
+      // Pending unread, but Exchange holds it read.
+      expect(await all(await reader.listMessages({ folderId: VENDORS, unread: true }))).toEqual([]);
+      const fromEve = await all(await reader.listMessages({ from: "eve@fabrikam.com" }));
+      expect(ids(fromEve)).toEqual([EVE, EVE_INVOICE]);
+      expect(fromEve[0]).toMatchObject({ isRead: false, pending: "update" });
+      expect(await all(await reader.listMessages({ unread: true }))).toEqual([]);
+    });
+
+    it("lists what pending moves put in a folder not yet created, under the ID it was asked for", async () => {
+      const { reader, writer, graph, bound } = sending();
+      const folder = await writer.createFolder("inbox", "Acme");
+      await writer.move([ADA, EVE], folder.id);
+      const cursor = await reader.listMessages({ folderId: folder.id, pageSize: 1 });
+      const moved = { folderId: folder.id, folder: "Inbox/Acme", pending: "move" };
+      const first = (await cursor.next())!;
+      expect(ids(first)).toEqual([ADA]);
+      expect(first[0]).toMatchObject(moved);
+      // The folder is created; the move still waits.
+      bound.set(folder.id, "AAMkNewFolder");
+      const second = (await cursor.next())!;
+      expect(ids(second)).toEqual([EVE]);
+      expect(second[0]).toMatchObject(moved);
+      expect(await all(cursor)).toEqual([]);
+      expect(graph.calls.filter(call => call.path.includes("AAMkNewFolder"))).toEqual([]);
+    });
+
+    it("lists what a pending move brings into a folder created before the listing began", async () => {
+      const { reader, writer, bound } = sending();
+      const folder = await writer.createFolder("inbox", "Acme");
+      await writer.move([ADA], folder.id);
+      // The folder is created; the move, which names it by its temporary ID, still waits.
+      bound.set(folder.id, VENDORS);
+      const listed = await all(await reader.listMessages({ folderId: folder.id }));
+      expect(ids(listed)).toEqual([ADA, "AAMkAdaVend1"]);
+      expect(listed[0]).toMatchObject({ folderId: VENDORS, folder: "Inbox/Vendors", pending: "move" });
+    });
+
+    it("lists a draft waiting to be created whose temporary ID has resolved", async () => {
+      const { reader, bound, draft } = await oneDraft();
+      // One apply has created the draft, and its creation is still pending.
+      bound.set(draft.id, "AAMkNewDraft");
+      const listed = await all(await reader.listMessages({ folderId: "drafts" }));
+      expect(ids(listed)).toEqual([draft.id, USER_DRAFT]);
+      expect(listed[0]).toMatchObject({ pending: "draft" });
+    });
   });
 });
