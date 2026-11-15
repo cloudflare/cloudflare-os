@@ -23,6 +23,8 @@ import { table as real } from "../generated/commands.ts";
 const GENERATED = join(import.meta.dirname, "__fixtures__", "generated");
 const EXPECTED_COMMANDS = join(GENERATED, "commands.ts");
 const API_SCHEMA_FIXTURE = join(import.meta.dirname, "..", "..", "api-schema", "__tests__", "__fixtures__", "schema.json");
+/** The real API's schema, generated in the same run as the real table (`real`). */
+const REAL_SCHEMA = join(import.meta.dirname, "..", "..", "api-schema", "generated", "workshop-api.schema.json");
 
 /** Agent declarations for the files `generate` renders beside the table. */
 const AGENT: AgentTypes = { declarations: "export interface A {}\n", fragments: { A: "export interface A {}\n" } };
@@ -207,6 +209,78 @@ test("ending a grant an approval gave is an ordinary command: a workspace, a gra
     { name: "reason", flag: undefined, encoding: "string" },
   ]);
   for (const refusal of ["notAdmin", "workspaceNotFound", "notFound"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+});
+
+test("grants, content reads and issue reports are commands where their methods are, and the passkey ceremonies the only ones AdminApi leaves out", () => {
+  const commands = (node: string, named: RegExp) => Object.keys(real.nodes[node]!.commands).filter((command) => named.test(command));
+  // A workspace's owner gives, lists, renews and ends its grants; the account-wide grant is the signed-in user's.
+  assert.deepEqual(commands("Overseer", /admin-(access|grants)$/),
+    ["grant-admin-access", "list-admin-grants", "renew-admin-access", "revoke-admin-access"]);
+  assert.deepEqual(commands("AuthenticatedApi", /account-admin-/),
+    ["get-account-admin-grant", "grant-account-admin-access", "revoke-account-admin-access"]);
+  // The reporter's eight commands, and the admins' six with the retention setting and the end of an approval's grant.
+  assert.deepEqual(commands("AuthenticatedApi", /issue-report/), [
+    "add-issue-report-image", "get-issue-report", "get-unseen-issue-report-count", "list-issue-reports", "mark-issue-report-seen",
+    "read-issue-report-image", "reply-to-issue-report", "submit-issue-report",
+  ]);
+  assert.deepEqual(commands("AdminApi", /issue-report|grant/), [
+    "add-issue-report-entry", "end-workspace-grant", "get-issue-report", "list-issue-reports", "read-issue-report-image",
+    "set-issue-report-links", "set-issue-report-retention-days", "set-issue-report-status",
+  ]);
+  // The five content reads on an admin's view of a workspace.
+  assert.deepEqual(commands("AdminWorkspaceView", /^read-|^get-chat$/),
+    ["get-chat", "read-chat-attachment", "read-file", "read-file-at-commit", "read-pending-file"]);
+
+  // Every other method of these services is a command too: the table leaves out what its constants name, nothing more.
+  const schema = JSON.parse(readFileSync(REAL_SCHEMA, "utf8")) as Schema;
+  const leftOut = (service: string) => schema.services[service]!.methods.map((method) => method.name)
+    .filter((method) => !(kebab(method) in real.nodes[service]!.commands)).toSorted();
+  assert.deepEqual(leftOut("AdminApi"), PASSKEY_METHODS.toSorted());
+  assert.deepEqual(leftOut("AuthenticatedApi"), ROOT_CREDENTIAL_METHODS);
+  assert.deepEqual(leftOut("Overseer"), []);
+  assert.deepEqual(leftOut("AdminWorkspaceView"), []);
+});
+
+test("an issue report's image is a stream and then its length; an image or an attachment read is a stream, a file read a value holding one", () => {
+  const add = real.nodes.AuthenticatedApi!.commands["add-issue-report-image"]!;
+  assert.deepEqual(add.args.map(({ name, index, flag, encoding }) => ({ name, index, flag, encoding })), [
+    { name: "reportId", index: 0, flag: undefined, encoding: "string" },
+    { name: "image", index: 1, flag: undefined, encoding: "stream" },
+    { name: "byteLength", index: 2, flag: undefined, encoding: "number" },
+  ]);
+  for (const node of ["AuthenticatedApi", "AdminApi"]) {
+    assert.deepEqual(real.nodes[node]!.commands["read-issue-report-image"]!.returns, { kind: "stream" }, node);
+  }
+  const view = real.nodes.AdminWorkspaceView!.commands;
+  assert.deepEqual(view["read-chat-attachment"]!.returns, { kind: "stream" });
+  // A file's answer says in JSON whether it is text, absent, unreadable or a stream of bytes, so it is a value marked for --out.
+  const content = 'AdminFileContent = { byteLength: number; content: ReadableStream; kind: "stream" } | { kind: "absent" } | ' +
+    '{ kind: "text"; text: string } | { kind: "unreadable"; message: string }';
+  for (const name of ["read-file", "read-file-at-commit", "read-pending-file"]) {
+    assert.deepEqual(view[name]!.returns, { kind: "value", type: content, stream: true }, name);
+  }
+  // A chat's page holds no stream: an image in it comes as its reference.
+  assert.equal("stream" in view["get-chat"]!.returns, false);
+});
+
+test("what a content read or a listing of reports may be given, but need not, is an option", () => {
+  const args = (node: string, command: string) => real.nodes[node]!.commands[command]!.args
+    .map(({ name, flag, encoding }) => ({ name, flag, encoding }));
+  assert.deepEqual(args("AdminWorkspaceView", "get-chat"), [
+    { name: "chatId", flag: undefined, encoding: "number" },
+    { name: "beforeSequence", flag: "before-sequence", encoding: "number" },
+  ]);
+  // The level a view is opened at, a report a grant comes with, and the admins' filters and cursor: one JSON object each.
+  assert.deepEqual(args("AdminApi", "inspect-workspace").at(-1), { name: "options", flag: "options", encoding: "json" });
+  assert.equal(real.shapes.AdminViewAccess!.kind, "union");
+  assert.equal(typeText(real.shapes.AdminViewAccess!), '"content" | "metadata"');
+  assert.deepEqual(args("Overseer", "grant-admin-access"), [{ name: "options", flag: "options", encoding: "json" }]);
+  assert.deepEqual(args("AuthenticatedApi", "grant-account-admin-access"), [{ name: "options", flag: "options", encoding: "json" }]);
+  assert.deepEqual(args("AdminApi", "list-issue-reports"), [{ name: "options", flag: "options", encoding: "json" }]);
+  // The reporter's own listing takes the cursor alone, and answers a page that may name the next.
+  const own = real.nodes.AuthenticatedApi!.commands["list-issue-reports"]!;
+  assert.deepEqual(args("AuthenticatedApi", "list-issue-reports"), [{ name: "cursor", flag: "cursor", encoding: "string" }]);
+  assert.deepEqual(own.returns, { kind: "value", type: "OwnIssueReportPage = { nextCursor?: string; reports: OwnIssueReport[] }" });
 });
 
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {

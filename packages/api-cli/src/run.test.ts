@@ -414,6 +414,9 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   assert.equal(searchCommands(realTable, "create a blueprint")[0].command, "cf-os api open-workspace <id> get-gadget <id> create-blueprint");
   assert.ok(searchCommands(realTable, "add a gatekeeper connection to a workspace")
     .some((match) => match.command === "cf-os api open-workspace <id> new-gatekeeper <accountId> <resourceUrl>"));
+  // Reading is one word with the API's `get`, "read" finding get-chat-history, and a command named `read` still comes first.
+  assert.equal(searchCommands(realTable, "read chat history")[0].command, "cf-os api open-workspace <id> get-chat-history <chatId>");
+  assert.equal(searchCommands(realTable, "read a blob")[0].command, "cf-os api open-workspace <id> read-blob <oid>");
   // A capability's CamelCase name is words: "client" meets GadgetClient's commands.
   assert.ok(searchCommands(realTable, "gadget client title").some((match) => match.command.endsWith(" get-gadget <id> get-title")));
   // Summaries are whole first sentences, not cut for a listing or at "e.g.".
@@ -518,6 +521,15 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ["share key", openWorkspace, 3],
     // An admin's write to a workspace.
     ["request a write to a workspace", / request-workspace-write </, 1],
+    // Issue reports: filing one sits among the reporter's commands for theirs.
+    ["report an issue", /^cf-os api submit-issue-report <report>$/, 3],
+    ["reply to an issue report", /^cf-os api reply-to-issue-report <reportId> <text>$/, 1],
+    // A grant for admins to read content: the account-wide one, one workspace's, and an admin ending an approval's.
+    ["give admins access", /^cf-os api grant-account-admin-access$/, 1],
+    ["give admins access", /^cf-os api open-workspace <id> grant-admin-access$/, 3],
+    ["end a grant", / end-workspace-grant <workspaceId> <grantId> <reason>$/, 1],
+    // An admin's read of a chat is the view's get-chat, which no word of the task names but "chat".
+    ["read a chat as admin", / inspect-workspace <workspaceId> <reason> get-chat <chatId>$/, 3],
   ];
   for (const [task, wanted, top] of cases) {
     const rank = rankOf(realTable, task, wanted);
@@ -834,6 +846,29 @@ test("an admin's view of a workspace has twenty-two commands, five of which read
     const { returns } = commands[name]!;
     assert.ok(returns.kind === "value" && returns.stream === true && returns.type.startsWith("AdminFileContent = "), name);
   }
+  // So --out names a file for a file read, whose JSON is what stdout holds, and a file or stdout for an attachment.
+  const out = (...tokens: string[]) => parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", ...tokens]).flags.out;
+  for (const [name, ...args] of [["read-file", "1", "p"], ["read-file-at-commit", "c", "p"], ["read-pending-file", "1", "1", "p"]]) {
+    assert.equal(out(name, ...args, "--out", "p.bin"), "p.bin", name);
+    assert.throws(() => out(name, ...args, "--out", "-"), (error: Error) => error instanceof UsageError &&
+      error.message === `${name} --out -: the result is printed on stdout, so its bytes need a file (--out <file>).`, name);
+  }
+  assert.equal(out("read-chat-attachment", "1", "a", "--out", "-"), "-");
+  assert.throws(() => out("get-chat", "1", "--out", "chat.json"), (error: Error) => error instanceof UsageError &&
+    error.message === "get-chat returns a value, not bytes: --out applies only to a command that returns bytes.");
+});
+
+test("help shows a reporter's cursor and an inspection's access as options, an image's length after its file, and where a file read's bytes go", () => {
+  assert.match(commandHelp(realTable, "AuthenticatedApi", "list-issue-reports", ["list-issue-reports"]),
+    /^Usage: cf-os api list-issue-reports \[--cursor <string>\]\n/);
+  const inspect = flat(commandHelp(realTable, "AdminApi", "inspect-workspace", ["get-admin-api", "inspect-workspace"]));
+  assert.match(inspect, /^Usage: cf-os api get-admin-api inspect-workspace <workspaceId> <reason> \[--options <json\|@file\|->\] /);
+  assert.match(inspect, /--options <json\|@file\|-> AdminWorkspaceInspectOptions = \{ access\?: AdminViewAccess; lifetimeSeconds\?: number \}/);
+  const image = flat(commandHelp(realTable, "AuthenticatedApi", "add-issue-report-image", ["add-issue-report-image"]));
+  assert.match(image, /^Usage: cf-os api add-issue-report-image <reportId> <image> <byteLength> /);
+  assert.match(image, /<image> <@file\|->: ReadableStream <byteLength> number /);
+  const file = flat(commandHelp(realTable, "AdminWorkspaceView", "read-file", ["get-admin-api", "inspect-workspace", "w", "why", "read-file"]));
+  assert.match(file, /Returns AdminFileContent = .*, printed as JSON; a byte stream inside it is written to --out <file>\./);
 });
 
 test("the root help says what `--` does, and that an option after it is a value", () => {

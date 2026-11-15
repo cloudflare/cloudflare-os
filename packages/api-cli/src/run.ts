@@ -1222,8 +1222,11 @@ export interface SearchMatch {
 const STOP_WORDS = new Set(["a", "an", "and", "all", "by", "for", "from", "i", "in", "into", "it", "its", "me",
   "my", "of", "on", "or", "the", "this", "to", "with"]);
 
-/** Stems that mean the same to a search: the API's verbs for creating something all say `new`. */
-const SAME_TERM: Record<string, string> = { add: "new", creat: "new", mak: "new" };
+/**
+ * Stems that mean the same to a search: the API's verbs for creating something all say `new`, and
+ * what a task calls reading the API mostly names `get` (a chat is read with `get-chat-history`).
+ */
+const SAME_TERM: Record<string, string> = { add: "new", creat: "new", mak: "new", read: "get" };
 
 /** `text`'s words, lowercased and crudely stemmed, so `chats` meets `chat` and `starts` `start`. */
 function searchTerms(text: string): string[] {

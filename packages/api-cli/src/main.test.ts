@@ -86,6 +86,21 @@ test("with CFOS_API_URL_UNAVAILABLE, a run that needs an instance exits 2 with t
   assert.equal(JSON.parse(explicit.stdout).url, "ws://localhost:9999/api");
 });
 
+test("search prints, among its five, the command that files an issue report, gives admins access, or reads a chat as an admin", () => {
+  const cases: [string, string][] = [
+    ["report an issue", "cf-os api submit-issue-report <report>"],
+    ["give admins access", "cf-os api open-workspace <id> grant-admin-access"],
+    ["read a chat as admin", "cf-os api get-admin-api inspect-workspace <workspaceId> <reason> get-chat <chatId>"],
+  ];
+  for (const [task, wanted] of cases) {
+    const search = cfOs(["api", "search", task]);
+    assert.equal(search.status, 0, search.stderr);
+    const commands = (JSON.parse(search.stdout) as { command: string }[]).map((match) => match.command);
+    assert.equal(commands.length, 5, task);
+    assert.ok(commands.includes(wanted), `"${task}" finds ${commands.join("; ")}`);
+  }
+});
+
 test("a usage error exits 2, printing nothing on stdout", () => {
   const nope = cfOs(["api", "nope"]);
   assert.equal(nope.status, 2);

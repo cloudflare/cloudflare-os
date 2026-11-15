@@ -65,6 +65,27 @@ pnpm cf-os api open-workspace <id> merge-changes <chatId>
 
 If `--timeout` runs out, the turn keeps going: wait again, or `stop-agent <chatId>`.
 
+## Issue reports, and an admin's read of content
+
+A report is filed first and its images are added to it after, each as a file followed by its
+length, which must be the file's exact size in bytes:
+
+```sh
+pnpm cf-os api submit-issue-report '{"text": "The chart is blank", "priority": "high", "context": {"workspaceId": "<id>"}}'
+pnpm cf-os api add-issue-report-image <reportId> shot.png $(wc -c < shot.png)
+```
+
+Leave the substitution unquoted: macOS's `wc` pads the number with blanks, which the shell drops
+only from an unquoted substitution, and the CLI refuses a number with blanks around it.
+
+An admin reads a workspace's content through a view opened for content, and only while a grant is
+live for that workspace. `--out <file>` saves a file the answer streams:
+
+```sh
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" --options '{"access": "content"}' get-chat <chatId>
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" --options '{"access": "content"}' read-file <gadgetId> <path> --out <file>
+```
+
 ## Gatekeeper app UIs, and what needs a browser
 
 `get-gatekeeper-app <vendor> ui` continues with the typed commands of the interface the gatekeeper
@@ -90,7 +111,10 @@ in a popup. Connect the account in the Workshop as the same user, and the CLI th
 Approving an admin's write to a workspace is left to a browser as well, since the CLI drives no
 authenticator: `get-admin-api request-workspace-write <workspaceId> <action> <args> <reason>` prints
 the request with its `approvalUrl`, an admin opens that page and confirms with a passkey, and
-`get-admin-api get-workspace-write <requestId>` then shows whether it was applied. Passkeys are
+`get-admin-api get-workspace-write <requestId>` then shows whether it was applied. A
+`grantContentAccess` request (reading a workspace's content without its owner) must be approved by
+another admin: the admin who ran the command hands the `approvalUrl` to a second one and cannot
+approve it themselves. Passkeys are
 enrolled and removed in the admin panel. That is a convenience and not the boundary: the server
 takes the passkey ceremonies' methods from any admin session, the CLI's included, and what it
 verifies is the passkey's assertion ([docs/admin-access.md](../../docs/admin-access.md)).
