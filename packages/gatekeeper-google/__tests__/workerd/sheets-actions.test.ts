@@ -3373,8 +3373,8 @@ describe("Google Sheets replay cost", () => {
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
-    "overlayCopies", "overlayEntries", "keysIndexed", "cellsKeyed", "digestedUnits", "fetches",
-    "responseBytes", "mostOpen", "indented",
+    "overlayCopies", "overlayEntries", "keysIndexed", "digestedUnits", "fetches", "responseBytes",
+    "mostOpen", "indented",
   ] as const;
   type Measure = typeof MEASURES[number];
   type Row = { phase: string; pending: number } & Record<Measure, number>;
@@ -3507,9 +3507,6 @@ describe("Google Sheets replay cost", () => {
         // Three copies a batch: the fold's, of no entry, and the two after it, of 0, 20, 40, 60
         // and 80 thousand entries each.
         overlayCopies: 15, overlayEntries: 400_000,
-        // The 20,000 cells each clearing batch guards, keyed once as they are read as entered and
-        // once more to be looked up.
-        cellsKeyed: 80_000,
         // Two guards of 20,000 cells at 16 units a cell (two areas of 160,001 units and 3 around
         // them: 320,029 each), and three of no cell (26 each).
         digestedUnits: 640_136,
@@ -3526,9 +3523,9 @@ describe("Google Sheets replay cost", () => {
         // Three copies to queue a batch and one to read: 15 and 5. The two copies after each
         // queueing fold hold the 100,000 entries.
         overlayCopies: 20, overlayEntries: 1_000_000,
-        // The one cell each batch overwrites, keyed twice. Its digest is of one cleared cell,
-        // `[[null]]`: 32 units.
-        cellsKeyed: 10, digestedUnits: 160,
+        // Each batch's digest is of the one cell it overwrites, a cleared one, `[[null]]`: 32
+        // units.
+        digestedUnits: 160,
         // To queue: the sheets and whether the account may edit, together, then the guarded cell
         // as entered, a block of 94 bytes. To read: the sheets and the 50,000 values, together.
         fetches: 25, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 5 * 134 + 5 * VALUES,
@@ -3575,10 +3572,8 @@ describe("Google Sheets replay cost", () => {
       {
         ...none, phase: "moved read", pending: 7 + N,
         overlayCopies: 1, keysIndexed: 100_000,
-        // The 499 rows below the inserted one, 49,900 cells: keyed as they are read as entered,
-        // and again to look up each of the two reads of them.
-        cellsKeyed: 149_700,
-        // The sheets, then the cells as entered, at 53 bytes a cell, and as shown, at 16, together.
+        // The sheets, then the 49,900 cells of the 499 rows below the inserted one as entered, at
+        // 53 bytes a cell, and as shown, at 16, together.
         fetches: 3, responseBytes: SHEETS + 2_651_240 + 799_562, mostOpen: 2,
       },
       {
@@ -3598,8 +3593,6 @@ describe("Google Sheets replay cost", () => {
         // 80,000 queued keys in each of the two replays, where a fold that stops nowhere indexes
         // them once.
         overlayCopies: 2, keysIndexed: 2 * 80_000,
-        // The 50,000 cells, keyed three times.
-        cellsKeyed: 150_000,
         // As `moved read`, of all 500 rows, and the sheets with the collaborator's frozen row (19
         // bytes).
         fetches: 3, responseBytes: SHEETS + 19 + 2_656_553 + 801_164, mostOpen: 2,
