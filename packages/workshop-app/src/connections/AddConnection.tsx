@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import type { RpcPromise } from 'capnweb'
 import type { GatekeeperClient } from '@gadgets/workshop-shared/api'
-import type { ResourceDescription } from '@gadgets/workshop-shared/gatekeeper'
+import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
+import { resourceGroups, resourceOfUrl } from './connectionGroups'
 import { ConnectResource } from './SetUpConnection'
 import { useServices } from './useServices'
 
@@ -28,7 +29,12 @@ export type AddConnectionProps = {
   onAdded: (connection: AddedConnection) => Promise<void>
 }
 
-type Chosen = ConnectionChoice & { vendorId: string; urlPattern: string }
+type Chosen = ConnectionChoice & {
+  vendorId: string
+  urlPattern: string
+  /** The kinds its form may choose among, when it stands for more than one (`groupedWith`). */
+  kinds: SupportedResource[]
+}
 
 /**
  * Adds a connection to a chat or a gadget, as the user chose rather than an agent asked: what to
@@ -48,15 +54,16 @@ export const AddConnection = ({ workspaceId, open, onOpenChange, to, onAdded }: 
     return services.vendors
       // Built-in services come with every chat already.
       .filter(({ unavailable, description }) => !unavailable && !description.autoProvisionsAccount)
-      .flatMap((vendor) => vendor.supportedResources
-        .filter(({ connectable }) => connectable !== false)
-        .map((resource): Chosen => ({
-          key: `${vendor.id} ${resource.urlPattern}`,
+      // A choice per group of kinds: Google Drive, rather than its folders, files and Docs apart.
+      .flatMap((vendor) => resourceGroups(vendor.supportedResources.filter(({ connectable }) => connectable !== false))
+        .map(({ lead, members }): Chosen => ({
+          key: `${vendor.id} ${lead.urlPattern}`,
           vendorId: vendor.id,
-          urlPattern: resource.urlPattern,
+          urlPattern: lead.urlPattern,
+          kinds: members,
           service: { name: vendor.description.displayName, logoUrl: vendor.description.logo?.url, color: vendor.description.color },
-          title: resource.title,
-          description: resource.description,
+          title: lead.title,
+          description: lead.description,
           connected: mine.has(vendor.id),
         })))
       .toSorted((a, b) => a.service.name.localeCompare(b.service.name) || a.title.localeCompare(b.title))
@@ -86,7 +93,7 @@ export const AddConnection = ({ workspaceId, open, onOpenChange, to, onAdded }: 
           service={{ vendorId: chosen.vendorId, name: chosen.service.name, logoUrl: chosen.service.logoUrl }}
           resourceUrlPattern={chosen.urlPattern}
           scope={chosen.title}
-          description={`Choose which ${chosen.title.toLowerCase()} ${to} can use.`}
+          description={chosen.kinds.length > 1 ? `Choose what in ${chosen.title} ${to} can use.` : `Choose which ${chosen.title.toLowerCase()} ${to} can use.`}
           onBack={() => setChosen(undefined)}
           onConnect={async (accountId, resourceUrl) => {
             // Disposed by hand: `using` is not lowered for every browser this runs in.
@@ -95,7 +102,9 @@ export const AddConnection = ({ workspaceId, open, onOpenChange, to, onAdded }: 
             const gatekeeper = overseer.newGatekeeper(accountId, resourceUrl) as RpcPromise<GatekeeperClient<never>>
             try {
               const [gatekeeperId, description] = await Promise.all([gatekeeper.getId(), gatekeeper.describe()])
-              await onAdded({ gatekeeperId, description, vendorId: chosen.vendorId, service: chosen.service, kind: chosen.title })
+              // What was chosen, which in a group may be any of its kinds.
+              const kind = resourceOfUrl(chosen.kinds, resourceUrl)?.title ?? chosen.title
+              await onAdded({ gatekeeperId, description, vendorId: chosen.vendorId, service: chosen.service, kind })
             } finally {
               gatekeeper[Symbol.dispose]()
               overseer[Symbol.dispose]()

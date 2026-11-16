@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { ConnectedAccount } from './ConnectedAccounts'
-import { accountName, groupConnections, newAccountOf } from './connectionGroups'
+import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
+import { accountName, grantedGroups, groupConnections, newAccountOf, resourceGroups, resourceOfUrl, resourcesOf, withGrouped } from './connectionGroups'
 
 const vendor = (id: string, extra: Partial<GatekeeperVendorInfo> & { ambient?: boolean } = {}): GatekeeperVendorInfo => ({
   id,
@@ -62,5 +63,53 @@ describe('newAccountOf', () => {
     const accounts = [account(1, 'github'), account(2, 'slack'), account(3, 'github')]
     expect(newAccountOf(accounts, 'github', new Set([1, 2]))?.id).toBe(3)
     expect(newAccountOf(accounts, 'slack', new Set([1, 2]))).toBeUndefined()
+  })
+})
+
+const DRIVE = 'https://drive.google.com/'
+const FOLDER = 'https://drive.google.com/drive/folders/:folderId'
+const FILE = 'https://drive.google.com/file/d/:fileId/view'
+const MAIL = 'https://mail.google.com/'
+const kind = (urlPattern: string, title: string, extra: Partial<SupportedResource> = {}): SupportedResource =>
+  ({ urlPattern, title, description: '', grantable: true, ...extra })
+// As Google lists them: a member before its group's lead, which an unrelated kind comes between.
+const google = [kind(FOLDER, 'Folder', { groupedWith: DRIVE }), kind(MAIL, 'Mail'), kind(DRIVE, 'Drive'), kind(FILE, 'File', { groupedWith: DRIVE })]
+
+describe('resourceGroups', () => {
+  it('shows the kinds grouped with one as one, named after it, in the order each group first comes', () => {
+    expect(resourceGroups(google).map(({ lead, members }) => [lead.title, members.map(({ title }) => title)]))
+      .toEqual([['Drive', ['Folder', 'Drive', 'File']], ['Mail', ['Mail']]])
+  })
+
+  it('names a group after its first other kind when its own is not offered', () => {
+    expect(resourceGroups(google.filter(({ title }) => title !== 'Drive'))[0]!.lead.title).toBe('Folder')
+  })
+})
+
+describe('resourcesOf', () => {
+  it('lists a row per group', () => {
+    expect(resourcesOf(google).map(({ title }) => title)).toEqual(['Drive', 'Mail'])
+  })
+})
+
+describe('withGrouped', () => {
+  it('asks for every grantable kind in each group chosen', () => {
+    expect(withGrouped([...google, kind('https://drive.google.com/x', 'X', { groupedWith: DRIVE, grantable: false })], [DRIVE]))
+      .toEqual([FOLDER, DRIVE, FILE])
+    expect(withGrouped(google, [MAIL])).toEqual([MAIL])
+  })
+})
+
+describe('grantedGroups', () => {
+  it('counts a group granted once all of its kinds are', () => {
+    expect(grantedGroups(google, [DRIVE, MAIL])).toEqual([MAIL])
+    expect(grantedGroups(google, [DRIVE, FOLDER, FILE])).toEqual([DRIVE])
+    expect(grantedGroups(google, undefined)).toBeUndefined()
+  })
+})
+
+describe('resourceOfUrl', () => {
+  it('finds the kind a chosen URL is of', () => {
+    expect(resourceOfUrl(google, 'https://drive.google.com/file/d/abc/view')?.title).toBe('File')
   })
 })

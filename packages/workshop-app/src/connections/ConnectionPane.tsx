@@ -8,7 +8,7 @@ import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
 import { openConnectWindow } from './connectHandoff'
-import { accountName, resourcesOf, serviceOf } from './connectionGroups'
+import { accountName, grantedGroups, resourcesOf, serviceOf, withGrouped } from './connectionGroups'
 import { changeGroups } from './changeGroups'
 import { useChangeDefaults } from './useChangeDefaults'
 import { useWorkspaceRules } from './useWorkspaceRules'
@@ -74,10 +74,10 @@ export const ConnectionPane = ({ accountId, onBack }: ConnectionPaneProps) => {
         account={accountName(account)}
         expired={!account.credentialsValid}
         resources={resourcesOf(account.supportedResources)}
-        granted={account.description.grantedResourceUrlPatterns}
+        granted={grantedGroups(account.supportedResources, account.description.grantedResourceUrlPatterns)}
         onGrant={async (urlPatterns) => {
           if (connection?.blocked()) return false
-          const flow = await api.ensureAccountResources(account.id, urlPatterns)
+          const flow = await api.ensureAccountResources(account.id, withGrouped(account.supportedResources, urlPatterns))
           if (flow) openConnectWindow(flow)
           return true
         }}

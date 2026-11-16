@@ -10,7 +10,7 @@ import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
 import { openConnectWindow } from './connectHandoff'
-import { accountName, newAccountOf } from './connectionGroups'
+import { accountName, groupOf, newAccountOf } from './connectionGroups'
 import { ResourceConfiguratorFrame } from './ResourceConfiguratorFrame'
 import { useServices } from './useServices'
 
@@ -166,6 +166,11 @@ export const ConnectResource = ({
   const vendor = services.status === 'ready' ? services.vendors.find(({ id }) => id === service.vendorId) : undefined
   const resources = vendor?.supportedResources ?? accounts?.[0]?.supportedResources ?? []
   const resource = resources.find(({ urlPattern }) => urlPattern === pattern)
+  // The kinds its form may choose: those shown with it (`groupedWith`), or, created, just it.
+  const kinds = pattern === undefined ? [] : create
+    ? [pattern]
+    : (groupOf(resources.filter(({ connectable }) => connectable !== false), pattern)?.members.map(({ urlPattern }) => urlPattern) ?? [pattern])
+  const grantable = resources.filter((candidate) => candidate.grantable && kinds.includes(candidate.urlPattern)).map(({ urlPattern }) => urlPattern)
 
   // The account chosen; until one is, the first that can be used.
   const [chosen, setChosen] = useState<number>()
@@ -178,8 +183,11 @@ export const ConnectResource = ({
   }
   const selected = accounts?.find(({ id }) => id === chosen) ?? accounts?.find(({ credentialsValid }) => credentialsValid) ?? accounts?.[0]
   const usable = selected?.credentialsValid ? selected : undefined
-  const needsGrant = usable !== undefined && pattern !== undefined && resource?.grantable === true &&
-    !isGranted(usable.description.grantedResourceUrlPatterns, pattern)
+  const ungranted = usable ? grantable.filter((kind) => !isGranted(usable.description.grantedResourceUrlPatterns, kind)) : []
+  // The form opens once the kind asked for may be reached, offering what else in it may be too;
+  // giving access asks for all of them at once.
+  const needsGrant = usable !== undefined && pattern !== undefined && ungranted.includes(pattern)
+  const accepted = kinds.filter((kind) => !ungranted.includes(kind))
   const grantedKey = usable?.description.grantedResourceUrlPatterns?.join('\n')
 
   // The service's form, for the account chosen once it may reach this kind of resource.
@@ -214,12 +222,11 @@ export const ConnectResource = ({
     // A new grant restarts it, as a form reads the kinds it may offer only when it starts.
   }, [api, reconnecting, accountId, pattern, grantedKey, service.name, create !== undefined])
 
-  const grantable = resources.filter((candidate) => candidate.grantable).map(({ urlPattern }) => urlPattern)
   const connect = async () => {
     if (connection?.blocked()) return false
     setBefore(new Set(accounts?.map(({ id }) => id)))
-    // Only what was asked for, where the service grants each kind on its own.
-    openConnectWindow(await api.connectAccount(service.vendorId, pattern && grantable.includes(pattern) ? [pattern] : undefined))
+    // Only what it may choose, where the service grants each kind on its own.
+    openConnectWindow(await api.connectAccount(service.vendorId, grantable.length > 0 ? grantable : undefined))
     return true
   }
 
@@ -251,7 +258,7 @@ export const ConnectResource = ({
       }}
       onGrant={needsGrant ? async () => {
         if (connection?.blocked()) return false
-        const flow = await api.ensureAccountResources(usable.id, [pattern])
+        const flow = await api.ensureAccountResources(usable.id, ungranted)
         if (flow) openConnectWindow(flow)
         return true
       } : undefined}
@@ -264,7 +271,7 @@ export const ConnectResource = ({
           key={shown.accountId}
           frame={shown.frame}
           initialResource={resourceUrl ? { resourceUrl, resourceUrlPattern: pattern } : undefined}
-          acceptedResourceUrlPatterns={[pattern]}
+          acceptedResourceUrlPatterns={accepted}
           ensureResources={async (urlPatterns) => {
             if (connection?.blocked()) return false
             const flow = await api.ensureAccountResources(shown.accountId, urlPatterns)

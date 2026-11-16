@@ -13,7 +13,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { ConnectedAccount } from './ConnectedAccounts'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
 import { openConnectWindow } from './connectHandoff'
-import { accountName, groupConnections, newAccountOf, resourcesOf, serviceOf } from './connectionGroups'
+import { accountName, groupConnections, newAccountOf, resourcesOf, serviceOf, withGrouped } from './connectionGroups'
 import { useServices } from './useServices'
 
 /** The service being connected; `before`: the accounts there were, so the one the flow makes is known when it comes. */
@@ -160,7 +160,7 @@ export const ConnectionsPane = ({ onOpenAccount }: ConnectionsPaneProps) => {
           ambient={target.vendor.description.autoProvisionsAccount}
           service={serviceOf(target.vendor.description)}
           resources={resourcesOf(target.vendor.supportedResources)}
-          onConnect={(urlPatterns) => connect(target.vendor, urlPatterns)}
+          onConnect={(urlPatterns) => connect(target.vendor, urlPatterns && withGrouped(target.vendor.supportedResources, urlPatterns))}
         />
       )}
     </PageLayout>
