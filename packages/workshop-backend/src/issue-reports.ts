@@ -1003,11 +1003,17 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     try {
       let dueBefore = await this.#dueBefore();
       // Chosen in `filed_at` order, which its index answers without reading the table.
-      let due = sql.exec<{ seq: number }>(
-        `SELECT seq FROM reports WHERE ${REPORT_DUE} AND NOT EXISTS
-           (SELECT 1 FROM images WHERE report_seq = reports.seq AND state = 'pending')
-         ORDER BY filed_at, seq LIMIT ?`, dueBefore, PRUNE_BATCH).toArray();
-      let seqs = JSON.stringify(due.map(({ seq }) => seq));
+      let image = "SELECT 1 FROM images WHERE report_seq = reports.seq";
+      let dueSeqs = (where: string, limit: number) => sql.exec<{ seq: number }>(
+        `SELECT seq FROM reports WHERE ${REPORT_DUE} AND ${where} ORDER BY filed_at, seq LIMIT ?`,
+        dueBefore, limit).toArray().map(({ seq }) => seq);
+      // The reports with no image fill the batch first, and those with images what is left of
+      // it: reports whose objects cannot be deleted stay due, and chosen by age alone they
+      // would fill every batch ahead of the reports that need nothing of the bucket.
+      let bare = dueSeqs(`NOT EXISTS (${image})`, PRUNE_BATCH);
+      let pictured = dueSeqs(`EXISTS (${image}) AND NOT EXISTS (${image} AND state = 'pending')`,
+          PRUNE_BATCH - bare.length);
+      let seqs = JSON.stringify([...bare, ...pictured]);
       let within = "IN (SELECT value FROM json_each(?))";
       let images = sql.exec<ImageKey>(
         `SELECT r.id AS report_id, i.id FROM images i JOIN reports r ON r.seq = i.report_seq

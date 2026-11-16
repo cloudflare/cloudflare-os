@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ISSUE_REPORT_ERROR_CODES, MAX_ISSUE_REPORT_IMAGES, MAX_ISSUE_REPORT_IMAGE_BYTES,
   MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER, MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER,
-  createIssueReportError, getIssueReportErrorCode,
+  MAX_ISSUE_REPORTS_PER_DAY, createIssueReportError, getIssueReportErrorCode,
   type AiChatAuthorInfo, type IssueReportErrorCode, type IssueReportImage,
 } from "@gadgets/workshop-shared/api";
 import { IssueReportsDurableObject } from "../src/issue-reports.js";
@@ -1349,6 +1349,52 @@ describe("deleting a report with its images", () => {
     expect(await reports.count("reports")).toBe(0);
     expect(await reports.count("images")).toBe(0);
     expect(await objectsOf(withImages.id)).toStrictEqual([]);
+  });
+
+  it("deletes the due reports with no image though a run's worth of older ones cannot go",
+      async () => {
+    let clock = fakeClock();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let down = true;
+    let bucket = wrappedBucket({
+      delete: (real, keys) => down ? unreachable() : real.delete(keys),
+    });
+    let reports = newStore(bucket.bucket);
+    // As many reports with an image as one run deletes, then two with none, filed after them.
+    let withImages: string[] = [];
+    let keys: string[] = [];
+    for (let i = 0; i < 102; i++) {
+      let report = await reports.file(
+          { id: `user-${Math.floor(i / MAX_ISSUE_REPORTS_PER_DAY)}`, name: "User" });
+      if (i >= 100) continue;
+      let image = await reports.insertImage(report.id, { state: "stored" });
+      await env.ISSUE_IMAGES.put(image.key, imageBytes(100));
+      withImages.push(report.id);
+      keys.push(image.key);
+    }
+    let kept = async () => (await reports.sql<{ id: string }>(
+        "SELECT id FROM reports ORDER BY seq")).map(row => row.id);
+    let objects = async () => (await Promise.all(withImages.map(objectsOf))).flat();
+    clock.advance(91 * DAY_MS);
+
+    await reports.run(store => store.alarm());
+    expect(await kept()).toStrictEqual(withImages);
+    expect(await reports.count("images")).toBe(100);
+    expect(await objects()).toStrictEqual(keys);
+    expect(await alarmAt(reports)).toBe(Date.now() + HOUR_MS);
+
+    // Nor do they hold up one that comes due while the bucket is still down.
+    await reports.file();
+    clock.advance(91 * DAY_MS);
+    await reports.run(store => store.alarm());
+    expect(await kept()).toStrictEqual(withImages);
+    expect(await objects()).toStrictEqual(keys);
+
+    down = false;
+    await reports.run(store => store.alarm());
+    expect(await reports.count("reports")).toBe(0);
+    expect(await reports.count("images")).toBe(0);
+    expect(await objects()).toStrictEqual([]);
   });
 
   it("keeps a stale upload whose object cannot be deleted, and comes back in an hour",
