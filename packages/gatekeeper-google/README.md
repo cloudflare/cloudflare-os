@@ -1707,10 +1707,11 @@ not slow as the connection stores more documents; neither does the removal of a 
 that keeps a document reads one small row for each copy the connection stores.
 
 A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds the
-text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide on a
+text of every slide's shapes and speaker notes, but no styles or geometry: about 2 KiB a slide on a
 live deck, so a presentation needs thousands of slides to exceed it. It also holds every master's
 and layout's name and background and the masters' theme colours, a few KiB in all. Slide content is
-read one slide at a time, capped at 2 MiB each. While changes await approval, reads also fetch the
+read one slide at a time, capped at 2 MiB each. Reads ask Google for compact JSON, so a cap counts
+content and no indentation. While changes await approval, reads also fetch the
 slides they address, so each can be checked as approving it would: slide content reads the other
 slides of any batch touching a slide it shows, since a batch applies all or none, and the summaries
 read every slide a queued batch changes, since they hold no tables or grouped shapes. Large batches

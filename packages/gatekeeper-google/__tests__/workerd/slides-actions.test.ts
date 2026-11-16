@@ -1445,9 +1445,9 @@ describe("Google Slides replay cost", () => {
   const PAGE_BYTES = 32_196;
   /** The same answer indented, as Google prints one not asked compact. */
   const PAGE_INDENTED = 93_183;
-  /** The outline of the fixture deck, and its summary, indented. */
-  const OUTLINE_INDENTED = 15_398;
-  const SUMMARY_INDENTED = 542_007;
+  /** The outline of the fixture deck, and its summary, asked compact as the client asks. */
+  const OUTLINE_BYTES = 8_826;
+  const SUMMARY_BYTES = 237_194;
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
@@ -1591,8 +1591,8 @@ describe("Google Slides replay cost", () => {
     let slides = gatekeeper();
 
     // The fixture is the size it claims, by the fake's own answers to a full read of one slide:
-    // a live slide of a title, eight lines and a 6 x 5 table is 31,474 bytes asked compact and
-    // 91,566 as the client asks, and the footer adds its own.
+    // a live slide of a title, eight lines and a 6 x 5 table is 31,474 bytes asked compact, as
+    // the client asks, and 91,566 indented, and the footer adds its own.
     let page = async (query: string) => (await (await provider.handle(new Request(
       `https://slides.googleapis.com/v1/presentations/deck-1/pages/${id(50)}?fields=${SLIDE_FIELDS}${query}`,
     )))!.arrayBuffer()).byteLength;
@@ -1600,10 +1600,10 @@ describe("Google Slides replay cost", () => {
     expect(compact).toBeGreaterThan(30_000);
     expect(compact).toBeLessThan(33_500);
     expect(compact).toBe(PAGE_BYTES);
-    let asAsked = await page("");
-    expect(asAsked).toBeGreaterThan(87_000);
-    expect(asAsked).toBeLessThan(97_000);
-    expect(asAsked).toBe(PAGE_INDENTED);
+    let indented = await page("");
+    expect(indented).toBeGreaterThan(87_000);
+    expect(indented).toBeLessThan(97_000);
+    expect(indented).toBe(PAGE_INDENTED);
 
     let totals = (): Record<Measure, number> => ({
       ...editorCost, cloneBytes: editorCost.pageClones * PAGE_BYTES,
@@ -1682,11 +1682,13 @@ describe("Google Slides replay cost", () => {
     });
 
     let none = Object.fromEntries(MEASURES.map(column => [column, 0])) as Record<Measure, number>;
-    // Every read is answered indented, so `indented` is `fetches` less the writes. A round trip is
-    // of a whole page, but for the outline's: `PAGE_BYTES` units for a slide as it was fetched, 126
-    // more for the copy, whose IDs are longer, 233 more for a slide whose title a queued edit holds
-    // as four runs in place of one, and one more for a slide whose number an earlier change of the
-    // fold made a digit longer (the footer's padding makes the pages one size as fetched only).
+    // Every read asks for compact JSON, so `indented` is 0 in every phase: the fake indents an
+    // answer that was not asked compact, and a read that forgot to ask would count here. A page is
+    // `PAGE_BYTES`, about a third of what it is indented. A round trip is of a whole page, but for
+    // the outline's: `PAGE_BYTES` units for a slide as it was fetched, 126 more for the copy, whose
+    // IDs are longer, 233 more for a slide whose title a queued edit holds as four runs in place of
+    // one, and one more for a slide whose number an earlier change of the fold made a digit longer
+    // (the footer's padding makes the pages one size as fetched only).
     expect(measured).toEqual([
       {
         ...none, phase: "queue N, a read after each", pending: N,
@@ -1702,8 +1704,8 @@ describe("Google Slides replay cost", () => {
         // Each queued change is measured once, and each read's 20 slides, about 3.7 KB a slide.
         measuredStrings: 10, longestMeasured: 74_091,
         // One page to queue each change, 20 for each read, and an outline with each.
-        pageFetches: 105, fetches: 115, responseBytes: 105 * PAGE_INDENTED + 10 * OUTLINE_INDENTED,
-        mostOpen: 20, indented: 115,
+        pageFetches: 105, fetches: 115, responseBytes: 105 * PAGE_BYTES + 10 * OUTLINE_BYTES,
+        mostOpen: 20,
       },
       {
         ...none, phase: "read", pending: N,
@@ -1711,8 +1713,8 @@ describe("Google Slides replay cost", () => {
         // two of an edited slide and one of a slide numbered a digit more.
         pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 39, roundTripUnits: 1_256_363,
         measuredStrings: 1, longestMeasured: 74_090,
-        pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_INDENTED + OUTLINE_INDENTED,
-        mostOpen: 20, indented: 21,
+        pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES,
+        mostOpen: 20,
       },
       {
         ...none, phase: "outline", pending: N,
@@ -1721,8 +1723,8 @@ describe("Google Slides replay cost", () => {
         // (the copy's two 126 more, two a digit more), but for the two edited slides, read whole.
         pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 199, roundTripUnits: 527_471,
         // The summary, then the two slides queued batches edit, together.
-        pageFetches: 2, fetches: 3, responseBytes: SUMMARY_INDENTED + 2 * PAGE_INDENTED,
-        mostOpen: 2, indented: 3,
+        pageFetches: 2, fetches: 3, responseBytes: SUMMARY_BYTES + 2 * PAGE_BYTES,
+        mostOpen: 2,
       },
       {
         ...none, phase: "queue a move of 99", pending: N + 1,
@@ -1732,8 +1734,8 @@ describe("Google Slides replay cost", () => {
         // The queued move alone: 99 labels and the slide they follow.
         measuredStrings: 1, longestMeasured: 6_138,
         // The 100 slides named, whole and at once, to label them.
-        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_INDENTED + OUTLINE_INDENTED,
-        mostOpen: 100, indented: 101,
+        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_BYTES + OUTLINE_BYTES,
+        mostOpen: 100,
       },
       {
         ...none, phase: "queue a skip of 100", pending: N + 2,
@@ -1741,16 +1743,16 @@ describe("Google Slides replay cost", () => {
         // of them the copy and four a slide numbered a digit more.
         pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 296, roundTripUnits: 9_530_866,
         measuredStrings: 1, longestMeasured: 6_130,
-        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_INDENTED + OUTLINE_INDENTED,
-        mostOpen: 100, indented: 101,
+        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_BYTES + OUTLINE_BYTES,
+        mostOpen: 100,
       },
       {
         ...none, phase: "approve", pending: N + 1,
         // The edit is built again over a fresh read of its slide: one clone, the outline, the page,
         // and the write, whose answer is 20 bytes.
         pageClones: 1, cloneBytes: PAGE_BYTES,
-        pageFetches: 1, fetches: 3, responseBytes: OUTLINE_INDENTED + PAGE_INDENTED + 20,
-        mostOpen: 1, indented: 2,
+        pageFetches: 1, fetches: 3, responseBytes: OUTLINE_BYTES + PAGE_BYTES + 20,
+        mostOpen: 1,
       },
       // A rejection reads nothing.
       { ...none, phase: "reject", pending: N },
@@ -1763,9 +1765,9 @@ describe("Google Slides replay cost", () => {
         pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 57, roundTripUnits: 1_835_715,
         // The 20 slides, each with the conflict's text.
         measuredStrings: 1, longestMeasured: 77_648,
-        // As `read`, less the 201 bytes slide 1 lost when the fake stored its approved edit as one run.
-        pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_INDENTED + OUTLINE_INDENTED - 201,
-        mostOpen: 20, indented: 21,
+        // As `read`, less the 71 bytes slide 1 lost when the fake stored its approved edit as one run.
+        pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES - 71,
+        mostOpen: 20,
       },
     ]);
   });

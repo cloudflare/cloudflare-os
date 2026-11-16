@@ -276,6 +276,9 @@ export class GoogleSheetsApi {
   async getSpreadsheet(spreadsheetId: string): Promise<SpreadsheetInfo> {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
     url.searchParams.set("fields", `${SPREADSHEET_FIELDS},sheets(${SHEET_PROPERTIES_FIELDS})`);
+    // Every read asks for compact JSON: Google indents an answer otherwise, and the indentation is
+    // fetched, held as text and counted against the response cap.
+    url.searchParams.set("prettyPrint", "false");
     return spreadsheetInfo(await this.#request<RestSpreadsheet>(url, "get spreadsheet"));
   }
 
@@ -359,6 +362,7 @@ export class GoogleSheetsApi {
     url.searchParams.set("majorDimension", "ROWS");
     url.searchParams.set("valueRenderOption", valueRenderOption(valueMode));
     if (valueMode === "raw") url.searchParams.set("dateTimeRenderOption", "SERIAL_NUMBER");
+    url.searchParams.set("prettyPrint", "false");
 
     let result = await this.#request<{ valueRanges?: RestValueRange[] }>(
       url,
@@ -441,8 +445,11 @@ export class GoogleSheetsApi {
     spreadsheetId: string, areas: readonly SheetArea[], valueMode: SpreadsheetValueMode,
   ): Promise<SpreadsheetCellValue[][][]> {
     if (areas.length === 0) return [];
+    let url = new URL(
+      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`);
+    url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(
-      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`,
+      url.toString(),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -579,6 +586,7 @@ export class GoogleSheetsApi {
     let url = new URL(
       `${API_BASE}/${encodeURIComponent(spreadsheetId)}/developerMetadata/${metadataId}`);
     url.searchParams.set("fields", "metadataValue");
+    url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(
       url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );

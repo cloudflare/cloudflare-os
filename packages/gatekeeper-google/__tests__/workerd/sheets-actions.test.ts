@@ -3188,12 +3188,12 @@ describe("Google Sheets replay cost", () => {
   /** The cells a read may hold at once, which the sheet's values fill. */
   const READ = `Data!A1:CV${ROWS}`;
   /**
-   * The fake's answers, in bytes: the spreadsheet's sheets and the values of `READ`, both
-   * indented, and whether the account may edit, which is Drive's.
+   * The fake's answers, in bytes: the spreadsheet's sheets and the values of `READ`, both asked
+   * compact as the client asks, and whether the account may edit, which is Drive's.
    */
-  const SHEETS = 562;
+  const SHEETS = 328;
   const CAN_EDIT = 33;
-  const VALUES = 1_360_128;
+  const VALUES = 801_078;
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
@@ -3333,8 +3333,10 @@ describe("Google Sheets replay cost", () => {
     // A fold copies the overlay once for each pending batch, the first copy of a grid with nothing
     // queued: the five batches of `build` are copied at 0, 20, 40, 60 and 80 thousand entries
     // (200,000), and every batch after them at 100,000. Queueing copies the folded grid twice
-    // more, in `resolveChanges` and in `guardCells`. The sheets and the values are answered
-    // indented; cells as entered and formats, which are asked compact, are not.
+    // more, in `resolveChanges` and in `guardCells`. Every read asks for compact JSON, so
+    // `indented` is 0 in every phase: the fake indents an answer that was not asked compact, and a
+    // read that forgot to ask would count here. The 50,000 values are 16 bytes a cell, where they
+    // are 27 indented.
     //
     // A batch is measured twice, as submitted and as stored, and the stored one is the longer:
     // 212 units (the label of its sheet, a digest of 64 digits, a marker ID of ten and a token of
@@ -3363,7 +3365,7 @@ describe("Google Sheets replay cost", () => {
         // of the first guard's two blocks names it and both of the second's, with a comma between
         // the two.
         fetches: 12, responseBytes: 5 * SHEETS + 5 * CAN_EDIT + 1_062_682 + 1_062_697,
-        mostOpen: 2, indented: 5,
+        mostOpen: 2,
       },
       {
         ...none, phase: "queue N, a read after each", pending: 5 + N,
@@ -3377,21 +3379,21 @@ describe("Google Sheets replay cost", () => {
         // To queue: the sheets and whether the account may edit, together, then the guarded cell
         // as entered, a block of 94 bytes. To read: the sheets and the 50,000 values, together.
         fetches: 25, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 5 * 134 + 5 * VALUES,
-        mostOpen: 2, indented: 15,
+        mostOpen: 2,
       },
       {
         ...none, phase: "read", pending: 5 + N,
         overlayCopies: 10, overlayEntries: 700_000,
         // The sheets and the 50,000 values, together.
-        fetches: 2, responseBytes: SHEETS + VALUES, mostOpen: 2, indented: 2,
+        fetches: 2, responseBytes: SHEETS + VALUES, mostOpen: 2,
       },
       {
         ...none, phase: "formats read", pending: 5 + N,
         overlayCopies: 10, overlayEntries: 700_000,
         // The result, which repeats the queued format across the 10,000 cells.
         measuredStrings: 1, longestMeasured: 140_971,
-        // The sheets, and the formats Google holds for the cells, asked compact, together.
-        fetches: 2, responseBytes: SHEETS + 35_008, mostOpen: 2, indented: 1,
+        // The sheets, and the formats Google holds for the cells, together.
+        fetches: 2, responseBytes: SHEETS + 35_008, mostOpen: 2,
       },
       {
         ...none, phase: "queue a deleted row", pending: 6 + N,
@@ -3406,7 +3408,7 @@ describe("Google Sheets replay cost", () => {
         measuredStrings: 2, longestMeasured: 354, digestedUnits: 527,
         // The sheets and whether the account may edit, together, then the deleted row as entered:
         // a block of 16 bytes, which names its first row and holds no cell.
-        fetches: 3, responseBytes: SHEETS + CAN_EDIT + 56, mostOpen: 2, indented: 1,
+        fetches: 3, responseBytes: SHEETS + CAN_EDIT + 56, mostOpen: 2,
       },
       {
         ...none, phase: "queue an inserted row", pending: 7 + N,
@@ -3418,7 +3420,7 @@ describe("Google Sheets replay cost", () => {
         // and no guarded area (2). Its digest is of the sheet, of 999 rows by then, and no cell.
         measuredStrings: 2, longestMeasured: 271, digestedUnits: 25,
         // The sheets and whether the account may edit, together.
-        fetches: 2, responseBytes: SHEETS + CAN_EDIT, mostOpen: 2, indented: 1,
+        fetches: 2, responseBytes: SHEETS + CAN_EDIT, mostOpen: 2,
       },
       {
         ...none, phase: "moved read", pending: 7 + N,
@@ -3426,15 +3428,15 @@ describe("Google Sheets replay cost", () => {
         // The 499 rows below the inserted one, 49,900 cells: keyed as they are read as entered,
         // and again to look up each of the two reads of them.
         cellsKeyed: 149_700,
-        // The sheets, then the cells as entered (compact) and as shown (indented) together.
-        fetches: 3, responseBytes: SHEETS + 2_651_240 + 1_459_397, mostOpen: 2, indented: 2,
+        // The sheets, then the cells as entered, at 53 bytes a cell, and as shown, at 16, together.
+        fetches: 3, responseBytes: SHEETS + 2_651_240 + 799_562, mostOpen: 2,
       },
       {
         ...none, phase: "approve", pending: 6 + N,
         // The batch is planned again over the sheets as they are, with nothing queued. It formats,
         // so its digest is of no cell. The sheets, then the write, whose answer is 20 bytes.
         overlayCopies: 1, digestedUnits: 26,
-        fetches: 2, responseBytes: SHEETS + 20, mostOpen: 1, indented: 1,
+        fetches: 2, responseBytes: SHEETS + 20, mostOpen: 1,
       },
       // A rejection reads nothing.
       { ...none, phase: "reject", pending: 5 + N },
@@ -3446,8 +3448,9 @@ describe("Google Sheets replay cost", () => {
         overlayCopies: 11, overlayEntries: 679_900, keysIndexed: 80_000,
         // The 50,000 cells, keyed three times.
         cellsKeyed: 150_000,
-        // As `moved read`, of all 500 rows, and the sheets with the collaborator's frozen row.
-        fetches: 3, responseBytes: SHEETS + 31 + 2_656_553 + 1_462_321, mostOpen: 2, indented: 2,
+        // As `moved read`, of all 500 rows, and the sheets with the collaborator's frozen row (19
+        // bytes).
+        fetches: 3, responseBytes: SHEETS + 19 + 2_656_553 + 801_164, mostOpen: 2,
       },
     ]);
   });
