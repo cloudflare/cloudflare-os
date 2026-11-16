@@ -14,6 +14,9 @@ export const COMPATIBILITY_DATE = "2026-09-04";
 /** Observability settings shared by the deployed Workers; workshop-backend extends them with traces. */
 export const OBSERVABILITY = {
   enabled: true,
+  // Workers Issues is a per-Worker setting a deploy resets to whatever the config says, so it
+  // must be declared here or every deploy turns it off.
+  issues: { enabled: true },
   headSamplingRate: 1,
   logs: { invocationLogs: false },
 } satisfies NonNullable<WorkerConfig["observability"]>;
