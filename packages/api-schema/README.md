@@ -138,6 +138,29 @@ pnpm api-schema:generate
 generates unconditionally and prints `{"files": [...]}` on stdout, the files written or removed;
 everything else goes to stderr. A method the CLI cannot represent fails either, naming it.
 
+## Serving one capability from its schema
+
+Two modules are for a host that serves one capability from its schema alone, such as a
+Gatekeeper that hands an agent a stub of one service and forwards its calls: it bundles the schema
+of that service rather than the whole API, and has no implementation to validate a call against.
+
+- `src/subset.ts`: `subsetSchema(schema, { root, omit })` is the schema of what a holder of a
+  `root` stub reaches: `root` as its `entry`, every service and named shape reachable from it
+  through methods' parameters and results and through properties, each service's methods less
+  `omit` (`"method"` on every service or `"Service.method"` on one, as `emitDeclarations()` takes
+  them), and no constants. What it keeps it keeps whole, docs and tags included, and each
+  service's `direction` stays the source's. The invariant, which the tests hold on the Workshop
+  API: `emitDeclarations(subsetSchema(schema, { root, omit }), { root })` equals
+  `emitDeclarations(schema, { root, omit })`, in `full` and in `fragments`, so the declarations
+  a host renders from its subset are the ones the whole schema gives.
+- `src/check.ts`: `checkArguments(schema, service, method, args)` lists what is wrong with `args`
+  as the arguments of `service.method`, one line a problem, naming the parameter and the path
+  into it (`options.limit: expected number`), at most `MAX_ARGUMENT_PROBLEMS` of them: a missing
+  required argument, one too many, a value of another shape, an object key the shape does not
+  declare. A capability, a function and a stream are always a problem, since a caller that passes
+  values has none to pass, and `any` and `unsupported` accept anything. It lets a host refuse a
+  malformed call in words its caller can act on; the call is validated again where it lands.
+
 ## What is generic, and what is not
 
 `src/` knows nothing about this repository, so it can move unchanged:
@@ -152,6 +175,8 @@ everything else goes to stderr. A method the CLI cannot represent fails either, 
   root service, the methods to omit): no `node:` imports, file system, clock, randomness or
   environment, and deterministic output: the shape of a forge plugin, so they can move to forge
   with the rest of the pipeline once it supports Cap'n Web.
+- `src/subset.ts` and `src/check.ts` are pure in the same way: functions of a `Schema` and their
+  arguments.
 
 `scripts/generate.ts` is the only product-specific file: it names `api.ts` and its tsconfig, the
 entry `PublicApi`, the constant `SERVICE_SALT`, the agent root `AuthenticatedApi` and the methods
