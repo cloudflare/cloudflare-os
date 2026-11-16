@@ -121,6 +121,29 @@ reaches the reporter: not through a method, a count, a time or an id.
 A reporter may write `MAX_ISSUE_REPORT_REPLIES_PER_DAY` (100) replies in a UTC day, over all
 their reports (`tooManyReplies`).
 
+### Entries an agent wrote
+
+An admin's agent can write to a thread through the admin gatekeeper (see
+[admin-access.md](admin-access.md#through-an-agent)). Such an entry is the admin's, written
+through the admins' methods like any other, and its `via` is `"gatekeeper"`.
+
+- **The reporter reads that an agent wrote it, and nothing more.** The entry reaches the
+  reporter with `via` and the admin's name, and the Workshop shows its author as "Agent, for"
+  that admin.
+- **Admins also read where it came from** (`agent`: the workspace whose connection made the call
+  and, when there is one, the chat). It is never returned to the reporter.
+- **A public reply through the whole admin binding always waits for a person**, whatever
+  auto-approval rules its workspace has: an agent that can read what only admins see never posts
+  to a reporter by itself.
+- **A public reply through a session limited to the report can be applied by a rule**, in a
+  workspace that has read nothing through the whole binding and nothing of a reporter's
+  workspace that holds restricted data. Such a session reads the report as its reporter does,
+  and the reporter's workspace only as the reporter chose to show it, so its answer holds
+  nothing the reporter could not see. Either of those reads marks the workspace as holding
+  restricted data, and no rule applies anything there afterwards.
+- **An admins-only note and a status change** are queued as actions too, and applied by a person
+  or, where the workspace has a rule for the kind and holds no restricted data, by that rule.
+
 ## Statuses
 
 | Status | Meaning |
@@ -146,6 +169,47 @@ text, and it tells the reporter where the report stands without counting as an a
 - setting the status a report already has adds nothing.
 
 The reporter's reopening reply carries the status it set (`withAdmin`) the same way.
+
+A status an agent set for an admin is the same line, with `via: "gatekeeper"`: the reporter
+reads "Agent, for" that admin, and admins also read the workspace and the chat it came from. It
+is set over whatever status the report has by the time the action is applied.
+
+## Hooks
+
+The admin gatekeeper offers two hooks to the code of a workspace that has its connection (see
+[its README](../packages/gatekeeper-instanceadmin/README.md#hooks)):
+
+| Hook | Fires | Its event |
+| --- | --- | --- |
+| Issue reported | Once for each report filed. | The report's id, its priority and when it was filed. |
+| Investigation complete | Once each time an admin moves a report from `investigating` to `answered`, `waitingOnReporter`, `withAdmin` or `closed`. | The report's id, its status and when it changed. |
+
+An event carries ids and labels only: a subscriber reads the report through its own connection.
+Only a deployment admin can hold that connection, and a hook delivers only while its workspace's
+owner is one. A hook wakes a gadget's stored callback or an existing chat; it opens no chat.
+
+- **"Issue reported" fires at `submitIssueReport()`**, before the reporter's client has called
+  `addIssueReportImage()` or given the grant that may come with the report. A subscriber that
+  reads at once may see no image and be refused content, and reads again later.
+- **Delivery is at least once.** A subscriber sees an event twice only when its own callback
+  failed or timed out part of the way through, so a callback keys its work by the report's id
+  (and its status).
+
+**The store's outgoing events.** The report store tells the gatekeeper; the gatekeeper holds
+nothing it could ask with. The store writes one row per event (`events`: a sequence number, the
+kind, the report's id, the priority or the status, and the time) in the same step as the change
+it reports, and deletes the row once the gatekeeper has taken it.
+
+- **It sends them oldest first**, `EVENT_BATCH` (100) a call, as soon as the change is stored
+  and again from its alarm.
+- **A call that is rejected, or has not settled within `EVENT_RETRY_MS` (a minute), is given up
+  on**, and its rows are offered again with the same sequence numbers. A row not taken for
+  `EVENT_MAX_AGE_MS` (a day) is dropped.
+- **Where the gatekeeper is not bound or is turned off, every row is deleted**: nobody is to be
+  told, and turning the gatekeeper on later replays nothing.
+- **It never delays the retention pass.** Every alarm runs the pass first and then offers the
+  waiting events, and the alarm comes back within `EVENT_RETRY_MS` while one waits. So the pass
+  can run more often than its own cadence, and never less.
 
 ## Links
 
@@ -370,6 +434,12 @@ What is recorded there:
 An owner's grant, given with a report or not, is the owner's own record and is not in the audit
 log either; the report's copy of it is where admins see it.
 
+An agent's entries and status lines are recorded in the thread like any admin's, with `via`
+`"gatekeeper"` and the workspace and the chat they came from: admins read that origin, and the
+reporter reads only that an agent wrote the entry. An agent's reads of reports leave no audit
+record, as an admin's do not. Their one trace is the observation in the activity of the
+workspace that read, which is deleted with that workspace.
+
 ## The Workshop
 
 - **Report issue** is one component (`features/issue-reports/`), offered in the user menu, the
@@ -393,12 +463,14 @@ log either; the report's copy of it is where admins see it.
   dialog closes or goes away. Where the browser has no screen capture the button is
   absent, and nothing is captured without the press and the browser's prompt.
 - **My issues** (`/issues`, with a sidebar item that carries the count): the reporter's reports
-  with their statuses, the public thread where they reply, the images they sent, and the grants
-  they gave, each with Renew and End access. End access ends that one grant, and the page says
+  with their statuses, the public thread where they reply (an entry an agent wrote for an admin
+  is shown as "Agent, for" that admin), the images they sent, and the grants they gave, each
+  with Renew and End access. End access ends that one grant, and the page says
   so: any other grant the owner gave stays until it is ended too.
 - **The Reports tab** of the admin panel: the list with its filters, a report with its whole
-  thread, a reply, an admins-only note, the links, the status, the images, the grant that came
-  with it and its time left, the retention setting, and the way into the workspace's admin page.
+  thread (an agent's entry with the workspace and the chat it came from), a reply, an
+  admins-only note, the links, the status, the images, the grant that came with it and its time
+  left, the retention setting, and the way into the workspace's admin page.
 
 ## Error codes
 
@@ -407,7 +479,7 @@ Expected refusals carry a code from `ISSUE_REPORT_ERROR_CODES` (read with
 
 | Code | When |
 | --- | --- |
-| `ISSUE_REPORT_NOT_FOUND` | No such report, or one that is not the caller's; an image that is not stored in it; an upload to a report past its retention; a report that cannot be linked to the grant being given. |
+| `ISSUE_REPORT_NOT_FOUND` | No such report, or one that is not the caller's; an image that is not stored in it; an upload to a report past its retention; a report that cannot be linked to the grant being given; an admin view opened for a report (`forIssueReport`) that the workspace's owner did not file about that workspace. |
 | `ISSUE_REPORT_CONTEXT_NOT_FOUND` | The report names a workspace, chat or gadget its reporter cannot open. |
 | `ISSUE_REPORT_CLOSED` | A reply or an image for a closed report. |
 | `ISSUE_REPORT_TOO_MANY` | The reporter filed `MAX_ISSUE_REPORTS_PER_DAY` reports today. |
@@ -435,6 +507,14 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   uploads included; a declared length the stream must match; an upload cut off, and one swept;
   what a failed upload leaves in the bucket; the reads, with the row checked first; and deletion
   with a report, while the bucket answers and while it does not.
+- `issue-report-events.test.ts`: the events the store sends the admin gatekeeper. One for each
+  report filed and each end of an investigation, and none for any other change of status; a
+  delivery that is not taken, offered again with its sequence number and dropped after a day; a
+  deployment whose gatekeeper is off or not bound; what arms the alarm; the retention pass
+  running first; and a gatekeeper that does not answer.
+- `issue-reports.test.ts` also covers an entry and a status line written through the admin
+  gatekeeper: `via` and the origin kept, the origin returned to admins and never to the
+  reporter, and a store whose `entries` table gains the `agent` column.
 - `issue-report-context.test.ts`: `issueReportContext()` for an owner, a `build` and a `use`
   collaborator, a stranger and a workspace that does not exist, writing nothing.
 - `chat-attachment-validation.test.ts` also covers `sniffImageMimeType()`.

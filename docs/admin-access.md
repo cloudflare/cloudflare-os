@@ -40,14 +40,18 @@ The API itself is documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserV
 | The account-wide grant | `packages/workshop-backend/src/user.ts` |
 | Who counts as one admin where two are required (`sameDeploymentAdmin`) | `packages/workshop-backend/src/auth/config.ts` |
 | An admin's page for one workspace: its live grants, ending one, asking for content access | `packages/workshop-frontend/src/pages/admin-workspace/` |
+| What an agent may do with each `AdminApi` method (`ADMIN_AGENT_KINDS`, `ADMIN_AGENT_ACTIONS`) | `packages/workshop-shared/src/admin-agent.ts` |
+| Lending a workspace owner's Admin API to the admin gatekeeper (`lendAdminApi`, `restrictAdminApi`) | `packages/workshop-backend/src/overseer.ts`, `packages/workshop-backend/src/admin-agent.ts` |
+| The admin gatekeeper | `packages/gatekeeper-instanceadmin/` |
 
 ## Entry points
 
-Everything goes through `AuthenticatedApi.getAdminApi()`, which returns null unless the
-caller is an admin. The admin check runs once, when the capability is minted, for every `AdminApi`
-method except inspection, which checks again, of a workspace (see [Inspection](#inspection)) and of
-a user's account (see [User inspection](#user-inspection)) alike, and the write-request, passkey,
-grant and issue report methods, which check on every call (see [Writes](#writes)).
+A client reaches everything through `AuthenticatedApi.getAdminApi()`, which returns null unless
+the caller is an admin. The admin check runs once, when the capability is minted, for every
+`AdminApi` method except inspection, which checks again, of a workspace (see
+[Inspection](#inspection)) and of a user's account (see [User inspection](#user-inspection))
+alike, and the write-request, passkey, grant and issue report methods, which check on every call
+(see [Writes](#writes)).
 
 - **Settings**: the setters (signups, user search, site name and logo, instructions,
   resource and gatekeeper availability, models, update checks, ...), plus
@@ -73,9 +77,16 @@ grant and issue report methods, which check on every call (see [Writes](#writes)
   `beginAdminPasskeyRemoval()` and `removeAdminPasskey()`. The listing and the two removal methods
   answer while writes are off too.
 
-Each record's `via` (`AdminVia`) comes from the session's User-Agent: `"cli"` when the `/api`
-upgrade names `cf-os api` (`cf-os-api/<version>`), `"api"` for any other client, the Workshop's
-admin panel included. A client can send any User-Agent, so it labels records and grants nothing.
+An admin reaches it three ways: from the Workshop's admin panel, from `cf-os api`, and through an
+agent, in a workspace the admin owns and has added the admin gatekeeper's connection to (see
+[Through an agent](#through-an-agent)). The third is not a session of `getAdminApi()`: the
+workspace lends the gatekeeper its owner's Admin API, less the methods an agent is not given.
+
+Each record's `via` (`AdminVia`) says which. For a session it comes from the User-Agent: `"cli"`
+when the `/api` upgrade names `cf-os api` (`cf-os-api/<version>`), `"api"` for any other client,
+the Workshop's admin panel included. A client can send any User-Agent, so it labels records and
+grants nothing. `"gatekeeper"` is not a client's claim: only a workspace sets it, on the Admin API
+it lends the admin gatekeeper (see [The audit](#the-audit)).
 Each capability mints a random `sessionId`, so every record made through one `getAdminApi()` call,
 settings and inspections alike, shares its `via` and `sessionId` and can be read as one session.
 
@@ -160,9 +171,10 @@ re-checks that the caller is an admin, reads the access policy from the authorit
 `AdminSettings` config (not the KV mirror: a mirror still saying `"metadata"` after an admin turned
 access off, or `"content"` after an admin lowered the level, must not mint a view above the level
 in force), and then calls `OverseerDurableObject.openForAdmin(adminId, reason, sessionId, terms)`.
-The terms carry the session's `via`, what the view was opened for (`access`: `"metadata"`, or
-`"content"` when the open asked for it, see [Opening for content](#opening-for-content)) and the
-view's expiry (`expiresAt`).
+The terms carry the caller's `via` and, for a call made through the admin gatekeeper, where it
+came from (`agent`), what the view was opened for (`access`: `"metadata"`, or `"content"` when
+the open asked for it, see [Opening for content](#opening-for-content)), the issue report it was
+opened for when there is one (`forIssueReport`) and the view's expiry (`expiresAt`).
 
 `AdminApiImpl` checks an open of either kind, `inspectWorkspace()` or `inspectUser()`, with
 `#openTerms()`, in the order the API documents: the reason and the lifetime, that the caller is
@@ -171,6 +183,13 @@ level, against the committed config. While that level is `"off"`, each method re
 refused open and refuses, and so does `inspectWorkspace()` for an open that asks for content
 while the level is below `"content"` (see
 [Which refusals are recorded](#which-refusals-are-recorded)).
+
+Neither a workspace nor an account checks the terms it is opened with, so `AdminApiImpl` does
+before it sends them. The label it puts on the terms and on its own record of a refused open is
+what `adminCallerTerms()` returns for the capability's caller: `"api"` or `"cli"` with no
+origin, or `"gatekeeper"` with the workspace and, when there is one, the chat, and a `TypeError`
+for anything else. `inspectWorkspace()` also refuses, with a `TypeError` and before anything is
+reached, a `forIssueReport` that is not a non-empty string of at most 128 characters.
 
 `openForAdmin()`:
 
@@ -322,6 +341,14 @@ content reads are refused (`contentNotRequested`) and every other method answers
 What a view was opened for is fixed for its life and is on every record it makes (`requested`).
 An investigation therefore starts on a metadata view and moves to content deliberately, in a
 second `inspectWorkspace()` call with a reason of its own, and the log shows when it did.
+
+**A view can be opened for one issue report** (`AdminWorkspaceInspectOptions.forIssueReport`,
+which the admin gatekeeper's session limited to one report uses: see
+[Through an agent](#through-an-agent)). Only the grant the workspace's owner gave with that
+report, or the owner's account-wide grant, then answers a content call, and the view's
+description lists no other grant. Such a view is opened only for a report the workspace's owner
+filed about that workspace: any other is refused as a report that does not exist
+(`ISSUE_REPORT_NOT_FOUND`), unrecorded, since nothing of the workspace was read.
 
 The Workshop never opens a view for content. Its page for one workspace
 (`/admin/workspace/<workspaceId>`) opens a metadata view, lists the workspace's live grants, ends
@@ -746,6 +773,11 @@ The request is then recorded (`"requested"`) and, only once its record exists, s
   after it is resolved.
 - **It returns its approval URL**, `<PUBLIC_BASE_URL>/admin/approve/<request id>`. Opening the page
   needs an admin's session, and the URL grants nothing.
+- **A request an agent files is its workspace owner's.** Through the admin gatekeeper,
+  `requestWorkspaceWrite()` is queued as an action of the workspace and filed once that action
+  is approved (see [Through an agent](#through-an-agent)). Its requester (`requestedBy`) is the
+  owner of that workspace, whichever member approved the filing, and the request carries where
+  it came from (`via: "gatekeeper"` and `agent`).
 
 **The reason of a write that changes a workspace is written for the people who read its action
 log**: its owner and its build collaborators. An inspection's reason stays in the admins' log. A
@@ -759,8 +791,9 @@ does, and the page says that instead.
 ### Approve
 
 The page at the approval URL shows the workspace's title and id, its owner, the action, each
-argument, the reason, who requested it and how (`via`), and when it expires. It shows what the
-request stores, and looks nothing up in the workspace:
+argument, the reason, who requested it and how (`via`), and when it expires. A request an agent
+filed is shown as its requester's agent's, with the workspace and the chat it came from
+(`agent`). It shows what the request stores, and looks nothing up in the workspace:
 
 - **Ids are shown as requested.** A chat or a connection is the id the request names, so an
   approver checks what it names with an inspection first. Where the deployment's access level is
@@ -770,13 +803,13 @@ The admin confirms with **Approve with passkey**, or denies.
 
 **The challenge** (`beginWorkspaceWriteApproval()`) is 32 random bytes followed by the SHA-256 of
 the request's canonical JSON (`adminWriteDigest()`: its id, workspace id, title and owner, action,
-arguments, reason, requester, `via`, and the times it was made and expires), so the authenticator
-signs what is approved. An admin has one approval challenge outstanding: beginning another
-replaces it. It lasts five minutes (`ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS`) and never past its
-request's expiry, and it is deleted before anything about its answer is checked, so its first
-answer spends it, right or wrong. An admin with no passkey of their own is refused
-`passkeyRequired` here, and the requester of a `"grantContentAccess"` request is refused
-`secondAdminRequired` (see
+arguments, reason, requester, `via`, where an agent's request came from (`agent`), and the times
+it was made and expires), so the authenticator signs what is approved. An admin has one approval
+challenge outstanding: beginning another replaces it. It lasts five minutes
+(`ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS`) and never past its request's expiry, and it is
+deleted before anything about its answer is checked, so its first answer spends it, right or
+wrong. An admin with no passkey of their own is refused `passkeyRequired` here, and the
+requester of a `"grantContentAccess"` request is refused `secondAdminRequired` (see
 [Asking for content without the owner](#asking-for-content-without-the-owner)).
 
 **The answer** (`approveWorkspaceWrite()`) must be an assertion by one of the caller's own
@@ -905,6 +938,16 @@ another admin.
 ASCII letters, while an account is named by its email as the identity provider spelled it, so two
 accounts that differ only by case are one entry of the list and one admin, and the approval
 compares names the way the list does (`sameDeploymentAdmin()`), never with `===`.
+
+**A request an agent filed is closed to everyone who was in its workspace.** A request filed
+through the admin gatekeeper is its workspace owner's, and other admins may work in that
+workspace. So the request keeps who was there when it was filed (its insiders: the owner,
+everyone the workspace was shared with in any role, and the member who approved the filing),
+and each of the three checks refuses any of them as it refuses the requester
+(`isRequestInsider()`, with `secondAdminRequired` and the refusal `"requester"`). The list is
+read once, at filing: a member who leaves afterwards still cannot approve, and an admin who
+joins afterwards can. An admin from outside the workspace approves. The approval page tells an
+admin it refused so, and shows the workspace and the chat the request came from.
 
 **What it proves, and what it does not.** It proves that two admin accounts took part: one asked,
 and another approved with a passkey enrolled under it. It does not prove two people. An enrolment
@@ -1133,6 +1176,100 @@ compared with the authenticator data's copy, since nothing signs a registration 
 attestation: both are whatever the enrolling session presents, and what binds a passkey is that
 every later assertion must verify under that key.
 
+## Through an agent
+
+A deployment admin can give the agents of a workspace they own this API, through the admin
+gatekeeper (`packages/gatekeeper-instanceadmin`, vendor `instanceadmin`). The gatekeeper is part
+of every deployment, with its mode Disabled until an admin chooses another; only deployment
+admins hold its account, and its holder adds its connection ("Deployment admin") to the
+workspaces that need it. Its design record is
+[the package's README](../packages/gatekeeper-instanceadmin/README.md).
+
+**What an agent can do.** Every `AdminApi` method has one kind (`ADMIN_AGENT_KINDS`; the
+[README's table](../packages/gatekeeper-instanceadmin/README.md#what-each-kind-does) lists
+them):
+
+- **Read**: the listings, the settings getters, the audit log and its statistics, issue reports
+  with their threads and images, a write request, and `inspectWorkspace()` and `inspectUser()`
+  with every method of the view each returns. A read runs at once. A workspace's view reads
+  metadata, and content only as [Each call](#each-call) decides for any admin: the gatekeeper
+  adds no way round a grant. A view of a user's account reads metadata alone (see
+  [User inspection](#user-inspection)).
+- **Act**: an entry in a report's thread, a report's status, and a write request. The call is
+  queued as an action of the workspace and runs once a member approves it, or a rule does where
+  the kind allows one. A public reply through the binding always waits for a person, and so
+  does a request for content access.
+- **Omitted**: every setter, every passkey method, approving or denying a write request, ending
+  an admins' grant, and setting a report's links. They are absent from what the agent is told
+  and refused.
+
+From the binding, code can also open a session limited to one issue report, which reaches that
+report as its reporter reads it and the reporter's workspace as the reporter chose to show it
+(see [Opening for content](#opening-for-content)), and subscribe to two hooks (see
+[issue-reports.md](issue-reports.md#hooks)).
+
+**Every call is the workspace owner's.** The gatekeeper Worker holds no credential: the workspace
+lends it its owner's Admin API, and each call is checked and recorded as any admin's is, with
+`via: "gatekeeper"` and where it came from.
+
+**The lend.** A session is lent the read methods for at most `ADMIN_AGENT_LEND_SECONDS` (15
+minutes), and a view it opens ends with it. An approved action is lent one call, the one its kind
+names. The Workshop asks at each lend whether the owner still holds the account, and before
+every call whether the owner is still a deployment admin and the gatekeeper is still turned on.
+
+**The workspace admits only deployment admins.** While a workspace has the connection, nobody
+but its owner and users who are deployment admins at that moment can open it, in any role or by
+any share link; other admins may collaborate there and decide its pending actions. Once the
+workspace has read anything through the whole binding it stays so for good, with or without the
+connection, because its chats hold what was read.
+
+**Reads mark the workspace as holding restricted data.** Every read through the whole binding
+sets the platform's restricted-data latch on the workspace, in this version. From then on no
+rule applies anything there, so every action waits for a person, and web fetches reach only the
+hosts the deployment trusts. A report session's reads do not mark, with one exception: its view
+of a reporter's workspace that itself holds restricted data marks the workspace that reads it,
+without closing it for good.
+
+**Where the person behind a call is found.** Every record names the owner, so:
+
+- for an agent's turn, the chat the record names says who prompted it;
+- for an approved action, its record in the workspace says who decided (`resolvedBy`);
+- for a session opened directly from the connection, it is the owner: no other member is lent
+  one.
+
+A slash command is not among them: this gatekeeper has none.
+
+**What the audit log holds of an agent.** View opens and view calls, of a workspace and of a
+user's account, and write requests carry `via: "gatekeeper"` and the origin (`agent`). Listings
+of users, workspaces, reports, settings and the audit log itself, and reading a report or its
+image, leave no audit record, for an agent as for any admin: their only trace is the observation
+in the activity of the workspace that called, which goes with that workspace. A report entry or
+status an agent wrote is recorded in the report's thread.
+
+**Removing the account.** Disconnecting the deployment admin account from Connectors ends every
+connection made with it, in every workspace its holder owns, at the next session, action or hook
+firing, and adding it again restores them. In mode Enabled it cannot be removed.
+
+**Limits**, each described in the README:
+
+- [The split of the two reply kinds and the restricted-data mark are the gatekeeper Worker's
+  own declarations](../packages/gatekeeper-instanceadmin/README.md#what-a-worker-that-keeps-everything-could-do):
+  they hold against agents and gadgets, not against the Worker.
+- [Non-admins admitted again after the connection is removed read what report sessions left in
+  the chats](../packages/gatekeeper-instanceadmin/README.md#what-the-non-admins-who-come-back-can-read).
+- [The latch does not hold back reads through the workspace's other
+  connections](../packages/gatekeeper-instanceadmin/README.md#what-the-latch-does-not-hold-back).
+- [What a report session reads of an ordinary reporter's workspace, under the reporter's grant,
+  lands in a triage workspace that is not
+  marked](../packages/gatekeeper-instanceadmin/README.md#what-an-unmarked-triage-workspace-holds).
+  Its web fetches and the rule-applied actions of its other connections are not held, and a
+  report's text can steer an agent to send that content out. So a triage agent is given no
+  other connection, and the triage workspace holds none its owner would not send a reporter's
+  content to.
+- [An agent finds the write request it filed through the audit
+  log](../packages/gatekeeper-instanceadmin/README.md#limits): the call that files it returns
+  nothing.
+
 ## Access levels and their bounds
 
 ### The levels
@@ -1305,21 +1442,23 @@ settings across deploys, while a variable only bounds what an admin session can 
 ### Four kinds of record
 
 - **`AdminAccessRecord`** (`kind: "workspace"`): one admin call into a workspace, the open or a view
-  method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `workspaceId`,
-  the workspace's owner (`workspaceOwner`, resolved when the view opens; from the directory for an
-  open refused before it reaches the workspace; a username is unbounded, so a long one keeps its
-  start and a digest of the whole id, which keeps long ids apart), the workspace's title at the
-  time, `method`, the call's arguments by name, the `reason` given at the open, what the view was
-  opened for (`requested`), the deployment's `access` level when the call ran (`"off"` for a call
-  refused for that), what the call's answer exposed (`exposed`, see
+  method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `agent` (for a
+  call made through the admin gatekeeper, see below), `workspaceId`, the workspace's owner
+  (`workspaceOwner`, resolved when the view opens; from the directory for an open refused before
+  it reaches the workspace; a username is unbounded, so a long one keeps its start and a digest
+  of the whole id, which keeps long ids apart), the workspace's title at the time, `method`, the
+  call's arguments by name, the `reason` given at the open, what the view was opened for
+  (`requested`), the deployment's `access` level when the call ran (`"off"` for a call refused
+  for that), what the call's answer exposed (`exposed`, see
   [What a call exposed](#what-a-call-exposed)), the grant the call was made under (`grantId`,
   whatever the grant's source: present when the call was allowed content, whether or not its
   answer held any), and `refused`, the code a refused call was refused with: `accessOff`,
   `contentOff`, `contentNotRequested` or `grantRequired`.
 - **`AdminUserAccessRecord`** (`kind: "user"`): one admin call into a user's account, the open or a
-  view method. It holds `at`, `admin`, `sessionId`, `via`, the user whose account it is (`userId`,
-  by canonical user id, kept as `workspaceOwner` is: a long one keeps its start and a digest of the
-  whole id; for an open refused before it reaches the account, the id the admin gave), `method`,
+  view method. It holds `at`, `admin`, `sessionId`, `via`, `agent` (for a call made through the
+  admin gatekeeper, see below), the user whose account it is (`userId`, by canonical user id,
+  kept as `workspaceOwner` is: a long one keeps its start and a digest of the whole id; for an
+  open refused before it reaches the account, the id the admin gave), `method`,
   the `reason` given at the open, its own `access` (`"metadata"`, or `"off"` for a call refused
   for that: a view of an account answers with metadata alone, whatever level is in force) and
   `refused` (`accessOff` alone), and its own `args`: only the open records one (`expiresAt`),
@@ -1328,7 +1467,8 @@ settings across deploys, while a variable only bounds what an admin session can 
   `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
   map or list setting, and its value `before` and `after`.
 - **`AdminWriteRecord`** (`kind: "write"`): one step in the life of a write request. It holds `at`,
-  `admin` (whose step it is), `sessionId`, `via`, the `requestId` its steps share, the `event`,
+  `admin` (whose step it is), `sessionId`, `via`, `agent` (on the `requested` and `expired` steps
+  of a request an agent filed), the `requestId` its steps share, the `event`,
   `workspaceId`, the workspace's owner and title (as the workspace itself gives them for
   `"approved"` and `"revoked"`, as the directory listed them when the request was made for the
   other steps),
@@ -1340,7 +1480,7 @@ settings across deploys, while a variable only bounds what an admin session can 
   | Event | Step | Whose (`admin`) | Recorded |
   | --- | --- | --- | --- |
   | `requested` | An admin asked for the write. | The requester | Before the request is stored. |
-  | `refused` | An attempt to approve was not accepted (`refusal`): the answer failed a passkey check, the request was no longer pending, or the requester tried to approve a request that needs a second admin (`"requester"`). | The admin who tried | When it is refused. |
+  | `refused` | An attempt to approve was not accepted (`refusal`): the answer failed a passkey check, the request was no longer pending, or the requester, or anyone who was in the workspace an agent's request was filed from, tried to approve a request that needs a second admin (`"requester"`). | The admin who tried | When it is refused. |
   | `approved` | An admin confirmed it with a passkey (for `"grantContentAccess"`, with the `grantId` of the grant it gives). | The approver | By the workspace, before it changes anything. |
   | `applied` | The workspace ran it (`outcome`, when it reports one: for `"grantContentAccess"`, the grant's id and when it ends). | The approver | After the fact, at least once. |
   | `failed` | The workspace refused it or failed to run it, or its answer never arrived (`error`). | The approver | After the fact, at least once. |
@@ -1352,6 +1492,17 @@ settings across deploys, while a variable only bounds what an admin session can 
   enrolment keys it: for `approved`, `applied` and `failed`, the one whose assertion approved the
   request; for `refused`, the one the answer named, when it is one of that admin's own, whether or
   not it signed the answer. A `"revoked"` record carries none.
+
+**`via` and `agent`.** `via` is `"api"`, `"cli"` or `"gatekeeper"`. The first two come from the
+session's User-Agent, the client's own claim. `"gatekeeper"` marks a call made through the admin
+gatekeeper's connection of a workspace the record's admin owns, and such a record carries
+`agent` (`AdminAgentOrigin`): the workspace whose connection made the call and, when the
+workspace ties the caller to one, the chat. Only the workspace sets them, when it lends the
+gatekeeper its owner's Admin API (`OverseerImpl.lendAdminApi()`): no client, header, argument or
+gatekeeper Worker can claim the value or choose the workspace or the chat. An access record, of
+a workspace or of a user's account, and a write record can carry them. A setting record never
+says `"gatekeeper"`: no setter is open to an agent. The Audit tab names such a record's `via` "Agent" and shows the workspace and the chat
+it came from.
 
 **There is no kind for grants.** The log records what admins do, and an owner's grant is the
 owner's own record (see
@@ -1675,7 +1826,7 @@ with `getAdminWriteErrorCode()`):
 | `ADMIN_WRITE_TOO_MANY_REQUESTS` | `MAX_PENDING_ADMIN_WRITES` (50) requests are pending across the deployment. |
 | `ADMIN_WRITE_PASSKEY_REQUIRED` | An approval begun by an admin who has enrolled no passkey. |
 | `ADMIN_WRITE_PASSKEY_REFUSED` | A passkey answer failed a check. The caller is not told which; a refused approval's record says (`refusal`). |
-| `ADMIN_WRITE_SECOND_ADMIN_REQUIRED` | The admin who made a `"grantContentAccess"` request began or sent its approval, or the workspace was handed one: it must be approved by another admin. |
+| `ADMIN_WRITE_SECOND_ADMIN_REQUIRED` | The admin who made a `"grantContentAccess"` request, or anyone who was in the workspace an agent filed it from, began or sent its approval, or the workspace was handed one: it must be approved by another admin. |
 
 The issue report methods refuse with a code from `ISSUE_REPORT_ERROR_CODES`, listed in
 [issue-reports.md](issue-reports.md#error-codes); the admins' also refuse with `ADMIN_NOT_ADMIN`.
@@ -1846,6 +1997,35 @@ Grants and content reads add these, in the same directory:
 - `git-cache.test.ts` also covers `readLocalFileAtCommit()`: text, a stream for a large file or
   one that is not text, a symlink and a submodule, and never a pull.
 
+The admin gatekeeper adds these, in the same directory (its own suites are listed in
+[its README](../packages/gatekeeper-instanceadmin/README.md#tests)):
+
+- `admin-agent-kinds.test.ts`: every `AdminApi` method classified, the six action kinds with a
+  tag each and their verdicts, and the constants.
+- `admin-agent.test.ts`: the membrane. What `adminAgentRefusal()` refuses under a session and
+  under each action kind; `restrictAdminApi()`'s checks in their order, an action's one call, a
+  lend that ended or ran out; and a view behind it, of a workspace or of a user's account, which
+  answers its own methods and no other name, ends with the lend and lives no longer than the
+  lend has left.
+- `admin-agent-lend.test.ts`: `lendAdminApi()` on a real workspace. A session's reads and what
+  each records, with `via` `"gatekeeper"`, the workspace and the chat, a view of a user's
+  account included; an approved action's one call; restricted data, marked by a read and
+  refusing a rule's approval afterwards; who is lent
+  nothing (the vendor off, an owner who is not an admin or holds no account, a member's direct
+  session); the insiders of a request for content, with a second admin who collaborates in the
+  workspace; and a spawned chat without the binding named.
+- `admin-workspace-admission.test.ts`: the admission rule at each gate, for a workspace with the
+  connection, for one that had it and read nothing, and for one that read through it, a
+  non-admin kept in the sharing list included.
+- `provisioning-policy.test.ts` and `user-ambient-accounts.test.ts`: the gatekeeper's mode,
+  Disabled until an admin chooses, and its account offered, provisioned and listed for
+  deployment admins alone, in each mode.
+- `admin-access.test.ts`, `admin-api-impl.test.ts`, `admin-audit.test.ts`,
+  `admin-workspace-view.test.ts`, `admin-user-view.test.ts` and the four write suites also cover
+  a caller's `via` and `agent` checked in one place, before any terms reach a workspace or an
+  account, and kept on each record, the digest over a request's `agent`, `isRequestInsider()` at
+  the three checks, and a view opened for one issue report.
+
 The issue report suites are listed in [issue-reports.md](issue-reports.md#code-and-tests).
 
 Integration suites, in `packages/integration-tests/__tests__/`:
@@ -1896,6 +2076,17 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   operation, and a request for anything else refused; a workspace that is gone; and passkeys kept
   through writes being turned off, and a former admin's, which do nothing.
 
+- `admin-gatekeeper.test.ts`, `admin-gatekeeper-actions.test.ts` and
+  `admin-gatekeeper-hooks.test.ts`: the admin gatekeeper end to end, with a scripted model. Who
+  is offered it; an agent's view calls recorded as made through the gatekeeper, and content read
+  only where the workspace's own check allows it; the admins-only workspace, while it has the
+  connection and after; a content request no member of the workspace can approve; a public
+  reply through the binding held for a person whatever the rules; a note, a status and a write
+  request applied by their rules; the restricted-data mark and its order; the session limited
+  to one report, its reply reaching the reporter with no person, and the mark of a reporter's
+  restricted workspace; both hooks firing into a gadget's stored callback; and a spawned agent
+  handed one report's session.
+
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
 faults the deployment-wide log with a trigger on `admin_audit`, shows that an inspected deleted
@@ -1919,6 +2110,12 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   page for one workspace, its live grants, ending one a second admin approved, and Request
   content access giving the approval link. The approval page's suites also cover what the page
   says of a request for content, and its requester offered no approval.
+- `features/admin-audit/AdminAuditPanel.test.tsx`, `features/admin-writes/writeLabels.test.ts`
+  and the approval page's suite also cover a record and a request made through the admin
+  gatekeeper: the "Agent" label, the workspace and the chat it came from, and what the page
+  tells an admin who was in that workspace. `ShareModal.test.tsx` covers the reason shown when
+  adding someone to an admins-only workspace is refused, and `ResourcePicker.test.tsx` and
+  `GatekeeperModal.test.tsx` the picker's row that adds an auto-provisioned account.
 - The browser tests (`test:run:browser`) run real ceremonies in Chromium against a virtual
   authenticator: `features/admin-writes/passkeyCeremony.browser.test.tsx` creates a passkey and
   confirms a challenge with it, and
