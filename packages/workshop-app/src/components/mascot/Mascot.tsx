@@ -21,7 +21,8 @@ export type MascotProps = {
   interactive?: boolean
   /**
    * `contrast` (the default) draws it in the colours of the viewer's own messages; `inverse` the
-   * other way round, for on top of something drawn in `contrast`; `brand` in the logo's orange,
+   * other way round, for on top of something drawn in `contrast`; `island` the same way round, for
+   * on top of the connection island, which is all black in light; `brand` in the logo's orange,
    * with a white sparkle and face, as the mark is.
    */
   color?: MascotColor
@@ -39,13 +40,14 @@ export type MascotProps = {
   className?: string
 }
 
-export type MascotColor = 'contrast' | 'inverse' | 'brand'
+export type MascotColor = 'contrast' | 'inverse' | 'island' | 'brand'
 
 // The brand orange is the logo asset's own (see `LogoIcon`), not a UI token. Kumo has the
 // contrast interior as a text colour only.
 const COLORS: Record<MascotColor, { body: string; interior: string }> = {
   contrast: { body: 'fill-kumo-contrast', interior: 'text-kumo-inverse' },
   inverse: { body: 'fill-current text-kumo-inverse', interior: 'text-kumo-contrast' },
+  island: { body: 'fill-current text-kumo-inverse', interior: 'text-(--color-island)' },
   brand: { body: 'fill-[#FF5C2E]', interior: 'text-white' },
 }
 
@@ -61,8 +63,8 @@ const describe = (emotion: MascotEmotion) =>
 
 /**
  * The Workshop cloud, alive: it billows in place when idle, more busily while thinking, and has a face for
- * happy and sad. It leans towards a pointer that comes near, stays still for people who ask for
- * reduced motion, and rests while off screen. It is drawn in the colours of the viewer's own
+ * happy and sad. It leans towards a pointer that comes near, or a finger on the screen near it,
+ * stays still for people who ask for reduced motion, and rests while off screen. It is drawn in the colours of the viewer's own
  * messages: their fill for the body, their text colour for the sparkle and the face.
  */
 export const Mascot = ({ emotion, shown = true, interactive, color = 'contrast', reach = DEFAULT_REACH, onShake, className }: MascotProps) => {

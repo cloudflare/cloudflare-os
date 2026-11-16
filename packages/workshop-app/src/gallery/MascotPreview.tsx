@@ -5,7 +5,7 @@ import { Mascot, type MascotColor, type MascotEmotion } from '@/components/masco
 import { Section } from './Section'
 
 const EMOTIONS: MascotEmotion[] = ['idle', 'thinking', 'happy', 'sad', 'error', 'loading']
-const COLORS: MascotColor[] = ['contrast', 'inverse', 'brand']
+const COLORS: MascotColor[] = ['contrast', 'inverse', 'island', 'brand']
 
 /** Every emotion at several sizes, coming and going. The large one can be played with; the others only show the state. */
 export const MascotPreview = () => {
@@ -31,8 +31,8 @@ export const MascotPreview = () => {
           />
           <Switch label="Shown" checked={shown} onCheckedChange={setShown} />
         </div>
-        {/* Room below for the rain. Inverse is for on top of something drawn in contrast. */}
-        <div className={cn('flex items-end gap-12 rounded-3xl px-12 pt-12 pb-20 ring-1 ring-kumo-line', color === 'inverse' && 'bg-kumo-contrast')}>
+        {/* Room below for the rain. Inverse is for on top of something drawn in contrast, island on the connection island. */}
+        <div className={cn('flex items-end gap-12 rounded-3xl px-12 pt-12 pb-20 ring-1 ring-kumo-line', color === 'inverse' && 'bg-kumo-contrast', color === 'island' && 'bg-(--color-island)')}>
           <Mascot emotion={emotion} shown={shown} color={color} interactive className="w-40" />
           <Mascot emotion={emotion} shown={shown} color={color} className="w-16" />
           <Mascot emotion={emotion} shown={shown} color={color} className="w-8" />
