@@ -3465,13 +3465,13 @@ describe("Google Sheets replay cost", () => {
     });
 
     let none = Object.fromEntries(MEASURES.map(column => [column, 0])) as Record<Measure, number>;
-    // A fold copies the overlay once for each pending batch, the first copy of a grid with nothing
-    // queued: the five batches of `build` are copied at 0, 20, 40, 60 and 80 thousand entries
-    // (200,000), and every batch after them at 100,000. Queueing copies the folded grid twice
-    // more, in `resolveChanges` and in `guardCells`. Every read asks for compact JSON, so
-    // `indented` is 0 in every phase: the fake indents an answer that was not asked compact, and a
-    // read that forgot to ask would count here. The 50,000 values are 16 bytes a cell, where they
-    // are 27 indented.
+    // A fold copies the overlay once, however many batches are pending: the fetched grid's, which
+    // holds no entry, and every batch then changes that one copy in place. Queueing copies the
+    // folded grid twice more, in `resolveChanges` and in `guardCells`, with the entries queued by
+    // then: 0, 20, 40, 60 and 80 thousand for the five batches of `build`, and 100,000 for every
+    // batch after them. Every read asks for compact JSON, so `indented` is 0 in every phase: the
+    // fake indents an answer that was not asked compact, and a read that forgot to ask would count
+    // here. The 50,000 values are 16 bytes a cell, where they are 27 indented.
     //
     // A batch is measured twice, as submitted and as stored, and the stored one is the longer:
     // 212 units (the label of its sheet, a digest of 64 digits, a marker ID of ten and a token of
@@ -3481,10 +3481,9 @@ describe("Google Sheets replay cost", () => {
     expect(measured).toEqual([
       {
         ...none, phase: "build", pending: 5,
-        // With 0 to 4 batches pending, 2 to 6 copies. The fold's hold 0, 20, 60 and 120 thousand
-        // entries for the second batch to the fifth, and the two after each fold 20, 40, 60 and
-        // 80 thousand each.
-        overlayCopies: 20, overlayEntries: 600_000,
+        // Three copies a batch: the fold's, of no entry, and the two after it, of 0, 20, 40, 60
+        // and 80 thousand entries each.
+        overlayCopies: 15, overlayEntries: 400_000,
         // The 20,000 cells each clearing batch guards, keyed once as they are read as entered and
         // once more to be looked up.
         cellsKeyed: 80_000,
@@ -3504,9 +3503,9 @@ describe("Google Sheets replay cost", () => {
       },
       {
         ...none, phase: "queue N, a read after each", pending: 5 + N,
-        // Queued with 5 to 9 pending (7 to 11 copies) and read with 6 to 10: 45 and 40. In
-        // entries, 4 to 8 hundred thousand to queue and 3 to 7 to read.
-        overlayCopies: 85, overlayEntries: 5_500_000,
+        // Three copies to queue a batch and one to read: 15 and 5. The two copies after each
+        // queueing fold hold the 100,000 entries.
+        overlayCopies: 20, overlayEntries: 1_000_000,
         // The one cell each batch overwrites, keyed twice. A stored batch is 125 units of changes,
         // the clearing batch it follows (3) and one guarded area (82), and its digest is of one
         // cleared cell, `[[null]]`: 32 units.
@@ -3518,13 +3517,13 @@ describe("Google Sheets replay cost", () => {
       },
       {
         ...none, phase: "read", pending: 5 + N,
-        overlayCopies: 10, overlayEntries: 700_000,
+        overlayCopies: 1,
         // The sheets and the 50,000 values, together.
         fetches: 2, responseBytes: SHEETS + VALUES, mostOpen: 2,
       },
       {
         ...none, phase: "formats read", pending: 5 + N,
-        overlayCopies: 10, overlayEntries: 700_000,
+        overlayCopies: 1,
         // The result, which repeats the queued format across the 10,000 cells.
         measuredStrings: 1, longestMeasured: 140_971,
         // The sheets, and the formats Google holds for the cells, together.
@@ -3532,10 +3531,11 @@ describe("Google Sheets replay cost", () => {
       },
       {
         ...none, phase: "queue a deleted row", pending: 6 + N,
-        // Ten pending and two more to queue; 700,000 entries in the fold and 100,000 in each.
-        overlayCopies: 12, overlayEntries: 900_000,
+        // The fold's copy and the two to queue, of the 100,000 entries each.
+        overlayCopies: 3, overlayEntries: 200_000,
         // A deletion indexes the queued keys of the copy it is applied to: once in
-        // `resolveChanges` and once in `guardCells`, 100,000 each. The row it deletes is empty.
+        // `resolveChanges` and once in `guardCells`, 100,000 each: an index is one batch's on
+        // one copy, and goes with it. The row it deletes is empty.
         keysIndexed: 200_000,
         // The batch as submitted and as stored: 55 units of changes, no batch to follow (2) and
         // the deleted row as its guarded area (85). Its digest is of that row's 100 blank cells:
@@ -3547,10 +3547,11 @@ describe("Google Sheets replay cost", () => {
       },
       {
         ...none, phase: "queue an inserted row", pending: 7 + N,
-        // Eleven pending and two more to queue: 800,000 entries in the fold, and twice the 99,900
-        // the deletion leaves. The fold's deletion indexes the queued keys once; an insertion
-        // builds no index and guards no cell.
-        overlayCopies: 13, overlayEntries: 999_800, keysIndexed: 100_000,
+        // The fold's copy and the two to queue, of the 99,900 entries the deletion leaves each.
+        // The fold's deletion indexes the queued keys once, as it does in every fold from here on:
+        // the index goes with its batch, so each fold builds it again. An insertion builds no
+        // index and guards no cell.
+        overlayCopies: 3, overlayEntries: 199_800, keysIndexed: 100_000,
         // The batch as submitted and as stored: 53 units of changes, the deletion it follows (4)
         // and no guarded area (2). Its digest is of the sheet, of 999 rows by then, and no cell.
         measuredStrings: 2, longestMeasured: 271, digestedUnits: 25,
@@ -3559,7 +3560,7 @@ describe("Google Sheets replay cost", () => {
       },
       {
         ...none, phase: "moved read", pending: 7 + N,
-        overlayCopies: 12, overlayEntries: 899_900, keysIndexed: 100_000,
+        overlayCopies: 1, keysIndexed: 100_000,
         // The 499 rows below the inserted one, 49,900 cells: keyed as they are read as entered,
         // and again to look up each of the two reads of them.
         cellsKeyed: 149_700,
@@ -3577,10 +3578,12 @@ describe("Google Sheets replay cost", () => {
       { ...none, phase: "reject", pending: 5 + N },
       {
         ...none, phase: "read, newest no longer applies", pending: 6 + N,
-        // Eleven pending, the stopped one included, whose copy is dropped: the four of `build`
-        // still queued at 0, 20, 40 and 60 thousand entries, six at 80,000 and the last at 79,900.
-        // One index of the 80,000 queued keys, for the deleted row.
-        overlayCopies: 11, overlayEntries: 679_900, keysIndexed: 80_000,
+        // Eleven pending, the stopped one included. Its first change wrote to the fold's grid, so
+        // the grid is put back: a second copy of the fetched grid, of no entry, and the ten batches
+        // before the stopped one applied to it again. The deleted row among them indexes the
+        // 80,000 queued keys in each of the two replays, where a fold that stops nowhere indexes
+        // them once.
+        overlayCopies: 2, keysIndexed: 2 * 80_000,
         // The 50,000 cells, keyed three times.
         cellsKeyed: 150_000,
         // As `moved read`, of all 500 rows, and the sheets with the collaborator's frozen row (19

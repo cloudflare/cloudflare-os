@@ -40,7 +40,7 @@ import {
   a1Of, byPosition, cellName, enteredOf, findSheet, intersection, isFormula, rectName, shownValue, type EnteredValue,
   type Rect,
 } from "./sheets-model";
-import { cellKey, lineKey, planSheet } from "./sheets-plan";
+import { cellKey, lineKey, planInPlace, planSheet, working, type Working } from "./sheets-plan";
 import type {
   SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
@@ -177,12 +177,9 @@ export function gridOf(metadata: { sheets: readonly SheetMeta[] }): Grid {
   };
 }
 
-/**
- * Applies one queued change to `grid`, returning a new grid. `id` is the change's action ID, which
- * the cells it enters record. Throws `ChangeConflict`, also for a sheet it acts on that is no longer
- * titled as when it was queued, which its guard would refuse.
- */
-export function applyChange(grid: Grid, action: SheetsAction, id = 0): Grid {
+// Throws `ChangeConflict` for a sheet `action` acts on that is no longer titled as when it was
+// queued, which its guard would refuse.
+function requireTitles(grid: Grid, action: SheetsAction): void {
   for (let [sheetId, title] of Object.entries(action.payload.sheets)) {
     // A sheet the change creates is not there yet.
     let sheet = grid.sheets.find(candidate => candidate.id === Number(sheetId));
@@ -190,6 +187,15 @@ export function applyChange(grid: Grid, action: SheetsAction, id = 0): Grid {
       throw new ChangeConflict(`the sheet "${title}" it acts on has been renamed "${sheet.title}"`);
     }
   }
+}
+
+/**
+ * Applies one queued change to `grid`, returning a new grid. `id` is the change's action ID, which
+ * the cells it enters record. Throws `ChangeConflict`, also for a sheet it acts on that is no longer
+ * titled as when it was queued, which its guard would refuse.
+ */
+export function applyChange(grid: Grid, action: SheetsAction, id = 0): Grid {
+  requireTitles(grid, action);
   return planSheet(grid, action.payload.changes, id).grid;
 }
 
@@ -203,18 +209,56 @@ function replayStep(grid: Grid, change: QueuedChange): SimulationStep<Grid> {
   }
 }
 
+// The queued changes a fold's grid has applied, oldest first: what puts the grid back when a
+// batch stops after an earlier change of it wrote. It is that grid's own bookkeeping, a part of
+// the fold's draft kept beside it so the grid stays a `Grid` and nothing more: reached only
+// through the grid, and gone with it. The store holds nothing, and no fold reads another's.
+const APPLIED = new WeakMap<Working, QueuedChange[]>();
+
+// Makes `work` what a fold of `applied` over `base` is, in the same object: what `base` holds,
+// then each change again, under its own ID. They applied once over this base, so they apply again
+// and write the same entries in the same order.
+function restore(work: Working, base: Grid, applied: readonly QueuedChange[]): void {
+  Object.assign(work, working(base));
+  for (let { id, action } of applied) planInPlace(work, action.payload.changes, id);
+}
+
+// One queued change applied to a fold's grid in place. A batch of several changes cannot decide
+// before it writes, since each change is checked against what the one before it wrote: when one
+// of them no longer applies, the grid is put back as the batches before made it.
+function replayInPlace(work: Working, change: QueuedChange, base: Grid): SimulationStep<Working> {
+  let { changes } = change.action.payload;
+  try {
+    requireTitles(work, change.action);
+    if (changes.length === 0) return { kind: "known-no-effect" };
+    planInPlace(work, changes, change.id);
+  } catch (error) {
+    if (!(error instanceof ChangeConflict)) throw error;
+    // The title check and a batch's one change both throw before they write.
+    if (changes.length > 1) restore(work, base, APPLIED.get(work)!);
+    return { kind: "unsupported", reason: error.message };
+  }
+  APPLIED.get(work)!.push(change);
+  return { kind: "applied", value: work };
+}
+
 /**
  * Creates a store that replays queued changes over the grid a read fetched, stopping at the first
  * that no longer applies. The grid is its one entity, folded under the spreadsheet's own ID. The
- * store keeps nothing: every call folds the changes it is given from the first, over the grid it
- * is given. No change writes a grid, each returning another, so a fold starts from the fetched
- * grid itself.
+ * store keeps nothing: every call folds the changes it is given from the first. Each fold works
+ * on one grid of its own, which every batch changes in place: nothing is copied for a batch, and
+ * the fetched grid is left as it was. A batch that stops part-way leaves that grid as the batches
+ * before it made it.
  */
-export function createReplay(): SimulationStore<string, Grid, Grid, QueuedChange> {
-  return createSimulationStore<string, Grid, Grid, QueuedChange>({
-    initial: grid => grid,
+export function createReplay(): SimulationStore<string, Grid, Working, QueuedChange> {
+  return createSimulationStore<string, Grid, Working, QueuedChange>({
+    initial: grid => {
+      let work = working(grid);
+      APPLIED.set(work, []);
+      return work;
+    },
     // A grid is always given: every fold has one for its base, and no change deletes it.
-    reduce: (grid, change) => replayStep(grid!, change),
+    reduce: (work, change, { base }) => replayInPlace(work!, change, base!),
   });
 }
 
@@ -292,6 +336,9 @@ type LogView = {
   hosts: Map<number, { start: number; host: number }[]>;
 };
 
+// A view is made for a grid whose log is complete. A fold changes its grid's log in place, and
+// that holds for it too: no step of a fold reads a view, the grid is read through `formulaAt` only
+// once its fold has returned, and nothing changes it after.
 const LOG_VIEWS = new WeakMap<Grid, LogView>();
 
 // Adds `value` to the list `map` holds for `key`.
