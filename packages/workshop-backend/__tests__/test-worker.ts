@@ -462,11 +462,15 @@ export const FAKE_ADMIN_RESOURCE: SupportedResource = {
 /** What the fake admin vendor has been asked, whichever instance was asked. */
 const adminVendorCalls = { describe: 0, createAccount: 0 };
 const adminVendorEvents: IssueReportEvent[][] = [];
+/** How the fake admin vendor answers issueReportEvents(), and the calls it has left unanswered. */
+let adminVendorAnswer: "take" | "reject" | "hang" = "take";
+const adminVendorHung = new Set<object>();
 
 /**
  * Stands for the admin gatekeeper's vendor: bound as GATEKEEPER_INSTANCEADMIN (vitest.config.ts),
  * so every user object of the pool finds it. It auto-provisions an account that declares no
- * singleton and no UI and offers one resource, and it records the issue report events it is sent.
+ * singleton and no UI and offers one resource, and it records the issue report events it is sent,
+ * which a test can make it reject or leave unanswered.
  */
 export class FakeAdminVendor extends WorkerEntrypoint<Cloudflare.Env> {
   async describe(): Promise<VendorDescription> {
@@ -490,8 +494,30 @@ export class FakeAdminVendor extends WorkerEntrypoint<Cloudflare.Env> {
     return this.ctx.exports.FakeAdminAccount({ props: {} });
   }
 
+  /** Records `events`, whatever it then answers: see answerEvents(). */
   async issueReportEvents(events: IssueReportEvent[]): Promise<void> {
     adminVendorEvents.push(events);
+    if (adminVendorAnswer === "reject") throw new Error("The fake admin vendor rejects events.");
+    if (adminVendorAnswer === "hang") {
+      // Each call waits in its own request, on the real clock: a promise settled from the
+      // request that releases it would not wake this one.
+      const call = {};
+      adminVendorHung.add(call);
+      while (adminVendorHung.has(call)) await scheduler.wait(5);
+    }
+  }
+
+  /** How issueReportEvents() answers from now on: it takes the events ("take", as it does until
+   * told otherwise), rejects them, or does not settle until releaseEvents(). */
+  async answerEvents(answer: typeof adminVendorAnswer): Promise<void> {
+    adminVendorAnswer = answer;
+  }
+
+  /** Lets every call of issueReportEvents() left unanswered resolve, and returns how many. */
+  async releaseEvents(): Promise<number> {
+    const hung = adminVendorHung.size;
+    adminVendorHung.clear();
+    return hung;
   }
 
   /** How often describe() and createAccount() were called, and each batch of events sent. */

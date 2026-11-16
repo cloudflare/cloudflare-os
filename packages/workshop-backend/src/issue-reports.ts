@@ -12,12 +12,19 @@ import {
   type IssueReportImage, type IssueReportInput, type IssueReportPriority, type IssueReportStatus,
   type NamedUser, type OwnIssueReport, type OwnIssueReportPage,
 } from "@gadgets/workshop-shared/api";
+import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
+import type {
+  AdminGatekeeperVendor, IssueReportEvent,
+} from "@gadgets/workshop-shared/admin-gatekeeper";
 import { DurableObject } from "cloudflare:workers";
 import {
   adminAccessPolicy, adminCallerTerms, adminListLimit, auditOwnerId, namedUser,
 } from "./admin-access.js";
+import { readAdminConfig } from "./admin-config.js";
+import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { sniffImageMimeType } from "./chat-attachment-validation.js";
 import { createWorkshopLogger } from "./observability";
+import { ambientGatekeeperMode } from "./provisioning-policy.js";
 
 const logger = createWorkshopLogger("workshop.issue-reports");
 
@@ -43,6 +50,13 @@ const REPORT_DUE = "filed_at < ?";
 // The longest reporter or workspace filter list() takes, and the longest workspace id a report
 // names; workspace ids are 64 characters.
 const MAX_FILTER_LENGTH = 1000;
+// The events one call to the admin gatekeeper carries.
+const EVENT_BATCH = 100;
+// How soon an event the admin gatekeeper has not taken is offered again, and how long one call
+// to it is waited for.
+const EVENT_RETRY_MS = MINUTE_MS;
+// An event the admin gatekeeper has not taken for this long is dropped, and the drop logged.
+const EVENT_MAX_AGE_MS = DAY_MS;
 
 // A report with the copy of its grant, if it names one.
 const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter_name, r.text,
@@ -93,6 +107,14 @@ type PendingImage = ImageKey & {
   reporter_id: string;
   byte_length: number;
   started_at: number;
+};
+
+type EventRow = {
+  seq: number;
+  kind: IssueReportEvent["kind"];
+  report_id: string;
+  label: string;
+  at: number;
 };
 
 type EntryRow = {
@@ -239,6 +261,23 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
   return entry;
 }
 
+// An event as the admin gatekeeper is sent it: a row's `label` is the priority of a report that
+// was filed, or the status an investigation ended with.
+function eventOf({ seq, kind, report_id: reportId, label, at }: EventRow): IssueReportEvent {
+  let event = { seq, reportId, at: new Date(at) };
+  return kind === "reported"
+      ? { kind, ...event, priority: label as IssueReportPriority }
+      : { kind, ...event, status: label as Exclude<IssueReportStatus, "new" | "investigating"> };
+}
+
+// Whether the deployment has turned the admin gatekeeper off: an admin disabled the connector,
+// or its provisioning mode is "disabled", as it is until an admin sets one.
+async function adminGatekeeperOff(env: Cloudflare.Env): Promise<boolean> {
+  let config = await readAdminConfig(env);
+  return config.disabledGatekeepers.includes(ADMIN_GATEKEEPER_VENDOR_ID) ||
+      ambientGatekeeperMode(config, ADMIN_GATEKEEPER_VENDOR_ID) === "disabled";
+}
+
 function notFound(): Error {
   return createIssueReportError(ISSUE_REPORT_ERROR_CODES.notFound);
 }
@@ -309,14 +348,26 @@ function fewerBytesThanDeclared(): TypeError {
  *     state TEXT NOT NULL CHECK (state IN ('pending', 'stored')), type TEXT,
  *     byte_length INTEGER NOT NULL, started_at INTEGER NOT NULL, n INTEGER NOT NULL) STRICT;
  *   indexes (report_seq, n), (reporter_id), (state, started_at)
+ *   events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, report_id TEXT NOT NULL,
+ *     label TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
  * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own, and its
  * `agent` is the AdminAgentOrigin, as JSON, of one written through the admin gatekeeper; a bare
  * change of status is an admins' public entry whose text is ''. An image is 'pending' from its
  * upload's reservation, when `started_at` and `n` (its place among its report's images) are set
  * and `byte_length` is the length its sender declared, until its object is in the bucket; only
  * a 'stored' image has a `type`, and only a 'stored' image is listed or read.
+ *
+ * `events` holds what the admin gatekeeper is still to be told (see IssueReportEvent): a report
+ * that was filed, an investigation that ended. A row is written in one step with the change it
+ * tells of and deleted once the gatekeeper has taken it; nothing else of a report leaves the
+ * store this way, and nothing but the delivery reads the table. On a deployment whose admin
+ * gatekeeper is not bound or is turned off the table is emptied instead, so turning the
+ * gatekeeper on tells it of nothing that came before.
  */
 export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
+  // The delivery of the waiting events that is under way, if one is: see #deliverEvents().
+  #delivery: Promise<void> | undefined;
+
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     let sql = ctx.storage.sql;
@@ -393,6 +444,15 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     sql.exec("CREATE INDEX IF NOT EXISTS images_reporter ON images (reporter_id)");
     // The sweep reads the oldest 'pending' rows.
     sql.exec("CREATE INDEX IF NOT EXISTS images_state ON images (state, started_at)");
+    // What the admin gatekeeper is still to be told, oldest first by `seq`, which is never used
+    // twice. Emptied when the gatekeeper is not bound or is turned off.
+    sql.exec(`CREATE TABLE IF NOT EXISTS events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      report_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      at INTEGER NOT NULL
+    ) STRICT`);
   }
 
   // --- The reporter ---
@@ -403,8 +463,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * none. The caller has checked that the reporter can open what the context names. Throws
    * (TypeError) for a text that is blank or over MAX_ISSUE_REPORT_TEXT_LENGTH once trimmed, a
    * priority that is not one, and a context that is malformed; refused `tooManyReports` once the
-   * reporter has filed MAX_ISSUE_REPORTS_PER_DAY since UTC midnight. Sets the alarm that prunes
-   * the store when none is set.
+   * reporter has filed MAX_ISSUE_REPORTS_PER_DAY since UTC midnight. Tells the admin gatekeeper
+   * of the report ("reported"), which leaves the alarm no later than EVENT_RETRY_MS away: that
+   * run is also what sets the alarm that prunes the store.
    */
   async submit(reporter: Pick<AiChatAuthorInfo, "id" | "name">, input: IssueReportInput,
       ownsWorkspace: boolean): Promise<OwnIssueReport> {
@@ -434,9 +495,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', '[]', ?, 0, 0)`,
       id, now, user.id, user.name, text, input.priority, workspaceId ?? null,
       ownsWorkspace && workspaceId !== undefined ? 1 : 0, JSON.stringify(context), now);
-    if (await this.ctx.storage.getAlarm() === null) {
-      await this.ctx.storage.setAlarm(now + DAY_MS);
-    }
+    this.#addEvent("reported", id, input.priority, now);
+    await this.#wakeForEvents();
+    this.ctx.waitUntil(this.#deliverEvents());
     return ownReportOf(this.#report("r.id = ?", id)!);
   }
 
@@ -884,17 +945,23 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * Sets a report's status, entered in its thread as a public line with no text that names
    * `admin` and is labelled as `caller` (see addEntry()). A status the report already has changes
    * nothing. Never refused `threadFull`, so a full thread can still be closed, and it leaves the
-   * report as seen as it was. Throws (TypeError) for a caller or a status that is not one;
-   * refused `notFound`.
+   * report as seen as it was. A report that leaves "investigating" for any status but "new" has
+   * ended an investigation, which the admin gatekeeper is told ("investigationComplete"). Throws
+   * (TypeError) for a caller or a status that is not one; refused `notFound`.
    */
-  setStatus(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+  async setStatus(admin: Pick<AiChatAuthorInfo, "id" | "name">,
       caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string,
-      status: IssueReportStatus): void {
+      status: IssueReportStatus): Promise<void> {
     let author = namedUser(admin);
     let label = adminCallerTerms(caller);
     if (!ISSUE_REPORT_STATUSES.includes(status)) throw new TypeError("Invalid status.");
     let report = this.#reportSeq(reportId);
-    if (report.status !== status) this.#addEntry(report.seq, author, "public", label, "", status);
+    if (report.status === status) return;
+    let { at } = this.#addEntry(report.seq, author, "public", label, "", status);
+    if (report.status !== "investigating" || status === "new") return;
+    this.#addEvent("investigationComplete", report.id, status, at);
+    await this.#wakeForEvents();
+    this.ctx.waitUntil(this.#deliverEvents());
   }
 
   /** Replaces a report's links with `links` as reportLinks() keeps them. Throws (TypeError) for
@@ -1002,6 +1069,88 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     return object.body;
   }
 
+  // --- Events ---
+
+  // Writes the row that tells the admin gatekeeper of a change. Called in the synchronous step
+  // that made the change, so the two are one write.
+  #addEvent(kind: IssueReportEvent["kind"], reportId: string,
+      label: IssueReportPriority | IssueReportStatus, at: number): void {
+    this.ctx.storage.sql.exec(
+        "INSERT INTO events (kind, report_id, label, at) VALUES (?, ?, ?, ?)",
+        kind, reportId, label, at);
+  }
+
+  // An event row is waiting: wake within EVENT_RETRY_MS, so that it outlives an object evicted
+  // before its delivery settles. Only ever moves the alarm earlier. Its caller awaits nothing
+  // between writing the row and this, so the row and the alarm are one write. What it costs:
+  // alarm()'s pass runs once more, a minute after each report filed and each investigation
+  // ended, even where the admin gatekeeper is off. The pass deletes only what is due, so an
+  // early run changes nothing.
+  async #wakeForEvents(): Promise<void> {
+    let retry = Date.now() + EVENT_RETRY_MS;
+    let at = await this.ctx.storage.getAlarm();
+    if (at === null || at > retry) await this.ctx.storage.setAlarm(retry);
+  }
+
+  // Offers the waiting events to the admin gatekeeper: see #sendEvents(). One delivery runs at
+  // a time, and a start while one runs joins it. Never rejects and never touches the alarm. The
+  // delivery begins in a later microtask, so that it is kept here before it can end.
+  #deliverEvents(): Promise<void> {
+    return this.#delivery ??= Promise.resolve().then(() => this.#sendEvents());
+  }
+
+  // One delivery: the waiting events, oldest first, EVENT_BATCH a call, each batch deleted once
+  // the admin gatekeeper has taken it. Where the gatekeeper is not bound or is turned off nobody
+  // is to be told, and every row is deleted.
+  //
+  // A call that is rejected, or has not settled within EVENT_RETRY_MS, ends the delivery: its
+  // rows stay for alarm() to offer again, with the same `seq`, except those older than
+  // EVENT_MAX_AGE_MS, which are dropped. A call given up on is not waited for: whatever it
+  // comes to later deletes nothing, since by then another delivery may be sending the same
+  // rows. So a gatekeeper that hangs holds back neither a later event nor the alarm.
+  async #sendEvents(): Promise<void> {
+    let sql = this.ctx.storage.sql;
+    let rows: EventRow[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      for (;;) {
+        rows = sql.exec<EventRow>(
+          "SELECT seq, kind, report_id, label, at FROM events ORDER BY seq LIMIT ?",
+          EVENT_BATCH).toArray();
+        if (rows.length === 0) return;
+        let vendor = getAuthVendorBinding(this.env, ADMIN_GATEKEEPER_VENDOR_ID) as
+            Service<AdminGatekeeperVendor> | null;
+        if (vendor === null || await adminGatekeeperOff(this.env)) {
+          sql.exec("DELETE FROM events");
+          return;
+        }
+        await Promise.race([
+          vendor.issueReportEvents(rows.map(eventOf)),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(reject, EVENT_RETRY_MS,
+                new Error("The admin gatekeeper did not answer in time."));
+          }),
+        ]);
+        clearTimeout(timer);
+        sql.exec("DELETE FROM events WHERE seq <= ?", rows.at(-1)!.seq);
+      }
+    } catch (error) {
+      logger.warn("the admin gatekeeper did not take the issue report events", {
+        event: "issue.reports.events.undelivered", size: rows.length, error,
+      });
+      let dropped = sql.exec(
+          "DELETE FROM events WHERE at < ? RETURNING seq", Date.now() - EVENT_MAX_AGE_MS).toArray();
+      if (dropped.length > 0) {
+        logger.error("dropped the issue report events the admin gatekeeper never took", {
+          event: "issue.reports.events.dropped", size: dropped.length,
+        });
+      }
+    } finally {
+      clearTimeout(timer);
+      this.#delivery = undefined;
+    }
+  }
+
   // --- Retention ---
 
   // The time before which a report was filed if it is past the retention in force: see
@@ -1024,9 +1173,13 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * upload in flight is left for a later run: the upload finishes or is swept within
    * PENDING_IMAGE_SECONDS, and none begins on a due report.
    *
+   * After the pass, whatever woke it, it offers the waiting events to the admin gatekeeper
+   * (#deliverEvents()), which cannot fail it and is given up on within EVENT_RETRY_MS.
+   *
    * Sets the next alarm itself: an hour ahead after a failure, else a minute ahead while a
-   * report is still due, else a day ahead while anything remains. Never throws: the platform
-   * gives up on an alarm that keeps throwing.
+   * report is still due, else a day ahead while anything remains; and no later than
+   * EVENT_RETRY_MS ahead while an event still waits, whatever else the store holds. Never
+   * throws: the platform gives up on an alarm that keeps throwing.
    */
   async alarm(): Promise<void> {
     let sql = this.ctx.storage.sql;
@@ -1088,14 +1241,18 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
         event: "issue-reports.prune.failed", error,
       });
     }
+    await this.#deliverEvents();
     try {
-      // An empty store needs no alarm: submit() sets one with the next report.
+      // An empty store needs no alarm: submit() sets one with the next report. An event that
+      // still waits brings the alarm back within EVENT_RETRY_MS, in a store with no report too.
       let kept = sql.exec(
         "SELECT 1 FROM reports UNION ALL SELECT 1 FROM images WHERE state = 'pending' LIMIT 1")
           .toArray();
-      if (kept.length > 0) {
+      let waiting = sql.exec("SELECT 1 FROM events LIMIT 1").toArray().length > 0;
+      if (kept.length > 0 || waiting) {
+        let pass = kept.length > 0 ? (failed ? HOUR_MS : dueLeft ? MINUTE_MS : DAY_MS) : Infinity;
         await this.ctx.storage.setAlarm(
-            Date.now() + (failed ? HOUR_MS : dueLeft ? MINUTE_MS : DAY_MS));
+            Date.now() + Math.min(pass, waiting ? EVENT_RETRY_MS : Infinity));
       }
     } catch (error) {
       logger.error("failed to set the issue reports' next alarm", {

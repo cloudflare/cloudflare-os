@@ -43,13 +43,21 @@ const HEDY: Person = { id: "hedy@example.test", name: "Hedy (admin)" };
 
 const NOT_FOUND = ISSUE_REPORT_ERROR_CODES.notFound;
 
+// The deployment the stores of this suite are on. The pool binds no BLUEPRINTS namespace, where
+// a store reads whether the admin gatekeeper is to be told of its events: this one holds no admin
+// config, which leaves the gatekeeper off, so no event is kept or sent.
+const DEPLOYMENT = { ...env, BLUEPRINTS: { get: async () => null } } as unknown as Cloudflare.Env;
+
 function store() {
   let stub = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
   // The store's methods are called on the instance itself, so that a refusal arrives as the
   // error it threw, with its code.
   let run = <T>(
       f: (reports: IssueReportsDurableObject, state: DurableObjectState) => T | Promise<T>) =>
-      runInDurableObject(stub, f);
+      runInDurableObject(stub, (reports, state) => {
+        reports["env"] = DEPLOYMENT;
+        return f(reports, state);
+      });
   let sql = <T extends Record<string, SqlStorageValue>>(query: string,
       ...params: SqlStorageValue[]) =>
       run((_reports, state) => state.storage.sql.exec<T>(query, ...params).toArray());
@@ -247,16 +255,24 @@ describe("filing an issue report", () => {
     await run(reports => reports.submit(ADA, input(), false));
   });
 
-  it("sets the alarm with the first report and leaves it where it is with the next", async () => {
+  it("sets the alarm a minute ahead with a report, and a day ahead once that alarm has run",
+      async () => {
     let clock = fakeClock();
     let { run } = store();
     expect(await run((_reports, state) => state.storage.getAlarm())).toBeNull();
     await run(reports => reports.submit(ADA, input(), false));
     let alarm = await run((_reports, state) => state.storage.getAlarm());
+    expect(alarm).toBe(Date.now() + 60_000);
+    clock.advance(1000);
+    await run(reports => reports.submit(ADA, input(), false));
+    expect(await run((_reports, state) => state.storage.getAlarm())).toBe(alarm);
+
+    await run(reports => reports.alarm());
+    alarm = await run((_reports, state) => state.storage.getAlarm());
     expect(alarm).toBe(Date.now() + DAY_MS);
     clock.advance(HOUR_MS);
     await run(reports => reports.submit(ADA, input(), false));
-    expect(await run((_reports, state) => state.storage.getAlarm())).toBe(alarm);
+    expect(await run((_reports, state) => state.storage.getAlarm())).toBe(Date.now() + 60_000);
   });
 });
 
@@ -573,9 +589,9 @@ describe("an issue report's thread", () => {
     let report = await run(reports => reports.submit(ADA, input(), false));
     // Two changes of status come first: each is a public line of the admins' and no answer, so
     // all 200 answers still go in after them.
-    await run(reports => {
-      reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
-      reports.setStatus(GRACE, { via: "api" }, report.id, "answered");
+    await run(async reports => {
+      await reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
+      await reports.setStatus(GRACE, { via: "api" }, report.id, "answered");
       for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
         reports.addEntry(GRACE, { via: "api" }, report.id, "Answer.", "public");
       }
@@ -712,7 +728,7 @@ describe("an entry written through the admin gatekeeper", () => {
 // as the store's next start does: the pool gives a test no way to restart the object in place and
 // keep what it stored.
 function restart(state: DurableObjectState): IssueReportsDurableObject {
-  return new IssueReportsDurableObject(state, env as unknown as Cloudflare.Env);
+  return new IssueReportsDurableObject(state, DEPLOYMENT);
 }
 
 describe("a store whose entries table has no agent column", () => {
@@ -1264,10 +1280,10 @@ describe("listing issue reports", () => {
   it("gives the reporter an admin's name without their id, and the admins both", async () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
-    await run(reports => {
+    await run(async reports => {
       reports.reply(ADA, report.id, "Any news?");
       reports.addEntry(GRACE, { via: "api" }, report.id, "Looking.", "public");
-      reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
+      await reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
     });
     let own = await run(reports => reports.getOwn("ada", report.id));
     expect(own.entries.map(entry => entry.author)).toStrictEqual(
@@ -1390,7 +1406,7 @@ describe("issue report retention", () => {
 
     // With the floor at 7 days the first report, 36 days old, goes and the second stays.
     await run((_reports, state) => new IssueReportsDurableObject(
-        state, { ...env, ISSUE_REPORT_RETENTION_MIN_DAYS: "7" } as unknown as Cloudflare.Env)
+        state, { ...DEPLOYMENT, ISSUE_REPORT_RETENTION_MIN_DAYS: "7" } as unknown as Cloudflare.Env)
         .alarm());
     expect(await count("reports")).toBe(1);
   });

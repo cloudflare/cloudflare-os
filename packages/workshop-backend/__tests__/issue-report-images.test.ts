@@ -241,6 +241,11 @@ async function unreachable(): Promise<never> {
   throw new Error("The bucket is unreachable.");
 }
 
+// The deployment the stores of this suite are on. The pool binds no BLUEPRINTS namespace, where
+// a store reads whether the admin gatekeeper is to be told of its events: this one holds no admin
+// config, which leaves the gatekeeper off, so no event is kept or sent.
+const DEPLOYMENT = { ...env, BLUEPRINTS: { get: async () => null } } as unknown as Cloudflare.Env;
+
 // A store of its own name. `run` calls the store's methods on the instance itself, so that a
 // refusal arrives as the error it threw; with `bucket` that instance is one the test builds over
 // the same storage and an env whose ISSUE_IMAGES is `bucket`. `stub` is the store's binding.
@@ -248,9 +253,11 @@ function newStore(bucket?: object) {
   let stub = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
   let run = <T>(
       f: (reports: IssueReportsDurableObject, state: DurableObjectState) => T | Promise<T>) =>
-      runInDurableObject(stub, (host, state) => f(bucket === undefined ? host
-          : new IssueReportsDurableObject(
-              state, { ...env, ISSUE_IMAGES: bucket } as unknown as Cloudflare.Env), state));
+      runInDurableObject(stub, (host, state) => {
+        host["env"] = DEPLOYMENT;
+        return f(bucket === undefined ? host : new IssueReportsDurableObject(
+            state, { ...DEPLOYMENT, ISSUE_IMAGES: bucket } as unknown as Cloudflare.Env), state);
+      });
   let sql = <T extends Record<string, SqlStorageValue>>(query: string,
       ...params: SqlStorageValue[]) =>
       runInDurableObject(stub,
