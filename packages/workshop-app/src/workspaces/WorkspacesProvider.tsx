@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { RpcTarget } from 'capnweb'
 import type { ChatReadState, NotificationMute, UnreadStateSubscriber, UnreadThread, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
+import { WorkspaceLooks } from './WorkspaceLooks'
 import { WorkspaceMemberships } from './WorkspaceMemberships'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
 
@@ -71,6 +72,7 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [api, reconnecting, version])
   const [memberships] = useState(() => new WorkspaceMemberships())
+  const [looks] = useState(() => new WorkspaceLooks())
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
@@ -165,5 +167,5 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     mark(id, { title, kind: 'workspace' })
   }
 
-  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create, makeWorkspace, memberships }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create, makeWorkspace, memberships, looks }}>{children}</WorkspacesContext>
 }

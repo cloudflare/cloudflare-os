@@ -219,6 +219,44 @@ const DropdownMenuRadioItem = ({ value, children }: { value: string; children: R
   </Menu.RadioItem>
 )
 
+type DropdownMenuSwatchGroupProps<Value extends string> = {
+  value: Value
+  onValueChange: (value: Value) => void
+  /** What its swatches are a choice of: "Color". */
+  'aria-label': string
+  /** The choices (`DropdownMenu.Swatch`). */
+  children: ReactNode
+}
+
+/** Choices that are drawn rather than named, such as icons or colours, four to a line, of which one is chosen. */
+const DropdownMenuSwatchGroup = <Value extends string>({ value, onValueChange, 'aria-label': label, children }: DropdownMenuSwatchGroupProps<Value>) => (
+  <Menu.RadioGroup value={value} onValueChange={(next: Value) => onValueChange(next)} aria-label={label} className="grid grid-cols-4">{children}</Menu.RadioGroup>
+)
+
+type DropdownMenuSwatchProps = {
+  value: string
+  /** What it is, as it is not said in the menu: "Red". */
+  label: string
+  /** What it is drawn as. */
+  children: ReactNode
+}
+
+/**
+ * One choice of a `DropdownMenu.SwatchGroup`, on a darker tile while it is the one chosen. The
+ * menu stays open, so that the choice is seen where it is made for, and another can be made.
+ */
+const DropdownMenuSwatch = ({ value, label, children }: DropdownMenuSwatchProps) => (
+  <Menu.RadioItem
+    value={value}
+    label={label}
+    aria-label={label}
+    title={label}
+    className="grid size-12 cursor-pointer place-items-center rounded-2xl outline-none not-data-checked:data-highlighted:bg-kumo-tint data-checked:bg-kumo-contrast/8 data-checked:data-highlighted:bg-kumo-contrast/12"
+  >
+    {children}
+  </Menu.RadioItem>
+)
+
 type DropdownMenuCheckboxItemProps = {
   checked: boolean
   onCheckedChange: (checked: boolean) => void
@@ -277,6 +315,8 @@ export const DropdownMenu = Object.assign(DropdownMenuRoot, {
   Label: DropdownMenuLabel,
   RadioGroup: DropdownMenuRadioGroup,
   RadioItem: DropdownMenuRadioItem,
+  SwatchGroup: DropdownMenuSwatchGroup,
+  Swatch: DropdownMenuSwatch,
   CheckboxItem: DropdownMenuCheckboxItem,
   Submenu: DropdownMenuSubmenu,
 })

@@ -20,6 +20,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { WorkspaceLibraryList } from '@/workspaces/WorkspaceLibraryList'
 import { isMuted, useMakeWorkspace, useSetNotificationMute, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatConnectionList } from './ChatConnectionList'
 import { formatUsage } from './usage'
@@ -70,6 +71,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const look = useWorkspaceLooks()[workspaceId]
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
@@ -112,7 +114,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
     <PageLayout
       header={(
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-          {workspace && named && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} onOpen={onOpenWorkspace} />}
+          {workspace && named && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} onOpen={onOpenWorkspace} />}
           <HeaderBubble>
             <Button icon={CaretLeftIcon} onClick={onBack}>Back to chat</Button>
           </HeaderBubble>
@@ -123,7 +125,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
           {workspace && named && (
             <span className="flex items-center gap-2 text-base text-kumo-subtle">
-              <WorkspaceIcon label={workspaceLabel(workspace.title)} small />
+              <WorkspaceIcon label={workspaceLabel(workspace.title)} {...look} small />
               {workspace.title}
             </span>
           )}

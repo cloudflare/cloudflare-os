@@ -21,6 +21,7 @@ import { usePendingDecisions } from './usePendingDecisions'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { withCapsules } from './capsules'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
@@ -130,6 +131,7 @@ export const ChatPane = ({
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
   const automations = useMemo(() => pinned?.filter((item) => item.kind === 'hook' && item.hookId !== undefined).length ?? 0, [pinned])
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
   const [sharing, setSharing] = useState(false)
   // Add a connection is open; and the connections made for the draft, by their line's key.
@@ -289,7 +291,7 @@ export const ChatPane = ({
     <ChatLayout
       header={(workspace || title) && (
         <ChatHeader
-          workspace={workspace && isNamedWorkspace(workspace) ? { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace } : undefined}
+          workspace={workspace && isNamedWorkspace(workspace) ? { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look, onOpen: onOpenWorkspace } : undefined}
           title={title}
           onOpenSettings={onOpenSettings && (() => onOpenSettings())}
           automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}

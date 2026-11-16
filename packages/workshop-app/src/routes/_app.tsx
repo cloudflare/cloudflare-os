@@ -31,6 +31,7 @@ import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { chatEntryKey, sidebarEntries, workspaceEntryKey } from '@/workspaces/sidebarEntries'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
@@ -92,6 +93,7 @@ const AppFrame = () => {
   const accounts = useConnectedAccounts()
   const { snapshot: waiting } = useWaiting()
   const { services } = useServices()
+  const looks = useWorkspaceLooks()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -247,6 +249,7 @@ const AppFrame = () => {
     id: entry.key,
     title: entry.title,
     workspaceLabel: workspaceLabel(entry.workspaceTitle),
+    workspaceLook: looks[entry.workspaceId],
     // A chat on its own is drawn as one, and its workspace, which it alone is in, goes unnamed.
     chat: entry.chatId !== undefined && !entry.named,
     subtitle: entry.chatId === undefined || !entry.named ? formatActivity(entry.at) : `${entry.workspaceTitle} · ${formatActivity(entry.at)}`,

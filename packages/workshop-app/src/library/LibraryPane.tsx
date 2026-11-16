@@ -21,6 +21,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { Skill } from '@/skills/SkillsLibrary'
 import { SkillsTab } from '@/skills/SkillsTab'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { LibraryEntry, LibraryGroup, LibrarySort, LibraryTab } from './libraryEntries'
 import { LibraryEntryList } from './LibraryEntryList'
@@ -133,7 +134,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpen, href, onNew, onOpenSkill
     () => (entryTab === 'gadgets' ? gadgets : entryTab === 'files' ? files : [...gadgets, ...files].toSorted(latest)),
     [entryTab, gadgets, files],
   )
-  const list = useListView('library', libraryList(listed, offers.map(({ output }) => output)))
+  const list = useListView('library', libraryList(listed, offers.map(({ output }) => output), useWorkspaceLooks()))
   const other = useListView<never, (typeof OTHER_ORDERS)[number]>('library-other', { orders: OTHER_ORDERS, searchText: () => '' })
   const sort = other.order.id
   const query = other.controls.search.value

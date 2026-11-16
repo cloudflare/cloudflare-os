@@ -13,6 +13,7 @@ export const WorkspaceRailItem = ({
   id,
   workspaceLabel,
   chat,
+  workspaceLook,
   title,
   subtitle,
   unread,
@@ -42,7 +43,7 @@ export const WorkspaceRailItem = ({
         selected && 'not-data-underlay:bg-kumo-contrast/8',
       )}
     >
-      {chat ? <ChatMark small /> : <WorkspaceIcon label={workspaceLabel} small />}
+      {chat ? <ChatMark small /> : <WorkspaceIcon label={workspaceLabel} {...workspaceLook} small />}
       {unread && <span aria-hidden="true" className="absolute right-1 bottom-1.5 size-2.5 rounded-full bg-kumo-brand ring-2 ring-kumo-canvas" />}
     </LinkButton>
   </Tooltip>

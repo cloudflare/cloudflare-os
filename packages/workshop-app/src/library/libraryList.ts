@@ -8,6 +8,7 @@ import type { ListFilter, ListOrder } from '@/components/listView'
 import { groupByName } from '@/components/nameGroups'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { ListViewSpec } from '@/hooks/useListView'
+import type { WorkspaceLooksById } from '@/workspaces/WorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { workspaceTitle } from '@/workspaces/workspaceList'
 import type { LibraryEntry } from './libraryEntries'
@@ -107,8 +108,8 @@ const OWNER_FILTERS: ListFilter<LibraryEntry>[] = [
   { id: 'shared', label: 'Shared with me', facet: 'owner', test: ({ sharedBy }) => sharedBy !== undefined },
 ]
 
-/** A filter for each workspace the entries are in, by title, once they are in more than one. */
-const workspaceFilters = (entries: LibraryEntry[]): ListFilter<LibraryEntry>[] => {
+/** A filter for each workspace the entries are in, by title, once they are in more than one, with its icon as it is drawn (`looks`). */
+const workspaceFilters = (entries: LibraryEntry[], looks: WorkspaceLooksById): ListFilter<LibraryEntry>[] => {
   const workspaces = new Map(entries.map((entry) => [entry.workspaceId, entry]))
   if (workspaces.size < 2) return []
   return [...workspaces]
@@ -118,7 +119,7 @@ const workspaceFilters = (entries: LibraryEntry[]): ListFilter<LibraryEntry>[] =
       id: `workspace:${id}`,
       label: title,
       facet: 'workspace',
-      icon: createElement(WorkspaceIcon, { label, small: true }),
+      icon: createElement(WorkspaceIcon, { label, ...looks[id], small: true }),
       test: ({ workspaceId }) => workspaceId === id,
     }))
 }
@@ -126,9 +127,9 @@ const workspaceFilters = (entries: LibraryEntry[]): ListFilter<LibraryEntry>[] =
 /**
  * How a tab of the Library page can be ordered, narrowed and searched: by when, by title, by what
  * an entry is (see `libraryTypes`, which `formats` are for), by whether it is starred, by whose it
- * is, and by the workspace it is in.
+ * is, and by the workspace it is in, each under its own icon (`looks`).
  */
-export const libraryList = (entries: LibraryEntry[], formats: BlueprintOutput[]): ListViewSpec<LibraryEntry, LibraryOrder> => {
+export const libraryList = (entries: LibraryEntry[], formats: BlueprintOutput[], looks: WorkspaceLooksById = {}): ListViewSpec<LibraryEntry, LibraryOrder> => {
   const types = libraryTypes(entries, formats)
   return {
     orders: [byTime, { id: 'name', label: 'Name', arrange: (all, enough) => groupByName(all, ({ title }) => title, enough) }, byType(types)],
@@ -136,7 +137,7 @@ export const libraryList = (entries: LibraryEntry[], formats: BlueprintOutput[])
       { id: 'starred', label: 'Starred', test: ({ starred }) => starred },
       ...OWNER_FILTERS,
       ...typeFilters(types),
-      ...workspaceFilters(entries),
+      ...workspaceFilters(entries, looks),
     ],
     // Both are as many as the deployment and the user have made them, so each has a menu of its own.
     facetMenus: { type: 'Type', workspace: 'Workspace' },

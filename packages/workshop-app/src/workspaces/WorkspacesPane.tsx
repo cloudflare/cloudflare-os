@@ -20,6 +20,7 @@ import { formatActivity } from './formatActivity'
 import { orderStarred } from './starredOrder'
 import { workspaceLabel } from './workspaceLabel'
 import { isNamedWorkspace } from './workspaceKind'
+import { useWorkspaceLooks } from './useWorkspaceLooks'
 import { useWorkspaceMemberships } from './useWorkspaceMemberships'
 import { workspaceList, workspaceTitle } from './workspaceList'
 
@@ -50,6 +51,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   // Named ones only: a chat on its own is in a workspace of its own, which is listed as that chat.
   const all = workspaces.status === 'ready' ? workspaces.workspaces.filter(isNamedWorkspace) : []
   const memberships = useWorkspaceMemberships(all)
+  const looks = useWorkspaceLooks()
   const list = useListView('workspaces', workspaceList(all, memberships, user.id))
   // Every starred one's place is kept, whichever of them the search and the filters leave.
   const starredIds = orderStarred(all.filter(({ pinned }) => pinned), starOrder).map(({ id }) => id)
@@ -84,6 +86,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   // What a row and a card are both given.
   const propsOf = (workspace: WorkspaceMetadataWithTimestamps) => ({
     workspaceLabel: workspaceLabel(workspace.title),
+    workspaceLook: looks[workspace.id],
     title: workspaceTitle(workspace),
     members: memberships.get(workspace.id)?.map(({ profile }) => ({ id: profile.id, name: profile.name, you: profile.id === user.id })),
     starred: workspace.pinned === true,

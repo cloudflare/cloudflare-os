@@ -1,6 +1,7 @@
 import { CaretRightIcon, ClockIcon, ExportIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'
+import type { WorkspaceLook } from '@/components/workspaceLook'
 import { WorkspaceCrumb } from './WorkspaceCrumb'
 
 export type ChatHeaderProps = {
@@ -8,8 +9,10 @@ export type ChatHeaderProps = {
   workspace?: {
     id: string
     title: string
-    /** Two letters shown on the folder. */
+    /** Two letters shown on the icon. */
     label: string
+    /** How its icon is drawn, when not as any workspace's is. */
+    look?: WorkspaceLook
     onOpen: () => void
   }
   /** The chat's title, once it is known. */

@@ -6,6 +6,7 @@ import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { formatCost } from '@/chat/usage'
 import { AvatarStack } from '@/components/AvatarStack'
+import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { Button } from '@/components/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EditableTitle } from '@/components/EditableTitle'
@@ -27,6 +28,7 @@ import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { isMuted, useDeleteWorkspace, useRenameWorkspace, useSetNotificationMute, useWorkspaces } from './WorkspacesContext'
 import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
+import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 
 /** What a workspace's page shows beneath its title. */
 export type WorkspaceTab = 'chats' | 'library' | 'automations' | 'members' | 'settings'
@@ -76,6 +78,8 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const title = workspace?.title
   useDocumentTitle(title || 'Workspace')
   const narrow = useNarrowScreen()
+  const look = useWorkspaceLooks()[workspaceId]
+  const setLook = useSetWorkspaceLook()
 
   const { user } = useApi()
   const sharing = useSharing(workspaceId, WHOLE_WORKSPACE, true)
@@ -118,7 +122,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     <PageLayout
       header={(
         <>
-          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} expanded />}
+          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
           {/* Only once there is someone besides the viewer, each of whom it shows the members of. */}
           {people.length > 1 && (
             <HeaderBubble className="ms-auto">
@@ -149,7 +153,10 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
-          <WorkspaceIcon label={workspaceLabel(title ?? '')} />
+          {/* Its icon, which opens what it can be drawn as. That is kept on this device, so anyone may choose. */}
+          {workspace
+            ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={(next) => setLook(workspaceId, next)} />
+            : <WorkspaceIcon label="" />}
           {/* Its own heading, which can be renamed by whoever may build in it. */}
           <h1 className="flex max-w-full justify-center text-xl font-medium text-kumo-default">
             {workspace && workspace.role !== 'use'

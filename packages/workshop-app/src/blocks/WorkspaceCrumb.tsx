@@ -2,12 +2,15 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import type { WorkspaceLook } from '@/components/workspaceLook'
 
 export type WorkspaceCrumbProps = {
   id: string
   title: string
-  /** Two letters shown on the folder. */
+  /** Two letters shown on the icon. */
   label: string
+  /** How its icon is drawn, when not as any workspace's is. */
+  look?: WorkspaceLook
   /** Shows the title beside the icon. Otherwise the crumb is the icon alone, in a circle. */
   expanded?: boolean
   onOpen?: () => void
@@ -18,12 +21,12 @@ export type WorkspaceCrumbProps = {
  * workspace and one of its chats keeps the crumb, which grows the title out of the icon or draws
  * it back in. Going to another workspace swaps the crumb for that one's.
  */
-export const WorkspaceCrumb = ({ id, title, label, expanded = false, onOpen }: WorkspaceCrumbProps) => (
+export const WorkspaceCrumb = ({ id, title, label, look, expanded = false, onOpen }: WorkspaceCrumbProps) => (
   <HeaderBubble name={`workspace:${id}`} state={expanded}>
     {(wasExpanded) => (
       <Button
         // The icon keeps the circle's square, so the title grows out to the side of it.
-        icon={<span className="grid size-(--control-size) place-items-center"><WorkspaceIcon label={label} small /></span>}
+        icon={<span className="grid size-(--control-size) place-items-center"><WorkspaceIcon label={label} {...look} small /></span>}
         aria-label={title}
         title={expanded ? undefined : title}
         onClick={onOpen}
