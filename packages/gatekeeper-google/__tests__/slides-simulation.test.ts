@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { RestText } from "../src/slides-api";
+import type { RestSlide, RestText } from "../src/slides-api";
 import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import { batchKind } from "../src/slides-actions";
 import type { DesignChange } from "../src/slides-design";
 import {
-  applyChange, batchSlides, slidesToFetch, slidesToRead, type CreatedPlaceholder, type Deck,
-  type SlidesAction,
+  applyChange, batchSlides, createReplay, slidesToFetch, slidesToRead, type CreatedPlaceholder,
+  type Deck, type SlidesAction,
 } from "../src/slides-simulation";
 import type { ShapeElement } from "../src/slides-read-types";
 import { editSlide } from "../src/slides-target";
@@ -102,6 +102,24 @@ describe("Slides text edits", () => {
     });
   });
 });
+
+/**
+ * A slide through JSON with its number set wherever it shows one: what a slide that moves must
+ * read as, but for a key that holds `undefined`, which JSON drops.
+ */
+function throughJson(page: RestSlide, number: number): RestSlide {
+  return JSON.parse(JSON.stringify(page), (key, value) =>
+    key === "autoText" && value.type === "SLIDE_NUMBER" ? { ...value, content: `${number}` } : value);
+}
+
+function move(slideIds: string[], after: string | null): SlidesAction {
+  return { kind: "moveSlides", payload: { slideIds, after, slides: [] } };
+}
+
+/** Where the second element of `page`, a line, starts. */
+function startOf(page: RestSlide) {
+  return page.pageElements![1].line!.lineProperties!.startConnection!;
+}
 
 describe("Slides change replay", () => {
   const THEME = themePagesOf(presentation([]));
@@ -248,6 +266,94 @@ describe("Slides change replay", () => {
     // A slide the read did not fetch need only exist.
     expect(applyChange({ order: ["s1"], slides: new Map(), masters: new Map(), themePages: THEME }, skip(["s1"], true)).slides.size).toBe(0);
     expect(() => applyChange(deck, skip(["gone"], true))).toThrow('slide "gone" no longer exists');
+  });
+
+  it("numbers a slide as a pass through JSON would", () => {
+    let number = { slideNumber: "0" };
+    let cell = (columnIndex: number, ...runs: (string | typeof number)[]) =>
+      ({ location: { rowIndex: 0, columnIndex }, text: text(runs) });
+    let pages = [
+      slide("first", []),
+      // The shape that shows a number is a placeholder of the number's own type, as in a real deck.
+      slide("shape", [
+        shape("a", text(["Page ", number]), { placeholder: "SLIDE_NUMBER" }), shape("b", text(["Plain"])),
+      ]),
+      slide("cell", [{ objectId: "t", table: { rows: 1, columns: 2, tableRows: [{ tableCells: [cell(0, "A"), cell(1, number)] }] } }]),
+      slide("group", [{ objectId: "g", elementGroup: { children: [shape("c", text(["x"])), shape("d", text([number, " of 9"]))] } }]),
+      slide("twice", [shape("e", text([number], ["and ", number])), shape("f", text([number]))], { notes: text([number]) }),
+      slide("nowhere", [shape("h", text(["Plain"]))]),
+    ];
+    let deck: Deck = {
+      order: pages.map(page => page.objectId!), slides: new Map(pages.map(page => [page.objectId!, page])),
+      masters: new Map(), themePages: THEME,
+    };
+
+    let moved = applyChange(deck, move(["first"], "nowhere"));
+
+    expect(moved.order).toEqual(["shape", "cell", "group", "twice", "nowhere", "first"]);
+    for (let [position, id] of moved.order.entries()) {
+      expect(moved.slides.get(id)).toStrictEqual(throughJson(deck.slides.get(id)!, position + 1));
+    }
+    expect(JSON.stringify(moved.slides.get("twice")).match(/"content":"4"/g)).toHaveLength(4);
+    // Only the number's text is numbered, not the placeholder that holds it.
+    expect(moved.slides.get("shape")!.pageElements![0].shape!.placeholder).toStrictEqual({ type: "SLIDE_NUMBER" });
+  });
+
+  it("keeps a key that holds undefined, which reads the same either way", () => {
+    let connector = { objectId: "arrow", line: { lineProperties: {
+      startConnection: { connectedObjectId: "a", connectionSiteIndex: 1 },
+    } } };
+    let deck: Deck = {
+      order: ["s1"], masters: new Map(), themePages: THEME,
+      slides: new Map([["s1", slide("s1", [shape("a"), shape("n", text([{ slideNumber: "1" }])), connector])]]),
+    };
+
+    // The shape the line starts from has no ID in the copy, as one added since the copy was queued.
+    let copied = applyChange(deck, copyOf("s1", "c1", { n: "cn", arrow: "carrow" }));
+    let renumbered = applyChange(copied, move(["c1"], null)).slides.get("c1")!;
+
+    let reference = throughJson(copied.slides.get("c1")!, 1);
+    expect(renumbered).toEqual(reference);
+    expect(startOf(renumbered)).toHaveProperty("connectedObjectId", undefined);
+    expect(startOf(reference)).not.toHaveProperty("connectedObjectId");
+    expect(slideOf(renumbered, 0, new Map())).toStrictEqual(slideOf(reference, 0, new Map()));
+    // So what a read counts against its size limit is the same.
+    expect(JSON.stringify(renumbered)).toBe(JSON.stringify(reference));
+  });
+
+  it("returns the slide itself when it shows no number, and shares what it does not change", () => {
+    let plain = slide("s1", [shape("a", text(["Plain"]))]);
+    let numbered = slide("s2", [shape("b", text(["Page ", { slideNumber: "2" }])), shape("c", text(["Plain"]))]);
+    let deck: Deck = {
+      order: ["s1", "s2"], slides: new Map([["s1", plain], ["s2", numbered]]), masters: new Map(),
+      themePages: THEME,
+    };
+
+    let moved = applyChange(deck, move(["s2"], null));
+
+    expect(moved.slides.get("s1")).toBe(plain);
+    let shown = moved.slides.get("s2")!;
+    expect(shown).not.toBe(numbered);
+    expect(shown.pageElements![0]).not.toBe(numbered.pageElements![0]);
+    expect(shown.pageElements![1]).toBe(numbered.pageElements![1]);
+    expect(shown.slideProperties).toBe(numbered.slideProperties);
+    expect(shown.pageElements![0].shape!.text!.textElements![1])
+      .toBe(numbered.pageElements![0].shape!.text!.textElements![1]);
+    // The slide the deck was given still shows the number it had.
+    expect(numbered).toEqual(slide("s2", [shape("b", text(["Page ", { slideNumber: "2" }])), shape("c", text(["Plain"]))]));
+  });
+
+  it("refuses a skip that names a missing slide before it skips any", () => {
+    let first = slide("s1", []);
+    let deck: Deck = { order: ["s1"], slides: new Map([["s1", first]]), masters: new Map(), themePages: THEME };
+    let skip: SlidesAction =
+      { kind: "skipSlides", payload: { slideIds: ["s1", "gone", "missing"], skipped: true, slides: [] } };
+
+    expect(() => applyChange(deck, skip)).toThrow('slide "gone" no longer exists');
+    let { entity, stopped } = createReplay().fold("deck-1", deck, [{ id: 1, action: skip }]);
+    expect(stopped?.reason).toBe('slide "gone" no longer exists');
+    expect(entity?.slides.get("s1")).toBe(first);
+    expect(first.slideProperties).not.toHaveProperty("isSkipped");
   });
 
   describe("a created slide", () => {
