@@ -8,8 +8,8 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, env } from "cloudf
 import type { ApiShape } from "@gadgets/api-schema/schema";
 import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
 import {
-  ISSUE_REPORT_IMAGE_TYPES, ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES,
-  MAX_ISSUE_REPORT_TEXT_LENGTH,
+  ADMIN_WRITE_ARGS, type AdminWriteAction, ISSUE_REPORT_IMAGE_TYPES, ISSUE_REPORT_PRIORITIES,
+  ISSUE_REPORT_STATUSES, MAX_ISSUE_REPORT_TEXT_LENGTH,
 } from "@gadgets/workshop-shared/api";
 import {
   type ActionDescription, matchesResourceUrlPattern, type ObservationDescription,
@@ -146,10 +146,18 @@ function sample(shape: ApiShape): unknown {
   }
 }
 
-/** Arguments that fit `service.name`: one for each required parameter. */
+/**
+ * Arguments that fit `service.name`: one for each required parameter. A write request's are
+ * those its sample action takes, which the schema does not say.
+ */
 function sampleArguments(service: string, name: string): unknown[] {
   const method = ADMIN_SCHEMA.services[service]!.methods.find((candidate) => candidate.name === name)!;
-  return method.params.filter((param) => !param.optional).map((param) => sample(param.type));
+  const args = method.params.filter((param) => !param.optional).map((param) => sample(param.type));
+  if (service === ROOT && name === "requestWorkspaceWrite") {
+    const { required } = ADMIN_WRITE_ARGS[args[1] as AdminWriteAction];
+    args[2] = Object.fromEntries(required.map((argument) => [argument, 1]));
+  }
+  return args;
 }
 
 /** An account and the vendor, as the Workshop reaches them: through the Worker's exports. */

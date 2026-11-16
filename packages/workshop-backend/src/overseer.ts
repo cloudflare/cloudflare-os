@@ -379,6 +379,11 @@ const ADMIN_ACCOUNT_REMOVED = "This workspace's owner has removed the deployment
     "so this connection reaches nothing. Add the account again from Connectors, or remove the " +
     "connection.";
 
+// What a member other than the owner is told when they use the admin connection from a session
+// they opened on the connection itself (see OverseerImpl.lendAdminApi()).
+const ADMIN_CONNECTION_OWNER_ONLY = "Only this workspace's owner can open the admin connection " +
+    "directly: its calls are recorded as the owner's. Use it from a chat.";
+
 // What a member is told when adding someone to an admins-only workspace is refused, by
 // OverseerImpl.adminsOnly()'s reason. The Share dialog shows it on the person's chip.
 const ADMINS_ONLY_REFUSALS = {
@@ -7664,10 +7669,9 @@ class OverseerImpl implements AgentHooks {
     let sharing = await this.getSharingManager();
     // Every call is recorded as the owner's. A chat keeps who prompted its agent and an action
     // who decided it; a session another member opened from the connection itself would leave
-    // nobody.
+    // nobody, so it is lent nothing here and queues nothing (AdminAgentQueueImpl.submitAction()).
     if (use.for === "session" && use.opener !== undefined && use.opener !== admin) {
-      throw new Error("Only this workspace's owner can open the admin connection directly: " +
-          "its calls are recorded as the owner's. Use it from a chat.");
+      throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
     }
     if (use.for === "action") {
       // A member who was demoted cannot decide, and a rule such a member enabled applies nothing.
@@ -16833,9 +16837,10 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
  * which ended() says nothing until the connection is gone.
  *
  * `opener` is the profile id of the collaborator whose session this queue was minted into, if
- * any. It is passed on with a lend only for a session a member opened from the connection
- * itself, the one `{from: "user"}` caller a queue is made for: that session has no chat to say
- * who called (see OverseerImpl.lendAdminApi()).
+ * any. It counts only for a session a member opened from the connection itself, the one
+ * `{from: "user"}` caller a queue is made for: that session has no chat to say who called, so
+ * unless its opener is the owner it is lent nothing (see OverseerImpl.lendAdminApi()) and
+ * queues nothing.
  */
 @validateRpc()
 class AdminAgentQueueImpl extends ApprovalQueueImpl implements AdminAgentQueue {
@@ -16869,6 +16874,16 @@ class AdminAgentQueueImpl extends ApprovalQueueImpl implements AdminAgentQueue {
     if (this.#released) lend.end();
     this.#lends.push(lend);
     return lend.api;
+  }
+
+  // A rule may apply a queued action with no person deciding it, and the record would then
+  // name the owner and the rule's enabler, never the member who queued it.
+  async submitAction(action: number, description: ActionDescription): Promise<void> {
+    if (this.caller.from === "user" && this.opener !== undefined &&
+        this.opener !== await this.impl.getOwnerProfileId()) {
+      throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
+    }
+    return super.submitAction(action, description);
   }
 
   [Symbol.dispose](): void {

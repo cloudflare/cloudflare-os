@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS,
-  DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_PENDING_ADMIN_WRITES,
+  DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_PENDING_ADMIN_WRITES, MAX_PENDING_AGENT_ADMIN_WRITES,
   getAdminWriteErrorCode,
   type AdminAuditRecord, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
@@ -172,6 +172,36 @@ describe("requestWorkspaceWrite", () => {
       await admin.requestWorkspaceWrite(next);
       expect(writes.get(next.id)?.state).toBe("pending");
       expect([...writes.list()]).toHaveLength(MAX_PENDING_ADMIN_WRITES + 1);
+    });
+  });
+
+  it("refuses a request an agent filed past MAX_PENDING_AGENT_ADMIN_WRITES of those, and a person's still fits",
+      async () => {
+    const agent = { via: "gatekeeper", agent: { workspaceId: "b".repeat(64), chatId: 1 } } as const;
+    const filed = Array.from({ length: MAX_PENDING_AGENT_ADMIN_WRITES + 1 }, () => pendingWrite(agent));
+    await harness.inDo(async admin => {
+      const writes = harness.storageOf(admin).adminWrites;
+      for (let request of filed.slice(0, -1)) await admin.requestWorkspaceWrite(request);
+      harness.appended.length = 0;
+
+      // Whichever workspace or chat it came from.
+      const other = pendingWrite({ via: "gatekeeper", agent: { workspaceId: "c".repeat(64) } });
+      for (let request of [filed.at(-1)!, other]) {
+        expect(await codeOf(admin.requestWorkspaceWrite(request)))
+            .toBe(ADMIN_WRITE_ERROR_CODES.tooManyRequests);
+      }
+      expect([...writes.list()]).toHaveLength(MAX_PENDING_AGENT_ADMIN_WRITES);
+      expect(harness.appended).toEqual([]);
+
+      // A person's request does not count against the agents' share, and has room.
+      const person = pendingWrite({ requestedBy: OTHER_ADMIN });
+      await admin.requestWorkspaceWrite(person);
+      expect(writes.get(person.id)?.state).toBe("pending");
+
+      // Once one of the agents' is resolved, another fits.
+      await admin.denyWorkspaceWrite(filed[0].id, actor(OTHER_ADMIN));
+      await admin.requestWorkspaceWrite(other);
+      expect(writes.get(other.id)?.state).toBe("pending");
     });
   });
 

@@ -14,7 +14,7 @@ import {
 import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
 import type { AdminApi } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { type BoundAdminActions, entryText, requestReason } from "./actions.js";
+import { type BoundAdminActions, entryText, requestArgs, requestReason } from "./actions.js";
 import { type ActMethod, ADMIN_SCHEMA, SERVICES, kindOf } from "./surface.js";
 
 // Event names only: a call's arguments, its result and the Admin API's errors (which can quote an
@@ -79,7 +79,7 @@ const ACT_ROUTES: { [M in ActMethod]: ActRoute<M> } = {
     actions.submit(queue, "issueReportStatus", { reportId, status }),
   requestWorkspaceWrite: (actions, queue, workspaceId, action, args, reason) => actions.submit(
       queue, action === "grantContentAccess" ? "contentAccessRequest" : "workspaceWriteRequest",
-      { workspaceId, action, args, reason: requestReason(reason) }),
+      { workspaceId, action, args: requestArgs(action, args), reason: requestReason(reason) }),
 };
 
 const ROOT = ADMIN_SCHEMA.entry;

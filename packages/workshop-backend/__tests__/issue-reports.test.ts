@@ -613,6 +613,36 @@ describe("an issue report's thread", () => {
         .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
   });
 
+  it("bounds the changes of status made through the admin gatekeeper, and never a person's",
+      async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let agent = { via: "gatekeeper", agent: { workspaceId: "w".repeat(64), chatId: 1 } } as const;
+    let flip = (index: number) => index % 2 === 0 ? "investigating" : "answered";
+    await run(async reports => {
+      for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
+        await reports.setStatus(GRACE, agent, report.id, flip(i));
+      }
+    });
+    expect(await refusal(() => run(reports => reports.setStatus(
+        GRACE, agent, report.id, flip(MAX_ISSUE_REPORT_THREAD_ENTRIES)))))
+        .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
+    // Whichever workspace or chat the call came from.
+    expect(await refusal(() => run(reports => reports.setStatus(
+        GRACE, { via: "gatekeeper", agent: { workspaceId: "x".repeat(64) } }, report.id, "closed"))))
+        .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
+    let read = await run(reports => reports.get(report.id));
+    expect(read.entries).toHaveLength(MAX_ISSUE_REPORT_THREAD_ENTRIES);
+    expect(read.status).toBe(flip(MAX_ISSUE_REPORT_THREAD_ENTRIES - 1));
+
+    // The status it already has is still nothing to refuse, and a person closes the report.
+    await run(reports => reports.setStatus(GRACE, agent, report.id, read.status));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "closed"));
+    expect((await run(reports => reports.get(report.id))).status).toBe("closed");
+    // An agent's entries with a text are counted apart from its changes of status.
+    await run(reports => reports.addEntry(GRACE, agent, report.id, "An answer.", "public"));
+  });
+
   it("refuses the reporter's 101st reply of a UTC day across their reports", async () => {
     let clock = fakeClock();
     let { run } = store();

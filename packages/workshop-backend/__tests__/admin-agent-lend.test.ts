@@ -533,6 +533,35 @@ describe("who is lent the Admin API", () => {
     expect((await chat.read({ method: "listUsers" })).error).toBeUndefined();
   }));
 
+  it("queues nothing for a session another admin opened from the connection itself",
+      () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws);
+    // A rule would apply the note at once, as the owner's, with nobody deciding it.
+    enableRule(ws, "issueReportNote");
+    await ws.facet.plan(1, NOTE(reportId));
+    using theirs = await ws.session({ from: "user" }, { kind: "build", profileId: OTHER_ADMIN.id });
+    let refusal = await theirs.submit(1, describeAction("issueReportNote"))
+        .then(() => undefined, (error: Error) => error.message);
+    expect(refusal).toMatch(/^Only this workspace's owner can open the admin connection/);
+    expect([...ws.impl.storage.actions.list()]).toEqual([]);
+    expect(await ws.facet.outcomes(1)).toBeUndefined();
+    expect(await entriesOf(ws, reportId)).toEqual([]);
+
+    // The owner's own direct session queues, and the rule applies it.
+    using own = await ws.session({ from: "user" });
+    await own.submit(1, describeAction("issueReportNote"));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(await entriesOf(ws, reportId)).toMatchObject(
+        [{ author: { id: ADMIN.id }, via: "gatekeeper", agent: { workspaceId: ws.id } }]);
+
+    // From a chat, the same collaborator's action is the chat's.
+    await ws.facet.plan(2, NOTE(reportId));
+    using chat = await ws.session(AGENT, { kind: "build", profileId: OTHER_ADMIN.id });
+    await chat.submit(2, describeAction("issueReportNote"));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(await entriesOf(ws, reportId)).toHaveLength(2);
+  }));
+
   it("refuses an action a member who is not an admin approved", () => adminWorkspace(async ws => {
     let reportId = await fileReport(ws);
     let id = await queueAction(ws, 1, "issueReportNote",

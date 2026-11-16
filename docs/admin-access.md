@@ -756,7 +756,9 @@ checks, in this order:
    approve the request on;
 7. that the directory lists the workspace (`workspaceUnlisted`);
 8. that fewer than `MAX_PENDING_ADMIN_WRITES` (50) requests are pending across the deployment
-   (`tooManyRequests`).
+   and, for a request filed [through an agent](#through-an-agent), fewer than
+   `MAX_PENDING_AGENT_ADMIN_WRITES` (10) of those (`tooManyRequests`): a workspace's rule can
+   file one with no person deciding, and those leave the other slots to people.
 
 The request is then recorded (`"requested"`) and, only once its record exists, stored.
 
@@ -1235,7 +1237,7 @@ without closing it for good.
 - for an agent's turn, the chat the record names says who prompted it;
 - for an approved action, its record in the workspace says who decided (`resolvedBy`);
 - for a session opened directly from the connection, it is the owner: no other member is lent
-  one.
+  one, and no other member's queues an action, which a rule could apply with nobody deciding.
 
 A slash command is not among them: this gatekeeper has none.
 
@@ -1823,7 +1825,7 @@ with `getAdminWriteErrorCode()`):
 | `ADMIN_WRITE_WORKSPACE_CHANGED` | An approved write reached a workspace whose owner is not the one the request named, so it was not run. |
 | `ADMIN_WRITE_REQUEST_NOT_FOUND` | No request has that id. A request is forgotten a day after it is resolved. |
 | `ADMIN_WRITE_REQUEST_NOT_PENDING` | The request was approved, denied or has expired. |
-| `ADMIN_WRITE_TOO_MANY_REQUESTS` | `MAX_PENDING_ADMIN_WRITES` (50) requests are pending across the deployment. |
+| `ADMIN_WRITE_TOO_MANY_REQUESTS` | `MAX_PENDING_ADMIN_WRITES` (50) requests are pending across the deployment, or, for a request filed through an agent, `MAX_PENDING_AGENT_ADMIN_WRITES` (10) of those. |
 | `ADMIN_WRITE_PASSKEY_REQUIRED` | An approval begun by an admin who has enrolled no passkey. |
 | `ADMIN_WRITE_PASSKEY_REFUSED` | A passkey answer failed a check. The caller is not told which; a refused approval's record says (`refusal`). |
 | `ADMIN_WRITE_SECOND_ADMIN_REQUIRED` | The admin who made a `"grantContentAccess"` request, or anyone who was in the workspace an agent filed it from, began or sent its approval, or the workspace was handed one: it must be approved by another admin. |

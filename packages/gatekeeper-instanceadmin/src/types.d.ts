@@ -54,7 +54,9 @@ export interface AdminBinding extends AdminApi {
 /**
  * The callback of subscribeIssueReported(). An event carries ids and labels only: read the
  * report through the binding the gadget holds. A callback can be called more than once for the
- * same event: key the work by the report's id.
+ * same event: key the work by the report's id. A callback answers within 30 seconds: it starts
+ * long work (a call to an agent is recorded and returns) and does not wait for it. One that
+ * takes longer counts as failed and is called again later.
  */
 export interface IssueReportedHook {
   /**
@@ -72,7 +74,8 @@ export interface IssueReportedHook {
 /**
  * The callback of subscribeInvestigationComplete(). An event carries ids and labels only. A
  * callback can be called more than once for the same event, and a report's investigation can
- * end more than once: key the work by the report's id and its status.
+ * end more than once: key the work by the report's id and its status. It answers within 30
+ * seconds, as IssueReportedHook's does.
  */
 export interface InvestigationCompleteHook {
   /** Called when an admin moved the report from "investigating" to `status`, at `at`. */

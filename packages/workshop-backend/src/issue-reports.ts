@@ -68,12 +68,14 @@ const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter
        FROM images i WHERE i.report_seq = r.seq AND i.state = 'stored') AS images
   FROM reports r LEFT JOIN grants g ON g.id = r.grant_id`;
 
-// The three kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart. A bare change of
-// status (an admin's public entry with no text) is in none of them.
+// The kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart. A bare change of
+// status (an admin's public entry with no text) is in none of the first three; one made through
+// the admin gatekeeper is the fourth (see setStatus()).
 const THREAD_KINDS = {
   replies: "visibility = 'public' AND via IS NULL",
   adminPublic: "visibility = 'public' AND via IS NOT NULL AND text <> ''",
   adminOnly: "visibility = 'admins'",
+  agentStatus: "visibility = 'public' AND via = 'gatekeeper' AND text = ''",
 } as const;
 
 type ReportRow = {
@@ -944,8 +946,10 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Sets a report's status, entered in its thread as a public line with no text that names
    * `admin` and is labelled as `caller` (see addEntry()). A status the report already has changes
-   * nothing. Never refused `threadFull`, so a full thread can still be closed, and it leaves the
-   * report as seen as it was. A report that leaves "investigating" for any status but "new" has
+   * nothing. A person's call is never refused `threadFull`, so a full thread can still be closed;
+   * a call made through the admin gatekeeper, which a rule can make with nobody deciding, is,
+   * once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of this report's status were made through it. It
+   * leaves the report as seen as it was. A report that leaves "investigating" for any status but "new" has
    * ended an investigation, which the admin gatekeeper is told ("investigationComplete"). Throws
    * (TypeError) for a caller or a status that is not one; refused `notFound`.
    */
@@ -957,6 +961,10 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (!ISSUE_REPORT_STATUSES.includes(status)) throw new TypeError("Invalid status.");
     let report = this.#reportSeq(reportId);
     if (report.status === status) return;
+    if (label.via === "gatekeeper" &&
+        this.#threadCount(report.seq, "agentStatus") >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
+    }
     let { at } = this.#addEntry(report.seq, author, "public", label, "", status);
     if (report.status !== "investigating" || status === "new") return;
     this.#addEvent("investigationComplete", report.id, status, at);

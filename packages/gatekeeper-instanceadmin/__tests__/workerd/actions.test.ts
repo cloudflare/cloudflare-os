@@ -140,8 +140,6 @@ const CASES: Case[] = [
 ];
 
 const caseOf = (kind: AdminAgentAction) => CASES.find((candidate) => candidate.kind === kind)!;
-/** The kinds that claim before they apply: a second run would post or file a second time. */
-const CLAIMING = CASES.filter((candidate) => candidate.kind !== "issueReportStatus");
 
 /** `candidate`'s action, queued on a facet of its own. */
 async function queued(candidate: Case) {
@@ -318,6 +316,37 @@ describe("what is refused before anything is queued", () => {
         [requestFields("restartWorkspace", {}, long.slice(1))]);
   });
 
+  it("arguments a request's action does not take, lacks or cannot hold", async () => {
+    const { log, queue } = workshop();
+    const { session } = await openBinding(queue);
+    using _session = session;
+    const request = (action: string, args: object) =>
+      rejection(session.requestWorkspaceWrite!(WORKSPACE, action, args, "reason"));
+
+    // Each fits the schema, which knows the arguments only as two optional numbers.
+    expect((await request("stopAgent", {})).message).toBe('"stopAgent" needs `chatId`.');
+    expect((await request("stopAgent", { chatId: 1, gatekeeperId: 1 })).message)
+        .toBe('"stopAgent" takes no `gatekeeperId`.');
+    expect((await request("restartWorkspace", { chatId: 7 })).message)
+        .toBe('"restartWorkspace" takes no `chatId`.');
+    expect((await request("grantContentAccess", { chatId: 7 })).message)
+        .toBe('"grantContentAccess" takes no `chatId`.');
+    for (const chatId of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect((await request("stopAgent", { chatId })).message)
+          .toBe("`chatId` must be a non-negative whole number.");
+    }
+    expect(log).toEqual([]);
+    expect(queue.submitted).toEqual([]);
+
+    // What the action takes is queued, an id of zero included.
+    await session.requestWorkspaceWrite!(WORKSPACE, "restartWorkspace", {}, "reason");
+    await session.requestWorkspaceWrite!(WORKSPACE, "stopAgent", { chatId: 0 }, "reason");
+    expect(queue.submitted.map((entry) => entry.description.fields)).toEqual([
+      requestFields("restartWorkspace", {}, "reason"),
+      requestFields("stopAgent", { chatId: 0 }, "reason"),
+    ]);
+  });
+
   it("an unknown status, an unknown action and arguments that are not a request's", async () => {
     const { log, queue } = workshop();
     const { session } = await openBinding(queue);
@@ -378,7 +407,9 @@ describe("an action that fails to apply", () => {
     ["a rejection that is no error", "the stub broke"],
   ];
 
-  for (const candidate of CLAIMING) {
+  // Every kind, a status included: set again after someone changed the report's status, it
+  // would undo their change.
+  for (const candidate of CASES) {
     const { kind, call } = candidate;
 
     for (const [what, error] of UNKNOWN) {
@@ -402,19 +433,6 @@ describe("an action that fails to apply", () => {
       });
     }
   }
-
-  it("issueReportStatus: an error with no code leaves it pending, and the next apply calls again", async () => {
-    const candidate = caseOf("issueReportStatus");
-    const { gatekeeper, id } = await queued(candidate);
-    const broken = failing(new Error("Network connection lost."));
-    const working = lent();
-
-    expect((await rejection(gatekeeper.applyAdminAction(id, broken as never))).message)
-        .toBe("Network connection lost.");
-    expect(broken.calls).toEqual([candidate.call]);
-    await gatekeeper.applyAdminAction(id, working as never);
-    expect(working.calls).toEqual([candidate.call]);
-  });
 });
 
 /** Durable Object KV, in memory: cloned values and scans in key order. */
@@ -469,12 +487,11 @@ describe("an action that is lent nothing", () => {
 
 describe("an action whose call is under way", () => {
   // What a facet that dies here leaves behind: a claimed action is never run again, so nothing
-  // is posted or filed twice, and one left pending is, which a status can be.
+  // is posted, set or filed twice.
   for (const candidate of CASES) {
     const { kind, call } = candidate;
-    const during = kind === "issueReportStatus" ? "pending" : "claimed";
 
-    it(`${kind}: is ${during} in the journal until the Admin API answers`, async () => {
+    it(`${kind}: is claimed in the journal until the Admin API answers`, async () => {
       const { held, journal, actions, id } = await bound(candidate);
       expect(journal.get(id)?.state).toBe("pending");
       const called = Promise.withResolvers<void>();
@@ -488,7 +505,7 @@ describe("an action whose call is under way", () => {
       const applying = actions.apply(id);
       await called.promise;
       expect(api.calls).toEqual([call]);
-      expect(journal.get(id)?.state).toBe(during);
+      expect(journal.get(id)?.state).toBe("claimed");
 
       answer.resolve();
       await applying;

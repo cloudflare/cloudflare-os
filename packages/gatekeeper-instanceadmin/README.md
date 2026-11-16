@@ -69,7 +69,8 @@ Other admins may collaborate there. Any of them may decide a pending action of t
 while they are an admin; the action's record names who decided (`resolvedBy`), and what it does
 is recorded as the owner's. A second admin needs an account of their own to be admitted, as an
 observer of any connection does. Their own direct session on the connection, opened outside any
-chat, is lent nothing: its records would name the owner and nothing would say who called.
+chat, is lent nothing and queues nothing: its records would name the owner and nothing would
+say who called, and a rule would apply what it queued with nobody deciding.
 
 ### After the connection is removed
 
@@ -322,6 +323,29 @@ kind.
 stores a request every admin sees, takes one of the deployment's pending slots, and puts text an
 agent wrote on an approval page.
 
+**What a rule cannot use up.** A rule applies an action with no person deciding, so the two
+kinds a rule can repeat without end are bounded where they land, in the Workshop:
+
+- requests filed through the gatekeeper hold at most `MAX_PENDING_AGENT_ADMIN_WRITES` (10) of
+  the deployment's `MAX_PENDING_ADMIN_WRITES` (50) pending slots, across every workspace; the
+  next is refused `tooManyRequests`, and the requests people make keep the rest;
+- one report takes at most `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) changes of status made
+  through the gatekeeper; the next is refused `threadFull`. A person's change of status is
+  never refused, so a report can always be closed.
+
+**What is refused before a card is made.** A text or a reason the Admin API would refuse, and a
+write request's arguments that do not fit its action (`ADMIN_WRITE_ARGS`, the Workshop's own
+table): a required one missing, one the action does not take, or an id that is not a
+non-negative whole number. The Admin API refuses these with no code, which an approved action
+could only report as an outcome nobody knows.
+
+**No action runs twice.** Every kind claims its action before it calls. A coded refusal the
+Admin API makes before it writes anything fails the action for good; any other failure (a
+broken call, an error with no code) leaves an outcome nobody knows, which is never run again: a
+person looks at the report's thread or the audit log, and rejects the action. A status is
+claimed like the rest: set again after someone had changed the report's status, it would undo
+their change, with a second status line and a second end of an investigation.
+
 **A verdict of `true` is a ceiling.** A rule applies an action only in a workspace that holds no
 restricted data, which the next section makes rare on purpose.
 
@@ -527,6 +551,13 @@ times. So a subscriber sees an event twice only when its own callback failed or 
 doing part of its work: a callback keys its work by the report's id, and for an investigation
 by its status too.
 
+**A callback has `HOOK_CALLBACK_TIMEOUT_MS` (30 seconds) to answer.** The deployment has one
+driver, and its alarm waits for every delivery it started, so a callback that did not settle
+would hold back every later event of every workspace's hooks and never count as a failed
+attempt. The facet's delivery gives up on a callback that has not answered in time, which the
+kit's queue retries and in the end drops as any failed delivery. The declarations tell a
+subscriber to start long work and return: a call to an agent is recorded and returns at once.
+
 **What is lost:**
 
 - events while the gatekeeper is turned off or not bound: the store deletes them, and turning
@@ -571,7 +602,8 @@ found elsewhere:
 - for an agent's turn, in the chat the record names: who prompted it;
 - for a decision, in the action's record (`resolvedBy`);
 - for a call with no chat, in the gadget's merged code;
-- for a session opened directly from the connection, the owner: nobody else is lent one;
+- for a session opened directly from the connection, the owner: nobody else is lent one, and
+  nobody else's queues an action;
 - for an entry or a status line, in the report's thread, which marks an agent's;
 - in this Worker's logs, event names only: no argument, result or report id is logged.
 

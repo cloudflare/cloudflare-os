@@ -12,7 +12,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueReportHookDriver } from "../../src/hooks.js";
-import { SERVICES } from "../../src/surface.js";
+import { HOOK_CALLBACK_TIMEOUT_MS, SERVICES } from "../../src/surface.js";
 import { ROOT, type Session, recordingTarget, rejection } from "./fakes.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
 import { type HookState, type TestFacet, hookState } from "./worker.js";
@@ -358,6 +358,39 @@ describe("a delivery that fails", () => {
     // Delivered, so nothing is left to retry.
     await tick(HOUR_MS);
     expect(state.firings).toBe(3);
+  });
+
+  it("because its callback does not answer in time is given up on and retried, and holds back no other event", async () => {
+    const slow = await subscribe("subscribeIssueReported");
+    const other = await subscribe("subscribeInvestigationComplete");
+    const tick = clock();
+    // The delivery's own timer, shortened: every other timer keeps its time.
+    const setTimer = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...args: unknown[]) =>
+      setTimer(handler, ms === HOOK_CALLBACK_TIMEOUT_MS ? 50 : ms, ...args)) as typeof setTimeout);
+    const answer = Promise.withResolvers<void>();
+    slow.state.hold = answer.promise;
+
+    // The delivery ends although the callback is still waiting, and counts as one failed attempt.
+    await ingest(reported("r1"));
+    expect(slow.state.firings).toBe(1);
+    expect((await rows()).map(({ message, attempts }) => [message?.reportId, attempts]))
+        .toContainEqual(["r1", 1]);
+
+    // An event for another hook is delivered meanwhile.
+    await ingest(ended("r2"));
+    expect(other.state.received).toEqual([{
+      method: "investigationComplete", event: { reportId: "r2", status: "answered", at: ENDED_AT },
+    }]);
+
+    // The slow callback is called again after its backoff, and answers this time.
+    slow.state.hold = undefined;
+    await tick(MINUTE_MS);
+    expect(slow.state.firings).toBe(2);
+    expect(slow.state.received).toEqual([{
+      method: "issueReported", event: { reportId: "r1", priority: "high", filedAt: FILED_AT },
+    }]);
+    answer.resolve();
   });
 
   it("because its firing is refused is retried, dropped after the kit's attempts, and a later event delivered", async () => {

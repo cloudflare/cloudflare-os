@@ -351,6 +351,10 @@ it("admits only its owner and deployment admins to a workspace that has the conn
   const records = await auditCount(harness);
   await expect(direct(graceWs, session => session.listUsers()))
       .rejects.toThrow("Only this workspace's owner can open the admin connection directly");
+  // Nor does it queue an action, which a rule could apply as the owner's with nobody deciding.
+  await expect(direct(graceWs, session => session.addIssueReportEntry("a-report", "A note.", "admins")))
+      .rejects.toThrow("Only this workspace's owner can open the admin connection directly");
+  expect(await adminActions(ws)).toEqual([]);
   expect(await auditCount(harness)).toBe(records);
   expect(await isRestricted(ws)).toBe(false);
   expect(await observationTitles(ws)).toEqual([]);

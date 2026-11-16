@@ -187,10 +187,20 @@ export const SERVICES: ReadonlyMap<string, readonly string[]> = new Map(
       .map(([name, service]) => [name, service.methods.map((method) => method.name)]),
 );
 
+/**
+ * How long a hook's callback has to answer one event, which the preamble tells a subscriber.
+ * The deployment has one hook driver, whose alarm waits for every delivery it started, so a
+ * callback that did not settle would hold back every later event of every workspace's hooks and
+ * would never count as a failed attempt. One given up on is a failed delivery, retried and in
+ * the end dropped as the kit's queue does any other.
+ */
+export const HOOK_CALLBACK_TIMEOUT_MS = 30_000;
+
 /** What the declarations say first in the doc of a method that only queues an action. */
 export const QUEUED_DOC = "Through the admin gatekeeper this call does not run: it queues an " +
-  "action, which runs once a member of the workspace approves it (or a rule does), and resolves " +
-  "to undefined. Until then no read shows what it will do.";
+  "action, which runs once a member of the workspace approves it (or, for a kind of action a " +
+  "rule may approve, once a rule does), and resolves to undefined. Until then no read shows " +
+  "what it will do.";
 
 /**
  * `schema` as an agent is told of it: a copy in which each AdminApi method of kind "act" returns
@@ -211,8 +221,10 @@ export function queued(schema: Schema): Schema {
 export const PREAMBLE = `\
 The binding these declarations describe is this deployment's Admin API (AdminApi, below), acting as
 the user who owns this workspace, a deployment admin.
-- A read runs at once and is recorded: in this workspace's activity, and in the deployment's audit
-  log as made through an agent.
+- A read runs at once and is recorded in this workspace's activity. Opening a view, of a workspace
+  or of a user's account, and each call on one are also recorded in the deployment's audit log, as
+  made through an agent; a listing, a setting, the audit log itself and an issue report leave no
+  record there.
 - The first read marks this workspace as holding restricted data. From then on nothing in it is
   applied without a person, and web fetches reach only the hosts the deployment trusts.
 - A method whose doc starts "Through the admin gatekeeper this call does not run" does nothing when
@@ -241,6 +253,8 @@ the user who owns this workspace, a deployment admin.
   time. Both carry ids and labels only: the callback reads the report through this binding.
 - A callback can be called more than once for the same event: it keys its work by the report's id
   (and status).
+- A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work and returns without waiting for it.
+  One that takes longer counts as failed and is called again later.
 - A hook wakes a gadget's stored callback or this chat, never a new chat.
 - "Issue reported" fires as the report is filed, before its reporter's client has attached its
   images or given the grant that may come with it (both are later calls), so a subscriber that

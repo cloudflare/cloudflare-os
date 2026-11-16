@@ -26,6 +26,9 @@ export type HookState = {
   refuseObservations: boolean;
   /** Fail this many more calls of the callback, as a failing gadget's would. */
   failures: number;
+  /** While set, a call of the callback waits for it and then returns, having received nothing:
+   * a gadget's callback that waits for long work. */
+  hold?: Promise<void>;
   /** What the firings' queues were asked to observe. */
   observations: ObservationDescription[];
   /** Each call of the callback: its method and its event. */
@@ -60,14 +63,15 @@ class RecordingHook extends RpcTarget {
   }
 
   async issueReported(event: unknown): Promise<void> {
-    this.#receive("issueReported", event);
+    await this.#receive("issueReported", event);
   }
 
   async investigationComplete(event: unknown): Promise<void> {
-    this.#receive("investigationComplete", event);
+    await this.#receive("investigationComplete", event);
   }
 
-  #receive(method: string, event: unknown): void {
+  async #receive(method: string, event: unknown): Promise<void> {
+    if (this.#state.hold) return await this.#state.hold;
     if (this.#state.failures > 0) {
       this.#state.failures--;
       throw new Error("The test hook failed.");

@@ -729,7 +729,8 @@ const adminWriteErrors = codedErrorFamily<AdminWriteErrorCode>({
   [ADMIN_WRITE_ERROR_CODES.passkeyRefused]:
       "The passkey confirmation was not accepted. Start again.",
   [ADMIN_WRITE_ERROR_CODES.secondAdminRequired]:
-      "This request must be approved by an admin other than the one who made it.",
+      "This request must be approved by an admin other than the one who made it and, for a " +
+      "request an agent filed, other than everyone who was in the workspace it was filed from.",
 });
 
 /** Creates an expected admin-write refusal with a machine-readable code. */
@@ -2549,6 +2550,22 @@ export type AdminWriteArgs = {
   gatekeeperId?: WorkpieceId;
 };
 
+/**
+ * The arguments each write action takes, as AdminWriteArgs' doc lists them: the `required` ones
+ * and the `optional` ones. AdminApi.requestWorkspaceWrite() refuses a request by this table, and
+ * a client reads it to refuse one before it is sent.
+ */
+export const ADMIN_WRITE_ARGS: Record<AdminWriteAction, {
+  /** The arguments a request for the action must carry. */
+  required: (keyof AdminWriteArgs)[];
+  /** The arguments a request for the action may carry. */
+  optional?: (keyof AdminWriteArgs)[];
+}> = {
+  stopAgent: { required: ["chatId"] },
+  restartWorkspace: { required: [] },
+  grantContentAccess: { required: [] },
+};
+
 /** How long a write request stays pending before it expires, in seconds: ten minutes. */
 export const ADMIN_WRITE_REQUEST_LIFETIME_SECONDS = 600;
 
@@ -2563,6 +2580,10 @@ export const ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS = 300;
 
 /** The most write requests that may be pending at once, across the deployment. */
 export const MAX_PENDING_ADMIN_WRITES = 50;
+
+/** How many of them may be requests filed through the admin gatekeeper: a workspace's rule can
+ * file one with no person deciding, and those must leave room for the requests people make. */
+export const MAX_PENDING_AGENT_ADMIN_WRITES = 10;
 
 /** The longest name an admin may give a passkey, in characters, once trimmed. */
 export const MAX_ADMIN_PASSKEY_NAME_LENGTH = 64;
@@ -2885,7 +2906,9 @@ export const MAX_ISSUE_REPORTS_PER_DAY = 20;
  * replies, the admins' public entries, and the admins-only ones. Each kind is counted apart, so
  * that a reporter who fills their side cannot stop the admins answering, and a full thread
  * tells a reporter nothing of the admins' notes. A bare change of status is not counted, so a
- * full thread can always be closed. */
+ * full thread can always be closed; the changes of status made through the admin gatekeeper are
+ * a fourth kind, bounded like the others, since a workspace's rule can make one with no person
+ * deciding. */
 export const MAX_ISSUE_REPORT_THREAD_ENTRIES = 200;
 
 /** The most replies one user may write in the threads of their issue reports in a UTC day. */
@@ -3630,7 +3653,8 @@ export interface AdminApi {
    *     AdminAccessGrant), for ADMIN_GRANT_LIFETIME_SECONDS, never renewed: it is asked for and
    *     approved again. It must be approved by an admin other than the requester (an account that
    *     matches the same entry of the deployment's admin list as the requester's is the
-   *     requester). Unlike the other actions it enters nothing in the workspace's action log and
+   *     requester) and, when it was filed through the admin gatekeeper, other than everyone who
+   *     was in the workspace it was filed from. Unlike the other actions it enters nothing in the workspace's action log and
    *     raises nothing a member can see; its reason stays in the admins' log. Refused
    *     `contentOff` (ADMIN_ACCESS_ERROR_CODES) while the level in force is below "content".
    *
@@ -3638,7 +3662,8 @@ export interface AdminApi {
    * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on", `workspaceNotFound` for a
    * malformed id, `workspaceUnlisted` for a workspace the directory does not list (see
    * listWorkspaces()), `originUnset` while the deployment has no PUBLIC_BASE_URL, and
-   * `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending. Rejects arguments the action
+   * `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending or, for a request filed through
+   * the admin gatekeeper, MAX_PENDING_AGENT_ADMIN_WRITES of those. Rejects arguments the action
    * does not take.
    */
   requestWorkspaceWrite(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
@@ -3754,7 +3779,8 @@ export interface AdminApi {
   /** Set an issue report's status, entered in its thread as a public line that names the caller
    * (see IssueReportEntry). It does not raise the reporter's count of unseen reports, and a full
    * thread does not refuse it. Setting the status it already has changes nothing. Refused
-   * `notFound`. */
+   * `notFound`, and `threadFull` for a call made through the admin gatekeeper once
+   * MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the report's status were made through it. */
   setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void>;
 
   /** Replace the links attached to an issue report: at most MAX_ISSUE_REPORT_LINKS, each an http

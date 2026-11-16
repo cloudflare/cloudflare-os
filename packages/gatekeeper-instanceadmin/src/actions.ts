@@ -15,8 +15,8 @@ import {
 } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminAgentApi } from "@gadgets/workshop-shared/admin-gatekeeper";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, type AdminWriteAction, type AdminWriteArgs,
-  ISSUE_REPORT_ERROR_CODES, type IssueReportStatus, MAX_ADMIN_ACCESS_REASON_LENGTH,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ARGS, ADMIN_WRITE_ERROR_CODES, type AdminWriteAction,
+  type AdminWriteArgs, ISSUE_REPORT_ERROR_CODES, type IssueReportStatus, MAX_ADMIN_ACCESS_REASON_LENGTH,
   MAX_ISSUE_REPORT_TEXT_LENGTH, getAdminAccessErrorCode, getAdminWriteErrorCode, getIssueReportErrorCode,
 } from "@gadgets/workshop-shared/api";
 
@@ -85,6 +85,32 @@ export function requestReason(reason: string): string {
 }
 
 /**
+ * `args` as a write request for `action` holds them: the arguments the action takes
+ * (ADMIN_WRITE_ARGS) and nothing else. Throws for arguments the Admin API would refuse, which it
+ * does with no code, as it refuses a reason: a required one missing, one the action does not
+ * take, or an id that is not a non-negative whole number.
+ */
+export function requestArgs(action: AdminWriteAction, args: AdminWriteArgs): AdminWriteArgs {
+  const { required, optional = [] } = ADMIN_WRITE_ARGS[action];
+  const taken: readonly string[] = [...required, ...optional];
+  const kept: AdminWriteArgs = {};
+  // The schema's check has refused a property the type does not declare.
+  for (const [name, value] of Object.entries(args)) {
+    if (value === undefined) continue;
+    if (!taken.includes(name)) throw new TypeError(`"${action}" takes no \`${name}\`.`);
+    // Every argument is an id.
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(`\`${name}\` must be a non-negative whole number.`);
+    }
+    kept[name as keyof AdminWriteArgs] = value;
+  }
+  for (const name of required) {
+    if (kept[name] === undefined) throw new TypeError(`"${action}" needs \`${name}\`.`);
+  }
+  return kept;
+}
+
+/**
  * The coded refusals after which an action can never apply: the Admin API makes each before it
  * writes anything, and no later approval changes it. For an entry or a status, the report does
  * not exist, its thread is full or it is closed; for a request, writes are off, the workspace's
@@ -116,16 +142,15 @@ const OUTCOME_UNKNOWN = "The Admin API did not say whether this was done. Check 
  *     was done, and the action is pending again for when they are one.
  *   - anything else (a broken or timed-out call, an error with no code, a code this list does
  *     not know): the call may have been carried out, so an ActionOutcomeUnknownError, which is
- *     never run again. With `repeatable`, for a call that changes nothing the second time,
- *     `error` itself: pending again.
+ *     never run again.
  */
-export function classifyApplyFailure(error: unknown, repeatable = false): unknown {
+export function classifyApplyFailure(error: unknown): unknown {
   const code = getIssueReportErrorCode(error) ?? getAdminWriteErrorCode(error) ??
       getAdminAccessErrorCode(error);
   if (code !== undefined && TERMINAL_REFUSALS.has(code)) {
     return new ActionApplyError(error instanceof Error ? error.message : code, { cause: error });
   }
-  if (code === ADMIN_ACCESS_ERROR_CODES.notAdmin || repeatable) return error;
+  if (code === ADMIN_ACCESS_ERROR_CODES.notAdmin) return error;
   return new ActionOutcomeUnknownError(OUTCOME_UNKNOWN, { cause: error });
 }
 
@@ -135,14 +160,14 @@ export function classifyApplyFailure(error: unknown, repeatable = false): unknow
  */
 async function callLent(
   host: AdminActionHost, ctx: ActionContext,
-  call: (admin: RpcStub<AdminAgentApi>) => Promise<unknown>, repeatable = false,
+  call: (admin: RpcStub<AdminAgentApi>) => Promise<unknown>,
 ): Promise<void> {
   const admin = host.lentFor(ctx.id);
   if (!admin) throw new Error(NOT_LENT);
   try {
     await call(admin);
   } catch (error) {
-    throw classifyApplyFailure(error, repeatable);
+    throw classifyApplyFailure(error);
   }
 }
 
@@ -183,8 +208,9 @@ const fileRequest = (request: WriteRequestPayload, host: AdminActionHost, ctx: A
  * authority is lent per apply and checked by the Workshop, so there is no connection to pin.
  *
  * Every kind awaits its decision: an entry, a status or a request is in no read until it is
- * applied. The kinds whose second run would be a second entry or a second request claim before
- * they apply; setting a status twice changes nothing, so that kind does not.
+ * applied. Every kind claims before it applies, so that none runs twice: a second run would be
+ * a second entry or a second request, and a status set again after someone changed it would
+ * undo their change, with a second status line and a second end of an investigation.
  */
 export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
   issueReportReply: {
@@ -244,6 +270,7 @@ export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
     kind: ADMIN_AGENT_ACTIONS.issueReportStatus.kind,
     autoApprovable: ADMIN_AGENT_ACTIONS.issueReportStatus.autoApprovable,
     delivery: "await-decision",
+    claimBeforeApply: true,
     describe: ({ reportId, status }) => card(
         `Set issue report ${reportId} to ${STATUS_LABELS[status]}`,
         buildDescription("Changes the report's status. Its reporter sees the change in the " +
@@ -251,7 +278,7 @@ export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
             .inline("Report", reportId)
             .inline("Status", STATUS_LABELS[status])),
     apply: ({ reportId, status }, host, ctx) =>
-      callLent(host, ctx, (admin) => admin.setIssueReportStatus(reportId, status), true),
+      callLent(host, ctx, (admin) => admin.setIssueReportStatus(reportId, status)),
   },
 
   // The two requests are one call under two kinds: a session queues a request for

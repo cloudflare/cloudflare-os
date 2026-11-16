@@ -2,7 +2,7 @@
 // storage read and no call made.
 
 import {
-  MAX_ADMIN_AUDIT_ARG_LENGTH,
+  ADMIN_WRITE_ARGS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord, type AdminWriteRequest,
 } from "@gadgets/workshop-shared/api";
 import {
@@ -61,14 +61,6 @@ export function newPasskeyChallenge(binding?: Uint8Array): string {
   return challenge.toBase64({ alphabet: "base64url", omitPadding: true });
 }
 
-// The arguments each action takes: exactly the list in AdminWriteArgs' doc.
-const WRITE_ARGS: Record<AdminWriteAction,
-    { required: (keyof AdminWriteArgs)[]; optional?: (keyof AdminWriteArgs)[] }> = {
-  stopAgent: { required: ["chatId"] },
-  restartWorkspace: { required: [] },
-  grantContentAccess: { required: [] },
-};
-
 // What an argument's value must be beyond its type, which the RPC validator has checked: `keep`
 // returns the value to keep, or undefined for one that is refused.
 type WriteArgRule<T> = { must: string; keep: (value: T) => T | undefined };
@@ -98,8 +90,8 @@ function keepWriteArg<Name extends keyof WriteArgValues>(
  * non-negative safe integer. */
 export function adminWriteArgs(action: AdminWriteAction, args: AdminWriteArgs): AdminWriteArgs {
   // An own entry only: "constructor" names no action.
-  if (!Object.hasOwn(WRITE_ARGS, action)) throw new TypeError("No such write action.");
-  let { required, optional = [] } = WRITE_ARGS[action];
+  if (!Object.hasOwn(ADMIN_WRITE_ARGS, action)) throw new TypeError("No such write action.");
+  let { required, optional = [] } = ADMIN_WRITE_ARGS[action];
   let taken: string[] = [...required, ...optional];
   // The validator lets through properties the type does not declare, so every key is looked at.
   // A name the client made up is cut as the audit log cuts a string before it is quoted back.

@@ -27,6 +27,7 @@ import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ADMIN_SUBRESOURCE } from "./forward.js";
+import { HOOK_CALLBACK_TIMEOUT_MS } from "./surface.js";
 import type { InvestigationCompleteHook, IssueReportedHook } from "./types";
 
 // Event names only: an event's report id stays in the workspace's activity.
@@ -110,7 +111,9 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
    * Observes the event on the firing's queue, then calls the hook with it. The observation
    * carries the whole binding's subresource and no restricted-data flag: an event is an id and a
    * label, so a workspace that only receives events keeps its rules. A refused observation calls
-   * no hook, and a throw from either is retried by the driver.
+   * no hook, and a throw from either is retried by the driver, as is a callback that has not
+   * answered within HOOK_CALLBACK_TIMEOUT_MS: it is not waited for, and whatever it comes to
+   * later is not looked at.
    */
   async deliver(
     callback: RpcStub<IssueReportHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
@@ -129,6 +132,21 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
       ...(fields ? { fields } : {}),
       subresources: [ADMIN_SUBRESOURCE],
     });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.#call(callback, event),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(reject, HOOK_CALLBACK_TIMEOUT_MS,
+              new Error("The hook's callback did not answer in time."));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async #call(callback: RpcStub<IssueReportHookTarget>, event: IssueReportEvent): Promise<void> {
     if (event.kind === "reported") {
       const { reportId, priority, at: filedAt } = event;
       await (callback as RpcStub<RpcTarget & IssueReportedHook>)

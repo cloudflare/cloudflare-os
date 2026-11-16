@@ -10,7 +10,8 @@ import {
 } from "@gadgets/workshop-shared/admin-agent";
 import { describe, expect, it } from "vitest";
 import {
-  ACT_METHODS, ADMIN_SCHEMA, PREAMBLE, QUEUED_DOC, SERVICES, assertAdminSchema,
+  ACT_METHODS, ADMIN_SCHEMA, HOOK_CALLBACK_TIMEOUT_MS, PREAMBLE, QUEUED_DOC, SERVICES,
+  assertAdminSchema,
   generatedDeclarations, kindOf, queued,
 } from "../src/surface.js";
 import SURFACE_SOURCE from "../src/surface.ts?raw";
@@ -111,6 +112,16 @@ describe("the declarations", () => {
     expect(PREAMBLE).toContain("marks this workspace as holding restricted data");
   });
 
+  it("say which reads the deployment's audit log records, and which it does not", () => {
+    const preamble = PREAMBLE.replace(/\n {2}/g, " ");
+    expect(preamble).toContain(
+        "A read runs at once and is recorded in this workspace's activity. Opening a view, of a " +
+        "workspace or of a user's account, and each call on one are also recorded in the " +
+        "deployment's audit log, as made through an agent; a listing, a setting, the audit log " +
+        "itself and an issue report leave no record there.");
+    expect(preamble).not.toContain("is recorded: in this workspace's activity, and in the deployment's");
+  });
+
   it("say what a session limited to one report is for, and what its answers are", () => {
     // One sentence each, whatever line it was wrapped on.
     const preamble = PREAMBLE.replace(/\n {2}/g, " ");
@@ -141,6 +152,10 @@ describe("the declarations", () => {
     expect(preamble).toContain(
         "A callback can be called more than once for the same event: it keys its work by the " +
         "report's id (and status).");
+    expect(preamble).toContain(
+        `A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work ` +
+        "and returns without waiting for it. One that takes longer counts as failed and is " +
+        "called again later.");
     expect(preamble).toContain("A hook wakes a gadget's stored callback or this chat, never a new chat.");
     expect(preamble).toContain(
         "\"Issue reported\" fires as the report is filed, before its reporter's client has " +
@@ -175,8 +190,9 @@ describe("the declarations", () => {
   it("declare each act method as resolving to nothing, saying first that it is queued", () => {
     expect(QUEUED_DOC).toBe(
         "Through the admin gatekeeper this call does not run: it queues an action, which runs " +
-        "once a member of the workspace approves it (or a rule does), and resolves to undefined. " +
-        "Until then no read shows what it will do.");
+        "once a member of the workspace approves it (or, for a kind of action a rule may " +
+        "approve, once a rule does), and resolves to undefined. Until then no read shows what it " +
+        "will do.");
     for (const name of ACTS) {
       const declared = member(declarations, ROOT, name)!;
       expect(declared.signature, name).toMatch(/\): Promise<void>;$/);
