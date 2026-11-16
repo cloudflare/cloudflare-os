@@ -10,7 +10,9 @@ import { ApiContext, type ApiSession } from './ApiContext'
 import type { Connection } from './Connection'
 import { ConnectionNotice } from './ConnectionNotice'
 import { ConnectionNoticeContext } from './ConnectionNoticeContext'
-import { clearToken, readToken } from './token'
+import { hashPassword } from './passwordHash'
+import { clearToken, readToken, storeToken } from './token'
+import { SignInForm } from '@/blocks/SignInForm'
 
 type Session =
   | { phase: 'connecting' }
@@ -38,6 +40,8 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
   // one's disposed stub. (An object, because a stub in useState would be called as an updater.)
   const [state, setState] = useState<{ owner: RpcStub<PublicApi>; session: Session } | null>(null)
   const [notice] = useState(() => new ConnectionNotice())
+  // Bumped once a token is stored, to sign in with it.
+  const [signIns, setSignIns] = useState(0)
 
   useEffect(() => {
     if (!publicApi) return
@@ -74,7 +78,19 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
       cancelled = true
       api?.[Symbol.dispose]()
     }
-  }, [publicApi])
+  }, [publicApi, signIns])
+
+  const signInWithPassword = async (username: string, password: string) => {
+    if (!publicApi) return 'Not connected to the server.'
+    try {
+      const token = await publicApi.login(username, await hashPassword(username, password))
+      if (!token) return 'Wrong username or password.'
+      storeToken(token)
+      setSignIns((n) => n + 1)
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
 
   const session = publicApi && state?.owner === publicApi ? state.session : CONNECTING
   // What was signed in on the connection before, until this one is.
@@ -112,7 +128,7 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
     case 'connecting':
       return <Notice>Connecting…</Notice>
     case 'signedOut':
-      return <Notice>You’re not signed in.</Notice>
+      return <SignInForm onSignIn={signInWithPassword} />
     case 'failed':
       return <Notice>Couldn’t sign in: {session.message}</Notice>
     case 'ready':
