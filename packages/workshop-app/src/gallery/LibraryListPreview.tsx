@@ -109,7 +109,7 @@ export const LibraryListPreview = () => {
             <DropdownMenu label="New" caret triggerVariant="primary" side={under ? 'top' : 'bottom'} align="end" inPlace>
               {FORMATS.map((format) => (
                 <DropdownMenu.Item key={format.id} label={format.noun} onSelect={() => say(`new ${format.noun.toLowerCase()}`)}>
-                  <FormatIcon name={format.icon} className="size-4 shrink-0" />
+                  <FormatIcon name={format.icon} className="shrink-0" />
                   {format.noun}
                 </DropdownMenu.Item>
               ))}

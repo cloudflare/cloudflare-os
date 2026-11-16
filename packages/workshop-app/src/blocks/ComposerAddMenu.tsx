@@ -71,11 +71,11 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
               <DropdownMenu.Item key={each.id} label={each.name} onSelect={() => model.onChoose(each.id)} current={each.id === model.current}>
                 {/* Ticked in the icons' column, so the names line up under the rows above. */}
                 {each.id === model.current
-                  ? <CheckIcon aria-hidden="true" weight="bold" className="size-4 shrink-0" />
-                  : <span aria-hidden="true" className="size-4 shrink-0" />}
+                  ? <CheckIcon aria-hidden="true" weight="bold" className="size-(--menu-icon) shrink-0" />
+                  : <span aria-hidden="true" className="size-(--menu-icon) shrink-0" />}
                 <span className="min-w-0 flex-1">
                   <span className="block truncate">{each.name}</span>
-                  {each.description && <span className="block truncate text-sm text-kumo-subtle">{each.description}</span>}
+                  {each.description && <span className="block truncate text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{each.description}</span>}
                 </span>
               </DropdownMenu.Item>
             ))}
@@ -107,7 +107,7 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
                   >
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">{command.title}</span>
-                      <span className="block truncate text-sm text-kumo-subtle">{command.description}</span>
+                      <span className="block truncate text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{command.description}</span>
                     </span>
                   </DropdownMenu.Item>
                 ))}

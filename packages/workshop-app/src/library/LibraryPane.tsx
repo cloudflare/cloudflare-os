@@ -177,7 +177,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpen, href, onNew, onOpenSkill
           <DropdownMenu label="New" caret triggerVariant="primary" side={narrow ? 'top' : 'bottom'} align="end" inPlace>
             {startable.map((format) => (
               <DropdownMenu.Item key={format.id} label={format.noun} onSelect={() => onNew(format)}>
-                <FormatIcon name={format.icon} className="size-4 shrink-0" />
+                <FormatIcon name={format.icon} className="shrink-0" />
                 {format.noun}
               </DropdownMenu.Item>
             ))}

@@ -56,21 +56,24 @@ export const OptionPicker = ({ options, value, onValueChange, 'aria-label': labe
           placeholder="Filter…"
           autoComplete="off"
           spellCheck={false}
-          // 16px at least on a narrow screen, or iOS zooms the page in on it.
-          className="mx-1.5 mt-1.5 shrink-0 appearance-none border-0 border-b border-kumo-line bg-transparent px-3 py-2.5 text-base/5 text-kumo-default outline-none placeholder:text-kumo-subtle max-md:text-[16px]/5"
+          // A menu's line, which is 16px on a narrow screen, where iOS would zoom the page in on a
+          // field with smaller text.
+          className="mx-1.5 mt-1.5 shrink-0 appearance-none border-0 border-b border-kumo-line bg-transparent px-(--menu-pad-x) py-(--menu-pad-y) text-(length:--menu-text) leading-(--menu-line) text-kumo-default outline-none placeholder:text-kumo-subtle"
         />
-        <Combobox.Empty className="px-4.5 py-4 text-base/5 text-kumo-subtle empty:hidden">Nothing matches.</Combobox.Empty>
+        {/* In line with the options' text, which the list's own padding moves in. */}
+        <Combobox.Empty className="px-[calc(var(--menu-pad-x)+0.375rem)] py-4 text-(length:--menu-text) leading-(--menu-line) text-kumo-subtle empty:hidden">Nothing matches.</Combobox.Empty>
         <Combobox.List className="min-h-0 overflow-y-auto overscroll-contain p-1.5 outline-none empty:hidden">
           {(option: PickerOption) => (
             <Combobox.Item
               key={option.id}
               value={option}
-              className="flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 text-base/5 text-kumo-default outline-none data-highlighted:bg-kumo-tint"
+              // As a menu's items are, which this is in.
+              className="flex cursor-pointer items-center gap-3 rounded-2xl px-(--menu-pad-x) py-(--menu-pad-y) text-(length:--menu-text) leading-(--menu-line) text-kumo-default outline-none data-highlighted:bg-kumo-tint"
             >
               {option.icon !== undefined && <span className="flex size-5 shrink-0 items-center justify-center text-kumo-subtle">{option.icon}</span>}
               <span className="min-w-0 flex-1 truncate">{option.label}</span>
-              <span className="grid size-4 shrink-0 place-items-center">
-                <Combobox.ItemIndicator><CheckIcon aria-hidden="true" weight="bold" className="size-4" /></Combobox.ItemIndicator>
+              <span className="grid size-(--menu-icon) shrink-0 place-items-center">
+                <Combobox.ItemIndicator><CheckIcon aria-hidden="true" weight="bold" className="size-(--menu-icon)" /></Combobox.ItemIndicator>
               </span>
             </Combobox.Item>
           )}

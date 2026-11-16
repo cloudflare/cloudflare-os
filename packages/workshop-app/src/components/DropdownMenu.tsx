@@ -45,7 +45,11 @@ export type DropdownMenuProps = TriggerContent & {
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
 const BASE_DURATION = 420
 
-const ITEM_CLASS = 'flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 text-base/5 text-kumo-default outline-none data-highlighted:bg-kumo-tint data-disabled:cursor-default'
+// Sized by the `--menu-*` sizes in `styles.css`, which are larger on a narrow screen, as the
+// buttons menus open from are. An icon that starts an item is the menu's size, whoever drew it.
+const ITEM_CLASS =
+  'flex cursor-pointer items-center gap-3 rounded-2xl px-(--menu-pad-x) py-(--menu-pad-y) text-(length:--menu-text) leading-(--menu-line) text-kumo-default outline-none ' +
+  'data-highlighted:bg-kumo-tint data-disabled:cursor-default [&>svg]:size-(--menu-icon)'
 
 const renderIcon = (icon: ElementType | ReactElement | undefined): ReactElement | undefined =>
   !icon ? undefined : isValidElement(icon) ? icon : createElement(icon)
@@ -177,21 +181,21 @@ type DropdownMenuItemProps = {
 
 const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger, keepsOpen, current, row }: DropdownMenuItemProps) => (
   <Menu.Item onClick={onSelect} disabled={disabled} label={label} closeOnClick={!keepsOpen} aria-current={current || undefined} data-row={row} className={cn(ITEM_CLASS, danger && 'text-kumo-danger data-highlighted:bg-kumo-danger-tint')}>
-    {Icon && <Icon aria-hidden="true" className="size-4 shrink-0" />}
+    {Icon && <Icon aria-hidden="true" className="shrink-0" />}
     {children}
   </Menu.Item>
 )
 
-const DropdownMenuSeparator = () => <Menu.Separator className="mx-3 my-1 h-px bg-kumo-line" />
+const DropdownMenuSeparator = () => <Menu.Separator className="mx-(--menu-pad-x) my-1 h-px bg-kumo-line" />
 
 /** A line over items that says what they are a choice of: "Sort by". */
 const DropdownMenuLabel = ({ children }: { children: ReactNode }) => (
-  <div className="px-3 pt-2 pb-1 text-sm text-kumo-subtle">{children}</div>
+  <div className="px-(--menu-pad-x) pt-2 pb-1 text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{children}</div>
 )
 
 // The tick an item that is chosen ends with. Its room is kept, so that choosing moves nothing.
-const TICK_SLOT = 'ms-auto grid size-4 shrink-0 place-items-center'
-const tick = <CheckIcon aria-hidden="true" weight="bold" className="size-4" />
+const TICK_SLOT = 'ms-auto grid size-(--menu-icon) shrink-0 place-items-center'
+const tick = <CheckIcon aria-hidden="true" weight="bold" className="size-(--menu-icon)" />
 
 type DropdownMenuRadioGroupProps<Value extends string> = {
   value: Value
@@ -247,7 +251,7 @@ type DropdownMenuSubmenuProps = {
 const DropdownMenuSubmenu = ({ label, icon: Icon, detail, children }: DropdownMenuSubmenuProps) => (
   <Menu.SubmenuRoot>
     <Menu.SubmenuTrigger className={cn(ITEM_CLASS, 'data-popup-open:bg-kumo-tint')}>
-      {Icon && <Icon aria-hidden="true" className="size-4 shrink-0" />}
+      {Icon && <Icon aria-hidden="true" className="shrink-0" />}
       {label}
       <span className="ms-auto flex items-center gap-2 text-kumo-subtle">
         {detail}
