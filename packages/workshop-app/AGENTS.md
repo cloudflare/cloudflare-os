@@ -639,7 +639,7 @@ kind of resource of the services that are not built in, those with an account fi
 the workspace (`newGatekeeper`). Kinds shown with another (`SupportedResource.groupedWith`), as a
 folder, a file and a Doc are with Google Drive, are one choice and one row of what an account can
 reach (`resourceGroups`, `connections/connectionGroups.ts`), as the old Workshop's cards are: their
-form may choose any of them, and connecting, or giving access to, one asks for them all. From a chat's + menu (an existing chat, for whoever builds in it)
+form may choose any of them, and connecting, or giving access to, one asks for them all. From a chat's + menu (a chat, or a new one in a workspace that exists, `NewChatPane`'s `workspaceId`, for whoever builds in it)
 the connection becomes a line above the draft (`ComposerConnectionLines`) and goes with the message
 as a capsule (`chat/capsules.ts`), so the chat has it from then on; a skill goes alone, so the two
 refuse each other, and none go while the agent works. From a gadget's Connections tab Add binds it

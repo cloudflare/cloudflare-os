@@ -34,7 +34,7 @@ export type ComposerProps = {
    * What the draft starts with, such as a message that did not go from a composer that has since
    * gone, or a skill chosen elsewhere to use.
    */
-  initialDraft?: { text: string; files: readonly File[]; command?: ComposerCommand }
+  initialDraft?: { text: string; files: readonly File[]; command?: ComposerCommand; connections?: readonly ComposerConnection[] }
   /**
    * The skills and commands the draft can be sent with: offered when a slash starts a word, and in
    * the add menu. Whatever the draft says then is what the command is given; files cannot go with
@@ -83,7 +83,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
   // The connections the draft goes with, added through the handle.
-  const [connections, setConnections] = useState<ComposerConnection[]>([])
+  const [connections, setConnections] = useState<ComposerConnection[]>(() => [...initialDraft?.connections ?? []])
   // The slash being typed, where the cursor is, and which of what fits it Enter would choose.
   const [slash, setSlash] = useState<SlashToken>()
   const [highlighted, setHighlighted] = useState(0)

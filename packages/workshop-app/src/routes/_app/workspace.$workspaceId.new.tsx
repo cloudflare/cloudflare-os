@@ -58,7 +58,8 @@ function NewChat() {
         />
       )}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open }, replace: true }) }}
-      start={(text, files, modelId, command, formats) => startConversation(() => api.openWorkspace(workspaceId), text, files, modelId, command, formats)}
+      workspaceId={workspaceId}
+      start={(text, files, modelId, command, formats, capsules) => startConversation(() => api.openWorkspace(workspaceId), text, files, modelId, command, formats, capsules)}
       // In its place, so that going back goes to the workspace rather than to an empty chat.
       onStarted={({ chatId }, sent) => {
         if (open) rememberShown(workspaceId, chatId, open)

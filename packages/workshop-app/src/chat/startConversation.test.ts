@@ -52,6 +52,15 @@ describe('startConversation', () => {
     expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Document about Q3', 'model-1', undefined, undefined, formats)
   })
 
+  it('gives the chat the connections that go with its first message', async () => {
+    const fake = fakeOverseer()
+    const capsules = [{ position: 13, length: 3, gatekeeperId: 9, description: { title: 'Budget', url: 'https://docs.google.com/spreadsheets/d/x', snippet: '', suggestedBindingName: 'BUDGET', tsType: 'Spreadsheet' } }]
+
+    await startConversation(() => fake.overseer, 'Summarize it [0]', [], 'model-1', undefined, undefined, capsules)
+
+    expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Summarize it [0]', 'model-1', capsules, undefined, undefined)
+  })
+
   it('uploads the files into the workspace, and starts the chat with them', async () => {
     const fake = fakeOverseer()
 

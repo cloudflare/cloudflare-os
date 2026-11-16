@@ -16,6 +16,8 @@ export type ChatStartProps = {
   problem?: ComposerProps['problem']
   /** What the composer's + menu offers besides attaching files, such as the model. */
   addActions?: ComposerProps['addActions']
+  /** The composer's handle, for what is added to the draft from outside, such as a connection once it is made. */
+  composerRef?: ComposerProps['ref']
   /** Put the cursor in the composer once it is shown. */
   autoFocus?: boolean
   /** Under the composer, such as where the chat will go (`WorkspacePicker`). */
@@ -28,7 +30,7 @@ export type ChatStartProps = {
 }
 
 /** Somewhere to start from nothing: the mascot and a greeting over the composer, in the middle of the page. */
-export const ChatStart = ({ greeting, onSend, initialDraft, commands, format, problem, addActions, autoFocus, below, after }: ChatStartProps) => (
+export const ChatStart = ({ greeting, onSend, initialDraft, commands, format, problem, addActions, composerRef, autoFocus, below, after }: ChatStartProps) => (
   // Centred between two rows that share what is left, so what comes in under it does not move it.
   <div className="grid min-h-0 flex-1 grid-rows-[1fr_auto_1fr] justify-items-center p-3">
     <div className="row-start-2 flex w-full max-w-md flex-col items-center">
@@ -36,7 +38,7 @@ export const ChatStart = ({ greeting, onSend, initialDraft, commands, format, pr
       <Mascot emotion="idle" color="brand" interactive reach={4} className="w-12 -mt-12" />
       <h1 className="mt-5 text-center text-lg/6 font-medium text-kumo-default">{greeting}</h1>
       <div className="mt-7 w-full">
-        <Composer onSend={onSend} initialDraft={initialDraft} commands={commands} format={format} problem={problem} addActions={addActions} autoFocus={autoFocus} />
+        <Composer ref={composerRef} onSend={onSend} initialDraft={initialDraft} commands={commands} format={format} problem={problem} addActions={addActions} autoFocus={autoFocus} />
       </div>
       {below && <div className="mt-6 flex w-full justify-center">{below}</div>}
     </div>
