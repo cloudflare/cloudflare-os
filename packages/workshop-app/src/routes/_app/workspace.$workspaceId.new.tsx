@@ -3,7 +3,7 @@ import { validateAsideParam } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { greeting } from '@/chat/greeting'
-import { NewChatPane } from '@/chat/NewChatPane'
+import { NEW_CHAT_TITLE, NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
 import { useApi } from '@/rpc/ApiContext'
@@ -53,15 +53,16 @@ function NewChat() {
             look,
             onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } }),
           }}
-          title="New chat"
+          // As the chat it becomes is called, until it is given a title.
+          title={NEW_CHAT_TITLE}
         />
       )}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open }, replace: true }) }}
       start={(text, files, modelId, command, formats) => startConversation(() => api.openWorkspace(workspaceId), text, files, modelId, command, formats)}
       // In its place, so that going back goes to the workspace rather than to an empty chat.
-      onStarted={({ chatId }) => {
+      onStarted={({ chatId }, sent) => {
         if (open) rememberShown(workspaceId, chatId, open)
-        return navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open }, replace: true })
+        return navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open }, replace: true, state: { chatTitle: NEW_CHAT_TITLE, sending: sent } })
       }}
     />
   )

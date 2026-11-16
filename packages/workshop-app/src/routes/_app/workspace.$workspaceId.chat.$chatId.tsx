@@ -26,6 +26,7 @@ export const Route = createFileRoute('/_app/workspace/$workspaceId/chat/$chatId'
 function WorkspaceChat() {
   const { workspaceId, chatId } = Route.useParams()
   const initialTitle = useLocation({ select: (location) => location.state.chatTitle })
+  const sending = useLocation({ select: (location) => location.state.sending })
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -78,6 +79,7 @@ function WorkspaceChat() {
         workspaceId={workspaceId}
         chatId={chatId}
         initialTitle={initialTitle}
+        sending={sending}
         onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
         onOpenSettings={(tab) => navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: { tab }, state: { fromChat: true } })}
         onOpenAttachment={openAttachment}

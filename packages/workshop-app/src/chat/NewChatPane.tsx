@@ -4,7 +4,8 @@ import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatStart } from '@/blocks/ChatStart'
 import { Composer } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
-import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
+import { MessageList } from '@/blocks/MessageList'
+import { UserMessage, type UserMessageAttachment, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { StartLayout } from '@/layouts/StartLayout'
@@ -20,8 +21,22 @@ import { useModels } from './useModels'
 /** Where a conversation that was started is. */
 export type StartedChat = { workspaceId: string; chatId: number }
 
+/**
+ * The first message of a conversation just started, as it was drawn while it was sent: for the
+ * conversation to draw it where it was until its own is read (`ChatPane`'s `sending`).
+ */
+export type SentMessage = { parts: UserMessagePart[]; attachments: UserMessageAttachment[] }
+
+/** What the server calls a new chat until it gives it a title of its own. */
+export const NEW_CHAT_TITLE = 'New Chat'
+
 export type NewChatPaneProps = {
   header?: ReactNode
+  /**
+   * The header the conversation will have, shown while its first message is sent, so that the
+   * conversation opens under the same one. Left out, `header`.
+   */
+  startedHeader?: ReactNode
   /** Greet with this and the composer in the middle of the page until the first message is sent. */
   greeting?: string
   /**
@@ -37,8 +52,8 @@ export type NewChatPaneProps = {
   start: (text: string, files: File[], modelId: string, command?: ComposerCommand, formats?: MessageFormatRef[]) => Promise<StartedChat>
   /** A skill chosen elsewhere, such as on its page, to start with. */
   initialCommand?: ComposerCommand
-  /** The conversation exists: open it. */
-  onStarted: (chat: StartedChat) => Promise<unknown>
+  /** The conversation exists: open it, drawing `sent` as it was until its own is read. */
+  onStarted: (chat: StartedChat, sent: SentMessage) => Promise<unknown>
   /** Under the greeting's composer, such as where the chat will go. */
   below?: ReactNode
   /** Apart from the composer, further down (`ChatStart`'s `after`), such as blueprints to start from. */
@@ -46,7 +61,7 @@ export type NewChatPaneProps = {
 }
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
-export const NewChatPane = ({ header, greeting, format, start, onStarted, initialCommand, below, after }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, startedHeader, greeting, format, start, onStarted, initialCommand, below, after }: NewChatPaneProps) => {
   const { models, prefer } = useModels()
   // The model chosen here, which also becomes the one every new chat starts with.
   const [picked, setPicked] = useState<string>()
@@ -78,7 +93,7 @@ export const NewChatPane = ({ header, greeting, format, start, onStarted, initia
       const message = asked ? startWithFormat(asked, text) : { text, formats: undefined }
       const started = await start(message.text, files, model.model.id, command, message.formats)
       refreshWorkspaces()
-      await onStarted(started)
+      await onStarted(started, sentOf({ text, files, command, format: asked }))
       return true
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error))
@@ -112,32 +127,28 @@ export const NewChatPane = ({ header, greeting, format, start, onStarted, initia
     )
   }
 
-  // As the message will be drawn: the skill or the format as what it is, then what was written.
-  const lead: UserMessagePart | undefined = pending?.command
-    ? { type: 'command', name: pending.command.name }
-    : pending?.format && { type: 'format', noun: pending.format.noun, icon: pending.format.icon }
-  const pendingParts: UserMessagePart[] = pending
-    ? [
-        ...(lead ? [lead] : []),
-        ...(pending.text ? [{ type: 'text' as const, text: lead ? ` ${pending.text}` : pending.text }] : []),
-      ]
-    : []
-
+  const sent = pending && sentOf(pending)
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={header} composer={<Composer onSend={send} initialDraft={unsent} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
-      {/* Spaced like the conversation this becomes. */}
-      <div className="flex flex-col gap-2">
-        {pending && (
-          <UserMessage
-            parts={pendingParts}
-            attachments={pending.files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type }))}
-          />
-        )}
+    <ChatLayout header={pending ? startedHeader ?? header : header} composer={<Composer onSend={send} initialDraft={unsent} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
+      {/* In the list the conversation will be in, under its header, so that it opens where this is. */}
+      <MessageList messages={[]}>
+        {sent && <UserMessage parts={sent.parts} attachments={sent.attachments} />}
         <AssistantPresence working={Boolean(pending)} status="Thinking…" />
-      </div>
+      </MessageList>
     </ChatLayout>
   )
+}
+
+// A message being sent as it is drawn: the skill or the format as what it is, then what was written.
+const sentOf = ({ text, files, command, format }: { text: string; files: File[]; command?: ComposerCommand; format?: StartFormat }): SentMessage => {
+  const lead: UserMessagePart | undefined = command
+    ? { type: 'command', name: command.name }
+    : format && { type: 'format', noun: format.noun, icon: format.icon }
+  return {
+    parts: [...(lead ? [lead] : []), ...(text ? [{ type: 'text' as const, text: lead ? ` ${text}` : text }] : [])],
+    attachments: files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type })),
+  }
 }
 
 /**

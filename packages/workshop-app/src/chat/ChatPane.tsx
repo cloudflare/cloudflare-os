@@ -8,6 +8,8 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
+import { UserMessage } from '@/blocks/UserMessage'
+import type { SentMessage } from './NewChatPane'
 import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -42,6 +44,11 @@ export type ChatPaneProps = {
   chatId: number
   /** The title to show until the chat's own arrives, e.g. from the list it was opened from. */
   initialTitle?: string
+  /**
+   * The first message, as it was drawn while the chat was started (`NewChatPane`): drawn where it
+   * was until the conversation is read, with the agent thinking, so the chat goes on from it.
+   */
+  sending?: SentMessage
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
   /** Opens the chat's settings, from its title, or at its automations, from the header's clock. */
@@ -81,6 +88,7 @@ export const ChatPane = ({
   workspaceId,
   chatId,
   initialTitle,
+  sending,
   onOpenWorkspace,
   onOpenSettings,
   onOpenAttachment,
@@ -354,9 +362,13 @@ export const ChatPane = ({
         </>
       )}
     >
-      {chat.status === 'ready' && (
+      {/* Another list once the conversation is read, which it is as it was found, not arriving; it
+          comes in only where nothing was there before it (`entrance`). */}
+      {chat.status === 'ready' ? (
         <MessageList
+          key="read"
           ref={list}
+          entrance={!sending}
           messages={messages}
           streaming={chat.activity !== undefined}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: actions.loadEarlier }}
@@ -398,12 +410,18 @@ export const ChatPane = ({
             }}
           />
         </MessageList>
-      )}
-      {chat.status !== 'ready' && (
-        <MessageList messages={[]}>
+      ) : (
+        <MessageList key="reading" messages={[]} entrance={!sending}>
           {chat.status === 'failed'
             ? <MessageBubble role="error">{chat.message}</MessageBubble>
-            : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
+            : sending
+              ? (
+                  <>
+                    <UserMessage parts={sending.parts} attachments={sending.attachments} />
+                    <AssistantPresence working status="Thinking…" />
+                  </>
+                )
+              : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
       <ConfirmDialog

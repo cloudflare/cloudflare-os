@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { createFileRoute, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { pageOf } from '@/aside/asideItems'
+import { ChatHeader } from '@/blocks/ChatHeader'
 import { WorkspacePicker } from '@/blocks/WorkspacePicker'
 import { FeaturedBlueprints } from '@/blueprints/FeaturedBlueprints'
 import { greeting } from '@/chat/greeting'
-import { NewChatPane } from '@/chat/NewChatPane'
+import { NEW_CHAT_TITLE, NewChatPane } from '@/chat/NewChatPane'
 import { RecentGadgets } from '@/library/RecentGadgets'
 import { skillCommandOf } from '@/chat/slashCommands'
 import { startConversation } from '@/chat/startConversation'
@@ -42,6 +43,10 @@ function Home() {
   const router = useRouter()
   const location = useLocation()
   const skill = location.state.useSkill
+  // A skill chosen again starts the draft again, by the history entry it was chosen in; kept as it
+  // was while the page is left, or the page would start again, greeting and all, on its way out.
+  const [draftKey, setDraftKey] = useState(location.state.key)
+  if (location.pathname === '/' && location.state.key !== draftKey) setDraftKey(location.state.key)
   const workspaces = useWorkspaces()
   const looks = useWorkspaceLooks()
   // Where the chat goes: one of the user's named workspaces, or a new one. It lasts for the visit.
@@ -53,20 +58,23 @@ function Home() {
     .toSorted((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
     .map((workspace) => ({ id: workspace.id, title: workspaceTitle(workspace), label: workspaceLabel(workspace.title), look: looks[workspace.id] })), [workspaces, looks])
   // One that is no longer listed is not chosen, so what the page says is what sending does.
-  const into = named.some(({ id }) => id === where) ? where : undefined
+  const chosen = named.find(({ id }) => id === where)
+  const into = chosen?.id
 
   const { format: formatId } = Route.useSearch()
   // One the deployment does not offer starts nothing.
   const format = startableFormats(useOutputFormats(formatId !== undefined)).find(({ id }) => id === formatId)
   return (
     <NewChatPane
-      // A skill chosen again starts the draft again.
-      key={location.state.key}
+      key={draftKey}
       greeting={greeting(user.name)}
       initialCommand={skill && skillCommandOf(skill, skill.source)}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
       start={(text, files, modelId, command, formats) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace()), text, files, modelId, command, formats)}
-      onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
+      // Under the header the chat will have, which it opens under with the message where it was.
+      startedHeader={<ChatHeader workspace={chosen && { ...chosen, onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: chosen.id } }) }} title={NEW_CHAT_TITLE} />}
+      onStarted={({ workspaceId, chatId }, sent) =>
+        navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, state: { chatTitle: NEW_CHAT_TITLE, sending: sent } })}
       below={<WorkspacePicker workspaces={named} value={into} onValueChange={setWhere} />}
       after={(
         <RecentGadgets

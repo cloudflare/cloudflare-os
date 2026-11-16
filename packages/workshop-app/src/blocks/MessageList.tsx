@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
 import { ArrowDownIcon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
 import { useMessageScroll } from './useMessageScroll'
@@ -21,6 +22,11 @@ export type MessageListProps = {
     onLoadEarlier: () => void
   }
   ref?: Ref<MessageListHandle>
+  /**
+   * Fades in, as a page arriving does; not where it goes on from what was already on the screen,
+   * as a conversation just started does from the message being sent.
+   */
+  entrance?: boolean
 }
 
 export type MessageListHandle = {
@@ -57,7 +63,7 @@ const markArriving = (row: Element) => {
 }
 
 /** A chat-specific, page-windowed list. Fetching and durable message state belong to the caller. */
-export const MessageList = ({ messages, children, history, streaming, ref }: MessageListProps) => {
+export const MessageList = ({ messages, children, history, streaming, ref, entrance = true }: MessageListProps) => {
   const { scrollRef, contentRef, atBottom, scrollToBottom, scrollToRow, reconcile } = useMessageScroll()
   useImperativeHandle(ref, () => ({
     scrollToMessage: (id) => {
@@ -131,7 +137,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
           role="log"
           aria-relevant="additions"
           aria-busy={streaming || loading}
-          className="appears mx-auto flex w-full max-w-4xl flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]"
+          className={cn(entrance && 'appears', 'mx-auto flex w-full max-w-4xl flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]')}
         >
           <div ref={startRef} className="shrink-0">
             {hasMore && (

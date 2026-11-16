@@ -1,4 +1,5 @@
 import { createRouter as createTanStackRouter, stringifySearchWith } from '@tanstack/react-router'
+import type { SentMessage } from './chat/NewChatPane'
 import { routeTree } from './routeTree.gen'
 
 export const createRouter = () =>
@@ -19,6 +20,8 @@ declare module '@tanstack/react-router' {
   interface HistoryState {
     /** The title of the chat being opened, when the page that opened it knew it. */
     chatTitle?: string
+    /** The first message of the chat being opened, which was just started with it, as it was drawn. */
+    sending?: SentMessage
     /** This step showed the aside, so putting it away goes back (`useAsideNavigation`). */
     asideOpenedHere?: boolean
     /**
