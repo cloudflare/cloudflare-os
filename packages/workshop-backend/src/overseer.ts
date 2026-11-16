@@ -12270,6 +12270,59 @@ type BindingLoopbackTarget = {
   id: WorkpieceId;
 };
 
+// Promise methods the runtime may probe on the session promise itself. They are passed through
+// untouched; every other method is an RPC call on the session.
+const SESSION_PROMISE_METHODS = new Set(["then", "catch", "finally", "constructor"]);
+
+/**
+ * Wrap the session behind one GatekeeperLoopback invocation so that each RPC method called on it
+ * disposes the session once the call settles, success or failure.
+ *
+ * A loopback invocation serves exactly one method call, but the session it opens on the overseer
+ * is an RPC stub: unless it is disposed, the overseer keeps the gatekeeper session, its approval
+ * queue and the open call for as long as the garbage collector leaves the stub alive, which in
+ * production was hours. A workspace whose scheduled gadgets make a few hundred binding calls a
+ * run piles these up until the isolate exceeds its memory limit and every open loopback fails
+ * with "Worker exceeded memory limit." at once. Stubs the call itself returns are separate
+ * references and outlive the session's disposal.
+ */
+export function releasingSessionProxy(session: Promise<any>): any {
+  // A failure to open the session reaches the caller through the call made on it; observing it
+  // here as well keeps it from also surfacing as an unhandled rejection.
+  let opened = session.then(s => s, () => undefined);
+  let released = false;
+  let release = () => {
+    if (released) return;
+    released = true;
+    void opened.then(s => s?.[Symbol.dispose]?.());
+  };
+
+  return new Proxy(session, {
+    get(target, prop, receiver) {
+      // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
+      //   we'll get an illegal invocation, as `receiver` points to our Proxy.
+      let value = Reflect.get(target, prop, target);
+      if (typeof prop !== "string" || typeof value !== "function" ||
+          SESSION_PROMISE_METHODS.has(prop)) {
+        return value;
+      }
+      return (...args: unknown[]) => {
+        let result: unknown;
+        try {
+          result = Reflect.apply(value, target, args);
+        } catch (err) {
+          release();
+          throw err;
+        }
+        return Promise.resolve(result).finally(release);
+      };
+    },
+    getPrototypeOf(target) {
+      return WorkerEntrypoint.prototype;
+    },
+  });
+}
+
 /**
  * Horrible hack: At present the `env` of a dynamic isolate can contain ServiceStubs but cannot
  * contain RpcStubs. But if we ask the gatekeeper to open a session, we get an RpcStub. So we
@@ -12292,16 +12345,7 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
     let session = stub.startGatekeeperSession(
         this.ctx.props.target, this.ctx.props.caller);
 
-    return new Proxy(session, {
-      get(target, prop, receiver) {
-        // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
-        //   we'll get an illegal invocation, as `receiver` points to our Proxy.
-        return Reflect.get(target, prop, target);
-      },
-      getPrototypeOf(target) {
-        return WorkerEntrypoint.prototype;
-      },
-    });
+    return releasingSessionProxy(session);
   }
 
   /**
