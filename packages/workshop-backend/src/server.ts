@@ -24,7 +24,7 @@ import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, nor
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
-import { RpcStub as NativeRpcStub, RpcTarget as NativeRpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub as NativeRpcStub, RpcTarget as NativeRpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
 import { accessSessionEmail, parseAccessServiceTokenEmails, verifyCfAccessJwt } from "./access.js";
@@ -37,6 +37,12 @@ import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorksp
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
 
 const logger = createWorkshopLogger("workshop.server");
+
+// What the API objects need from their host: the stateless fetch handler (HTTP batch sessions) or
+// an ApiSessionDurableObject (WebSocket sessions).
+type ApiContext = ExecutionContext | DurableObjectState;
+
+type ApiAccessSession = { payload: JWTPayload; jwt: string; email: string };
 
 // Set once we've asked the AdminSettings DO to install the bundled blueprints (see the
 // fetch handler), so later requests skip the call. The DO holds the real answer.
@@ -97,7 +103,7 @@ type Env = Cloudflare.Env & {
 
 @validateRpc()
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
-  constructor(private ctx: ExecutionContext, private env: Env,
+  constructor(private ctx: ApiContext, private env: Env,
       userId: DurableObjectId,
       private abortSession: (reason: Error) => void,
       private accessSession?: { jwt: string; expiresAt: number }) {
@@ -882,9 +888,9 @@ class LoginAttemptImpl extends RpcTarget implements LoginAttempt {
 class PublicApiImpl extends RpcTarget implements PublicApi {
   users: DurableObjectNamespace<UserDurableObject>;
 
-  constructor(private ctx: ExecutionContext, private env: Env,
+  constructor(private ctx: ApiContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessSession?: { payload: JWTPayload; jwt: string; email: string }) {
+      private accessSession?: ApiAccessSession) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
@@ -1291,18 +1297,14 @@ export default {
         };
       }
 
-      // HACK: Implement `abortSession` callback by closing the websocket.
-      // TODO: When ctx.abort() becomes non-experimental, consider using that instead.
-      let abortController = new AbortController();
-      let abortSession = (reason: Error) => {
-        // Closing the socket fails no invocation, so nothing else logs this.
-        logger.warn("aborting api session", { event: "session.abort", error: reason });
-        abortController.abort(reason);
-      };
+      // A WebSocket session lives in its own ApiSessionDurableObject: a stateless isolate that
+      // holds one is evicted at the runtime's discretion, which drops the socket mid-session.
+      if (req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+        return openApiSessionObject(req, ctx.exports.ApiSessionDurableObject, accessSession);
+      }
 
       return await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessSession),
-          { abortSignal: abortController.signal });
+          new PublicApiImpl(ctx, env, abortSessionCallback().abortSession, accessSession));
     }
 
     return new Response("Not Found", {status: 404});
@@ -1365,4 +1367,57 @@ function newWorkersWebSocketRpcResponse(
     status: 101,
     webSocket: pair[1],
   });
+}
+
+// =======================================================================================
+// WebSocket API sessions
+
+/**
+ * Carries the verified Cloudflare Access session from the fetch handler to the session object.
+ * Only the fetch handler can reach the object (it has no route of its own), and it always sets
+ * this header itself, so a client cannot supply it.
+ */
+export const API_SESSION_HEADER = "X-Gadgets-Api-Session";
+
+/**
+ * Hands a WebSocket upgrade to a fresh ApiSessionDurableObject, with the Access session the fetch
+ * handler verified (null when Access is off). The object is created next to this isolate.
+ */
+export function openApiSessionObject(
+    req: Request, sessions: DurableObjectNamespace<ApiSessionDurableObject>,
+    accessSession: ApiAccessSession | undefined): Promise<Response> {
+  let headers = new Headers(req.headers);
+  headers.set(API_SESSION_HEADER, JSON.stringify(accessSession ?? null));
+  return sessions.get(sessions.newUniqueId()).fetch(new Request(req, { headers }));
+}
+
+function abortSessionCallback() {
+  // HACK: Implement `abortSession` callback by closing the websocket.
+  // TODO: When ctx.abort() becomes non-experimental, consider using that instead.
+  let abortController = new AbortController();
+  let abortSession = (reason: Error) => {
+    // Closing the socket fails no invocation, so nothing else logs this.
+    logger.warn("aborting api session", { event: "session.abort", error: reason });
+    abortController.abort(reason);
+  };
+  return { abortSession, abortSignal: abortController.signal };
+}
+
+/**
+ * One client's WebSocket RPC session, one object per connection. A plain Worker loses its open
+ * WebSockets whenever the runtime evicts the isolate (the request ends as `loadShed`, the browser
+ * sees close code 1006 and every call in flight fails). A Durable Object holding an accepted
+ * WebSocket stays in memory until the socket closes. The object keeps no storage.
+ */
+export class ApiSessionDurableObject extends DurableObject<Env> {
+  override async fetch(req: Request): Promise<Response> {
+    let raw = req.headers.get(API_SESSION_HEADER);
+    if (raw === null || req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+      return new Response("Not Found", { status: 404 });
+    }
+    let accessSession = (JSON.parse(raw) as ApiAccessSession | null) ?? undefined;
+    let { abortSession, abortSignal } = abortSessionCallback();
+    return newWorkersWebSocketRpcResponse(req,
+        new PublicApiImpl(this.ctx, this.env, abortSession, accessSession), { abortSignal });
+  }
 }

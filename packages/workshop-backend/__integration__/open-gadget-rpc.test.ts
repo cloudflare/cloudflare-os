@@ -171,9 +171,13 @@ describe("user-DO reset flags", () => {
 
     await abortAllDurableObjects();
 
-    // The session recovers: AuthenticatedApiImpl resolves a fresh stub per call, so the
-    // restarted object serves this read — the browser never sees the reset.
-    expect(await authenticated.listModels()).toBeInstanceOf(Array);
+    // The abort also takes down the ApiSessionDurableObject holding this WebSocket, so the
+    // session itself is gone, as it would be for a browser; the browser reconnects. A user-DO
+    // reset that leaves the session object running is covered below.
+    await rejection(authenticated.listModels());
+    using reconnected = await connect();
+    using reauthenticated = await reconnected.authenticate(account.token);
+    expect(await reauthenticated.listModels()).toBeInstanceOf(Array);
 
     const nativeErr = await rejection(userStub.listModels());
     expect({
