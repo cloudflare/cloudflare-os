@@ -77,6 +77,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -141,6 +144,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -190,6 +196,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -234,6 +243,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -311,6 +323,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -383,6 +398,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -516,6 +534,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -556,6 +577,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -620,6 +644,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -661,6 +688,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -704,6 +734,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -798,6 +831,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -869,6 +905,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -910,6 +949,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1042,6 +1084,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1105,6 +1150,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1149,6 +1197,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1225,6 +1276,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1287,6 +1341,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1361,6 +1418,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         }
@@ -1443,6 +1503,12 @@
             "UserDirectoryDurableObject"
           ],
           "tag": "v3"
+        },
+        {
+          "new_sqlite_classes": [
+            "ApiSessionDurableObject"
+          ],
+          "tag": "v4"
         }
       ],
       "modules": [
@@ -1457,6 +1523,9 @@
       "observability": {
         "enabled": true,
         "head_sampling_rate": 1,
+        "issues": {
+          "enabled": true
+        },
         "logs": {
           "invocation_logs": false
         },

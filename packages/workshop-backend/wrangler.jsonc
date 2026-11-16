@@ -79,6 +79,12 @@
       "new_sqlite_classes": [
         "UserDirectoryDurableObject"
       ]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": [
+        "ApiSessionDurableObject"
+      ]
     }
   ]
 }

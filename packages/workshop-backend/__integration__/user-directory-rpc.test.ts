@@ -52,3 +52,15 @@ it("an open capability re-reads the search policy once its cache expires", async
     dateNow.mockRestore();
   }
 });
+
+// The fetch handler hands each WebSocket to its own ApiSessionDurableObject, so an evicted
+// stateless isolate no longer drops the session. Two connections are two objects: closing one
+// leaves the other serving.
+it("each API WebSocket is served by its own session object", async () => {
+  const first = await connect();
+  using second = await connect();
+  await first.ping();
+  first[Symbol.dispose]();
+  await second.ping();
+  expect(await second.getServerConfig()).toBeTypeOf("object");
+});
