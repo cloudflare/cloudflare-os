@@ -107,7 +107,7 @@ const EdgeSwipe = ({ side, onStart, onMove, onEnd, tap, children }: EdgeSwipePro
     onPointerMove: move,
     onPointerUp: letGo,
     onPointerCancel: letGo,
-    className: cn('group absolute top-16 bottom-0 z-40 w-4 touch-none outline-none', side === 'left' ? 'left-0' : 'right-0'),
+    className: cn('group absolute top-16 bottom-0 z-40 w-6 touch-none outline-none', side === 'left' ? 'left-0' : 'right-0'),
   }
 
   return tap ? (
@@ -194,6 +194,8 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside, onC
   const open = useMotionValue(shown ? 1 : 0)
   const away = useMotionValue(sidebarOpen ? 1 : 0)
   const asideX = useTransform(open, (amount) => `${(1 - amount) * 100}%`)
+  // The pill stays while held, and gives way to the aside's edge as that comes out over it.
+  const pillShown = useTransform(open, [0, 0.1], [1, 0])
   const pageX = useTransform(() => `calc(${away.get()} * (100% - ${PEEK}px) - ${open.get() * PARALLAX * 100}%)`)
   const sidebarX = useTransform(away, (amount) => `${-(1 - amount) * PARALLAX * 100}%`)
   // Pulled out of the edge, or let go to open, until the aside arrives: until then its surface
@@ -273,13 +275,10 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside, onC
               onOpenAside()
             }}
           >
-            <span
-              aria-hidden="true"
-              className={cn(
-                'absolute top-1/2 right-1 h-10 w-1 -translate-y-1/2 rounded-full bg-kumo-contrast opacity-25 transition-opacity group-focus-visible:opacity-70',
-                pulled && 'opacity-0',
-              )}
-            />
+            {/* In the middle of the window: the strip starts below the header, 4rem down. */}
+            <motion.span aria-hidden="true" style={{ opacity: pillShown }} className="absolute top-[calc(50%-2rem)] right-1.5 h-12 w-1.5 -translate-y-1/2">
+              <span className="absolute inset-0 rounded-full bg-kumo-contrast opacity-25 transition-opacity group-focus-visible:opacity-70" />
+            </motion.span>
           </EdgeSwipe>
         )}
         {!shown && pulled && <motion.div aria-hidden="true" style={{ x: asideX }} className={SURFACE} />}
