@@ -5,6 +5,7 @@ import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown, rememberShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
+import { useJustMade } from '@/aside/useJustMade'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
@@ -143,6 +144,24 @@ const AppFrame = () => {
   useEffect(() => {
     if (firstFound !== undefined && chatWorkspaceId !== undefined && chatId !== undefined) aside.show(firstFound, { workspaceId: chatWorkspaceId, chatId })
   }, [firstFound, chatWorkspaceId, chatId, aside])
+  // What the chat makes as the user watches, a gadget or a Google Doc, opens beside it, so that
+  // it is seen as it is worked on; but not over a narrow screen's chat, nor in a chat whose pane
+  // the user put away (kept for this visit), nor again once shown.
+  const justMade = useJustMade(chatRef)
+  const [putAway] = useState(() => new Set<string>())
+  const [opened] = useState(() => new Set<string>())
+  const namedKey = named && formatAsideRef(named)
+  useEffect(() => {
+    if (!justMade || chatWorkspaceId === undefined || chatId === undefined || narrow) return
+    const at = `${chatWorkspaceId}/${chatId}`
+    if (putAway.has(at) || opened.has(`${at} ${justMade}`)) return
+    opened.add(`${at} ${justMade}`)
+    if (namedKey !== justMade) aside.show(justMade, { workspaceId: chatWorkspaceId, chatId })
+  }, [justMade, chatWorkspaceId, chatId, narrow, namedKey, aside, putAway, opened])
+  const hideBeside = () => {
+    if (chatKey) putAway.add(chatKey)
+    aside.hide()
+  }
   const hideEmpty = () => {
     writeLayoutPrefs({ asideOpen: false })
     setOpenedEmptyAt(undefined)
@@ -234,7 +253,7 @@ const AppFrame = () => {
         onOpenSettings={openSettings}
         onOpenAgent={openAgent}
         onSelect={(key) => aside.show(key, chatRef)}
-        onHide={aside.hide}
+        onHide={hideBeside}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
       />
     )
@@ -349,7 +368,7 @@ const AppFrame = () => {
         setOpenedEmptyAt(chatKey)
       }
     : undefined
-  const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
+  const closeAside = besideOf && named ? hideBeside : openedEmpty ? hideEmpty : undefined
 
   const search = <AppSearch open={searching} onOpenChange={setSearching} />
 

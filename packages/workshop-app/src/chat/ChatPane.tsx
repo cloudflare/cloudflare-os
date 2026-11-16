@@ -218,7 +218,6 @@ export const ChatPane = ({
       // Asked first: it reaches past this action, to every chat and gadget in the workspace.
       onAlwaysApprove: (rule) => setAsked({ rule, open: true }),
       onHookEnabledChange: actions.setHookEnabled,
-      // TODO: the connect flow, which ends in `Overseer.acceptConnectionRequest`.
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
       onDenyConnection: actions.denyConnection,
       onRetry: () => (model.status === 'ready' ? actions.retry(model.model.id) : setProblem(describeModelProblem(model))),
