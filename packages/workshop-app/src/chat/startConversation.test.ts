@@ -18,7 +18,16 @@ describe('startConversation', () => {
     const ids = await startConversation(() => fake.overseer, 'Build me a dashboard', [], 'model-1')
 
     expect(ids).toEqual({ workspaceId: 'abc123', chatId: 7 })
-    expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Build me a dashboard', 'model-1', undefined, undefined)
+    expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Build me a dashboard', 'model-1', undefined, undefined, undefined)
+  })
+
+  it('says where the message names a format', async () => {
+    const fake = fakeOverseer()
+    const formats = [{ position: 0, length: 8, noun: 'Document', icon: 'fileText' as const }]
+
+    await startConversation(() => fake.overseer, 'Document about Q3', [], 'model-1', formats)
+
+    expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Document about Q3', 'model-1', undefined, undefined, formats)
   })
 
   it('uploads the files into the workspace, and starts the chat with them', async () => {
@@ -28,7 +37,7 @@ describe('startConversation', () => {
 
     expect(fake.newChat).toHaveBeenCalledExactlyOnceWith('Chart this', 'model-1', undefined, [
       { oid: 'oid-3', mimeType: 'text/csv', name: 'data.csv' },
-    ])
+    ], undefined)
   })
 
   it('opens no workspace for files that are more than a message can carry', async () => {

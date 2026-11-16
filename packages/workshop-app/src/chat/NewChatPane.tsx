@@ -1,13 +1,15 @@
 import { useState, type ReactNode } from 'react'
+import type { MessageFormatRef } from '@gadgets/workshop-shared/api'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatStart } from '@/blocks/ChatStart'
 import { Composer } from '@/blocks/Composer'
-import { UserMessage } from '@/blocks/UserMessage'
+import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { StartLayout } from '@/layouts/StartLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
+import { startWithFormat, type StartFormat } from './startWithFormat'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 
 /** Where a conversation that was started is. */
@@ -17,19 +19,28 @@ export type NewChatPaneProps = {
   header?: ReactNode
   /** Greet with this and the composer in the middle of the page until the first message is sent. */
   greeting?: string
-  /** Starts the conversation with its first message and the files it carries (see `startConversation`). */
-  start: (text: string, files: File[], modelId: string) => Promise<StartedChat>
+  /**
+   * The format the first message asks for something as (a Document, a Spreadsheet, …), which the
+   * composer starts with, and the way to start with none after all.
+   */
+  format?: StartFormat & { onRemove: () => void }
+  /**
+   * Starts the conversation with its first message and the files it carries, `formats` saying
+   * where the message names a format (see `startConversation`).
+   */
+  start: (text: string, files: File[], modelId: string, formats?: MessageFormatRef[]) => Promise<StartedChat>
   /** The conversation exists: open it. */
   onStarted: (chat: StartedChat) => Promise<unknown>
 }
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
-export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, start, onStarted }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const refreshWorkspaces = useRefreshWorkspaces()
   const connection = useConnectionNotice()
-  // The message being sent, shown until the conversation opens; or why it could not be sent.
-  const [pending, setPending] = useState<{ text: string; files: File[] }>()
+  // The message being sent, as it was written and with the format it started with, shown until
+  // the conversation opens; or why it could not be sent.
+  const [pending, setPending] = useState<{ text: string; files: File[]; format?: StartFormat }>()
   const [problem, setProblem] = useState<string>()
   // A message that did not go, for the greeting's composer, which is gone while it is sent, to
   // start from when it comes back.
@@ -44,9 +55,10 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
       return false
     }
     setProblem(undefined)
-    setPending({ text, files })
+    setPending({ text, files, format })
     try {
-      const started = await start(text, files, model.id)
+      const message = format ? startWithFormat(format, text) : { text, formats: undefined }
+      const started = await start(message.text, files, model.id, message.formats)
       refreshWorkspaces()
       await onStarted(started)
       return true
@@ -65,18 +77,27 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} problem={composerProblem} autoFocus />
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} format={format} problem={composerProblem} autoFocus />
       </StartLayout>
     )
   }
 
+  // As the message will be drawn: the format as what it is, then what was written.
+  const pendingParts: UserMessagePart[] = pending
+    ? [
+        ...(pending.format ? [{ type: 'format' as const, noun: pending.format.noun, icon: pending.format.icon }] : []),
+        ...(pending.text ? [{ type: 'text' as const, text: pending.format ? ` ${pending.text}` : pending.text }] : []),
+      ]
+    : []
+
   return (
-    <ChatLayout header={header} composer={<Composer onSend={send} problem={composerProblem} />}>
+    // The message being sent has its format in it, so the composer under it starts with none.
+    <ChatLayout header={header} composer={<Composer onSend={send} format={pending ? undefined : format} problem={composerProblem} />}>
       {/* Spaced like the conversation this becomes. */}
       <div className="flex flex-col gap-2">
         {pending && (
           <UserMessage
-            parts={pending.text ? [{ type: 'text', text: pending.text }] : []}
+            parts={pendingParts}
             attachments={pending.files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type }))}
           />
         )}

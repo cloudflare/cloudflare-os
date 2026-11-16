@@ -1,10 +1,8 @@
-import type { ReactNode } from 'react'
-import { StarIcon } from '@phosphor-icons/react'
-import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
 import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { MemberAvatars, type ListedMember } from './MemberAvatars'
+import { RowAction } from './RowAction'
+import { LIST_ACTION, StarButton } from './StarButton'
 import { WorkspaceMoreMenu } from './WorkspaceMoreMenu'
 
 export type WorkspaceRowProps = {
@@ -20,31 +18,6 @@ export type WorkspaceRowProps = {
   href?: string
   onSelect: () => void
 }
-
-// A button and the gap before it.
-const ROOM = '[--action-room:calc(var(--control-size)+0.25rem)]'
-
-const ACTION = 'text-kumo-subtle not-data-disabled:hover:bg-kumo-contrast/5 not-data-disabled:hover:text-kumo-default'
-
-/**
- * One of the row's buttons at its end, which slides out from under the edge, pushing the time in,
- * while the row is pointed at or has focus, or its menu is open. Always out to a finger, which
- * cannot point, and while `shown`.
- */
-const Action = ({ shown, children }: { shown?: boolean; children: ReactNode }) => (
-  <span
-    className={cn(
-      // The sidebar underlay's glide (`useWorkspaceUnderlay`), so pointing at a row answers as quickly.
-      ROOM,
-      'flex shrink-0 justify-end transition-[width,opacity] duration-75 ease-[cubic-bezier(0.2,0,0.15,1)] motion-reduce:transition-none',
-      shown
-        ? 'w-(--action-room) opacity-100'
-        : 'pointer-events-none w-0 opacity-0 group-has-focus-visible:pointer-events-auto group-has-focus-visible:w-(--action-room) group-has-focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:w-(--action-room) group-hover:opacity-100 group-has-data-popup-open:pointer-events-auto group-has-data-popup-open:w-(--action-room) group-has-data-popup-open:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:w-(--action-room) pointer-coarse:opacity-100',
-    )}
-  >
-    {children}
-  </span>
-)
 
 /**
  * One workspace on the Workspaces page, on one line: its icon and title, and at the far end who
@@ -65,21 +38,14 @@ export const WorkspaceRow = ({ workspaceLabel, title, time, members, starred, on
       {time && <span className="shrink-0 text-end text-kumo-subtle">{time}</span>}
     </LinkButton>
     {href && (
-      <Action>
+      <RowAction>
         <span className="relative flex">
-          <WorkspaceMoreMenu title={title} href={href} triggerClassName={ACTION} />
+          <WorkspaceMoreMenu title={title} href={href} triggerClassName={LIST_ACTION} />
         </span>
-      </Action>
+      </RowAction>
     )}
-    <Action shown={starred}>
-      <Button
-        variant="ghost"
-        icon={<StarIcon weight={starred ? 'fill' : 'regular'} />}
-        aria-label={`Star ${title}`}
-        aria-pressed={starred}
-        onClick={() => onStarredChange(!starred)}
-        className={cn('relative', ACTION)}
-      />
-    </Action>
+    <RowAction shown={starred}>
+      <StarButton title={title} starred={starred} onStarredChange={onStarredChange} className="relative" />
+    </RowAction>
   </div>
 )

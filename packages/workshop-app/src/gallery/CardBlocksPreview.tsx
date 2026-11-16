@@ -6,8 +6,8 @@ import { HookCard } from '@/blocks/HookCard'
 import { OutputCard } from '@/blocks/OutputCard'
 import { FileListItem } from '@/blocks/FileListItem'
 import { FileView } from '@/blocks/FileView'
+import { LibraryRow } from '@/blocks/LibraryRow'
 import { ListGroup } from '@/blocks/ListGroup'
-import { OutputListItem } from '@/blocks/OutputListItem'
 import { WorkspaceRow } from '@/blocks/WorkspaceRow'
 import { groupByTime } from '@/chat/timeGroups'
 import { GroupedList, type GroupedListGroup } from '@/components/GroupedList'
@@ -92,6 +92,7 @@ export const CardBlocksPreview = () => {
   const { of } = useOpen()
   const { report, say, after, later } = useReport()
   const [hookEnabled, setHookEnabled] = useState(true)
+  const [documentStarred, setDocumentStarred] = useState(true)
 
   return (
     <>
@@ -103,10 +104,13 @@ export const CardBlocksPreview = () => {
           <OutputCard title="Fix export timeout" kind="worktree" onOpen={() => say('open the worktree')} />
         </Column>
       </Section>
-      <Section title="OutputListItem (in the library: a document, an app with no format and a long title, both linking to their page)">
+      <Section title="LibraryRow (on the Library page: a starred document, which keeps its star out; an app with no format and a long title, both linking to their page; and one that says only what it is called. The star slides out when a row is pointed at)">
         <Column>
-          <OutputListItem title="Q3 platform review" subtitle="Document · Engineering Notes · 4 hours ago" icon="fileText" href="#q3-platform-review" onSelect={() => say('open the document')} />
-          <OutputListItem title="Jira dashboard with a title long enough that it has to be cut off" subtitle="App · Platform · Shared by Grace Hopper · Oct 27" href="#jira-dashboard" onSelect={() => say('open the app')} />
+          <ListGroup label="Today">
+            <LibraryRow title="Q3 platform review" detail="Document · Engineering Notes" icon="fileText" time="4 hours ago" starred={documentStarred} onStarredChange={setDocumentStarred} href="#q3-platform-review" onSelect={() => say('open the document')} />
+            <LibraryRow title="Jira dashboard with a title long enough that it has to be cut off somewhere in the row" detail="App · Platform · Shared by Grace Hopper" time="Oct 27" starred={false} onStarredChange={() => say('star the app')} href="#jira-dashboard" onSelect={() => say('open the app')} />
+            <LibraryRow title="Budget 2026" icon="table" starred={false} onStarredChange={() => say('star the spreadsheet')} onSelect={() => say('open the spreadsheet')} />
+          </ListGroup>
         </Column>
       </Section>
       <Section title="ListGroup, FileListItem (a chat's files and outputs on its settings page, in a surface for each stretch of time: a busy day on its own, quieter days folded together; a name long enough that it has to be cut off)">

@@ -2,8 +2,10 @@ import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import type { FormatIconName } from '@/components/FormatIcon'
 import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
+import { ComposerFormat } from './ComposerFormat'
 import { ComposerProblem } from './ComposerProblem'
 import { ComposerReply } from './ComposerReply'
 import { useComposerAttachments } from './useComposerAttachments'
@@ -30,6 +32,13 @@ export type ComposerProps = {
    * message knows what it replies to.
    */
   reply?: { quote: string; onShow?: () => void; onCancel: () => void }
+  /**
+   * The draft starts with a format (a Document, a Spreadsheet, …): what it asks for something as,
+   * shown above the draft, and the way to make the draft an ordinary message again. It can then be
+   * sent with no words, as the format is something to say. Whoever sends the message knows what it
+   * starts with.
+   */
+  format?: { noun: string; icon: FormatIconName; onRemove: () => void }
   /** Why the last message did not go, shown over the composer until dismissed. */
   problem?: { message: string; onDismiss: () => void }
   /**
@@ -54,7 +63,7 @@ const MAX_ROWS = 6
 const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, reply, format, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The draft has been sent and it is not known yet whether it went: it stays as it is meanwhile.
   const [sending, setSending] = useState(false)
@@ -75,7 +84,7 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const trimmed = text.trim()
   const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0
-  const canSend = !sending && (stop ? canSteer : !!trimmed || attachments.length > 0)
+  const canSend = !sending && (stop ? canSteer : !!trimmed || attachments.length > 0 || !!format)
   const showSend = !stop || canSteer
   useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), [])
 
@@ -162,6 +171,13 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
             onShow={reply?.onShow}
             onCancel={() => {
               reply?.onCancel()
+              inputRef.current?.focus()
+            }}
+          />
+          <ComposerFormat
+            format={format}
+            onRemove={() => {
+              format?.onRemove()
               inputRef.current?.focus()
             }}
           />
