@@ -10,6 +10,7 @@ import {
 } from "./creation";
 import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
+import { measured } from "./editor-cost";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
@@ -354,8 +355,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
   #read: NativeRead;
   #changes: SheetsChangeQueue;
   // Replays the queued changes over the grid of each read, as one entity under the spreadsheet's
-  // ID. Each read builds its own grid and folds it once, so no fold is reused, and none is to be
-  // forgotten when a change is applied or rejected.
+  // ID. It keeps nothing between reads: each folds every queued change again over the grid it
+  // fetched.
   #replay = createReplay();
 
   /** `reader` makes the reads with nothing queued: for a spreadsheet not created yet, a blank one. */
@@ -572,7 +573,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     if (read instanceof RefusedRead) throw read.refusal;
     // Queued formatting is repeated across every cell it covers, so the result can outgrow what
     // Google returned.
-    if (JSON.stringify(read).length > MAX_FORMATS_READ_LENGTH) {
+    if (measured(JSON.stringify(read)) > MAX_FORMATS_READ_LENGTH) {
       throw new Error("The formatting of this range is too large to read at once. Request fewer cells.");
     }
     return read;

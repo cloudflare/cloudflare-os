@@ -10,6 +10,7 @@ import {
 } from "./creation";
 import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
+import { measured } from "./editor-cost";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
@@ -258,8 +259,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   #read: NativeRead;
   #changes: SlidesChangeQueue;
   // Replays the queued changes over the deck of each read, as one entity under the presentation's
-  // ID. Each read builds its own deck and folds it once, so no fold is reused, and none is to be
-  // forgotten when a change is applied or rejected.
+  // ID. It keeps nothing between reads: each folds every queued change again over the deck it
+  // fetched.
   #replay = createReplay();
 
   constructor(
@@ -375,7 +376,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...slideOf(deck.slides.get(id)!, deck.order.indexOf(id), layouts),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         }));
-        if (JSON.stringify(slides).length > MAX_SLIDES_READ_LENGTH) {
+        if (measured(JSON.stringify(slides)) > MAX_SLIDES_READ_LENGTH) {
           throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`);
         }
         return { title, missing, slides };

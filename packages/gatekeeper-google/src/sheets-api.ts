@@ -4,6 +4,7 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { editorCost } from "./editor-cost";
 import { readGoogleJson } from "./google-response";
 import {
   baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_READ_FIELDS,
@@ -415,6 +416,7 @@ export class GoogleSheetsApi {
       for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
         starts.add(`${sheetId}:${startRow}:${startColumn}`);
         rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
+          editorCost.cellsKeyed++;
           cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, enteredValue(cell.userEnteredValue));
         }));
       }

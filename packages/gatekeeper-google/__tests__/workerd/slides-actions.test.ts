@@ -1,16 +1,19 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ActionDescription, ActionField, ActionKind,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { editorCost } from "../../src/editor-cost";
 import type {
-  RestPageBackgroundFill, RestPresentation, RestThemeColorPair,
+  RestPageBackgroundFill, RestPageElement, RestPresentation, RestSlide, RestText, RestTextElement,
+  RestThemeColorPair,
 } from "../../src/slides-api";
+import { SLIDE_FIELDS } from "../../src/slides-fields";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
-import { PICTURE_COPY, SlidesProvider, table } from "../slides-provider";
+import { meterFetches, PICTURE_COPY, SlidesProvider, table } from "../slides-provider";
 import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import { DriveFiles, SLIDES_MIME } from "../drive-files";
 
@@ -1431,5 +1434,339 @@ describe("Google Slides stored layout", () => {
     await hooks().restartFacet(slides.facet);
 
     expect((await slides.edit([EDIT])).actionId).toBe(12);
+  });
+});
+
+describe("Google Slides replay cost", () => {
+  /** The changes queued in the first phase, each followed by a read. */
+  const N = 5;
+  const SLIDES = 100;
+  /** One fixture slide as the fake answers a full read of it asked compact: every slide is this size. */
+  const PAGE_BYTES = 32_196;
+  /** The same answer indented, as Google prints one not asked compact. */
+  const PAGE_INDENTED = 93_183;
+  /** The outline of the fixture deck, and its summary, indented. */
+  const OUTLINE_INDENTED = 15_398;
+  const SUMMARY_INDENTED = 542_007;
+
+  /** What a phase is measured in, in the order the table prints them. */
+  const MEASURES = [
+    "pageClones", "cloneBytes", "pageRoundTrips", "roundTripUnits", "measuredStrings",
+    "longestMeasured", "pageFetches", "fetches", "responseBytes", "mostOpen", "indented",
+  ] as const;
+  type Measure = typeof MEASURES[number];
+  type Row = { phase: string; pending: number } & Record<Measure, number>;
+
+  const id = (number: number) => `s${String(number).padStart(3, "0")}`;
+  const EMU = (magnitude: number) => ({ magnitude, unit: "EMU" as const });
+  const GEOMETRY = {
+    size: { width: EMU(3_000_000), height: EMU(3_000_000) },
+    transform: { scaleX: 2.8402, scaleY: 1.1388, translateX: 311_700, translateY: 1_152_475, unit: "EMU" },
+  };
+  const INHERIT = { propertyState: "INHERIT" };
+  const SHAPE_PROPERTIES = {
+    shapeBackgroundFill: INHERIT, outline: INHERIT, shadow: INHERIT,
+    autofit: { autofitType: "NONE", fontScale: 1 },
+  };
+  const WHITE = { solidFill: { color: { rgbColor: { red: 1, green: 1, blue: 1 } }, alpha: 1 } };
+  const CELL_PROPERTIES = {
+    tableCellBackgroundFill: { propertyState: "NOT_RENDERED", ...WHITE }, contentAlignment: "TOP",
+  };
+  const GREY = 0.61960787;
+  const BORDER = {
+    tableBorderFill: { solidFill: { color: { rgbColor: { red: GREY, green: GREY, blue: GREY } }, alpha: 1 } },
+    weight: EMU(9525),
+    dashStyle: "SOLID",
+  };
+  const LEFT_TO_RIGHT = { style: { direction: "LEFT_TO_RIGHT" } };
+  const INDENTED = {
+    style: {
+      indentStart: { unit: "PT" as const }, indentFirstLine: { unit: "PT" as const }, direction: "LEFT_TO_RIGHT",
+    },
+  };
+
+  /**
+   * `element` with the size, transform and shape properties a live element carries. It is widened
+   * here, once: a live page holds fields the client's types leave out.
+   */
+  function live(element: { objectId?: string; shape?: object }): RestPageElement {
+    return {
+      ...element, ...GEOMETRY,
+      ...(element.shape ? { shape: { ...element.shape, shapeProperties: SHAPE_PROPERTIES } } : {}),
+    } as RestPageElement;
+  }
+
+  /** Paragraphs as a live text box holds them: each a marker, then one run that ends in its newline. */
+  function paragraphs(marker: NonNullable<RestTextElement["paragraphMarker"]>, lines: string[]): RestText {
+    let index = 0;
+    return {
+      textElements: lines.flatMap(line => {
+        let start = index;
+        index += line.length + 1;
+        let range = { ...(start === 0 ? {} : { startIndex: start }), endIndex: index };
+        return [{ ...range, paragraphMarker: marker }, { ...range, textRun: { content: `${line}\n`, style: {} } }];
+      }),
+    };
+  }
+
+  /** Where a cell or a cell edge is: Google omits a zero index. */
+  const located = (rowIndex: number, columnIndex: number) =>
+    ({ ...(rowIndex ? { rowIndex } : {}), ...(columnIndex ? { columnIndex } : {}) });
+
+  /** A grid of `rows` by `columns` cell edges, each with its location and border. */
+  function borders(rows: number, columns: number) {
+    return Array.from({ length: rows }, (_row, rowIndex) => ({
+      tableBorderCells: Array.from({ length: columns }, (_cell, columnIndex) =>
+        ({ location: located(rowIndex, columnIndex), tableBorderProperties: BORDER })),
+    }));
+  }
+
+  /**
+   * A slide the size of a live slide of a title, eight lines and a 6 x 5 table of empty cells, with
+   * a footer showing its number, padded so that every slide's page is the same size.
+   */
+  function largeSlide(number: number): RestSlide {
+    let page = id(number);
+    let line = (index: number) => `${page} line ${index}: ${"storage is the working state ".repeat(3)}`.slice(0, 87);
+    let fixture = slide(page, [
+      shape(`${page}-title`, paragraphs(LEFT_TO_RIGHT, [`Slide ${page}: the piece in hand`]),
+        { placeholder: "TITLE" }),
+      shape(`${page}-body`, paragraphs(INDENTED, Array.from({ length: 8 }, (_line, index) => line(index + 1))),
+        { placeholder: "BODY" }),
+      {
+        objectId: `${page}-table`,
+        table: {
+          rows: 6,
+          columns: 5,
+          tableColumns: Array.from({ length: 5 }, () => ({ columnWidth: EMU(1_447_800) })),
+          tableRows: Array.from({ length: 6 }, (_row, rowIndex) => ({
+            rowHeight: EMU(381_000),
+            tableRowProperties: { minRowHeight: EMU(381_000) },
+            tableCells: Array.from({ length: 5 }, (_cell, columnIndex) => ({
+              location: located(rowIndex, columnIndex), rowSpan: 1, columnSpan: 1,
+              tableCellProperties: CELL_PROPERTIES,
+            })),
+          })),
+          horizontalBorderRows: borders(7, 5),
+          verticalBorderRows: borders(6, 6),
+        },
+      },
+      shape(`${page}-number`, text([
+        { slideNumber: String(number) }, " of 100".padEnd(12 - String(number).length),
+      ])),
+    ].map(live));
+    let notes = fixture.slideProperties!.notesPage!;
+    notes.pageElements = notes.pageElements!.map(live);
+    return fixture;
+  }
+
+  const measured: Row[] = [];
+
+  afterAll(() => {
+    if (measured.length === 0) return;
+    let header = ["phase", ...MEASURES, "pending"];
+    let lines = measured.map(row =>
+      [row.phase, ...MEASURES.map(column => String(row[column])), String(row.pending)]);
+    let widths = header.map((title, column) =>
+      Math.max(title.length, ...lines.map(line => line[column].length)));
+    let print = (line: string[]) =>
+      line.map((cell, column) => column < 1 ? cell.padEnd(widths[column])
+        : cell.padStart(widths[column])).join("  ");
+    console.log([
+      "Google Slides replay cost",
+      `A deck of ${SLIDES} slides of ${PAGE_BYTES} bytes each as compact JSON. ${N} changes are ` +
+      "queued, each followed by a read of the first 20 slides; then one more read of them, the " +
+      "outline, a queued move of 99 slides and a queued skip of 100, the oldest change approved, " +
+      "the newest rejected, and a read whose newest batch stopped at its second edit. cloneBytes " +
+      "is pageClones times a slide's bytes; mostOpen is of the fake, which has no limit on " +
+      "connections; pending is the changes awaiting a decision after the phase.",
+      print(header), ...lines.map(print),
+    ].join("\n"));
+  });
+
+  it("counts what a queue over a large deck copies and fetches", async () => {
+    let provider = new SlidesProvider(
+      presentation(Array.from({ length: SLIDES }, (_slide, at) => largeSlide(at + 1)))).install();
+    let meter = meterFetches();
+    let slides = gatekeeper();
+
+    // The fixture is the size it claims, by the fake's own answers to a full read of one slide:
+    // a live slide of a title, eight lines and a 6 x 5 table is 31,474 bytes asked compact and
+    // 91,566 as the client asks, and the footer adds its own.
+    let page = async (query: string) => (await (await provider.handle(new Request(
+      `https://slides.googleapis.com/v1/presentations/deck-1/pages/${id(50)}?fields=${SLIDE_FIELDS}${query}`,
+    )))!.arrayBuffer()).byteLength;
+    let compact = await page("&prettyPrint=false");
+    expect(compact).toBeGreaterThan(30_000);
+    expect(compact).toBeLessThan(33_500);
+    expect(compact).toBe(PAGE_BYTES);
+    let asAsked = await page("");
+    expect(asAsked).toBeGreaterThan(87_000);
+    expect(asAsked).toBeLessThan(97_000);
+    expect(asAsked).toBe(PAGE_INDENTED);
+
+    let totals = (): Record<Measure, number> => ({
+      ...editorCost, cloneBytes: editorCost.pageClones * PAGE_BYTES,
+      pageFetches: provider.pageReads.length, fetches: meter.fetches,
+      responseBytes: meter.responseBytes, mostOpen: 0, indented: provider.indented.length,
+    });
+    let pending = async () => (await hooks().storedKeys(slides.facet, "slides"))
+      .filter(key => /^slides:action:\d+$/.test(key)).length;
+    /** Runs one phase and records what it added to each measure. */
+    let phase = async (name: string, body: () => Promise<unknown>) => {
+      editorCost.longestMeasured = 0;
+      meter.mostOpen = 0;
+      let before = totals();
+      await body();
+      let after = totals();
+      measured.push({
+        phase: name,
+        ...Object.fromEntries(MEASURES.map(column => [column, after[column] - before[column]])) as Record<Measure, number>,
+        longestMeasured: editorCost.longestMeasured,
+        mostOpen: meter.mostOpen,
+        pending: await pending(),
+      });
+    };
+    let first = Array.from({ length: 20 }, (_slide, at) => id(at + 1));
+    let every = Array.from({ length: SLIDES }, (_slide, at) => id(at + 1));
+    let read = async () => {
+      let outcome = await slides.call("getSlides", first);
+      expect(outcome.error).toBeUndefined();
+      return outcome.value as Slide[];
+    };
+    let title = (number: number, find: string, replace: string) =>
+      ({ slideId: id(number), elementId: `${id(number)}-title`, find, replace });
+    let body = (number: number, find: string, replace: string) =>
+      ({ slideId: id(number), elementId: `${id(number)}-body`, find, replace });
+    let ids: number[] = [];
+    let queue = async (submitted: Promise<{ actionId?: number }>) => {
+      ids.push((await submitted).actionId!);
+    };
+
+    await phase("queue N, a read after each", async () => {
+      for (let change of [
+        () => slides.edit([title(1, "piece", "part")]),
+        () => slides.edit([title(2, "piece", "part")]),
+        () => slides.queued("duplicateSlide", id(3)),
+        () => slides.queued("moveSlides", [id(SLIDES)], null),
+        () => slides.edit([body(1, "line 1:", "row 1:")]),
+      ]) {
+        await queue(change());
+        await read();
+      }
+    });
+    expect(ids).toHaveLength(N);
+    await phase("read", read);
+    await phase("outline", async () => {
+      let outcome = await slides.call("getPresentation");
+      expect(outcome.error).toBeUndefined();
+    });
+    await phase("queue a move of 99", () => queue(slides.queued("moveSlides", every.slice(0, 99), id(SLIDES))));
+    await phase("queue a skip of 100", () => queue(slides.queued("setSlidesSkipped", every, true)));
+    await phase("approve", async () => expect(await slides.apply(ids[0])).toBeNull());
+    await phase("reject", async () => expect(await slides.reject(ids.at(-1)!)).toBeNull());
+
+    // A batch of two edits to slide 4, whose second a collaborator leaves nothing to find for, in
+    // a text as long, so the page stays its size: the batch stops after its first edit wrote.
+    await queue(slides.edit([title(4, "piece", "part"), body(4, "line 8:", "row 8:")]));
+    provider.edit(held => {
+      let run = held.slides![3].pageElements![1].shape!.text!.textElements!
+        .find(element => element.textRun?.content?.includes("line 8:"))!.textRun!;
+      run.content = run.content!.replace("line 8:", "LINE 8:");
+    });
+    await phase("read, newest no longer applies", async () => {
+      // The batch stopped at its second edit, after its first wrote.
+      expect((await read())[3].queuedChangeConflict).toBe(
+        `Queued change ${ids.at(-1)} no longer applies, so it and the changes queued after it are ` +
+        "not shown: change 2 (editText): the text does not contain the text to find.");
+    });
+
+    let none = Object.fromEntries(MEASURES.map(column => [column, 0])) as Record<Measure, number>;
+    // Every read is answered indented, so `indented` is `fetches` less the writes. A round trip is
+    // of a whole page, but for the outline's: `PAGE_BYTES` units for a slide as it was fetched, 126
+    // more for the copy, whose IDs are longer, 233 more for a slide whose title a queued edit holds
+    // as four runs in place of one, and one more for a slide whose number an earlier change of the
+    // fold made a digit longer (the footer's padding makes the pages one size as fetched only).
+    expect(measured).toEqual([
+      {
+        ...none, phase: "queue N, a read after each", pending: N,
+        // Queueing clones the slide a new batch edits (1, 1, 0, 0, 1) and, for the fifth, slide 1
+        // again for the first batch: 4. The reads clone a slide for each pending batch and copy: 1,
+        // 2, 3, 3 and 4.
+        pageClones: 17, cloneBytes: 17 * PAGE_BYTES,
+        // A queued copy of slide 3 shifts slides 4 to 20 and numbers the copy (18), and a queued
+        // move to the start then shifts all 21 held: 18, 39 and 39 for the last three reads, and 1
+        // each for the one slide held when the move and the last edit are queued. Five are of the
+        // copy, five of an edited slide and two of a slide numbered a digit more.
+        pageRoundTrips: 98, roundTripUnits: 3_157_005,
+        // Each queued change is measured once, and each read's 20 slides, about 3.7 KB a slide.
+        measuredStrings: 10, longestMeasured: 74_091,
+        // One page to queue each change, 20 for each read, and an outline with each.
+        pageFetches: 105, fetches: 115, responseBytes: 105 * PAGE_INDENTED + 10 * OUTLINE_INDENTED,
+        mostOpen: 20, indented: 115,
+      },
+      {
+        ...none, phase: "read", pending: N,
+        // The three edited slides and the copy; 18 and 21 round trips, as above: two of the copy,
+        // two of an edited slide and one of a slide numbered a digit more.
+        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 39, roundTripUnits: 1_256_363,
+        measuredStrings: 1, longestMeasured: 74_090,
+        pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_INDENTED + OUTLINE_INDENTED,
+        mostOpen: 20, indented: 21,
+      },
+      {
+        ...none, phase: "outline", pending: N,
+        // The same four clones, the copy's of a summary. The summary holds all 100 slides, so the
+        // copy shifts 97 and is numbered (98) and the move shifts 101: of summaries of 2,347 units
+        // (the copy's two 126 more, two a digit more), but for the two edited slides, read whole.
+        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 199, roundTripUnits: 527_471,
+        // The summary, then the two slides queued batches edit, together.
+        pageFetches: 2, fetches: 3, responseBytes: SUMMARY_INDENTED + 2 * PAGE_INDENTED,
+        mostOpen: 2, indented: 3,
+      },
+      {
+        ...none, phase: "queue a move of 99", pending: N + 1,
+        // All 100 slides are held whole: the four clones, and 98 and 101 round trips of them, two
+        // of the copy, two of an edited slide and two of a slide numbered a digit more.
+        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 199, roundTripUnits: 6_407_724,
+        // The queued move alone: 99 labels and the slide they follow.
+        measuredStrings: 1, longestMeasured: 6_138,
+        // The 100 slides named, whole and at once, to label them.
+        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_INDENTED + OUTLINE_INDENTED,
+        mostOpen: 100, indented: 101,
+      },
+      {
+        ...none, phase: "queue a skip of 100", pending: N + 2,
+        // As the move, and the queued move of 99 shifts slides 4 to 99 and the copy: 97 more, one
+        // of them the copy and four a slide numbered a digit more.
+        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 296, roundTripUnits: 9_530_866,
+        measuredStrings: 1, longestMeasured: 6_130,
+        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_INDENTED + OUTLINE_INDENTED,
+        mostOpen: 100, indented: 101,
+      },
+      {
+        ...none, phase: "approve", pending: N + 1,
+        // The edit is built again over a fresh read of its slide: one clone, the outline, the page,
+        // and the write, whose answer is 20 bytes.
+        pageClones: 1, cloneBytes: PAGE_BYTES,
+        pageFetches: 1, fetches: 3, responseBytes: OUTLINE_INDENTED + PAGE_INDENTED + 20,
+        mostOpen: 1, indented: 2,
+      },
+      // A rejection reads nothing.
+      { ...none, phase: "reject", pending: N },
+      {
+        ...none, phase: "read, newest no longer applies", pending: N + 1,
+        // Slides 2, 1 and 4 and the copy: the clone of slide 4 is dropped with its batch. The copy
+        // and the two moves shift 18, 21 and 18 of the 21 slides held: three of the copy, one of
+        // slide 2 as edited, three of a slide numbered a digit more, and one of slide 1, which the
+        // fake answers 71 units shorter since it stored the approved edit as one run.
+        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 57, roundTripUnits: 1_835_715,
+        // The 20 slides, each with the conflict's text.
+        measuredStrings: 1, longestMeasured: 77_648,
+        // As `read`, less the 201 bytes slide 1 lost when the fake stored its approved edit as one run.
+        pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_INDENTED + OUTLINE_INDENTED - 201,
+        mostOpen: 20, indented: 21,
+      },
+    ]);
   });
 });

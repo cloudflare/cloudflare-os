@@ -26,6 +26,7 @@ import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
 import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
+import { editorCost } from "./editor-cost";
 import type { SheetArea } from "./sheets-api";
 import {
   DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, mergeFormat, type Axis, type BaseFormats, type BaseSizes,
@@ -204,10 +205,10 @@ function replayStep(grid: Grid, change: QueuedChange): SimulationStep<Grid> {
 
 /**
  * Creates a store that replays queued changes over the grid a read fetched, stopping at the first
- * that no longer applies. The grid is its one entity, folded under the spreadsheet's own ID. Fold
- * each grid a read builds once, with the changes queued when it was fetched: the store finds a
- * fold by its grid, so it then reuses none, and is owed no `forget()` when a change is applied or
- * rejected.
+ * that no longer applies. The grid is its one entity, folded under the spreadsheet's own ID. The
+ * store keeps nothing: every call folds the changes it is given from the first, over the grid it
+ * is given. No change writes a grid, each returning another, so a fold starts from the fetched
+ * grid itself.
  */
 export function createReplay(): SimulationStore<string, Grid, Grid, QueuedChange> {
   return createSimulationStore<string, Grid, Grid, QueuedChange>({
@@ -218,10 +219,9 @@ export function createReplay(): SimulationStore<string, Grid, Grid, QueuedChange
 }
 
 /**
- * Replays queued changes over a grid with nothing remembered, stopping at the first that no longer
- * applies: what the store of `createReplay()` folds, and how many of the changes had an effect.
- * One grid may be replayed again under the same IDs with other changes, which a store would
- * answer from what it remembers of the grid.
+ * Replays queued changes over a grid, stopping at the first that no longer applies: what the
+ * store of `createReplay()` folds, and how many of the changes had an effect. `base` is left as
+ * it was.
  */
 export function replayChanges(
   base: Grid, changes: readonly QueuedChange[],
@@ -729,7 +729,10 @@ export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
 ): BaseCells<T> {
   let cells = new Map<string, T>();
   pieces.forEach(({ sheetId, rect }, i) => values[i]?.forEach((line, r) => line.forEach((value, c) => {
-    if (value !== null) cells.set(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`, value);
+    if (value !== null) {
+      editorCost.cellsKeyed++;
+      cells.set(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`, value);
+    }
   })));
   return (sheetId, row, column) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
 }

@@ -11,6 +11,7 @@
  * before it leave it.
  */
 
+import { editorCost } from "./editor-cost";
 import type { SheetArea, SheetProtection } from "./sheets-api";
 import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry } from "./sheets-format";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
@@ -103,6 +104,8 @@ type Working = {
 };
 
 function working(grid: Grid): Working {
+  editorCost.overlayCopies++;
+  editorCost.overlayEntries += grid.cells.size + grid.formats.size + grid.sizes.size;
   return {
     sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats),
     sizes: new Map(grid.sizes), log: [...grid.log],
@@ -126,6 +129,7 @@ function keySet(keys: Map<number, Set<string>>, sheetId: number): Set<string> {
 // changes that only write cells never build it.
 function keysOn(work: Working, sheetId: number): Set<string> {
   if (!work.keys) {
+    editorCost.keysIndexed += work.cells.size + work.formats.size;
     work.keys = new Map();
     for (let map of byCell(work)) {
       for (let key of map.keys()) keySet(work.keys, Number(key.slice(0, key.indexOf(":")))).add(key);
@@ -1428,7 +1432,9 @@ export async function guardDigest(
     return values;
   });
   let order = guard.order ? [sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id)] : [];
-  let bytes = new TextEncoder().encode(JSON.stringify([described, cells, ...order]));
+  let text = JSON.stringify([described, cells, ...order]);
+  editorCost.digestedUnits += text.length;
+  let bytes = new TextEncoder().encode(text);
   let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
 }
