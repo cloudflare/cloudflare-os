@@ -14,6 +14,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { groupByTime } from './timeGroups'
 import { useChatSession } from './useChatSession'
@@ -40,6 +41,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const look = useWorkspaceLooks()[workspaceId]
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
@@ -60,7 +62,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
     <PageLayout
       header={(
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} onOpen={onOpenWorkspace} />}
+          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} onOpen={onOpenWorkspace} />}
           <HeaderBubble>
             <Button icon={CaretLeftIcon} onClick={onBack}>Back to chat</Button>
           </HeaderBubble>
@@ -71,7 +73,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
           {workspace && (
             <span className="flex items-center gap-2 text-base text-kumo-subtle">
-              <WorkspaceIcon label={workspaceLabel(workspace.title)} small />
+              <WorkspaceIcon label={workspaceLabel(workspace.title)} {...look} small />
               {workspace.title}
             </span>
           )}

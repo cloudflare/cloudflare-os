@@ -16,6 +16,7 @@ import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
 import { readLibraryStars, writeLibraryStars } from '@/prefs/libraryStars'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { libraryList, outputDetail, outputKey, outputTitle } from './libraryList'
 import { withStar, withStarOrder } from './libraryStars'
 import { useLibrary } from './useLibrary'
@@ -45,7 +46,8 @@ export const LibraryPane = ({ onOpenOutput, outputHref, onNew }: LibraryPaneProp
 
   const all = library.status === 'ready' ? library.outputs : []
   const starredKeys = new Set(stars)
-  const list = useListView('library', libraryList(all, offers.map(({ output }) => output), starredKeys))
+  const looks = useWorkspaceLooks()
+  const list = useListView('library', libraryList(all, offers.map(({ output }) => output), starredKeys, looks))
   const shown = list.narrow(all)
   const shownByKey = new Map(shown.map((output) => [outputKey(output), output]))
   const starred = stars.flatMap((key) => shownByKey.get(key) ?? [])

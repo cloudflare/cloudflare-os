@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { NotePencilIcon } from '@phosphor-icons/react'
 import type { AsideItem } from '@/aside/asideItems'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
+import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { Button } from '@/components/Button'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -16,6 +17,7 @@ import { WorkspaceLibraryList } from './WorkspaceLibraryList'
 import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
 import { workspaceLabel } from './workspaceLabel'
+import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 
 /** What a workspace's page shows beneath its title. */
 export type WorkspaceTab = 'chats' | 'library' | 'members'
@@ -50,6 +52,8 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const title = workspace?.title
   useDocumentTitle(title || 'Workspace')
   const narrow = useNarrowScreen()
+  const look = useWorkspaceLooks()[workspaceId]
+  const setLook = useSetWorkspaceLook()
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
@@ -67,7 +71,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     <PageLayout
       header={(
         <>
-          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} expanded />}
+          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
           <HeaderBubble className="ms-auto">
             {/* Its icon alone on a narrow screen, which leaves the workspace's title the room. */}
             {narrow
@@ -79,7 +83,10 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
-          <WorkspaceIcon label={workspaceLabel(title ?? '')} />
+          {/* Its icon, which opens what it can be drawn as. That is kept on this device, so anyone may choose. */}
+          {workspace
+            ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={(next) => setLook(workspaceId, next)} />
+            : <WorkspaceIcon label="" />}
           {/* Its own heading, which can be renamed by whoever may build in it. */}
           <h1 className="flex max-w-full justify-center text-xl font-medium text-kumo-default">
             {workspace && workspace.role !== 'use'

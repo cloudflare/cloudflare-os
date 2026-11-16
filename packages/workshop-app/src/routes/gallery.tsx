@@ -9,6 +9,7 @@ import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { MemberListItem } from '@/blocks/MemberListItem'
+import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
@@ -19,6 +20,7 @@ import { Tabs as PageTabs } from '@/components/Tabs'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
@@ -64,6 +66,15 @@ const ShimmerTextPreview = () => {
         <ShimmerText active={active}>Reconnecting…</ShimmerText>
       </span>
       <Switch label="Active" checked={active} onCheckedChange={setActive} />
+    </div>
+  )
+}
+
+const WorkspaceIconPickerPreview = () => {
+  const [look, setLook] = useState<WorkspaceLook>()
+  return (
+    <div className="flex w-full justify-center py-4">
+      <WorkspaceIconPicker label="EN" look={look} onLookChange={setLook} />
     </div>
   )
 }
@@ -240,6 +251,22 @@ function Gallery() {
         <WorkspaceIcon label="FR" />
         <WorkspaceIcon label="EN" small />
         <WorkspaceIcon label="MW" small />
+      </Section>
+      <Section title="WorkspaceIcon (every shape, and small; every colour)">
+        <div className="flex w-full flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-4">
+            {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="EN" shape={shape} />)}
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            {workspaceShapes.map((shape) => <WorkspaceIcon key={shape} label="MW" shape={shape} small />)}
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            {workspaceColors.map((color, index) => <WorkspaceIcon key={color} label="EN" shape={workspaceShapes[index % workspaceShapes.length]} color={color} />)}
+          </div>
+        </div>
+      </Section>
+      <Section title="WorkspaceIconPicker (a workspace’s icon on its page: click it to choose its shape and its colour, which it takes on as each is chosen)">
+        <WorkspaceIconPickerPreview />
       </Section>
       <Section title="WorkspaceListItem (selected + unread, plain, long text)">
         <div className="flex w-80 flex-col">

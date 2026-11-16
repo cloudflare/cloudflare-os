@@ -19,6 +19,7 @@ import { sharedConnection } from '@/rpc/sharedConnection'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
@@ -52,6 +53,7 @@ const AppFrame = () => {
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
+  const looks = useWorkspaceLooks()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -175,6 +177,7 @@ const AppFrame = () => {
           id,
           title,
           workspaceLabel: workspaceLabel(title),
+          workspaceLook: looks[id],
           subtitle: formatActivity(lastActive),
           href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
         }))

@@ -1,6 +1,7 @@
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import type { WorkspaceLook } from '@/components/workspaceLook'
 import { CardAction } from './CardAction'
 import { MemberAvatars, type ListedMember } from './MemberAvatars'
 import { LIST_ACTION, StarButton } from './StarButton'
@@ -8,6 +9,8 @@ import { WorkspaceMoreMenu } from './WorkspaceMoreMenu'
 
 export type WorkspaceCardProps = {
   workspaceLabel: string
+  /** How its icon is drawn, when not as any workspace's is. */
+  workspaceLook?: WorkspaceLook
   title: string
   /** When it was last active, as the list it is in puts it. */
   time?: string
@@ -27,7 +30,7 @@ const HIGHLIGHT = 'group-hover:bg-kumo-contrast/5 group-has-focus-visible:bg-kum
  * at most, then on one line when it was last active and, at its end, who has access to it. Pointed at, more and its star show in its corner; a starred
  * one keeps its star.
  */
-export const WorkspaceCard = ({ workspaceLabel, title, time, members, starred, onStarredChange, href, onSelect }: WorkspaceCardProps) => (
+export const WorkspaceCard = ({ workspaceLabel, workspaceLook, title, time, members, starred, onStarredChange, href, onSelect }: WorkspaceCardProps) => (
   <div className="group relative flex flex-col rounded-3xl bg-kumo-tint">
     <LinkButton
       href={href}
@@ -35,7 +38,7 @@ export const WorkspaceCard = ({ workspaceLabel, title, time, members, starred, o
       // The whole card opens the workspace, apart from the buttons over it.
       className={cn('flex flex-1 flex-col justify-between gap-8 rounded-3xl p-4 text-left text-base', HIGHLIGHT)}
     >
-      <WorkspaceIcon label={workspaceLabel} />
+      <WorkspaceIcon label={workspaceLabel} {...workspaceLook} />
       <span className="flex min-w-0 flex-col gap-1 leading-snug">
         <span className="line-clamp-2 font-medium wrap-anywhere text-kumo-default">{title}</span>
         {/* As tall as the pictures whether or not they are known yet, so that the title does not move when they are. */}

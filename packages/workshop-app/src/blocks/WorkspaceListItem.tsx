@@ -1,11 +1,14 @@
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import type { WorkspaceLook } from '@/components/workspaceLook'
 
 export type WorkspaceListItemProps = {
   /** Identifies the row to the sidebar's shared highlight. */
   id?: string
   workspaceLabel: string
+  /** How its icon is drawn, when not as any workspace's is. */
+  workspaceLook?: WorkspaceLook
   title: string
   /** A line under the title, e.g. when the workspace was last active. */
   subtitle?: string
@@ -20,6 +23,7 @@ export type WorkspaceListItemProps = {
 export const WorkspaceListItem = ({
   id,
   workspaceLabel,
+  workspaceLook,
   title,
   subtitle,
   unread,
@@ -39,7 +43,7 @@ export const WorkspaceListItem = ({
       selected && 'not-data-underlay:bg-kumo-fill',
     )}
   >
-    <WorkspaceIcon label={workspaceLabel} />
+    <WorkspaceIcon label={workspaceLabel} {...workspaceLook} />
     <span className="min-w-0 flex-1 leading-snug">
       <span className="block truncate font-medium text-kumo-default">{title}</span>
       {subtitle && <span className="block truncate text-kumo-subtle">{subtitle}</span>}

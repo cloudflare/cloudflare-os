@@ -10,6 +10,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED } from './chatItems'
@@ -61,6 +62,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
@@ -146,7 +148,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     <ChatLayout
       header={(workspace || title) && (
         <ChatHeader
-          workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace }}
+          workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look, onOpen: onOpenWorkspace }}
           title={title}
           onOpenSettings={onOpenSettings}
         />

@@ -308,6 +308,22 @@ title, renamed where it is (`EditableTitle`) by whoever may build in it, then ta
 in place in the history): its chats, what it has made (the library's, as beside a chat, opening
 as their own pages), and its members, the owner first. Each tab loads what it lists once chosen.
 
+A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
+and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a
+field (`WorkspaceIconPicker`): it opens a menu of the shapes and, under them, the colours
+(`DropdownMenu.SwatchGroup`), which stays open beside the icon so that each choice is seen on it.
+The backend keeps no look, so they are this device's (`workspaces/WorkspaceLooks.ts`, plain and
+tested, held by `WorkspacesProvider`), for anyone who can open the workspace: they do not follow
+the user to another browser, and should be the server's once the backend can say so. Whatever
+draws a workspace's icon is given its look with its initials (`useWorkspaceLooks`), so that it is
+the same in the sidebar, the lists, a header and a filter.
+
+`WorkspaceIcon` draws a shape as layers, each rounded, with the letters on what looks like the
+middle of the layer they are on: say where that is for a new shape (`label`), and size it to weigh
+what the others do. The letters are on its lightest layer and what is behind that is darker, in
+both themes and in every colour. `workspace-icons/` has each as an SVG, beside the folder's
+`workspace.svg`.
+
 Pages other than a chat (`PageLayout`) float their header over the content, unfilled, with the
 content fading under it as a conversation's does (`.chat-fade`).
 

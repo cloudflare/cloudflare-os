@@ -7,6 +7,7 @@ import { NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { useApi } from '@/rpc/ApiContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 
 /**
@@ -25,6 +26,7 @@ function NewChat() {
   const navigate = useNavigate()
   const workspaces = useWorkspaces()
   const title = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
+  const look = useWorkspaceLooks()[workspaceId]
 
   return (
     <NewChatPane
@@ -38,6 +40,7 @@ function NewChat() {
             id: workspaceId,
             title,
             label: workspaceLabel(title),
+            look,
             onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } }),
           }}
           title="New chat"

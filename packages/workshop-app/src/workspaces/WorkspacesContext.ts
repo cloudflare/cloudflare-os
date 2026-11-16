@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceLooks } from './WorkspaceLooks'
 import type { WorkspaceMemberships } from './WorkspaceMemberships'
 
 export type WorkspacesState =
@@ -17,6 +18,8 @@ export type WorkspacesContextValue = {
   rename: (id: string, title: string) => Promise<void>
   /** Who has access to each workspace, as far as the workspaces have been asked. */
   memberships: WorkspaceMemberships
+  /** How each workspace's icon is drawn, which is this device's to say. */
+  looks: WorkspaceLooks
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -41,3 +44,6 @@ export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWor
 
 /** What is known of who has access to each workspace, kept from one page to the next (see `useWorkspaceMemberships`). */
 export const useMembershipsStore = (): WorkspaceMemberships => useWorkspacesContext().memberships
+
+/** How each workspace's icon is drawn on this device, the same wherever it is asked (see `useWorkspaceLooks`). */
+export const useLooksStore = (): WorkspaceLooks => useWorkspacesContext().looks

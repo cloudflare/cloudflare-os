@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
+import { WorkspaceLooks } from './WorkspaceLooks'
 import { WorkspaceMemberships } from './WorkspaceMemberships'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
 
@@ -16,6 +17,7 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   // Stable, for whoever keeps it beyond a render, such as a chat session.
   const [refresh] = useState(() => () => setVersion((v) => v + 1))
   const [memberships] = useState(() => new WorkspaceMemberships())
+  const [looks] = useState(() => new WorkspaceLooks())
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
@@ -65,5 +67,5 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, memberships }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, memberships, looks }}>{children}</WorkspacesContext>
 }
