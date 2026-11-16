@@ -153,7 +153,12 @@ class, and put what can come and go in the live output in a `LiveRows.Row`.
 
 The view follows the end of the conversation only for a reader who is at it; one reading further
 up is left where they are, with a button to the latest. Sending a message is the exception: it
-takes whoever sent it to the end, and follows from there.
+takes whoever sent it to the end, and follows from there. Where the reader is, the view keeps by the
+row they were reading, as far down the conversation as it is, never as where it is on screen:
+WebKit moves the view before the scroll event that says so, so a correction made in between from
+a position on screen undoes the reader's own scrolling, and on iOS stops its momentum dead
+(`useMessageScroll`). Set the scroll position only for a change to the conversation, never while
+the reader moves it.
 
 A draft is only let go of once its message has gone: `Composer`'s `onSend` resolves to whether it
 did, and until then the draft, its files and what it replies to stay, dimmed and unsendable. One

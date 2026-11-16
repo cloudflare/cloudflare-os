@@ -2,6 +2,8 @@ import { useCallback, useLayoutEffect, useRef } from 'react'
 import { useReducedMotion } from 'motion/react'
 import { useStickToBottom } from 'use-stick-to-bottom'
 
+// Where a row the reader can see is in the conversation: how far down the content its top is. Not
+// where it is on screen, which the reader's own scrolling changes too.
 type Anchor = { element: HTMLElement; offset: number }
 
 /** The library owns following/escaping. Our page virtualization only corrects reading anchors
@@ -30,27 +32,32 @@ export const useMessageScroll = () => {
       })
     // The page survives unmounting its rows. It is also the fallback when an updated message is
     // removed or when a fast scrollbar drag lands on a spacer that has not mounted its rows yet.
+    const start = content.getBoundingClientRect().top
     anchors.current = [visible('[data-message-anchor]'), visible('[data-message-page]')]
       .filter((element): element is HTMLElement => !!element)
-      .map((element) => ({ element, offset: element.getBoundingClientRect().top - top }))
+      .map((element) => ({ element, offset: element.getBoundingClientRect().top - start }))
   }, [scrollRef, contentRef])
 
   const reconcile = useCallback(() => {
-    const scroll = scrollRef.current
-    if (!scroll) return
+    const content = contentRef.current
+    if (!content) return
     // `isAtBottom` also includes the library's near-bottom tolerance; state.isAtBottom is the
     // actual follow lock. Never anchor-correct while its scrolling animation owns the viewport.
     if (!state.isAtBottom) {
-      const anchor = anchors.current.find(({ element }) => contentRef.current?.contains(element))
+      const anchor = anchors.current.find(({ element }) => content.contains(element))
       if (anchor) {
-        const delta = anchor.element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - anchor.offset
+        // Only what moved the row within the conversation (a page above it measured, earlier
+        // history arrived) is put right, never the reader's scrolling. WebKit moves the view
+        // before the scroll event that would record it, so a render in between would see the
+        // scroll as a shift and undo it, which on iOS also stops the scroll's momentum dead.
+        const delta = anchor.element.getBoundingClientRect().top - content.getBoundingClientRect().top - anchor.offset
         // This setter marks the correction as programmatic, so the library doesn't mistake a
         // prepend or remeasurement for user input and change its follow/escape state.
         if (Math.abs(delta) > 0.5) state.scrollTop += delta
       }
     }
     capture()
-  }, [scrollRef, contentRef, state, capture])
+  }, [contentRef, state, capture])
 
   const jumpToLatest = useCallback(() => {
     void scrollToBottom({ animation })
