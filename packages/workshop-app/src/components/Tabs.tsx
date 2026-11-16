@@ -22,7 +22,7 @@ const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-labe
           key={tab.value}
           value={tab.value}
           className={cn(
-            'h-9 rounded-full px-4 text-base font-medium text-kumo-subtle',
+            'h-(--control-size) rounded-full px-(--control-pad) text-(length:--control-text) font-medium text-kumo-subtle',
             'hover:text-kumo-default data-active:bg-kumo-contrast/5 data-active:text-kumo-default',
           )}
         >

@@ -22,6 +22,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
+import { ListViewPreview } from '@/gallery/ListViewPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
@@ -279,6 +280,7 @@ function Gallery() {
         </div>
       </Section>
       <TabsPreview />
+      <ListViewPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded and collapsed to a rail (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">

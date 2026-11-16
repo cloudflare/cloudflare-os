@@ -14,7 +14,7 @@ export const ConnectButton = ({ children, onConnect }: ConnectButtonProps) => (
     aria-label="Connect an app"
     onClick={onConnect}
     // With logos the add control sits flush in the left end; alone, Button's circle applies.
-    className={children ? 'pr-4 pl-1' : undefined}
+    className={children ? 'pr-(--control-pad) pl-[calc((var(--control-size)-1.75rem)/2)]' : undefined}
     icon={
       <span className="grid size-7 place-items-center rounded-full bg-kumo-tint">
         <PlusIcon />

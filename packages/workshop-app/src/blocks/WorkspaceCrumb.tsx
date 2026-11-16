@@ -23,7 +23,7 @@ export const WorkspaceCrumb = ({ id, title, label, expanded = false, onOpen }: W
     {(wasExpanded) => (
       <Button
         // The icon keeps the circle's square, so the title grows out to the side of it.
-        icon={<span className="grid size-9 place-items-center"><WorkspaceIcon label={label} small /></span>}
+        icon={<span className="grid size-(--control-size) place-items-center"><WorkspaceIcon label={label} small /></span>}
         aria-label={title}
         title={expanded ? undefined : title}
         onClick={onOpen}
@@ -38,7 +38,7 @@ export const WorkspaceCrumb = ({ id, title, label, expanded = false, onOpen }: W
           )}
         >
           <span className="min-w-0 overflow-hidden">
-            <span className="block pr-4 pl-px">{title}</span>
+            <span className="block pr-(--control-pad) pl-px">{title}</span>
           </span>
         </span>
       </Button>

@@ -1,7 +1,7 @@
 import { createElement, isValidElement, type CSSProperties, type ElementType, type ReactElement, type ReactNode, type RefObject } from 'react'
 import { Menu } from '@cloudflare/kumo/primitives/menu'
 import { cn } from '@cloudflare/kumo/utils'
-import { XIcon } from '@phosphor-icons/react'
+import { CaretDownIcon, CaretRightIcon, CheckIcon, XIcon } from '@phosphor-icons/react'
 import { Button, type ButtonProps } from './Button'
 import { useMenuMorph } from './useMenuMorph'
 import './DropdownMenu.css'
@@ -17,6 +17,8 @@ export type DropdownMenuProps = TriggerContent & {
   triggerClassName?: string
   /** The trigger Button's variant. A ghost trigger has no surface, so the menu's fades in as it grows. */
   triggerVariant?: ButtonProps['variant']
+  /** A chevron after the label, for a trigger that would otherwise read as a button that acts at once. */
+  caret?: boolean
   /** Positions the popup against this element instead of the trigger. */
   anchorRef?: RefObject<HTMLElement | null>
   side?: 'top' | 'right' | 'bottom' | 'left'
@@ -52,6 +54,7 @@ const DropdownMenuRoot = ({
   children,
   triggerClassName,
   triggerVariant,
+  caret = false,
   anchorRef,
   side = 'bottom',
   align = 'start',
@@ -62,6 +65,10 @@ const DropdownMenuRoot = ({
   const { triggerRef, popupRef } = useMenuMorph()
   const time = { '--menu-time': duration / BASE_DURATION } as CSSProperties
   const iconNode = renderIcon(icon)
+  // In a span, so that it keeps a chevron's size rather than taking the Button's size for an icon.
+  const labelNode = caret && label !== undefined
+    ? <>{label}<span className="-me-1 flex"><CaretDownIcon aria-hidden="true" weight="bold" className="size-3" /></span></>
+    : label
   const keepsTrigger = keepTrigger && !inPlace
   const closesFromTrigger = !inPlace && !keepsTrigger
   // Stays mounted: the × must persist while it fades out during the closing morph,
@@ -87,7 +94,7 @@ const DropdownMenuRoot = ({
             aria-label={open && closesFromTrigger ? 'Close menu' : ariaLabel}
             className={cn('dropdown-menu-trigger relative', triggerClassName)}
           >
-            {iconNode ? label : <>{label}{close}</>}
+            {iconNode ? labelNode : <>{labelNode}{close}</>}
           </Button>
         )}
       />
@@ -129,7 +136,7 @@ const DropdownMenuRoot = ({
             {/* A copy of the trigger rides the surface, so the button itself appears to morph. */}
             <div inert aria-hidden="true" className="dropdown-menu-ghost pointer-events-none absolute">
               <Button icon={iconNode} aria-label="" tabIndex={-1} variant={triggerVariant} className={cn(triggerClassName, 'h-full w-full')}>
-                {label}
+                {labelNode}
               </Button>
             </div>
             <div className="dropdown-menu-content max-h-[inherit]">
@@ -162,7 +169,95 @@ const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label }: D
 
 const DropdownMenuSeparator = () => <Menu.Separator className="mx-3 my-1 h-px bg-kumo-line" />
 
+/** A line over items that says what they are a choice of: "Sort by". */
+const DropdownMenuLabel = ({ children }: { children: ReactNode }) => (
+  <div className="px-3 pt-2 pb-1 text-sm text-kumo-subtle">{children}</div>
+)
+
+// The tick an item that is chosen ends with. Its room is kept, so that choosing moves nothing.
+const TICK_SLOT = 'ms-auto grid size-4 shrink-0 place-items-center'
+const tick = <CheckIcon aria-hidden="true" weight="bold" className="size-4" />
+
+type DropdownMenuRadioGroupProps<Value extends string> = {
+  value: Value
+  onValueChange: (value: Value) => void
+  /** What its items are a choice of: "Sort by". */
+  'aria-label': string
+  /** The choices (`DropdownMenu.RadioItem`). */
+  children: ReactNode
+}
+
+/** Items of which one is chosen. */
+const DropdownMenuRadioGroup = <Value extends string>({ value, onValueChange, 'aria-label': label, children }: DropdownMenuRadioGroupProps<Value>) => (
+  <Menu.RadioGroup value={value} onValueChange={(next: Value) => onValueChange(next)} aria-label={label}>{children}</Menu.RadioGroup>
+)
+
+/** One choice of a `DropdownMenu.RadioGroup`, ticked while it is the one chosen. Choosing closes the menu. */
+const DropdownMenuRadioItem = ({ value, children }: { value: string; children: ReactNode }) => (
+  <Menu.RadioItem value={value} closeOnClick className={ITEM_CLASS}>
+    {children}
+    <span className={TICK_SLOT}><Menu.RadioItemIndicator>{tick}</Menu.RadioItemIndicator></span>
+  </Menu.RadioItem>
+)
+
+type DropdownMenuCheckboxItemProps = {
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  children: ReactNode
+}
+
+/** An item that is on or off, ticked while on. The menu stays open, so that several can be set. */
+const DropdownMenuCheckboxItem = ({ checked, onCheckedChange, children }: DropdownMenuCheckboxItemProps) => (
+  <Menu.CheckboxItem checked={checked} onCheckedChange={(next) => onCheckedChange(next)} className={ITEM_CLASS}>
+    {children}
+    <span className={TICK_SLOT}><Menu.CheckboxItemIndicator>{tick}</Menu.CheckboxItemIndicator></span>
+  </Menu.CheckboxItem>
+)
+
+type DropdownMenuSubmenuProps = {
+  /** What the menu is of, as its item in the menu it opens from. */
+  label: string
+  icon?: ElementType
+  /** What the item says of the menu before it is opened, such as how many of its options are on. */
+  detail?: ReactNode
+  /** What the menu holds: items, or something of its own to choose with, such as an `OptionPicker`. */
+  children: ReactNode
+}
+
+/**
+ * An item that opens a menu of its own beside the one it is in, for what there is too much of to
+ * list in place. It opens when pointed at or with the arrow key towards it, and is simply there:
+ * only the menu it opens from morphs out of a button.
+ */
+const DropdownMenuSubmenu = ({ label, icon: Icon, detail, children }: DropdownMenuSubmenuProps) => (
+  <Menu.SubmenuRoot>
+    <Menu.SubmenuTrigger className={cn(ITEM_CLASS, 'data-popup-open:bg-kumo-tint')}>
+      {Icon && <Icon aria-hidden="true" className="size-4 shrink-0" />}
+      {label}
+      <span className="ms-auto flex items-center gap-2 text-kumo-subtle">
+        {detail}
+        <CaretRightIcon aria-hidden="true" weight="bold" className="size-3" />
+      </span>
+    </Menu.SubmenuTrigger>
+    <Menu.Portal>
+      <Menu.Positioner sideOffset={10} alignOffset={-6} collisionPadding={12} className="z-50">
+        <Menu.Popup
+          aria-label={label}
+          className="flex max-h-[min(var(--available-height),24rem)] w-64 max-w-[var(--available-width)] origin-[var(--transform-origin)] flex-col overflow-hidden rounded-[21px] bg-kumo-base text-kumo-default ring-1 ring-kumo-contrast/6 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none"
+        >
+          {children}
+        </Menu.Popup>
+      </Menu.Positioner>
+    </Menu.Portal>
+  </Menu.SubmenuRoot>
+)
+
 export const DropdownMenu = Object.assign(DropdownMenuRoot, {
   Item: DropdownMenuItem,
   Separator: DropdownMenuSeparator,
+  Label: DropdownMenuLabel,
+  RadioGroup: DropdownMenuRadioGroup,
+  RadioItem: DropdownMenuRadioItem,
+  CheckboxItem: DropdownMenuCheckboxItem,
+  Submenu: DropdownMenuSubmenu,
 })

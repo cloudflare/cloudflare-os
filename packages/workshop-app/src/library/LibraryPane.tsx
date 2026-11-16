@@ -21,7 +21,7 @@ export const LibraryPane = ({ onOpenOutput, outputHref }: LibraryPaneProps) => {
   useDocumentTitle('Library')
 
   return (
-    <PageLayout header={<HeaderBubble><h1 className="flex h-9 items-center rounded-full bg-kumo-base px-4 text-base font-medium text-kumo-default ring-1 ring-kumo-line">Library</h1></HeaderBubble>}>
+    <PageLayout header={<HeaderBubble><h1 className="flex h-(--control-size) items-center rounded-full bg-kumo-base px-(--control-pad) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line">Library</h1></HeaderBubble>}>
       {library.status === 'loading' && <p role="status" className="px-3 py-2 text-base text-kumo-subtle">Loading the library…</p>}
       {library.status === 'failed' && <p className="px-3 py-2 text-base text-kumo-subtle">Couldn’t load the library: {library.message}</p>}
       {library.status === 'ready' && library.outputs.length === 0 && (

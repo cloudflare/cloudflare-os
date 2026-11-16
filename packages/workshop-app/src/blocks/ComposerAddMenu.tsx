@@ -29,7 +29,7 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
   <DropdownMenu
     icon={<PlusIcon weight="bold" />}
     aria-label="Add to conversation"
-    triggerClassName="size-[30px] text-kumo-subtle not-data-disabled:hover:text-kumo-default [&>svg]:size-3.5"
+    triggerClassName="size-(--composer-button) text-kumo-subtle not-data-disabled:hover:text-kumo-default [&>svg]:size-[calc(var(--composer-button)*0.47)]"
     triggerVariant="ghost"
     anchorRef={anchorRef}
     side="top"

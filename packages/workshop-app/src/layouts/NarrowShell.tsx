@@ -33,7 +33,7 @@ export type NarrowShellProps = {
 }
 
 // The room the sidebar's button takes at the start of a page's header: the button and the header's gap.
-const BUTTON_ROOM = 36 + 6
+const BUTTON_ROOM = 'calc(var(--control-size) + 6px)'
 // How much of the page stays in sight at the far edge with the sidebar out, to be tapped to put the
 // sidebar away. The sidebar has the rest.
 const PEEK = 64
@@ -202,7 +202,7 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside, onC
   // comes out empty.
   const [pulled, setPulled] = useState(false)
   if (pulled && shown) setPulled(false)
-  const lead = sidebar?.button ? ({ '--header-lead': `${BUTTON_ROOM}px` } as CSSProperties) : undefined
+  const lead = sidebar?.button ? ({ '--header-lead': BUTTON_ROOM } as CSSProperties) : undefined
 
   useEffect(() => {
     const moving = animate(away, sidebarOpen ? 1 : 0, reduceMotion ? { duration: 0 } : OPENING_TIMING)

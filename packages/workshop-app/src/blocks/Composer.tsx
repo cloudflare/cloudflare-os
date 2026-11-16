@@ -50,6 +50,9 @@ export type ComposerProps = {
 /** Lines the message grows to before it scrolls inside the field. */
 const MAX_ROWS = 6
 
+// A button in the field: smaller than a Button, with an icon to match (`--composer-button`).
+const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
+
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
 export const Composer = ({ onSend, initialDraft, reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
@@ -231,7 +234,7 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
           <div
             ref={measureRef}
             aria-hidden="true"
-            className="pointer-events-none invisible absolute top-[11px] right-[var(--composer-end)] left-[42px] text-base/5 max-md:text-[16px]/5 wrap-anywhere whitespace-pre-wrap"
+            className="pointer-events-none invisible absolute top-[11px] right-[var(--composer-end)] left-[var(--composer-start)] text-base/5 max-md:text-[16px]/5 wrap-anywhere whitespace-pre-wrap"
           >
             {text + '\u200b'}
           </div>
@@ -262,7 +265,7 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
                   // The button goes once the agent has stopped; the draft is where to carry on.
                   inputRef.current?.focus()
                 }}
-                className="size-[30px] [&>svg]:size-3.5"
+                className={COMPOSER_BUTTON}
               />
             )}
             {showSend && (
@@ -271,7 +274,7 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
                 icon={<ArrowUpIcon weight="bold" />}
                 aria-label="Send"
                 disabled={!canSend}
-                className="size-[30px] [&>svg]:size-3.5"
+                className={COMPOSER_BUTTON}
               />
             )}
           </div>

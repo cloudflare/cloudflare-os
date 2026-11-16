@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMemberships } from './WorkspaceMemberships'
 
 export type WorkspacesState =
   | { status: 'loading' }
@@ -14,6 +15,8 @@ export type WorkspacesContextValue = {
   setPinned: (id: string, pinned: boolean) => Promise<void>
   /** Renames a workspace, shown at once and undone if the server refuses. */
   rename: (id: string, title: string) => Promise<void>
+  /** Who has access to each workspace, as far as the workspaces have been asked. */
+  memberships: WorkspaceMemberships
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -35,3 +38,6 @@ export const useSetWorkspacePinned = (): WorkspacesContextValue['setPinned'] => 
 
 /** Renames a workspace (`setTitle`, to the server). Rejects with why, once it is undone. */
 export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWorkspacesContext().rename
+
+/** What is known of who has access to each workspace, kept from one page to the next (see `useWorkspaceMemberships`). */
+export const useMembershipsStore = (): WorkspaceMemberships => useWorkspacesContext().memberships
