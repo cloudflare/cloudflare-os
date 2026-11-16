@@ -1,7 +1,8 @@
 // The sessions the admin binding opens, built from the Admin API's schema: one class per service,
 // with one method per method of that service, each a forward to the Admin API the Workshop lent
-// the session (or to a view that API returned). A session decides nothing: the Workshop checks
-// and records each call where it lands.
+// the session (or to a view that API returned), except an "act" method, which is queued as one of
+// the facet's actions. A session decides nothing: the Workshop checks and records each call where
+// it lands.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { checkArguments } from "@gadgets/api-schema/check";
@@ -10,9 +11,11 @@ import { createLogger } from "@gadgets/observability/logger";
 import {
   ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
 } from "@gadgets/workshop-shared/admin-agent";
-import type { AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import type { AdminApi } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { ADMIN_SCHEMA, SERVICES, kindOf } from "./surface.js";
+import { type BoundAdminActions, entryText, requestReason } from "./actions.js";
+import { type ActMethod, ADMIN_SCHEMA, SERVICES, kindOf } from "./surface.js";
 
 // Event names only: a call's arguments, its result and the Admin API's errors (which can quote an
 // argument) are deployment admin data, kept in the workspace's activity and the audit log.
@@ -27,12 +30,17 @@ const logger = createLogger<{ vendorId: string }>({
  */
 export const ADMIN_SUBRESOURCE = ADMIN_BINDING_SUBRESOURCE;
 
-/** What every observation of one forwarder carries. */
+/** What one forwarder is made with: what each of its observations carries, and its actions. */
 export interface ForwarderOptions {
   /** Whether what it reads marks the workspace as holding restricted data. */
   restricted: boolean;
   /** The one subresource id that says which capability made the observation. */
   subresource: string;
+  /**
+   * The facet's actions, which a session of the entry service queues its "act" calls through. A
+   * session made without them refuses those calls, and a view never has them.
+   */
+  actions?: BoundAdminActions;
 }
 
 /** A capability a forwarder forwards to: the lent Admin API, or a view it returned. */
@@ -50,13 +58,29 @@ export type ForwarderClass =
     new (queue: RpcStub<AdminAgentQueue>, options: ForwarderOptions, target?: Target) => AdminSession;
 
 /**
- * Queues the action of one "act" method of AdminApi, given the session's queue and the call's
- * arguments, which fit the schema.
+ * Queues the action of one "act" method of AdminApi, whose arguments fit the schema. It reads
+ * nothing and observes nothing: the card is made from the arguments alone, so queuing does not
+ * mark the workspace.
  */
-export type ActRoute = (queue: RpcStub<AdminAgentQueue>, args: readonly unknown[]) => Promise<void>;
+type ActRoute<M extends ActMethod> = (
+  actions: BoundAdminActions, queue: RpcStub<AdminAgentQueue>, ...args: Parameters<AdminApi[M]>
+) => Promise<unknown>;
 
-/** The route of each "act" method of AdminApi, by name. A method with none is refused. */
-export const ACT_ROUTES = new Map<string, ActRoute>();
+/**
+ * The route of each "act" method of AdminApi. Which kind a call is queued as is decided here, by
+ * the method and its own arguments: a public entry through the binding is always
+ * "issueReportReply", never the kind a session limited to one report queues.
+ */
+const ACT_ROUTES: { [M in ActMethod]: ActRoute<M> } = {
+  addIssueReportEntry: (actions, queue, reportId, text, visibility) => actions.submit(
+      queue, visibility === "public" ? "issueReportReply" : "issueReportNote",
+      { reportId, text: entryText(text) }),
+  setIssueReportStatus: (actions, queue, reportId, status) =>
+    actions.submit(queue, "issueReportStatus", { reportId, status }),
+  requestWorkspaceWrite: (actions, queue, workspaceId, action, args, reason) => actions.submit(
+      queue, action === "grantContentAccess" ? "contentAccessRequest" : "workspaceWriteRequest",
+      { workspaceId, action, args, reason: requestReason(reason) }),
+};
 
 const ROOT = ADMIN_SCHEMA.entry;
 
@@ -65,6 +89,40 @@ const VIEWED: Record<string, string> = {
   AdminWorkspaceView: "a workspace",
   AdminUserView: "a user's account",
 };
+
+/**
+ * A session's lend of the owner's Admin API: asked of the session's queue on first use, and the
+ * stub that resolved is kept. A refusal is thrown and not kept, so the next use asks again. It
+ * borrows the queue, and releases what it was lent when it is disposed.
+ */
+export class Lend {
+  readonly #queue: RpcStub<AdminAgentQueue>;
+  #api: Promise<RpcStub<AdminAgentApi>> | undefined;
+
+  constructor(queue: RpcStub<AdminAgentQueue>) {
+    this.#queue = queue;
+  }
+
+  /** The lent Admin API. A session awaits it before it observes: one lent nothing marks nothing. */
+  get(): Promise<RpcStub<AdminAgentApi>> {
+    return this.#api ??= this.#ask();
+  }
+
+  async #ask(): Promise<RpcStub<AdminAgentApi>> {
+    try {
+      return await this.#queue.getAdminApi();
+    } catch (error) {
+      this.#api = undefined;
+      logger.info("admin api was not lent", { event: "session.lend_refused" });
+      throw error;
+    }
+  }
+
+  [Symbol.dispose](): void {
+    // A lend that was refused left nothing to release.
+    void this.#api?.then((api) => api[Symbol.dispose](), () => {});
+  }
+}
 
 /** What a workspace's activity records for one forwarded call, before the call is made. */
 function describeCall(
@@ -103,8 +161,8 @@ class Forwarder extends RpcTarget {
   readonly #service: string;
   readonly #queue: RpcStub<AdminAgentQueue>;
   readonly #options: ForwarderOptions;
-  /** What calls are forwarded to: a view's stub, or the lent Admin API once a read asked for it. */
-  #target: Promise<Target> | undefined;
+  /** What calls are forwarded to: a view's stub, or the Admin API the session's queue lends. */
+  readonly #target: Target | Lend;
 
   constructor(
     service: string, queue: RpcStub<AdminAgentQueue>, options: ForwarderOptions, target?: Target,
@@ -116,7 +174,7 @@ class Forwarder extends RpcTarget {
     this.#service = service;
     this.#queue = queue;
     this.#options = options;
-    this.#target = target && Promise.resolve(target);
+    this.#target = target ?? new Lend(queue);
   }
 
   /**
@@ -141,26 +199,7 @@ class Forwarder extends RpcTarget {
   }
 
   /**
-   * The capability calls are forwarded to. A root session asks its queue for the owner's Admin
-   * API on its first read and keeps the stub that resolved; a refusal is thrown and not kept, so
-   * the next read asks again.
-   */
-  #lend(): Promise<Target> {
-    return this.#target ??= this.#askForLend();
-  }
-
-  async #askForLend(): Promise<Target> {
-    try {
-      return await this.#queue.getAdminApi();
-    } catch (error) {
-      this.#target = undefined;
-      logger.info("admin api was not lent", { event: "session.lend_refused" });
-      throw error;
-    }
-  }
-
-  /**
-   * Checks the arguments, then routes an "act" call to its action and forwards any other: lent
+   * Checks the arguments, then queues an "act" call as its action and forwards any other: lent
    * first, observed second, called third. A method the schema says returns a view answers with a
    * forwarder over it, which observes as this one does.
    */
@@ -171,16 +210,20 @@ class Forwarder extends RpcTarget {
       throw new TypeError(`Invalid arguments for ${service}.${name}: ${problems.join("; ")}`);
     }
     if (service === ROOT && kindOf(name) === "act") {
-      const route = ACT_ROUTES.get(name);
-      if (!route) throw new Error(`${service}.${name}() has no action defined for it.`);
-      return route(this.#queue, args);
+      const actions = this.#options.actions;
+      const route = Object.hasOwn(ACT_ROUTES, name) ? ACT_ROUTES[name as ActMethod] : undefined;
+      if (!actions || !route) throw new Error(`${service}.${name}() has no action defined for it.`);
+      // The arguments fit the schema, which is what the route's parameters are typed from.
+      await Reflect.apply(route, undefined, [actions, this.#queue, ...args]);
+      // An "act" call resolves to undefined, as the generated declarations say.
+      return undefined;
     }
 
     // The lend is awaited before anything is observed, and no read is pipelined through a
     // pending lend. An observation that says its read holds restricted data marks the workspace
     // for good, so it must not be made for a call the Workshop was never going to answer: a
     // session that is lent nothing reads nothing, and marks nothing.
-    const target = await this.#lend();
+    const target = this.#target instanceof Lend ? await this.#target.get() : this.#target;
     // Before the call, so a refused observation reads nothing and the workspace is marked before
     // any data leaves the Workshop. A call the Admin API then refuses has still been observed.
     await this.#queue.authorizeObservation(describeCall(service, name, args, this.#options));
@@ -195,7 +238,9 @@ class Forwarder extends RpcTarget {
     const returns = ADMIN_SCHEMA.services[service]!.methods.find((method) => method.name === name)!.returns;
     if (returns.kind === "stub") {
       // The view's forwarder owns the returned stub, and a queue of its own to observe through.
-      return new (forwarderFor(returns.service!))(this.#queue.dup(), this.#options, result as Target);
+      const { restricted, subresource } = this.#options;
+      return new (forwarderFor(returns.service!))(
+          this.#queue.dup(), { restricted, subresource }, result as Target);
     }
     // Anything else is returned as it is: a stream is never read here.
     return result;
@@ -203,8 +248,7 @@ class Forwarder extends RpcTarget {
 
   [Symbol.dispose](): void {
     this.#queue[Symbol.dispose]();
-    // A lend that was refused left nothing to release.
-    void this.#target?.then((target) => target[Symbol.dispose](), () => {});
+    this.#target[Symbol.dispose]();
   }
 }
 

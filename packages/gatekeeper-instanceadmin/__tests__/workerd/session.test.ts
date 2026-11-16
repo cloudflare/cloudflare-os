@@ -8,7 +8,11 @@ import { DurableObject, RpcStub, RpcTarget, env } from "cloudflare:workers";
 import type { ApiShape } from "@gadgets/api-schema/schema";
 import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
 import {
-  matchesResourceUrlPattern, type ObservationDescription,
+  ISSUE_REPORT_IMAGE_TYPES, ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES,
+  MAX_ISSUE_REPORT_TEXT_LENGTH,
+} from "@gadgets/workshop-shared/api";
+import {
+  type ActionDescription, matchesResourceUrlPattern, type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it, vi } from "vitest";
 import { ADMIN_SUBRESOURCE, forwarderFor } from "../../src/forward.js";
@@ -96,6 +100,10 @@ function workshop() {
       if (this.refuseObservations) throw new Error("The approval queue refused this observation.");
     }
 
+    async submitAction(_action: number, description: ActionDescription): Promise<void> {
+      log.push(`submit ${description.actionKind?.tag}`);
+    }
+
     [Symbol.dispose](): void {
       this.disposed++;
     }
@@ -151,6 +159,9 @@ const vendor = () => createExecutionContext().exports.GatekeeperVendor({});
 const READS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "read");
 const ACTS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "act");
 
+/** `values` as a declaration writes a union of string literals. */
+const union = (values: readonly string[]) => values.map((value) => `"${value}"`).join(" | ");
+
 describe("the facet", () => {
   it("describes the binding", async () => {
     expect(await facet().describe()).toEqual({
@@ -172,18 +183,34 @@ describe("the facet", () => {
     expect(HAND_WRITTEN_TYPES).not.toMatch(/^export interface (AdminApi|AdminWorkspaceView) /m);
   });
 
-  it("has no action: none is auto-approvable, and each entry point refuses", async () => {
-    const gatekeeper = facet();
-    expect(await gatekeeper.getAutoApprovableActions()).toEqual([]);
-    expect(await gatekeeper.getAgentCatalog()).toBeNull();
-    const refusals = await Promise.all([
-      rejection(gatekeeper.applyAdminAction(7, new RpcStub(new (class extends RpcTarget {})()) as never)),
-      rejection(gatekeeper.applyAction(7, new RpcStub(new (class extends RpcTarget {})()) as never)),
-      rejection(gatekeeper.rejectAction(7)),
-      rejection(gatekeeper.revertAction(7)),
-    ]);
-    expect(refusals.map((refusal) => refusal.message))
-        .toEqual(Array(4).fill("The admin gatekeeper has no action 7."));
+  it("declares the report session by hand, in full, with the values the Admin API has", () => {
+    expect(HAND_WRITTEN_TYPES).toMatch(/^ {2}openIssueReport\(reportId: string\): Promise<IssueReportSession>;$/m);
+    expect(HAND_WRITTEN_TYPES).toMatch(/^export interface IssueReportSession \{$/m);
+    expect(HAND_WRITTEN_TYPES).toMatch(/^export interface ScopedIssueReport \{$/m);
+    for (const signature of [
+      "get(): Promise<ScopedIssueReport>;",
+      "readImage(imageId: string): Promise<ReadableStream<Uint8Array>>;",
+      "reply(text: string): Promise<void>;",
+      "inspectWorkspace(reason: string): Promise<AdminWorkspaceView>;",
+    ]) {
+      expect(HAND_WRITTEN_TYPES).toContain(`\n  ${signature}\n`);
+    }
+    expect(HAND_WRITTEN_TYPES).toContain(`priority: ${union(ISSUE_REPORT_PRIORITIES)};`);
+    expect(HAND_WRITTEN_TYPES).toContain(`status: ${union(ISSUE_REPORT_STATUSES)};`);
+    expect(HAND_WRITTEN_TYPES).toContain(`status?: ${union(ISSUE_REPORT_STATUSES)};`);
+    expect(HAND_WRITTEN_TYPES).toContain(`type: ${union(ISSUE_REPORT_IMAGE_TYPES)};`);
+    expect(HAND_WRITTEN_TYPES).toContain(`at most ${MAX_ISSUE_REPORT_TEXT_LENGTH} characters`);
+    // What a restricted reporter's workspace does to the workspace that reads it.
+    expect(HAND_WRITTEN_TYPES.replace(/\n +\* /g, " ")).toContain(
+        "When that workspace holds restricted data, every answer of the view marks THIS " +
+        "workspace as holding restricted data too");
+    // How a session is handed to a spawned agent: never from the report id.
+    expect(HAND_WRITTEN_TYPES).toContain("never from the report id");
+    expect(HAND_WRITTEN_TYPES).toContain("crypto.randomUUID()");
+  });
+
+  it("has no agent catalog", async () => {
+    expect(await facet().getAgentCatalog()).toBeNull();
   });
 
   it("allows every observer it is asked about, and keeps no observer state", async () => {
@@ -553,11 +580,28 @@ describe("a view a session opened", () => {
 });
 
 describe("what a session refuses", () => {
-  it("each act method, which has no route: nothing is lent, observed or forwarded", async () => {
-    const { log, queue } = workshop();
+  it("to run an act method: it is queued, and nothing is lent, observed or forwarded", async () => {
+    const { log, admin, queue } = workshop();
     using session = await openSession(queue);
 
     expect(ACTS.toSorted()).toEqual(["addIssueReportEntry", "requestWorkspaceWrite", "setIssueReportStatus"]);
+    for (const name of ACTS) {
+      expect(await session[name]!(...sampleArguments(ROOT, name)), name).toBeUndefined();
+    }
+
+    // The sample entry is an admins-only one, and the sample request asks for content access.
+    expect(log.toSorted()).toEqual([
+      "submit content-access-request", "submit issue-report-note", "submit issue-report-status",
+    ]);
+    expect(admin.calls).toEqual([]);
+  });
+
+  it("an act method on a session that was given no actions", async () => {
+    const { log, queue } = workshop();
+    using session = new (forwarderFor(ROOT))(
+        new RpcStub(queue) as never, { restricted: true, subresource: ADMIN_SUBRESOURCE },
+    ) as unknown as Session;
+
     for (const name of ACTS) {
       expect((await rejection(session[name]!(...sampleArguments(ROOT, name)))).message, name)
           .toBe(`AdminApi.${name}() has no action defined for it.`);
@@ -572,7 +616,7 @@ describe("what a session refuses", () => {
 
     // Every name on an RPC stub is callable, so only the call's rejection says it is not served.
     for (const name of ["setSiteName", "getUpdateStatus", "approveWorkspaceWrite", "serving",
-      "#call", "#lend", "#queue", "describe"]) {
+      "#call", "#lend", "#queue", "describe", "get", "reply", "readImage"]) {
       expect((await rejection(session[name]!("x"))).message, name).not.toBe("did not reject");
     }
 
@@ -610,6 +654,9 @@ describe("disposal", () => {
     view[Symbol.dispose]();
     await vi.waitFor(() => expect(views[0]!.disposed).toBe(1));
     expect([queue.disposed, admin.disposed]).toEqual([0, 0]);
+    // A view carries what it observes with, and nothing to queue an action through.
+    expect((await rejection(view.addIssueReportEntry!("report-1", "x", "admins"))).message)
+        .not.toBe("did not reject");
 
     session[Symbol.dispose]();
     await vi.waitFor(() => expect([queue.disposed, admin.disposed]).toEqual([1, 1]));

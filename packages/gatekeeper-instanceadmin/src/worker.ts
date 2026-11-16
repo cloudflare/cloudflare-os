@@ -5,6 +5,7 @@
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
+import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import type {
   AdminAgentApi, AdminAgentQueue, AdminGatekeeper, AdminGatekeeperVendor, IssueReportEvent,
 } from "@gadgets/workshop-shared/admin-gatekeeper";
@@ -24,9 +25,11 @@ import type {
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
+import { ADMIN_ACTIONS, type AdminActions, type BoundAdminActions } from "./actions.js";
 import type { DeploymentConfiguratorRpc } from "./configurator/deployment-configurator-types";
 import { ADMIN_SUBRESOURCE, type AdminSession, forwarderFor } from "./forward.js";
 import DEPLOYMENT_CONFIGURATOR_HTML from "./generated/deployment-configurator-ui.txt";
+import { IssueReportSession } from "./report-session.js";
 import { ADMIN_SCHEMA, generatedDeclarations } from "./surface.js";
 import TYPES_CODE from "./types.txt";
 
@@ -63,14 +66,54 @@ const NO_CONNECT_FLOW = "The admin gatekeeper is auto-provisioned and has no con
 const TYPES = `${generatedDeclarations()}\n${TYPES_CODE}`;
 
 /**
+ * The session of the whole binding: the schema's methods, and beside them the ones AdminBinding
+ * declares by hand. It borrows the queue its base owns.
+ *
+ * No @validateRpc(), as its base has none: a validator built from this class would refuse every
+ * method the schema defines. So a method written here checks its own arguments.
+ */
+class BindingSession extends forwarderFor(ADMIN_SCHEMA.entry) {
+  readonly #queue: RpcStub<AdminAgentQueue>;
+  readonly #actions: BoundAdminActions;
+
+  constructor(queue: RpcStub<AdminAgentQueue>, actions: BoundAdminActions) {
+    super(queue, { restricted: true, subresource: ADMIN_SUBRESOURCE, actions });
+    this.#queue = queue;
+    this.#actions = actions;
+  }
+
+  /**
+   * Opens a session limited to the report `reportId`, over a queue of its own. It reads nothing
+   * and observes nothing, since it returns a capability and no data: a report that does not
+   * exist is refused by the session's first call.
+   */
+  async openIssueReport(reportId: string): Promise<IssueReportSession> {
+    if (typeof reportId !== "string") {
+      throw new TypeError("Invalid arguments for AdminBinding.openIssueReport: reportId must " +
+          "be a string.");
+    }
+    return new IssueReportSession(reportId, this.#queue.dup(), this.#actions);
+  }
+}
+
+/**
  * The workspace facet. Its sessions forward to the Admin API the Workshop lends each of them
- * through its queue; the facet itself holds nothing.
+ * through its queue, and queue what would post, set or ask anything as an action. The facet
+ * holds the journal of those actions and nothing that could carry one out: an approved action
+ * runs on the Admin API the Workshop lends for it.
  */
 @validateRpc()
 export class InstanceAdminGatekeeper
   extends DurableObject<Cloudflare.Env>
   implements AdminGatekeeper<AdminSession>
 {
+  /** The Admin API lent for each action being applied, by action id, for as long as it is. */
+  readonly #lent = new Map<number, RpcStub<AdminAgentApi>>();
+  readonly #journal = new ActionJournal<TaggedAction<AdminActions>>(
+      this.ctx.storage.kv, { namespace: "instanceadmin" });
+  readonly #actions = ADMIN_ACTIONS.bind(
+      this.#journal, { lentFor: (action) => this.#lent.get(action) });
+
   /** Describes the admin binding. */
   async describe(): Promise<ResourceDescription> {
     return {
@@ -87,13 +130,14 @@ export class InstanceAdminGatekeeper
     return TYPES;
   }
 
-  /** Reports no action kinds. */
+  /** The action kinds a rule may apply: every kind but the two whose verdict is false. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return this.#actions.autoApprovableKinds();
   }
 
   /**
-   * Opens a session that forwards each Admin API call to what `queue` lends it.
+   * Opens a session that forwards each Admin API read to what `queue` lends it, and queues the
+   * rest as actions.
    *
    * Skips validation: capnweb-validate builds a method's return validator from its declared
    * type, and the session's type declares none of its Admin API methods (they are defined from
@@ -105,8 +149,7 @@ export class InstanceAdminGatekeeper
   @skipRpcValidation()
   async startSession(queue: RpcStub<AdminAgentQueue>): Promise<AdminSession> {
     // The queue is disposed when this call returns, so the session keeps its own copy.
-    return new (forwarderFor(ADMIN_SCHEMA.entry))(
-        queue.dup(), { restricted: true, subresource: ADMIN_SUBRESOURCE });
+    return new BindingSession(queue.dup(), this.#actions);
   }
 
   /** Returns no catalog: the binding's types say everything there is to know. */
@@ -137,22 +180,34 @@ export class InstanceAdminGatekeeper
     return [];
   }
 
-  applyAdminAction(action: number, _admin: RpcStub<AdminAgentApi>): Promise<void> {
-    throw noAction(action);
+  /**
+   * Applies approved action `action` with `admin`, which the Workshop lent for its one call. The
+   * handler finds `admin` by the action's id, and only for as long as this call runs.
+   */
+  async applyAdminAction(action: number, admin: RpcStub<AdminAgentApi>): Promise<void> {
+    this.#lent.set(action, admin);
+    try {
+      await this.#actions.apply(action);
+    } finally {
+      this.#lent.delete(action);
+    }
   }
 
-  applyAction(action: number, _cache: RpcStub<GitCache>): Promise<void> {
-    throw noAction(action);
+  /** Refuses: an action runs only on the Admin API lent for it (applyAdminAction()). */
+  applyAction(_action: number, _cache: RpcStub<GitCache>): Promise<void> {
+    throw new Error("The admin gatekeeper applies an action only with the Admin API lent for it.");
   }
 
-  rejectAction(action: number): Promise<void> {
-    throw noAction(action);
+  /** Withdraws an action: nothing was posted, set or filed for it. */
+  async rejectAction(action: number): Promise<void> {
+    await this.#actions.reject(action);
   }
 
+  /** Refuses: an entry, a status and a filed request cannot be taken back from here. */
   revertAction(
-    action: number,
+    _action: number,
   ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
-    throw noAction(action);
+    throw new Error("The admin gatekeeper's actions cannot be reverted.");
   }
 }
 
@@ -162,10 +217,6 @@ export class InstanceAdminGatekeeper
  * start a Worker whose migration names a class it doesn't export.
  */
 export class IssueReportHookDriver extends DurableObject<Cloudflare.Env> {}
-
-function noAction(action: number): Error {
-  return new Error(`The admin gatekeeper has no action ${action}.`);
-}
 
 /**
  * An admin's account. It holds no credential and no state: every account is alike, and the
