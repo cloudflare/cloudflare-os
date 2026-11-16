@@ -198,7 +198,12 @@ created by its first message; the chat then takes the empty one's place in the h
 then it greets the user as the home page does, under its header (`StartLayout`). The home
 page (`/`, which the sidebar's logo goes to) starts one in a new workspace: until its first message
 is sent it greets the user over the composer in the middle of the page (`ChatStart`), and is then
-drawn as the conversation it becomes.
+drawn as the conversation it becomes. Under the composer, in its middle, is where the chat starts
+(`WorkspacePicker`): a new workspace until one of the user's is chosen, with its icon, from a menu
+that opens in place with a field to find one by. The menu is a `DropdownMenu` that holds an
+`OptionPicker` (`picker`) of which one is chosen (`single`), and choosing closes it. It offers the
+workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
+to the page.
 
 ## The Workspaces page
 

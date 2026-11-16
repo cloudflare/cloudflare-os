@@ -11,6 +11,7 @@ import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { MemberListItem } from '@/blocks/MemberListItem'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
+import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
@@ -54,6 +55,15 @@ const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'untitled', workspaceLabel: 'UW', title: 'Untitled Workspace' },
   { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
   { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
+]
+
+// More than fit in the menu, one with a look of its own and one with a title too long for the button.
+const pickerWorkspaces: WorkspacePickerProps['workspaces'] = [
+  ...previewWorkspaces.map(({ id, workspaceLabel, title }) => ({ id, label: workspaceLabel, title })),
+  { id: 'paris', label: 'CA', title: 'Create a new slideshow about the history of Paris and its many bridges', look: { shape: 'rocket', color: 'blue' } },
+  { id: 'roadmap', label: 'QR', title: 'Quarterly roadmap' },
+  { id: 'onboarding', label: 'OC', title: 'Onboarding checklist' },
+  { id: 'budget', label: 'BT', title: 'Budget tracker' },
 ]
 
 const ShimmerTextPreview = () => {
@@ -212,6 +222,7 @@ function Gallery() {
     return true
   }
   const [replying, setReplying] = useState(true)
+  const [startWorkspace, setStartWorkspace] = useState<string>()
   const [startsWithFormat, setStartsWithFormat] = useState(true)
   const [sendFailed, setSendFailed] = useState(true)
   const [working, setWorking] = useState(true)
@@ -365,9 +376,13 @@ function Gallery() {
           </div>
         </div>
       </Section>
-      <Section title="ChatStart (the home page, before the first message)">
-        <div className="flex h-96 w-full rounded-3xl bg-kumo-base">
-          <ChatStart greeting="Hello Ada, what should we do today?" onSend={previewSend} />
+      <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them)">
+        <div className="flex h-[32rem] w-full rounded-3xl bg-kumo-base">
+          <ChatStart
+            greeting="Hello Ada, what should we do today?"
+            onSend={previewSend}
+            workspace={{ workspaces: pickerWorkspaces, value: startWorkspace, onValueChange: setStartWorkspace }}
+          />
         </div>
       </Section>
       <Section title="Composer (replying: a line of the message being answered sits above the draft, with any attachments under it; the cross or Escape makes it an ordinary message again)">

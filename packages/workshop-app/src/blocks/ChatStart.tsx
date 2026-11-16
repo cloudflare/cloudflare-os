@@ -1,5 +1,6 @@
 import { Mascot } from '@/components/mascot/Mascot'
 import { Composer, type ComposerProps } from './Composer'
+import { WorkspacePicker, type WorkspacePickerProps } from './WorkspacePicker'
 
 export type ChatStartProps = {
   /** What the page says to whoever is starting, e.g. "Hello Ada, what should we do today?" */
@@ -13,10 +14,15 @@ export type ChatStartProps = {
   problem?: ComposerProps['problem']
   /** Put the cursor in the composer once it is shown. */
   autoFocus?: boolean
+  /** The workspace the conversation starts in, where that is still to choose. */
+  workspace?: WorkspacePickerProps
 }
 
-/** Somewhere to start from nothing: the mascot and a greeting over the composer, in the middle of the page. */
-export const ChatStart = ({ greeting, onSend, initialDraft, format, problem, autoFocus }: ChatStartProps) => (
+/**
+ * Somewhere to start from nothing: the mascot and a greeting over the composer, in the middle of
+ * the page, and under the composer the workspace it starts in, where there is a choice of one.
+ */
+export const ChatStart = ({ greeting, onSend, initialDraft, format, problem, autoFocus, workspace }: ChatStartProps) => (
   <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-3">
     <div className="flex w-full max-w-md flex-col items-center">
       {/* Small on a page that is mostly empty, so it notices a pointer from well away. */}
@@ -25,6 +31,11 @@ export const ChatStart = ({ greeting, onSend, initialDraft, format, problem, aut
       <div className="mt-7 w-full">
         <Composer onSend={onSend} initialDraft={initialDraft} format={format} problem={problem} autoFocus={autoFocus} />
       </div>
+      {workspace && (
+        <div className="mt-6 flex w-full justify-center">
+          <WorkspacePicker {...workspace} />
+        </div>
+      )}
     </div>
   </div>
 )

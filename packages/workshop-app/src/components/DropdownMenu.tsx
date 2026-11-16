@@ -1,4 +1,4 @@
-import { createElement, isValidElement, type CSSProperties, type ElementType, type ReactElement, type ReactNode, type RefObject } from 'react'
+import { createElement, isValidElement, useRef, type CSSProperties, type ElementType, type ReactElement, type ReactNode, type RefObject } from 'react'
 import { Menu } from '@cloudflare/kumo/primitives/menu'
 import { cn } from '@cloudflare/kumo/utils'
 import { CaretDownIcon, CaretRightIcon, CheckIcon, XIcon } from '@phosphor-icons/react'
@@ -12,7 +12,13 @@ type TriggerContent =
   | { label?: undefined; icon: ElementType | ReactElement; 'aria-label': string }
 
 export type DropdownMenuProps = TriggerContent & {
-  children: ReactNode
+  /** As a function, it is given the way to close the menu, for what closes it other than an item. */
+  children: ReactNode | ((close: () => void) => ReactNode)
+  /**
+   * The menu holds something of its own to choose with, such as an `OptionPicker`, rather than
+   * items: it is as wide as a submenu, and leaves the padding and the scrolling to what it holds.
+   */
+  picker?: boolean
   /** Sizes and styles the trigger Button; the morphing surface copies it. */
   triggerClassName?: string
   /** The trigger Button's variant. A ghost trigger has no surface, so the menu's fades in as it grows. */
@@ -56,6 +62,7 @@ const DropdownMenuRoot = ({
   label,
   'aria-label': ariaLabel,
   children,
+  picker = false,
   triggerClassName,
   triggerVariant,
   caret = false,
@@ -67,6 +74,7 @@ const DropdownMenuRoot = ({
   duration = 360,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
+  const actionsRef = useRef<Menu.Root.Actions>(null)
   const time = { '--menu-time': duration / BASE_DURATION } as CSSProperties
   const iconNode = renderIcon(icon)
   // In a span, so that it keeps a chevron's size rather than taking the Button's size for an icon.
@@ -85,7 +93,7 @@ const DropdownMenuRoot = ({
   )
 
   return (
-    <Menu.Root>
+    <Menu.Root actionsRef={actionsRef}>
       <Menu.Trigger
         ref={triggerRef}
         data-in-place={inPlace || undefined}
@@ -132,7 +140,11 @@ const DropdownMenuRoot = ({
                 event.stopPropagation()
               }
             }}
-            className="dropdown-menu relative isolate max-h-[min(var(--available-height),24rem)] w-max max-w-[min(var(--available-width),28rem)] rounded-[21px] text-kumo-default outline-none"
+            className={cn(
+              'dropdown-menu relative isolate max-h-[min(var(--available-height),24rem)] rounded-[21px] text-kumo-default outline-none',
+              // A width of its own, or it would change with the options a picker is narrowed to.
+              picker ? 'w-64 max-w-(--available-width)' : 'w-max max-w-[min(var(--available-width),28rem)]',
+            )}
           >
             <div aria-hidden="true" className="dropdown-menu-surface pointer-events-none absolute -z-10 bg-kumo-base ring-1 ring-kumo-contrast/6">
               <div className="absolute inset-0 rounded-[inherit]" />
@@ -144,8 +156,13 @@ const DropdownMenuRoot = ({
               </Button>
             </div>
             <div className="dropdown-menu-content max-h-[inherit]">
-              <div className="dropdown-menu-items max-h-[inherit] overflow-y-auto overscroll-contain rounded-[inherit] p-1.5">
-                {children}
+              <div
+                className={cn(
+                  'dropdown-menu-items max-h-[inherit] rounded-[inherit]',
+                  picker ? 'flex flex-col overflow-hidden' : 'overflow-y-auto overscroll-contain p-1.5',
+                )}
+              >
+                {typeof children === 'function' ? children(() => actionsRef.current?.close()) : children}
               </div>
             </div>
           </Menu.Popup>

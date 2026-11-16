@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import type { MessageFormatRef } from '@gadgets/workshop-shared/api'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
-import { ChatStart } from '@/blocks/ChatStart'
+import { ChatStart, type ChatStartProps } from '@/blocks/ChatStart'
 import { Composer } from '@/blocks/Composer'
 import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -24,6 +24,8 @@ export type NewChatPaneProps = {
    * composer starts with, and the way to start with none after all.
    */
   format?: StartFormat & { onRemove: () => void }
+  /** The workspace the conversation starts in, where that is still to choose, under the greeting's composer. */
+  workspace?: ChatStartProps['workspace']
   /**
    * Starts the conversation with its first message and the files it carries, `formats` saying
    * where the message names a format (see `startConversation`).
@@ -34,7 +36,7 @@ export type NewChatPaneProps = {
 }
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
-export const NewChatPane = ({ header, greeting, format, start, onStarted }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const refreshWorkspaces = useRefreshWorkspaces()
   const connection = useConnectionNotice()
@@ -77,7 +79,7 @@ export const NewChatPane = ({ header, greeting, format, start, onStarted }: NewC
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} format={format} problem={composerProblem} autoFocus />
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} format={format} problem={composerProblem} workspace={workspace} autoFocus />
       </StartLayout>
     )
   }
