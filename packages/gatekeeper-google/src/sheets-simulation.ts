@@ -26,7 +26,6 @@ import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
 import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
-import { editorCost } from "./editor-cost";
 import type { SheetArea } from "./sheets-api";
 import {
   DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, mergeFormat, type Axis, type BaseFormats, type BaseSizes,
@@ -770,18 +769,45 @@ export type BaseCells<T> = (sheetId: number, row: number, column: number) => T |
 /** Cells of the sheets Google holds as a read shows them. */
 export type BaseValues = BaseCells<SpreadsheetCellValue>;
 
-/** `values[i]`, what a read of `pieces[i]` returned padded to its size, by cell. */
+/**
+ * `values[i]`, what a read of `pieces[i]` returned padded to its size, by cell. It reads the
+ * arrays it is given, which it keeps, and copies nothing: a cell is looked for in the pieces of
+ * its sheet that hold its row, the last first, and is the first value found that is not null.
+ * Those pieces are found once for a run of lookups on one row, which is how a caller walks an
+ * area.
+ */
 export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   pieces: readonly SheetArea[], values: readonly (readonly (readonly (T | null)[])[])[],
 ): BaseCells<T> {
-  let cells = new Map<string, T>();
-  pieces.forEach(({ sheetId, rect }, i) => values[i]?.forEach((line, r) => line.forEach((value, c) => {
-    if (value !== null) {
-      editorCost.cellsKeyed++;
-      cells.set(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`, value);
+  let piecesOn = new Map<number, number[]>();
+  pieces.forEach(({ sheetId }, i) => {
+    let on = piecesOn.get(sheetId);
+    if (on) on.push(i);
+    else piecesOn.set(sheetId, [i]);
+  });
+  // The pieces that hold the row last asked for, in piece order. Every caller walks an area a row
+  // at a time (`rewriteWork`, `enteredContent` and the simulated read all loop rows, then
+  // columns), so a run of lookups shares one list, and a lookup costs the pieces that hold its
+  // row, not every piece of its sheet: a guarded area that queued insertions cut up has hundreds.
+  // A caller that asked in another order would get the same answers at the cost of a scan of the
+  // sheet's pieces a lookup.
+  let heldSheet: number | undefined;
+  let heldRow = 0;
+  let holding: number[] = [];
+  return (sheetId, row, column) => {
+    if (sheetId !== heldSheet || row !== heldRow) {
+      holding = (piecesOn.get(sheetId) ?? [])
+        .filter(i => values[i]?.[row - pieces[i].rect.startRow] !== undefined);
+      heldSheet = sheetId;
+      heldRow = row;
     }
-  })));
-  return (sheetId, row, column) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
+    for (let at = holding.length - 1; at >= 0; at--) {
+      let { rect } = pieces[holding[at]];
+      let value = values[holding[at]]?.[row - rect.startRow]?.[column - rect.startColumn];
+      if (value !== undefined && value !== null) return value;
+    }
+    return null;
+  };
 }
 
 /**

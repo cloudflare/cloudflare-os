@@ -4,7 +4,6 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { editorCost } from "./editor-cost";
 import { readGoogleJson } from "./google-response";
 import {
   baseFormats, baseSizes, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, FORMAT_READ_FIELDS,
@@ -411,28 +410,46 @@ export class GoogleSheetsApi {
       provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES,
     });
     // Each range's cells are placed by the position Google gives them, whichever order they come
-    // in, so a range is answered when its sheet holds data starting where it does. A cell Google
-    // trims from the end of a row or range is blank.
+    // in, so a range is answered when its sheet holds data starting where it does. A returned cell
+    // is written straight into every range that holds its position, a later block's over an
+    // earlier one's; a cell Google trims from the end of a row or range stays blank.
+    let padded = areas.map(({ rect }) =>
+      Array.from({ length: rect.endRow - rect.startRow }, () =>
+        Array.from({ length: rect.endColumn - rect.startColumn }, (): EnteredValue => null)));
+    let areasOn = new Map<number, number[]>();
+    areas.forEach(({ sheetId }, i) => {
+      let on = areasOn.get(sheetId);
+      if (on) on.push(i);
+      else areasOn.set(sheetId, [i]);
+    });
     let starts = new Set<string>();
-    let cells = new Map<string, EnteredValue>();
     for (let sheet of result.sheets ?? []) {
       let sheetId = sheet.properties?.sheetId ?? 0;
+      let onSheet = areasOn.get(sheetId) ?? [];
       for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
         starts.add(`${sheetId}:${startRow}:${startColumn}`);
+        let endRow = startRow + (rowData?.length ?? 0);
+        // The ranges some row of the block is in: its cells are tried against these alone.
+        let reached = onSheet.filter(i => areas[i].rect.startRow < endRow && startRow < areas[i].rect.endRow);
         rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
-          editorCost.cellsKeyed++;
-          cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, enteredValue(cell.userEnteredValue));
+          // Converted wherever it lies: a value of a kind this cannot hold is refused, not dropped.
+          let value = enteredValue(cell.userEnteredValue);
+          let at = startRow + r, column = startColumn + c;
+          for (let i of reached) {
+            let { rect } = areas[i];
+            if (at >= rect.startRow && at < rect.endRow && column >= rect.startColumn && column < rect.endColumn) {
+              padded[i][at - rect.startRow][column - rect.startColumn] = value;
+            }
+          }
         }));
       }
     }
-    return areas.map(({ sheetId, rect }) => {
+    areas.forEach(({ sheetId, rect }) => {
       if (!starts.has(`${sheetId}:${rect.startRow}:${rect.startColumn}`)) {
         throw new Error("Google Sheets did not return every range it was asked for.");
       }
-      return Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
-        Array.from({ length: rect.endColumn - rect.startColumn }, (_cell, c) =>
-          cells.get(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`) ?? null));
     });
+    return padded;
   }
 
   /**

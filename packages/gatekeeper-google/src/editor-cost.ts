@@ -12,8 +12,6 @@ export type EditorCost = {
    * sheet's entries (a deletion of rows or columns, a copy or a deletion of a sheet) builds it.
    */
   keysIndexed: number;
-  /** Cells of a read put in a map under a string key of their own on the way to a simulated read. */
-  cellsKeyed: number;
   /** UTF-16 units of the JSON built whole to be digested for a batch's guard. */
   digestedUnits: number;
   /** Slides, masters and layouts copied whole with `structuredClone`. */
@@ -22,6 +20,5 @@ export type EditorCost = {
 
 /** The running totals of `EditorCost`. */
 export const editorCost: EditorCost = {
-  overlayCopies: 0, overlayEntries: 0, keysIndexed: 0, cellsKeyed: 0, digestedUnits: 0,
-  pageClones: 0,
+  overlayCopies: 0, overlayEntries: 0, keysIndexed: 0, digestedUnits: 0, pageClones: 0,
 };

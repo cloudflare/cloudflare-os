@@ -9,11 +9,12 @@ import {
   applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, gridOf,
   overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedFormats, simulatedRange,
   SimulatedTextTooLong, UnsimulatedFormula,
-  type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
+  type BaseCells, type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
 import { positionOf } from "../src/sheets-structure";
 import type { SheetFormatChange } from "../src/sheets-types";
 import { ChangeConflict } from "../src/slides-text";
+import { seeded } from "./doc-fixture";
 import { ERROR_VALUE_READS, grid, rect, sheet } from "./sheets-fixture";
 
 // Every export calls through to its own code; the spies only count calls from other modules.
@@ -914,5 +915,110 @@ describe("Sheets formatted values with a number format queued", () => {
     // A sheet a queued change adds starts with no formatting to take.
     expect(simulatedRange(g, { sheetId: 3, rect: rect(0, 0), rows: 1, columns: 1 }, BLANK).values)
       .toEqual([["shown"]]);
+  });
+});
+
+/** Every value of `values` in a map under a key of its own: what `baseValues` must answer. */
+function keyedValues<T extends EnteredValue>(
+  pieces: readonly SheetArea[], values: readonly (readonly (readonly (T | null)[])[])[],
+): BaseCells<T> {
+  let cells = new Map<string, T>();
+  pieces.forEach(({ sheetId, rect: { startRow, startColumn } }, i) => values[i].forEach((line, r) => line.forEach((value, c) => {
+    if (value !== null) cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, value);
+  })));
+  return (sheetId, row, column) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
+}
+
+describe("baseValues", () => {
+  it("reads a cell from the last piece that holds a value for it", () => {
+    // A1:B2, then B1:C2: column B is in both.
+    let pieces = [{ sheetId: 0, rect: rect(0, 0, 2, 2) }, { sheetId: 0, rect: rect(0, 1, 2, 2) }];
+    let cells = baseValues(pieces, [[["a1", "b1"], ["a2", "b2"]], [["later", "c1"], [null, "c2"]]]);
+
+    expect([0, 1].map(row => [0, 1, 2].map(column => cells(0, row, column))))
+      .toEqual([["a1", "later", "c1"], ["a2", "b2", "c2"]]);
+  });
+
+  it("answers null outside every piece, and for a sheet no piece is on", () => {
+    let cells = baseValues([{ sheetId: 0, rect: rect(2, 2, 2, 2) }], [[["c3", "d3"], ["c4", "d4"]]]);
+
+    expect(cells(0, 3, 3)).toBe("d4");
+    for (let [row, column] of [[1, 2], [2, 1], [4, 2], [2, 4], [0, 0], [-1, 2], [2, -1]]) {
+      expect(cells(0, row, column)).toBeNull();
+    }
+    expect(cells(1, 2, 2)).toBeNull();
+  });
+
+  it("reads the arrays it was given", () => {
+    let values = [[["a1", "b1"]]];
+    let cells = baseValues([{ sheetId: 0, rect: rect(0, 0, 1, 2) }], values);
+    values[0][0][0] = "changed";
+    expect(cells(0, 0, 0)).toBe("changed");
+    values[0][0][1] = "changed again";
+    expect(cells(0, 0, 1)).toBe("changed again");
+  });
+
+  it("answers the same whatever order cells are asked in", () => {
+    let random = seeded(11);
+    // Two pieces of sheet 0 that overlap, and between them one of sheet 1 over positions both hold.
+    let pieces = [
+      { sheetId: 0, rect: rect(0, 0, 4, 4) }, { sheetId: 1, rect: rect(1, 1, 4, 3) },
+      { sheetId: 0, rect: rect(2, 1, 4, 5) },
+    ];
+    let values = pieces.map(({ rect: { startRow, endRow, startColumn, endColumn } }, i) =>
+      Array.from({ length: endRow - startRow }, (_line, r) =>
+        Array.from({ length: endColumn - startColumn }, (_cell, c) => random() < 0.3 ? null : `${i}:${r}:${c}`)));
+    let reference = keyedValues(pieces, values);
+    // Every cell of the pieces and a line around them, on both sheets and on one no piece is on.
+    let byRow = [0, 1, 2].flatMap(sheetId => Array.from({ length: 8 }, (_line, r) =>
+      Array.from({ length: 8 }, (_cell, c) => [sheetId, r - 1, c - 1] as const)).flat());
+    let byColumn = byRow.toSorted((a, b) => a[2] - b[2]);
+    let shuffled = byRow.map(cell => ({ cell, at: random() })).toSorted((a, b) => a.at - b.at).map(({ cell }) => cell);
+
+    expect(byRow.filter(cell => reference(...cell) !== null).length).toBeGreaterThan(20);
+    for (let order of [byRow, byColumn, shuffled]) {
+      let cells = baseValues(pieces, values);
+      expect(order.map(cell => cells(...cell))).toEqual(order.map(cell => reference(...cell)));
+    }
+  });
+
+  it("looks only through the pieces that hold a cell's row when queued structure cuts a guarded area into hundreds", () => {
+    // As many insertions as may be queued: a row before every 18th of the first 480 that Google
+    // holds and a column before every 4th of its 100, the last first so that each lands where
+    // Google's lines still are.
+    let steps: PlannedChange[] = Array.from({ length: 25 }, (_step, k) => 24 - k).flatMap(k => [
+      insertRows(0, 18 * (k + 1) + 1),
+      { op: "insertColumns", sheetId: 0, start: 3 + 4 * k, count: 1 },
+    ]);
+    let g = planSheet(gridOf({ sheets: [sheet(0, "Sales", { rowCount: 1000, columnCount: 100 })] }), steps).grid;
+    // Those 480 rows and every column as the grid shows them, the inserted lines among them.
+    let area = { sheetId: 0, rect: rect(0, 0, 480 + 25, 100 + 25) };
+    let pieces = basePiecesOf(g, [area]);
+    expect(pieces).toHaveLength(26 * 26);
+    let values: EnteredValue[][][] = pieces.map(({ rect: { startRow, endRow, startColumn, endColumn } }) =>
+      Array.from({ length: endRow - startRow }, (_line, r) =>
+        Array.from({ length: endColumn - startColumn }, (_cell, c) => `${startRow + r}:${startColumn + c}`)));
+    let reads = 0;
+    let counted = new Proxy(values, {
+      get(target, key, receiver) {
+        if (typeof key === "string" && /^\d+$/.test(key)) reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    let entered = baseValues(pieces, counted);
+
+    expect(rewriteWork(g, [area], entered)).toBe(0);
+    let content = enteredContent(g, [area], entered);
+
+    expect(content).toEqual(enteredContent(g, [area], keyedValues(pieces, values)));
+    expect(content[0][479 + 25][99 + 25]).toBe("479:99");
+    // Each walk asks for the 480 rows Google holds, 100 cells a row. A row's first cell looks at
+    // each of the 676 pieces once to list the 26 that hold the row. A cell then looks through
+    // that list from its end until its own piece: the columns come in runs of 3, then 24 runs of
+    // 4, then 1, and a cell of run j looks at 26 - j pieces, so a row's cells look at
+    // 3 * 26 + 4 * (25 + 24 + ... + 2) + 1 = 1,375. Two walks of 480 * (676 + 1,375).
+    expect(reads).toBe(1_968_960);
+    // Looking through every piece for every cell would be 48,000 * 676, twice: 64,896,000.
+    expect(reads).toBeLessThan(3_000_000);
   });
 });

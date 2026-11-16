@@ -406,6 +406,10 @@ function answering(answer: unknown): Request[] {
   return requests;
 }
 
+/** A row of cells holding each of `texts` as entered, as Google returns them. */
+const textRow = (...texts: string[]) =>
+  ({ values: texts.map(stringValue => ({ userEnteredValue: { stringValue } })) });
+
 describe("Google Sheets entered values", () => {
   let api = new GoogleSheetsApi(async () => "access-token");
   let areas = [
@@ -479,6 +483,51 @@ describe("Google Sheets entered values", () => {
 
     await expect(api.readEntered("sheet-1", areas))
       .rejects.toThrow("Google Sheets did not return every range it was asked for.");
+  });
+
+  it("places a returned cell in every range that holds it", async () => {
+    // A1:B2 and B2:C3 share B2, which only the first range's block returns: the second's leaves
+    // its first row out.
+    answering({
+      sheets: [{
+        properties: {},
+        data: [
+          { rowData: [textRow("a1", "b1"), textRow("a2", "b2")] },
+          { startRow: 1, startColumn: 1, rowData: [{}, textRow("b3", "c3")] },
+        ],
+      }],
+    });
+
+    let overlapping = [{ sheetId: 0, rect: rect(0, 0, 2, 2) }, { sheetId: 0, rect: rect(1, 1, 2, 2) }];
+    expect(await api.readEntered("sheet-1", overlapping))
+      .toEqual([[["a1", "b1"], ["a2", "b2"]], [["b2", null], ["b3", "c3"]]]);
+  });
+
+  it("lets a later block's cell replace an earlier one's, a blank cell included", async () => {
+    answering({
+      sheets: [{
+        properties: {},
+        data: [
+          { rowData: [textRow("a1", "b1", "c1")] },
+          { rowData: [{ values: [{ userEnteredValue: { stringValue: "later" } }, {}] }] },
+        ],
+      }],
+    });
+
+    expect(await api.readEntered("sheet-1", [{ sheetId: 0, rect: rect(0, 0, 1, 3) }]))
+      .toEqual([[["later", null, "c1"]]]);
+  });
+
+  it("refuses an unsupported value in a block no range holds", async () => {
+    answering({
+      sheets: [
+        { properties: {}, data: [{ rowData: [textRow("a1")] }] },
+        { properties: { sheetId: 9 }, data: [{ startRow: 40, rowData: [{ values: [{ userEnteredValue: {} }] }] }] },
+      ],
+    });
+
+    await expect(api.readEntered("sheet-1", [{ sheetId: 0, rect: rect(0, 0) }]))
+      .rejects.toThrow("Google Sheets returned an unsupported cell value.");
   });
 });
 
