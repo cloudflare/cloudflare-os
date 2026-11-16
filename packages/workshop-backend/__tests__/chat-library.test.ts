@@ -262,3 +262,29 @@ describe("listing a workspace's connections", () => {
     });
   });
 });
+
+describe("a gadget's own activity", () => {
+  it("is noted when it is used or changed, at most once a minute, and goes into the outputs index", async () => {
+    let workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
+    await runInDurableObject(workspace, async (instance: OverseerDurableObject) => {
+      let impl = instance.impl;
+      impl.markOutputsDirty = () => {};
+      impl.storage.gadgets.put({type: "gadget", id: 100, title: "Tip Jar", created: new Date(0), bindingName: "TIP_JAR", bindings: {}});
+      impl.storage.gadgets.put({type: "gadget", id: 101, title: "Draft", created: new Date(0), bindingName: "DRAFT", bindings: {}, pending: {chatId: 1}});
+      let lastActive = (id: number) => impl.outputsSnapshot().find(({workpieceId}) => workpieceId === id)?.lastActive;
+      // Not used since it was made, the index has nothing to say, and its workspace's time stands in.
+      expect(lastActive(100)).toBeUndefined();
+
+      impl.touchGadget(100, new Date(60_000));
+      expect(lastActive(100)).toEqual(new Date(60_000));
+      impl.touchGadget(100, new Date(90_000));
+      expect(lastActive(100)).toEqual(new Date(60_000));
+      impl.touchGadget(100, new Date(120_000));
+      expect(lastActive(100)).toEqual(new Date(120_000));
+
+      // One still being made in a chat is no output yet, and is not noted.
+      impl.touchGadget(101, new Date(120_000));
+      expect(impl.storage.gadgets.get(101)).not.toHaveProperty("lastActive");
+    });
+  });
+});

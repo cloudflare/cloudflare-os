@@ -1885,7 +1885,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         title: output.title,
         workspaceTitle: workspace.title,
         created: output.created,
-        lastActive: workspace.lastActive,
+        // Its workspace's, for one not used or changed since gadgets noted their own.
+        lastActive: output.lastActive ?? workspace.lastActive,
         ...(workspace.owner ? {owner: workspace.owner} : {}),
         ...(workspace.role ? {role: workspace.role} : {}),
         ...(output.waiting ? {waiting: output.waiting} : {}),

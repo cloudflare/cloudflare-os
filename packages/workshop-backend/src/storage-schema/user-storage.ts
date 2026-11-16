@@ -210,14 +210,17 @@ export type QueuedChatNotification = UserNotification & {
 
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
- * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
- * activity time and ownership are joined in from the `gadgets` collection on read, so they can't
+ * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: the workspace's
+ * title, activity time and ownership are joined in from the `gadgets` collection on read, so they can't
  * go stale here.
  */
 export type WorkspaceOutputEntry = {
   workpieceId: WorkpieceId;
   title: string;
   created: Date;
+
+  /** When the gadget was last used or changed (see GadgetRecord.lastActive), where that is known. */
+  lastActive?: Date;
 
   /** The format the gadget was built as, if it was instantiated from a blueprint declaring one. */
   output?: BlueprintOutput;

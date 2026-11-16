@@ -4767,6 +4767,7 @@ class OverseerImpl implements AgentHooks {
       let record = this.storage.gadgets.get(gadgetId)!;
       if (record.type !== "gadget") continue;  // unreachable: only gadgets are committed
       record.commitId = commitId;
+      record.lastActive = new Date();
       this.storage.gadgets.put(record);
     }
 
@@ -4973,6 +4974,7 @@ class OverseerImpl implements AgentHooks {
       let record = this.storage.gadgets.get(gadgetId)!;
       if (record.type !== "gadget") continue;  // unreachable: checked above
       record.commitId = commitId;
+      record.lastActive = new Date();
       this.storage.gadgets.put(record);
     }
     this.bumpVersion();
@@ -7328,6 +7330,7 @@ class OverseerImpl implements AgentHooks {
         workpieceId: gadget.id,
         title: gadget.title,
         created: gadget.created,
+        ...(gadget.lastActive ? {lastActive: gadget.lastActive} : {}),
         ...(gadget.output ? {output: gadget.output} : {}),
         ...(count ? {waiting: count} : {}),
       });
@@ -7353,6 +7356,16 @@ class OverseerImpl implements AgentHooks {
       this.restartIfLoopLimited(err);
       return false;
     }
+  }
+
+  // Note that gadget `id` was used or changed just now (GadgetRecord.lastActive), for the Library's
+  // order. At most once a minute: each note is a write, and a push to every live outputs index.
+  touchGadget(id: WorkpieceId, now = new Date()): void {
+    let record = this.storage.gadgets.get(id);
+    if (record?.type !== "gadget" || record.pending) return;
+    if (record.lastActive && now.getTime() - record.lastActive.getTime() < 60_000) return;
+    record.lastActive = now;
+    this.storage.gadgets.put(record);
   }
 
   // Note that the gadget registry changed, scheduling a push to every index that should be live.
@@ -15187,6 +15200,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (chatId === undefined && this.clientUserId === this.impl.ownerId) {
       void this.impl.refreshView(this.id);
     }
+    this.impl.touchGadget(this.id);
     // The facet stub counts exactly as this capability does (joinedAs): it can outlive this
     // object, and it is the very stub a hook-enable widening's data flows through.
     return this.impl.getGadgetFacet(this.id, chatId, this.joinedAs);
@@ -15487,6 +15501,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
       user_id: this.#clientUser.id.toString(),
       interaction_type: "gadget_ui_connected",
     });
+    this.impl.touchGadget(this.id);
     // The facet stub counts as a "use" session for its own lifetime, like this interface: it can
     // outlive this object, and it is the very stub a hook-enable widening's data flows through.
     return this.impl.getGadgetFacet(this.id, undefined, {kind: "use", profileId: this.clientProfileId});

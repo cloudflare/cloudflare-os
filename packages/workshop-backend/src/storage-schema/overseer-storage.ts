@@ -178,6 +178,13 @@ export type GadgetRecord = {
   created: Date;
 
   /**
+   * When the gadget was last used or changed: its UI connected live, by anyone who may use it, or
+   * its code moved (see touchGadget()). To the minute at best, as it is noted at most once a
+   * minute. Absent on a gadget not used or changed since this was recorded.
+   */
+  lastActive?: Date;
+
+  /**
    * Set while the gadget is in Auto (see GadgetClient.setAutoApprove()): who put it there, under
    * whose authority its auto-approvable actions apply.
    */

@@ -3189,8 +3189,9 @@ export type OutputSummary = {
   created: Date;
 
   /**
-   * When the containing workspace was last active. Outputs have no activity timestamp of their
-   * own yet, so all outputs of a workspace share this value.
+   * When the output was last used (its UI connected live, by anyone who may use it) or its code
+   * changed, to the minute. Its workspace's last activity for one not used or changed since
+   * outputs recorded their own.
    */
   lastActive: Date;
 
