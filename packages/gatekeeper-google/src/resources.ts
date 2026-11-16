@@ -58,6 +58,7 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   creatable: true,
   creationConfigurator: true,
   creationConfigurationDescription: CREATION_FOLDER,
+  savableFrom: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
   groupedWith: "drive",
 };
 
@@ -76,6 +77,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   creatable: true,
   creationConfigurator: true,
   creationConfigurationDescription: CREATION_FOLDER,
+  savableFrom: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
   groupedWith: "drive",
 };
 
@@ -92,6 +94,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   creatable: true,
   creationConfigurator: true,
   creationConfigurationDescription: CREATION_FOLDER,
+  savableFrom: ["application/vnd.openxmlformats-officedocument.presentationml.presentation"],
   groupedWith: "drive",
 };
 

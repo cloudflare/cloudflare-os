@@ -151,6 +151,7 @@ import {
   type GoogleDocGatekeeperImplProps,
 } from "./docs";
 import { ReadGate } from "./read-gate";
+import { saveFile } from "./save-file";
 import {
   BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
@@ -1235,15 +1236,32 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
   }
 
-  /** Every creatable type is configured by where it is created. */
-  async startCreationConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+  /** Every creatable type is configured by where it is created, and every savable one by where it is saved. */
+  async startCreationConfigurator(
+      resourceUrlPattern: string, purpose: "create" | "save" = "create"): Promise<ResourceConfiguratorFrame> {
     resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     creatableKind(resourceUrlPattern);
     let { getToken, holds } = this.#configuratorAccess();
     return {
       iframeHtml: CREATION_LOCATION_CONFIGURATOR_HTML,
-      ui: new RpcStub(new CreationLocationConfiguratorUI(getToken, holds)),
+      ui: new RpcStub(new CreationLocationConfiguratorUI(getToken, holds, purpose)),
     };
+  }
+
+  async saveFile(
+      resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }> {
+    let { getToken, holds } = this.#configuratorAccess();
+    let cache = new AccessTokenCache(getToken);
+    try {
+      return await saveFile(
+        opts => cache.get(opts), holds,
+        resourceTypeUrlPattern(await this.getSupportedResources(), resourceTypeId),
+        destination, name, contentType, file);
+    } finally {
+      // Releases a file refused before it was read; a no-op once it is.
+      void file.cancel().catch(() => {});
+    }
   }
 
   async revoke(): Promise<void> {
