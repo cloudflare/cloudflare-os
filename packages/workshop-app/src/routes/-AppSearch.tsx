@@ -1,11 +1,14 @@
 import { useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { CirclesFourIcon, FolderIcon, FolderPlusIcon, NotePencilIcon, PlugsIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, FolderPlusIcon, NotePencilIcon, PuzzlePieceIcon } from '@phosphor-icons/react'
 import { SearchDialog, type SearchEntry } from '@/blocks/SearchDialog'
+import { ChatMark } from '@/components/ChatMark'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 
 // The most recently active, offered before anything is typed.
 const SUGGESTED_WORKSPACES = 4
@@ -17,6 +20,7 @@ const SUGGESTED_WORKSPACES = 4
 export const AppSearch = ({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) => {
   const navigate = useNavigate()
   const workspaces = useWorkspaces()
+  const looks = useWorkspaceLooks()
 
   useEffect(() => {
     const pressed = (event: KeyboardEvent) => {
@@ -32,17 +36,18 @@ export const AppSearch = ({ open, onOpenChange }: { open: boolean; onOpenChange:
     { key: 'new-chat', group: 'Go to', title: 'New chat', keywords: ['home', 'start'], icon: <NotePencilIcon />, onSelect: () => void navigate({ to: '/' }) },
     { key: 'workspaces', group: 'Go to', title: 'Workspaces', icon: <FolderIcon />, onSelect: () => void navigate({ to: '/workspaces' }) },
     { key: 'library', group: 'Go to', title: 'Library', keywords: ['gadgets', 'files'], icon: <CirclesFourIcon />, onSelect: () => void navigate({ to: '/library' }) },
-    { key: 'gatekeepers', group: 'Go to', title: 'Gatekeepers', keywords: ['connections', 'accounts', 'services'], icon: <PlugsIcon />, onSelect: () => void navigate({ to: '/gatekeepers' }) },
+    { key: 'gatekeepers', group: 'Go to', title: 'Gatekeepers', keywords: ['connections', 'accounts', 'services'], icon: <PuzzlePieceIcon />, onSelect: () => void navigate({ to: '/gatekeepers' }) },
     { key: 'new-workspace', group: 'Go to', title: 'New workspace', keywords: ['create'], icon: <FolderPlusIcon />, onSelect: () => void navigate({ to: '/workspaces/new' }) },
   ]
   // Most recently active first, as the provider keeps them.
   const listed: SearchEntry[] = workspaces.status === 'ready'
-    ? workspaces.workspaces.map(({ id, title, lastActive }) => ({
+    ? workspaces.workspaces.map(({ id, title, lastActive, kind }) => ({
         key: `workspace:${id}`,
         group: 'Workspaces',
         title: title || 'Untitled workspace',
         detail: formatActivity(lastActive),
-        icon: <WorkspaceIcon label={workspaceLabel(title)} small />,
+        // Drawn as the sidebar draws it: a chat on its own as a chat, a workspace with its look.
+        icon: isNamedWorkspace({ kind }) ? <WorkspaceIcon label={workspaceLabel(title)} {...looks[id]} small /> : <ChatMark small />,
         onSelect: () => void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } }),
       }))
     : []
