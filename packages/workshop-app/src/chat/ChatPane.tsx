@@ -21,8 +21,8 @@ import { PendingTray, type PendingTrayGroup } from '@/blocks/PendingTray'
 import { pendingActions, pendingCount, pendingGroups } from './pendingGroups'
 import { usePendingDecisions } from './usePendingDecisions'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
-import { useWorkspaces } from '@/workspaces/WorkspacesContext'
-import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { useRefreshWorkspaces, useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { isNamedWorkspace, UNTITLED_WORKSPACE } from '@/workspaces/workspaceKind'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { withCapsules } from './capsules'
@@ -143,6 +143,9 @@ export const ChatPane = ({
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
   const automations = useMemo(() => pinned?.filter((item) => item.kind === 'hook' && item.hookId !== undefined).length ?? 0, [pinned])
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  // Just started in a new workspace, which the list may not have yet: called as the server calls it.
+  const crumb = workspace ?? (sending ? { kind: 'workspace' as const, title: UNTITLED_WORKSPACE } : undefined)
+  const refreshWorkspaces = useRefreshWorkspaces()
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
   const [sharing, setSharing] = useState(false)
@@ -156,6 +159,14 @@ export const ChatPane = ({
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
+
+  // A workspace made untitled takes its first chat's title when the chat is titled, after the turn
+  // may have ended, so the list is asked again then.
+  const serverTitle = chat.status === 'ready' ? chat.title : undefined
+  const untitled = workspace?.title === UNTITLED_WORKSPACE
+  useEffect(() => {
+    if (untitled && serverTitle) refreshWorkspaces()
+  }, [untitled, serverTitle, refreshWorkspaces])
 
   // What is on screen has been read: each message that arrives while the tab is in view, and
   // what came while it was away once it is back.
@@ -302,9 +313,9 @@ export const ChatPane = ({
 
   return (
     <ChatLayout
-      header={(workspace || title) && (
+      header={(crumb || title) && (
         <ChatHeader
-          workspace={workspace && isNamedWorkspace(workspace) ? { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look, onOpen: onOpenWorkspace } : undefined}
+          workspace={crumb && isNamedWorkspace(crumb) ? { id: workspaceId, title: crumb.title, label: workspaceLabel(crumb.title), look, onOpen: onOpenWorkspace } : undefined}
           // A run recorded before chats said which agent's it is has no page to go to, so no crumb.
           agent={agent?.id === undefined ? undefined : { id: agent.id, workspaceId, name: agent.name, onOpen: onOpenAgent && (() => onOpenAgent(agent.id!)) }}
           title={title}

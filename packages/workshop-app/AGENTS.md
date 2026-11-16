@@ -285,8 +285,9 @@ drawn as the conversation it becomes. Under the composer, in its middle, is wher
 that opens in place with a field to find one by. The menu is a `DropdownMenu` that holds an
 `OptionPicker` (`picker`) of which one is chosen (`single`), and choosing closes it. It offers the
 user's named workspaces they may chat in, starred first, not those they can only use, and the
-choice lasts for the visit to the page. A new workspace is, until it is named, a chat on its own
-(see the Workspaces page, below).
+choice lasts for the visit to the page. A new workspace is a named one, called as the server
+calls it (`UNTITLED_WORKSPACE`) until its first chat is titled, when it takes the chat's title: the
+header has its crumb from the first message on, and the chat asks the list again once titled.
 
 ## The Workspaces page
 
@@ -409,9 +410,9 @@ in place in the history): its chats, what it has made (the library's, as beside 
 as their own pages), its members, the owner first, and its settings: its notifications, what it has
 cost, and, for its owner alone, deleting it. Each tab loads what it lists once chosen.
 
-A chat started from Home goes, unless the picker under its composer (`WorkspacePicker`) names one
-of the user's workspaces, into a workspace of its own that is never named (no
-`WorkspaceMetadata.kind`; `workspaces/workspaceKind.ts`): it is a chat on its own. The sidebar
+A workspace that is never named (no `WorkspaceMetadata.kind`; `workspaces/workspaceKind.ts`) is a
+chat on its own. Home no longer starts one (a chat outside any workspace is left for later), but
+those made before are still drawn as such. The sidebar
 draws it with a chat's mark (`ChatMark`) and when it was last active, its header and settings
 have no workspace crumb, the Workspaces page leaves it out, and its sharing speaks of the chat.
 Its settings can make it a workspace (`useMakeWorkspace`, `Overseer.makeWorkspace`), named in a

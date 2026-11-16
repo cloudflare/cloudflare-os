@@ -12,7 +12,7 @@ import { startConversation } from '@/chat/startConversation'
 import { useProfile } from '@/profile/ProfileContext'
 import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
 import { useApi } from '@/rpc/ApiContext'
-import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { isNamedWorkspace, UNTITLED_WORKSPACE } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { workspaceTitle } from '@/workspaces/workspaceList'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
@@ -20,7 +20,8 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 
 /**
  * The start of a new conversation: in a new workspace, which sending the first message creates
- * with it, unless one of the user's named workspaces has been chosen for it under the composer
+ * with it, named as the chat is once its title is written (the server titles an untitled
+ * workspace after its first chat), unless one of the user's named workspaces has been chosen for it under the composer
  * (`WorkspacePicker`). A skill chosen to use elsewhere (`useSkill`) is what the draft starts with;
  * `?format=` is what the first message asks for something as, by the format's id (`document`), as
  * the library's New menu starts one. Further down, the gadgets lately worked on, or a few of the
@@ -30,6 +31,9 @@ export const Route = createFileRoute('/_app/')({
   validateSearch: (search: Record<string, unknown>): { format?: string } => ({ format: typeof search.format === 'string' ? search.format : undefined }),
   component: Home,
 })
+
+// What a workspace started with its chat is called until the chat is titled, and its crumb meanwhile.
+const NEW_WORKSPACE = { id: 'new', title: UNTITLED_WORKSPACE, label: workspaceLabel(UNTITLED_WORKSPACE), onOpen: () => {} }
 
 const blueprintPage = (blueprintId: string) => ({ to: '/blueprints/$blueprintId', params: { blueprintId } }) as const
 const allBlueprints = { to: '/library', search: { tab: 'blueprints' } } as const
@@ -70,9 +74,10 @@ function Home() {
       greeting={greeting(user.name)}
       initialCommand={skill && skillCommandOf(skill, skill.source)}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
-      start={(text, files, modelId, command, formats) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace()), text, files, modelId, command, formats)}
+      start={(text, files, modelId, command, formats) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace({ kind: 'workspace' })), text, files, modelId, command, formats)}
       // Under the header the chat will have, which it opens under with the message where it was.
-      startedHeader={<ChatHeader workspace={chosen && { ...chosen, onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: chosen.id } }) }} title={NEW_CHAT_TITLE} />}
+      // A new one is named, so it has a crumb too: as the server calls it until the chat is titled.
+      startedHeader={<ChatHeader workspace={chosen ? { ...chosen, onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: chosen.id } }) } : NEW_WORKSPACE} title={NEW_CHAT_TITLE} />}
       onStarted={({ workspaceId, chatId }, sent) =>
         navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, state: { chatTitle: NEW_CHAT_TITLE, sending: sent } })}
       below={<WorkspacePicker workspaces={named} value={into} onValueChange={setWhere} />}
