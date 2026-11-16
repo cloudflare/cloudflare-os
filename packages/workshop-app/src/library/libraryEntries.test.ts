@@ -56,9 +56,9 @@ describe('libraryEntries', () => {
       builds: new Set(['w1']),
     }))
     expect(gadgets.map((entry) => entry.title)).toEqual(['New', 'Old'])
-    expect(gadgets[0]).toMatchObject({ section: 'gadget', canDelete: true, item: { kind: 'output', key: '2' } })
+    expect(gadgets[0]).toMatchObject({ section: 'gadget', builds: true, item: { kind: 'output', key: '2' } })
     expect(files.map((entry) => entry.item.kind)).toEqual(['connected', 'file'])
-    expect(files[0]).toMatchObject({ canDelete: false, removal: { kind: 'external', subjectId: 'doc' } })
+    expect(files[0]).toMatchObject({ builds: false, removal: { kind: 'external', subjectId: 'doc' } })
     expect(files[1]).toMatchObject({ chatId: 3, favorite: { kind: 'file', fileId: 'a', mimeType: 'application/pdf' } })
   })
 

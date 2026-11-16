@@ -510,7 +510,7 @@ what others shared with them, in tabs: Recent, Gadgets, Files, Automations, Skil
 left out; a Google file that was taken out comes back once it is worked on again. Everything opens as its own page, a file shown from the chat it was sent in. A
 workspace's Library tab and a chat's settings show the same rows. A Google file is starred by its subject, and shows starred while its workspace lists it. A star or a removal shows at once
 and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
-whoever builds where it was made.
+whoever builds where it was made, as sharing it is (Share…, the dialog its settings open, `ShareGadgetDialog`).
 
 A row or card shows what it is in a rounded square: an image file's own picture fills it, and
 anything else has its glyph. A Google Doc, Sheet or Slides deck's glyph is Drive's own

@@ -39,8 +39,8 @@ export type LibraryEntry = {
   starred: boolean
   /** How it is taken out of the Library. */
   removal: LibraryItemRef
-  /** The viewer builds in its workspace, so may rename or delete it. Only a gadget can be. */
-  canDelete: boolean
+  /** The viewer builds in its workspace, so may share, rename or delete it. Only a gadget can be. */
+  builds: boolean
   /** How many changes it has waiting on the viewer to approve: only a gadget's, and only theirs to decide. */
   waiting?: number
 }
@@ -106,7 +106,7 @@ const gadgetEntry = (gadget: Gadget, sources: LibrarySources, starred: ReadonlyS
     starred: starred.has(favoriteKey(favorite)),
     removal: { kind: 'app', workspaceId, workpieceId },
     waiting: waitingOn(gadget) || undefined,
-    canDelete: sources.builds.has(workspaceId),
+    builds: sources.builds.has(workspaceId),
   }
 }
 
@@ -133,7 +133,7 @@ const fileEntry = (file: WorkspaceFile, starred: ReadonlySet<string>): LibraryEn
     favorite,
     starred: starred.has(favoriteKey(favorite)),
     removal: { kind: 'file', workspaceId, chatId, fileId: id },
-    canDelete: false,
+    builds: false,
   }
 }
 
@@ -159,7 +159,7 @@ const connectedEntry = (file: LibrarySources['connected'][number], starred: Read
     favorite,
     starred: starred.has(favoriteKey(favorite)),
     removal: { kind: 'external', workspaceId, subjectId },
-    canDelete: false,
+    builds: false,
   }
 }
 

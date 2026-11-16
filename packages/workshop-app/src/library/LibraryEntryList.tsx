@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowSquareOutIcon, ArrowUpRightIcon, LinkIcon, MinusCircleIcon, StarIcon, TrashIcon } from '@phosphor-icons/react'
+import { ArrowSquareOutIcon, ArrowUpRightIcon, ExportIcon, LinkIcon, MinusCircleIcon, StarIcon, TrashIcon } from '@phosphor-icons/react'
 import { asideItemIcon } from '@/aside/asideItemIcon'
 import { LibraryCard } from '@/blocks/LibraryCard'
 import { LibraryRow, type LibraryAction, type LibraryItemProps } from '@/blocks/LibraryRow'
@@ -8,6 +8,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { GroupedList } from '@/components/GroupedList'
 import type { ListViewMode } from '@/components/listView'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
 import type { LibraryEntry, LibraryGroup } from './libraryEntries'
 import { entryDetail } from './libraryList'
 import type { LibraryEntriesState } from './useLibraryEntries'
@@ -60,6 +61,8 @@ export const LibraryEntryList = ({ groups, view = 'list', withWorkspace = true, 
   const [deleting, setDeleting] = useState<LibraryEntry>()
   // The one being asked about, kept while the dialog closes so its words do not change as it goes.
   const [asked, setAsked] = useState<LibraryEntry>()
+  // The gadget being shared, kept while its dialog closes.
+  const [sharing, setSharing] = useState<{ entry: LibraryEntry; page: string; open: boolean }>()
 
   const act = (doing: string, run: () => Promise<void>) => {
     setProblem(undefined)
@@ -73,6 +76,10 @@ export const LibraryEntryList = ({ groups, view = 'list', withWorkspace = true, 
       ? [
           { key: 'tab', label: 'Open in new tab', icon: ArrowSquareOutIcon, onSelect: () => window.open(address, '_blank', 'noopener') },
           { key: 'link', label: 'Copy link', icon: LinkIcon, onSelect: () => copyLink(address) },
+          // As from its settings: by whoever builds where it is, apart from its workspace.
+          ...(entry.builds && entry.item.kind === 'output'
+            ? [{ key: 'share', label: 'Share…', icon: ExportIcon, onSelect: () => setSharing({ entry, page: new URL(address, window.location.origin).href, open: true }) }]
+            : []),
         ]
       : []),
     ...(entry.favorite
@@ -84,7 +91,7 @@ export const LibraryEntryList = ({ groups, view = 'list', withWorkspace = true, 
         }]
       : []),
     { key: 'remove', label: 'Remove from Library', icon: MinusCircleIcon, onSelect: () => act('remove it', () => library.remove(entry)) },
-    ...(entry.canDelete
+    ...(entry.builds
       ? [{
           key: 'delete',
           label: 'Delete gadget…',
@@ -139,6 +146,16 @@ export const LibraryEntryList = ({ groups, view = 'list', withWorkspace = true, 
               }))}
             />
           )}
+      {sharing?.entry.item.kind === 'output' && (
+        <ShareGadgetDialog
+          workspaceId={sharing.entry.workspaceId}
+          gadgetId={sharing.entry.item.output.workpieceId}
+          title={sharing.entry.title}
+          page={sharing.page}
+          open={sharing.open}
+          onOpenChange={(open) => setSharing((current) => current && { ...current, open })}
+        />
+      )}
       <ConfirmDialog
         open={deleting !== undefined}
         onOpenChange={(open) => !open && setDeleting(undefined)}
