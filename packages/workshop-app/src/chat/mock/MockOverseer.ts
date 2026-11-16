@@ -30,6 +30,10 @@ type ActionMessage = Extract<AiChatMessage, { type: 'action' }>
 const lease = (release: () => void) => Promise.resolve({ [Symbol.dispose]: release })
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+// Made up, and only told apart here. Not `crypto.randomUUID()`, which a page that is not served
+// securely does not have, such as the dev server opened from a phone by its address.
+let made = 0
+const madeUpId = (kind: string) => `${kind}-${++made}`
 
 /**
  * A workspace's Overseer for one scripted chat, holding what a server would: the messages, the
@@ -158,7 +162,7 @@ export class MockOverseer {
 
   /** Kept by a made-up OID, until a message carries it. */
   async uploadBlob(content: Uint8Array): Promise<GitOid> {
-    const oid = crypto.randomUUID()
+    const oid = madeUpId('blob')
     this.#blobs.set(oid, content)
     return oid
   }
@@ -176,7 +180,7 @@ export class MockOverseer {
     const attachments = handles?.map((handle): ChatAttachmentRef => {
       const content = 'oid' in handle ? this.#blobs.get(handle.oid) : undefined
       if (!('oid' in handle) || !content) throw new Error('Chat attachment not found.')
-      const id = crypto.randomUUID()
+      const id = madeUpId('file')
       this.#files[id] = content
       const image = handle.mimeType.startsWith('image/')
       return { id, oid: handle.oid, mimeType: handle.mimeType, name: handle.name, size: content.byteLength, content: image ? content : undefined }

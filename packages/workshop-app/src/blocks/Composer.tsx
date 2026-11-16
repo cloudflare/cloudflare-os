@@ -194,6 +194,8 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
               className="composer-input block min-w-0 resize-none rounded-none border-0 bg-transparent p-0 text-base/5 max-md:text-[16px]/5 wrap-anywhere shadow-none ring-0 focus:ring-0 data-expanded:[scrollbar-gutter:stable] data-sending:text-kumo-subtle"
               placeholder="Ask anything…"
               aria-label="Message"
+              // A phone's keyboard then labels its return key for sending, which Enter does.
+              enterKeyHint="send"
               value={text}
               onValueChange={setText}
               onPaste={(event) => {

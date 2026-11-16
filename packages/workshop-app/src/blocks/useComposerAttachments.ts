@@ -5,7 +5,10 @@ export type ComposerAttachment = {
   file: File
 }
 
-const attach = (file: File): ComposerAttachment => ({ id: crypto.randomUUID(), file })
+// Only told apart within the page. Not `crypto.randomUUID()`, which a page that is not served
+// securely does not have, such as the dev server opened from a phone by its address.
+let attached = 0
+const attach = (file: File): ComposerAttachment => ({ id: `attachment-${++attached}`, file })
 
 /** Local draft files, starting with `initial`. Each card makes its own preview of its file. */
 export const useComposerAttachments = (initial: readonly File[] = []) => {
