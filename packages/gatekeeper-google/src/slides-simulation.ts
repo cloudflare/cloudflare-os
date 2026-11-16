@@ -16,7 +16,7 @@ import type { SimulationStep } from "@gadgets/gatekeeper-kit/simulation";
 import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import { editorCost } from "./editor-cost";
 import type { RestPage, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
-import { designDeck, pageOf, slideIdOf, type DesignChange } from "./slides-design";
+import { designInPlace, pageOf, slideIdOf, type DesignChange } from "./slides-design";
 import { ChangeConflict } from "./slides-text";
 
 /** A slide as it was when a change was queued, so the approver can recognize it. */
@@ -254,25 +254,76 @@ function withSkipped(slide: RestSlide, skipped: boolean): RestSlide {
   return { ...slide, slideProperties: skipped ? { ...properties, isSkipped: true } : properties };
 }
 
-// Google renders a slide number as the slide's position, so a slide that moves shows a new one.
-function reordered(deck: Deck, order: string[], slides = deck.slides, masters = deck.masters): Deck {
-  let renumbered = [...slides].map(([id, slide]): [string, RestSlide] => {
-    let position = order.indexOf(id);
-    return position === deck.order.indexOf(id) ? [id, slide] : [id, numbered(slide, position + 1)];
-  });
-  return { ...deck, order, slides: new Map(renumbered), masters };
+/**
+ * A deck being changed in place, which its maker alone holds: its own order and maps. Its pages
+ * are the fetched deck's until a change writes one, which is then copied once (see `DRAFTS`).
+ */
+export type DeckDraft = {
+  order: string[];
+  slides: Map<string, RestSlide>;
+  masters: Map<string, string>;
+  firstMaster?: string;
+  themePages: Map<string, RestThemePage>;
+};
+
+// What a fold keeps of its deck beside the deck: `own`, the IDs of the pages that are the fold's
+// to write (copied by it, or made by it as a copy of a slide), and `applied`, the changes it has
+// applied, oldest first, which put the deck back when a batch stops after it wrote. Both are that
+// deck's own bookkeeping, a part of the fold's draft kept beside it so the deck stays a `Deck`
+// and nothing more: reached only through the deck, and gone with it. The store holds nothing, and
+// no fold reads another's.
+const DRAFTS = new WeakMap<DeckDraft, { own: Set<string>; applied: SlidesAction[] }>();
+
+// A deck of the caller's own holding what `deck` holds: its order and maps copied, its pages not.
+// `firstMaster` is always set, to `undefined` where the deck has none, so that assigning a
+// draft's fields over another's replaces every one.
+function draftOf(deck: Deck): DeckDraft {
+  return {
+    order: [...deck.order],
+    slides: new Map(deck.slides),
+    masters: new Map(deck.masters),
+    firstMaster: deck.firstMaster,
+    themePages: new Map(deck.themePages),
+  };
 }
 
+// Gives each held slide whose position changed from `before` to the deck's order now its number.
+// Google renders a slide number as the slide's position, so a slide that moves shows another.
+function renumber(deck: DeckDraft, before: readonly string[]): void {
+  for (let [id, slide] of deck.slides) {
+    let position = deck.order.indexOf(id);
+    if (position !== before.indexOf(id)) deck.slides.set(id, numbered(slide, position + 1));
+  }
+}
+
+// `slide` showing `number` wherever it shows its own number (an `autoText` of type
+// `SLIDE_NUMBER`, at any depth): the slide itself when it shows none, else a copy of only the
+// objects and arrays on the way to each number, sharing everything else with `slide`. `slide`
+// is not written, so it needs no copy of the page and no entry in `own`. Every key of a copied
+// object is kept, one that holds `undefined` included.
 function numbered(slide: RestSlide, number: number): RestSlide {
-  let text = JSON.stringify(slide);
-  editorCost.pageRoundTrips++;
-  editorCost.roundTripUnits += text.length;
-  return JSON.parse(text, (key, value) =>
-    key === "autoText" && value.type === "SLIDE_NUMBER" ? { ...value, content: `${number}` } : value);
+  let content = `${number}`;
+  let show = (value: unknown, key?: string): unknown => {
+    if (typeof value !== "object" || value === null) return value;
+    let parts = value as Record<string, unknown>;
+    let shown: Record<string, unknown> | undefined;
+    for (let name of Object.keys(parts)) {
+      let next = show(parts[name], name);
+      if (next === parts[name]) continue;
+      shown ??= (Array.isArray(value) ? [...value] : { ...parts }) as Record<string, unknown>;
+      shown[name] = next;
+    }
+    let result = shown ?? parts;
+    return key === "autoText" && result.type === "SLIDE_NUMBER" ? { ...result, content } : result;
+  };
+  return show(slide) as RestSlide;
 }
 
-/** Applies one queued change to `deck`, returning a new deck. Throws `ChangeConflict`. */
-export function applyChange(deck: Deck, action: SlidesAction): Deck {
+// Applies `action` to `deck` in place and says whether it changed anything. `own` is as
+// `designInPlace` takes it. Throws `ChangeConflict`: having written nothing, for a change that
+// is not a design batch, since each checks before it writes; for a design batch the deck may
+// hold a part of it (see `designInPlace`), and the caller drops the deck or puts it back.
+function applyInPlace(deck: DeckDraft, action: SlidesAction, own: Set<string>): boolean {
   let { order, slides, masters } = deck;
   switch (action.kind) {
     case "editText":
@@ -280,67 +331,84 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
     case "editSlides":
     case "deleteSlideContent":
     case "updateSlides":
-      return designDeck(deck, action.payload.changes).deck;
+      // A step is null only for a change on a slide the deck does not hold, which edits nothing.
+      return designInPlace(deck, action.payload.changes, own).some(step => step !== null);
     case "duplicateSlide": {
       let { slideId, newSlideId, objectIds } = action.payload;
       requireSlide(order, slideId);
       requireNewSlide(order, newSlideId);
       let source = slides.get(slideId);
-      let next = new Map(slides);
-      if (source) next.set(newSlideId, duplicated(source, newSlideId, objectIds));
+      if (source) {
+        slides.set(newSlideId, duplicated(source, newSlideId, objectIds));
+        own.add(newSlideId);
+      }
       let master = masters.get(slideId);
-      return reordered(deck, order.toSpliced(order.indexOf(slideId) + 1, 0, newSlideId), next,
-        master === undefined ? masters : new Map(masters).set(newSlideId, master));
+      if (master !== undefined) masters.set(newSlideId, master);
+      deck.order = order.toSpliced(order.indexOf(slideId) + 1, 0, newSlideId);
+      break;
     }
     case "deleteSlide": {
       let { slideId } = action.payload;
       requireSlide(order, slideId);
-      let next = new Map(slides);
-      next.delete(slideId);
-      let rest = order.filter(id => id !== slideId);
+      slides.delete(slideId);
+      own.delete(slideId);
+      deck.order = order.filter(id => id !== slideId);
       // Google deletes a master, and its layouts, with the last slide on it, unless it is the
       // presentation's first master.
       let master = masters.get(slideId);
       let dropped = master !== undefined && master !== deck.firstMaster &&
-        !rest.some(id => masters.get(id) === master);
-      if (!dropped) return reordered(deck, rest, next);
-      let themePages = new Map([...deck.themePages].filter(([id, page]) =>
-        id !== master && page.layoutProperties?.masterObjectId !== master));
-      return reordered({ ...deck, themePages }, rest, next,
-        new Map([...masters].filter(([, of]) => of !== master)));
+        !deck.order.some(id => masters.get(id) === master);
+      if (dropped) {
+        deck.themePages = new Map([...deck.themePages].filter(([id, page]) =>
+          id !== master && page.layoutProperties?.masterObjectId !== master));
+        deck.masters = new Map([...masters].filter(([, of]) => of !== master));
+      }
+      break;
     }
     case "moveSlides": {
       let { slideIds, after } = action.payload;
-      return reordered(deck, movedOrder(order, slideIds, after));
+      deck.order = movedOrder(order, slideIds, after);
+      break;
     }
     case "createSlide": {
       let { newSlideId, layoutId, placeholders } = action.payload;
       let { at, master } = newSlidePlace(deck, action.payload);
-      return reordered(deck, order.toSpliced(at, 0, newSlideId),
-        new Map(slides).set(newSlideId, created(newSlideId, layoutId, master, placeholders)),
-        new Map(masters).set(newSlideId, master));
+      // The new slide holds the queued record's sizes and transforms, so it is not the fold's to
+      // write: the first batch that edits it copies it.
+      slides.set(newSlideId, created(newSlideId, layoutId, master, placeholders));
+      masters.set(newSlideId, master);
+      deck.order = order.toSpliced(at, 0, newSlideId);
+      break;
     }
     case "skipSlides": {
       let { slideIds, skipped } = action.payload;
-      let next = new Map(slides);
+      for (let id of slideIds) requireSlide(order, id);
       for (let id of slideIds) {
-        requireSlide(order, id);
         let slide = slides.get(id);
-        if (slide) next.set(id, withSkipped(slide, skipped));
+        if (slide) slides.set(id, withSkipped(slide, skipped));
       }
-      return { ...deck, slides: next };
+      return true;
     }
   }
+  renumber(deck, order);
+  return true;
 }
 
-function step(deck: Deck, action: SlidesAction): SimulationStep<Deck> {
-  try {
-    let next = applyChange(deck, action);
-    return next === deck ? { kind: "known-no-effect" } : { kind: "applied", value: next };
-  } catch (error) {
-    if (error instanceof ChangeConflict) return { kind: "unsupported", reason: error.message };
-    throw error;
-  }
+// Makes `deck` what a fold of `applied` over `base` is, in the same object, and `own` the pages
+// that fold copied: what `base` holds, then each change again. They applied once over this base,
+// so they apply again to the same result.
+function restore(
+  deck: DeckDraft, base: Deck, { own, applied }: { own: Set<string>; applied: SlidesAction[] },
+): void {
+  Object.assign(deck, draftOf(base));
+  own.clear();
+  for (let action of applied) applyInPlace(deck, action, own);
+}
+
+/** Applies one queued change to `deck`, returning a new deck. Throws `ChangeConflict`. */
+export function applyChange(deck: Deck, action: SlidesAction): Deck {
+  let draft = draftOf(deck);
+  return applyInPlace(draft, action, new Set()) ? draft : deck;
 }
 
 /** One journal entry visible to replay. */
@@ -352,14 +420,33 @@ export type QueuedChange = { readonly id: number; readonly action: SlidesAction 
  * because a change may move, add or delete slides in the one order, a batch applies across its
  * slides or not at all, and a change that no longer applies hides every change queued after it,
  * on whatever slide. The store keeps nothing: every call folds the changes it is given from the
- * first, over the deck it is given. No change writes a deck, each returning another, so a fold
- * starts from the fetched deck itself.
+ * first. Each fold works on one deck of its own, changed in place: a page is copied the first
+ * time a change of the fold writes it and never again, and the fetched deck and its pages are
+ * left as they were. A batch that stops part-way leaves that deck as the changes before it made
+ * it.
  */
-export function createReplay(): SimulationStore<string, Deck, Deck, QueuedChange> {
-  return createSimulationStore<string, Deck, Deck, QueuedChange>({
-    initial: deck => deck,
+export function createReplay(): SimulationStore<string, Deck, DeckDraft, QueuedChange> {
+  return createSimulationStore<string, Deck, DeckDraft, QueuedChange>({
+    initial: base => {
+      let deck = draftOf(base);
+      DRAFTS.set(deck, { own: new Set(), applied: [] });
+      return deck;
+    },
     // A deck is always given: every fold has one for its base, and no change deletes it.
-    reduce: (deck, change) => step(deck!, change.action),
+    reduce: (deck, change, { base }): SimulationStep<DeckDraft> => {
+      let draft = DRAFTS.get(deck!)!;
+      try {
+        if (!applyInPlace(deck!, change.action, draft.own)) return { kind: "known-no-effect" };
+      } catch (error) {
+        if (!(error instanceof ChangeConflict)) throw error;
+        // A batch checks each change against what the one before it wrote, so it cannot decide
+        // before it writes; a change of any other kind throws before it writes.
+        if (isDesignBatch(change.action)) restore(deck!, base!, draft);
+        return { kind: "unsupported", reason: error.message };
+      }
+      draft.applied.push(change.action);
+      return { kind: "applied", value: deck! };
+    },
   });
 }
 

@@ -1578,8 +1578,8 @@ describe("Google Slides replay cost", () => {
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
-    "pageClones", "cloneBytes", "pageRoundTrips", "roundTripUnits", "measuredStrings",
-    "longestMeasured", "pageFetches", "fetches", "responseBytes", "mostOpen", "indented",
+    "pageClones", "cloneBytes", "measuredStrings", "longestMeasured", "pageFetches", "fetches",
+    "responseBytes", "mostOpen", "indented",
   ] as const;
   type Measure = typeof MEASURES[number];
   type Row = { phase: string; pending: number } & Record<Measure, number>;
@@ -1828,27 +1828,20 @@ describe("Google Slides replay cost", () => {
     let none = Object.fromEntries(MEASURES.map(column => [column, 0])) as Record<Measure, number>;
     // Every read asks for compact JSON, so `indented` is 0 in every phase: the fake indents an
     // answer that was not asked compact, and a read that forgot to ask would count here. A page is
-    // `PAGE_BYTES`, about a third of what it is indented. A round trip is of a whole page, but for
-    // the outline's: `PAGE_BYTES` units for a slide as it was fetched, 126 more for the copy, whose
-    // IDs are longer, 233 more for a slide whose title a queued edit holds as four runs in place of
-    // one, and one more for a slide whose number an earlier change of the fold made a digit longer
-    // (the footer's padding makes the pages one size as fetched only). A slide a change only names
-    // is read by label, `LABEL_BYTES` in place of `PAGE_BYTES`, fetched and through each round trip.
+    // `PAGE_BYTES`, about a third of what it is indented. A fold clones a page once: the first
+    // time one of its batches edits it, or to make a queued copy of a slide it holds. A slide whose
+    // position a change shifts is not cloned to show its number. A slide a change only names is
+    // read by label, `LABEL_BYTES` in place of `PAGE_BYTES`.
     // `mostOpen` is the requests the FAKE had open at once. It has no limit on connections, where a
     // deployed Worker holds six, so the 4 of whole pages and the 6 of labels are the client's bounds.
     expect(measured).toEqual([
       {
         ...none, phase: "queue N, a read after each", pending: N,
-        // Queueing clones the slide a new batch edits (1, 1, 0, 0, 1) and, for the fifth, slide 1
-        // again for the first batch: 4. The reads clone a slide for each pending batch and copy: 1,
-        // 2, 3, 3 and 4.
-        pageClones: 17, cloneBytes: 17 * PAGE_BYTES,
-        // A queued copy of slide 3 shifts slides 4 to 20 and numbers the copy (18), and a queued
-        // move to the start then shifts all 21 held: 18, 39 and 39 for the last three reads, and 1
-        // each for the one slide held when the move and the last edit are queued. Five are of the
-        // copy, five of an edited slide and two of a slide numbered a digit more. The slide the
-        // move names is held by label: its one round trip is `PAGE_BYTES - LABEL_BYTES` shorter.
-        pageRoundTrips: 98, roundTripUnits: 3_157_005 - (PAGE_BYTES - LABEL_BYTES),
+        // Queueing clones the slide a new batch edits, to check the batch on it (1, 1, 0, 0, 1),
+        // and, for the fifth, slide 1 in the fold before that, for the first batch: 4. Each read's
+        // fold clones a slide the pending batches edit once, and makes the pending copy: 1, 2, 3,
+        // 3 and 3, the fifth batch editing slide 1 as the first left it.
+        pageClones: 16, cloneBytes: 16 * PAGE_BYTES,
         // Each queued change is measured once, and each read's 20 slides, about 3.7 KB a slide.
         measuredStrings: 10, longestMeasured: 74_091,
         // One page to queue each change, the moved slide's by label, 20 for each read, and an
@@ -1859,19 +1852,16 @@ describe("Google Slides replay cost", () => {
       },
       {
         ...none, phase: "read", pending: N,
-        // The three edited slides and the copy; 18 and 21 round trips, as above: two of the copy,
-        // two of an edited slide and one of a slide numbered a digit more.
-        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 39, roundTripUnits: 1_256_363,
+        // Slides 1 and 2, which three pending batches edit, and the copy.
+        pageClones: 3, cloneBytes: 3 * PAGE_BYTES,
         measuredStrings: 1, longestMeasured: 74_090,
         pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES,
         mostOpen: 4,
       },
       {
         ...none, phase: "outline", pending: N,
-        // The same four clones, the copy's of a summary. The summary holds all 100 slides, so the
-        // copy shifts 97 and is numbered (98) and the move shifts 101: of summaries of 2,347 units
-        // (the copy's two 126 more, two a digit more), but for the two edited slides, read whole.
-        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 199, roundTripUnits: 527_471,
+        // The same three clones, the copy's of a summary.
+        pageClones: 3, cloneBytes: 3 * PAGE_BYTES,
         // The summary, then the two slides queued batches edit, together.
         pageFetches: 2, fetches: 3, responseBytes: SUMMARY_BYTES + 2 * PAGE_BYTES,
         mostOpen: 2,
@@ -1879,14 +1869,9 @@ describe("Google Slides replay cost", () => {
       {
         ...none, phase: "queue a move of 99", pending: N + 1,
         // All 100 slides are held: slides 1 and 2, which queued batches edit, whole, and the 98
-        // others by label. Per fold: 3 whole clones (the batches on slides 1 and 2) and 1 label
-        // clone (the queued copy of slide 3, read by label here).
-        pageClones: 4, cloneBytes: 3 * PAGE_BYTES + LABEL_BYTES,
-        // The copy shifts 97 and is numbered (98), all by label, and the move to the start shifts
-        // all 101: slides 1 and 2, whole and with an edited title, and 99 by label. Two are of the
-        // copy and two of a slide numbered a digit more.
-        pageRoundTrips: 199,
-        roundTripUnits: 2 * (PAGE_BYTES + 233) + 197 * LABEL_BYTES + 2 * 126 + 2,
+        // others by label. Per fold: 2 whole clones (slides 1 and 2, for their batches) and 1
+        // label clone (the queued copy of slide 3, read by label here).
+        pageClones: 3, cloneBytes: 2 * PAGE_BYTES + LABEL_BYTES,
         // The queued move alone: 99 labels and the slide they follow.
         measuredStrings: 1, longestMeasured: 6_138,
         // The 100 slides named, a mixed read: the two a queued batch edits whole, together, and
@@ -1897,11 +1882,8 @@ describe("Google Slides replay cost", () => {
       },
       {
         ...none, phase: "queue a skip of 100", pending: N + 2,
-        // As the move, and the queued move of 99 shifts slides 4 to 99 and the copy, all held by
-        // label: 97 more, one of them the copy and four a slide numbered a digit more.
-        pageClones: 4, cloneBytes: 3 * PAGE_BYTES + LABEL_BYTES,
-        pageRoundTrips: 296,
-        roundTripUnits: 2 * (PAGE_BYTES + 233) + 294 * LABEL_BYTES + 3 * 126 + 6,
+        // As the move: 2 whole clones and 1 label clone.
+        pageClones: 3, cloneBytes: 2 * PAGE_BYTES + LABEL_BYTES,
         measuredStrings: 1, longestMeasured: 6_130,
         // The same mixed read: slides 1 and 2 whole, then 98 labels with six open.
         pageFetches: 100, fetches: 101,
@@ -1920,11 +1902,11 @@ describe("Google Slides replay cost", () => {
       { ...none, phase: "reject", pending: N },
       {
         ...none, phase: "read, newest no longer applies", pending: N + 1,
-        // Slides 2, 1 and 4 and the copy: the clone of slide 4 is dropped with its batch. The copy
-        // and the two moves shift 18, 21 and 18 of the 21 slides held: three of the copy, one of
-        // slide 2 as edited, three of a slide numbered a digit more, and one of slide 1, which the
-        // fake answers 71 units shorter since it stored the approved edit as one run.
-        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 57, roundTripUnits: 1_835_715,
+        // The changes before the stopped batch write three pages, slides 2 and 1 and the copy,
+        // and the batch clones slide 4, which it wrote before it stopped. The deck is then put
+        // back as those changes made it by applying them again to what was fetched, which clones
+        // their three pages a second time: 3 twice, and 1.
+        pageClones: 7, cloneBytes: 7 * PAGE_BYTES,
         // The 20 slides, each with the conflict's text.
         measuredStrings: 1, longestMeasured: 77_648,
         // As `read`, less the 71 bytes slide 1 lost when the fake stored its approved edit as one run.

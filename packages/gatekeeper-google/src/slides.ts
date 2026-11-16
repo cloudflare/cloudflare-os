@@ -259,8 +259,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   #read: NativeRead;
   #changes: SlidesChangeQueue;
   // Replays the queued changes over the deck of each read, as one entity under the presentation's
-  // ID. It keeps nothing between reads: each folds every queued change again over the deck it
-  // fetched.
+  // ID. It keeps nothing between reads: each folds every queued change again, on a deck of the
+  // fold's own, and leaves the deck it fetched as it was.
   #replay = createReplay();
 
   constructor(

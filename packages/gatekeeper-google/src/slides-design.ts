@@ -21,7 +21,7 @@ import {
   EMU_PER_POINT, localBox, matrixFor, matrixOf, placementOf, tableLinesOf, transformOf, type Placement,
 } from "./slides-geometry";
 import type { SlideBounds } from "./slides-read-types";
-import type { Deck } from "./slides-simulation";
+import type { Deck, DeckDraft } from "./slides-simulation";
 import { editSlide, locate, textSlot, type Located, type TextSlot } from "./slides-target";
 import {
   ChangeConflict, changeRange, fixedRange, isGraphemeBoundary, paragraphAt, paragraphRange,
@@ -99,32 +99,41 @@ const PLACEMENT_TOLERANCE = 0.005;
 export function designDeck(
   deck: Deck, changes: readonly DesignChange[],
 ): { deck: Deck; steps: (DesignStep | null)[] } {
-  let edited = new Map<string, RestSlide>();
-  let editedThemes = new Map<string, RestThemePage>();
+  let draft: DeckDraft = {
+    ...deck, order: [...deck.order], slides: new Map(deck.slides), masters: new Map(deck.masters),
+    themePages: new Map(deck.themePages),
+  };
+  let own = new Set<string>();
+  let steps = designInPlace(draft, changes, own);
+  return { deck: own.size === 0 ? deck : draft, steps };
+}
+
+/**
+ * `designDeck` on a deck of the caller's own, changed in place: an edited page is written into
+ * `deck.slides` or `deck.themePages`, copied first unless `own` holds its ID, and `own` gains the
+ * ID of each page copied. Returns what each change did: null for one on a slide the deck does not
+ * hold. Throws `ChangeConflict` as `designDeck` does; the deck may then hold a part of the batch,
+ * and its caller drops it or puts it back.
+ */
+export function designInPlace(
+  deck: DeckDraft, changes: readonly DesignChange[], own: Set<string>,
+): (DesignStep | null)[] {
   let created = new Set<string>();
-  let steps = changes.map((change, i) => {
+  return changes.map((change, i) => {
     try {
       let { pageType, id } = pageOf(change);
-      let page: RestSlide | RestThemePage | undefined;
+      let page: RestSlide | RestThemePage;
       if (pageType === "SLIDE") {
         if (!deck.order.includes(id)) throw new ChangeConflict(`slide "${id}" no longer exists`);
-        page = edited.get(id);
-        if (!page) {
-          let held = deck.slides.get(id);
-          if (!held) return null;
-          editorCost.pageClones++;
-          edited.set(id, page = structuredClone(held));
-        }
+        let held = deck.slides.get(id);
+        if (!held) return null;
+        page = writable(deck.slides, id, held, own);
       } else {
-        let held = editedThemes.get(id) ?? deck.themePages.get(id);
+        let held = deck.themePages.get(id);
         if (held?.pageType !== pageType) {
           throw new ChangeConflict(`the presentation has no ${pageType.toLowerCase()} "${id}"`);
         }
-        page = editedThemes.get(id);
-        if (!page) {
-          editorCost.pageClones++;
-          editedThemes.set(id, page = structuredClone(held));
-        }
+        page = writable(deck.themePages, id, held, own);
       }
       let step = applyDesign(page, change, created);
       if (step.created) created.add(step.created);
@@ -134,15 +143,17 @@ export function designDeck(
       throw new ChangeConflict(`change ${i + 1} (${change.op}): ${error.message}`);
     }
   });
-  if (edited.size === 0 && editedThemes.size === 0) return { deck, steps };
-  return {
-    deck: {
-      ...deck,
-      slides: new Map([...deck.slides, ...edited]),
-      themePages: new Map([...deck.themePages, ...editedThemes]),
-    },
-    steps,
-  };
+}
+
+// The page `pages` holds under `id`, to write: `held` itself when `own` has its ID, else a copy of
+// it, which takes its place in `pages`, and its ID a place in `own`.
+function writable<Page>(pages: Map<string, Page>, id: string, held: Page, own: Set<string>): Page {
+  if (own.has(id)) return held;
+  editorCost.pageClones++;
+  let copy = structuredClone(held);
+  pages.set(id, copy);
+  own.add(id);
+  return copy;
 }
 
 // `page` is a layout or master only for the changes `pageOf()` puts on one, which set its page

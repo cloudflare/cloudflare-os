@@ -22,16 +22,12 @@ export type EditorCost = {
   digestedUnits: number;
   /** Slides, masters and layouts copied whole with `structuredClone`. */
   pageClones: number;
-  /** Slides passed whole through `JSON.stringify` and `JSON.parse` to show their number. */
-  pageRoundTrips: number;
-  /** UTF-16 units of the JSON those round trips built. */
-  roundTripUnits: number;
 };
 
 /** The running totals of `EditorCost`. */
 export const editorCost: EditorCost = {
   overlayCopies: 0, overlayEntries: 0, keysIndexed: 0, cellsKeyed: 0, measuredStrings: 0,
-  longestMeasured: 0, digestedUnits: 0, pageClones: 0, pageRoundTrips: 0, roundTripUnits: 0,
+  longestMeasured: 0, digestedUnits: 0, pageClones: 0,
 };
 
 /** Counts a string built only to be measured, and gives its length. */
