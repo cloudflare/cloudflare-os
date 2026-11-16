@@ -48,7 +48,7 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
           <DropdownMenu.Item key={skill.id} icon={ScrollIcon} label={skill.name} onSelect={() => skills.onSelect(skill)}>
             <span className="min-w-0 flex-1">
               <span className="block truncate">{skill.name}</span>
-              <span className="block truncate text-sm text-kumo-subtle">{skill.description}</span>
+              <span className="block truncate text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{skill.description}</span>
             </span>
             {skill.source && (
               <span className="max-w-[30%] truncate text-xs text-kumo-subtle">{skill.source}</span>

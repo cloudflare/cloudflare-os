@@ -427,6 +427,10 @@ its workspace's library. The workspace page's New chat is its icon alone. A fiel
 at least there (`max-md:text-[16px]`, Kumo's `text-base` being 14px), or iOS zooms the page in
 when it is focused: the composer and its measuring copies, and the sign-in form. Keep to it for
 a new field.
+Everything fully rounded is 44px there rather than 36px, for a thumb, from the `--control-*` sizes
+in `styles.css`, and what a menu opened from one holds grows with it from the `--menu-*` sizes
+(`DropdownMenu`, `OptionPicker`): 48px lines of 16px text, their icons, labels and the room at
+their ends. Size anything new in a menu by them, not by Kumo's text sizes.
 The composer's return key is labelled for sending (`enterkeyhint`), as Enter sends; the ✓ iOS
 puts over its keyboard only puts the keyboard away, and nothing a page does makes it send. An
 on-screen keyboard makes the page shorter on Android (`interactive-widget` in `index.html`), and
