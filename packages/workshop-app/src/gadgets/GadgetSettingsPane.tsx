@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react'
-import { CaretLeftIcon, ExportIcon, PlusIcon, ShapesIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, ExportIcon, PlusIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { ofGadget } from '@/automations/automations'
 import { calledByGadget } from '@/automations/agents'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BindingRow } from '@/blocks/BindingRow'
 import { CodeBrowser } from '@/blocks/CodeBrowser'
-import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
+import { GadgetIconPicker } from '@/blocks/GadgetIconPicker'
 import { GadgetPermissions } from '@/blocks/GadgetPermissions'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -16,7 +16,7 @@ import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EditableTitle } from '@/components/EditableTitle'
-import { FormatIcon } from '@/components/FormatIcon'
+import { FormatIcon, GADGET_ICONS, type FormatIconName } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
 import { AddConnection } from '@/connections/AddConnection'
@@ -30,6 +30,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { Listed } from './GadgetSettings'
 import { useBlueprintDescription, useGadgetSettings } from './useGadgetSettings'
 import { useGadgetCode } from './useGadgetCode'
+import { setGadgetColor, useGadgetColor } from './useGadgetColor'
 import { usePublishPicture } from './usePublishPicture'
 
 export const GADGET_SETTINGS_TABS = [
@@ -64,6 +65,18 @@ export type GadgetSettingsPaneProps = {
   onOpenBlueprint?: (blueprintId: string) => void
 }
 
+const offered = (icon: string) => GADGET_ICONS.find(({ name }) => name === icon)
+
+/**
+ * What a gadget that was `was` is with `icon`: called as its icon is, unless it was called
+ * something of its own, which it keeps; a window, with nothing of its own, is a plain app again.
+ */
+const kindWith = (was: { noun: string; plural?: string; icon: string } | undefined, icon: FormatIconName) => {
+  if (was && was.noun !== offered(was.icon)?.label) return { noun: was.noun, plural: was.plural, icon }
+  const given = offered(icon)
+  return icon === 'appWindow' || !given ? null : { noun: given.label, plural: given.plural, icon }
+}
+
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
@@ -73,9 +86,10 @@ const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
 
 /**
  * A gadget's own settings (from its More, or full screen), laid out as a chat's are: back to it,
- * what kind it is, its title, renamed in place by whoever may build in its workspace, and what its
- * blueprint says it is for. Then tabs (`?tab=`): who has it, publishing it as a blueprint and
- * deleting it; what it is connected to; and the automations that run its code.
+ * its mark, which opens what it can be drawn as (`GadgetIconPicker`), its title, renamed in place
+ * by whoever may build in its workspace, and what its blueprint says it is for. Then tabs
+ * (`?tab=`): who has it, publishing it as a blueprint and deleting it; what it is connected to;
+ * and the automations that run its code.
  */
 export const GadgetSettingsPane = ({
   workspaceId, workpieceId, initialTitle, tab, onTabChange, file, onShowFile, onBack, onDeleted, onOpenConnections, link, automationLink, onOpenBlueprint,
@@ -109,9 +123,17 @@ export const GadgetSettingsPane = ({
   // The blueprint it was last published as, for its page to be opened.
   const [published, setPublished] = useState<string>()
   const [sharing, setSharing] = useState(false)
-  const [choosingKind, setChoosingKind] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [addingConnection, setAddingConnection] = useState(false)
+
+  const color = useGadgetColor(workspaceId, workpieceId)
+  // Why its new icon was not kept.
+  const [iconProblem, setIconProblem] = useState<string>()
+  const changeIcon = (icon: FormatIconName) => {
+    setIconProblem(undefined)
+    if (!gadget || connection?.blocked()) return
+    settings.setKind(kindWith(gadget.output, icon)).catch((error: unknown) => setIconProblem(`Couldn’t change its icon: ${messageOf(error)}`))
+  }
 
   const rename = (next: string) => {
     setRenameProblem(undefined)
@@ -152,16 +174,18 @@ export const GadgetSettingsPane = ({
     <PageLayout header={header}>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
-          <span aria-hidden="true" className="grid size-9 place-items-center rounded-full bg-kumo-tint text-kumo-default [&>svg]:size-[1.125em]">
-            <FormatIcon name={gadget?.output?.icon} />
-          </span>
+          {/* Its mark, which opens what it can be drawn as: its icon, by whoever may build in its
+              workspace, as the server keeps it; its colour, kept on this device, by anyone. */}
+          {gadget
+            ? <GadgetIconPicker icon={gadget.output?.icon} color={color} onIconChange={builds ? changeIcon : undefined} onColorChange={(next) => setGadgetColor(workspaceId, workpieceId, next)} />
+            : <FormatIcon color={color} className="size-8" />}
           {/* Its own heading, which can be renamed by whoever may build in its workspace. */}
           <h1 className="flex max-w-full justify-center text-xl font-medium text-kumo-default">
             {gadget && builds
               ? <EditableTitle value={gadget.title} onRename={rename} aria-label="Gadget title" placeholder="Untitled gadget" className="text-center" />
               : <span className="px-2.5 py-1">{title || 'Gadget'}</span>}
           </h1>
-          {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
+          {(renameProblem ?? iconProblem) && <p role="alert" className="text-base text-kumo-subtle">{renameProblem ?? iconProblem}</p>}
           {description && <p className="appears max-w-sm text-base/5 text-kumo-subtle">{description}</p>}
         </div>
         {snapshot.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the gadget…</p>}
@@ -169,15 +193,6 @@ export const GadgetSettingsPane = ({
           <Tabs value={shownTab} onValueChange={onTabChange} tabs={tabs} aria-label="Gadget settings" className="gap-6">
             <Tabs.Panel value="settings" className="flex flex-col gap-2">
               <SettingsGroup label="Gadget">
-                {builds && (
-                  <SettingsRow
-                    title="What it is"
-                    description={gadget?.output
-                      ? `A ${gadget.output.noun.toLowerCase()}, wherever it’s listed and in blueprints made from it.`
-                      : 'Give it a kind and an icon, shown wherever it’s listed and in blueprints made from it.'}
-                    control={<Button icon={gadget?.output ? <FormatIcon name={gadget.output.icon} /> : ShapesIcon} onClick={() => setChoosingKind(true)}>{gadget?.output?.noun ?? 'Choose'}</Button>}
-                  />
-                )}
                 {builds && (
                   <SettingsRow
                     title="Access"
@@ -287,22 +302,6 @@ export const GadgetSettingsPane = ({
           </Tabs>
         )}
       </div>
-      {builds && gadget && (
-        <GadgetKindDialog
-          // Starting from what it is now, as the agent may have changed it since.
-          key={`${gadget.output?.noun}\n${gadget.output?.icon}`}
-          open={choosingKind}
-          onOpenChange={setChoosingKind}
-          initial={gadget.output && { noun: gadget.output.noun, icon: gadget.output.icon }}
-          onSave={async (kind) => {
-            if (connection?.blocked()) return false
-            // A plural it had is kept while its name stays the same.
-            const plural = kind && kind.noun === gadget.output?.noun ? gadget.output.plural : undefined
-            await settings.setKind(kind && { ...kind, plural })
-            return true
-          }}
-        />
-      )}
       {builds && (
         <AddConnection
           workspaceId={workspaceId}

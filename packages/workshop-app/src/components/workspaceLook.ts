@@ -18,18 +18,19 @@ export type WorkspaceShape = keyof typeof WORKSPACE_SHAPES
 
 /**
  * The colours a workspace's icon can be drawn in, each with its name and the class that fills with
- * it. `contrast` is first: the page's opposite, which the icon is in until another is chosen. The
- * rest are `theme.css`'s.
+ * it, and the colour itself (`value`), for what is drawn in it some other way, such as a gadget's
+ * mark (`KindMark`). `contrast` is first: the page's opposite, which the icon is in until another is
+ * chosen. The rest are `theme.css`'s.
  */
 export const WORKSPACE_COLORS = {
-  contrast: { name: 'Default', fill: 'fill-kumo-contrast' },
-  red: { name: 'Red', fill: 'fill-(--color-workspace-red)' },
-  orange: { name: 'Orange', fill: 'fill-(--color-workspace-orange)' },
-  green: { name: 'Green', fill: 'fill-(--color-workspace-green)' },
-  teal: { name: 'Teal', fill: 'fill-(--color-workspace-teal)' },
-  blue: { name: 'Blue', fill: 'fill-(--color-workspace-blue)' },
-  purple: { name: 'Purple', fill: 'fill-(--color-workspace-purple)' },
-  pink: { name: 'Pink', fill: 'fill-(--color-workspace-pink)' },
+  contrast: { name: 'Default', fill: 'fill-kumo-contrast', value: 'var(--color-kumo-contrast)' },
+  red: { name: 'Red', fill: 'fill-(--color-workspace-red)', value: 'var(--color-workspace-red)' },
+  orange: { name: 'Orange', fill: 'fill-(--color-workspace-orange)', value: 'var(--color-workspace-orange)' },
+  green: { name: 'Green', fill: 'fill-(--color-workspace-green)', value: 'var(--color-workspace-green)' },
+  teal: { name: 'Teal', fill: 'fill-(--color-workspace-teal)', value: 'var(--color-workspace-teal)' },
+  blue: { name: 'Blue', fill: 'fill-(--color-workspace-blue)', value: 'var(--color-workspace-blue)' },
+  purple: { name: 'Purple', fill: 'fill-(--color-workspace-purple)', value: 'var(--color-workspace-purple)' },
+  pink: { name: 'Pink', fill: 'fill-(--color-workspace-pink)', value: 'var(--color-workspace-pink)' },
 } as const
 
 export type WorkspaceColor = keyof typeof WORKSPACE_COLORS

@@ -3,12 +3,18 @@ import { AttachmentKindIcon } from '@/blocks/AttachmentKindIcon'
 import { FormatIcon } from '@/components/FormatIcon'
 import { GoogleFileIcon } from '@/components/GoogleFileIcon'
 import { KindMark } from '@/components/KindMark'
-import type { AsideItem } from './asideItems'
+import { useGadgetColor } from '@/gadgets/useGadgetColor'
+import type { AsideItem, AsideOutput } from './asideItems'
 
-/** What kind of thing an item is, as a mark (`KindMark`): the output's format, the file's kind, or a Google file's own icon. */
+// A gadget's mark, in the colour chosen for it on its page.
+const GadgetMark = ({ output }: { output: AsideOutput }) => (
+  <FormatIcon name={output.format?.icon} color={useGadgetColor(output.workspaceId, output.workpieceId)} />
+)
+
+/** What kind of thing an item is, as a mark (`KindMark`): the output's format in its colour, the file's kind, or a Google file's own icon. */
 export const asideItemIcon = (item: AsideItem) => {
   if (item.kind === 'output') {
-    return item.output.type === 'worktree' ? <KindMark name="branch" /> : <FormatIcon name={item.output.format?.icon} />
+    return item.output.type === 'worktree' ? <KindMark name="branch" /> : <GadgetMark output={item.output} />
   }
   if (item.kind === 'connected') {
     const { fileKind } = item.connected

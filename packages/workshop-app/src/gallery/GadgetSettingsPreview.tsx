@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { ListChecksIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
-import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
+import { GadgetIconPicker } from '@/blocks/GadgetIconPicker'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
 import { PublishBlueprintDialog } from '@/blocks/PublishBlueprintDialog'
 import { PREVIEW_TIP_JAR } from './previewPictures'
 import { Button } from '@/components/Button'
+import type { FormatIconName } from '@/components/FormatIcon'
+import type { WorkspaceColor } from '@/components/workspaceLook'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -14,7 +16,8 @@ import { Section } from './Section'
 export const GadgetSettingsPreview = () => {
   const { report, say, later } = useReport()
   const [publishing, setPublishing] = useState<'works' | 'drawing' | 'fails'>()
-  const [kind, setKind] = useState<'plain' | 'dashboard' | 'fails'>()
+  const [icon, setIcon] = useState<FormatIconName>('kanban')
+  const [color, setColor] = useState<WorkspaceColor>('teal')
 
   return (
     <>
@@ -52,23 +55,10 @@ export const GadgetSettingsPreview = () => {
           return true
         }}
       />
-      <Section title="GadgetKindDialog (a plain app, one that is a Dashboard, and one whose save fails and stays open under why)">
-        <Button onClick={() => setKind('plain')}>What it is</Button>
-        <Button onClick={() => setKind('dashboard')}>What it is, a Dashboard</Button>
-        <Button onClick={() => setKind('fails')}>What it is, failing</Button>
+      <Section title="GadgetIconPicker (whoever builds: its icons and colours; whoever only uses it: its colours)">
+        <GadgetIconPicker icon={icon} color={color} onIconChange={(next) => { setIcon(next); say(`icon ${next}`) }} onColorChange={(next) => { setColor(next); say(`colour ${next}`) }} />
+        <GadgetIconPicker icon="chartBar" color={color} onColorChange={(next) => { setColor(next); say(`colour ${next}`) }} />
       </Section>
-      <GadgetKindDialog
-        key={kind}
-        open={kind !== undefined}
-        onOpenChange={(open) => { if (!open) setKind(undefined) }}
-        initial={kind === 'dashboard' ? { noun: 'Dashboard', icon: 'chartBar' } : undefined}
-        onSave={async (next) => {
-          await later()
-          if (kind === 'fails') throw new Error('The workspace is offline.')
-          say(next ? `now a ${next.noun} (${next.icon})` : 'now a plain app')
-          return true
-        }}
-      />
       <Section title="GadgetNoAccess (Request access opens a message to send, with the link; with the blueprint known, and without)">
         <div className="grid w-full gap-3 md:grid-cols-2">
           <div className="h-[480px] rounded-3xl bg-kumo-tint">

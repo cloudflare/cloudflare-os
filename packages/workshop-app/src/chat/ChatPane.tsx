@@ -158,6 +158,7 @@ export const ChatPane = ({
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
+      workspaceId,
       onReply: (item) => {
         setReply({ key: item.key, quote: quoteLine(item) })
         composer.current?.focus()
@@ -188,7 +189,7 @@ export const ChatPane = ({
       onOpenChat,
       chatHref,
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, onOpenMade, madeHref, outputHref, onSetUpConnection, onOpenChat, chatHref, decisions.run])
+  }, [actions, model, onOpenAttachment, onOpenOutput, onOpenMade, madeHref, outputHref, onSetUpConnection, onOpenChat, chatHref, decisions.run, workspaceId])
   const keep = chat.status === 'ready' ? chat.keep : undefined
 
   // What waits on the user is docked above the composer, by what it would change, rather than

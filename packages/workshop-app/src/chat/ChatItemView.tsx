@@ -13,10 +13,26 @@ import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import type { GoBack } from './changePoints'
 import type { ActionItem, MadeFile, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, ReportItem, UserItem } from './chatItems'
+import { useGadgetColor } from '@/gadgets/useGadgetColor'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
+
+// What the agent made, its mark in the colour chosen for it.
+const OutputRow = ({ item, handlers }: { item: OutputItem; handlers: ChatItemHandlers }) => (
+  <OutputCard
+    title={item.title}
+    kind={item.type}
+    draft={item.draft}
+    format={item.format}
+    color={useGadgetColor(handlers.workspaceId ?? '', item.workpieceId)}
+    href={handlers.outputHref?.(item)}
+    onOpen={() => handlers.onOpenOutput(item)}
+  />
+)
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
 export type ChatItemHandlers = {
+  /** The workspace the chat is in, whose gadgets' marks are drawn in the colours chosen for them. */
+  workspaceId?: string
   /** Start a reply to a message. */
   onReply: (item: UserItem | AssistantItem | ReportItem) => void
   /** Go to the message a reply answers. */
@@ -142,16 +158,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
         />
       )
     case 'output':
-      return (
-        <OutputCard
-          title={item.title}
-          kind={item.type}
-          draft={item.draft}
-          format={item.format}
-          href={handlers.outputHref?.(item)}
-          onOpen={() => handlers.onOpenOutput(item)}
-        />
-      )
+      return <OutputRow item={item} handlers={handlers} />
     case 'action': {
       const request = { title: item.title, description: item.description, resource: item.resource, fields: item.fields, open: isOpen, onToggle: toggle }
       if (item.made) {

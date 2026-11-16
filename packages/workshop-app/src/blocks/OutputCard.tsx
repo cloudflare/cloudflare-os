@@ -5,6 +5,7 @@ import { CARD } from '@/components/Card'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { GoogleFileIcon } from '@/components/GoogleFileIcon'
 import { LinkButton } from '@/components/LinkButton'
+import type { WorkspaceColor } from '@/components/workspaceLook'
 import type { ConnectedFileKind } from '@/files/connectedFile'
 
 export type OutputCardProps = {
@@ -16,6 +17,8 @@ export type OutputCardProps = {
   draft?: boolean
   /** What the gadget is, when its blueprint says; otherwise it reads as an app. */
   format?: { noun: string; icon: FormatIconName }
+  /** The colour its mark is drawn in, as chosen for the gadget; none, ink. */
+  color?: WorkspaceColor
   /** The output's own page, so that it can be opened in another tab. */
   href?: string
   /** Opens it in place, such as beside the chat. */
@@ -32,7 +35,7 @@ const caption = ({ kind, file, draft, format }: Pick<OutputCardProps, 'kind' | '
 }
 
 /** Something the agent made that can be opened: a document, an app, a checkout of code, a Google file. */
-export const OutputCard = ({ title, kind, file, draft, format, href, onOpen }: OutputCardProps) => (
+export const OutputCard = ({ title, kind, file, draft, format, color, href, onOpen }: OutputCardProps) => (
   <LinkButton
     href={href}
     onClick={onOpen}
@@ -40,7 +43,7 @@ export const OutputCard = ({ title, kind, file, draft, format, href, onOpen }: O
   >
     <span className="grid size-14 shrink-0 place-items-center rounded-[13px] bg-kumo-fill text-kumo-subtle">
       {file ? <GoogleFileIcon kind={file} className="size-7" />
-        : kind === 'worktree' ? <GitBranchIcon aria-hidden="true" className="size-6" /> : <FormatIcon name={format?.icon} className="size-6" />}
+        : kind === 'worktree' ? <GitBranchIcon aria-hidden="true" className="size-6" /> : <FormatIcon name={format?.icon} color={color} className="size-6" />}
     </span>
     <span className="flex min-w-0 flex-1 flex-col gap-0.5">
       <span className="truncate font-medium text-kumo-default">{title}</span>

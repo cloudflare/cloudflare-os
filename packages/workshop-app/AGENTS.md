@@ -327,7 +327,10 @@ padding meets share one rounded run, so groups never notch where they meet.
 and worked on, and what others shared with them (`useLibraryEntries`, see The Library, below), in
 tabs, the way the Workspaces page lists workspaces: what waits on the viewer's approval first, then
 the starred, then the rest in the order chosen, as rows (`LibraryRow`) or cards (`LibraryCard`,
-which has no room to say which workspace an entry is in), both with More and a star. Recent has
+which has no room to say which workspace an entry is in), both with More and a star. A card with
+a picture of its own fills a well with it; one with a glimpse (`useLibraryPicture`: a gadget's
+screen, a file's first page) stands the glimpse in the well as a sheet, which lifts when pointed at;
+any other has its icon. Recent has
 the starred and the latest few, in no other order. `library/libraryList.ts` (plain, tested) says
 how the other tabs can be ordered (last active; name; type, each type a group of its own however
 few it has), narrowed (starred, whose it is, and its type and its workspace, each a menu of its
@@ -438,9 +441,15 @@ while it works and staying open under why if it fails. A dialog (`Dialog`) grows
 arrives in the conversation and dims and makes inert the window beneath. A chat's settings page
 (`?tab=settings`) has its workspace's notifications, which cannot be muted one chat at a time and
 say so, what it has used (`chat/usage.ts`), and deleting it.
-A gadget's settings page starts with what it is (`GadgetKindDialog`): a kind such as "Dashboard"
-and one of the format icons, which the agent can also give it (createGadget's `format`,
-`setGadgetFormat`) and which a blueprint published from it keeps. With no kind it is a plain app.
+A gadget's settings page starts with its mark, a button as a workspace's icon is
+(`GadgetIconPicker`, the same menu): the format icons (`GADGET_ICONS`) and the workspace colours.
+Its icon is the server's (`setKind`), for whoever may build in its workspace, and goes with its
+kind, a noun such as "Dashboard" that the agent can also give it (createGadget's `format`,
+`setGadgetFormat`) and that a blueprint published from it keeps: a gadget given an icon is called
+as that icon is, unless it was called something of its own, and a window again is a plain app.
+Its colour is this device's, as a workspace's look is (`gadgets/GadgetColors.ts`,
+`useGadgetColor`), for anyone, and every mark of the gadget is drawn in it: `asideItemIcon`, the
+chat's `OutputCard`.
 
 ## Search and the account
 

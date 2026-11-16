@@ -1,10 +1,11 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
+import { WORKSPACE_COLORS, type WorkspaceColor } from './workspaceLook'
 
 // Ink is the page's opposite, as a workspace's folder (`WorkspaceIcon`) and a chat's cloud
 // (`ChatMark`) are drawn: black in light, white in dark. What is cut out of it is the page's own
 // colour, and what is drawn into it, a shade of that over the ink, as the folder's front is.
-const INK = 'fill-kumo-contrast'
+const INK = 'fill-(--mark-ink)'
 const CUT = { fill: 'currentColor' }
 const SHADE = { fill: 'currentColor', fillOpacity: 0.18 }
 const LINE = { stroke: 'currentColor', strokeWidth: 2.5, strokeLinecap: 'round', strokeLinejoin: 'round', fill: 'none' } as const
@@ -95,7 +96,7 @@ const MARKS = {
   // A flow: one step leading to the next.
   flow: (
     <>
-      <path d="M7.5 13v6a5 5 0 0 0 5 5H19" {...LINE} className="stroke-kumo-contrast" stroke={undefined} strokeWidth={3} />
+      <path d="M7.5 13v6a5 5 0 0 0 5 5H19" {...LINE} className="stroke-(--mark-ink)" stroke={undefined} strokeWidth={3} />
       <rect x="1" y="1" width="13" height="13" rx="4.5" className={INK} />
       <rect x="18" y="18" width="13" height="13" rx="4.5" className={INK} />
     </>
@@ -117,7 +118,7 @@ const MARKS = {
   // A branch: a line of work leaving another, to come back to it.
   branch: (
     <>
-      <path d="M9 9v14M23 13.5c0 4.5-3 7-7 7h-3a4 4 0 0 0-4 4" {...LINE} className="stroke-kumo-contrast" stroke={undefined} strokeWidth={3} />
+      <path d="M9 9v14M23 13.5c0 4.5-3 7-7 7h-3a4 4 0 0 0-4 4" {...LINE} className="stroke-(--mark-ink)" stroke={undefined} strokeWidth={3} />
       <circle cx="9" cy="6" r="4.5" className={INK} />
       <circle cx="9" cy="26" r="4.5" className={INK} />
       <circle cx="23" cy="10" r="4.5" className={INK} />
@@ -156,7 +157,7 @@ const MARKS = {
   map: (
     <>
       <path d="M3 7.5 11 4.5l10 3 8-3v20l-8 3-10-3-8 3Z" className={INK} stroke={undefined} />
-      <path d="M3 7.5 11 4.5l10 3 8-3v20l-8 3-10-3-8 3Z" {...LINE} className="stroke-kumo-contrast" stroke={undefined} strokeWidth={4} />
+      <path d="M3 7.5 11 4.5l10 3 8-3v20l-8 3-10-3-8 3Z" {...LINE} className="stroke-(--mark-ink)" stroke={undefined} strokeWidth={4} />
       <path d="M11 4.5 21 7.5v20l-10-3Z" {...SHADE} />
     </>
   ),
@@ -187,8 +188,8 @@ const MARKS = {
   // An agent: a spark, with a smaller one beside it in shade.
   agent: (
     <>
-      <path d="M14 3.5C15 10 18 13.5 25.5 16 18 18.5 15 22 14 28.5 13 22 10 18.5 2.5 16 10 13.5 13 10 14 3.5Z" {...LINE} className="fill-kumo-contrast stroke-kumo-contrast" stroke={undefined} fill={undefined} strokeWidth={2.5} />
-      <path d="M25.5 1.5c.5 2.5 1.5 3.5 4 4-2.5.5-3.5 1.5-4 4-.5-2.5-1.5-3.5-4-4 2.5-.5 3.5-1.5 4-4Z" {...LINE} className="fill-kumo-contrast stroke-kumo-contrast" stroke={undefined} fill={undefined} strokeWidth={1.5} opacity={0.45} />
+      <path d="M14 3.5C15 10 18 13.5 25.5 16 18 18.5 15 22 14 28.5 13 22 10 18.5 2.5 16 10 13.5 13 10 14 3.5Z" {...LINE} className="fill-(--mark-ink) stroke-(--mark-ink)" stroke={undefined} fill={undefined} strokeWidth={2.5} />
+      <path d="M25.5 1.5c.5 2.5 1.5 3.5 4 4-2.5.5-3.5 1.5-4 4-.5-2.5-1.5-3.5-4-4 2.5-.5 3.5-1.5 4-4Z" {...LINE} className="fill-(--mark-ink) stroke-(--mark-ink)" stroke={undefined} fill={undefined} strokeWidth={1.5} opacity={0.45} />
     </>
   ),
   // People: one in front of another, parted from them.
@@ -280,10 +281,20 @@ export const KIND_MARKS = Object.keys(MARKS) as KindMarkName[]
  * mark in the language of the workspace's folder and the chat's cloud: a soft silhouette in ink,
  * the page's opposite, with what tells it apart cut out of it or set into it in shade. Sized by
  * what it is in, as a Phosphor icon is (1em unless told), with room around it so that, solid, it
- * weighs the same as an outlined icon beside it.
+ * weighs the same as an outlined icon beside it. In `color`, one of a workspace's icon's colours,
+ * the ink is that colour instead, as a gadget's mark is once the user has chosen one for it.
  */
-export const KindMark = ({ name, className }: { name: KindMarkName; className?: string }) => (
-  <svg viewBox="-2 -2 36 36" width="1em" height="1em" fill="none" aria-hidden="true" className={cn('shrink-0 text-kumo-inverse', className)}>
+export const KindMark = ({ name, color = 'contrast', className }: { name: KindMarkName; color?: WorkspaceColor; className?: string }) => (
+  <svg
+    viewBox="-2 -2 36 36"
+    width="1em"
+    height="1em"
+    fill="none"
+    aria-hidden="true"
+    // In a colour, what is cut out of the ink is the colour's own light, as a workspace's letters are.
+    style={{ '--mark-ink': WORKSPACE_COLORS[color].value } as CSSProperties}
+    className={cn('shrink-0', color === 'contrast' ? 'text-kumo-inverse' : 'text-(--color-workspace-ink)', className)}
+  >
     {MARKS[name]}
   </svg>
 )

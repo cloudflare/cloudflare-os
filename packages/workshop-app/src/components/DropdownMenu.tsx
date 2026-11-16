@@ -149,6 +149,8 @@ const DropdownMenuRoot = ({
             }}
             className={cn(
               'dropdown-menu relative isolate max-h-[min(var(--available-height),24rem)] rounded-[21px] text-kumo-default outline-none',
+              // Swatches are shown whole, as far as the window allows: scrolled, some would be hidden.
+              'has-data-swatches:max-h-(--available-height)',
               // A width of its own, or it would change with the options a picker is narrowed to.
               picker ? 'w-64 max-w-(--available-width)' : 'w-max max-w-[min(var(--available-width),28rem)]',
             )}
@@ -247,7 +249,7 @@ type DropdownMenuSwatchGroupProps<Value extends string> = {
 
 /** Choices that are drawn rather than named, such as icons or colours, four to a line, of which one is chosen. */
 const DropdownMenuSwatchGroup = <Value extends string>({ value, onValueChange, 'aria-label': label, children }: DropdownMenuSwatchGroupProps<Value>) => (
-  <Menu.RadioGroup value={value} onValueChange={(next: Value) => onValueChange(next)} aria-label={label} className="grid grid-cols-4">{children}</Menu.RadioGroup>
+  <Menu.RadioGroup value={value} onValueChange={(next: Value) => onValueChange(next)} aria-label={label} data-swatches="" className="grid grid-cols-4">{children}</Menu.RadioGroup>
 )
 
 type DropdownMenuSwatchProps = {
