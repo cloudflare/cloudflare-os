@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { API_SESSION_HEADER, openApiSessionObject, type ApiSessionDurableObject } from "../src/server.js";
+import { API_SESSION_HEADER, openApiSessionObject } from "../src/api-session.js";
+import type { ApiSessionDurableObject } from "../src/server.js";
 // Load the whole backend (the pool's `main`) up front. Otherwise the pool loads it on the first
 // call into the Durable Object, and that slow load counts against the first test's timeout.
 import "./test-worker.js";

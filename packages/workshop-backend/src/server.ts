@@ -35,6 +35,7 @@ import { deployServiceInstall, routerVersionTag } from "./deployment-updates.js"
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, writeWorkspacePlacement } from "./workspace-placements.js";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
+import { openApiSessionObject, API_SESSION_HEADER, type ApiAccessSession } from "./api-session.js";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -42,7 +43,6 @@ const logger = createWorkshopLogger("workshop.server");
 // an ApiSessionDurableObject (WebSocket sessions).
 type ApiContext = ExecutionContext | DurableObjectState;
 
-type ApiAccessSession = { payload: JWTPayload; jwt: string; email: string };
 
 // Set once we've asked the AdminSettings DO to install the bundled blueprints (see the
 // fetch handler), so later requests skip the call. The DO holds the real answer.
@@ -1371,25 +1371,6 @@ function newWorkersWebSocketRpcResponse(
 
 // =======================================================================================
 // WebSocket API sessions
-
-/**
- * Carries the verified Cloudflare Access session from the fetch handler to the session object.
- * Only the fetch handler can reach the object (it has no route of its own), and it always sets
- * this header itself, so a client cannot supply it.
- */
-export const API_SESSION_HEADER = "X-Gadgets-Api-Session";
-
-/**
- * Hands a WebSocket upgrade to a fresh ApiSessionDurableObject, with the Access session the fetch
- * handler verified (null when Access is off). The object is created next to this isolate.
- */
-export function openApiSessionObject(
-    req: Request, sessions: DurableObjectNamespace<ApiSessionDurableObject>,
-    accessSession: ApiAccessSession | undefined): Promise<Response> {
-  let headers = new Headers(req.headers);
-  headers.set(API_SESSION_HEADER, JSON.stringify(accessSession ?? null));
-  return sessions.get(sessions.newUniqueId()).fetch(new Request(req, { headers }));
-}
 
 function abortSessionCallback() {
   // HACK: Implement `abortSession` callback by closing the websocket.
