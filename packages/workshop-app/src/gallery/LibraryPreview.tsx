@@ -1,9 +1,11 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { ArrowSquareOutIcon, ArrowUpRightIcon, FileDocIcon, FileImageIcon, FilePdfIcon, FileAudioIcon, FileXlsIcon, MinusCircleIcon, StarIcon, TrashIcon } from '@phosphor-icons/react'
 import { ConnectedFileView } from '@/blocks/ConnectedFileView'
 import { LibraryCard } from '@/blocks/LibraryCard'
 import { LibraryRow, type LibraryAction } from '@/blocks/LibraryRow'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NewFormatMenu } from '@/blocks/NewFormatMenu'
 import { documentFixture, longDocumentFixture, presentationFixture, spreadsheetFixture } from '@/blocks/resource-preview/fixtures'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { FormatIcon } from '@/components/FormatIcon'
@@ -136,6 +138,28 @@ const LibraryItemsPreview = () => {
   )
 }
 
+const FORMATS: BlueprintOutput[] = [
+  { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' },
+  { id: 'spreadsheet', noun: 'Spreadsheet', plural: 'Spreadsheets', icon: 'table' },
+  { id: 'presentation', noun: 'Presentation', plural: 'Presentations', icon: 'presentation' },
+]
+
+// New with formats to choose between, as the Library page has it and as a workspace's library has it, and with none.
+const NewFormatMenuPreview = () => {
+  const { report, say } = useReport()
+  const onNew = (format?: BlueprintOutput) => say(format ? `new ${format.noun.toLowerCase()}` : 'new chat')
+  return (
+    <>
+      <div className="flex flex-wrap gap-3">
+        <NewFormatMenu formats={FORMATS} onNew={onNew} />
+        <NewFormatMenu formats={FORMATS} onNew={onNew} primary={false} />
+        <NewFormatMenu formats={[]} onNew={onNew} />
+      </div>
+      <p className="w-full text-sm text-kumo-subtle">{report}</p>
+    </>
+  )
+}
+
 // As tall as the pane beside a chat would give it.
 const Pane = ({ children }: { children: ReactNode }) => (
   <div className="flex h-[30rem] w-full flex-col overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">{children}</div>
@@ -146,6 +170,9 @@ export const LibraryPreview = () => (
   <>
     <Section title="GroupedList, CardGrid, LibraryRow, LibraryCard, ContextMenu (the Library’s entries as rows or cards, latest first or by name, searched; star one to see it shrink out of its stretch of time and grow into the starred group, and unstar it to send it back; More and the star slide out when pointed at, a starred one keeps its star, and a right-click opens the same menu as More where it was clicked; an image fills its icon’s place; the review is a gadget the viewer builds, with changes waiting, so it says so in place of when, and can be deleted once asked)">
       <LibraryItemsPreview />
+    </Section>
+    <Section title="NewFormatMenu (the Library page’s New, its formats in a menu that opens in its place; a workspace’s, beside its New chat, not the page’s main action; and with no formats, starting a chat at once)">
+      <NewFormatMenuPreview />
     </Section>
     <Section title="ConnectedFileView (a Google Doc, Sheet and Slides deck beside the page, read only and in their own look, as they will be once the changes waiting are made, counted in a pill; a long Doc broken into Letter pages where Docs would break it, a manual page break included; and each while it loads, a blank one of its kind where it will be. These are fixtures: nothing is fetched from Google)">
       <Column>

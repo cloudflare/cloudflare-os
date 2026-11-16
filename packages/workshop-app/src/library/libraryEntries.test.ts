@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { FavoriteItem, OutputSummary } from '@gadgets/workshop-shared/api'
-import { favoriteKey, libraryEntries, libraryGroups, removalKey, type LibrarySources, type WorkspaceFile } from './libraryEntries'
+import { favoriteKey, libraryEntries, libraryGroups, removalKey, type LibraryEntry, type LibraryGroup, type LibrarySources, type WorkspaceFile } from './libraryEntries'
+import { formatActivity } from '@/workspaces/formatActivity'
 import type { ConnectedFile } from './connectedFiles'
 
 const now = new Date(2026, 10, 14, 12)
@@ -105,6 +106,10 @@ describe('libraryEntries', () => {
   })
 })
 
+// As an order arranges them: one group, keeping the order they came in.
+const asGiven = (rest: LibraryEntry[]) => (rest.length > 0 ? [{ key: 'all', label: 'All', entries: rest.map((value) => ({ value })) }] : [])
+const titles = (group: LibraryGroup) => group.rows.map((row) => row.entry.title)
+
 describe('libraryGroups', () => {
   const favorites: FavoriteItem[] = [{ kind: 'app', workspaceId: 'w1', workpieceId: 3, title: 'Zeta', starred: hoursAgo(1) }]
   const entries = libraryEntries(sources({
@@ -113,25 +118,19 @@ describe('libraryGroups', () => {
     favorites,
   }))
 
-  it('leads with what is starred, then groups the rest by when', () => {
-    const groups = libraryGroups(entries, { tab: 'gadgets', sort: 'recent' }, now)
-    expect(groups.map((group) => group.label)).toEqual(['Starred', 'Today', 'October'])
-    expect(groups[1].rows.map((row) => row.entry.title)).toEqual(['beta', 'Alpha'])
+  it('leads with what is starred, in the user’s order, then the rest as the order arranges them', () => {
+    const groups = libraryGroups(entries.gadgets, { starOrder: [], arrange: asGiven, orderId: 'active', now })
+    expect(groups.map(({ key, label }) => [key, label])).toEqual([['starred', 'Starred'], ['active:all', 'All']])
+    expect(titles(groups[1])).toEqual(['beta', 'Alpha', 'Older'])
+    expect(groups[1].rows[0].time).toBe(formatActivity(hoursAgo(1), now))
   })
 
-  it('puts the rest in one group by name when asked', () => {
-    const groups = libraryGroups(entries, { tab: 'gadgets', sort: 'name' }, now)
-    expect(groups.map((group) => group.label)).toEqual(['Starred', 'A to Z'])
-    expect(groups[1].rows.map((row) => row.entry.title)).toEqual(['Alpha', 'beta', 'Older'])
+  it('takes the starred it is given, as Recent has some that are not listed', () => {
+    const groups = libraryGroups(entries.files, { starred: entries.favorites, starOrder: [], arrange: asGiven, orderId: 'recent', now })
+    expect(titles(groups[0])).toEqual(['Zeta'])
   })
 
-  it('shows favorites, then what was worked on last, across gadgets and files', () => {
-    const groups = libraryGroups(entries, { tab: 'favorites', sort: 'recent' }, now)
-    expect(groups.map((group) => group.label)).toEqual(['Starred', 'Latest'])
-    expect(groups[1].rows.map((row) => row.entry.title)).toEqual(['beta', 'Alpha', 'notes.pdf', 'Older'])
-  })
-
-  it('leads with what waits on the viewer to approve, out of the groups it would be in, but not what they only use', () => {
+  it('leads with what waits on the viewer to approve, out of the groups it would be in, but not what they only use, nor for files', () => {
     const waiting = libraryEntries(sources({
       outputs: [
         { ...output(1, 'beta', 1), waiting: 2 },
@@ -142,18 +141,11 @@ describe('libraryGroups', () => {
       favorites,
     }))
     expect(waiting.gadgets.map(({ title, waiting: count }) => [title, count])).toEqual([['beta', 2], ['Alpha', undefined], ['Zeta', 1], ['Shared', undefined]])
-    for (const tab of ['gadgets', 'favorites'] as const) {
-      const groups = libraryGroups(waiting, { tab, sort: 'recent' }, now)
-      expect(groups[0]).toMatchObject({ key: 'waiting', label: 'Needs approval' })
-      expect(groups[0].rows.map((row) => row.entry.title)).toEqual(['beta', 'Zeta'])
-      // Zeta, starred, is shown once, where it waits.
-      expect(groups.slice(1).flatMap((group) => group.rows.map((row) => row.entry.title))).not.toContain('Zeta')
-    }
-    expect(libraryGroups(waiting, { tab: 'files', sort: 'recent' }, now).some((group) => group.key === 'waiting')).toBe(false)
-  })
-
-  it('keeps what has every word searched for, in its name or its workspace’s', () => {
-    expect(libraryGroups(entries, { tab: 'files', sort: 'recent', query: 'NOTES home' }, now)).toHaveLength(1)
-    expect(libraryGroups(entries, { tab: 'files', sort: 'recent', query: 'nothing' }, now)).toEqual([])
+    const groups = libraryGroups(waiting.gadgets, { starred: waiting.favorites, starOrder: [], arrange: asGiven, orderId: 'active', now })
+    expect(groups[0]).toMatchObject({ key: 'waiting', label: 'Needs approval' })
+    expect(titles(groups[0])).toEqual(['beta', 'Zeta'])
+    // Zeta, starred, is shown once, where it waits.
+    expect(groups.slice(1).flatMap(titles)).not.toContain('Zeta')
+    expect(libraryGroups(waiting.gadgets, { waiting: false, starOrder: [], arrange: asGiven, orderId: 'active', now }).some((group) => group.key === 'waiting')).toBe(false)
   })
 })

@@ -5,9 +5,8 @@ import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BlueprintsTab } from '@/blueprints/BlueprintsTab'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { NewFormatMenu } from '@/blocks/NewFormatMenu'
 import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { FormatIcon } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import type { ListOrder } from '@/components/listView'
 import { Tabs } from '@/components/Tabs'
@@ -20,13 +19,12 @@ import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { Skill } from '@/skills/SkillsLibrary'
 import { SkillsTab } from '@/skills/SkillsTab'
-import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
-import type { LibraryEntry, LibraryGroup, LibrarySort, LibraryTab } from './libraryEntries'
+import { libraryGroups, type LibraryEntry, type LibraryGroup, type LibrarySort, type LibraryTab } from './libraryEntries'
 import { LibraryEntryList } from './LibraryEntryList'
 import { libraryList } from './libraryList'
-import { byStarOrder, withStarOrder } from './libraryStars'
+import { withStarOrder } from './libraryStars'
 import { useLibraryEntries } from './useLibraryEntries'
 import { startableFormats, useOutputFormats } from './useOutputFormats'
 
@@ -90,8 +88,9 @@ const OTHER_ORDERS: Array<ListOrder<never> & { id: LibrarySort }> = [
 
 const latest = (a: LibraryEntry, b: LibraryEntry) => b.at.getTime() - a.at.getTime()
 
-// A row of a group, with when it was: as its order says, else when it was last worked on.
-const timed = (entry: LibraryEntry, time?: string) => ({ entry, time: time ?? formatActivity(entry.at) })
+// What Recent has after what leads it: the latest few worked on.
+const recentRest = (rest: LibraryEntry[]) =>
+  rest.length > 0 ? [{ key: 'latest', label: 'Latest', entries: rest.toSorted(latest).slice(0, RECENT).map((value) => ({ value })) }] : []
 
 /**
  * Everything the user's workspaces made, were sent and worked on, and those shared with them, in
@@ -146,23 +145,13 @@ export const LibraryPane = ({ tab, onTabChange, onOpen, href, onNew, onOpenSkill
   // Only with all of the starred there: putting some of them in order would lose the others' places.
   const reorderStarred = list.narrowed ? undefined : (order: string[]) => keepOrder(withStarOrder(starOrder, order))
 
-  const groups = ((): LibraryGroup[] => {
-    if (!entryTab) return []
-    const shown = list.narrow(listed)
-    // What waits on the viewer leads, out of the groups it would be in otherwise, so it is seen first.
-    const waiting = entryTab === 'files' ? [] : shown.filter((entry) => entry.waiting)
-    const leads = (entry: LibraryEntry) => waiting.includes(entry)
+  const groups: LibraryGroup[] = entryTab ? libraryGroups(list.narrow(listed), {
     // Recent's starred include what the listings do not have, from what starring it recorded.
-    const starred = byStarOrder((entryTab === 'favorites' ? list.narrow(favorites) : shown.filter((entry) => entry.starred)).filter((entry) => !leads(entry)), starOrder)
-    const rest = shown.filter((entry) => !entry.starred && !leads(entry))
-    return [
-      ...(waiting.length > 0 ? [{ key: 'waiting', label: 'Needs approval', rows: waiting.toSorted(latest).map((entry) => timed(entry)) }] : []),
-      ...(starred.length > 0 ? [{ key: 'starred', label: 'Starred', rows: starred.map((entry) => timed(entry)) }] : []),
-      ...(entryTab === 'favorites'
-        ? (rest.length > 0 ? [{ key: 'recent', label: 'Latest', rows: rest.slice(0, RECENT).map((entry) => timed(entry)) }] : [])
-        : list.arrange(rest).map(({ key, label, entries }) => ({ key: `${list.order.id}:${key}`, label, rows: entries.map(({ value, time }) => timed(value, time)) }))),
-    ]
-  })()
+    starred: entryTab === 'favorites' ? list.narrow(favorites) : undefined,
+    starOrder,
+    waiting: entryTab !== 'files',
+    ...(entryTab === 'favorites' ? { arrange: recentRest, orderId: 'recent' } : { arrange: list.arrange, orderId: list.order.id }),
+  }) : []
 
   // Automations are read from every workspace the user builds in: one only looked at keeps them to itself.
   const workspaces = useWorkspaces()
@@ -171,21 +160,8 @@ export const LibraryPane = ({ tab, onTabChange, onOpen, href, onNew, onOpenSkill
     [workspaces],
   )
 
-  const startable = startableFormats(offers)
   const action: ReactNode = entryTab
-    ? startable.length > 0
-      ? (
-          <DropdownMenu label="New" caret triggerVariant="primary" side={narrow ? 'top' : 'bottom'} align="end" inPlace>
-            {startable.map((format) => (
-              <DropdownMenu.Item key={format.id} label={format.noun} onSelect={() => onNew(format)}>
-                <FormatIcon name={format.icon} className="shrink-0" />
-                {format.noun}
-              </DropdownMenu.Item>
-            ))}
-          </DropdownMenu>
-        )
-      // With no formats to choose between, or until they are known, it starts a chat at once.
-      : <Button variant="primary" onClick={() => onNew()}>New</Button>
+    ? <NewFormatMenu formats={startableFormats(offers)} onNew={onNew} side={narrow ? 'top' : 'bottom'} />
     : tab === 'skills'
       ? <Button variant="primary" icon={PlusIcon} onClick={() => setCreatingSkill(true)}>New skill</Button>
       : tab === 'blueprints'

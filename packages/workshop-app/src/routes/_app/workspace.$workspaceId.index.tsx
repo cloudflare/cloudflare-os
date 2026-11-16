@@ -46,6 +46,8 @@ function Workspace() {
       entryHref={(entry) => router.buildLocation(page(entry)).href}
       automationLink={automationLink}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId } })}
+      // As the Library page's New starts one on the home page, here in this workspace.
+      onNew={(format) => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { format: format?.id } })}
       onDeleted={() => navigate({ to: '/', replace: true })}
       link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
     />

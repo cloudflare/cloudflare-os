@@ -334,7 +334,13 @@ any other has its icon. Recent has
 the starred and the latest few, in no other order. `library/libraryList.ts` (plain, tested) says
 how the other tabs can be ordered (last active; name; type, each type a group of its own however
 few it has), narrowed (starred, whose it is, and its type and its workspace, each a menu of its
-own) and searched.
+own) and searched, and `libraryGroups` (`library/libraryEntries.ts`) groups them: what waits on
+the viewer, the starred, then the order's groups.
+
+A workspace's Library tab (`WorkspaceLibraryList`) is the same list of that workspace alone, in no
+tabs, under the same controls, its New (`NewFormatMenu`, as the Library page's) starting a chat in
+the workspace as the format chosen (`/workspace/$workspaceId/new?format=`); it is a secondary
+button there, beside the page's New chat, and only for whoever may build in it.
 
 The types are apps (a gadget made as no format), then the formats the deployment offers
 (`listOutputFormats()`, `useOutputFormats`), in its order and whether or not anything has been made

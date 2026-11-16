@@ -1,7 +1,8 @@
 import type { BlueprintOutput, ChatFileSummary, FavoriteItem, FavoriteItemRef, FavoriteItemSpec, LibraryItemRef, OutputSummary } from '@gadgets/workshop-shared/api'
 import { formatAsideRef, type AsideItem } from '@/aside/asideItems'
-import { groupByTime } from '@/chat/timeGroups'
+import type { ArrangedGroup } from '@/components/listView'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { byStarOrder } from './libraryStars'
 import type { ConnectedFile } from './connectedFiles'
 import { waitingOn } from './Waiting'
 
@@ -215,58 +216,36 @@ export type LibraryGroup = {
   rows: Array<{ entry: LibraryEntry; time?: string }>
 }
 
-// Recent shows what is starred, then this many of what was worked on last, to reach for.
-const RECENT = 8
-
-const matches = (entry: LibraryEntry, query: string) => {
-  const words = query.toLocaleLowerCase().split(/\s+/).filter(Boolean)
-  const text = `${entry.title} ${entry.workspaceTitle ?? ''}`.toLocaleLowerCase()
-  return words.every((word) => text.includes(word))
-}
-
-const byName = (a: LibraryEntry, b: LibraryEntry) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true })
+/** A row of a Library list, with when it was: as its order says, else when it was last worked on. */
+export const libraryRow = (entry: LibraryEntry, time?: string, now: Date = new Date()) => ({ entry, time: time ?? formatActivity(entry.at, now) })
 
 /**
- * What a tab lists, in groups: gadgets with changes waiting on the viewer to approve lead, then
- * what is starred, then the rest, latest first and grouped by when (as `groupByTime` groups), or
- * by name in one group. Recent (the `favorites` tab) has its starred items, then the latest worked on; `all`, as a workspace lists them, has gadgets and files
- * together. A search keeps what has every word of it in its name or its workspace's.
+ * A Library list in groups. What waits on the viewer to approve leads, out of the groups it would
+ * be in otherwise, so that it is seen first; but not for a list of files (`waiting: false`), which
+ * have nothing to approve. Then the starred, those of `shown` unless they are given (`starred`, as
+ * Recent has some that are not listed), in the order the user put them in (`starOrder`, see
+ * `byStarOrder`). Then the rest, as the list's order groups them (`arrange`, its groups' keys
+ * under the order's `orderId`).
  */
 export const libraryGroups = (
-  entries: LibraryEntries,
-  { tab, sort, query = '' }: { tab: LibraryTab | 'all'; sort: LibrarySort; query?: string },
-  now: Date = new Date(),
+  shown: LibraryEntry[],
+  { starred, starOrder, waiting: leads = true, arrange, orderId, now = new Date() }: {
+    starred?: LibraryEntry[]
+    starOrder: string[]
+    waiting?: boolean
+    arrange: (rest: LibraryEntry[]) => ArrangedGroup<LibraryEntry>[]
+    orderId: string
+    now?: Date
+  },
 ): LibraryGroup[] => {
-  const found = (list: LibraryEntry[]) => (query.trim() ? list.filter((entry) => matches(entry, query)) : list)
-  const timed = (entry: LibraryEntry) => ({ entry, time: formatActivity(entry.at, now) })
-  const ordered = (list: LibraryEntry[]) => (sort === 'name' ? list.toSorted(byName) : list)
-  const starredGroup = (list: LibraryEntry[]): LibraryGroup[] =>
-    list.length > 0 ? [{ key: 'starred', label: 'Starred', rows: ordered(list).map(timed) }] : []
-  // What waits on the viewer leads, out of the groups it would be in otherwise, so it is seen first.
-  const waiting = tab === 'files' ? [] : found(entries.gadgets.filter((entry) => entry.waiting))
-  const waitingKeys = new Set(waiting.map(({ key }) => key))
-  const waits = (entry: LibraryEntry) => waitingKeys.has(entry.key)
-  const waitingGroup: LibraryGroup[] = waiting.length > 0
-    ? [{ key: 'waiting', label: 'Needs approval', rows: waiting.toSorted(latest).map(timed) }]
-    : []
-
-  if (tab === 'favorites') {
-    const starred = found(entries.favorites).filter((entry) => !waits(entry))
-    const rest = found([...entries.gadgets, ...entries.files].filter((entry) => !entry.starred && !waits(entry)))
-      .toSorted(latest)
-      .slice(0, RECENT)
-    return [...waitingGroup, ...starredGroup(starred), ...(rest.length > 0 ? [{ key: 'recent', label: 'Latest', rows: rest.map(timed) }] : [])]
-  }
-
-  const listed = tab === 'gadgets' ? entries.gadgets : tab === 'files' ? entries.files : [...entries.gadgets, ...entries.files].toSorted(latest)
-  const all = found(listed).filter((entry) => !waits(entry))
-  const rest = all.filter((entry) => !entry.starred)
-  const groups = [...waitingGroup, ...starredGroup(all.filter((entry) => entry.starred))]
-  if (rest.length === 0) return groups
-  if (sort === 'name') return [...groups, { key: 'name', label: 'A to Z', rows: rest.toSorted(byName).map(timed) }]
+  const waiting = leads ? shown.filter((entry) => entry.waiting) : []
+  const waits = new Set(waiting.map(({ key }) => key))
+  const stars = byStarOrder((starred ?? shown.filter((entry) => entry.starred)).filter(({ key }) => !waits.has(key)), starOrder)
+  const rest = shown.filter((entry) => !entry.starred && !waits.has(entry.key))
+  const row = (entry: LibraryEntry) => libraryRow(entry, undefined, now)
   return [
-    ...groups,
-    ...groupByTime(rest.map((entry) => ({ value: entry, at: entry.at })), now)
-      .map(({ key, label, entries: within }) => ({ key: `time:${key}`, label, rows: within.map(({ value, time }) => ({ entry: value, time })) })),
+    ...(waiting.length > 0 ? [{ key: 'waiting', label: 'Needs approval', rows: waiting.toSorted(latest).map(row) }] : []),
+    ...(stars.length > 0 ? [{ key: 'starred', label: 'Starred', rows: stars.map(row) }] : []),
+    ...arrange(rest).map(({ key, label, entries }) => ({ key: `${orderId}:${key}`, label, rows: entries.map(({ value, time }) => libraryRow(value, time, now)) })),
   ]
 }

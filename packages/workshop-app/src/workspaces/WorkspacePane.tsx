@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { Switch } from '@cloudflare/kumo'
 import { NotePencilIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
@@ -57,6 +58,8 @@ export type WorkspacePaneProps = {
   /** Where an automation reports, for its row to open and link to. */
   automationLink: AutomationLink
   onNewChat: () => void
+  /** Starts a chat here that makes something new, from its library: as `format`, when one of those offered was chosen. */
+  onNew: (format?: BlueprintOutput) => void
   /** The workspace is gone: go somewhere that is still there. */
   onDeleted: () => void
   /** The workspace's address, which inviting people copies. Left out, nobody is invited from here. */
@@ -72,7 +75,7 @@ const WHOLE_WORKSPACE = {}
  * loads what it lists once chosen; who has
  * access is read with the page, for its header.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, automationLink, onNewChat, onDeleted, link }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, automationLink, onNewChat, onNew, onDeleted, link }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -170,7 +173,8 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} />
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
-            <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpenEntry} href={entryHref} />
+            {/* Only whoever may build here starts something in it. */}
+            <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpenEntry} href={entryHref} onNew={workspace && workspace.role !== 'use' ? onNew : undefined} />
           </Tabs.Panel>
           <Tabs.Panel value="automations" className="flex flex-col gap-8">
             {tab === 'automations' && (
