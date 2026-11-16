@@ -1,3 +1,4 @@
+import { mapLimit } from "@gadgets/gatekeeper-kit/observers";
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
@@ -12,6 +13,13 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 // A slide is read on its own; a live slide of a title, a body and a table is about 30 KiB of
 // compact JSON with all its styles.
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
+/** The most whole pages one read fetches at a time: each is held as text, then parsed, up to 2 MiB. */
+const MAX_PAGE_FETCHES = 4;
+/**
+ * The most pages one read fetches at a time by label alone: the connections a Worker invocation
+ * holds open at once, so a larger bound would only queue the rest in the runtime.
+ */
+const MAX_LABEL_FETCHES = 6;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 // A thumbnail response is a URL and two numbers.
@@ -361,6 +369,25 @@ export class GoogleSlidesApi {
     return layout;
   }
 
+  // `getSlide` of each of `ids` with `fields`, at most `limit` at a time, in the order of `ids`,
+  // through the kit's `mapLimit`: once a request fails no other starts and those running are
+  // awaited. Of several failures it throws that of the ID earliest in `ids`, so the error a read
+  // reports does not depend on which answer came first.
+  async #getPages(
+    presentationId: string, ids: readonly string[], limit: number, fields: string,
+  ): Promise<RestSlide[]> {
+    let failures = new Map<number, unknown>();
+    try {
+      return await mapLimit(ids.map((id, index) => ({ id, index })), limit, ({ id, index }) =>
+        this.getSlide(presentationId, id, fields).catch((error: unknown) => {
+          failures.set(index, error);
+          throw error;
+        }));
+    } catch {
+      throw failures.get(Math.min(...failures.keys()));
+    }
+  }
+
   /**
    * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
    * `ids`: a full page of each, but of each in `labelOnly` only what `LABEL_FIELDS` names.
@@ -369,9 +396,17 @@ export class GoogleSlidesApi {
     presentationId: string, ids: Iterable<string>, order: readonly string[],
     labelOnly: ReadonlySet<string> = new Set(),
   ): Promise<Map<string, RestSlide>> {
-    let slides = await Promise.all([...ids].filter(id => order.includes(id))
-      .map(id => this.getSlide(presentationId, id, labelOnly.has(id) ? LABEL_FIELDS : SLIDE_FIELDS)));
-    return new Map(slides.map(slide => [slide.objectId!, slide]));
+    let wanted = [...ids].filter(id => order.includes(id));
+    // The whole pages come first and alone, so the two kinds are never in flight together: the
+    // most a read holds unparsed is four whole pages or six labels.
+    let pages = [
+      ...await this.#getPages(
+        presentationId, wanted.filter(id => !labelOnly.has(id)), MAX_PAGE_FETCHES, SLIDE_FIELDS),
+      ...await this.#getPages(
+        presentationId, wanted.filter(id => labelOnly.has(id)), MAX_LABEL_FETCHES, LABEL_FIELDS),
+    ];
+    let byId = new Map(pages.map(page => [page.objectId!, page]));
+    return new Map(wanted.map(id => [id, byId.get(id)!]));
   }
 
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */
