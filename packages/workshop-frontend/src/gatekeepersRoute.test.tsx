@@ -117,3 +117,67 @@ describe('native connector modal cancellation', () => {
     expect(state.toast).not.toHaveBeenCalled()
   })
 })
+
+const cards = (name: string) => Array.from(container!.querySelectorAll<HTMLElement>('[role="button"]'))
+  .filter(element => element.textContent?.includes(name))
+
+describe('a gatekeeper that provisions its own account and offers a resource', () => {
+  // The backend lists such a vendor among the connectable ones under "optional" and "enabled" alike
+  // (it offers a resource), and among the addable ones only while the user can still add it.
+  const DEPLOYMENT = { urlPattern: 'instanceadmin://deployment', title: 'Deployment admin', description: '' }
+  const ADMIN = { displayName: 'Deployment admin', url: 'https://example.com/admin', autoProvisionsAccount: true }
+
+  const renderWith = async ({ addable, account }: { addable: boolean, account: boolean }) => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+    const api = {
+      listAddableGatekeepers: async () => addable ? [{ id: 'instanceadmin', description: ADMIN, supportedResources: [] }] : [],
+      listGatekeeperVendors: async () => [
+        { id: 'example', description: { displayName: 'Example', url: 'https://example.com' }, supportedResources: [] },
+        { id: 'instanceadmin', description: ADMIN, supportedResources: [DEPLOYMENT] },
+      ],
+      subscribeConnectedAccounts: (subscriber: Parameters<AuthenticatedApi['subscribeConnectedAccounts']>[0]) => {
+        if (account) {
+          subscriber.add(3, { displayName: 'Deployment admin', uniqueName: 'ada', avatar: { url: '' } }, ADMIN, [DEPLOYMENT], true, 'instanceadmin')
+        }
+        subscriber.ready()
+        return Object.assign(Promise.resolve(), { [Symbol.dispose]() {} })
+      },
+      provisionAmbientAccount: vi.fn<(vendorId: string) => Promise<void>>(async () => {}),
+      connectAccount: vi.fn<() => Promise<ConnectFlowStart>>(),
+    }
+    state.api = api as unknown as RpcStub<AuthenticatedApi>
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<GatekeepersPage />))
+    return api
+  }
+
+  it('offers it once while it can be added, and adds it with no connect flow', async () => {
+    const api = await renderWith({ addable: true, account: false })
+    expect(cards('Deployment admin')).toHaveLength(1)
+
+    await act(async () => cards('Deployment admin')[0].click())
+    await act(async () => button('Add Deployment admin').click())
+
+    expect(api.provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('instanceadmin')
+    expect(api.connectAccount).not.toHaveBeenCalled()
+    expect(cards('Deployment admin')).toHaveLength(0)
+    expect(cards('Example')).toHaveLength(1)
+  })
+
+  it('lists its account once, as connected', async () => {
+    await renderWith({ addable: false, account: true })
+    expect(cards('Deployment admin')).toHaveLength(1)
+
+    await act(async () => cards('Deployment admin')[0].click())
+    expect(button('Add Deployment admin')).toBeUndefined()
+  })
+
+  it('offers nothing to connect when the deployment forces its account', async () => {
+    // The feed sends a forced account only to a subscriber that asks for it, and this page does not.
+    await renderWith({ addable: false, account: false })
+    expect(cards('Deployment admin')).toHaveLength(0)
+    expect(cards('Example')).toHaveLength(1)
+  })
+})

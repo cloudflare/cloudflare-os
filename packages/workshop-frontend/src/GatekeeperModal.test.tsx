@@ -789,3 +789,162 @@ describe('stable resource type selection', () => {
     expect(api.startResourceConfigurator).toHaveBeenCalledWith(1, 'catalog')
   })
 })
+
+const button = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+  .find(candidate => candidate.textContent === label)!
+
+describe('GatekeeperModal with a vendor that provisions its own account', () => {
+  // The admin gatekeeper as it describes itself: no connect flow, and one resource that is not a
+  // web URL.
+  const DEPLOYMENT = { id: 'deployment', urlPattern: 'instanceadmin://deployment', title: 'Deployment admin', description: '' }
+  const ADMIN_VENDOR = { displayName: 'Deployment admin', url: 'https://example.com/admin', autoProvisionsAccount: true }
+  const ADMIN_ACCOUNT = { displayName: 'Deployment admin', uniqueName: 'ada', avatar: { url: '' } }
+  const OPEN_ON_DEPLOYMENT = { initialVendorId: 'instanceadmin', initialResourceUrlPattern: DEPLOYMENT.urlPattern }
+
+  // Renders the modal over a feed that sends the account as the backend does: one the deployment
+  // forces goes only to a subscriber that asked for forced accounts.
+  async function renderForAdmin(account: 'forced' | 'none', props: Partial<ComponentProps<typeof GatekeeperModal>> = {}) {
+    stubResizeObserver()
+    api.startResourceConfigurator.mockImplementation(async () => ({
+      iframeHtml: '<!doctype html>',
+      ui: { [Symbol.dispose]() {} },
+    }))
+    const calls = {
+      provisionAmbientAccount: vi.fn<(vendorId: string) => Promise<void>>(async () => {}),
+      connectAccount: vi.fn<(vendorId: string) => Promise<ConnectFlowStart>>(),
+    }
+    testState.authenticatedApi = {
+      listModels: async () => [CHAT_MODEL],
+      listGatekeeperVendors: async () => [{ id: 'instanceadmin', description: ADMIN_VENDOR, supportedResources: [DEPLOYMENT] }],
+      subscribeConnectedAccounts: (
+        subscriber: ConnectedAccountsSubscriber, filter?: { includeForcedAutoProvisionedAccounts?: boolean },
+      ) => {
+        api.subscriber = subscriber
+        if (account === 'forced' && filter?.includeForcedAutoProvisionedAccounts) {
+          subscriber.add(3, ADMIN_ACCOUNT, ADMIN_VENDOR, [DEPLOYMENT], true, 'instanceadmin')
+        }
+        subscriber.ready()
+        return subscription()
+      },
+      startResourceConfigurator: api.startResourceConfigurator,
+      ...calls,
+    } as unknown as RpcStub<AuthenticatedApi>
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<GatekeeperModal
+      open
+      onClose={() => {}}
+      getOverseer={() => { throw new Error('not called') }}
+      onCreated={() => Promise.resolve()}
+      {...OPEN_ON_DEPLOYMENT}
+      {...props}
+    />))
+    return calls
+  }
+
+  it('adds the connection of an account the deployment forces', async () => {
+    testState.ready = true
+    testState.collectedUrl = DEPLOYMENT.urlPattern
+    const created = Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), { getId: async () => 'gk-1' })
+    const newGatekeeper = vi.fn<(accountId: number, url: string) => unknown>(() => created)
+    const onCreated = vi.fn<ComponentProps<typeof GatekeeperModal>['onCreated']>(async () => {})
+    const calls = await renderForAdmin('forced', {
+      getOverseer: (async () => ({ newGatekeeper })) as unknown as ComponentProps<typeof GatekeeperModal>['getOverseer'],
+      onCreated,
+    })
+
+    await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
+    expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(3, DEPLOYMENT.id)
+    await act(async () => button('Add connection').click())
+
+    expect(newGatekeeper).toHaveBeenCalledExactlyOnceWith(3, DEPLOYMENT.urlPattern)
+    expect(onCreated).toHaveBeenCalledOnce()
+    expect(calls.provisionAmbientAccount).not.toHaveBeenCalled()
+    expect(testState.toasts).toEqual([])
+  })
+
+  it('adds a missing account with no connect flow, then starts its configurator', async () => {
+    const calls = await renderForAdmin('none')
+    const connect = await vi.waitFor(() => {
+      expect(button('Connect Deployment admin')).toBeDefined()
+      return button('Connect Deployment admin')
+    })
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+
+    await act(async () => connect.click())
+    expect(calls.provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('instanceadmin')
+    expect(calls.connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+
+    await act(async () => api.subscriber!.add(3, ADMIN_ACCOUNT, ADMIN_VENDOR, [DEPLOYMENT], true, 'instanceadmin'))
+    await vi.waitFor(() =>
+      expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(3, DEPLOYMENT.id))
+  })
+
+  it('shows why an account could not be added', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const calls = await renderForAdmin('none')
+    calls.provisionAmbientAccount.mockRejectedValueOnce(new Error('Service is disabled.'))
+    const connect = await vi.waitFor(() => {
+      expect(button('Connect Deployment admin')).toBeDefined()
+      return button('Connect Deployment admin')
+    })
+
+    await act(async () => connect.click())
+
+    expect(testState.toasts).toEqual([{ title: 'Service is disabled.', variant: 'error' }])
+    expect(calls.connectAccount).not.toHaveBeenCalled()
+  })
+
+  it('offers no other account once the account is listed', async () => {
+    await renderForAdmin('forced')
+
+    await vi.waitFor(() => expect(button('Add connection')).toBeDefined())
+    const labels = Array.from(document.body.querySelectorAll('button'), candidate => candidate.textContent)
+    expect(labels.filter(label => /^(Connect|Use another) /.test(label))).toEqual([])
+  })
+})
+
+async function renderWithConnectCalls(accountIds: number[]) {
+  stubResizeObserver()
+  await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: RESOURCE.urlPattern }, { accountIds })
+  const calls = {
+    provisionAmbientAccount: vi.fn<(vendorId: string) => Promise<void>>(async () => {}),
+    connectAccount: vi.fn<(vendorId: string, resourceUrlPatterns?: string[]) => Promise<ConnectFlowStart>>(async () => FLOW),
+  }
+  Object.assign(testState.authenticatedApi!, calls)
+  return calls
+}
+
+describe('GatekeeperModal with a vendor whose accounts are connected', () => {
+  it('keeps the connect flow', async () => {
+    openConnectWindow.mockResolvedValue('connected')
+    const calls = await renderWithConnectCalls([])
+
+    const connect = await vi.waitFor(() => {
+      expect(button('Connect Service catalog')).toBeDefined()
+      return button('Connect Service catalog')
+    })
+    await act(async () => connect.click())
+
+    expect(calls.connectAccount).toHaveBeenCalledExactlyOnceWith('catalog', undefined)
+    expect(openConnectWindow).toHaveBeenCalledExactlyOnceWith(FLOW, testState.authenticatedApi)
+    expect(calls.provisionAmbientAccount).not.toHaveBeenCalled()
+    expect(testState.toasts).toEqual([{ title: 'Account connected.', variant: 'success' }])
+  })
+
+  it('still offers another account once one is listed', async () => {
+    openConnectWindow.mockResolvedValue('opened')
+    const calls = await renderWithConnectCalls([1])
+
+    const another = await vi.waitFor(() => {
+      expect(button('Use another Service catalog account')).toBeDefined()
+      return button('Use another Service catalog account')
+    })
+    await act(async () => another.click())
+
+    expect(calls.connectAccount).toHaveBeenCalledExactlyOnceWith('catalog', undefined)
+    expect(calls.provisionAmbientAccount).not.toHaveBeenCalled()
+  })
+})

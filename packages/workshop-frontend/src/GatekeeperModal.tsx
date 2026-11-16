@@ -469,7 +469,10 @@ export default function GatekeeperModal({
         setAccounts(Array.from(accountMap.values()))
       },
     })
-    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    // A deployment may force an auto-provisioned account that offers a resource, and the feed sends
+    // a forced account only to a subscriber that asks for it.
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
     subscription.catch(error => {
       if (cancelled) return
       logRpcFailure('Failed to subscribe to connected accounts:', error)
@@ -664,6 +667,11 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceTypeIds?: string[]) => {
     setConnectingVendor(vendorId)
     try {
+      if (vendors.find(vendor => vendor.id === vendorId)?.description.autoProvisionsAccount) {
+        // No connect flow: the account arrives through the accounts subscription.
+        await authenticatedApi.provisionAmbientAccount(vendorId)
+        return
+      }
       const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
@@ -891,6 +899,8 @@ export default function GatekeeperModal({
                     vendorId={selectedConnection.vendorId}
                     vendorName={selectedConnection.vendor}
                     resourceTitle={selectedConnection.resourceUrlPattern ? selectedConnection.title : undefined}
+                    singleAccount={vendors.find(vendor => vendor.id === selectedConnection.vendorId)
+                      ?.description.autoProvisionsAccount}
                     connecting={connectingVendor === selectedConnection.vendorId}
                     reconnectingAccountId={reconnectingAccountId}
                     requiredResourceTypeIds={account => requiredResourceTypeIds(selectedConnection, account)}
