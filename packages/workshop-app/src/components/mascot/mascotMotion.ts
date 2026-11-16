@@ -198,8 +198,17 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     pointer.active = true
   }
   const resetPointer = () => { moved = undefined; pointer.x = 0; pointer.y = 0; pointer.influence = 0; pointer.active = false }
+  // A finger is only there while it touches. It is followed by its touches, which go on while the
+  // page scrolls under it, where its pointer events stop, and let go of once the last one lifts.
+  const onTouch = (event: TouchEvent) => {
+    const touch = event.touches[0]
+    if (touch) moved = { x: touch.clientX, y: touch.clientY }
+    else resetPointer()
+  }
   const onWindowBlur = () => { resetPointer(); held = false }
+  const touchEvents = ['touchstart', 'touchmove', 'touchend', 'touchcancel'] as const
   window.addEventListener('pointermove', onPointer, { passive: true })
+  for (const type of touchEvents) window.addEventListener(type, onTouch, { passive: true })
   document.addEventListener('pointerleave', resetPointer)
   window.addEventListener('blur', onWindowBlur)
 
@@ -747,6 +756,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       visibility.disconnect()
       cancelAnimationFrame(request)
       window.removeEventListener('pointermove', onPointer)
+      for (const type of touchEvents) window.removeEventListener(type, onTouch)
       document.removeEventListener('pointerleave', resetPointer)
       window.removeEventListener('blur', onWindowBlur)
       media.removeEventListener('change', onMotionChange)

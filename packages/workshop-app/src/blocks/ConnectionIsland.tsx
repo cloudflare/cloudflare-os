@@ -194,7 +194,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
         */}
         <div ref={content} className="connection-island-items absolute top-0 left-0 flex h-11 w-max items-center gap-2 ps-2.5 pe-5 text-base font-medium">
           {/* Its drawing has room around it: at 32px wide the cloud itself is some 25px tall. */}
-          <Mascot emotion={emotion} color="inverse" onShake={knock} className="w-8 shrink-0" />
+          <Mascot emotion={emotion} color="island" onShake={knock} className="w-8 shrink-0" />
           {/* Each wording blurs in over the last, in the same place, which leaves out of the way. */}
           <AnimatePresence initial={false} mode="popLayout">
             <motion.span
