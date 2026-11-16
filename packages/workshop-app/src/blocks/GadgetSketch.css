@@ -1,0 +1,51 @@
+/* A gadget being built, in its place: a screen sketched in by hand, line by line, each piece
+   washed in once its outline is closed; then rubbed out in the order it was drawn, and drawn
+   again. A piece takes its turn by `--at` (0 to 1). Lines are drawn as their dash is let out
+   (`pathLength` 1), so the sketch is small and cheap to draw; the paper under it never moves. */
+.gadget-sketch-paper {
+  background-image: radial-gradient(circle, color-mix(in oklab, currentColor 14%, transparent) 1px, transparent 1.2px);
+  background-size: 14px 14px;
+  background-position: center;
+  mask-image: radial-gradient(ellipse 50% 50% at center, black 30%, transparent 75%);
+}
+
+.gadget-sketch-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-opacity: 0.55;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: gadget-sketch-draw 4.8s cubic-bezier(0.65, 0, 0.35, 1) infinite backwards;
+  animation-delay: calc(var(--at, 0) * 1.6s);
+}
+
+.gadget-sketch-wash {
+  fill: currentColor;
+  fill-opacity: 0;
+  stroke: none;
+  animation: gadget-sketch-wash 4.8s ease-out infinite backwards;
+  animation-delay: calc(var(--at, 0) * 1.6s);
+}
+
+/* Drawn over its first fifth, held, then rubbed out. */
+@keyframes gadget-sketch-draw {
+  0% { stroke-dashoffset: 1; opacity: 1; }
+  20% { stroke-dashoffset: 0; opacity: 1; }
+  62% { stroke-dashoffset: 0; opacity: 1; }
+  74%, 100% { stroke-dashoffset: 0; opacity: 0; }
+}
+
+/* Washed in once the outline is closed, a little later than it. */
+@keyframes gadget-sketch-wash {
+  0%, 18% { fill-opacity: 0; }
+  32%, 62% { fill-opacity: 0.08; }
+  74%, 100% { fill-opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gadget-sketch-line { animation: none; stroke-dashoffset: 0; }
+  .gadget-sketch-wash { animation: none; fill-opacity: 0.08; }
+}

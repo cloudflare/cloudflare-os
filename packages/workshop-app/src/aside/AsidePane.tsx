@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { AppWindowIcon, FileDashedIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
+import { GadgetSketch } from '@/blocks/GadgetSketch'
+import { useChatSelection } from '@/chat/useChatSession'
 import { GadgetAskDock } from './GadgetAskDock'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
@@ -143,6 +145,10 @@ export const AsidePane = (props: AsidePaneProps) => {
     } : undefined,
   }
 
+  // A gadget with no screen yet is being built while the agent of the chat it is shown from works.
+  const fromChat = item.kind === 'output' && item.output.chatId !== undefined ? { workspaceId: item.output.workspaceId, chatId: item.output.chatId } : undefined
+  const building = useChatSelection(fromChat, (chat) => chat.status === 'ready' && chat.agentActive, Object.is)
+
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.kind === 'connected' ? (
@@ -156,7 +162,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     // While its changes to a file are reviewed over it, the gadget is hidden (running still), so
     // none of it shows at the corners the review shares with it.
     <div className="relative flex min-h-0 flex-1 flex-col [&:has(>[data-gadget-review])>:first-child]:invisible">
-      <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} link={link} onReload={connection?.reload} />
+      <GadgetView key={item.key} title={title} ui={snapshot.ui} building={building} frame={frame} link={link} onReload={connection?.reload} />
       {/* What its own code asks, for whoever builds where it is. Shown beside a chat as well: what
           the chat's version asks carries the chat, and is the chat's to ask; the rest is not. */}
       {item.output.type === 'gadget' && listed?.role !== 'use' && snapshot.ui.status !== 'denied' && (
@@ -274,9 +280,10 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
   </SidePane>
 )
 
-const GadgetView = ({ title, ui, frame, link, onReload }: {
+const GadgetView = ({ title, ui, building, frame, link, onReload }: {
   title: string
   ui: GadgetUi
+  building: boolean
   frame: RefObject<HTMLIFrameElement | null>
   link?: string
   onReload?: () => void
@@ -285,7 +292,10 @@ const GadgetView = ({ title, ui, frame, link, onReload }: {
     case 'loading':
       return <PaneNotice title="Loading…" />
     case 'none':
-      return <PaneNotice icon={SmileyMehIcon} title="No UI yet" description="When the gadget builds one, it will show here." />
+      // Being built, it is drawn as it will be; otherwise it is said plainly that there is nothing to see.
+      return building
+        ? <GadgetSketch title={title} />
+        : <PaneNotice icon={AppWindowIcon} title="No screen yet" description={`${title} doesn’t have a screen. Ask for one in a chat with it.`} />
     case 'failed':
       return (
         <PaneNotice

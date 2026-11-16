@@ -756,6 +756,16 @@ pulled. Only reaching the edge does it, not being near, because the page's scrol
 Beside a chat it shows what was last shown there, or what was made last. Until the library has
 been read, it opens empty, then shows the first thing found, or that there is nothing.
 
+What a chat makes as the user watches, a gadget or a file in a connected service such as a Google
+Doc, opens beside it by itself (`aside/useJustMade.ts`, wired in `routes/_app.tsx`), so it is seen
+as the agent works on it: only what newly heads what the chat has made while its agent works (not
+what it had when opened, nor what paging back turns up, nor a file the user sent), never over a
+narrow screen's chat, and not again in a chat whose pane the user put away during this visit. A
+gadget that has no screen yet is drawn in its place as it is built (`GadgetSketch`: a screen
+sketched in line by line on dotted paper, washed in, rubbed out and drawn again, its motion
+transform-, opacity- and dash-only), while the agent of the chat it is shown from works; otherwise
+it says plainly it has no screen yet.
+
 What is listed beside a chat, and on its settings page, is everything its workspace has made
 (`useChatLibrary`): the library (`listOutputs()`), read again for each chat, and what the chat has
 made that the library does not have yet (a gadget still to be accepted, a worktree), from what is

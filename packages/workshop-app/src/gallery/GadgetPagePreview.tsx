@@ -3,6 +3,7 @@ import { SidePane } from '@/blocks/SidePane'
 import { AgentsMenu, type AgentsMenuProps } from '@/blocks/AgentsMenu'
 import { GadgetChatMenu, type GadgetChatMenuChat } from '@/blocks/GadgetChatMenu'
 import { FormatIcon } from '@/components/FormatIcon'
+import { GadgetSketch } from '@/blocks/GadgetSketch'
 import { Section } from './Section'
 
 const CHATS: GadgetChatMenuChat[] = [
@@ -74,6 +75,11 @@ export const GadgetPagePreview = () => {
           <AgentsMenu title="Slides" agents={AGENTS} latest="2 hours ago" onOpenAgent={() => {}} compact />
           <AgentsMenu title="Slides" agents={[{ ...AGENTS[0], waiting: true }]} latest="2 hours ago" onOpenAgent={() => {}} compact />
         </span>
+      </Section>
+      <Section title="GadgetSketch: a gadget being built that has no screen yet, in its place, opened as the chat makes it (sketched in line by line, washed in, rubbed out and drawn again; still for reduced motion)">
+        <div className="flex h-80 w-full max-w-xl flex-col overflow-hidden rounded-3xl bg-kumo-tint ring-1 ring-kumo-line">
+          <GadgetSketch title="Counter" />
+        </div>
       </Section>
       <Section title="GadgetChatMenu on a phone: the icon alone">
         <GadgetChatMenu title="Slides" chats={CHATS} onOpenChat={() => {}} onNewChat={() => {}} compact />
