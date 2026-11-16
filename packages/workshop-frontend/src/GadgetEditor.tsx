@@ -466,6 +466,8 @@ export default function GadgetEditor() {
   // subscribeToWorkpieces(). `workpiecesReady` flips once the initial listing has arrived.
   const [workpieces, setWorkpieces] = useState<Map<WorkpieceId, WorkpieceSummary>>(new Map())
   const [workpiecesReady, setWorkpiecesReady] = useState(false)
+  // The workspace the per-workspace state was last reset for.
+  const [resetWorkspaceId, setResetWorkspaceId] = useState(id)
   const knownWorkpieceIdsRef = useRef<Set<WorkpieceId> | null>(null)
   // GadgetClient stub for the currently-selected gadget workpiece. Per-gadget operations (UI
   // bundle, RPC connection, bindings, blueprints) go through this stub. Null while the workspace
@@ -1008,8 +1010,11 @@ export default function GadgetEditor() {
     urlWorkpieceId,
     at: atParam,
     selectedGadgetId,
-    // A use-only view has no chats, and no pending gadgets to wait for.
-    selectionSettled: workpiecesReady && metadata !== null && (isUseOnly || chatListReady),
+    // A use-only view has no chats, and no pending gadgets to wait for. The editor stays mounted
+    // when it moves to another workspace, so until the reset below has run, what is loaded is the
+    // previous workspace's, and says nothing about whether this one's `w` can be selected.
+    selectionSettled: resetWorkspaceId === id && workpiecesReady && metadata !== null &&
+      (isUseOnly || chatListReady),
     replaceSearch: changes => {
       // Writing the selected gadget's `w` is not arriving with it, so it mustn't reopen a pane the
       // user closed.
@@ -1196,6 +1201,7 @@ export default function GadgetEditor() {
     setUserNavigatedToList(false)
     setGadgetToDelete(null)
     forgetPaneFocus()
+    setResetWorkspaceId(id)
   }, [id, forgetPaneFocus])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
