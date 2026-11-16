@@ -4,6 +4,7 @@ import { ChangePasswordDialog } from '@/blocks/ChangePasswordDialog'
 import { MenuChooser } from '@/blocks/MenuChooser'
 import { ProfilePicture } from '@/blocks/ProfilePicture'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
+import { SignInForm } from '@/blocks/SignInForm'
 import { Button } from '@/components/Button'
 import { PREVIEW_TIP_JAR } from './previewPictures'
 import { useReport } from './previewState'
@@ -58,6 +59,25 @@ export const ProfilePreview = () => {
       <Section title="ChangePasswordDialog (too short, not the same twice, then changed; one whose current password is wrong stays open under why)">
         <Button onClick={() => setChanging('works')}>Change password</Button>
         <Button onClick={() => setChanging('fails')}>Change password, wrong</Button>
+      </Section>
+      <Section title="SignInForm (a username and password; New here? makes an account, the password twice, checked as typed; ada with any password signs in, anything else is refused; Continue as dev, as development offers once signed out)">
+        <div className="h-[34rem] overflow-hidden rounded-3xl ring-1 ring-kumo-line">
+          <SignInForm
+            onSignIn={async (username) => {
+              await later()
+              if (username !== 'ada') return 'Wrong username or password.'
+              say(`signed in as ${username}`)
+              return undefined
+            }}
+            onCreateAccount={async (username) => {
+              await later()
+              if (username === 'ada') return 'That username is taken.'
+              say(`made ${username}`)
+              return undefined
+            }}
+            devAccount={{ username: 'dev', onContinue: () => say('continue as dev') }}
+          />
+        </div>
       </Section>
       <ChangePasswordDialog
         open={changing !== undefined}

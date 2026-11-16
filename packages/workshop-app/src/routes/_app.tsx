@@ -20,7 +20,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
 import { useApi } from '@/rpc/ApiContext'
-import { clearToken } from '@/rpc/token'
+import { signOut } from '@/rpc/token'
 import { AppSearch } from './-AppSearch'
 import { ShareLinkGate } from '@/sharing/ShareLinkGate'
 import { WaitingProvider, useWaiting } from '@/library/WaitingProvider'
@@ -294,7 +294,7 @@ const AppFrame = () => {
       onOpenAdmin={admin ? () => window.location.assign('/admin') : undefined}
       // Forgets the session here and starts again from nothing, so no one else at this browser sees it.
       onSignOut={() => {
-        clearToken()
+        signOut()
         window.location.assign('/')
       }}
       connections={accounts.status === 'ready'

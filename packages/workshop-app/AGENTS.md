@@ -21,7 +21,10 @@ package's `build`) ends by copying this app's `dist` over it and keeping the old
 `admin.html`, which Workers assets serves at `/admin` (`workshop-frontend/compose-dist.mjs`). So
 the old app survives only for its admin page, reached from the account menu by admins. A
 signed-out visitor signs in with a username and password on this app's own form (`RpcGate`'s
-`SignInForm`); behind Access (`VITE_CF_ACCESS_MODE=true`, as a gadgets-internal preview builds)
+`SignInForm`), or makes an account there where the deployment has password sign-in and sign-ups
+on, as the old app's sign-up page did. Signing out (`signOut`, `rpc/token.ts`) keeps the dev
+auto-login from signing straight back in, so that a second account can be used to try sharing
+locally; the form then offers "Continue as dev"; behind Access (`VITE_CF_ACCESS_MODE=true`, as a gadgets-internal preview builds)
 `RpcGate` signs in with the user's Access credential instead.
 
 ## Layers

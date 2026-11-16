@@ -11,7 +11,7 @@ import type { Connection } from './Connection'
 import { ConnectionNotice } from './ConnectionNotice'
 import { ConnectionNoticeContext } from './ConnectionNoticeContext'
 import { hashPassword } from './passwordHash'
-import { clearToken, readToken, storeToken } from './token'
+import { clearToken, readToken, resumeAutoLogin, signedOutHere, storeToken } from './token'
 import { SignInForm } from '@/blocks/SignInForm'
 
 type Session =
@@ -25,6 +25,8 @@ const CONNECTING: Session = { phase: 'connecting' }
 
 // A deployment behind Cloudflare Access signs in with the user's Access credential, not a token.
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
+// Development signs in as the dev account by itself, unless whoever was signed in signed out.
+const DEV_AUTO_LOGIN = import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
 
 const Notice = ({ children }: { children: ReactNode }) => (
   <div className="grid h-full place-items-center p-6 text-base text-kumo-subtle">{children}</div>
@@ -62,7 +64,7 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
         } else {
           // Written out where it is used, so that a build, where it is `false`, drops the import and
           // everything behind it, the dev account's password included.
-          const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
+          const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true' && !signedOutHere()
             ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
             : null)
           if (!token) return finish({ phase: 'signedOut' })
@@ -88,11 +90,39 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
     }
   }, [publicApi, signIns])
 
+  // As the existing Workshop's sign-up page offers it: where both password sign-in and sign-ups
+  // are on, which is asked once signed out, as nothing else needs it.
+  const [canCreate, setCanCreate] = useState(false)
+  const signedOut = publicApi !== null && state?.owner === publicApi && state.session.phase === 'signedOut'
+  useEffect(() => {
+    if (!signedOut || !publicApi) return
+    let cancelled = false
+    publicApi.getServerConfig().then(
+      (config) => { if (!cancelled) setCanCreate(config.passwordAuthEnabled && config.signupsEnabled) },
+      // Signing in is offered either way.
+      () => {},
+    )
+    return () => { cancelled = true }
+  }, [publicApi, signedOut])
+
   const signInWithPassword = async (username: string, password: string) => {
     if (!publicApi) return 'Not connected to the server.'
     try {
       const token = await publicApi.login(username, await hashPassword(username, password))
       if (!token) return 'Wrong username or password.'
+      storeToken(token)
+      setSignIns((n) => n + 1)
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  // Its display name is its username to begin with, as the existing Workshop makes it.
+  const createAccount = async (username: string, password: string) => {
+    if (!publicApi) return 'Not connected to the server.'
+    try {
+      const token = await publicApi.createAccount(username, username, await hashPassword(username, password))
+      if (!token) return 'That username is taken.'
       storeToken(token)
       setSignIns((n) => n + 1)
     } catch (error) {
@@ -137,7 +167,19 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
       // Held back, then faded in: most connections are made before it would show.
       return <Notice><span className="appears-late">Connecting…</span></Notice>
     case 'signedOut':
-      return <SignInForm onSignIn={signInWithPassword} />
+      return (
+        <SignInForm
+          onSignIn={signInWithPassword}
+          onCreateAccount={canCreate ? createAccount : undefined}
+          devAccount={DEV_AUTO_LOGIN ? {
+            username: import.meta.env.VITE_DEV_USERNAME ?? 'dev',
+            onContinue: () => {
+              resumeAutoLogin()
+              setSignIns((n) => n + 1)
+            },
+          } : undefined}
+        />
+      )
     case 'failed':
       return <Notice>Couldn’t sign in: {session.message}</Notice>
     case 'ready':
