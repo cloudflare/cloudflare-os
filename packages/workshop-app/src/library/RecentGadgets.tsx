@@ -8,7 +8,8 @@ import { GadgetCard } from '@/blocks/GadgetCard'
 import { SheetPicture } from '@/blocks/SheetPicture'
 import { useApi } from '@/rpc/ApiContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
-import { libraryEntries, removalKey, type LibraryEntry } from './libraryEntries'
+import { readLibraryStarOrder } from '@/prefs/libraryStars'
+import { libraryEntries, recentOrder, removalKey, type LibraryEntry } from './libraryEntries'
 import { useLibrary } from './useLibrary'
 import { useLibraryPicture } from './useLibraryPicture'
 
@@ -76,7 +77,8 @@ let cameIn = false
 /**
  * The gadgets the user comes back to, under Home's composer, drawn as the blueprints to start
  * from are: up to two rows of three cards, any with changes waiting on the user to approve first,
- * saying how many, then the starred ones, then the most recently active; and last, a card to all of
+ * saying how many, then the starred ones in the order the user put them in, then the most
+ * recently active, as the Library's Recent has them (`recentOrder`); and last, a card to all of
  * them in the Library, a fan of their screens. With fewer than three, `fewer` follows instead, as a
  * new user has more use for something to start from. Nothing at all until the Library is read, so
  * Home does not shift as it arrives; then, the first time, it comes in whole once its pictures are
@@ -108,9 +110,13 @@ export const RecentGadgets = ({ onOpen, href, onBrowse, browseHref, fewer }: Rec
   const ordered = useMemo(() => {
     if (!outputs || !favorites || !removals || !known) return undefined
     const builds = new Set(known.filter(({ role }) => role !== 'use').map(({ id }) => id))
-    const { gadgets } = libraryEntries({ outputs, files: [], connected: [], favorites, removals, builds })
-    return gadgets.toSorted((a, b) =>
-      Number(Boolean(b.waiting)) - Number(Boolean(a.waiting)) || Number(b.starred) - Number(a.starred) || b.at.getTime() - a.at.getTime())
+    const all = libraryEntries({ outputs, files: [], connected: [], favorites, removals, builds })
+    // In the Library's Recent order, of its gadgets alone.
+    const { waiting, stars, rest } = recentOrder(all.gadgets, {
+      starred: all.favorites.filter(({ section }) => section === 'gadget'),
+      starOrder: readLibraryStarOrder(),
+    })
+    return [...waiting, ...stars, ...rest]
   }, [outputs, favorites, removals, known])
 
   // The first time, the row waits unseen, its room kept, until its pictures are ready to draw or

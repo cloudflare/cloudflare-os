@@ -220,6 +220,24 @@ export type LibraryGroup = {
 export const libraryRow = (entry: LibraryEntry, time?: string, now: Date = new Date()) => ({ entry, time: time ?? formatActivity(entry.at, now) })
 
 /**
+ * What leads a Library list, and what follows: what waits on the viewer to approve, the latest
+ * first; then the starred, those of `shown` unless they are given (`starred`, as Recent has some
+ * that are not listed), in the order the user put them in (`starOrder`, see `byStarOrder`); then
+ * the rest, the latest first. The Library's Recent is in this order, and so is Home's Jump back in,
+ * of its gadgets, so that the two agree.
+ */
+export const recentOrder = (
+  shown: readonly LibraryEntry[],
+  { starred, starOrder, waiting: leads = true }: { starred?: readonly LibraryEntry[]; starOrder: string[]; waiting?: boolean },
+) => {
+  const waiting = leads ? shown.filter((entry) => entry.waiting).toSorted(latest) : []
+  const waits = new Set(waiting.map(({ key }) => key))
+  const stars = byStarOrder((starred ?? shown.filter((entry) => entry.starred)).filter(({ key }) => !waits.has(key)), starOrder)
+  const rest = shown.filter((entry) => !entry.starred && !waits.has(entry.key)).toSorted(latest)
+  return { waiting, stars, rest }
+}
+
+/**
  * A Library list in groups. What waits on the viewer to approve leads, out of the groups it would
  * be in otherwise, so that it is seen first; but not for a list of files (`waiting: false`), which
  * have nothing to approve. Then the starred, those of `shown` unless they are given (`starred`, as
@@ -238,13 +256,10 @@ export const libraryGroups = (
     now?: Date
   },
 ): LibraryGroup[] => {
-  const waiting = leads ? shown.filter((entry) => entry.waiting) : []
-  const waits = new Set(waiting.map(({ key }) => key))
-  const stars = byStarOrder((starred ?? shown.filter((entry) => entry.starred)).filter(({ key }) => !waits.has(key)), starOrder)
-  const rest = shown.filter((entry) => !entry.starred && !waits.has(entry.key))
+  const { waiting, stars, rest } = recentOrder(shown, { starred, starOrder, waiting: leads })
   const row = (entry: LibraryEntry) => libraryRow(entry, undefined, now)
   return [
-    ...(waiting.length > 0 ? [{ key: 'waiting', label: 'Needs approval', rows: waiting.toSorted(latest).map(row) }] : []),
+    ...(waiting.length > 0 ? [{ key: 'waiting', label: 'Needs approval', rows: waiting.map(row) }] : []),
     ...(stars.length > 0 ? [{ key: 'starred', label: 'Starred', rows: stars.map(row) }] : []),
     ...arrange(rest).map(({ key, label, entries }) => ({ key: `${orderId}:${key}`, label, rows: entries.map(({ value, time }) => libraryRow(value, time, now)) })),
   ]

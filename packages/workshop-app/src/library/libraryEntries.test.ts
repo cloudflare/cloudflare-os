@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FavoriteItem, OutputSummary } from '@gadgets/workshop-shared/api'
-import { favoriteKey, libraryEntries, libraryGroups, removalKey, type LibraryEntry, type LibraryGroup, type LibrarySources, type WorkspaceFile } from './libraryEntries'
+import { favoriteKey, libraryEntries, libraryGroups, recentOrder, removalKey, type LibraryEntry, type LibraryGroup, type LibrarySources, type WorkspaceFile } from './libraryEntries'
 import { formatActivity } from '@/workspaces/formatActivity'
 import type { ConnectedFile } from './connectedFiles'
 
@@ -147,5 +147,21 @@ describe('libraryGroups', () => {
     // Zeta, starred, is shown once, where it waits.
     expect(groups.slice(1).flatMap(titles)).not.toContain('Zeta')
     expect(libraryGroups(waiting.gadgets, { waiting: false, starOrder: [], arrange: asGiven, orderId: 'active', now }).some((group) => group.key === 'waiting')).toBe(false)
+  })
+})
+
+describe('recentOrder', () => {
+  it('puts what waits first, then the starred in the user’s order, then the rest latest first', () => {
+    const favorites: FavoriteItem[] = [
+      { kind: 'app', workspaceId: 'w1', workpieceId: 3, title: 'Zeta', starred: hoursAgo(1) },
+      { kind: 'app', workspaceId: 'w1', workpieceId: 4, title: 'Older', starred: hoursAgo(2) },
+    ]
+    const entries = libraryEntries(sources({
+      outputs: [output(1, 'beta', 5), { ...output(2, 'Alpha', 9), waiting: 1 }, output(3, 'Zeta', 3), output(4, 'Older', 24 * 20), output(5, 'Gamma', 1)],
+      favorites,
+    }))
+    const keyOf = (title: string) => entries.favorites.find((entry) => entry.title === title)!.key
+    const { waiting, stars, rest } = recentOrder(entries.gadgets, { starred: entries.favorites, starOrder: [keyOf('Older'), keyOf('Zeta')] })
+    expect([waiting, stars, rest].map((part) => part.map(({ title }) => title))).toEqual([['Alpha'], ['Older', 'Zeta'], ['Gamma', 'beta']])
   })
 })
