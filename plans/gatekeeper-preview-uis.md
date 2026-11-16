@@ -251,12 +251,14 @@ the connection's ID.
   chat instead of offering Apply and Discard.
 - `useAutoOpenConnectionPreview`: opens a connection that offers a preview at its first live read
   or change, and at each change queued after that. Work from before the page loaded does not
-  count, a connection whose preview the user closed stays closed until reload or until another
+  count, nor does the last record of a session that is resumed, which the server delivers again
+  on a reconnection or a return to the workspace. A connection whose preview the user closed stays closed until reload or until another
   workspace is opened (connections are numbered per workspace), and a single-pane layout is left
   alone.
 - `usePendingConnectionPreviews`: the connections that offer a preview and have changes waiting.
   The editor shows a button in the top bar for each one whose preview is not showing.
-- `connectionPreview.ts`: `offersPreview()` asks `describe()` once per connection per page. The
+- `connectionPreview.ts`: `previewOffers()` asks `describe()` once per connection for a stay in a
+  workspace, across reconnections, and asks again a connection that could not be asked. The
   pane's icon is the one the vendor gives the connection's type of resource
   (`SupportedResource.icon`, found through `getCreationSpec()`), so a gatekeeper says nothing
   more for it.
@@ -362,8 +364,15 @@ provisional ID `addTab()` returns. It only reads.
   `readImage()` is authorized and logged as its own read: one log entry per image.
 - **Bookmark links go nowhere.** The Docs API gives a bookmark's ID and tab but not its place,
   so a link to one in the tab shown cannot be followed.
-- **The navigator counts places, not requests.** It steps through the stretches of changed text
-  in the tab shown, so it differs from the Workshop's count of requests on the connection.
+- **The navigator steps through places, not requests, and shows no count.** A place is a stretch
+  of changed text in the tab shown, so several requests can be one place: a number of them beside
+  the Workshop's count of requests read as a disagreement. Its group names the number of places to
+  assistive technology. The card says which request it holds ("1 of 3 changes waiting"), which
+  is the one its Apply and Discard act on.
+- **The card floats over the foot of the frame, closed.** It shows the request's title and one
+  line of its description, so the frame keeps the room; "More detail" opens everything the action
+  sends, scrolling inside half the pane. What a change adds at the very end of a document can lie
+  under the closed card until it is scrolled up.
 - **Large documents.** The client fetches and diffs the whole tab. Nothing caps a tab's size or
   keeps only the text around each edit.
 - **The Docs rendering version moved from 6 to 7.** Snapshots cached and edits queued under 6
