@@ -10,9 +10,9 @@ import {
 } from "./creation";
 import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
-import { measured } from "./editor-cost";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { QueuedChanges } from "./queued-changes";
@@ -381,7 +381,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...slideOf(deck.slides.get(id)!, deck.order.indexOf(id), layouts),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         }));
-        if (measured(JSON.stringify(slides)) > MAX_SLIDES_READ_LENGTH) {
+        if (jsonLength(slides) > MAX_SLIDES_READ_LENGTH) {
           throw new Error(`These ${ids.length} slides are too large to read at once. Request fewer.`);
         }
         return { title, missing, slides };
