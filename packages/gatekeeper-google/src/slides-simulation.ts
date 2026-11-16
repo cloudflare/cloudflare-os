@@ -97,9 +97,10 @@ export function isDesignBatch(action: SlidesAction): action is Extract<SlidesAct
 }
 
 /**
- * What a read fetched, with queued changes applied: the slide order, the slides it fetched, and
- * every master and layout, which the outline holds. Every slide a queued edit addresses is a full
- * page, so an edit to a slide it holds is checked.
+ * What a read fetched, with queued changes applied: the slide order, the slides it fetched (a
+ * slide no queued change edits may hold only its label fields), and every master and layout,
+ * which the outline holds. Every slide a queued edit addresses is a full page, so an edit to a
+ * slide it holds is checked.
  */
 export type Deck = {
   order: readonly string[];
@@ -383,6 +384,22 @@ export function slidesToFetch(pages: readonly string[], changes: readonly Queued
     }
   }
   return needed;
+}
+
+/**
+ * The slides a read fetches to show `pages` whole and to name `labelled` with queued changes:
+ * `needed`, what `slidesToFetch` gives for all of them, and `labelOnly`, those of `needed` that
+ * no queued change edits and `pages` does not reach, of which `LABEL_FIELDS` is enough. A slide a
+ * queued batch edits is read whole, with the batch's other slides, so the batch is checked as it
+ * is when every slide is read whole; so is the slide a queued copy that is edited, or is among
+ * `pages`, was made from.
+ */
+export function slidesToRead(
+  pages: readonly string[], labelled: readonly string[], changes: readonly QueuedChange[],
+): { needed: Set<string>; labelOnly: Set<string> } {
+  let needed = slidesToFetch([...pages, ...labelled], changes);
+  let whole = slidesToFetch([...pages, ...changes.flatMap(({ action }) => batchSlides(action))], changes);
+  return { needed, labelOnly: new Set([...needed].filter(id => !whole.has(id))) };
 }
 
 /**

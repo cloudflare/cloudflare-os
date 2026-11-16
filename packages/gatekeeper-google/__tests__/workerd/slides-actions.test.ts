@@ -8,7 +8,7 @@ import type {
   RestPageBackgroundFill, RestPageElement, RestPresentation, RestSlide, RestText, RestTextElement,
   RestThemeColorPair,
 } from "../../src/slides-api";
-import { SLIDE_FIELDS } from "../../src/slides-fields";
+import { LABEL_FIELDS, LAYOUT_PAGE_FIELDS, SLIDE_FIELDS } from "../../src/slides-fields";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
@@ -1075,6 +1075,131 @@ describe.each(RUNS)("Google Slides new and skipped slides ($name)", run => {
   });
 });
 
+/** The pages `provider` served since it was installed or last asked, each with its mask. */
+function pagesRead(provider: SlidesProvider): [string, string | null][] {
+  let read = provider.pageReads.map((id, i): [string, string | null] => [id, provider.pageFields[i]]);
+  provider.pageReads = [];
+  provider.pageFields = [];
+  return read;
+}
+
+// A change that only names a slide reads its label fields. The fake answers a page read with only
+// what its mask names, so a card or a refusal made over it needed nothing else of the slide.
+describe.each(RUNS)("Google Slides label reads ($name)", run => {
+  useRun(run);
+
+  it("reads only label fields of the slides a move names", async () => {
+    // Every element has geometry, the first title a style, and the second slide a table and notes.
+    let styled = deck();
+    for (let page of styled.slides!) page.pageElements = page.pageElements!.map(e => ({ ...e, ...BOX }));
+    styled.slides![0].pageElements![0].shape!.text = text([{ content: "Q3 review", style: { bold: true } }]);
+    let provider = new SlidesProvider(styled).install();
+    let slides = gatekeeper(run);
+
+    let move = await slides.queued("moveSlides", ["s3", "s1"], "s2");
+
+    expect(pagesRead(provider)).toEqual([["s3", LABEL_FIELDS], ["s1", LABEL_FIELDS], ["s2", LABEL_FIELDS]]);
+    expect(move.action).toMatchObject({
+      title: "Move 2 slides",
+      description: 'Moves slide 1 ("Q3 review"), slide 3 ("Thanks") to follow slide 2 ("Revenue"), keeping their order.',
+    });
+    for (let id of ["s1", "s2"]) {
+      let answer = await (await provider.handle(new Request(
+        `https://slides.googleapis.com/v1/presentations/deck-1/pages/${id}?fields=${LABEL_FIELDS}&prettyPrint=false`,
+      )))!.text();
+      expect(answer).toContain(id === "s1" ? "Q3 review" : "Revenue");
+      for (let left of ["transform", "style", "tableRows", "notesPage", "pageProperties"]) {
+        expect(answer, left).not.toContain(left);
+      }
+    }
+  });
+
+  it("reads whole a moved slide that a queued edit changes, and names it as edited", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper(run);
+    await slides.edit([{ slideId: "s2", elementId: "t2", find: "Revenue", replace: "Income" }]);
+    pagesRead(provider);
+
+    let move = await slides.queued("moveSlides", ["s2"], "s3");
+
+    expect(pagesRead(provider)).toEqual([["s2", SLIDE_FIELDS], ["s3", LABEL_FIELDS]]);
+    expect(move.action).toMatchObject({
+      title: 'Move slide 2 ("Income")',
+      description: 'Moves slide 2 ("Income") to follow slide 3 ("Thanks"), keeping their order.',
+    });
+  });
+
+  it("names a queued copy by its source's title from label fields", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper(run);
+    let copyId = (await slides.queued("duplicateSlide", "s2")).value as string;
+    pagesRead(provider);
+
+    // The copy is not Google's yet: its source is read, by label, and the fold copies that.
+    let move = await slides.queued("moveSlides", [copyId], null);
+
+    expect(pagesRead(provider)).toEqual([["s2", LABEL_FIELDS]]);
+    expect(move.action!.title).toBe('Move slide 3 ("Revenue")');
+
+    // A queued edit to the copy is checked against a whole copy, so its source is read whole.
+    let [copied] = await slides.slides(copyId);
+    let title = copied.elements.find(e => (e as ShapeElement).text === "Revenue")!;
+    await slides.edit([{ slideId: copyId, elementId: title.id, find: "Revenue", replace: "Income" }]);
+    pagesRead(provider);
+
+    let skip = await slides.queued("setSlidesSkipped", [copyId], true);
+
+    expect(pagesRead(provider)).toEqual([["s2", SLIDE_FIELDS]]);
+    expect(skip.action!.title).toBe('Skip slide 1 ("Income")');
+  });
+
+  it("refuses a skip of slides already skipped from label fields", async () => {
+    let skipped = deck();
+    skipped.slides![0].slideProperties!.isSkipped = true;
+    let provider = new SlidesProvider(skipped).install();
+    let slides = gatekeeper(run);
+    await slides.queued("setSlidesSkipped", ["s3"], true);
+    pagesRead(provider);
+
+    // The first slide is skipped as Google has it, and the third by the queued change.
+    expect((await slides.call("setSlidesSkipped", ["s1", "s3"], true)).error)
+      .toBe("Those slides are already skipped.");
+    expect((await slides.call("setSlidesSkipped", ["s2"], false)).error).toBe("None of those slides is skipped.");
+    expect(pagesRead(provider)).toEqual([["s1", LABEL_FIELDS], ["s3", LABEL_FIELDS], ["s2", LABEL_FIELDS]]);
+  });
+
+  it("reads only label fields to delete a slide, and to add one after a slide", async () => {
+    let numbered = layoutDeck();
+    numbered.slides![2].pageElements![0].shape!.text = text(["Part ", { slideNumber: "3" }]);
+    let provider = new SlidesProvider(numbered).install();
+    let slides = gatekeeper(run);
+    await slides.queued("moveSlides", ["s3"], null);
+    pagesRead(provider);
+
+    let create = await slides.queued("createSlide", "layout-title", "s1");
+
+    expect(pagesRead(provider)).toEqual([["s1", LABEL_FIELDS], ["layout-title", LAYOUT_PAGE_FIELDS]]);
+    expect(create.action!.description)
+      .toBe('Adds a slide with the layout "Title slide" after slide 2 ("Q3 review").');
+
+    // The queued move renumbers the slide it holds by label, whose title shows its number.
+    let remove = await slides.queued("deleteSlide", "s3");
+
+    expect(pagesRead(provider)).toEqual([["s3", LABEL_FIELDS]]);
+    expect(remove.action!.title).toBe('Delete slide 1 ("Part 1")');
+  });
+
+  it("reads whole the slides a text change and a copy name", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper(run);
+
+    await slides.edit([{ slideId: "s2", elementId: "b2", find: "$10M", replace: "$12M" }]);
+    await slides.queued("duplicateSlide", "s3");
+
+    expect(pagesRead(provider)).toEqual([["s2", SLIDE_FIELDS], ["s3", SLIDE_FIELDS]]);
+  });
+});
+
 function background(target: object, value: unknown) {
   return { op: "setBackground", ...target, background: value };
 }
@@ -1445,6 +1570,8 @@ describe("Google Slides replay cost", () => {
   const PAGE_BYTES = 32_196;
   /** The same answer indented, as Google prints one not asked compact. */
   const PAGE_INDENTED = 93_183;
+  /** One fixture slide as the fake answers a read of its label fields, asked compact. */
+  const LABEL_BYTES = 2_042;
   /** The outline of the fixture deck, and its summary, asked compact as the client asks. */
   const OUTLINE_BYTES = 8_826;
   const SUMMARY_BYTES = 237_194;
@@ -1574,12 +1701,14 @@ describe("Google Slides replay cost", () => {
         : cell.padStart(widths[column])).join("  ");
     console.log([
       "Google Slides replay cost",
-      `A deck of ${SLIDES} slides of ${PAGE_BYTES} bytes each as compact JSON. ${N} changes are ` +
+      `A deck of ${SLIDES} slides of ${PAGE_BYTES} bytes each as compact JSON, ${LABEL_BYTES} as ` +
+      `its label fields. ${N} changes are ` +
       "queued, each followed by a read of the first 20 slides; then one more read of them, the " +
       "outline, a queued move of 99 slides and a queued skip of 100, the oldest change approved, " +
       "the newest rejected, and a read whose newest batch stopped at its second edit. cloneBytes " +
-      "is pageClones times a slide's bytes; mostOpen is of the fake, which has no limit on " +
-      "connections; pending is the changes awaiting a decision after the phase.",
+      "is a slide's bytes for each of pageClones, or its label fields' where the slide cloned " +
+      "was read by label; mostOpen is of the fake, which has no limit on connections; pending " +
+      "is the changes awaiting a decision after the phase.",
       print(header), ...lines.map(print),
     ].join("\n"));
   });
@@ -1593,8 +1722,8 @@ describe("Google Slides replay cost", () => {
     // The fixture is the size it claims, by the fake's own answers to a full read of one slide:
     // a live slide of a title, eight lines and a 6 x 5 table is 31,474 bytes asked compact, as
     // the client asks, and 91,566 indented, and the footer adds its own.
-    let page = async (query: string) => (await (await provider.handle(new Request(
-      `https://slides.googleapis.com/v1/presentations/deck-1/pages/${id(50)}?fields=${SLIDE_FIELDS}${query}`,
+    let page = async (query: string, fields = SLIDE_FIELDS) => (await (await provider.handle(new Request(
+      `https://slides.googleapis.com/v1/presentations/deck-1/pages/${id(50)}?fields=${fields}${query}`,
     )))!.arrayBuffer()).byteLength;
     let compact = await page("&prettyPrint=false");
     expect(compact).toBeGreaterThan(30_000);
@@ -1604,24 +1733,36 @@ describe("Google Slides replay cost", () => {
     expect(indented).toBeGreaterThan(87_000);
     expect(indented).toBeLessThan(97_000);
     expect(indented).toBe(PAGE_INDENTED);
+    // Its label fields are 1,780 bytes of that live slide, and the footer's box adds its own.
+    let label = await page("&prettyPrint=false", LABEL_FIELDS);
+    expect(label).toBeGreaterThan(1_700);
+    expect(label).toBeLessThan(2_400);
+    expect(label).toBe(LABEL_BYTES);
 
+    // `cloneBytes` is not a running total: `phase` derives it from the phase's clones.
     let totals = (): Record<Measure, number> => ({
-      ...editorCost, cloneBytes: editorCost.pageClones * PAGE_BYTES,
+      ...editorCost, cloneBytes: 0,
       pageFetches: provider.pageReads.length, fetches: meter.fetches,
       responseBytes: meter.responseBytes, mostOpen: 0, indented: provider.indented.length,
     });
     let pending = async () => (await hooks().storedKeys(slides.facet, "slides"))
       .filter(key => /^slides:action:\d+$/.test(key)).length;
-    /** Runs one phase and records what it added to each measure. */
-    let phase = async (name: string, body: () => Promise<unknown>) => {
+    /**
+     * Runs one phase and records what it added to each measure. `labelClones` of its clones are
+     * of a slide read by label, each of `LABEL_BYTES`; the others are of a whole page.
+     */
+    let phase = async (name: string, body: () => Promise<unknown>, labelClones = 0) => {
       editorCost.longestMeasured = 0;
       meter.mostOpen = 0;
       let before = totals();
       await body();
       let after = totals();
+      let added = Object.fromEntries(
+        MEASURES.map(column => [column, after[column] - before[column]])) as Record<Measure, number>;
       measured.push({
         phase: name,
-        ...Object.fromEntries(MEASURES.map(column => [column, after[column] - before[column]])) as Record<Measure, number>,
+        ...added,
+        cloneBytes: (added.pageClones - labelClones) * PAGE_BYTES + labelClones * LABEL_BYTES,
         longestMeasured: editorCost.longestMeasured,
         mostOpen: meter.mostOpen,
         pending: await pending(),
@@ -1661,8 +1802,10 @@ describe("Google Slides replay cost", () => {
       let outcome = await slides.call("getPresentation");
       expect(outcome.error).toBeUndefined();
     });
-    await phase("queue a move of 99", () => queue(slides.queued("moveSlides", every.slice(0, 99), id(SLIDES))));
-    await phase("queue a skip of 100", () => queue(slides.queued("setSlidesSkipped", every, true)));
+    // In both, a fold's one clone of a slide read by label is the queued copy of slide 3.
+    await phase("queue a move of 99",
+      () => queue(slides.queued("moveSlides", every.slice(0, 99), id(SLIDES))), 1);
+    await phase("queue a skip of 100", () => queue(slides.queued("setSlidesSkipped", every, true)), 1);
     await phase("approve", async () => expect(await slides.apply(ids[0])).toBeNull());
     await phase("reject", async () => expect(await slides.reject(ids.at(-1)!)).toBeNull());
 
@@ -1688,7 +1831,8 @@ describe("Google Slides replay cost", () => {
     // the outline's: `PAGE_BYTES` units for a slide as it was fetched, 126 more for the copy, whose
     // IDs are longer, 233 more for a slide whose title a queued edit holds as four runs in place of
     // one, and one more for a slide whose number an earlier change of the fold made a digit longer
-    // (the footer's padding makes the pages one size as fetched only).
+    // (the footer's padding makes the pages one size as fetched only). A slide a change only names
+    // is read by label, `LABEL_BYTES` in place of `PAGE_BYTES`, fetched and through each round trip.
     expect(measured).toEqual([
       {
         ...none, phase: "queue N, a read after each", pending: N,
@@ -1699,12 +1843,15 @@ describe("Google Slides replay cost", () => {
         // A queued copy of slide 3 shifts slides 4 to 20 and numbers the copy (18), and a queued
         // move to the start then shifts all 21 held: 18, 39 and 39 for the last three reads, and 1
         // each for the one slide held when the move and the last edit are queued. Five are of the
-        // copy, five of an edited slide and two of a slide numbered a digit more.
-        pageRoundTrips: 98, roundTripUnits: 3_157_005,
+        // copy, five of an edited slide and two of a slide numbered a digit more. The slide the
+        // move names is held by label: its one round trip is `PAGE_BYTES - LABEL_BYTES` shorter.
+        pageRoundTrips: 98, roundTripUnits: 3_157_005 - (PAGE_BYTES - LABEL_BYTES),
         // Each queued change is measured once, and each read's 20 slides, about 3.7 KB a slide.
         measuredStrings: 10, longestMeasured: 74_091,
-        // One page to queue each change, 20 for each read, and an outline with each.
-        pageFetches: 105, fetches: 115, responseBytes: 105 * PAGE_BYTES + 10 * OUTLINE_BYTES,
+        // One page to queue each change, the moved slide's by label, 20 for each read, and an
+        // outline with each.
+        pageFetches: 105, fetches: 115,
+        responseBytes: 104 * PAGE_BYTES + LABEL_BYTES + 10 * OUTLINE_BYTES,
         mostOpen: 20,
       },
       {
@@ -1728,22 +1875,32 @@ describe("Google Slides replay cost", () => {
       },
       {
         ...none, phase: "queue a move of 99", pending: N + 1,
-        // All 100 slides are held whole: the four clones, and 98 and 101 round trips of them, two
-        // of the copy, two of an edited slide and two of a slide numbered a digit more.
-        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 199, roundTripUnits: 6_407_724,
+        // All 100 slides are held: slides 1 and 2, which queued batches edit, whole, and the 98
+        // others by label. Per fold: 3 whole clones (the batches on slides 1 and 2) and 1 label
+        // clone (the queued copy of slide 3, read by label here).
+        pageClones: 4, cloneBytes: 3 * PAGE_BYTES + LABEL_BYTES,
+        // The copy shifts 97 and is numbered (98), all by label, and the move to the start shifts
+        // all 101: slides 1 and 2, whole and with an edited title, and 99 by label. Two are of the
+        // copy and two of a slide numbered a digit more.
+        pageRoundTrips: 199,
+        roundTripUnits: 2 * (PAGE_BYTES + 233) + 197 * LABEL_BYTES + 2 * 126 + 2,
         // The queued move alone: 99 labels and the slide they follow.
         measuredStrings: 1, longestMeasured: 6_138,
-        // The 100 slides named, whole and at once, to label them.
-        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_BYTES + OUTLINE_BYTES,
+        // The 100 slides named, at once: 98 by label, and the two a queued batch edits whole.
+        pageFetches: 100, fetches: 101,
+        responseBytes: 2 * PAGE_BYTES + 98 * LABEL_BYTES + OUTLINE_BYTES,
         mostOpen: 100,
       },
       {
         ...none, phase: "queue a skip of 100", pending: N + 2,
-        // As the move, and the queued move of 99 shifts slides 4 to 99 and the copy: 97 more, one
-        // of them the copy and four a slide numbered a digit more.
-        pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 296, roundTripUnits: 9_530_866,
+        // As the move, and the queued move of 99 shifts slides 4 to 99 and the copy, all held by
+        // label: 97 more, one of them the copy and four a slide numbered a digit more.
+        pageClones: 4, cloneBytes: 3 * PAGE_BYTES + LABEL_BYTES,
+        pageRoundTrips: 296,
+        roundTripUnits: 2 * (PAGE_BYTES + 233) + 294 * LABEL_BYTES + 3 * 126 + 6,
         measuredStrings: 1, longestMeasured: 6_130,
-        pageFetches: 100, fetches: 101, responseBytes: 100 * PAGE_BYTES + OUTLINE_BYTES,
+        pageFetches: 100, fetches: 101,
+        responseBytes: 2 * PAGE_BYTES + 98 * LABEL_BYTES + OUTLINE_BYTES,
         mostOpen: 100,
       },
       {

@@ -181,6 +181,8 @@ export class SlidesProvider {
   editable = true;
   /** Every page fetched, by ID. */
   pageReads: string[] = [];
+  /** The `fields` each page was fetched with, in the order of `pageReads`. */
+  pageFields: (string | null)[] = [];
   /** The reads answered indented, as `METHOD path`: those that did not ask for compact JSON. */
   indented: string[] = [];
   #copies = 0;
@@ -230,6 +232,7 @@ export class SlidesProvider {
     if (!url.pathname.startsWith(`${base}/`)) return undefined;
     let pageId = url.pathname.slice(`${base}/pages/`.length);
     this.pageReads.push(pageId);
+    this.pageFields.push(fields);
     let page = [...this.deck.slides!, ...this.deck.layouts ?? []].find(s => s.objectId === pageId);
     return page ? Response.json(masked(page, mask)) : new Response(null, { status: 404 });
   }
