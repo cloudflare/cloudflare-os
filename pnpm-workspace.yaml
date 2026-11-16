@@ -44,7 +44,7 @@ catalog:
   vitest: ^5.0.5
   # Vitest's browser-mode provider, which must match vitest's version, and the Playwright it
   # drives. Playwright's browsers are not dependencies: `playwright install chromium` fetches them.
-  '@vitest/browser-playwright': ^5.1.0
+  '@vitest/browser-playwright': ^5.0.5
   playwright: ^1.65.0
   wrangler: ^4.158.0
   zod: ^4.6.7
@@ -70,12 +70,6 @@ overrides:
   # the one workshop-backend pins. The agent loop and the backend's model handles must share one
   # pi-ai (its model registry and types), so the agent core gets the backend's.
   '@earendil-works/pi-agent-core>@earendil-works/pi-ai': 1.5.2
-
-peerDependencyRules:
-  allowedVersions:
-    # vitest-evals 0.17 declares `vitest >=4 <5`, but its harness, judges and reporter work unchanged
-    # on vitest 5. Drop this once a release widens the range.
-    'vitest-evals>vitest': '5'
 
 # Reject dependency versions published within this many minutes (24h), matching the
 # CI supply-chain policy so local installs can't commit a too-fresh lockfile.
