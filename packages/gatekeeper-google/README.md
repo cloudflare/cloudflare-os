@@ -1715,7 +1715,11 @@ content and no indentation. While changes await approval, reads also fetch the
 slides they address, so each can be checked as approving it would: slide content reads the other
 slides of any batch touching a slide it shows, since a batch applies all or none, and the summaries
 read every slide a queued batch changes, since they hold no tables or grouped shapes. Large batches
-awaiting approval therefore cost reads more requests against Google's per-user quota.
+awaiting approval therefore cost reads more requests against Google's per-user quota. Queueing a
+move, a skip, a deletion, or a new slide placed after another reads, of each slide it names, only
+its shapes' text and whether it is skipped, a couple of KiB, and reads the slide whole when a queued
+change edits it. A read fetches the slides it needs whole first, four at a time, and then those it
+needs only that much of, six at a time, which is as many connections as a Worker holds open at once.
 
 The simulated presentation was recorded from an English-locale account, so until it is created it
 reads with locale `en` and English layout names. Google translates those names: a presentation a
