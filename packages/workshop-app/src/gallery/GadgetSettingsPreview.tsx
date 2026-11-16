@@ -21,13 +21,14 @@ export const GadgetSettingsPreview = () => {
 
   return (
     <>
-      <Section title="BindingRow (one with its service’s logo, one waiting to be accepted, one that can only be looked at; More to manage or remove, which asks first)">
+      <Section title="BindingRow (one with its service’s logo and what goes ahead through it without asking, one waiting to be accepted, one that can only be looked at; More to manage, in the connection’s dialog, or remove, which asks first)">
         <div className="w-full max-w-3xl">
           <ListGroup label="Connected to">
             <BindingRow
               name="GITHUB"
               resource="cloudflare/gadgets"
               service={{ name: 'GitHub', logoUrl: '/favicon.svg' }}
+              automatic="2 changes automatic"
               onManage={() => say('manage connections')}
               onRemove={async () => { await later(); say('GITHUB removed'); return true }}
             />

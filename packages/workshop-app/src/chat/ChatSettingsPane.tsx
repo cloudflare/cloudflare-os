@@ -22,6 +22,7 @@ import { isMuted, useMakeWorkspace, useSetNotificationMute, useWorkspaces } from
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import type { ConnectionLinks } from '@/connections/ConnectionDetails'
 import { ChatConnectionList } from './ChatConnectionList'
 import { formatUsage } from './usage'
 import { useChatSession } from './useChatSession'
@@ -57,7 +58,8 @@ export type ChatSettingsPaneProps = {
   /** Where an automation reports, for its row to open and link to. */
   automationLink: AutomationLink
   /** Where the accounts its connections go through are managed. */
-  onOpenConnections: () => void
+  /** Where a connection's dialog goes, from the Connections tab. */
+  connectionLinks: ConnectionLinks
 }
 
 /**
@@ -67,7 +69,7 @@ export type ChatSettingsPaneProps = {
  * set up from it for a gadget; and its settings, which are what it is told about (its workspace's
  * notifications), what it has used, and deleting it.
  */
-export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onOpen, href, automationLink, onOpenConnections }: ChatSettingsPaneProps) => {
+export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onOpen, href, automationLink, connectionLinks }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -143,7 +145,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
             <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpen} href={href} />
           </Tabs.Panel>
           <Tabs.Panel value="connections" className="flex flex-col gap-8">
-            {tab === 'connections' && <ChatConnectionList workspaceId={workspaceId} chatId={chatId} onManage={onOpenConnections} />}
+            {tab === 'connections' && <ChatConnectionList workspaceId={workspaceId} chatId={chatId} links={connectionLinks} />}
           </Tabs.Panel>
           <Tabs.Panel value="automations" className="flex flex-col gap-8">
             {tab === 'automations' && (

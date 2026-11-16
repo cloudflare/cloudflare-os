@@ -199,7 +199,12 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, status, children }: {
           }}
           // A scripted chat has nowhere else to go: an automation's chat is this one.
           automationLink={() => ({ onOpen: () => setSettings(false) })}
-          onOpenConnections={onOpenScenarios}
+          // Nowhere else to go from a scripted chat's connections either.
+          connectionLinks={{
+            use: () => ({ onOpen: () => setSettings(false) }),
+            account: () => ({ onOpen: onOpenScenarios }),
+            workspace: () => ({ onOpen: onOpenScenarios }),
+          }}
         />
       ) : (
         <ChatPane

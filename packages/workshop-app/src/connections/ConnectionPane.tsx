@@ -1,4 +1,5 @@
 import { CaretLeftIcon } from '@phosphor-icons/react'
+import { kindLabel } from '@/blocks/ChangeRulesList'
 import { ConnectionAccountView } from '@/blocks/ConnectionAccountView'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -9,9 +10,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
 import { openConnectWindow } from './connectHandoff'
 import { accountName, grantedGroups, resourcesOf, serviceOf, withGrouped } from './connectionGroups'
-import { changeGroups } from './changeGroups'
-import { useChangeDefaults } from './useChangeDefaults'
-import { useWorkspaceRules } from './useWorkspaceRules'
+import { useAccountWideDefaults } from './useAccountWideDefaults'
 
 export type ConnectionPaneProps = {
   accountId: number
@@ -20,28 +19,18 @@ export type ConnectionPaneProps = {
 }
 
 /**
- * One connected account's page (`ConnectionAccountView`), opened from the Gatekeepers page: every
- * kind of change its service can make, and which go ahead without asking in the user's workspaces
- * (`useChangeDefaults`), with the workspaces that let one go ahead though the service asks
- * (`useWorkspaceRules`); what it can reach; reconnecting it; and disconnecting it, after which it
- * goes back.
+ * One connected account's page (`ConnectionAccountView`), opened from the Gatekeepers page: what it
+ * can reach; what still goes ahead without asking through its service in every workspace, from
+ * before that was each workspace's to choose (`useAccountWideDefaults`); reconnecting it; and
+ * disconnecting it, after which it goes back.
  */
 export const ConnectionPane = ({ accountId, onBack }: ConnectionPaneProps) => {
   const { api } = useApi()
   const connection = useConnectionNotice()
   const accounts = useConnectedAccounts()
   const account = accounts.status === 'ready' ? accounts.accounts.find(({ id }) => id === accountId) : undefined
-  const defaults = useChangeDefaults(account?.vendorId)
-  const workspaceRules = useWorkspaceRules(account?.vendorId)
+  const defaults = useAccountWideDefaults(account?.vendorId)
   useDocumentTitle(account?.vendor.displayName ?? 'Gatekeeper')
-
-  // The workspaces that let each kind go ahead though the service asks first, by tag.
-  const alsoIn = new Map<string, string[]>()
-  for (const { tag, workspaceTitle } of workspaceRules.rules ?? []) {
-    const titles = alsoIn.get(tag) ?? []
-    if (!titles.includes(workspaceTitle)) titles.push(workspaceTitle)
-    alsoIn.set(tag, titles)
-  }
 
   const header = (
     <HeaderBubble>
@@ -92,10 +81,7 @@ export const ConnectionPane = ({ accountId, onBack }: ConnectionPaneProps) => {
           onBack()
           return true
         }}
-        changes={defaults.automatic && changeGroups(account.supportedResources, defaults.automatic, alsoIn)}
-        onChange={defaults.change}
-        onAskEverywhere={(kind) => workspaceRules.clear(kind.tag, kind.label)}
-        changeProblem={defaults.problem ?? workspaceRules.problem}
+        everywhere={defaults.kinds && { kinds: defaults.kinds.map(({ label }) => kindLabel(label).title), onAskFirst: defaults.askFirst, problem: defaults.problem }}
       />
     </PageLayout>
   )

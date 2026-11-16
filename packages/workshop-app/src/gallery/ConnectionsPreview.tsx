@@ -2,7 +2,11 @@ import { useRef, useState } from 'react'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { Button } from '@/components/Button'
-import { ChangeDefaultsList, type ChangeDefaultsGroup } from '@/blocks/ChangeDefaultsList'
+import { ChangeRulesList, type ChangeRule } from '@/blocks/ChangeRulesList'
+import { ConnectionDetailsDialog, type ConnectionUse } from '@/blocks/ConnectionDetailsDialog'
+import { WorkspaceConnectionRow } from '@/blocks/WorkspaceConnectionRow'
+import { FormatIcon } from '@/components/FormatIcon'
+import { KindMark } from '@/components/KindMark'
 import { ConnectionAccountView } from '@/blocks/ConnectionAccountView'
 import { ConnectionDialog, type ConnectionDialogResource } from '@/blocks/ConnectionDialog'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
@@ -84,10 +88,16 @@ export const ConnectionsPreview = () => {
         <Button onClick={() => setOpen('connect-granular')}>Connect, choosing</Button>
         <Button onClick={() => setOpen('add')}>Add built in</Button>
       </Section>
-      <Section title="ChangeDefaultsList (every kind of change a service can make, by what it changes: Ask first or Automatic in every workspace the user owns; one that can never go ahead on its own requires approval always; one a workspace lets go ahead though the service asks says where, with Ask there too)">
-        <div className="w-full max-w-3xl"><DefaultsPreview /></div>
+      <Section title="WorkspaceConnectionRow (a workspace’s Connections tab, by service: what it is and what uses it, and what goes ahead without asking, under the title on a narrow screen; one nothing uses yet; one every chat has)">
+        <WorkspaceRowsPreview say={say} />
       </Section>
-      <Section title="ConnectionAccountView (an account’s page, from the Gatekeepers page: what changes go ahead on their own, in every workspace; what it can reach, with more to grant, which waits for its window; disconnecting, asked first. Signed in, expired, still reading, and a service that changes nothing)">
+      <Section title="ChangeRulesList (every kind of change one connection can make: Ask first or Automatic for its workspace; one that can never go ahead on its own always asks; and as shown where nothing can be chosen)">
+        <RulesPreview />
+      </Section>
+      <Section title="ConnectionDetailsDialog (one of a workspace’s connections, from its row or a chat’s or gadget’s More: what uses it, gadgets then chats, a published gadget saying it asks anyway, the first five until all; its changes; the account, and from a chat or gadget the rest. Also with nothing using it, in a workspace that has read restricted data, and for whoever only uses it)">
+        <DetailsPreview say={say} />
+      </Section>
+      <Section title="ConnectionAccountView (an account’s page, from the Gatekeepers page: what it can reach, with more to grant, which waits for its window; that what goes ahead is each workspace’s, with what still goes ahead everywhere from before, to make ask first; disconnecting, asked first. Signed in, expired, and with nothing left from before)">
         <AccountPreview />
       </Section>
       <Section title="SetUpConnectionDialog (a chat’s connection request: accounts loading, none yet, one with the service’s form, an expired one, one without access)">
@@ -127,60 +137,116 @@ export const ConnectionsPreview = () => {
   )
 }
 
-const change = (tag: string, label: string, automatic = false, autoApprovable = true, alsoIn?: string[]) =>
-  ({ kind: { tag, label }, autoApprovable, automatic, ...(alsoIn ? { alsoIn } : {}) })
+const change = (tag: string, label: string, automatic = false, autoApprovable = true): ChangeRule =>
+  ({ kind: { tag, label }, autoApprovable, automatic })
 
-const GROUPS: ChangeDefaultsGroup[] = [
-  { key: 'gmail', title: 'Gmail', changes: [
-    change('gmail.label', 'Labels and archiving, in any message this connection reaches', true),
-    change('gmail.draft', 'Drafts, in this mailbox'),
-    change('gmail.send', 'Send email', false, false),
-    change('gmail.draftSend', 'Send drafts', false, false),
-  ] },
-  { key: 'doc', title: 'Google Doc', changes: [
-    change('editDocument', 'Document edits, in any Doc this connection reaches', false, true, ['Quarterly planning']),
-    change('addTab', 'New tabs, in any Doc this connection reaches'),
-    change('docComments', 'Comments and replies, in any Doc this connection reaches', true),
-  ] },
-  { key: 'sheet', title: 'Google Sheet', changes: [
-    change('editSheetValues', 'Sheet value edits, in any spreadsheet this connection reaches', false, true, ['Board pack', 'Budget']),
-    change('formatSheets', 'Sheet formatting, in any spreadsheet this connection reaches'),
-  ] },
-  { key: 'drive', title: 'Drive file', changes: [
-    change('driveComments', 'Drive comments'),
-    change('share', 'Sharing', false, false),
-  ] },
+const CHANGES: ChangeRule[] = [
+  change('editDocument', 'Document edits, in any Doc this connection reaches', true),
+  change('addTab', 'New tabs, in any Doc this connection reaches'),
+  change('docComments', 'Comments and replies, in any Doc this connection reaches'),
+  change('share', 'Sharing', false, false),
 ]
 
-const toggled = (groups: ChangeDefaultsGroup[], tag: string, update: (one: ChangeDefaultsGroup['changes'][number]) => ChangeDefaultsGroup['changes'][number]) =>
-  groups.map((group) => ({ ...group, changes: group.changes.map((one) => (one.kind.tag === tag ? update(one) : one)) }))
-
-const useGroups = () => {
-  const [groups, setGroups] = useState(GROUPS)
+const useChanges = () => {
+  const [changes, setChanges] = useState(CHANGES)
   return {
-    groups,
-    set: (tag: string, automatic: boolean) => setGroups((current) => toggled(current, tag, (one) => ({ ...one, automatic, alsoIn: automatic ? undefined : one.alsoIn }))),
-    askEverywhere: (tag: string) => setGroups((current) => toggled(current, tag, ({ alsoIn: _, ...one }) => one)),
+    changes,
+    set: (tag: string, automatic: boolean) => setChanges((current) => current.map((one) => (one.kind.tag === tag ? { ...one, automatic } : one))),
   }
 }
 
-const DefaultsPreview = () => {
-  const { groups, set, askEverywhere } = useGroups()
-  return <ChangeDefaultsList groups={groups} onChange={(kind, automatic) => set(kind.tag, automatic)} onAskEverywhere={(kind) => askEverywhere(kind.tag)} />
+const RulesPreview = () => {
+  const { changes, set } = useChanges()
+  return (
+    <div className="flex w-full max-w-xl flex-col gap-3">
+      <ChangeRulesList changes={changes} onChange={(kind, automatic) => set(kind.tag, automatic)} />
+      <ChangeRulesList changes={changes} onChange={() => {}} disabled />
+    </div>
+  )
 }
 
-type AccountState = 'signed-in' | 'expired' | 'loading' | 'nothing'
+const GADGET_COLOR = 'blue' as const
+
+const WorkspaceRowsPreview = ({ say }: { say: (what: string) => void }) => (
+  <div className="flex w-full max-w-3xl flex-col gap-6">
+    {[
+      { label: 'GitHub', rows: [{ title: 'acme/storefront', detail: 'GitHub Repository · Used by Release Notes and 3 chats', automatic: '2 changes automatic' }] },
+      { label: 'Google', rows: [
+        { title: 'Quarterly planning', detail: 'Google Doc · Used by Tip Jar and a chat', automatic: 'Document edits automatic' },
+        { title: 'Team calendar', detail: 'Google Calendar · Not used yet' },
+      ] },
+      { label: 'Every chat has', rows: [{ title: 'Web Search', detail: 'Used in 4 chats' }] },
+    ].map((group) => (
+      <section key={group.label} className="flex flex-col gap-2">
+        <h2 className="px-4 text-sm font-medium text-kumo-subtle">{group.label}</h2>
+        <ListGroup label={group.label}>
+          {group.rows.map((row) => (
+            <WorkspaceConnectionRow key={row.title} {...row} logo={{ name: group.label }} onOpen={() => say(`open ${row.title}`)} />
+          ))}
+        </ListGroup>
+      </section>
+    ))}
+  </div>
+)
+
+type DetailsState = 'used' | 'unused' | 'restricted' | 'uses'
+
+const DetailsPreview = ({ say }: { say: (what: string) => void }) => {
+  const [open, setOpen] = useState<DetailsState>()
+  const [shown, setShown] = useState<DetailsState>('used')
+  const { changes, set } = useChanges()
+  const uses: ConnectionUse[] = [
+    { key: 'g1', icon: <FormatIcon name="dashboard" color={GADGET_COLOR} />, title: 'Tip Jar', detail: 'Gadget', onOpen: () => say('open Tip Jar') },
+    { key: 'g2', icon: <FormatIcon name="listChecks" />, title: 'Launch checklist', detail: 'Made by Ada: it asks anyway', onOpen: () => say('open Launch checklist') },
+    { key: 'a1', icon: <KindMark name="agent" />, title: 'Weekly digest', detail: 'Agent · 4 runs', onOpen: () => say('open Weekly digest’s latest run') },
+    ...['Plan the offsite', 'Q3 board pack', 'Budget review', 'Hiring plan'].map((title, index) => ({
+      key: `c${index}`, icon: <span className="size-5 rounded-full bg-kumo-contrast/10" />, title, detail: 'Chat', onOpen: () => say(`open ${title}`),
+    })),
+  ]
+  const show = (state: DetailsState) => {
+    setShown(state)
+    setOpen(state)
+  }
+  return (
+    <>
+      {(['used', 'unused', 'restricted', 'uses'] as const).map((state) => (
+        <Button key={state} onClick={() => show(state)}>{{ used: 'From the workspace', unused: 'Nothing uses it', restricted: 'Restricted data', uses: 'Only uses it' }[state]}</Button>
+      ))}
+      <ConnectionDetailsDialog
+        open={open !== undefined}
+        onOpenChange={(next) => { if (!next) setOpen(undefined) }}
+        title="Quarterly planning"
+        logo={{ name: 'Google' }}
+        kind="Google Doc"
+        serviceLink={{ label: 'Open in Google', href: 'https://example.com/doc' }}
+        uses={shown === 'unused' ? [] : uses}
+        changes={changes}
+        onChange={(kind, automatic) => {
+          set(kind.tag, automatic)
+          say(`${kind.tag}: ${automatic ? 'automatic' : 'ask first'}`)
+        }}
+        locked={shown === 'restricted'
+          ? 'This workspace has read restricted data, so every change asks first, whatever is chosen here.'
+          : shown === 'uses' ? 'Only whoever builds in this workspace chooses what goes ahead without asking.' : undefined}
+        account={{ label: 'Google account', onOpen: () => say('the account’s page') }}
+        onSeeAll={shown === 'used' ? undefined : () => say('the workspace’s connections')}
+      />
+    </>
+  )
+}
+
+type AccountState = 'signed-in' | 'expired' | 'nothing'
 
 const AccountPreview = () => {
   const { report, say, later } = useReport()
   const [state, setState] = useState<AccountState>('signed-in')
-  const { groups, set, askEverywhere } = useGroups()
+  const [everywhere, setEverywhere] = useState(['Document edits', 'Sheet value edits'])
   const [granted, setGranted] = useState(['https://mail.google.com/*'])
   const [failing, setFailing] = useState(false)
   return (
     <div className="flex w-full flex-col gap-3">
       <div className="flex flex-wrap gap-2">
-        {(['signed-in', 'expired', 'loading', 'nothing'] as const).map((each) => (
+        {(['signed-in', 'expired', 'nothing'] as const).map((each) => (
           <Button key={each} variant={each === state ? 'primary' : 'secondary'} onClick={() => setState(each)}>{each}</Button>
         ))}
         <Button variant={failing ? 'primary' : 'secondary'} onClick={() => setFailing((current) => !current)}>Changes fail</Button>
@@ -210,17 +276,20 @@ const AccountPreview = () => {
             say('Google disconnected')
             return true
           }}
-          changes={state === 'loading' ? undefined : state === 'nothing' ? [] : groups}
-          onChange={(kind, automatic) => {
-            set(kind.tag, automatic)
-            say(`${kind.tag}: ${automatic ? 'automatic' : 'ask first'}`)
-            if (failing) setTimeout(() => set(kind.tag, !automatic), 600)
+          everywhere={state === 'nothing' ? undefined : {
+            kinds: everywhere,
+            onAskFirst: async () => {
+              await later()
+              if (failing) {
+                say('couldn’t')
+                return true
+              }
+              setEverywhere([])
+              say('they ask first everywhere')
+              return true
+            },
+            problem: failing ? 'Couldn’t make them ask first: The server didn’t answer.' : undefined,
           }}
-          onAskEverywhere={(kind) => {
-            askEverywhere(kind.tag)
-            say(`${kind.tag}: asks first everywhere`)
-          }}
-          changeProblem={failing ? 'Couldn’t change “Document edits”: The server didn’t answer.' : undefined}
         />
       </div>
     </div>

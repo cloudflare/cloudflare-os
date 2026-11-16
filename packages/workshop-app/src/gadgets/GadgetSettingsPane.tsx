@@ -14,6 +14,10 @@ import { PaneNotice } from '@/blocks/PaneNotice'
 import { PublishBlueprintDialog } from '@/blocks/PublishBlueprintDialog'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
+import { ConnectionDetails, WorkspaceConnectionsLink, type ConnectionLinks } from '@/connections/ConnectionDetails'
+import { useWorkspaceConnections } from '@/connections/useWorkspaceConnections'
+import { automaticLine } from '@/connections/workspaceConnections'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EditableTitle } from '@/components/EditableTitle'
 import { FormatIcon, GADGET_ICONS, type FormatIconName } from '@/components/FormatIcon'
@@ -55,8 +59,8 @@ export type GadgetSettingsPaneProps = {
   onBack: () => void
   /** It was deleted: go somewhere that still is. */
   onDeleted: () => void
-  /** Where the accounts its connections go through are managed. */
-  onOpenConnections: () => void
+  /** Where a connection's dialog goes, from the Connections tab. */
+  connectionLinks: ConnectionLinks
   /** Its own address: what its share link lets people in to, and what whoever has no access asks for. */
   link: string
   /** Where an automation reports, for its row to open and link to. */
@@ -92,7 +96,7 @@ const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
  * and the automations that run its code.
  */
 export const GadgetSettingsPane = ({
-  workspaceId, workpieceId, initialTitle, tab, onTabChange, file, onShowFile, onBack, onDeleted, onOpenConnections, link, automationLink, onOpenBlueprint,
+  workspaceId, workpieceId, initialTitle, tab, onTabChange, file, onShowFile, onBack, onDeleted, connectionLinks, link, automationLink, onOpenBlueprint,
 }: GadgetSettingsPaneProps) => {
   const own = useMemo(() => ofGadget(workpieceId), [workpieceId])
   const ownAgents = useMemo(() => calledByGadget(workpieceId), [workpieceId])
@@ -125,6 +129,14 @@ export const GadgetSettingsPane = ({
   const [sharing, setSharing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [addingConnection, setAddingConnection] = useState(false)
+  // What its workspace lets go ahead through each connection, read with the Connections tab; and the one open in its dialog.
+  const workspaceConnections = useWorkspaceConnections(workspaceId, tab === 'connections')
+  const [openConnection, setOpenConnection] = useState<number>()
+  // Code someone else published asks whatever its workspace makes automatic, so its rows say nothing of that.
+  const madeBy = gadget?.publishedBy && gadget.publishedBy.id !== user.id ? gadget.publishedBy.name : undefined
+  const automatic = workspaceConnections.state.status === 'ready' && !madeBy && !workspace?.containsRestrictedData
+    ? workspaceConnections.state.automatic
+    : undefined
 
   const color = useGadgetColor(workspaceId, workpieceId)
   // Why its new icon was not kept.
@@ -244,7 +256,8 @@ export const GadgetSettingsPane = ({
                           resource={binding.resourceTitle}
                           service={serviceOf(binding.vendorId)}
                           pending={binding.chatId !== undefined}
-                          onManage={onOpenConnections}
+                          automatic={automatic && automaticLine(automatic.get(binding.target) ?? [])}
+                          onManage={() => setOpenConnection(binding.target)}
                           onRemove={builds ? async () => {
                             if (connection?.blocked()) return false
                             await settings.unbind(binding.name)
@@ -255,10 +268,26 @@ export const GadgetSettingsPane = ({
                     </ListGroup>
                   </div>
                 ))}
+                {/* Someone else's code is told of below, as it asks whatever the workspace lets go ahead. */}
+                {!madeBy && (
+                  <p className="px-4 pt-2 text-sm/5 text-pretty text-kumo-subtle">
+                    A change it makes through them asks first, unless the workspace makes that kind of change automatic.
+                    {isNamedWorkspace(workspace) && <> <WorkspaceConnectionsLink {...connectionLinks.workspace(workspaceId)} /></>}
+                  </p>
+                )}
               </section>
-              {builds && gadget && (
+              <ConnectionDetails
+                workspaceId={workspaceId}
+                gatekeeperId={openConnection}
+                onClose={() => setOpenConnection(undefined)}
+                connections={workspaceConnections}
+                links={connectionLinks}
+                seeAll={isNamedWorkspace(workspace)}
+              />
+              {/* Its own allowances matter where the workspace's do not reach, or once it has some. */}
+              {builds && gadget && (madeBy || gadget.autoApprove || (gadget.allowed?.length ?? 0) > 0) && (
                 <GadgetPermissions
-                  madeBy={gadget.publishedBy?.name}
+                  madeBy={madeBy}
                   everything={gadget.autoApprove === true}
                   allowances={(gadget.allowed ?? []).map(({ gatekeeperId, actionKind, enabledBy }) => {
                     const binding = snapshot.bindings.status === 'ready' ? snapshot.bindings.items.find(({ target }) => target === gatekeeperId) : undefined

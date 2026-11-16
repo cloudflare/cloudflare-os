@@ -13,6 +13,7 @@ import type {
   SlashCommandChoice,
   SlashCommandRequest,
   WorkpiecesSubscriber,
+  WorkspaceConnectionInfo,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, type Handle } from './MockGadget'
@@ -60,7 +61,7 @@ export class MockOverseer {
   #chatSubscribers = new Set<ChatEvents>()
   #actionSubscribers = new Set<ActionEvents>()
   // Standing approvals, as `gatekeeperId:tag`.
-  #rules = new Set<string>()
+  #rules = new Map<string, { gatekeeperId: number; actionKind: ActionKind }>()
   #gadgets = new Map<number, MockGadget>()
   #listed: NonNullable<Scenario['gadgets']>
   #files: NonNullable<Scenario['files']>
@@ -302,10 +303,26 @@ export class MockOverseer {
 
   /** Approves what is pending under the new rule, and what the script queues under it later. */
   async setAutoApprovedActionKind(gatekeeperId: number, actionKind: ActionKind) {
-    this.#rules.add(`${gatekeeperId}:${actionKind.tag}`)
+    this.#rules.set(`${gatekeeperId}:${actionKind.tag}`, { gatekeeperId, actionKind })
     const pending = this.#messages.filter((message) => this.#autoApproves(message))
     for (const { actionId } of pending) this.#resolve(actionId, { state: 'approved', resolvedBy: VIEWER, autoApproved: true })
     if (pending.length) this.player.fire('onApprove')
+  }
+
+  async removeAutoApprovedActionKind(gatekeeperId: number, tag: string) {
+    this.#rules.delete(`${gatekeeperId}:${tag}`)
+  }
+
+  async listAutoApprovedActionKinds() {
+    return [...this.#rules.values()]
+  }
+
+  /** What the scripted chat can use, as its workspace lists what it can reach. */
+  async listConnections(): Promise<WorkspaceConnectionInfo[]> {
+    return [
+      { gatekeeperId: 7, title: 'Jira · Platform board', vendorId: 'jira', gadgetIds: [], chatIds: [] },
+      { gatekeeperId: 2, title: 'Web search', vendorId: 'websearch', ambient: true, gadgetIds: [], chatIds: [] },
+    ]
   }
 
   /**

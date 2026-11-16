@@ -7,6 +7,7 @@ import type { LibraryEntry } from '@/library/libraryEntries'
 import { writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useAutomationLink } from '../-automationLink'
+import { useConnectionLinks } from '../-connectionLinks'
 
 const validateTab = (value: unknown): ChatSettingsTab | undefined =>
   CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'library')?.value
@@ -33,6 +34,7 @@ function ChatSettings() {
   const navigate = useNavigate()
   const router = useRouter()
   const automationLink = useAutomationLink()
+  const connectionLinks = useConnectionLinks()
   // The chat, with `open` shown beside it.
   const chat = (open: string | undefined) =>
     ({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open } }) as const
@@ -50,7 +52,7 @@ function ChatSettings() {
       initialTitle={initialTitle}
       tab={tab}
       automationLink={automationLink}
-      onOpenConnections={() => navigate({ to: '/gatekeepers' })}
+      connectionLinks={connectionLinks}
       // In place, so that going back leaves the settings rather than going through their tabs.
       onTabChange={(next) =>
         navigate({

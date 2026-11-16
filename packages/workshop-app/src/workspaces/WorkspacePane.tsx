@@ -23,7 +23,9 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { shareStanding } from '@/sharing/sharingRules'
 import { useSharing } from '@/sharing/useSharing'
+import type { ConnectionLinks } from '@/connections/ConnectionDetails'
 import { WorkspaceChatList } from './WorkspaceChatList'
+import { WorkspaceConnectionList } from './WorkspaceConnectionList'
 import { WorkspaceLibraryList } from './WorkspaceLibraryList'
 import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { isMuted, useDeleteWorkspace, useRenameWorkspace, useSetNotificationMute, useWorkspaces } from './WorkspacesContext'
@@ -32,11 +34,12 @@ import { workspaceMembers } from './workspaceMembers'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 
 /** What a workspace's page shows beneath its title. */
-export type WorkspaceTab = 'chats' | 'library' | 'automations' | 'members' | 'settings'
+export type WorkspaceTab = 'chats' | 'library' | 'connections' | 'automations' | 'members' | 'settings'
 
 export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'chats', label: 'Chats' },
   { value: 'library', label: 'Library' },
+  { value: 'connections', label: 'Connections' },
   { value: 'automations', label: 'Automations' },
   { value: 'members', label: 'Members' },
   { value: 'settings', label: 'Settings' },
@@ -64,18 +67,26 @@ export type WorkspacePaneProps = {
   onDeleted: () => void
   /** The workspace's address, which inviting people copies. Left out, nobody is invited from here. */
   link?: string
+  /** The connection open in its dialog, on the Connections tab. */
+  openConnection?: number
+  onConnectionChange: (gatekeeperId: number | undefined) => void
+  /** Where a connection's dialog goes. */
+  connectionLinks: ConnectionLinks
 }
 
 const WHOLE_WORKSPACE = {}
 
 /**
  * One workspace: its title, which can be renamed, the way to start a chat in it, who it is shared
- * with and the way to invite more, and, a tab each, its chats, what it has made, what runs by
- * itself, who has access to it and its settings. Each of the chats, library and automations tabs
+ * with and the way to invite more, and, a tab each, its chats, what it has made, what it can reach
+ * (for whoever may build in it, who chooses what goes ahead through each without asking), what runs
+ * by itself, who has access to it and its settings. Each of the chats, library and automations tabs
  * loads what it lists once chosen; who has
  * access is read with the page, for its header.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, automationLink, onNewChat, onNew, onDeleted, link }: WorkspacePaneProps) => {
+export const WorkspacePane = ({
+  workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, automationLink, onNewChat, onNew, onDeleted, link, openConnection, onConnectionChange, connectionLinks,
+}: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -120,6 +131,9 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   }
   // The server says who owns a workspace only to those who do not.
   const owns = workspace !== undefined && workspace.owner === undefined
+  // Whoever only uses what is in it is not told what it reaches, nor may say what goes ahead.
+  const builds = workspace !== undefined && workspace.role !== 'use'
+  const tabs = builds ? WORKSPACE_TABS : WORKSPACE_TABS.filter(({ value }) => value !== 'connections')
 
   return (
     <PageLayout
@@ -168,7 +182,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           </h1>
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
         </div>
-        <Tabs value={tab} onValueChange={onTabChange} tabs={WORKSPACE_TABS} aria-label="Workspace" className="gap-6">
+        <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
             <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} />
           </Tabs.Panel>
@@ -176,6 +190,13 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             {/* Only whoever may build here starts something in it. */}
             <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpenEntry} href={entryHref} onNew={workspace && workspace.role !== 'use' ? onNew : undefined} />
           </Tabs.Panel>
+          {builds && (
+            <Tabs.Panel value="connections" className="flex flex-col gap-8">
+              {tab === 'connections' && (
+                <WorkspaceConnectionList workspaceId={workspaceId} open={openConnection} onOpenChange={onConnectionChange} links={connectionLinks} />
+              )}
+            </Tabs.Panel>
+          )}
           <Tabs.Panel value="automations" className="flex flex-col gap-8">
             {tab === 'automations' && (
               <AutomationsTab

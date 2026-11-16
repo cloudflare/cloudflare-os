@@ -2,6 +2,7 @@ import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '
 import { parseItemPageId } from '@/aside/asideItems'
 import { GADGET_SETTINGS_TABS, GadgetSettingsPane, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsPane'
 import { useAutomationLink } from '../-automationLink'
+import { useConnectionLinks } from '../-connectionLinks'
 
 const validateTab = (value: unknown): GadgetSettingsTab | undefined =>
   GADGET_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'settings')?.value
@@ -33,6 +34,7 @@ function GadgetSettings() {
   const navigate = useNavigate()
   const router = useRouter()
   const automationLink = useAutomationLink()
+  const connectionLinks = useConnectionLinks()
   const { workspaceId, ref } = parseItemPageId(itemId)!
   const workpieceId = ref.kind === 'output' ? ref.workpieceId : -1
   const gadget = { to: '/app/$itemId', params: { itemId } } as const
@@ -55,7 +57,7 @@ function GadgetSettings() {
       }}
       // Its workspace's library, which it was one of; in place, as the gadget is no longer there to go back to.
       onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library' }, replace: true })}
-      onOpenConnections={() => navigate({ to: '/gatekeepers' })}
+      connectionLinks={connectionLinks}
       link={new URL(router.buildLocation(gadget).href, window.location.origin).href}
       automationLink={automationLink}
       onOpenBlueprint={(blueprintId) => navigate({ to: '/blueprints/$blueprintId', params: { blueprintId } })}

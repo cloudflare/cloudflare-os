@@ -2,8 +2,6 @@ import { useState, type ReactNode } from 'react'
 import { Button } from '@/components/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import { ChangeDefaultsList, type ChangeDefaultsGroup } from './ChangeDefaultsList'
 import type { ConnectionDialogResource, ConnectionDialogService } from './ConnectionDialog'
 import { isGranted, patternsToGrant } from './resourceGrants'
 import { ResourceReachList } from './ResourceReachList'
@@ -24,18 +22,16 @@ export type ConnectionAccountViewProps = {
   /** Disconnects it, once asked; as `ConfirmDialog`'s `onConfirm`, `false` if it was not tried. */
   onDisconnect: () => Promise<boolean>
   /**
-   * Every kind of change the service can make, by what it changes, and which go ahead without
-   * asking; undefined while that is read.
+   * The kinds of change, by label, that the user once let go ahead without asking through the
+   * service in every workspace they own, from before that was chosen in each workspace, with the
+   * way to make them ask first again and why that last failed.
    */
-  changes?: ChangeDefaultsGroup[]
-  onChange: (kind: ActionKind, automatic: boolean) => void
-  /** Has the workspaces that let a kind go ahead though the service asks first ask too. */
-  onAskEverywhere: (kind: ActionKind) => void
-  /** Why the last change to what goes ahead did not happen. */
-  changeProblem?: string
+  everywhere?: { kinds: string[]; onAskFirst: () => Promise<boolean>; problem?: string }
 }
 
 const REACH_SHOWN = 5
+
+const LIST = new Intl.ListFormat('en', { type: 'conjunction' })
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -47,14 +43,38 @@ const Section = ({ title, intro, children }: { title: string; intro?: ReactNode;
   </section>
 )
 
+// What still goes ahead in every workspace from before each workspace chose, until made to ask first.
+const EverywhereNotice = ({ service, kinds, onAskFirst, problem }: NonNullable<ConnectionAccountViewProps['everywhere']> & { service: string }) => {
+  const [pending, setPending] = useState(false)
+  return (
+    <div className="appears flex flex-col gap-3 rounded-3xl bg-kumo-tint px-4 py-3 sm:flex-row sm:items-center">
+      <p className="min-w-0 flex-1 text-base/5 text-pretty text-kumo-default">
+        {LIST.format(kinds)} still {kinds.length === 1 ? 'goes' : 'go'} ahead without asking through {service} in every workspace you own, as you chose before it was chosen in each.
+      </p>
+      <Button
+        className="shrink-0 self-start sm:self-auto"
+        disabled={pending}
+        onClick={() => {
+          setPending(true)
+          void onAskFirst().finally(() => setPending(false))
+        }}
+      >
+        Ask first everywhere
+      </Button>
+      {problem && <p role="alert" className="text-sm/5 text-kumo-danger">{problem}</p>}
+    </div>
+  )
+}
+
 /**
  * One connected account, on a page of its own: the service and which account it is, and whether it
- * is still signed in. Then every kind of change the service can make, each "Ask first" or
- * "Automatic" in every workspace the user owns, or always asking (`ChangeDefaultsList`); what it can reach, the first few of a long list until asked for all, to
- * which more can be added, as connecting does; and last, disconnecting it, asked first.
+ * is still signed in. Then what it can reach, the first few of a long list until asked for all, to
+ * which more can be added, as connecting does; where what goes ahead without asking is chosen,
+ * which is each workspace, not the account, with whatever still goes ahead everywhere from before
+ * that and the way to make it ask first; and last, disconnecting it, asked first.
  */
 export const ConnectionAccountView = (props: ConnectionAccountViewProps) => {
-  const { service, account, expired, resources, granted, onGrant, onReconnect, onDisconnect, changes, onChange, onAskEverywhere, changeProblem } = props
+  const { service, account, expired, resources, granted, onGrant, onReconnect, onDisconnect, everywhere } = props
   const grantable = resources.filter((resource) => resource.grantable).map(({ urlPattern }) => urlPattern)
   // Those switched on that were not granted.
   const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set())
@@ -112,27 +132,6 @@ export const ConnectionAccountView = (props: ConnectionAccountViewProps) => {
         {problem && <p role="alert" className="text-base/5 text-kumo-danger">{problem}</p>}
       </div>
 
-      {(changes === undefined || changes.length > 0) && (
-        <Section
-          title="When it changes something"
-          intro={(
-            <>
-              Reading never asks. Before a chat or gadget changes something through {service.name}, you’re asked
-              first, unless you make that kind of change automatic. What you choose here holds in every
-              workspace you own.
-            </>
-          )}
-        >
-          {changes === undefined
-            ? <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading…</p>
-            : <ChangeDefaultsList groups={changes} logoUrl={service.logoUrl} onChange={onChange} onAskEverywhere={onAskEverywhere} />}
-          <p className="max-w-xl px-4 pt-1 text-sm/5 text-kumo-subtle">
-            Once a workspace has read something sensitive, every change in it asks first.
-          </p>
-          {changeProblem && <p role="alert" className="px-4 text-base/5 text-kumo-danger">{changeProblem}</p>}
-        </Section>
-      )}
-
       {resources.length > 0 && (
         <Section title={grantable.length === 0 ? 'What it can do' : 'What it can reach'}>
           <ResourceReachList
@@ -157,6 +156,13 @@ export const ConnectionAccountView = (props: ConnectionAccountViewProps) => {
           )}
         </Section>
       )}
+
+      <Section title="When it changes something">
+        <p className="max-w-xl px-4 text-base/6 text-pretty text-kumo-default">
+          Reading never asks. A change through {service.name} asks first, unless the workspace it’s made in makes that kind of change automatic, on its Connections tab.
+        </p>
+        {everywhere && everywhere.kinds.length > 0 && <EverywhereNotice service={service.name} {...everywhere} />}
+      </Section>
 
       <SettingsGroup label="Disconnect">
         <SettingsRow

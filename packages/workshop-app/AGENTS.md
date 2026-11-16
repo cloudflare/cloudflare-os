@@ -161,7 +161,8 @@ answer that ended their turn, as a message action; someone else's, and every res
 divider, as a word after it. Undoing what made a gadget deletes it, which is asked about first.
 
 An action whose gatekeeper allows it can be approved for good (`ActionItem.rule`), once the user
-has been told that it reaches every chat in the workspace, whichever gadget asks.
+has been told that it reaches every chat in the workspace, whichever gadget asks, and that the
+workspace's Connections tab is where to change it.
 
 Approvals waiting are not cards in the conversation: they are the tray over the composer
 (`PendingTray`), however many there are and whichever turn asked, so none is ever scrolled away.
@@ -342,6 +343,9 @@ A workspace's Library tab (`WorkspaceLibraryList`) is the same list of that work
 tabs, under the same controls, its New (`NewFormatMenu`, as the Library page's) starting a chat in
 the workspace as the format chosen (`/workspace/$workspaceId/new?format=`); it is a secondary
 button there, beside the page's New chat, and only for whoever may build in it.
+
+Its Connections tab (`WorkspaceConnectionList`, `?tab=connections&connection=`, for whoever builds
+in it) is described under Connections.
 
 The types are apps (a gadget made as no format), then the formats the deployment offers
 (`listOutputFormats()`, `useOutputFormats`), in its order and whether or not anything has been made
@@ -606,18 +610,26 @@ asks which account and where, in the service's creation form (`startCreationConf
 
 An account opens its own page (`/gatekeepers/$accountId`, `ConnectionPane`, drawn by
 `ConnectionAccountView`); a service not connected yet opens `ConnectionDialog` to connect it. The
-page leads with what the service may change without asking: every kind of change its gatekeeper
-declares (`SupportedResource.actionKinds`), grouped by what it changes (`changeGroups`, a kind
-listed once, under the first), each "Ask first" or "Automatic" (`Segmented`), or "Always requires
-approval" where the gatekeeper never lets it through (`ChangeDefaultsList`). The choice is the
-user's default for the service in every workspace they own (`useChangeDefaults`, over
-`setDefaultAutoApprovedActionKind`): a workspace does not record which of the user's accounts it
-connected through, so it is by service, not account. A workspace rule ("Always approve" on a
-request, `setAutoApprovedActionKind`) that goes further shows under its kind, "Automatic in Trip
-planner", with the way to clear it (`useWorkspaceRules`, over each owned workspace's
-`listPreApprovableActions`). A kind's label splits at ", in " into what it is and how far it
-reaches (`kindLabel`). Then what the account can reach, five until "Show all", with more to grant,
-and Disconnect, asked first. "Always approve" on a request says this is where to change it.
+page says that reading never asks and that a change asks first unless the workspace it is made in
+makes that kind automatic, then what the account can reach, five until "Show all", with more to
+grant, and Disconnect, asked first. Account-wide defaults (`setDefaultAutoApprovedActionKind`) are
+no longer chosen anywhere; one set before still goes ahead, so the page says so and offers "Ask
+first everywhere" (`useAccountWideDefaults`).
+
+What goes ahead without asking is the workspace's to choose, per connection and kind of change
+(`setAutoApprovedActionKind`), as in main. The workspace's Connections tab is the whole list
+(`Overseer.listConnections`: every connection in it, with the gadgets bound to it and the chats that
+read or changed through it), grouped by service, then what every chat has
+(`connections/workspaceConnections.ts`), each a `WorkspaceConnectionRow` saying what it is, what
+uses it and what is automatic. A row opens `ConnectionDetails` (`ConnectionDetailsDialog`): what
+uses it, each a link, a gadget made from someone else's blueprint saying it asks anyway; and every
+kind of change its kind of resource declares (`SupportedResource.actionKinds`), each "Ask first" or
+"Automatic" (`Segmented`), or "Always asks" where the gatekeeper never lets it through
+(`ChangeRulesList`, `useWorkspaceConnections`). A kind's label splits at ", in " into what it is and
+how far it reaches (`kindLabel`). In a workspace that has read restricted data everything asks, and
+the tab and dialog say so instead. A chat's and a gadget's Connections tabs open the same dialog in
+place, with "All connections" to the workspace's tab, and end with a line pointing there. Where the
+dialog goes is the route's (`routes/-connectionLinks.ts`).
 
 The user adds one themselves with `AddConnection`: `AddConnectionDialog` lists every connectable
 kind of resource of the services that are not built in, those with an account first, then

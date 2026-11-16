@@ -1,6 +1,11 @@
+import { useState } from 'react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { ListGroup } from '@/blocks/ListGroup'
-import { useServices } from '@/connections/useServices'
+import { ConnectionDetails, WorkspaceConnectionsLink, type ConnectionLinks } from '@/connections/ConnectionDetails'
+import { useConnectionServices, useWorkspaceConnections } from '@/connections/useWorkspaceConnections'
+import { automaticLine } from '@/connections/workspaceConnections'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useChatConnections } from './useChatConnections'
 
 const GROUPS = [
@@ -12,21 +17,25 @@ const GROUPS = [
 /**
  * What a chat's agent can use, a group each: what was added in the chat, or read or changed
  * through in it; what the workspace's gadgets hold; and what every chat has. Each with its
- * service's logo and the name the agent knows it by, with the way to where its account is managed.
- * More is added from the composer's + menu.
+ * service's logo, the name the agent knows it by and what goes ahead through it without asking,
+ * which its More opens in the connection's dialog (`ConnectionDetails`), where the workspace
+ * chooses that, as the line under the list says, with the way to the workspace's every connection
+ * for a named one. More is added from the composer's + menu.
  */
-export const ChatConnectionList = ({ workspaceId, chatId, onManage }: { workspaceId: string; chatId: number; onManage: () => void }) => {
+export const ChatConnectionList = ({ workspaceId, chatId, links }: { workspaceId: string; chatId: number; links: ConnectionLinks }) => {
   const state = useChatConnections(workspaceId, chatId)
-  const { services } = useServices()
-  const serviceOf = (vendorId: string | undefined) => {
-    const vendor = vendorId === undefined || services.status !== 'ready' ? undefined : services.vendors.find(({ id }) => id === vendorId)
-    return vendor && { name: vendor.description.displayName, logoUrl: vendor.description.logo?.url, color: vendor.description.color }
-  }
+  const connections = useWorkspaceConnections(workspaceId)
+  const services = useConnectionServices()
+  const workspaces = useWorkspaces()
+  const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const [open, setOpen] = useState<number>()
+  const automatic = connections.state.status === 'ready' && !workspace?.containsRestrictedData ? connections.state.automatic : undefined
+  const named = isNamedWorkspace(workspace)
 
   if (state.status === 'loading') return <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading its connections…</p>
   if (state.status === 'failed') return <p role="alert" className="px-4 text-center text-base text-kumo-danger">Couldn’t load its connections. {state.message}</p>
   return (
-    <div className="flex flex-col gap-6">
+    <div className="appears flex flex-col gap-6">
       {GROUPS.map(({ scope, label }) => {
         const rows = state.connections.filter((each) => each.scope === scope)
         if (rows.length === 0 && scope !== 'chat') return null
@@ -37,20 +46,30 @@ export const ChatConnectionList = ({ workspaceId, chatId, onManage }: { workspac
               <p className="px-4 text-base text-pretty text-kumo-subtle">Nothing yet. Add a repository, a spreadsheet or a mailbox from the + in the chat’s message box, and it goes with your next message.</p>
             ) : (
               <ListGroup label={label}>
-                {rows.map((each) => (
-                  <BindingRow
-                    key={each.gatekeeperId}
-                    name={each.name}
-                    resource={each.title}
-                    service={serviceOf(each.vendorId)}
-                    onManage={each.vendorId ? onManage : undefined}
-                  />
-                ))}
+                {rows.map((each) => {
+                  const service = each.vendorId === undefined ? undefined : services.get(each.vendorId)
+                  return (
+                    <BindingRow
+                      key={each.gatekeeperId}
+                      name={each.name}
+                      resource={each.title}
+                      service={service && { name: service.name, logoUrl: service.logoUrl, color: service.color }}
+                      automatic={automatic && automaticLine(automatic.get(each.gatekeeperId) ?? [])}
+                      // A connection to a service; an agent spawner has a page of its own.
+                      onManage={each.vendorId ? () => setOpen(each.gatekeeperId) : undefined}
+                    />
+                  )
+                })}
               </ListGroup>
             )}
           </section>
         )
       })}
+      <p className="px-4 text-sm/5 text-pretty text-kumo-subtle">
+        A change through them asks first, unless the workspace makes that kind of change automatic.
+        {named && <> <WorkspaceConnectionsLink {...links.workspace(workspaceId)} /></>}
+      </p>
+      <ConnectionDetails workspaceId={workspaceId} gatekeeperId={open} onClose={() => setOpen(undefined)} connections={connections} links={links} seeAll={named} />
     </div>
   )
 }
