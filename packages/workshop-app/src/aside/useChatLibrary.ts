@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ChatFileSummary } from '@gadgets/workshop-shared/api'
-import { useChatBeside } from '@/chat/useChatSession'
+import { useChatSelection } from '@/chat/useChatSession'
 import { fileTitle } from '@/library/libraryEntries'
 import { useLibrary } from '@/library/useLibrary'
 import { useApi } from '@/rpc/ApiContext'
@@ -19,6 +19,10 @@ export type ChatLibrary = {
   /** Reads it again after it could not be. */
   retry: (() => void) | undefined
 }
+
+const NONE: AsideItem[] = []
+/** Items are plain data, few, and rebuilt from each snapshot, so they are compared as written out. */
+const sameItems = (a: AsideItem[], b: AsideItem[]) => a === b || JSON.stringify(a) === JSON.stringify(b)
 
 /**
  * The files sent in chat `chat`, as `listChatFiles` lists them, read only while `wanted`: what a
@@ -49,14 +53,15 @@ const useChatFiles = (chat: ChatRef | undefined, wanted: boolean) => {
  * up among the files sent in the chat, so that it is known by its name and type.
  */
 export const useChatLibrary = (chat: ChatRef | undefined, shownFileId?: string): ChatLibrary => {
-  const { chat: snapshot } = useChatBeside(chat)
   const workspaceId = chat?.workspaceId
   const chatId = chat?.chatId
   const library = useLibrary(chat ? `${chat.workspaceId}/${chat.chatId}` : null)
   const outputs = library.status === 'ready' ? library.outputs : undefined
-  const fromChat = useMemo(
-    () => (workspaceId === undefined || chatId === undefined ? [] : chatAsideItems(workspaceId, chatId, snapshot)),
-    [workspaceId, chatId, snapshot],
+  // Only what the chat has made, so that a reply streaming in does not draw the frame again.
+  const fromChat = useChatSelection(
+    chat,
+    (snapshot) => (workspaceId === undefined || chatId === undefined ? NONE : chatAsideItems(workspaceId, chatId, snapshot)),
+    sameItems,
   )
   const items = useMemo(
     () => (workspaceId === undefined ? [] : besideChatItems(workspaceAsideItems(workspaceId, chatId, outputs ?? [], fromChat), fromChat)),

@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { ChatSession, ChatSnapshot } from './ChatSession'
 import { useChatSessions } from './ChatSessionsContext'
 
@@ -38,4 +38,28 @@ export const useChatBeside = (chat: { workspaceId: string; chatId: number } | un
   const session = useHeldSession(chat)
   const snapshot = useSyncExternalStore(session?.subscribe ?? noSubscription, session?.getSnapshot ?? loading)
   return { chat: snapshot, actions: session }
+}
+
+/**
+ * Something drawn from what a chat holds, live, for whoever needs only that of it: the caller
+ * renders again only when `select` gives something that is not `equal` to what it gave before,
+ * not for every word of a reply as it streams in. `select` of the loading snapshot, for no chat.
+ */
+export const useChatSelection = <T,>(
+  chat: { workspaceId: string; chatId: number } | undefined,
+  select: (snapshot: ChatSnapshot) => T,
+  equal: (a: T, b: T) => boolean,
+): T => {
+  const session = useHeldSession(chat)
+  const read = session?.getSnapshot ?? loading
+  const last = useRef<{ from: ChatSnapshot; select: (snapshot: ChatSnapshot) => T; value: T }>(undefined)
+  const getSelection = () => {
+    const from = read()
+    const before = last.current
+    if (before?.from === from && before.select === select) return before.value
+    const value = select(from)
+    last.current = { from, select, value: before && equal(before.value, value) ? before.value : value }
+    return last.current.value
+  }
+  return useSyncExternalStore(session?.subscribe ?? noSubscription, getSelection)
 }

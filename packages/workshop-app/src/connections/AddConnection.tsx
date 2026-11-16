@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import type { RpcPromise } from 'capnweb'
 import type { GatekeeperClient } from '@gadgets/workshop-shared/api'
 import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
@@ -41,8 +41,10 @@ type Chosen = ConnectionChoice & {
  * connect (`AddConnectionDialog`), from every connectable kind of resource of the services that
  * can be connected, those the user has an account on first; then which one, in that service's own
  * form (`ConnectResource`), making it in the workspace (`newGatekeeper`) and handing it over.
+ * Drawn again only for props of its own, not with the chat it is in as each word of a reply comes:
+ * a stable `onAdded` keeps it so.
  */
-export const AddConnection = ({ workspaceId, open, onOpenChange, to, onAdded }: AddConnectionProps) => {
+export const AddConnection = memo(function AddConnection({ workspaceId, open, onOpenChange, to, onAdded }: AddConnectionProps) {
   const { api } = useApi()
   const { services } = useServices()
   const accounts = useConnectedAccounts()
@@ -114,4 +116,4 @@ export const AddConnection = ({ workspaceId, open, onOpenChange, to, onAdded }: 
       )}
     </>
   )
-}
+})

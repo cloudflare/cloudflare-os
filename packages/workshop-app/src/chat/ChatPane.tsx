@@ -153,6 +153,13 @@ export const ChatPane = ({
   // Add a connection is open; and the connections made for the draft, by their line's key.
   const [adding, setAdding] = useState(false)
   const added = useRef(new Map<string, AddedConnection>())
+  // One made from the menu: the chat has it once the message goes with it. Stable, as it uses
+  // only refs, so that the dialog is not drawn again for each word of a reply.
+  const [onAdded] = useState(() => async (made: AddedConnection) => {
+    const key = `gatekeeper:${made.gatekeeperId}`
+    added.current.set(key, made)
+    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+  })
   // Making a connection in the workspace is building in it.
   const builds = workspace !== undefined && workspace.role !== 'use'
   const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
@@ -469,12 +476,7 @@ export const ChatPane = ({
           open={adding}
           onOpenChange={setAdding}
           to="this chat"
-          onAdded={async (made) => {
-            const key = `gatekeeper:${made.gatekeeperId}`
-            added.current.set(key, made)
-            // The chat has it once the message goes with it.
-            composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
-          }}
+          onAdded={onAdded}
         />
       )}
     </ChatLayout>
