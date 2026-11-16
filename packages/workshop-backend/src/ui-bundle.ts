@@ -1,6 +1,7 @@
-// The default build compiles wasm at runtime, which Workers forbid. The `/js` build exports only
-// `parse`; its types also declare `init`, which would fail when the module links.
-import { parse, type ExportSpecifier, type ImportSpecifier } from "es-module-lexer/js";
+// The wasm builds compile at runtime, which Workers forbid, so this is an asm.js (`/js`) build,
+// whose `parse` needs no `init()`. `minimal` lexes JavaScript only, where the full build also
+// accepts TypeScript, and reports the flat records read below.
+import { parse, type ExportSpecifier, type ImportSpecifier } from "es-module-lexer/minimal/js";
 import type { UiBundle } from "@gadgets/workshop-shared/api";
 import { uiModuleKey } from "@gadgets/workshop-shared/ui-page";
 
@@ -59,7 +60,7 @@ export function buildUiBundle(files: ReadonlyMap<string, string>): UiBundle | nu
         throw fail(`import() isn't supported in UI code. Import the module statically instead, ` +
             `like \`import { list } from "./ui/list.js";\`.`);
       }
-      // A specifier the lexer can't unescape is invalid JavaScript, which the browser reports.
+      // Only an import() can lack a specifier: one the lexer can't unescape fails the parse.
       if (spec === undefined) continue;
       let quoted = JSON.stringify(spec);
       if (spec.startsWith(uiModuleKey(""))) {
