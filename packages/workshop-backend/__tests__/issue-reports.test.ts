@@ -1115,6 +1115,68 @@ describe("the grant given with an issue report", () => {
   });
 });
 
+describe("the report an admin's view of a workspace is opened for", () => {
+  it("is one the workspace's owner filed about that workspace, and no other", async () => {
+    let { run, sql } = store();
+    let adas = await run(reports => reports.submit(
+        ADA, input({ context: { workspaceId: "w1" } }), true));
+    let bens = await run(reports => reports.submit(
+        BEN, input({ context: { workspaceId: "w1" } }), false));
+    let home = await run(reports => reports.submit(ADA, input(), false));
+    let before = await sql("SELECT * FROM reports ORDER BY seq");
+
+    await run(reports => reports.checkReportWorkspace("ada", adas.id, "w1"));
+    let cases: [string, string, string][] = [
+      ["ada", crypto.randomUUID(), "w1"],
+      // A collaborator's report about the workspace, asked for by its owner, and the owner's
+      // report asked for by another.
+      ["ada", bens.id, "w1"],
+      ["ben", adas.id, "w1"],
+      ["ada", adas.id, "w2"],
+      // A report from the home page names no workspace, whatever is asked of it.
+      ["ada", home.id, "w1"],
+      ["ada", home.id, ""],
+    ];
+    for (let [owner, reportId, workspaceId] of cases) {
+      expect(await refusal(() => run(reports =>
+          reports.checkReportWorkspace(owner, reportId, workspaceId)))).toBe(NOT_FOUND);
+    }
+    expect(await sql("SELECT * FROM reports ORDER BY seq")).toStrictEqual(before);
+  });
+
+  it("is the owner's now, whoever owned the workspace when it was filed", async () => {
+    let { run } = store();
+    // Filed while Ada collaborated on the workspace, which she owns by the time it is asked.
+    let report = await run(reports => reports.submit(
+        ADA, input({ context: { workspaceId: "w1" } }), false));
+    await run(reports => reports.checkReportWorkspace("ada", report.id, "w1"));
+  });
+
+  it("may hold a live grant, which a grant about to be given may not", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(
+        ADA, input({ context: { workspaceId: "w1" } }), true));
+    await run(reports => reports.noteGrant("ada", workspaceGrant(), report.id));
+    expect(await refusal(() => run(reports => reports.checkGrantLink(
+        "ada", report.id, { scope: "workspace", workspaceId: "w1" })))).toBe(NOT_FOUND);
+    await run(reports => reports.checkReportWorkspace("ada", report.id, "w1"));
+  });
+
+  it("matches an owner whose id is longer than the store keeps", async () => {
+    let { run } = store();
+    let start = "u".repeat(290);
+    let one: Person = { id: `${start}${"1".repeat(10)}`, name: "One" };
+    let two: Person = { id: `${start}${"2".repeat(10)}`, name: "Two" };
+    let report = await run(reports => reports.submit(
+        one, input({ context: { workspaceId: "w1" } }), true));
+    expect(report.reporter.id).not.toBe(one.id);
+
+    await run(reports => reports.checkReportWorkspace(one.id, report.id, "w1"));
+    expect(await refusal(() => run(reports =>
+        reports.checkReportWorkspace(two.id, report.id, "w1")))).toBe(NOT_FOUND);
+  });
+});
+
 describe("listing issue reports", () => {
   it("pages a reporter's 120 reports as 50, 50 and 20, newest first", async () => {
     let clock = fakeClock();

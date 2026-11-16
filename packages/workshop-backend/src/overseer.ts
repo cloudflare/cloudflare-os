@@ -6862,11 +6862,15 @@ class OverseerImpl implements AgentHooks {
   /** The stored grants that are live (isAdminGrantLive()), from either source, newest first.
    * Synchronous, and it writes nothing. All of them: contentGrant() takes its first, and an
    * admin view's describe() lists the "admins" ones before the owner's, MAX_ADMIN_GRANTS_LISTED
-   * in all. */
-  liveAdminGrants(): AdminAccessGrant[] {
+   * in all. With `reportId`, only those the owner gave with that issue report: what a view
+   * opened for the report may read under and list
+   * (AdminWorkspaceInspectOptions.forIssueReport). */
+  liveAdminGrants(reportId?: string): AdminAccessGrant[] {
     let now = Date.now();
     return [...this.storage.adminGrants.list()]
-        .filter(grant => isAdminGrantLive(grant, now)).toSorted(newestAdminGrantFirst);
+        .filter(grant => isAdminGrantLive(grant, now) && (reportId === undefined ||
+            (grant.source === "owner" && grant.reportId === reportId)))
+        .toSorted(newestAdminGrantFirst);
   }
 
   // The owner's account-wide grant as their account last gave it, with when the question was
@@ -6874,9 +6878,10 @@ class OverseerImpl implements AgentHooks {
   #accountGrant?: { at: number; ownerId: string; grant: AdminAccessGrant };
 
   /**
-   * The grant an admin's content call runs under: the newest of liveAdminGrants(), else the
-   * owner's account-wide grant. A live answer from the owner's account is kept in memory, with
-   * the id of the owner it was asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
+   * The grant an admin's content call runs under: the newest of liveAdminGrants(reportId), else
+   * the owner's account-wide grant, which counts whichever report the view was opened for. A
+   * live answer from the owner's account is kept in memory, with the id of the owner it was
+   * asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
    * the question was sent (the time is taken before the await, so the bound on a revocation does
    * not grow by the round trip), and checked with isLiveAccountGrant() each time it is used. An
    * answer that arrives after that time is neither used nor kept: it counts as no grant. It
@@ -6888,8 +6893,8 @@ class OverseerImpl implements AgentHooks {
    * that would return content: no member-facing path, listing or metadata call reaches it. It
    * writes nothing.
    */
-  async contentGrant(): Promise<AdminAccessGrant | undefined> {
-    let [stored] = this.liveAdminGrants();
+  async contentGrant(reportId?: string): Promise<AdminAccessGrant | undefined> {
+    let [stored] = this.liveAdminGrants(reportId);
     if (stored) return stored;
 
     let ownerId = this.ownerId;
@@ -12222,7 +12227,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * else and writing nothing: unlike open()'s first-open path it never asks a user DO whether the
    * workspace is theirs and never claims ownership. `reason` and `terms` arrive validated (see
    * AdminApiImpl.inspectWorkspace()). An `expiresAt` already past refuses the open `viewExpired`,
-   * unrecorded, as any call on an expired view is.
+   * unrecorded, as any call on an expired view is. Terms that carry `forIssueReport` are refused
+   * `notFound` (ISSUE_REPORT_ERROR_CODES), unrecorded, unless that report is one this workspace's
+   * owner filed about it (IssueReportsDurableObject.checkReportWorkspace()).
    *
    * By explicit policy it skips authorizeCollaborator() and observer verification (see
    * docs/observers.md): the admin is not a collaborator, is never registered with the workspace's
@@ -12245,6 +12252,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // The owner is resolved now, since a call's record is built before its first await (see
     // AdminWorkspaceViewImpl), and never changes.
     let ownerId = await this.impl.getOwnerProfileId();
+    // Asked before the open is recorded: a refusal has read nothing of the workspace. The report
+    // is not a field of the view's records, since a record's `grantId` says which grant answered.
+    let {forIssueReport} = terms;
+    if (forIssueReport !== undefined) {
+      await this.impl.issueReports.getByName("").checkReportWorkspace(
+          ownerId, forIssueReport, this.ctx.id.toString());
+    }
     let view = await AdminWorkspaceViewImpl.open(
         this.impl, adminId, reason, sessionId, terms, ownerId);
     this.impl.logger.info("admin workspace view opened", {event: "admin.view.opened"});
@@ -15228,7 +15242,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       if (kind !== "metadata") {
         let refusal = adminContentRefusal(this.#terms, {access: level});
         if (refusal === undefined) {
-          grant = await impl.contentGrant();
+          grant = await impl.contentGrant(this.#terms.forIssueReport);
           // Checked again: the lookup may have awaited the owner's account.
           this.#assertLive();
           if (grant === undefined) refusal = ADMIN_ACCESS_ERROR_CODES.grantRequired;
@@ -15314,7 +15328,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     return this.#call("describe", {}, async content => {
       let owner = await this.#ownerProfile();
       let collaborators = await (await impl.getSharingManager()).listCollaborators();
-      let live = impl.liveAdminGrants();
+      let live = impl.liveAdminGrants(this.#terms.forIssueReport);
       return {
         id: impl.ctx.id.toString(),
         // Live data, not a record, so whole.

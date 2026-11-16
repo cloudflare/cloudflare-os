@@ -15,18 +15,20 @@ import { runInDurableObject } from "cloudflare:test";
 import { RpcTarget } from "capnweb";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_WORKSPACE_METHODS,
-  DEFAULT_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
-  MAX_ADMIN_GRANTS_LISTED, getAdminAccessErrorCode,
+  DEFAULT_ADMIN_COMMIT_LOG_DEPTH, ISSUE_REPORT_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_GRANTS_LISTED, getAdminAccessErrorCode,
+  getIssueReportErrorCode,
   type AdminAccessGrant, type AdminAccessRecord, type AdminAutoApproval,
   type AdminChatAttachment, type AdminChatState, type AdminFileContent,
   type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess,
   type AdminWorkspaceMethod, type AdminWorkspaceView, type AiChatAuthorInfo,
-  type BlueprintGadgetSummary, type ChatGadgetPin, type ObserverBindingNeed, type Overseer,
-  type ShareLinkInfo,
+  type BlueprintGadgetSummary, type ChatGadgetPin, type IssueReportContext,
+  type ObserverBindingNeed, type Overseer, type ShareLinkInfo,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
+import type { IssueReportsDurableObject } from "../src/issue-reports.js";
 import { ADMIN_METHOD_ANSWERS, type AdminWorkspaceViewTerms } from "../src/admin-access.js";
 import { newAdminGrant } from "../src/admin-grants.js";
 import { MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
@@ -43,6 +45,7 @@ declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
     TEST_ADMIN_AUDIT: DurableObjectNamespace<AdminAuditDurableObject>;
+    TEST_ISSUE_REPORTS: DurableObjectNamespace<IssueReportsDurableObject>;
   }
 }
 
@@ -2692,6 +2695,284 @@ describe("the grants a view lists", () => {
     expect(description.owner.name).toBe(name);
     expect(JSON.stringify(description).length).toBeLessThan(name.length + 64 * 1024);
   }, { seed: false }));
+});
+
+// A fresh issue report store of the real class, which the workspace reaches in place of the
+// deployment's. Returns what files a report in it: the owner's about this workspace, unless
+// told who files it and what it names.
+function reportStore(ws: Workspace) {
+  let stub = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
+  ws.impl.issueReports = { getByName: () => stub };
+  return async (reporter: Pick<AiChatAuthorInfo, "id" | "name"> = OWNER,
+                context: IssueReportContext = { workspaceId: ws.id }) =>
+      (await stub.submit(reporter, { text: "The chart is blank.", priority: "high", context },
+          reporter.id === ws.impl.ownerProfileId)).id;
+}
+
+// A live grant a second admin approved, whose requester, approver and reason are found nowhere
+// else in the seed.
+const APPROVED = {
+  requestedBy: "requester-admin@example.test",
+  grantedBy: { id: "approver-admin@example.test", name: "Approver of the grant" },
+  reason: "the admins' own reason for reading",
+  requestId: "request-of-the-admins",
+};
+function putApprovedGrant(ws: Workspace, minutesAgo = 5): AdminAccessGrant {
+  return putGrant(ws, {
+    ...newAdminGrant({ source: "admins", scope: "workspace", ...APPROVED }),
+    grantedAt: new Date(Date.now() - minutesAgo * 60_000),
+  });
+}
+
+function endGrant(ws: Workspace, grant: AdminAccessGrant): void {
+  ws.impl.storage.adminGrants.put({ ...grant, revokedAt: new Date(), revokedBy: OWNER });
+}
+
+// What threw: an issue report refusal's code, or "TypeError".
+async function reportRefusal(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (err) {
+    return getIssueReportErrorCode(err) ?? (err instanceof TypeError ? "TypeError" : String(err));
+  }
+  throw new Error("Expected a refusal.");
+}
+
+describe("a view opened for an issue report", () => {
+  it("reads content under the grant the owner gave with that report, recorded with its id",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let file = reportStore(ws);
+    let reportId = await file();
+    let grant = putGrant(ws, { reportId });
+    let view = await openForContent(ws, { forIssueReport: reportId });
+
+    expect(JSON.stringify(await view.getChat(CHAT_ID))).toContain(WITHHELD.message);
+    expect(await readsContent(view)).toBe(true);
+    let records = await deploymentRecords(ws);
+    expect(records.map(r => [r.method, r.exposed, r.grantId, r.refused])).toStrictEqual([
+      ["inspectWorkspace", "metadata", undefined, undefined],
+      ["getChat", "content", grant.id, undefined],
+      ["listChats", "content", grant.id, undefined],
+    ]);
+    // The report is no field of a record: the grant's id says which grant answered.
+    for (let record of records) expect(JSON.stringify(record)).not.toContain(reportId);
+    // The grant was found in the workspace, so the owner's account was not asked.
+    expect(ws.account.asked).toStrictEqual([]);
+  }));
+
+  it("reads no content under a grant the admins approved, and records the refusal",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    allowContent(ws);
+    let reportId = await reportStore(ws)();
+    let withheld = await mixedAnswers(ws, await open(ws));
+    let approved = putApprovedGrant(ws);
+    let view = await openForContent(ws, { forIssueReport: reportId });
+
+    expect(await codeOf(view.getChat(CHAT_ID))).toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    let refused = (await deploymentRecords(ws)).at(-1)!;
+    expect(refused).toMatchObject({
+      method: "getChat", requested: "content", access: "content", exposed: "metadata",
+      refused: ADMIN_ACCESS_ERROR_CODES.grantRequired,
+    });
+    expect(refused).not.toHaveProperty("grantId");
+
+    // Its mixed methods answer as a metadata view's do, and its description lists no grant.
+    let answers = await mixedAnswers(ws, view);
+    let { expiresAt } = answers.describe;
+    expect(answers).toStrictEqual(
+        { ...withheld, describe: { ...withheld.describe, access: "content", expiresAt } });
+    expect(answers.describe.grants).toStrictEqual([]);
+    for (let record of (await deploymentRecords(ws)).slice(-MIXED_METHODS.length)) {
+      expect(record.exposed).toBe("metadata");
+      expect(record).not.toHaveProperty("grantId");
+    }
+
+    // A view opened for no report reads under that grant, and lists it.
+    let whole = await openForContent(ws);
+    expect(await readsContent(whole)).toBe(true);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({ grantId: approved.id });
+    expect((await whole.describe()).grants).toStrictEqual([approved]);
+  }));
+
+  it("reads no content under a grant the owner gave with another report, or with none",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let file = reportStore(ws);
+    let reportId = await file();
+    let other = putGrant(ws, { reportId: await file() });
+    let bare = putGrant(ws, { grantedAt: new Date(Date.now() - 60_000) });
+    let view = await openForContent(ws, { forIssueReport: reportId });
+
+    expect(await codeOf(view.getChat(CHAT_ID))).toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    expect(await readsContent(view)).toBe(false);
+    expect((await view.describe()).grants).toStrictEqual([]);
+
+    // Both are live: a view opened for no report lists them, and reads under the newest.
+    let whole = await openForContent(ws);
+    expect((await whole.describe()).grants).toStrictEqual([other, bare]);
+    expect(await readsContent(whole)).toBe(true);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({ grantId: other.id });
+  }));
+
+  it("reads no content under a grant of the admins that names its report",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let reportId = await reportStore(ws)();
+    // No approval stores such a grant: the report's id alone must not make one the reporter's.
+    let approved = putGrant(ws, {
+      ...newAdminGrant({ source: "admins", scope: "workspace", ...APPROVED }), reportId,
+    });
+    let view = await openForContent(ws, { forIssueReport: reportId });
+
+    expect(await codeOf(view.getChat(CHAT_ID))).toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    expect(await readsContent(view)).toBe(false);
+    expect((await view.describe()).grants).toStrictEqual([]);
+    expect((await (await open(ws)).describe()).grants).toStrictEqual([approved]);
+  }));
+
+  it.each([
+    ["newer", 1],
+    ["older", 10],
+  ])("reads under the report's grant, never the admins', when it is the %s of the two",
+      (_case, minutesAgo) => withWorkspace(async ws => {
+    allowContent(ws);
+    let reportId = await reportStore(ws)();
+    putApprovedGrant(ws, 5);
+    let grant = putGrant(ws, { reportId, grantedAt: new Date(Date.now() - minutesAgo * 60_000) });
+    let view = await openForContent(ws, { forIssueReport: reportId });
+
+    await view.getChat(CHAT_ID);
+    expect((await deploymentRecords(ws)).at(-1))
+        .toMatchObject({ method: "getChat", exposed: "content", grantId: grant.id });
+  }));
+
+  it("reads under the owner's account-wide grant when the workspace holds none for the report",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let file = reportStore(ws);
+    let reportId = await file();
+    putApprovedGrant(ws);
+    putGrant(ws, { reportId: await file() });
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    let view = await openForContent(ws, { forIssueReport: reportId });
+
+    await view.getChat(CHAT_ID);
+    expect((await deploymentRecords(ws)).at(-1))
+        .toMatchObject({ method: "getChat", exposed: "content", grantId: grant.id });
+    expect(ws.account.asked).toStrictEqual([OWNER_USER_ID]);
+    // The account-wide grant is listed for nobody.
+    expect((await view.describe()).grants).toStrictEqual([]);
+  }));
+
+  it("stops reading content once the report's grant is ended, the admins' still being live",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let reportId = await reportStore(ws)();
+    let approved = putApprovedGrant(ws);
+    let grant = putGrant(ws, { reportId });
+    let view = await openForContent(ws, { forIssueReport: reportId });
+    await view.getChat(CHAT_ID);
+    expect((await view.describe()).grants).toStrictEqual([grant]);
+
+    endGrant(ws, grant);
+    expect(await codeOf(view.getChat(CHAT_ID))).toBe(ADMIN_ACCESS_ERROR_CODES.grantRequired);
+    expect(await readsContent(view)).toBe(false);
+    expect((await view.describe()).grants).toStrictEqual([]);
+    expect((await (await open(ws)).describe()).grants).toStrictEqual([approved]);
+  }));
+
+  it("lists the grant given with its report alone, and nothing of any other grant",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let file = reportStore(ws);
+    let reportId = await file();
+    let approved = putApprovedGrant(ws, 1);
+    let other = putGrant(ws, { reportId: await file() });
+    let grant = putGrant(ws, { reportId, grantedAt: new Date(Date.now() - 600_000) });
+
+    for (let access of ["metadata", "content"] as const) {
+      let description = await (await open(ws, { access, forIssueReport: reportId })).describe();
+      expect(description.grants).toStrictEqual([grant]);
+      let described = JSON.stringify(description);
+      for (let hidden of [
+        approved.id, APPROVED.requestedBy, APPROVED.grantedBy.id, APPROVED.grantedBy.name,
+        APPROVED.reason, APPROVED.requestId, other.id, other.reportId!,
+      ]) {
+        expect(described, hidden).not.toContain(hidden);
+      }
+    }
+
+    // A view opened for no report lists every live grant, the admins' first.
+    expect((await (await open(ws)).describe()).grants).toStrictEqual([approved, other, grant]);
+
+    endGrant(ws, grant);
+    expect((await (await open(ws, { forIssueReport: reportId })).describe()).grants)
+        .toStrictEqual([]);
+  }));
+
+  it("is opened only for a report the workspace's owner filed about it, and a refused open " +
+      "records nothing", () => withWorkspace(async ws => {
+    allowContent(ws);
+    let file = reportStore(ws);
+    let cases = {
+      "no report": crypto.randomUUID(),
+      "a collaborator's report about this workspace": await file(BOB),
+      "the owner's report about another workspace":
+          await file(OWNER, { workspaceId: env.TEST_OVERSEER.newUniqueId().toString() }),
+      "the owner's report about no workspace": await file(OWNER, {}),
+    };
+    // Each would open something were the report not checked.
+    putGrant(ws);
+    let before = await deploymentRecords(ws);
+
+    for (let [name, forIssueReport] of Object.entries(cases)) {
+      for (let access of ["metadata", "content"] as const) {
+        expect(await reportRefusal(open(ws, { access, forIssueReport })), name)
+            .toBe(ISSUE_REPORT_ERROR_CODES.notFound);
+      }
+    }
+    expect(await deploymentRecords(ws)).toStrictEqual(before);
+    expect(before).toStrictEqual([]);
+    expect(ws.account.asked).toStrictEqual([]);
+
+    // The owner's own report about it opens one, recorded as any open is.
+    await open(ws, { forIssueReport: await file() });
+    expect((await deploymentRecords(ws)).map(r => r.method)).toStrictEqual(["inspectWorkspace"]);
+  }));
+
+  it("is opened for the report of an owner whose id is longer than a report keeps",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let owner = { id: `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 40)}@example.test`, name: "Owner" };
+    ws.impl.ownerProfileId = owner.id;
+    let file = reportStore(ws);
+    let reportId = await file(owner);
+    let grant = putGrant(ws, { reportId });
+    // The same start, another user: the report is not theirs.
+    let namesake = { id: `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 40)}@example.com`, name: "Other" };
+    let theirs = await file(namesake);
+
+    let view = await openForContent(ws, { forIssueReport: reportId });
+    await view.getChat(CHAT_ID);
+    expect((await deploymentRecords(ws)).at(-1))
+        .toMatchObject({ method: "getChat", exposed: "content", grantId: grant.id });
+    expect(await reportRefusal(open(ws, { forIssueReport: theirs })))
+        .toBe(ISSUE_REPORT_ERROR_CODES.notFound);
+  }));
+
+  it("asks the report store about the report, with the workspace's own owner and id",
+      () => withWorkspace(async ws => {
+    let longest = "r".repeat(128);
+    let checked: unknown[][] = [];
+    ws.impl.issueReports = { getByName: (name: string) => ({
+      checkReportWorkspace: async (...args: unknown[]) => { checked.push([name, ...args]); },
+    }) };
+    await open(ws, { forIssueReport: longest });
+    expect(checked).toStrictEqual([["", OWNER.id, longest, ws.id]]);
+  }));
 });
 
 type ContentMethod = typeof CONTENT_METHODS[number];

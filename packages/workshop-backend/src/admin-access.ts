@@ -253,6 +253,10 @@ export type AdminWorkspaceViewTerms = AdminViewTerms & {
   /** What the view was opened for (AdminWorkspaceInspectOptions.access): recorded on every
    * record the view makes, and the most any of its calls returns. */
   access: AdminViewAccess;
+  /** The view reads content, and lists grants, only under the grant the owner gave with this
+   * issue report or the owner's account-wide grant
+   * (AdminWorkspaceInspectOptions.forIssueReport). */
+  forIssueReport?: string;
 };
 
 // --- Validation ---

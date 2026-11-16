@@ -4,8 +4,9 @@ import { runInDurableObject } from "cloudflare:test";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_WRITE_ERROR_CODES,
   ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError, createAdminGrantError,
-  createAdminWriteError, getAdminAccessErrorCode, getAdminGrantErrorCode, getAdminWriteErrorCode,
+  ISSUE_REPORT_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  createAdminGrantError, createAdminWriteError, createIssueReportError, getAdminAccessErrorCode,
+  getAdminGrantErrorCode, getAdminWriteErrorCode, getIssueReportErrorCode,
   type AdminAccessRecord, type AdminAgentOrigin, type AdminPasskeyAssertion,
   type AdminPasskeyRegistration, type AdminUserAccessRecord, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
@@ -331,6 +332,60 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     const error = await rejection(mint().inspectWorkspace(workspaceId(), REASON));
     expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
     expect(calls.filter(call => call.target.startsWith("director"))).toEqual([]);
+  });
+
+  it("opens a view for one issue report, naming the report in the view's terms", async () => {
+    const { mint, callsTo } = deployment({
+      ...CONTENT, handlers: { overseer: { openForAdmin: () => ({}) } },
+    });
+    const api = mint(ADMIN, { via: "api" });
+    await api.inspectWorkspace(
+        workspaceId(), REASON, { access: "content", forIssueReport: "report-1" });
+    await api.inspectWorkspace(workspaceId(), REASON, { forIssueReport: "report-2" });
+    const terms = callsTo("overseer", "openForAdmin")
+        .map(call => call.args[3] as AdminWorkspaceViewTerms);
+    expect(terms).toStrictEqual([
+      { via: "api", access: "content", expiresAt: terms[0]!.expiresAt,
+        forIssueReport: "report-1" },
+      { via: "api", access: "metadata", expiresAt: terms[1]!.expiresAt,
+        forIssueReport: "report-2" },
+    ]);
+  });
+
+  it("takes no issue report that is not a non-empty string of at most 128 characters, and " +
+      "reaches nothing", async () => {
+    const { mint, calls, callsTo } = deployment({
+      ...CONTENT, handlers: { overseer: { openForAdmin: () => ({}) } },
+    });
+    const api = mint();
+    // The method's validator throws before the method runs.
+    for (const forIssueReport of [true, 1, null, {}]) {
+      expect(() => api.inspectWorkspace(workspaceId(), REASON, { forIssueReport } as never))
+          .toThrow(TypeError);
+    }
+    // The workspace checks no terms, so an id no report has is refused before it is reached.
+    for (const forIssueReport of ["", "r".repeat(129)]) {
+      expect(await rejection(api.inspectWorkspace(workspaceId(), REASON, { forIssueReport })))
+          .toBeInstanceOf(TypeError);
+    }
+    expect(calls).toEqual([]);
+
+    const longest = "r".repeat(128);
+    await api.inspectWorkspace(workspaceId(), REASON, { forIssueReport: longest });
+    expect(callsTo("overseer", "openForAdmin")[0]!.args[3])
+        .toMatchObject({ forIssueReport: longest });
+  });
+
+  it("passes on the refusal of a report that is not the workspace's owner's, leaving the " +
+      "workspace in the directory and recording nothing", async () => {
+    const { mint, calls, callsTo } = deployment({ ...CONTENT, handlers: { overseer: {
+      openForAdmin: () => { throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.notFound); },
+    } } });
+    const error = await rejection(mint().inspectWorkspace(
+        workspaceId(), REASON, { access: "content", forIssueReport: "report-1" }));
+    expect(getIssueReportErrorCode(error)).toBe(ISSUE_REPORT_ERROR_CODES.notFound);
+    expect(calls.filter(call => call.target.startsWith("director"))).toEqual([]);
+    expect(callsTo("audit", "append")).toEqual([]);
   });
 });
 

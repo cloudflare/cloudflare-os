@@ -2086,6 +2086,21 @@ export type AdminWorkspaceInspectOptions = {
    * needs the deployment's level in force to be "content" (refused `contentOff` otherwise) and
    * needs no grant yet: each call checks for one. */
   access?: AdminViewAccess;
+  /**
+   * Read content only as the reporter of issue report `forIssueReport` chose to show it: under
+   * the grant the workspace's owner gave with that report, or under the owner's account-wide
+   * grant. No other grant opens anything to a view opened so, and its description lists none:
+   * not one the admins approved for themselves (AdminAccessGrant.source "admins"), not one the
+   * owner gave with another report or with none. The view is opened only for a report the
+   * workspace's owner filed about this workspace: for any other id, a report someone else filed
+   * (a collaborator's included) or one that names another workspace or none, the open is
+   * refused as a report that does not exist (ISSUE_REPORT_ERROR_CODES.notFound), with no view
+   * and no record, since nothing of the workspace was read. It narrows and never widens: every
+   * other check of the open and of a content call is unchanged. The admin gatekeeper's session
+   * limited to one issue report opens its view so, since its holder may read only what the
+   * reporter chose to show and may learn nothing the reporter cannot see.
+   */
+  forIssueReport?: string;
 };
 
 /** The workspace calls the audit log records: the open (AdminApi.inspectWorkspace()) and each
@@ -3486,7 +3501,9 @@ export interface AdminApi {
    * it, recorded, like `accessOff`, without the workspace being reached; `workspaceNotFound` for
    * an id that names no workspace (never initialised or since deleted), which this neither
    * creates nor claims; `viewExpired` should the view's lifetime run out before the workspace
-   * answers. Only `accessOff` and `contentOff` refusals are recorded.
+   * answers. Only `accessOff` and `contentOff` refusals are recorded. A view asked for an issue
+   * report is refused ISSUE_REPORT_ERROR_CODES.notFound as well, by the workspace and
+   * unrecorded: see AdminWorkspaceInspectOptions.forIssueReport.
    *
    * Admin access is a deliberate exception to observer verification (see docs/observers.md): the
    * admin is never verified against the workspace's connections nor registered as an observer, and
@@ -3752,7 +3769,9 @@ export type AdminWorkspaceDescription = Pick<WorkspaceMetadata,
    * first, since only an admin can end one and each took a passkey approval, so they are few;
    * then the owner's, newest first, as far as the bound allows. A workspace can hold more owner
    * grants than are listed, and any one lets content be read. The owner's account-wide grant is
-   * not among them: the workspace asks for it only when a call needs content. */
+   * not among them: the workspace asks for it only when a call needs content. A view opened for
+   * an issue report (AdminWorkspaceInspectOptions.forIssueReport) lists only the grant the owner
+   * gave with that report. */
   grants: AdminAccessGrant[];
   /** When this view stops working. */
   expiresAt: Date;

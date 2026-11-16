@@ -2220,6 +2220,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   async inspectWorkspace(workspaceId: string, reason: string,
       options: AdminWorkspaceInspectOptions = {}): Promise<RpcStub<AdminWorkspaceView>> {
     let requested = options.access ?? "metadata";
+    // The workspace trusts the terms it is opened with, so an id no report has stops here.
+    let { forIssueReport } = options;
+    if (forIssueReport !== undefined &&
+        (forIssueReport.length === 0 || forIssueReport.length > 128)) {
+      throw new TypeError("An admin view's issue report must be an id of at most 128 characters.");
+    }
     let { target: id, reason: trimmedReason, access, expiresAt } =
         await this.#openTerms(reason, options, () => {
           try {
@@ -2250,8 +2256,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openForAdmin(
-        id, trimmedReason, { ...this.#label(), access: requested, expiresAt });
+    return this.#openForAdmin(id, trimmedReason, {
+      ...this.#label(), access: requested, expiresAt,
+      ...(forIssueReport !== undefined && { forIssueReport }),
+    });
   }
 
   // Mint the view. A workspace that turns out not to exist leaves the directory (see
