@@ -11,6 +11,7 @@
  * before it leave it.
  */
 
+import { createHash } from "node:crypto";
 import { editorCost } from "./editor-cost";
 import type { SheetArea, SheetProtection } from "./sheets-api";
 import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry } from "./sheets-format";
@@ -1442,19 +1443,26 @@ export async function guardDigest(
     let sheet = sheets.find(candidate => candidate.id === id);
     return sheet ? [id, sheet.title, sheet.rowCount, sheet.columnCount] : [id, null];
   });
-  let cells = guard.cells.map(({ rect }, i) => {
-    let values: unknown[] = [];
-    for (let row = rect.startRow; row < rect.endRow; row++) {
+  // What is digested is the UTF-8 of `JSON.stringify([described, cells, ...order])`, where `cells`
+  // holds one flat array of digested values for each area and `order` is absent or one array of
+  // IDs. A queued batch stores this digest and its approval compares a fresh one with it, so those
+  // bytes are fixed. They are fed to the hash a row at a time, so that a guard of 50,000 cells
+  // holds the text of one row and never the text of them all.
+  let hash = createHash("sha256");
+  hash.update(`[${JSON.stringify(described)},[`, "utf8");
+  guard.cells.forEach(({ rect }, i) => {
+    hash.update(i > 0 ? ",[" : "[", "utf8");
+    // A rectangle of no column has no value, in however many rows.
+    for (let row = rect.startRow; row < rect.endRow && rect.startColumn < rect.endColumn; row++) {
+      let values: string[] = [];
       for (let column = rect.startColumn; column < rect.endColumn; column++) {
-        values.push(digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null));
+        values.push(JSON.stringify(digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null)));
       }
+      hash.update((row > rect.startRow ? "," : "") + values.join(","), "utf8");
     }
-    return values;
+    hash.update("]", "utf8");
   });
-  let order = guard.order ? [sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id)] : [];
-  let text = JSON.stringify([described, cells, ...order]);
-  editorCost.digestedUnits += text.length;
-  let bytes = new TextEncoder().encode(text);
-  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+  let order = guard.order ? `,${JSON.stringify(sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id))}` : "";
+  hash.update(`]${order}]`, "utf8");
+  return hash.digest("hex");
 }

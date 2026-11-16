@@ -3238,8 +3238,7 @@ describe("Google Sheets replay cost", () => {
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
-    "overlayCopies", "overlayEntries", "keysIndexed", "digestedUnits", "fetches", "responseBytes",
-    "mostOpen", "indented",
+    "overlayCopies", "overlayEntries", "keysIndexed", "fetches", "responseBytes", "mostOpen", "indented",
   ] as const;
   type Measure = typeof MEASURES[number];
   type Row = { phase: string; pending: number } & Record<Measure, number>;
@@ -3364,17 +3363,13 @@ describe("Google Sheets replay cost", () => {
     // fake indents an answer that was not asked compact, and a read that forgot to ask would count
     // here. The 50,000 values are 16 bytes a cell, where they are 27 indented.
     //
-    // A guard's digest is of `[[[0,"Data",1000,100]],[...]]`: 24 units around the list of its
-    // areas' cells. An answer of cells as entered is 40 bytes around its blocks, one for each area.
+    // An answer of cells as entered is 40 bytes around its blocks, one for each area.
     expect(measured).toEqual([
       {
         ...none, phase: "build", pending: 5,
         // Three copies a batch: the fold's, of no entry, and the two after it, of 0, 20, 40, 60
         // and 80 thousand entries each.
         overlayCopies: 15, overlayEntries: 400_000,
-        // Two guards of 20,000 cells at 16 units a cell (two areas of 160,001 units and 3 around
-        // them: 320,029 each), and three of no cell (26 each).
-        digestedUnits: 640_136,
         // The sheets and whether the account may edit, asked together for each batch, and then the
         // two guards' cells as entered, at 53 bytes a cell: a block of 10,000 cells is 531,313
         // bytes, and 15 more where it names its first row, which a block from row 1 does not. One
@@ -3388,9 +3383,6 @@ describe("Google Sheets replay cost", () => {
         // Three copies to queue a batch and one to read: 15 and 5. The two copies after each
         // queueing fold hold the 100,000 entries.
         overlayCopies: 20, overlayEntries: 1_000_000,
-        // Each batch's digest is of the one cell it overwrites, a cleared one, `[[null]]`: 32
-        // units.
-        digestedUnits: 160,
         // To queue: the sheets and whether the account may edit, together, then the guarded cell
         // as entered, a block of 94 bytes. To read: the sheets and the 50,000 values, together.
         fetches: 25, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 5 * 134 + 5 * VALUES,
@@ -3416,8 +3408,6 @@ describe("Google Sheets replay cost", () => {
         // `resolveChanges` and once in `guardCells`, 100,000 each: an index is one batch's on
         // one copy, and goes with it. The row it deletes is empty.
         keysIndexed: 200_000,
-        // The batch's digest is of the row it deletes, 100 blank cells: 503 units.
-        digestedUnits: 527,
         // The sheets and whether the account may edit, together, then the deleted row as entered:
         // a block of 16 bytes, which names its first row and holds no cell.
         fetches: 3, responseBytes: SHEETS + CAN_EDIT + 56, mostOpen: 2,
@@ -3429,8 +3419,6 @@ describe("Google Sheets replay cost", () => {
         // the index goes with its batch, so each fold builds it again. An insertion builds no
         // index and guards no cell.
         overlayCopies: 3, overlayEntries: 199_800, keysIndexed: 100_000,
-        // The batch's digest is of the sheet, of 999 rows by then, and no cell.
-        digestedUnits: 25,
         // The sheets and whether the account may edit, together.
         fetches: 2, responseBytes: SHEETS + CAN_EDIT, mostOpen: 2,
       },
@@ -3445,7 +3433,7 @@ describe("Google Sheets replay cost", () => {
         ...none, phase: "approve", pending: 6 + N,
         // The batch is planned again over the sheets as they are, with nothing queued. It formats,
         // so its digest is of no cell. The sheets, then the write, whose answer is 20 bytes.
-        overlayCopies: 1, digestedUnits: 26,
+        overlayCopies: 1,
         fetches: 2, responseBytes: SHEETS + 20, mostOpen: 1,
       },
       // A rejection reads nothing.
