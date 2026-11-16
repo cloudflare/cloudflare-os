@@ -185,7 +185,9 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   only null doesn't pin `w`. Writing `w` this way is not arriving with it, so it doesn't reopen a
   workspace pane the user closed (a hidden pane's frame still runs and reports).
 - `at` means something only for the gadget `w` names. It is ignored and dropped when the URL has
-  no `w`, or when that workpiece cannot be selected.
+  no `w`, or when that workpiece cannot be selected. The editor stays mounted when it moves to another
+  workspace, so that is concluded only from what has loaded for the workspace the URL names, never
+  from the previous one's workpieces.
 - Selecting another workpiece drops `at`.
 - URL writes are throttled, so a drag-selection doesn't rewrite the URL per event (browsers
   rate-limit `replaceState`). A report after a quiet spell is written at once; for 300 ms after a
@@ -281,7 +283,9 @@ Frontend:
   the bundled blueprints. The chip's tooltip, here and on the transcript's chips, shows the label
   and below it the spot's context, if any, as plain text with its line breaks, clamped to a few
   lines: the user can see what the agent is told without the context crowding the chip or its
-  accessible name.
+  accessible name. The composer chip takes keyboard focus, which opens the tooltip, since the context
+  is shown nowhere else. It does so with or without context, so that it is not a Tab stop only
+  some of the time.
 - On a single-pane layout (under 48rem, where the chat and the pane take turns on screen), the
   composer treats a closed pane as still showing what it showed when last open, since switching to
   the Chat tab is how a phone user gets to the composer at all. If the pane last showed a gadget

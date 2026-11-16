@@ -650,6 +650,16 @@ describe("ChatComposer", () => {
       });
     };
 
+    it("lets the keyboard reach a spot's context, which only the tooltip shows", async () => {
+      await render({ focusOffer: budget });
+      const face = container!.querySelector<HTMLElement>('span[tabindex="0"]')!;
+      expect(face.textContent).toBe("Budget › Q3 › cell B7");
+      expect(document.body.textContent).not.toContain("1,204,331");
+
+      await act(async () => face.focus());
+      expect(document.body.textContent).toContain("1,204,331");
+    });
+
     it("shows the gadget and the spot, and sends them without the title", async () => {
       const onSend = vi.fn<ComposerProps["onSend"]>();
       await render({ onSend, focusOffer: budget });

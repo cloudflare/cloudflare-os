@@ -62,7 +62,14 @@ export const FocusChip = (props: { focus: TitledFocus } & (
         side="top"
         asChild
       >
-        <span className="flex min-w-0 items-center gap-1.5">{face}</span>
+        {/* Focusable so the keyboard can open the tooltip, which alone shows the context. Always,
+            since a chip that is only sometimes a stop reads as broken. */}
+        <span
+          tabIndex={0}
+          className="flex min-w-0 items-center gap-1.5 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+        >
+          {face}
+        </span>
       </Tooltip>
       <button
         type="button"
