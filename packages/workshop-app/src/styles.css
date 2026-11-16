@@ -175,6 +175,15 @@
   mask-position: right top, 0 0, 0 0;
   mask-repeat: no-repeat;
 }
+/* The sidebar's workspaces fade the same way, by the same two amounts, but to nothing at either
+   end and over the same length: nothing floats over them, so what scrolls goes at the list's own
+   edges. There is no scrollbar to leave a strip for. */
+.chat-fade.sidebar-fade {
+  --chat-fade-floor: calc(1 - var(--chat-fade-top));
+  --chat-fade-length: calc(var(--chat-fade-top) * 3rem);
+  --chat-fade-bottom-length: calc(var(--chat-fade-bottom) * 3rem);
+  mask-size: 0 0, 100% 100%, 100% 100%;
+}
 @supports (animation-timeline: scroll()) {
   .chat-fade {
     animation:
