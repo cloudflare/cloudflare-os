@@ -821,6 +821,8 @@ export default function GadgetEditor() {
   const isViewActive = agentActivity.chatId === paneChatId && agentActivity.active
   const isAgentActive = paneChatId !== null && isViewActive
   const selectedGadgetId = selectedGadgetSummary?.id ?? null
+  const gadgetSaveScope = id !== undefined && selectedGadgetId !== null
+    ? { workspaceId: id, workpieceId: selectedGadgetId } : undefined
   // A gadget still pending in a chat has no committed code for an update to be merged into.
   const canUpdateFromBlueprint = selectedGadgetSummary?.commitId !== undefined
   // An upstream that names no blueprint records that the gadget was built from scratch, so there
@@ -1962,6 +1964,7 @@ export default function GadgetEditor() {
               gadget={selectedGadgetStub}
               gadgetTitle={selectedGadgetSummary?.title ?? 'Gadget'}
               chatId={previewChatId}
+              saveScope={gadgetSaveScope}
             />
           </span>
           <UserMenu />
@@ -2290,6 +2293,7 @@ export default function GadgetEditor() {
                   gadget={selectedGadgetStub}
                   gadgetTitle={selectedGadgetSummary?.title ?? 'Gadget'}
                   chatId={previewChatId}
+                  saveScope={gadgetSaveScope}
                 />
               )}
 

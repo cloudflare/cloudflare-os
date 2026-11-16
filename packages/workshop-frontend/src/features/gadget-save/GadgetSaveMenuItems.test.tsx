@@ -1,0 +1,123 @@
+// @vitest-environment jsdom
+/* eslint-disable react/react-in-jsx-scope */
+
+import { act, type ReactNode } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+
+const testState = vi.hoisted(() => ({
+  authenticatedApi: {} as Record<string, unknown>,
+}))
+
+vi.mock('@cloudflare/kumo', () => ({
+  DropdownMenu: {
+    Separator: () => <hr />,
+    Item: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
+      <button type="button" onClick={onClick}>{children}</button>
+    ),
+  },
+}))
+
+vi.mock('../../AuthContext', () => ({
+  useAuthenticatedApi: () => ({
+    authenticatedApi: testState.authenticatedApi, currentUser: { id: 'ada@example.com' },
+  }),
+}))
+
+import { GadgetSaveMenuItems, type SaveRequest } from './GadgetSaveMenuItems'
+import { savedFileKey } from './savedFiles'
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+const vendor = {
+  id: 'office',
+  description: { displayName: 'Office' },
+  supportedResources: [
+    { id: 'document', title: 'Office Docs', urlPattern: 'https://office.example/d/*',
+      creationConfigurator: true, savableFrom: ['text/html'] },
+    { id: 'sheet', title: 'Office Sheets', urlPattern: 'https://office.example/s/*',
+      creationConfigurator: true, savableFrom: ['text/csv'] },
+  ],
+} as GatekeeperVendorInfo
+const html: GadgetExportFormat =
+  { id: 'html', label: 'HTML', mode: 'server', contentType: 'text/html', fileExtension: '.html' }
+const scope = { workspaceId: 'ws', workpieceId: 3 }
+const target = { vendor, resource: vendor.supportedResources[0], format: html }
+const key = savedFileKey('ada@example.com', scope, target)
+const saved = { accountId: 5, url: 'https://office.example/d/1', name: 'Q3 report' }
+
+let root: Root
+let container: HTMLDivElement
+const onSelect = vi.fn<(request: SaveRequest) => void>()
+
+const render = async (formats: GadgetExportFormat[] = [html]) => {
+  await act(async () => root.render(
+    <GadgetSaveMenuItems formats={formats} scope={scope} onSelect={onSelect} />))
+}
+
+const labels = () => [...container.querySelectorAll('button')].map(button => button.textContent)
+
+beforeEach(() => {
+  testState.authenticatedApi = {
+    listGatekeeperVendors: async () => [vendor],
+  }
+  container = document.createElement('div')
+  document.body.appendChild(container)
+  root = createRoot(container)
+})
+
+afterEach(() => {
+  act(() => root.unmount())
+  container.remove()
+  localStorage.clear()
+  onSelect.mockReset()
+  vi.restoreAllMocks()
+})
+
+describe('GadgetSaveMenuItems', () => {
+  it('offers a save for each type the gadget\'s exports can be saved as', async () => {
+    await render()
+    expect(labels()).toEqual(['Save to Office Docs…'])
+
+    await act(async () => container.querySelector('button')!.click())
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith({ target, storageKey: key })
+  })
+
+  it('renders nothing when no type matches', async () => {
+    await render([{ ...html, contentType: 'application/pdf' }])
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('offers to update the file the last save made, above saving a new one', async () => {
+    localStorage.setItem(key, JSON.stringify(saved))
+    await render()
+    expect(labels()).toEqual(['Update “Q3 report”…', 'Save to Office Docs…'])
+
+    await act(async () => container.querySelector('button')!.click())
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith({ target, storageKey: key, saved })
+  })
+
+  it('keeps a save to itself: another gadget, workspace or type has nothing to update', async () => {
+    localStorage.setItem(savedFileKey('ada@example.com', { ...scope, workspaceId: 'other' }, target),
+      JSON.stringify(saved))
+    localStorage.setItem(savedFileKey('ada@example.com', { ...scope, workpieceId: 4 }, target),
+      JSON.stringify(saved))
+    localStorage.setItem(savedFileKey('bob@example.com', scope, target), JSON.stringify(saved))
+    localStorage.setItem(
+      savedFileKey('ada@example.com', scope, { ...target, resource: vendor.supportedResources[1] }),
+      JSON.stringify(saved))
+    await render()
+    expect(labels()).toEqual(['Save to Office Docs…'])
+  })
+
+  it('still offers a save when storage is unreadable or holds something else', async () => {
+    localStorage.setItem(key, '{"url": 7}')
+    await render()
+    expect(labels()).toEqual(['Save to Office Docs…'])
+
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
+    await render()
+    expect(labels()).toEqual(['Save to Office Docs…'])
+  })
+})

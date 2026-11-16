@@ -6,18 +6,24 @@ import type { GadgetClient } from '@gadgets/workshop-shared/api'
 import type { GadgetExportFormat } from '@gadgets/workshop-shared/api'
 import { WorkshopIconButton } from './components/WorkshopControls'
 import { makeExportFilename, saveStreamToFile } from './fileTransfers'
+import { GadgetSaveDialog } from './features/gadget-save/GadgetSaveDialog'
+import { GadgetSaveMenuItems, type SaveRequest } from './features/gadget-save/GadgetSaveMenuItems'
+import type { SaveScope } from './features/gadget-save/savedFiles'
 
 type Props = {
   gadget: RpcStub<GadgetClient> | null
   gadgetTitle: string
   chatId?: number
+  /** Offers saving the Gadget, identified by this, to a connected account. */
+  saveScope?: SaveScope
 }
 
-export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props) {
+export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScope }: Props) {
   const [formats, setFormats] = useState<GadgetExportFormat[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [exportingId, setExportingId] = useState<string | null>(null)
+  const [saveRequest, setSaveRequest] = useState<SaveRequest | null>(null)
   const formatRequest = useRef(0)
   const toasts = useKumoToastManager()
 
@@ -133,8 +139,20 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
                 {format.label}
               </DropdownMenu.Item>
             ))}
+            {saveScope && formats && (
+              <GadgetSaveMenuItems formats={formats} scope={saveScope} onSelect={setSaveRequest} />
+            )}
           </DropdownMenu.Content>
         </DropdownMenu>
+        {saveRequest && (
+          <GadgetSaveDialog
+            gadget={gadget}
+            gadgetTitle={gadgetTitle}
+            chatId={chatId}
+            request={saveRequest}
+            onClose={() => setSaveRequest(null)}
+          />
+        )}
         {exportingId !== null && (
           <span className="pointer-events-none absolute bottom-0 left-1 right-1 h-0.5 overflow-hidden rounded-full bg-kumo-fill">
             <span className="absolute inset-y-0 w-1/3 bg-kumo-brand animate-[thinking_1.5s_ease-in-out_infinite]" />

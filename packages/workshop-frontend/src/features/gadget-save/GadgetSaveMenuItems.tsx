@@ -1,0 +1,69 @@
+import { useEffect, useState } from 'react'
+import { DropdownMenu } from '@cloudflare/kumo'
+import { ArrowsClockwise, CloudArrowUp } from '@phosphor-icons/react'
+import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import { getResourceTypeId } from '@gadgets/workshop-shared/gatekeeper'
+import { useAuthenticatedApi } from '../../AuthContext'
+import { findSaveTargets, type SaveTarget } from './saveTargets'
+import { readSavedFile, savedFileKey, type SavedFile, type SaveScope } from './savedFiles'
+
+/** A save the user asked for: a new file, or with `saved` an update of that one. */
+export type SaveRequest = { target: SaveTarget; storageKey: string | null; saved?: SavedFile }
+
+const ITEM = '!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint'
+
+/**
+ * The export menu's items that save the gadget to a connected account as a file of a type its
+ * gatekeeper can make from one of `formats` (see SupportedResource.savableFrom), and that update
+ * the file the last such save made.
+ */
+export const GadgetSaveMenuItems = ({ formats, scope, onSelect }: {
+  formats: GadgetExportFormat[]
+  scope: SaveScope
+  onSelect: (request: SaveRequest) => void
+}) => {
+  const { authenticatedApi, currentUser } = useAuthenticatedApi()
+  const [vendors, setVendors] = useState<GatekeeperVendorInfo[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    authenticatedApi.listGatekeeperVendors().then(
+      listed => { if (!cancelled) setVendors(listed) },
+      err => console.error('Failed to list the services to save to:', err))
+    return () => { cancelled = true }
+  }, [authenticatedApi])
+
+  const targets = findSaveTargets(vendors, formats)
+  if (targets.length === 0) return null
+
+  return (
+    <>
+      <DropdownMenu.Separator />
+      {targets.map(target => {
+        const storageKey = currentUser && savedFileKey(currentUser.id, scope, target)
+        const saved = readSavedFile(storageKey)
+        const key = `${target.vendor.id}:${getResourceTypeId(target.resource)}`
+        return [
+          saved && (
+            <DropdownMenu.Item
+              key={`${key}:update`}
+              icon={<ArrowsClockwise className="size-3" />}
+              onClick={() => onSelect({ target, storageKey, saved })}
+              className={ITEM}
+            >
+              Update “{saved.name}”…
+            </DropdownMenu.Item>
+          ),
+          <DropdownMenu.Item
+            key={key}
+            icon={<CloudArrowUp className="size-3" />}
+            onClick={() => onSelect({ target, storageKey })}
+            className={ITEM}
+          >
+            Save to {target.resource.title}…
+          </DropdownMenu.Item>,
+        ]
+      })}
+    </>
+  )
+}
