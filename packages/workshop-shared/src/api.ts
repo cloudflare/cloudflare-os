@@ -7348,6 +7348,8 @@ export type ShareLinkInfo = {
 
   /** The one gadget a "use" link grants, unless it grants several (see `gadgets`). */
   gadgetId?: WorkpieceId;
+  /** Set when the link grants only its gadget's owner's view (see CollaboratorGrant). */
+  viewOnly?: true;
 
   /**
    * The gadgets a "use" link to several gadgets grants, those of them that can still be shared,

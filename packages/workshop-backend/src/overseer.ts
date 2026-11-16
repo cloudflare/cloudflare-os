@@ -14726,6 +14726,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         createdBy,
         role: record.role ?? "build",
         ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
+        ...(record.viewOnly ? {viewOnly: true} : {}),
         ...(record.gadgetIds !== undefined ? {gadgets: record.gadgetIds
           .filter(id => this.impl.isShareableGadget(id))
           .map(id => ({id, title: this.impl.getGadgetRecord(id).title}))} : {}),

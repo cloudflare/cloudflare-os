@@ -309,6 +309,11 @@ it.concurrent("revokes every key and recipient of one gadget's share link", asyn
     const gadgetId = await shared.getId();
     const unsharedId = await unshared.getId();
 
+    // A link only to see its view says so, apart from one to use it.
+    const viewLink = await workspace.createShareLink({ gadgetId, viewOnly: true });
+    expect(await workspace.listShareLinks()).toContainEqual(expect.objectContaining({ linkId: viewLink.linkId, gadgetId, viewOnly: true }));
+    await workspace.revokeShareLink(viewLink.linkId, []);
+
     const shareLink = await workspace.createShareLink({ gadgetId }, "review link");
     const copiedKey = await workspace.newShareLinkKey(shareLink.linkId);
     expect(await workspace.listShareLinks()).toContainEqual(expect.objectContaining({
