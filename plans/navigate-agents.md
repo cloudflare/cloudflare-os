@@ -137,8 +137,7 @@ openAgentChat(chatToken: string): Promise<void>;
   passes `activeTab === 'app' && !previewMode`, which stays true while the workspace pane is closed
   (`workspaceView.mode === 'chat'`) or showing Activity, and the gadget stays mounted in both. So
   `GadgetEditor` works out whether its gadget is actually showing: the pane is on the app with the
-  app tab selected, or the gadget is full screen, or in the preview overlay. If it isn't, the
-  handler ignores the call.
+  app tab selected, or the gadget is full screen. If it isn't, the handler ignores the call.
 - **The handler**, supplied by `GadgetEditor` to the pane's `GadgetUI`. (The preview overlay's
   never renders: nothing sets `previewMode`.)
   - **Look up the token** in the chat list `ChatInterface` holds. `ChatInterface` reports every
