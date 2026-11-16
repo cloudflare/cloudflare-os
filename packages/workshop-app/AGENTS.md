@@ -759,7 +759,9 @@ when it is focused: the composer and its measuring copies, and the sign-in form.
 a new field.
 The composer's return key is labelled for sending (`enterkeyhint`), as Enter sends; the ✓ iOS
 puts over its keyboard only puts the keyboard away, and nothing a page does makes it send. An
-on-screen keyboard makes the page shorter on Android (`interactive-widget` in `index.html`), so
+on-screen keyboard makes the page shorter on Android (`interactive-widget` in `index.html`), and
+the app's frame is held to the page's height (`max-h-full` in `routes/__root.tsx`), which viewport
+units alone take no account of, so
 the composer sits above it. A phone reaching the dev server by its address has a page that is not
 served securely, which has no `crypto.randomUUID()` and no clipboard: make ids some other way.
 A named header bubble that carries on from one elsewhere along the header slides over from there.
