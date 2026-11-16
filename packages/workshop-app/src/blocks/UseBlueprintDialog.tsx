@@ -69,10 +69,10 @@ const PlaceChooser = ({ place }: { place: NonNullable<UseBlueprintDialogProps['p
       align="end"
     >
       <DropdownMenu.Item label="A new workspace" onSelect={() => place.onChange(undefined)}>
-        <FolderPlusIcon aria-hidden="true" className="size-4 shrink-0" />
+        <FolderPlusIcon aria-hidden="true" className="size-(--menu-icon) shrink-0" />
         <span className="min-w-0 flex-1">
           <span className="block">A new workspace</span>
-          <span className="block text-sm text-kumo-subtle">Named after it</span>
+          <span className="block text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">Named after it</span>
         </span>
         {tick(chosen === undefined)}
       </DropdownMenu.Item>

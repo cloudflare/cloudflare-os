@@ -308,9 +308,9 @@ const MoreMenu = ({ title, onShare, onReload, openIn, onDownload, exports, onOpe
             {formats.status === 'ready' && formats.formats.length > 0 ? formats.formats.map((format) => (
               <DropdownMenu.Item key={format.id} label={format.label} disabled={exporting} onSelect={() => exports.onExport(format.id)}>
                 {/* In the icons' column, so the formats line up under the rows' names. */}
-                <span aria-hidden="true" className="size-4 shrink-0" />
+                <span aria-hidden="true" className="size-(--menu-icon) shrink-0" />
                 <span className="min-w-0 flex-1 truncate">{format.label}</span>
-                <span className="text-sm text-kumo-subtle">{format.fileExtension}</span>
+                <span className="text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{format.fileExtension}</span>
               </DropdownMenu.Item>
             )) : formats.status === 'failed' ? (
               <>

@@ -71,6 +71,6 @@ export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, compact = 
 const ChatRow = ({ title, detail }: { title: string; detail: string }) => (
   <span className="flex min-w-0 max-w-72 flex-col">
     <span className="truncate">{title}</span>
-    <span className="truncate text-sm text-kumo-subtle">{detail}</span>
+    <span className="truncate text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{detail}</span>
   </span>
 )

@@ -43,7 +43,7 @@ export const MenuChooser = ({ choices, value, onChoose, label, none, placeholder
         <DropdownMenu.Item key={choice.id} label={choice.name} onSelect={() => onChoose(choice.id)}>
           <span className="min-w-0 flex-1">
             <span className="block truncate">{choice.name}</span>
-            {choice.description && <span className="block truncate text-sm text-kumo-subtle">{choice.description}</span>}
+            {choice.description && <span className="block truncate text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{choice.description}</span>}
           </span>
           {tick(choice.id === value)}
         </DropdownMenu.Item>

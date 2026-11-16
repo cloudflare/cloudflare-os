@@ -46,7 +46,7 @@ export const AccessMenu = <Value extends string>({ label, of, choices, remove, d
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span>{option.label}</span>
-          <span className="text-sm text-kumo-subtle">{option.hint}</span>
+          <span className="text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{option.hint}</span>
         </span>
         {option.value === choices.value
           ? <CheckIcon aria-label="(chosen)" weight="bold" className="size-3.5 shrink-0" />

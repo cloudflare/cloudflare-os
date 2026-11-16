@@ -44,7 +44,7 @@ export const GadgetExportRow = ({ workspaceId, workpieceId, title }: { workspace
           {formats.formats.map((format) => (
             <DropdownMenu.Item key={format.id} label={format.label} onSelect={() => save(format.id)}>
               <span className="min-w-0 flex-1 truncate">{format.label}</span>
-              <span className="text-sm text-kumo-subtle">{format.fileExtension}</span>
+              <span className="text-(length:--menu-detail-text) leading-(--menu-detail-line) text-kumo-subtle">{format.fileExtension}</span>
             </DropdownMenu.Item>
           ))}
         </DropdownMenu>
