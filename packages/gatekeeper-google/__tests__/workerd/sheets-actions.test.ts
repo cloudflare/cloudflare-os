@@ -3180,6 +3180,47 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
   });
 });
 
+describe("Google Sheets format read size", () => {
+  /** The zeros of the longest pattern whose format, on 10,000 cells, is read whole. */
+  const ZEROS = 84;
+
+  it("refuses a format read by the length of its result's JSON, and reads fewer cells", async () => {
+    current = new SheetsProvider([sheetMeta(0, "Data", { rowCount: 100, columnCount: 100 })]).install();
+    let sheets = gatekeeper();
+    let border = { style: "SOLID", color: "#0000ff" } as const;
+    // A queued format is repeated in the result for each of the 10,000 cells it covers, so one
+    // character more in its pattern is 10,000 units more. The pattern's quotes are escaped in the
+    // JSON and its euro sign is not.
+    let pattern = (zeros: number) => `"€"${"0".repeat(zeros)}`;
+    await sheets.queued([{
+      op: "formatCells", range: "Data!A1:CV100",
+      format: {
+        bold: true, italic: true, underline: true, strikethrough: true, fontSize: 400,
+        textColor: "#ff0000", fillColor: "#00ff00", numberFormat: { type: "NUMBER", pattern: pattern(ZEROS) },
+        horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", wrap: "OVERFLOW",
+        borders: {
+          top: border, bottom: border, left: border, right: border,
+          innerHorizontal: border, innerVertical: border,
+        },
+      },
+    }]);
+
+    // The longest result the limit of 5 MiB of UTF-16 units lets through, to within one character
+    // of the pattern.
+    let length = JSON.stringify(await sheets.formats("Data!A1:CV100")).length;
+    expect(length).toBeLessThanOrEqual(5 * 1024 * 1024);
+    expect(length).toBeGreaterThan(5 * 1024 * 1024 - 10_000);
+
+    await sheets.queued([{
+      op: "formatCells", range: "Data!A1:CV100",
+      format: { numberFormat: { type: "NUMBER", pattern: pattern(ZEROS + 1) } },
+    }]);
+    await expect(sheets.formats("Data!A1:CV100")).rejects.toThrow(
+      "The formatting of this range is too large to read at once. Request fewer cells.");
+    expect((await sheets.formats("Data!A1:CV50")).formats).toHaveLength(50);
+  });
+});
+
 describe("Google Sheets replay cost", () => {
   /** The batches queued in the first phase, each followed by a read. */
   const N = 5;
@@ -3197,26 +3238,13 @@ describe("Google Sheets replay cost", () => {
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
-    "overlayCopies", "overlayEntries", "keysIndexed", "cellsKeyed", "measuredStrings",
-    "longestMeasured", "digestedUnits", "fetches", "responseBytes", "mostOpen", "indented",
+    "overlayCopies", "overlayEntries", "keysIndexed", "cellsKeyed", "digestedUnits", "fetches",
+    "responseBytes", "mostOpen", "indented",
   ] as const;
   type Measure = typeof MEASURES[number];
   type Row = { phase: string; pending: number } & Record<Measure, number>;
 
   const measured: Row[] = [];
-
-  // A queued batch holds its marker's ID, a random number of one to ten digits: of ten here, each
-  // its own, so that the length a batch is measured at does not vary.
-  beforeEach(() => {
-    let random = crypto.getRandomValues.bind(crypto);
-    let minted = 0;
-    vi.spyOn(crypto, "getRandomValues").mockImplementation(array => {
-      if (!(array instanceof Uint32Array) || array.length !== 1) return random(array);
-      array[0] = 2 * (1_000_000_000 + ++minted);
-      return array;
-    });
-  });
-  afterEach(() => { vi.restoreAllMocks(); });
 
   afterAll(() => {
     if (measured.length === 0) return;
@@ -3267,7 +3295,6 @@ describe("Google Sheets replay cost", () => {
       .filter(name => /^sheets:action:\d+$/.test(name)).length;
     /** Runs one phase and records what it added to each measure. */
     let phase = async (name: string, body: () => Promise<unknown>) => {
-      editorCost.longestMeasured = 0;
       meter.mostOpen = 0;
       let before = totals();
       await body();
@@ -3275,7 +3302,6 @@ describe("Google Sheets replay cost", () => {
       measured.push({
         phase: name,
         ...Object.fromEntries(MEASURES.map(column => [column, after[column] - before[column]])) as Record<Measure, number>,
-        longestMeasured: editorCost.longestMeasured,
         mostOpen: meter.mostOpen,
         pending: await pending(),
       });
@@ -3338,11 +3364,8 @@ describe("Google Sheets replay cost", () => {
     // fake indents an answer that was not asked compact, and a read that forgot to ask would count
     // here. The 50,000 values are 16 bytes a cell, where they are 27 indented.
     //
-    // A batch is measured twice, as submitted and as stored, and the stored one is the longer:
-    // 212 units (the label of its sheet, a digest of 64 digits, a marker ID of ten and a token of
-    // 36) around its changes, the batches its guard follows and its guarded areas. A guard's digest
-    // is of `[[[0,"Data",1000,100]],[...]]`: 24 units around the list of its areas' cells. An
-    // answer of cells as entered is 40 bytes around its blocks, one for each area.
+    // A guard's digest is of `[[[0,"Data",1000,100]],[...]]`: 24 units around the list of its
+    // areas' cells. An answer of cells as entered is 40 bytes around its blocks, one for each area.
     expect(measured).toEqual([
       {
         ...none, phase: "build", pending: 5,
@@ -3352,9 +3375,6 @@ describe("Google Sheets replay cost", () => {
         // The 20,000 cells each clearing batch guards, keyed once as they are read as entered and
         // once more to be looked up.
         cellsKeyed: 80_000,
-        // Each batch twice, the longest a stored clearing batch: 203 units of changes, no batch to
-        // follow (2) and two guarded areas (167).
-        measuredStrings: 10, longestMeasured: 584,
         // Two guards of 20,000 cells at 16 units a cell (two areas of 160,001 units and 3 around
         // them: 320,029 each), and three of no cell (26 each).
         digestedUnits: 640_136,
@@ -3371,10 +3391,9 @@ describe("Google Sheets replay cost", () => {
         // Three copies to queue a batch and one to read: 15 and 5. The two copies after each
         // queueing fold hold the 100,000 entries.
         overlayCopies: 20, overlayEntries: 1_000_000,
-        // The one cell each batch overwrites, keyed twice. A stored batch is 125 units of changes,
-        // the clearing batch it follows (3) and one guarded area (82), and its digest is of one
-        // cleared cell, `[[null]]`: 32 units.
-        cellsKeyed: 10, measuredStrings: 10, longestMeasured: 422, digestedUnits: 160,
+        // The one cell each batch overwrites, keyed twice. Its digest is of one cleared cell,
+        // `[[null]]`: 32 units.
+        cellsKeyed: 10, digestedUnits: 160,
         // To queue: the sheets and whether the account may edit, together, then the guarded cell
         // as entered, a block of 94 bytes. To read: the sheets and the 50,000 values, together.
         fetches: 25, responseBytes: 10 * SHEETS + 5 * CAN_EDIT + 5 * 134 + 5 * VALUES,
@@ -3389,8 +3408,6 @@ describe("Google Sheets replay cost", () => {
       {
         ...none, phase: "formats read", pending: 5 + N,
         overlayCopies: 1,
-        // The result, which repeats the queued format across the 10,000 cells.
-        measuredStrings: 1, longestMeasured: 140_971,
         // The sheets, and the formats Google holds for the cells, together.
         fetches: 2, responseBytes: SHEETS + 35_008, mostOpen: 2,
       },
@@ -3402,10 +3419,8 @@ describe("Google Sheets replay cost", () => {
         // `resolveChanges` and once in `guardCells`, 100,000 each: an index is one batch's on
         // one copy, and goes with it. The row it deletes is empty.
         keysIndexed: 200_000,
-        // The batch as submitted and as stored: 55 units of changes, no batch to follow (2) and
-        // the deleted row as its guarded area (85). Its digest is of that row's 100 blank cells:
-        // 503 units.
-        measuredStrings: 2, longestMeasured: 354, digestedUnits: 527,
+        // The batch's digest is of the row it deletes, 100 blank cells: 503 units.
+        digestedUnits: 527,
         // The sheets and whether the account may edit, together, then the deleted row as entered:
         // a block of 16 bytes, which names its first row and holds no cell.
         fetches: 3, responseBytes: SHEETS + CAN_EDIT + 56, mostOpen: 2,
@@ -3417,9 +3432,8 @@ describe("Google Sheets replay cost", () => {
         // the index goes with its batch, so each fold builds it again. An insertion builds no
         // index and guards no cell.
         overlayCopies: 3, overlayEntries: 199_800, keysIndexed: 100_000,
-        // The batch as submitted and as stored: 53 units of changes, the deletion it follows (4)
-        // and no guarded area (2). Its digest is of the sheet, of 999 rows by then, and no cell.
-        measuredStrings: 2, longestMeasured: 271, digestedUnits: 25,
+        // The batch's digest is of the sheet, of 999 rows by then, and no cell.
+        digestedUnits: 25,
         // The sheets and whether the account may edit, together.
         fetches: 2, responseBytes: SHEETS + CAN_EDIT, mostOpen: 2,
       },

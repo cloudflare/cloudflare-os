@@ -1578,8 +1578,7 @@ describe("Google Slides replay cost", () => {
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
-    "pageClones", "cloneBytes", "measuredStrings", "longestMeasured", "pageFetches", "fetches",
-    "responseBytes", "mostOpen", "indented",
+    "pageClones", "cloneBytes", "pageFetches", "fetches", "responseBytes", "mostOpen", "indented",
   ] as const;
   type Measure = typeof MEASURES[number];
   type Row = { phase: string; pending: number } & Record<Measure, number>;
@@ -1753,7 +1752,6 @@ describe("Google Slides replay cost", () => {
      * of a slide read by label, each of `LABEL_BYTES`; the others are of a whole page.
      */
     let phase = async (name: string, body: () => Promise<unknown>, labelClones = 0) => {
-      editorCost.longestMeasured = 0;
       meter.mostOpen = 0;
       let before = totals();
       await body();
@@ -1764,7 +1762,6 @@ describe("Google Slides replay cost", () => {
         phase: name,
         ...added,
         cloneBytes: (added.pageClones - labelClones) * PAGE_BYTES + labelClones * LABEL_BYTES,
-        longestMeasured: editorCost.longestMeasured,
         mostOpen: meter.mostOpen,
         pending: await pending(),
       });
@@ -1842,8 +1839,6 @@ describe("Google Slides replay cost", () => {
         // fold clones a slide the pending batches edit once, and makes the pending copy: 1, 2, 3,
         // 3 and 3, the fifth batch editing slide 1 as the first left it.
         pageClones: 16, cloneBytes: 16 * PAGE_BYTES,
-        // Each queued change is measured once, and each read's 20 slides, about 3.7 KB a slide.
-        measuredStrings: 10, longestMeasured: 74_091,
         // One page to queue each change, the moved slide's by label, 20 for each read, and an
         // outline with each. A read's 20 whole pages go four at a time.
         pageFetches: 105, fetches: 115,
@@ -1854,7 +1849,6 @@ describe("Google Slides replay cost", () => {
         ...none, phase: "read", pending: N,
         // Slides 1 and 2, which three pending batches edit, and the copy.
         pageClones: 3, cloneBytes: 3 * PAGE_BYTES,
-        measuredStrings: 1, longestMeasured: 74_090,
         pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES,
         mostOpen: 4,
       },
@@ -1872,8 +1866,6 @@ describe("Google Slides replay cost", () => {
         // others by label. Per fold: 2 whole clones (slides 1 and 2, for their batches) and 1
         // label clone (the queued copy of slide 3, read by label here).
         pageClones: 3, cloneBytes: 2 * PAGE_BYTES + LABEL_BYTES,
-        // The queued move alone: 99 labels and the slide they follow.
-        measuredStrings: 1, longestMeasured: 6_138,
         // The 100 slides named, a mixed read: the two a queued batch edits whole, together, and
         // then the 98 others by label, six at a time.
         pageFetches: 100, fetches: 101,
@@ -1884,7 +1876,6 @@ describe("Google Slides replay cost", () => {
         ...none, phase: "queue a skip of 100", pending: N + 2,
         // As the move: 2 whole clones and 1 label clone.
         pageClones: 3, cloneBytes: 2 * PAGE_BYTES + LABEL_BYTES,
-        measuredStrings: 1, longestMeasured: 6_130,
         // The same mixed read: slides 1 and 2 whole, then 98 labels with six open.
         pageFetches: 100, fetches: 101,
         responseBytes: 2 * PAGE_BYTES + 98 * LABEL_BYTES + OUTLINE_BYTES,
@@ -1907,8 +1898,6 @@ describe("Google Slides replay cost", () => {
         // back as those changes made it by applying them again to what was fetched, which clones
         // their three pages a second time: 3 twice, and 1.
         pageClones: 7, cloneBytes: 7 * PAGE_BYTES,
-        // The 20 slides, each with the conflict's text.
-        measuredStrings: 1, longestMeasured: 77_648,
         // As `read`, less the 71 bytes slide 1 lost when the fake stored its approved edit as one run.
         pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES - 71,
         mostOpen: 4,

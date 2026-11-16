@@ -46,6 +46,30 @@ describe("QueuedChanges", () => {
     expect(() => checkQueuedSize("abc", 8)).toThrow("(10 bytes, limit 8)");
   });
 
+  it("refuses at the same size, with the same count, as its JSON's length gives", () => {
+    /**
+     * A change whose JSON is `units` long. Its text holds an accented letter (one unit), an escaped
+     * line break (two) and a lone surrogate (six), which a count of its characters would miss.
+     */
+    let sized = (units: number) => {
+      let change = { text: "é\n\ud83d", pad: "" };
+      change.pad = "x".repeat(units - JSON.stringify(change).length);
+      expect(JSON.stringify(change).length).toBe(units);
+      return change;
+    };
+    let limit = MAX_CHANGE_BYTES / 2;
+    expect(() => checkQueuedSize(sized(limit - 1))).not.toThrow();
+    expect(() => checkQueuedSize(sized(limit))).not.toThrow();
+    let over = sized(limit + 1);
+    expect(() => checkQueuedSize(over)).toThrow(
+      `This change is too large to queue (${JSON.stringify(over).length * 2} bytes, limit ${
+        MAX_CHANGE_BYTES}). Split it up.`);
+    expect(JSON.stringify(over).length * 2).toBe(MAX_CHANGE_BYTES + 2);
+    // A limit of the caller's is held the same way.
+    expect(() => checkQueuedSize(sized(40), 80)).not.toThrow();
+    expect(() => checkQueuedSize(sized(40), 78)).toThrow("(80 bytes, limit 78)");
+  });
+
   it("keeps each file's view, order and restart answer apart within one journal", async () => {
     let edits = journal();
     let a = changesOf(edits, "a");

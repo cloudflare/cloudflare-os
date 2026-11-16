@@ -10,9 +10,9 @@ import {
 } from "./creation";
 import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
-import { measured } from "./editor-cost";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { jsonLength } from "./json-length";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
@@ -573,7 +573,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     if (read instanceof RefusedRead) throw read.refusal;
     // Queued formatting is repeated across every cell it covers, so the result can outgrow what
     // Google returned.
-    if (measured(JSON.stringify(read)) > MAX_FORMATS_READ_LENGTH) {
+    if (jsonLength(read) > MAX_FORMATS_READ_LENGTH) {
       throw new Error("The formatting of this range is too large to read at once. Request fewer cells.");
     }
     return read;

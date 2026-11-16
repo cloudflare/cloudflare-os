@@ -14,10 +14,6 @@ export type EditorCost = {
   keysIndexed: number;
   /** Cells of a read put in a map under a string key of their own on the way to a simulated read. */
   cellsKeyed: number;
-  /** Strings built only to be measured against a size limit. */
-  measuredStrings: number;
-  /** The longest of them, in UTF-16 units. A test sets it to 0 before what it measures. */
-  longestMeasured: number;
   /** UTF-16 units of the JSON built whole to be digested for a batch's guard. */
   digestedUnits: number;
   /** Slides, masters and layouts copied whole with `structuredClone`. */
@@ -26,13 +22,6 @@ export type EditorCost = {
 
 /** The running totals of `EditorCost`. */
 export const editorCost: EditorCost = {
-  overlayCopies: 0, overlayEntries: 0, keysIndexed: 0, cellsKeyed: 0, measuredStrings: 0,
-  longestMeasured: 0, digestedUnits: 0, pageClones: 0,
+  overlayCopies: 0, overlayEntries: 0, keysIndexed: 0, cellsKeyed: 0, digestedUnits: 0,
+  pageClones: 0,
 };
-
-/** Counts a string built only to be measured, and gives its length. */
-export function measured(text: string): number {
-  editorCost.measuredStrings++;
-  editorCost.longestMeasured = Math.max(editorCost.longestMeasured, text.length);
-  return text.length;
-}
