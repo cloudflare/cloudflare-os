@@ -355,10 +355,8 @@ provisional ID `addTab()` returns. It only reads.
 
 ### Watch-fors
 
-- **Image reads after a listing are not authorized again.** `readImage()` skips
-  `authorizeObservation()` for an image `listImages()` returned in the same session, to keep one
-  log entry per tab rather than one per image. The skill asks for every read to be authorized;
-  this is open for review.
+- **Every image read is authorized.** A listing tells of an image, not its bytes, so
+  `readImage()` is authorized and logged as its own read: one log entry per image.
 - **Bookmark links go nowhere.** The Docs API gives a bookmark's ID and tab but not its place,
   so a link to one in the tab shown cannot be followed.
 - **The navigator counts places, not requests.** It steps through the stretches of changed text

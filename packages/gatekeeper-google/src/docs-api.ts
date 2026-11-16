@@ -43,6 +43,34 @@ export type GoogleDocsTab = {
   lists: Record<string, DocList>;
   /** Named ranges anchored in this tab. */
   namedRanges: NamedRanges;
+  /** Objects placed in the text, by the ID an `inlineObjectElement` names. */
+  inlineObjects?: Record<string, { inlineObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
+  /** Objects tethered to a paragraph, by the ID its `positionedObjectIds` names. */
+  positionedObjects?:
+    Record<string, { positionedObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
+  /** What each named style (`NORMAL_TEXT`, `TITLE`, `HEADING_1`, ...) sets. */
+  namedStyles?: {
+    styles?: { namedStyleType?: string; textStyle?: TextStyle; paragraphStyle?: ParagraphStyle }[];
+  };
+  /** The tab's page size and margins. */
+  documentStyle?: {
+    pageSize?: { width?: Dimension };
+    marginTop?: Dimension;
+    marginRight?: Dimension;
+    marginLeft?: Dimension;
+  };
+}
+
+/** A length. Google leaves out a `magnitude` of zero. */
+export type Dimension = { magnitude?: number; unit?: string };
+
+/** An image, drawing or chart embedded in a tab. */
+export type EmbeddedObject = {
+  /** Alt text. */
+  description?: string;
+  size?: { width?: { magnitude?: number }; height?: { magnitude?: number } };
+  /** Present only for an image, whose `contentUri` serves its bytes for a short while. */
+  imageProperties?: { contentUri?: string };
 }
 
 /** Named ranges grouped by name, as `documents.get` returns them. */
@@ -83,7 +111,14 @@ export type StructuralElement = {
 /** A table embedded in a document body or table cell. */
 export type Table = {
   tableRows?: TableRow[];
+  tableStyle?: {
+    /** One per column; a width counts only when `widthType` is `FIXED_WIDTH`. */
+    tableColumnProperties?: { width?: Dimension; widthType?: string }[];
+  };
 }
+
+/** One edge of a table cell. */
+export type TableCellBorder = { color?: Color; width?: Dimension };
 
 /** One row in a Google Docs table. */
 export type TableRow = {
@@ -100,6 +135,13 @@ export type TableCell = {
   tableCellStyle?: {
     rowSpan?: number;
     columnSpan?: number;
+    backgroundColor?: Color;
+    /** `TOP`, `MIDDLE` or `BOTTOM`. */
+    contentAlignment?: string;
+    borderTop?: TableCellBorder;
+    borderRight?: TableCellBorder;
+    borderBottom?: TableCellBorder;
+    borderLeft?: TableCellBorder;
   };
 }
 
@@ -116,6 +158,15 @@ export type ParagraphStyle = {
   namedStyleType: string;
   /** Set on a title or heading paragraph, and only there: the target of a `#heading=` link. */
   headingId?: string;
+  /** `START`, `CENTER`, `END` or `JUSTIFIED`. */
+  alignment?: string;
+  /** Percent of single spacing. */
+  lineSpacing?: number;
+  shading?: { backgroundColor?: Color };
+  spaceAbove?: Dimension;
+  spaceBelow?: Dimension;
+  /** `COLLAPSE_LISTS` leaves out the space between this paragraph and an item of its list beside it. */
+  spacingMode?: string;
 }
 
 /** Present on paragraphs that are list items. */
@@ -171,7 +222,15 @@ export type TextStyle = {
   italic?: boolean;
   strikethrough?: boolean;
   link?: GoogleDocsLink;
+  fontSize?: Dimension;
+  weightedFontFamily?: { fontFamily?: string; weight?: number };
+  foregroundColor?: Color;
+  /** The highlight behind the text. */
+  backgroundColor?: Color;
 }
+
+/** A color, absent when none is set. Channels run from 0 to 1, and Google leaves out a zero. */
+export type Color = { color?: { rgbColor?: { red?: number; green?: number; blue?: number } } };
 
 type GoogleDocsResponse = Pick<
   GoogleDocsDocument, "documentId" | "title" | "revisionId"
@@ -220,7 +279,8 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
       seen.add(tabId);
 
       if (!documentTab || typeof documentTab !== "object") throw new Error(INVALID_TAB);
-      let { body, lists, namedRanges } = documentTab as Record<string, unknown>;
+      let { body, lists, namedRanges, inlineObjects, positionedObjects, namedStyles, documentStyle } =
+        documentTab as Record<string, unknown>;
       // A real body always holds at least a section break, and `bodyEndIndex` arithmetic assumes
       // it: an empty one would place an append at index -1.
       if (!body || typeof body !== "object" || !("content" in body) ||
@@ -239,6 +299,10 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
         body: { content },
         lists: tabCollection<GoogleDocsTab["lists"]>(lists),
         namedRanges: tabCollection<NamedRanges>(namedRanges),
+        inlineObjects: tabCollection<GoogleDocsTab["inlineObjects"]>(inlineObjects),
+        positionedObjects: tabCollection<GoogleDocsTab["positionedObjects"]>(positionedObjects),
+        namedStyles: tabCollection<GoogleDocsTab["namedStyles"]>(namedStyles),
+        documentStyle: tabCollection<GoogleDocsTab["documentStyle"]>(documentStyle),
       });
 
       if (childTabs === undefined) continue;

@@ -81,6 +81,7 @@ type ModelTab = {
   text: string;
   table?: { before: string; rows: string[][]; after: string };
   body?: GoogleDocsTab["body"];
+  inlineObjects?: GoogleDocsTab["inlineObjects"];
   links: { start: number; end: number; url: string }[];
   paragraphStyles?: string[];
   paragraphLists?: ModelListSlot[];
@@ -142,6 +143,14 @@ class DocsModel {
   /** Full `documents.get` calls, excluding the lightweight revision probe. */
   documentFetches = 0;
   revisionProbes = 0;
+  /** Requests for an image's bytes. */
+  imageFetches = 0;
+  /** Google fails to serve any image. */
+  imageOutage = false;
+  /** The image addresses Google refuses, as it does once one lapses. */
+  readonly #lapsed = new Set<string>();
+  /** The length Google states for an image, when not its real one. */
+  imageLength?: number;
   /** Every provider request, of any kind. */
   fetches = 0;
   /** The body of each `documents.create` call. */
@@ -255,6 +264,36 @@ class DocsModel {
     this.#tab(tabId).body = body;
   }
 
+  /** One paragraph per image, each an inline object Google serves at docs.google.com/<id>. */
+  setImages(tabId: string, images: { id: string; drawing?: true }[]): void {
+    let { body } = buildTab(images.map(({ id }) => ({
+      runs: [{ richLink: { title: id, uri: "https://example.com" } }, "\n"],
+    })));
+    let inlineObjects: NonNullable<GoogleDocsTab["inlineObjects"]> = {};
+    for (let [index, { id, drawing }] of images.entries()) {
+      let element = body.content[index + 1].paragraph!.elements[0];
+      delete element.richLink;
+      element.inlineObjectElement = { inlineObjectId: id };
+      inlineObjects[id] = { inlineObjectProperties: { embeddedObject: {
+        size: { width: { magnitude: 120 }, height: { magnitude: 80 } },
+        ...drawing ? {} : { imageProperties: { contentUri: `https://docs.google.com/${id}` } },
+      } } };
+    }
+    Object.assign(this.#tab(tabId), { body, inlineObjects });
+  }
+
+  /** Lapses every image address given out so far: the next read of the document has new ones. */
+  lapseImages(): void {
+    for (let { inlineObjects } of this.tabs) {
+      for (let { inlineObjectProperties } of Object.values(inlineObjects ?? {})) {
+        let image = inlineObjectProperties?.embeddedObject?.imageProperties;
+        if (!image?.contentUri) continue;
+        this.#lapsed.add(image.contentUri);
+        image.contentUri += "?again";
+      }
+    }
+  }
+
   text(tabId = MAIN_TAB): string {
     let tab = this.#tab(tabId);
     if (!tab.body) return tab.text;
@@ -323,6 +362,16 @@ class DocsModel {
         id: "doc-1", name: "Test document", modifiedTime: this.driveModifiedTime,
         ...this.driveMimeType ? { mimeType: this.driveMimeType } : {},
       });
+    }
+    if (url.hostname === "docs.google.com") {
+      this.imageFetches++;
+      if (this.#lapsed.has(url.href)) return new Response("gone", { status: 403 });
+      if (this.imageOutage) return new Response("busy", { status: 503 });
+      let bytes = new TextEncoder().encode(`bytes of ${url.pathname.slice(1)}`);
+      return new Response(bytes, { headers: {
+        "content-type": "image/png",
+        "content-length": String(this.imageLength ?? bytes.length),
+      } });
     }
     if (url.hostname !== "docs.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url}`);
@@ -936,7 +985,7 @@ class DocsModel {
     body ??= buildTab([{ runs: [text] }]).body;
     return {
       tabProperties: { tabId: tab.id, title: tab.title },
-      documentTab: { body, lists, namedRanges },
+      documentTab: { body, lists, namedRanges, inlineObjects: tab.inlineObjects },
       childTabs: this.tabs.filter(child => child.parentId === tab.id)
         .map(child => this.#documentTab(child)),
     };
@@ -2225,6 +2274,229 @@ describe("Google Doc with no revision ID", () => {
   });
 });
 
+describe("Google Doc styles", () => {
+  it("reads a tab's styles under one observation", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    docs.install();
+
+    expect(await hooks().readStyles("styles-read", MAIN_TAB)).toEqual({
+      named: {}, paragraphs: [{ line: 0, style: "NORMAL_TEXT" }], runLooks: [], tables: [],
+    });
+    expect(await hooks().lastObservations).toEqual([`Read the styles of tab "Main" (${MAIN_TAB}).`]);
+  });
+
+  it("refuses a tab the document does not have", async () => {
+    nestedDocs();
+
+    await expect(Promise.resolve(hooks().readStyles("styles-no-tab", "nope")))
+      .rejects.toThrow('getStyles: no tab with ID "nope"');
+    expect(await hooks().lastObservations).toEqual(["Read the styles of one tab of the document."]);
+  });
+});
+
+describe("Google Doc images", () => {
+  const LISTED = `Read the images in tab "Main" (${MAIN_TAB}).`;
+
+  it("lists a tab's images and reads one as a read of its own", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }, { id: "sketch", drawing: true }]);
+    docs.install();
+
+    let { images, read } = await hooks().readImages("images-listed", MAIN_TAB, ["photo"], true);
+
+    expect(images).toEqual([
+      { id: "photo", width: 120, height: 80, readable: true },
+      { id: "sketch", width: 120, height: 80, readable: false },
+    ]);
+    expect(read).toEqual([{ mimeType: "image/png", text: "bytes of photo" }]);
+    expect(await hooks().lastObservations).toEqual([LISTED, `Read an image in tab "Main" (${MAIN_TAB}).`]);
+  });
+
+  it("reports an image read that no listing covers", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    docs.install();
+
+    let { read } = await hooks().readImages("images-unlisted", MAIN_TAB, ["photo"], false);
+
+    expect(read).toEqual([{ mimeType: "image/png", text: "bytes of photo" }]);
+    expect(await hooks().lastObservations)
+      .toEqual([`Read an image in tab "Main" (${MAIN_TAB}).`]);
+  });
+
+  it("refuses a drawing, an unknown image and one over the size limit", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }, { id: "sketch", drawing: true }]);
+    docs.imageLength = 10 * 1024 * 1024 + 1;
+    docs.install();
+
+    let { read } = await hooks().readImages("images-refused", MAIN_TAB, ["sketch", "nope", "photo"], true);
+
+    expect(read).toEqual([
+      { error: expect.stringContaining('no readable image with ID "sketch"') },
+      { error: expect.stringContaining('no readable image with ID "nope"') },
+      { error: "readImage: this image is larger than 10 MB." },
+    ]);
+  });
+
+  it("reads the document again when an image's address has lapsed", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    docs.install();
+    // The document is unchanged since this read, so what it gave is what the next read holds.
+    await hooks().readImages("images-lapsed", MAIN_TAB, [], true);
+    docs.lapseImages();
+
+    let { read } = await hooks().readImages("images-lapsed", MAIN_TAB, ["photo"], false);
+
+    expect(read).toEqual([{ mimeType: "image/png", text: "bytes of photo" }]);
+    expect(docs.documentFetches).toBe(2);
+    expect(docs.imageFetches).toBe(2);
+  });
+
+  it("leaves the document alone when Google fails to serve an image whose address stands", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    docs.imageOutage = true;
+    docs.install();
+
+    let { read } = await hooks().readImages("images-outage", MAIN_TAB, ["photo"], true);
+
+    expect(read).toEqual([{ error: "readImage: Google did not return this image [http=503]." }]);
+    expect(docs.documentFetches).toBe(1);
+    expect(docs.imageFetches).toBe(1);
+  });
+});
+
+describe("Google Doc pending changes", () => {
+  it("returns a tab as saved and as edited, with the changes between them", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Before");
+    docs.install();
+    let replaceId = await hooks().submitReplace("pending-list", "Before", "After");
+    let appendId = await hooks().submitAppend("pending-list", "added");
+
+    let pending = await hooks().readPendingChanges("pending-list", MAIN_TAB);
+
+    expect(pending).toEqual({
+      savedMarkdown: "Before\n",
+      markdown: await hooks().readContent("pending-list"),
+      changes: [
+        { id: replaceId, type: "replaceText", oldMarkdown: "Before", newMarkdown: "After" },
+        { id: appendId, type: "appendText", markdown: "added" },
+      ],
+    });
+    expect(pending.markdown).toBe("After\n\nadded\n");
+    expect(docs.text()).toBe("Before");
+  });
+
+  it("authorizes one read of the tab, like getContent()", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    await hooks().readPendingChanges("pending-observation", MAIN_TAB);
+
+    expect(await hooks().lastObservations).toEqual([
+      `Read the saved and simulated content of tab "Main" (${MAIN_TAB}) as Markdown, ` +
+      "with its pending changes.",
+    ]);
+  });
+
+  it("marks an edit the document no longer fits as stale and leaves it out", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let actionId = await hooks().submitReplace("pending-stale", "target", "changed");
+
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+
+    expect(await hooks().readPendingChanges("pending-stale", MAIN_TAB)).toEqual({
+      savedMarkdown: "rewritten\n",
+      markdown: "rewritten\n",
+      changes: [{
+        id: actionId, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+      }],
+    });
+  });
+
+  it("lists only the edits of the tab it names", async () => {
+    nestedDocs();
+    let actionId = await hooks().submitAppend("pending-tabs", "added", "details");
+
+    expect((await hooks().readPendingChanges("pending-tabs", MAIN_TAB)).changes).toEqual([]);
+    expect((await hooks().readPendingChanges("pending-tabs", "details")).changes)
+      .toEqual([{ id: actionId, type: "appendText", markdown: "added" }]);
+  });
+
+  it("reads a tab still to be added as saved empty, before and after it is added", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("pending-added-tab", "Notes");
+    let actionId = await hooks().submitAppend("pending-added-tab", "Hello", added.tabId);
+    let changes = [{ id: actionId, type: "appendText", markdown: "Hello" }];
+
+    expect(await hooks().readPendingChanges("pending-added-tab", added.tabId))
+      .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes });
+    expect((await hooks().readPendingChanges("pending-added-tab", MAIN_TAB)).changes).toEqual([]);
+    expect(await hooks().readStyles("pending-added-tab", added.tabId))
+      .toMatchObject({ paragraphs: [{ line: 0, style: "NORMAL_TEXT" }], tables: [] });
+
+    expect(await hooks().applyAction("pending-added-tab", added.actionId)).toBeNull();
+    // The ID the agent was given still names the tab, and the edit queued under it.
+    expect(await hooks().readPendingChanges("pending-added-tab", added.tabId))
+      .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes });
+  });
+
+  it("refuses a tab the document does not have", async () => {
+    nestedDocs();
+
+    await expect(Promise.resolve(hooks().readPendingChanges("pending-no-tab", "nope")))
+      .rejects.toThrow('getPendingChanges: no tab with ID "nope"');
+    expect(await hooks().lastObservations)
+      .toEqual(["Read the pending changes of one tab of the document."]);
+  });
+
+  it("stops listing an edit once it is applied or rejected", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Before");
+    docs.install();
+    let appliedId = await hooks().submitAppend("pending-resolved", "kept");
+    let rejectedId = await hooks().submitAppend("pending-resolved", "dropped");
+
+    expect(await hooks().applyAction("pending-resolved", appliedId)).toBeNull();
+    await hooks().rejectAction("pending-resolved", rejectedId);
+
+    expect(await hooks().readPendingChanges("pending-resolved", MAIN_TAB)).toEqual({
+      savedMarkdown: "Before\n\nkept\n",
+      markdown: "Before\n\nkept\n",
+      changes: [],
+    });
+  });
+
+  // The action is still pending for the overseer, but Google already holds its write, so the
+  // saved content shows it and there is no difference left to attribute to it.
+  it("does not list an edit whose write landed though its response was lost", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let actionId = await hooks().submitAppend("pending-lost-response", "first");
+    expect(await hooks().applyAction("pending-lost-response", actionId))
+      .toMatch(/content response lost/);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+
+    let pending = await hooks().readPendingChanges("pending-lost-response", MAIN_TAB);
+
+    expect(pending.changes).toEqual([]);
+    expect(pending.savedMarkdown).toBe(pending.markdown);
+    expect(pending.markdown.match(/first/g)).toHaveLength(1);
+  });
+});
+
 /** A nested document whose three tabs all hold the same text, so an edit cannot be mistaken. */
 function nestedDocs(): DocsModel {
   let docs = new DocsModel();
@@ -2420,7 +2692,7 @@ function tabSnapshot(tabId: string, title: string) {
   return {
     tabId, title, index: 0, nestingLevel: 0,
     markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
-    committedWriteIds: [],
+    images: [], styles: { named: {}, paragraphs: [], runLooks: [], tables: [] }, committedWriteIds: [],
   };
 }
 
