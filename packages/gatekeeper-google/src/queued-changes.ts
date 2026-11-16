@@ -7,6 +7,7 @@
 
 import type { ActionJournal, JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
+import { measured } from "./editor-cost";
 import { ReadGate } from "./read-gate";
 
 /** The most a queued change may hold: one Durable Object KV value holds at most 128 KiB. */
@@ -15,7 +16,7 @@ export const MAX_CHANGE_BYTES = 100 * 1024;
 /** Throws if `value` would not fit in the one storage value a queued change is. */
 export function checkQueuedSize(value: unknown, maxBytes = MAX_CHANGE_BYTES): void {
   // Storage serializes a string holding any non-Latin-1 character at two bytes a unit.
-  let bytes = JSON.stringify(value).length * 2;
+  let bytes = measured(JSON.stringify(value)) * 2;
   if (bytes > maxBytes) {
     throw new Error(`This change is too large to queue (${bytes} bytes, limit ${maxBytes}). ` +
       "Split it up.");

@@ -26,6 +26,18 @@ export function serveFakes(fakes: readonly ProviderFake[]): void {
 }
 
 /**
+ * `response` as Google sends it to `url`: a JSON answer indented by two spaces and ended with a
+ * newline, unless the request asked for compact JSON with `prettyPrint=false`. An answer that is
+ * not JSON, or has no body, is given back as it is.
+ */
+export async function printedAsGoogle(url: URL, response: Response): Promise<Response> {
+  if (url.searchParams.get("prettyPrint") === "false" || response.status === 204 || !response.body ||
+    !response.headers.get("content-type")?.includes("json")) return response;
+  let { status, headers } = response;
+  return new Response(`${JSON.stringify(await response.json(), null, 2)}\n`, { status, headers });
+}
+
+/**
  * What the fakes served since a meter was started. `mostOpen` is requests the fake had open at
  * once: it has no limit on connections, where a deployed Worker holds six and queues the rest.
  */
@@ -169,6 +181,8 @@ export class SlidesProvider {
   editable = true;
   /** Every page fetched, by ID. */
   pageReads: string[] = [];
+  /** The reads answered indented, as `METHOD path`: those that did not ask for compact JSON. */
+  indented: string[] = [];
   #copies = 0;
 
   constructor(public deck: RestPresentation, readonly presentationId = "deck-1") {}
@@ -189,9 +203,21 @@ export class SlidesProvider {
     return this;
   }
 
-  /** Google Slides' answer to `request`, or `undefined` for a request about another file. */
+  /**
+   * Google Slides' answer to `request`, printed as Google prints it, or `undefined` for a request
+   * about another file.
+   */
   async handle(request: Request): Promise<Response | undefined> {
     let url = new URL(request.url);
+    let answer = await this.#answer(request, url);
+    let printed = answer && await printedAsGoogle(url, answer);
+    if (printed !== answer && !url.pathname.endsWith(":batchUpdate")) {
+      this.indented.push(`${request.method} ${url.pathname}`);
+    }
+    return printed;
+  }
+
+  async #answer(request: Request, url: URL): Promise<Response | undefined> {
     if (url.hostname !== "slides.googleapis.com") return undefined;
     let base = `/v1/presentations/${this.presentationId}`;
     if (url.pathname === `${base}:batchUpdate`) return this.#batch(await request.json());

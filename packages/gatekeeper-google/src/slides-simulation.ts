@@ -14,6 +14,7 @@
 import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import type { SimulationStep } from "@gadgets/gatekeeper-kit/simulation";
 import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
+import { editorCost } from "./editor-cost";
 import type { RestPage, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
 import { designDeck, pageOf, slideIdOf, type DesignChange } from "./slides-design";
 import { ChangeConflict } from "./slides-text";
@@ -185,6 +186,7 @@ function duplicated(slide: RestSlide, newSlideId: string, objectIds: Record<stri
         ...(group ? { elementGroup: { ...group, children: rename(group.children) } } : {}),
       }];
     });
+  editorCost.pageClones++;
   let copy = structuredClone(slide);
   copy.objectId = newSlideId;
   copy.pageElements = rename(copy.pageElements);
@@ -261,7 +263,10 @@ function reordered(deck: Deck, order: string[], slides = deck.slides, masters = 
 }
 
 function numbered(slide: RestSlide, number: number): RestSlide {
-  return JSON.parse(JSON.stringify(slide), (key, value) =>
+  let text = JSON.stringify(slide);
+  editorCost.pageRoundTrips++;
+  editorCost.roundTripUnits += text.length;
+  return JSON.parse(text, (key, value) =>
     key === "autoText" && value.type === "SLIDE_NUMBER" ? { ...value, content: `${number}` } : value);
 }
 
@@ -345,9 +350,9 @@ export type QueuedChange = { readonly id: number; readonly action: SlidesAction 
  * that no longer applies. The deck is its one entity, folded under the presentation's own ID,
  * because a change may move, add or delete slides in the one order, a batch applies across its
  * slides or not at all, and a change that no longer applies hides every change queued after it,
- * on whatever slide. Fold each deck a read builds once, with the changes queued when it was
- * fetched: the store finds a fold by its deck, so it then reuses none, and is owed no `forget()`
- * when a change is applied or rejected.
+ * on whatever slide. The store keeps nothing: every call folds the changes it is given from the
+ * first, over the deck it is given. No change writes a deck, each returning another, so a fold
+ * starts from the fetched deck itself.
  */
 export function createReplay(): SimulationStore<string, Deck, Deck, QueuedChange> {
   return createSimulationStore<string, Deck, Deck, QueuedChange>({

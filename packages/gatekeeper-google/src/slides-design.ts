@@ -10,6 +10,7 @@
  * Google fits it to, and text does not reflow.
  */
 
+import { editorCost } from "./editor-cost";
 import type { RestPageBackgroundFill, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
 import {
   paragraphStyleChange, pointsDimension, reshaped, restBackgroundOf, restFillOf,
@@ -111,6 +112,7 @@ export function designDeck(
         if (!page) {
           let held = deck.slides.get(id);
           if (!held) return null;
+          editorCost.pageClones++;
           edited.set(id, page = structuredClone(held));
         }
       } else {
@@ -119,7 +121,10 @@ export function designDeck(
           throw new ChangeConflict(`the presentation has no ${pageType.toLowerCase()} "${id}"`);
         }
         page = editedThemes.get(id);
-        if (!page) editedThemes.set(id, page = structuredClone(held));
+        if (!page) {
+          editorCost.pageClones++;
+          editedThemes.set(id, page = structuredClone(held));
+        }
       }
       let step = applyDesign(page, change, created);
       if (step.created) created.add(step.created);
