@@ -15369,6 +15369,19 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
         this.joinedAs);
   }
 
+  async getPreviewUi(): Promise<UiBundle> {
+    // getPreviewUi is optional on Gatekeeper; a caller checks describe().hasPreview first.
+    this.impl.assertGatekeeperUsable(this.id);
+    let files = await (this.facet as Fetcher<Gatekeeper<Session> &
+        Required<Pick<Gatekeeper<Session>, "getPreviewUi">>>).getPreviewUi();
+    let bundle = buildUiBundle(new Map(files.map(({path, code}) => [path, code])));
+    // A preview is new code, which nothing obliges to run as a legacy UI does.
+    if (!bundle || !("modules" in bundle)) {
+      throw new Error("This gatekeeper's preview has no client.js with a default export.");
+    }
+    return bundle;
+  }
+
   async getCreationSpec(): Promise<GatekeeperCreationSpec> {
     let record = this.#getRecord();
     if (!record.creationSpec) {

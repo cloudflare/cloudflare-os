@@ -286,6 +286,18 @@ export type AccountDescription = {
   providesUi?: { title: string; icon?: AvatarImage };
 }
 
+/**
+ * One source file of a UI. Files travel as a list, not as an object keyed by path: RPC drops keys
+ * that shadow an object's prototype, which a path may.
+ */
+export type UiFile = {
+  /** The file's path among the UI's files, such as `client.js` or `ui/list.js`. */
+  path: string;
+
+  /** The file's code as written, relative imports and all. */
+  code: string;
+};
+
 /** Describes metadata about a specific instance of a resource. Returned by Gatekeeper.describe(). */
 export type ResourceDescription = {
   /**
@@ -325,6 +337,9 @@ export type ResourceDescription = {
 
   /** Indicates that getSlashCommandProvider() is available. */
   hasSlashCommands?: true;
+
+  /** Indicates that getPreviewUi() is available. */
+  hasPreview?: true;
 
   /**
    * Some resources implement the ability for the client to subscribe to events. The application
@@ -1273,6 +1288,17 @@ export interface Gatekeeper<Session> extends DurableObject {
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
+
+  /**
+   * Returns client-side code that draws this resource for a person, for describe().hasPreview:
+   * its files as a gadget's file tree holds its UI. `client.js` is the entry, and the import rules
+   * of a gadget's UI apply.
+   *
+   * It runs as a gadget's UI does, with a session from `startSession()` in place of the gadget's
+   * server. It therefore holds no more than a gadget bound to this resource would, and its reads
+   * and actions go through the approval queue like any other.
+   */
+  getPreviewUi?(): Promise<UiFile[]>;
 
   /**
    * Stream a self-contained Git pack containing the requested objects and related objects
