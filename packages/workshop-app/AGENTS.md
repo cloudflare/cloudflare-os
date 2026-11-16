@@ -19,10 +19,10 @@ either, build (`pnpm --filter @gadgets/workshop-app exec vite build`) and grep `
 What a deployment serves is `workshop-frontend/dist`, whose build (a vp task that depends on this
 package's `build`) ends by copying this app's `dist` over it and keeping the old app's page as
 `admin.html`, which Workers assets serves at `/admin` (`workshop-frontend/compose-dist.mjs`). So
-the old app survives only for its admin page, reached from the account menu by admins, and for its
-sign-in form, which a signed-out visitor is sent to outside Cloudflare Access. Behind Access
-(`VITE_CF_ACCESS_MODE=true`, as a gadgets-internal preview builds) `RpcGate` signs in with the
-user's Access credential instead.
+the old app survives only for its admin page, reached from the account menu by admins. A
+signed-out visitor signs in with a username and password on this app's own form (`RpcGate`'s
+`SignInForm`); behind Access (`VITE_CF_ACCESS_MODE=true`, as a gadgets-internal preview builds)
+`RpcGate` signs in with the user's Access credential instead.
 
 ## Layers
 
@@ -284,12 +284,13 @@ drawn as the conversation it becomes. Under the composer, in its middle, is wher
 (`WorkspacePicker`): a new workspace until one of the user's is chosen, with its icon, from a menu
 that opens in place with a field to find one by. The menu is a `DropdownMenu` that holds an
 `OptionPicker` (`picker`) of which one is chosen (`single`), and choosing closes it. It offers the
-workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
-to the page.
+user's named workspaces they may chat in, starred first, not those they can only use, and the
+choice lasts for the visit to the page. A new workspace is, until it is named, a chat on its own
+(see the Workspaces page, below).
 
 ## The Workspaces page
 
-`/workspaces` (the sidebar's folder button) lists every named workspace: the starred ones first, then the
+`/workspaces` (the sidebar's Workspaces row) lists every named workspace: the starred ones first, then the
 rest by when they were last active, grouped as the chat settings page groups its files. Starring is
 the server's `pinned`; the starred ones' order is this device's (`prefs/starOrder.ts`), the latest
 starred first until they are dragged, or moved with Alt and an arrow key.
@@ -322,24 +323,27 @@ padding meets share one rounded run, so groups never notch where they meet.
 
 ## The Library page
 
-`/library` (the sidebar's Library button) lists everything the user's workspaces, and those shared
-with them, have made (`useLibrary`), the way the Workspaces page lists workspaces: the starred
-first, then the rest in the order chosen, as rows (`LibraryRow`) or cards (`LibraryCard`, which
-has no room to say which workspace an output is in). `library/libraryList.ts` (plain, tested) says
-how it can be ordered (last active, which is its workspace's; date created; name; type, each type
-a group of its own however few it has), narrowed (starred, whose it is, and its type and its
-workspace, each a menu of its own) and searched.
+`/library` (the sidebar's Library button) lists everything the user's workspaces made, were sent
+and worked on, and what others shared with them (`useLibraryEntries`, see The Library, below), in
+tabs, the way the Workspaces page lists workspaces: what waits on the viewer's approval first, then
+the starred, then the rest in the order chosen, as rows (`LibraryRow`) or cards (`LibraryCard`,
+which has no room to say which workspace an entry is in), both with More and a star. Recent has
+the starred and the latest few, in no other order. `library/libraryList.ts` (plain, tested) says
+how the other tabs can be ordered (last active; name; type, each type a group of its own however
+few it has), narrowed (starred, whose it is, and its type and its workspace, each a menu of its
+own) and searched.
 
-The types are what the old Outputs page had: apps (an output made as no format), then the formats
-the deployment offers (`listOutputFormats()`, `useOutputFormats`), in its order and whether or not
-anything has been made as one, then whatever else is in the library, such as a format no longer
-offered.
+The types are apps (a gadget made as no format), then the formats the deployment offers
+(`listOutputFormats()`, `useOutputFormats`), in its order and whether or not anything has been made
+as one, then whatever else is in the library: a format no longer offered, a kind of Google file,
+or a file sent in a chat.
 
-The backend keeps no star for an output, so the stars and their order are this device's
-(`prefs/libraryStars.ts`, with the rules in `library/libraryStars.ts`): they do not follow the
-user to another browser. They should be the server's, as a workspace's `pinned` is, once the
-backend can say so. A star for an output that is not listed is kept: it may only not have been
-read yet, as while the index catches up.
+Stars are the server's (favorites); the order the starred are put in is this device's
+(`prefs/libraryStars.ts`, with the rules in `library/libraryStars.ts`), as the Workspaces page's
+is. One starred since, such as in another browser, comes first.
+
+Automations, Skills and Blueprints keep their own lists, with only a search and Latest or Name
+over them, and what each offers to do at the end of the controls: New skill, Upload.
 
 Its New button is a menu of the formats that can be started by asking for one (not those whose
 blueprint has something to set up first), and a plain button until there are any. Choosing one goes
@@ -404,8 +408,7 @@ have no workspace crumb, the Workspaces page leaves it out, and its sharing spea
 Its settings can make it a workspace (`useMakeWorkspace`, `Overseer.makeWorkspace`), named in a
 dialog that starts from the chat's title; it is then listed, crumbed and drawn as one. A
 workspace made before kinds were kept is a chat on its own until made one. A workspace is made on
-purpose from the Workspaces page (`/workspaces/new`, `NewWorkspacePane`) or the picker's New
-workspace: its title is typed where it will be shown, on a folder that takes its initials as they
+purpose from the Workspaces page (`/workspaces/new`, `NewWorkspacePane`): its title is typed where it will be shown, on a folder that takes its initials as they
 are typed. A named workspace is listed at once.
 
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
@@ -487,28 +490,22 @@ that set themselves up.
 ## The Library
 
 The Library (`/library`) is everything the user's workspaces made, were sent and worked on, and
-what others shared with them, in tabs: Favorites, Gadgets, Files, Automations and Skills (`?tab=`).
+what others shared with them, in tabs: Recent, Gadgets, Files, Automations, Skills and Blueprints (`?tab=`).
 `library/libraryEntries.ts` makes one list from all of these, starred first and what was taken out
-left out; a Google file that was taken out comes back once it is worked on again. Rows are grouped
-by when, or by name, and searched by name. The list or grid and the order are this device's
-(`prefs/`). Everything opens as its own page, a file shown from the chat it was sent in. A
+left out; a Google file that was taken out comes back once it is worked on again. Everything opens as its own page, a file shown from the chat it was sent in. A
 workspace's Library tab and a chat's settings show the same rows. A Google file is starred by its subject, and shows starred while its workspace lists it. A star or a removal shows at once
 and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
 whoever builds where it was made.
 
-A tile shows what it is: an image file fills it; otherwise, once the tile nears the screen,
-`library/useLibraryPicture.ts` fetches a glimpse, drawn as a sheet standing up out of the tile's
-foot under the name, which heads the tile; the sheet has an edge and a shadow so a white page shows
-against the tile in light, and the name fades under More and the star while they are out, which
-sit on the tile, never on the picture. A
-gadget's is the server's picture of it (`GadgetClient.getThumbnail()`, asked again only when the
-gadget was worked on, two at a time; one the server could not draw yet is asked for twice more
-while shown, and is not kept); a file's is the chat's thumbnail (`useFileThumbnail`); a
-Google file's is the top of its real page, read with `previewResource` and drawn by
-`blocks/resource-preview/ConnectedFileThumbnail`. What was fetched is kept for 80 entries, so
-switching tabs or views does not fetch again. Nothing arrives means the glyph stays. Rows keep
-their glyphs. A Google Doc, Sheet or Slides deck's glyph is Drive's own (`GoogleFileIcon`),
-wherever it is listed or open.
+A row or card shows what it is in a rounded square: an image file's own picture fills it, and
+anything else has its glyph. A Google Doc, Sheet or Slides deck's glyph is Drive's own
+(`GoogleFileIcon`), wherever it is listed or open. Home's Jump back in has glimpses of them
+(`library/useLibraryPicture.ts`): once a card nears the screen, a gadget's is the server's picture
+of it (`GadgetClient.getThumbnail()`, asked again only when the gadget was worked on, two at a
+time; one the server could not draw yet is asked for twice more while shown, and is not kept); a
+file's is the chat's thumbnail (`useFileThumbnail`); a Google file's is the top of its real page,
+read with `previewResource` and drawn by `blocks/resource-preview/ConnectedFileThumbnail`. What
+was fetched is kept for 80 entries. Nothing arrives means the glyph stays.
 
 A Google file a chat's agent created is drawn in the chat as the file (`ActionItem.made`, an
 `OutputCard` in Drive's icon) once its creation is approved, rather than as the approval, and opens
@@ -574,7 +571,8 @@ to that chat unless told not to.
 
 `connections/` holds the user's connected accounts (`ConnectedAccounts`, a plain class provided
 once by `_app`), the services they can connect (`useServices`) and the Gatekeepers page
-(`/gatekeepers`, from the sidebar's pill, which stacks the connected services' logos).
+(`/gatekeepers`, from the sidebar's Gatekeepers row; the older `icons` layout has a pill that
+stacks the connected services' logos).
 `connectionGroups` sorts services into Connected, Built in and Available; blocks get logos and
 accounts as props. A connection finishes in a popup that ends on the app's own `/connect/handoff`,
 which redeems the ticket with the nonce the opener left in the popup's sessionStorage. In dev, start
@@ -855,4 +853,8 @@ it, as `packages/ui/AGENTS.md` describes. Shell and layout code is expected to s
 
 The sidebar lists recents (`workspaces/sidebarEntries.ts`): each chat as a row of its own, from the
 account's `getChatThreads()`, kept live by the `"all"` unread-state subscription
-(`WorkspacesProvider`), and each workspace with no chat to list as one row.
+(`WorkspacesProvider`), and each workspace with no chat to list as one row. The logo and search are
+over them; under them, rows each with its name: Workspaces, Library (with a dot while changes wait
+on the user), Gatekeepers, and the user, whose row opens the account menu (the profile, Admin for
+an admin, Sign out). The list fades at both ends as it scrolls. `Sidebar`'s `layout="icons"` keeps
+the earlier design, with the pages as icons beside the logo, to compare until one is chosen.

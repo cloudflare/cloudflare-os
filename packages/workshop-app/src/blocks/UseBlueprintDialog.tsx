@@ -4,6 +4,7 @@ import { Button } from '@/components/Button'
 import { Dialog } from '@/components/Dialog'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import type { WorkspaceLook } from '@/components/workspaceLook'
 import { BlueprintNeedRow } from './BlueprintNeedRow'
 import { MenuChooser, type MenuChoice } from './MenuChooser'
 
@@ -41,7 +42,7 @@ export type UseBlueprintDialogProps = {
    * Where the gadget goes, for one that can go in a workspace the user has as well as a new one:
    * `value` is the workspace chosen, none for a new one.
    */
-  place?: { workspaces: readonly { id: string; title: string; label: string }[]; value?: string; onChange: (id: string | undefined) => void }
+  place?: { workspaces: readonly { id: string; title: string; label: string; look?: WorkspaceLook }[]; value?: string; onChange: (id: string | undefined) => void }
   /** Makes it. Resolves to whether it was tried (`false` when the connection is down), and rejects with why it was not made. */
   onUse: () => Promise<boolean>
 }
@@ -58,7 +59,7 @@ const PlaceChooser = ({ place }: { place: NonNullable<UseBlueprintDialogProps['p
     <DropdownMenu
       label={(
         <span className="flex min-w-0 items-center gap-2">
-          {chosen && <WorkspaceIcon label={chosen.label} small />}
+          {chosen && <WorkspaceIcon label={chosen.label} {...chosen.look} small />}
           <span className="min-w-0 truncate">{chosen?.title ?? 'A new workspace'}</span>
           <CaretDownIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
         </span>
@@ -78,7 +79,7 @@ const PlaceChooser = ({ place }: { place: NonNullable<UseBlueprintDialogProps['p
       {place.workspaces.length > 0 && <DropdownMenu.Separator />}
       {place.workspaces.map((workspace) => (
         <DropdownMenu.Item key={workspace.id} label={workspace.title} onSelect={() => place.onChange(workspace.id)}>
-          <WorkspaceIcon label={workspace.label} small />
+          <WorkspaceIcon label={workspace.label} {...workspace.look} small />
           <span className="min-w-0 flex-1 truncate">{workspace.title}</span>
           {tick(workspace.id === chosen?.id)}
         </DropdownMenu.Item>

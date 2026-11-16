@@ -7,6 +7,7 @@ import { ConnectResource } from '@/connections/SetUpConnection'
 import { useServices } from '@/connections/useServices'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { useRefreshWorkspaces, useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -77,10 +78,11 @@ export const UseBlueprint = ({ blueprint, open, onOpenChange, onMade }: UseBluep
 
   // Where it goes, for one that needs nothing: one of the workspaces the user builds in, or none for a new one.
   const [into, setInto] = useState<string>()
+  const looks = useWorkspaceLooks()
   const named = useMemo(() => (workspaces.status === 'ready' ? workspaces.workspaces : [])
     .filter((workspace) => isNamedWorkspace(workspace) && workspace.role !== 'use')
     .toSorted((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.title.localeCompare(b.title))
-    .map(({ id, title }) => ({ id, title, label: workspaceLabel(title) })), [workspaces])
+    .map(({ id, title }) => ({ id, title, label: workspaceLabel(title), look: looks[id] })), [workspaces, looks])
 
   const vendorOf = (vendorId: string) => (services.status === 'ready' ? services.vendors.find(({ id }) => id === vendorId) : undefined)
   const serviceOf = (vendorId: string) => {

@@ -227,7 +227,7 @@ export const Sidebar = ({
           <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
           <NavRow icon={<CirclesFourIcon />} label="Library" aria-label={libraryLabel} title={libraryTitle} dot={waiting > 0} current={library?.current} onClick={library?.onOpen} />
           <NavRow icon={<PuzzlePieceIcon />} label="Gatekeepers" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
-          {/* The user's row opens the account menu over it, which leaves the row where it is. */}
+          {/* The user's row opens the account menu in its place, growing up out of the row. */}
           <DropdownMenu
             label={<span className="min-w-0 flex-1 truncate text-start">{user.name}</span>}
             icon={<span className={ROW_CIRCLE}><Avatar name={user.name} src={user.avatarUrl} /></span>}
@@ -235,8 +235,9 @@ export const Sidebar = ({
             triggerVariant="ghost"
             triggerClassName={`${ROW} h-auto justify-start`}
             side="top"
-            align="start"
-            keepTrigger
+            // From its middle: from its start, so near the window's edge, it would be pushed to its end.
+            align="center"
+            inPlace
           >
             {menu}
           </DropdownMenu>
