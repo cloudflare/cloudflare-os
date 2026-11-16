@@ -112,7 +112,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpen, href, onOpenSkill, skill
       header={(
         <>
           <HeaderBubble>
-            <h1 className="flex h-9 items-center gap-2 rounded-full bg-kumo-base pr-4 pl-3 text-base font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
+            <h1 className="flex h-(--control-size) items-center gap-2 rounded-full bg-kumo-base pr-(--control-pad) pl-(--control-pad-icon) text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
               <SquaresFourIcon aria-hidden="true" />
               Library
             </h1>

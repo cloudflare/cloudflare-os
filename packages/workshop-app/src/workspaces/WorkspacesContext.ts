@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { NotificationMute, UnreadThread, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMemberships } from './WorkspaceMemberships'
 
 export type WorkspacesState =
   | { status: 'loading' }
@@ -27,6 +28,8 @@ export type WorkspacesContextValue = {
   create: (title: string) => Promise<string>
   /** Makes the workspace a chat on its own is in a named one, titled `title`, once the server has. */
   makeWorkspace: (id: string, title: string) => Promise<void>
+  /** Who has access to each workspace, as far as the workspaces have been asked. */
+  memberships: WorkspaceMemberships
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -70,3 +73,6 @@ export const useMakeWorkspace = (): WorkspacesContextValue['makeWorkspace'] => u
 /** Whether a workspace's notifications are muted now: for good, or until a time not yet reached. */
 export const isMuted = (mute: NotificationMute | undefined, now = Date.now()) =>
   mute !== undefined && (mute.indefinite === true || mute.until.getTime() > now)
+
+/** What is known of who has access to each workspace, kept from one page to the next (see `useWorkspaceMemberships`). */
+export const useMembershipsStore = (): WorkspaceMemberships => useWorkspacesContext().memberships

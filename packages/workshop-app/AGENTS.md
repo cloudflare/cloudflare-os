@@ -289,6 +289,21 @@ rest by when they were last active, grouped as the chat settings page groups its
 the server's `pinned`; the starred ones' order is this device's (`prefs/starOrder.ts`), the latest
 starred first until they are dragged, or moved with Alt and an arrow key.
 
+Over the list are its controls (see Lists, below): `workspaces/workspaceList.ts` says how it can be
+ordered (last active, date created, name), narrowed (starred, whose it is, who has access) and
+searched. The starred stay first in every order, and are only reordered while nothing narrows
+them, as putting some of them in order would lose the others' places. Its New button starts a chat
+on the home page, which is what makes a workspace.
+
+A workspace shows the first three of those with access to it on its row (`MemberAvatars`), the
+viewer alone when nobody else has, each saying how many there are and whose it is when pointed at;
+a card shows them, smaller, at the end of the line its time is on. `listWorkspaces()` says nothing of members, so each workspace is asked for
+its own (`WorkspaceMemberships`, plain and tested): a few at a time, in the order listed, and kept
+for a while by `WorkspacesProvider`, so that going back to the page does not ask them all again.
+That is a round trip to every workspace, each of which it wakes: the list should carry its members
+instead, once the backend can say so. Until a workspace has answered it shows no one, and passes
+none of the filters for members.
+
 The groups are drawn by `GroupedList`: one flat list of rows, so a row that changes group is the
 same row and keeps its focus, with each group's padding and the gap before it as margins. Its
 motion (`groupedListMotion.ts`) lays the rows out again as they move and draws the surface under
@@ -299,6 +314,46 @@ row that moves past others into another group (starred, unstarred) does not trav
 out of its old group, as a copy left there, and grows into its new one. A row reordered within its
 group slides over a surface that stays still. `groupedLayout.ts` draws the surface: rows whose
 padding meets share one rounded run, so groups never notch where they meet.
+
+## Lists
+
+A list that is more than a few rows has the same controls over it (`ListToolbar`), on one line: a
+search at the start, a round button that opens out over the room when clicked or tabbed to
+(`SearchField`); then rows or cards, the order, the filters, and what the list offers to do, such
+as New. Each is drawn only if given, so a list has the ones it has a use for. The Workspaces page
+is the first; use the same pieces for the next rather than building beside them:
+
+- `components/listView.ts` (plain, tested) has what a list says of itself: its orders
+  (`ListOrder`), its filters (`ListFilter`) and how a search and the filters narrow it. An order is
+  also how the list is grouped: `arrange` gives the items in groups, by when (`groupByTime`), by
+  name under letters (`groupByName`), or by anything else. It is told how few make a group in the
+  view shown, as cards need fuller groups than rows. Filters of one `facet` are alternatives, and
+  an item has to pass in every facet. A facet named in `facetMenus` has a menu of its own
+  (`DropdownMenu.Submenu`) with a field to find one by (`OptionPicker`): for alternatives that are
+  many, or that come and go, such as people.
+- `hooks/useListView.ts` keeps how one list is looked at. Rows or cards and the order are kept on
+  this device (`prefs/listView.ts`), under the list's name. The search and the filters last for the
+  visit: a list that came back narrowed would seem to have lost things. It gives the controls
+  `ListToolbar` draws, ready to spread.
+- `GroupedList` draws the groups as rows, `CardGrid` as cards, each group under its label. Both
+  take `onReorder` for a group whose order is the user's. The pane gives each a row or a card of
+  its own block.
+
+On a narrow screen the controls are under the list, in reach of a thumb: the pane gives them to
+`PageLayout` as its `footer`, which floats over the end of the content as a chat's composer does
+(and, while it has one, keeps the window from being pulled along by a drag with nothing left to
+scroll, which would take the footer with it; a chat is left its rubber band), and tells the toolbar (`at`), which gathers them in the middle, draws them `large` (44px, for a
+thumb) and opens its menus upwards.
+
+Another order or view is another list, faded to (`key` it by both) rather than moved to row by
+row. The menus open in place, over their buttons. A primary button that opens a menu, such as a
+New with several things to make, takes `caret`, and its surface starts in the button's colour.
+
+`CardGrid`'s motion (`cardGridMotion.ts`, with its places from the pure, tested
+`cardGridLayout.ts`) slides a card that has another place after a change, and fades one in that
+arrives. A card of a group that can be reordered is dragged to any of the group's places, the
+others making way, or moved with Alt and an arrow key: along its line, or to the line above or
+below.
 
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept

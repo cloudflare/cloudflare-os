@@ -34,6 +34,7 @@ import { KindMarksPreview } from '@/gallery/KindMarksPreview'
 import { LibraryPreview } from '@/gallery/LibraryPreview'
 import { PendingPreview } from '@/gallery/PendingPreview'
 import { GadgetTrustPreview } from '@/gallery/GadgetTrustPreview'
+import { ListViewPreview } from '@/gallery/ListViewPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
@@ -319,6 +320,7 @@ function Gallery() {
         </div>
       </Section>
       <TabsPreview />
+      <ListViewPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded (an admin's account menu) and collapsed to a rail (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">

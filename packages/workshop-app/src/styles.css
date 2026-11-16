@@ -18,6 +18,32 @@
   }
 }
 
+/* The size of everything that is fully rounded: buttons, a header's badges, tabs, the search
+   field. Larger on a narrow screen, where they are pressed with a thumb, which wants 44px. They
+   all read these, so they are one size wherever they are; a button that sets its own size, such
+   as the composer's, keeps it. The breakpoint is `useNarrowScreen`'s. */
+:root {
+  /* How tall, and how wide for an icon alone. */
+  --control-size: 2.25rem;
+  --control-text: 0.875rem;
+  /* The room at each end of its text, and before an icon that starts it. */
+  --control-pad: 1rem;
+  --control-pad-icon: 0.75rem;
+  /* The composer's own buttons, which are in its field and so smaller: its geometry is worked out
+     from this (`Composer.css`). Here rather than on the composer, as its menu's popup, which is
+     drawn outside it, has a copy of one. */
+  --composer-button: 1.875rem;
+}
+@media (max-width: 767px) {
+  :root {
+    --control-size: 2.75rem;
+    --control-text: 1rem;
+    --control-pad: 1.25rem;
+    --control-pad-icon: 1rem;
+    --composer-button: 2.25rem;
+  }
+}
+
 /* What a page opens on is faded in rather than cut to, as a conversation is once it has loaded.
    The note that something is loading is held back first: most loads are over before it is due,
    and it would only flash by. */

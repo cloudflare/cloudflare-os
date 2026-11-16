@@ -9,9 +9,6 @@ export type TimeGroup<T> = {
   entries: Array<{ value: T; at?: Date; time?: string }>
 }
 
-// A stretch with fewer than this many is folded into the one before it.
-const ENOUGH = 2
-
 const DAY = 24 * 60 * 60 * 1000
 // The past week is told apart by day, and anything older by month.
 const DAYS = 7
@@ -65,11 +62,11 @@ const labelOf = (newest: Bucket, oldest: Bucket, now: Date) => {
 
 /**
  * `entries` (latest first) put into stretches of time as fine as there are enough of them for:
- * each of the past week's days, then each month, with a stretch that has too few folded into the
- * one before it, and so on until there are enough. A busy day is a group of its own, and a quiet
- * month is gathered up with what came before it. One with no time is taken to be from now.
+ * each of the past week's days, then each month, with a stretch that has fewer than `enough` folded
+ * into the one before it, and so on until there are enough. A busy day is a group of its own, and a
+ * quiet month is gathered up with what came before it. One with no time is taken to be from now.
  */
-export const groupByTime = <T>(entries: Array<{ value: T; at?: Date }>, now: Date = new Date()): TimeGroup<T>[] => {
+export const groupByTime = <T>(entries: Array<{ value: T; at?: Date }>, now: Date = new Date(), enough = 2): TimeGroup<T>[] => {
   const buckets = new Map<number, { bucket: Bucket; entries: Array<{ value: T; at?: Date }> }>()
   for (const entry of entries) {
     const bucket = bucketOf(entry.at, now)
@@ -94,7 +91,7 @@ export const groupByTime = <T>(entries: Array<{ value: T; at?: Date }>, now: Dat
   }
   for (const [, found] of [...buckets].toSorted(([a], [b]) => a - b)) {
     pending.push(found)
-    if (pending.reduce((count, { entries: within }) => count + within.length, 0) >= ENOUGH) close()
+    if (pending.reduce((count, { entries: within }) => count + within.length, 0) >= enough) close()
   }
   // What is left is the oldest, and stays apart rather than blur the stretch before it.
   if (pending.length > 0) close()

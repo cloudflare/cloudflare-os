@@ -200,6 +200,12 @@
   opacity: clamp(0, var(--menu-size) / 0.1, 1);
 }
 
+/* A primary trigger is in the page's opposite, which a menu is not: the surface starts out in the
+   trigger's colour and takes its own as it grows, by when the trigger's copy has faded from it. */
+.dropdown-menu[data-variant='primary'] .dropdown-menu-surface {
+  background-color: color-mix(in oklch, var(--color-kumo-base) calc(clamp(0, var(--menu-size) / 0.5, 1) * 100%), var(--color-kumo-contrast));
+}
+
 .dropdown-menu-shadow {
   /* Share the morph's clock so both handoffs match the shadowless trigger. */
   opacity: clamp(0, var(--menu-size), 1);

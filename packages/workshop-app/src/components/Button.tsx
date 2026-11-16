@@ -37,8 +37,9 @@ const renderIcon = (icon: ButtonProps['icon']): ReactNode => {
 }
 
 /**
- * The one button size: 36px tall and fully rounded. With only an `icon` it is a 36px circle; with
- * text it stretches and keeps round ends.
+ * The one button size, fully rounded: 36px tall, and 44px on a narrow screen, for a thumb (the
+ * `--control-*` sizes in `styles.css`). With only an `icon` it is a circle; with text it stretches
+ * and keeps round ends.
  */
 export const Button = ({ icon, children, variant = 'secondary', className, ...props }: ButtonProps) => {
   const iconNode = renderIcon(icon)
@@ -48,11 +49,11 @@ export const Button = ({ icon, children, variant = 'secondary', className, ...pr
     <BaseButton
       type="button"
       className={cn(
-        'inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-full text-base font-medium whitespace-nowrap',
+        'inline-flex h-(--control-size) shrink-0 items-center justify-center gap-2 rounded-full text-(length:--control-text) leading-normal font-medium whitespace-nowrap',
         'data-disabled:opacity-50',
         VARIANT[variant],
         '[&>svg]:size-[1.125em] [&>svg]:shrink-0',
-        iconOnly ? 'w-9 p-0' : iconNode ? 'pr-4 pl-3' : 'px-4',
+        iconOnly ? 'w-(--control-size) p-0' : iconNode ? 'pr-(--control-pad) pl-(--control-pad-icon)' : 'px-(--control-pad)',
         className,
       )}
       {...props}

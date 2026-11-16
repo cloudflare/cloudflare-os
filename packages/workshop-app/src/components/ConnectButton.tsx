@@ -56,7 +56,7 @@ export const ConnectButton = ({ logos = [], suggested = [], current, onConnect }
       aria-current={current ? 'page' : undefined}
       onClick={onConnect}
       // With logos the add control sits flush in the left end; alone, Button's circle applies.
-      className={cn('group/connect aria-[current=page]:bg-kumo-tint', shown.length > 0 && 'gap-2 pr-3 pl-1')}
+      className={cn('group/connect aria-[current=page]:bg-kumo-tint', shown.length > 0 && 'gap-2 pr-[calc(var(--control-pad)-0.25rem)] pl-[calc((var(--control-size)-1.75rem)/2)]')}
       icon={
         <span className="grid size-7 place-items-center rounded-full bg-kumo-tint text-kumo-subtle transition-colors group-hover/connect:text-kumo-default">
           <PlusIcon />

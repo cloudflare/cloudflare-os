@@ -34,6 +34,14 @@ describe('groupByTime', () => {
     expect(labels([at(0, 5), at(11, 20, 12, 2025)])).toEqual([['December 2025 – January 2026', [0, 1]]])
   })
 
+  it('folds up to as many as are asked for, as a view that needs fuller groups does', () => {
+    const dates = [at(10, 12, 14), at(10, 12, 9), at(10, 11, 20), at(10, 11, 8), at(10, 9)]
+    expect(groupByTime(dates.map((date, index) => ({ value: index, at: date })), NOW, 4).map(({ label, entries }) => [label, entries.length])).toEqual([
+      ['Today and yesterday', 4],
+      ['Monday', 1],
+    ])
+  })
+
   it('says when each was in full, apart from its group', () => {
     const [today, yesterday] = groupByTime(
       [{ value: 'a', at: at(10, 12, 13) }, { value: 'b', at: at(10, 12, 9) }, { value: 'c', at: at(10, 11, 14) }, { value: 'd', at: at(10, 11, 9) }],

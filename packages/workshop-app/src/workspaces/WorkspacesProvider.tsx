@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { RpcTarget } from 'capnweb'
 import type { ChatReadState, NotificationMute, UnreadStateSubscriber, UnreadThread, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
+import { WorkspaceMemberships } from './WorkspaceMemberships'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
 
 // How long after a chat changes its list is read again, so a burst of messages reads it once.
@@ -69,6 +70,7 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
       void subscription.then((held) => held[Symbol.dispose](), () => {})
     }
   }, [api, reconnecting, version])
+  const [memberships] = useState(() => new WorkspaceMemberships())
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
@@ -163,5 +165,5 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     mark(id, { title, kind: 'workspace' })
   }
 
-  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create, makeWorkspace }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create, makeWorkspace, memberships }}>{children}</WorkspacesContext>
 }
