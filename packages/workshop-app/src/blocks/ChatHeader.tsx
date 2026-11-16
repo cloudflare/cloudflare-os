@@ -2,6 +2,7 @@ import { CaretRightIcon, ClockIcon, ExportIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import type { WorkspaceLook } from '@/components/workspaceLook'
+import { AgentCrumb, type AgentCrumbProps } from './AgentCrumb'
 import { WorkspaceCrumb } from './WorkspaceCrumb'
 
 export type ChatHeaderProps = {
@@ -15,6 +16,8 @@ export type ChatHeaderProps = {
     look?: WorkspaceLook
     onOpen: () => void
   }
+  /** The agent whose run the chat is, after the workspace: the way to its page. */
+  agent?: AgentCrumbProps
   /** The chat's title, once it is known. */
   title?: string
   /** Opens the chat's settings, from its title. */
@@ -26,15 +29,16 @@ export type ChatHeaderProps = {
 }
 
 /**
- * A chat's header: the way back to its workspace, then the chat's title, which opens its settings,
+ * A chat's header: the way back to its workspace, and for an agent's run to the agent, then the chat's title, which opens its settings,
  * and at the far end a clock while the chat has automations, which opens them, and the way to share
  * the workspace. Each is a bubble of the header it is put in, so the clock pops in as the first
  * automation is set up.
  */
-export const ChatHeader = ({ workspace, title, onOpenSettings, automations, onShare }: ChatHeaderProps) => (
+export const ChatHeader = ({ workspace, agent, title, onOpenSettings, automations, onShare }: ChatHeaderProps) => (
   <>
     <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
       {workspace && <WorkspaceCrumb {...workspace} />}
+      {agent && <AgentCrumb {...agent} />}
       {title && (
         // Cut off where there is not room for all of it, as on a phone.
         <HeaderBubble className="min-w-0">

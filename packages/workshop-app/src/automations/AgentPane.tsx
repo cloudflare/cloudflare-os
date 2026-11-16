@@ -1,7 +1,6 @@
-import { CaretLeftIcon } from '@phosphor-icons/react'
+import { AgentCrumb } from '@/blocks/AgentCrumb'
 import { AgentView } from '@/blocks/AgentView'
-import { Button } from '@/components/Button'
-import { HeaderBubble } from '@/components/HeaderBubble'
+import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { groupByTime } from '@/chat/timeGroups'
 import { useModels } from '@/chat/useModels'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -9,7 +8,10 @@ import { PageLayout } from '@/layouts/PageLayout'
 import { useLibrary } from '@/library/useLibrary'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { useChatThreads } from '@/workspaces/WorkspacesContext'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { AutomationLink } from './AutomationsTab'
 import { useAgents } from './useAgents'
 
@@ -19,14 +21,17 @@ export type AgentPaneProps = {
   agentId: number
   /** Where its gadgets, chats and runs open. */
   link: AutomationLink
-  onBack: () => void
+  /** Goes to the page of the workspace it is in. */
+  onOpenWorkspace: () => void
 }
 
 /**
  * An agent's page (`AgentView`), opened from Automations: renamed, and its model changed, through
- * `updateAgentSpawner`; the gadgets and chats that call on it, by name; and its runs, by when.
+ * `updateAgentSpawner`; the gadgets and chats that call on it, by name; and its runs, by when. Its
+ * header is its workspace's crumb and its own, named, as a chat's is its workspace's and its title,
+ * so that opening one of its runs keeps both, drawing its name in beside the run's.
  */
-export const AgentPane = ({ workspaceId, agentId, link, onBack }: AgentPaneProps) => {
+export const AgentPane = ({ workspaceId, agentId, link, onOpenWorkspace }: AgentPaneProps) => {
   const { api } = useApi()
   const connection = useConnectionNotice()
   const { state, reload } = useAgents([workspaceId])
@@ -35,11 +40,16 @@ export const AgentPane = ({ workspaceId, agentId, link, onBack }: AgentPaneProps
   const library = useLibrary(agent && agent.gadgetIds.length > 0 ? 'automations' : null)
   const chats = useChatThreads()
   useDocumentTitle(agent?.name ?? 'Agent')
+  const workspaces = useWorkspaces()
+  const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const look = useWorkspaceLooks()[workspaceId]
 
   const header = (
-    <HeaderBubble>
-      <Button icon={CaretLeftIcon} onClick={onBack}>Back</Button>
-    </HeaderBubble>
+    <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
+      {/* As a chat's header has it: only a named workspace is a place of its own to go to. */}
+      {workspace && isNamedWorkspace(workspace) && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} onOpen={onOpenWorkspace} />}
+      {agent && <AgentCrumb id={agentId} workspaceId={workspaceId} name={agent.name} expanded />}
+    </nav>
   )
 
   if (!agent) {

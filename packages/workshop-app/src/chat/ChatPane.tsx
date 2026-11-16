@@ -51,6 +51,8 @@ export type ChatPaneProps = {
   sending?: SentMessage
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
+  /** Goes to the page of the agent whose run the chat is, by its connection. */
+  onOpenAgent?: (agentId: number) => void
   /** Opens the chat's settings, from its title, or at its automations, from the header's clock. */
   onOpenSettings?: (tab?: 'automations') => void
   /**
@@ -90,6 +92,7 @@ export const ChatPane = ({
   initialTitle,
   sending,
   onOpenWorkspace,
+  onOpenAgent,
   onOpenSettings,
   onOpenAttachment,
   onOpenOutput,
@@ -133,6 +136,7 @@ export const ChatPane = ({
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
   const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
+  const agent = chat.status === 'ready' ? chat.agent : undefined
   const items = chat.status === 'ready' ? chat.items : undefined
   // The automations its cards show that were not deleted, for the header's clock. A card is
   // pinned beneath the conversation, so it is looked for there.
@@ -301,6 +305,8 @@ export const ChatPane = ({
       header={(workspace || title) && (
         <ChatHeader
           workspace={workspace && isNamedWorkspace(workspace) ? { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look, onOpen: onOpenWorkspace } : undefined}
+          // A run recorded before chats said which agent's it is has no page to go to, so no crumb.
+          agent={agent?.id === undefined ? undefined : { id: agent.id, workspaceId, name: agent.name, onOpen: onOpenAgent && (() => onOpenAgent(agent.id!)) }}
           title={title}
           onOpenSettings={onOpenSettings && (() => onOpenSettings())}
           automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}

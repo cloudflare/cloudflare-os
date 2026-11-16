@@ -25,7 +25,7 @@ describe('sidebarEntries', () => {
     expect(entries.map(({ key, named }) => [key, named])).toEqual([['chat:w/1', true], ['workspace:e', false], ['chat:c/0', false]])
   })
 
-  it('leaves out archived, unjoined and agent-started chats, unless one is open, and chats of workspaces not listed', () => {
+  it('leaves out archived and unjoined chats, unless one is open, agent-started ones even then, and chats of workspaces not listed', () => {
     const threads = [
       thread('w', 1, 'Archived', day(8), { archived: true }),
       thread('w', 2, 'Someone else’s', day(8), { unjoined: true }),
@@ -33,6 +33,7 @@ describe('sidebarEntries', () => {
       thread('gone', 4, 'Elsewhere', day(8)),
     ]
     expect(sidebarEntries(WORKSPACES, threads).map(({ key }) => key)).toEqual(['workspace:w', 'workspace:e'])
-    expect(sidebarEntries(WORKSPACES, threads, { workspaceId: 'w', chatId: 3 }).map(({ key }) => key)).toEqual(['chat:w/3', 'workspace:e'])
+    expect(sidebarEntries(WORKSPACES, threads, { workspaceId: 'w', chatId: 1 }).map(({ key }) => key)).toEqual(['chat:w/1', 'workspace:e'])
+    expect(sidebarEntries(WORKSPACES, threads, { workspaceId: 'w', chatId: 3 }).map(({ key }) => key)).toEqual(['workspace:w', 'workspace:e'])
   })
 })

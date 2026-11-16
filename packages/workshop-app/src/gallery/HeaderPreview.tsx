@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NotePencilIcon } from '@phosphor-icons/react'
+import { AgentCrumb } from '@/blocks/AgentCrumb'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
@@ -21,6 +22,9 @@ export const HeaderPreview = () => {
   const [page, setPage] = useState<{ workspaceId: string; chat?: string }>({ workspaceId: 'notes', chat: WORKSPACES[0].chat })
   const workspace = WORKSPACES.find(({ id }) => id === page.workspaceId)!
   const [chatTitle, setChatTitle] = useState('Refactor conditional rendering logic')
+  // An agent's page, or one of its runs, by its title.
+  const [run, setRun] = useState<string>()
+  const agent = { id: 4, workspaceId: 'notes', name: 'Joke' }
 
   return (
     <>
@@ -55,6 +59,19 @@ export const HeaderPreview = () => {
           ))}
           <Button variant="ghost" disabled={page.chat !== undefined} onClick={() => setPage({ workspaceId: workspace.id, chat: workspace.chat })}>Open a chat</Button>
         </div>
+      </div>
+    </Section>
+    <Section title="ChatHeader, AgentCrumb, HeaderCrumb (an agent's page: its workspace's crumb, then its own, named; opening one of its runs keeps both, drawing the name into the spark as the run's title comes in beside it, and the spark goes back to the agent)">
+      <div className="flex w-full flex-col items-start gap-3">
+        {run
+          ? <ChatHeader key={run} workspace={{ ...WORKSPACES[0], onOpen: () => {} }} agent={{ ...agent, onOpen: () => setRun(undefined) }} title={run} onOpenSettings={() => {}} />
+          : (
+              <nav key="agent" aria-label="Breadcrumb" className="flex items-center gap-1.5">
+                <WorkspaceCrumb {...WORKSPACES[0]} />
+                <AgentCrumb {...agent} expanded />
+              </nav>
+            )}
+        <Button variant="ghost" disabled={run !== undefined} onClick={() => setRun('Add a joke to the doc')}>Open a run</Button>
       </div>
     </Section>
     </>

@@ -26,8 +26,10 @@ export const workspaceEntryKey = (workspaceId: string) => `workspace:${workspace
 /**
  * The sidebar's recents, most recently active first: each of the user's chats as a row of its own,
  * named with its workspace when that is a named one, and each workspace with no chat to list as one row, so it can still be
- * reached. A chat the user archived, has not joined, or that an agent started is left out (they are
- * on its workspace's page), unless it is the one open.
+ * reached. A chat the user archived or has not joined is left out (they are on its workspace's
+ * page), unless it is the one open. One an agent started is left out even then: it is the agent's
+ * run, on the agent's page, which its header leads to, and not one of the user's conversations to
+ * come back to, so it is not put among them for as long as it is open.
  */
 export const sidebarEntries = (
   workspaces: readonly WorkspaceMetadataWithTimestamps[],
@@ -37,7 +39,7 @@ export const sidebarEntries = (
   const titles = new Map(workspaces.map(({ id, title }) => [id, title]))
   const named = new Set(workspaces.filter(isNamedWorkspace).map(({ id }) => id))
   const isOpen = (thread: UnreadThread) => thread.workspaceId === open?.workspaceId && thread.chatId === open.chatId
-  const chats = threads.filter((thread) => titles.has(thread.workspaceId) && (isOpen(thread) || (!thread.archived && !thread.unjoined && !thread.spawnerName)))
+  const chats = threads.filter((thread) => titles.has(thread.workspaceId) && !thread.spawnerName && (isOpen(thread) || (!thread.archived && !thread.unjoined)))
   const withChats = new Set(chats.map(({ workspaceId }) => workspaceId))
   return [
     ...chats.map((thread): SidebarEntry => ({

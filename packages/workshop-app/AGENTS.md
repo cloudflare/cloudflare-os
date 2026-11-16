@@ -578,7 +578,11 @@ An agent (an agent spawner, never called that in the UI) is listed under Agents 
 tab shows those it calls on, a chat's those its agent started. A row opens the agent's page
 (`/workspace/$workspaceId/agent/$agentId`, `AgentPane`, drawn by `AgentView`): renamed and its model
 changed through `updateAgentSpawner`, what calls on it, what it can use, and its conversations by
-when, those waiting on a person marked. It is not a connection, so it is not on the Gatekeepers
+when, those waiting on a person marked. Its header is its workspace's crumb and its own, named
+(`AgentCrumb`, on `HeaderCrumb` as `WorkspaceCrumb` is); a run keeps both, the agent's as its spark,
+before the run's title (`ChatSnapshot.agent`, from the chat's `spawnerId`), as a chat keeps its
+workspace's. A run is the agent's, not one of the user's conversations, so the sidebar's recents
+leave it out even while it is open (`sidebarEntries`). It is not a connection, so it is not on the Gatekeepers
 page; a chat that asks for one sets it up from its card (`SetUpAgentDialog`), reporting each run back
 to that chat unless told not to.
 

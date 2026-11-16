@@ -37,6 +37,12 @@ export type ChatSnapshot =
       /** Undefined until the chat's metadata arrives, which can be after its messages. */
       title: string | undefined
       /**
+       * The agent whose run this chat is, by its connection (`AiChatMetadata.spawnerId`, absent for
+       * a run recorded before chats said) and its name. Undefined for a chat no agent started, and
+       * until the metadata arrives.
+       */
+      agent: { id?: number; name: string } | undefined
+      /**
        * The conversation as rows, without the open turn's artefacts (`pinned`): the committed
        * messages, then the messages sent to the running agent that it has not read yet. The
        * array is unchanged while only streaming text moves.
@@ -229,6 +235,7 @@ export class ChatSession {
   #early: Array<() => void> = []
 
   #title: string | undefined
+  #agent: { id?: number; name: string } | undefined
   #usage: { tokens: number; cost?: number } | undefined
   #agentActive = false
   #activeModel: string | undefined
@@ -707,6 +714,7 @@ export class ChatSession {
     this.#loaded = false
     this.#early = []
     this.#title = undefined
+    this.#agent = undefined
     this.#usage = undefined
     this.#agentActive = false
     this.#activeModel = undefined
@@ -747,6 +755,7 @@ export class ChatSession {
     this.#publish({
       status: 'ready',
       title: this.#title,
+      agent: this.#agent,
       items: this.#feed.items,
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
@@ -975,6 +984,7 @@ export class ChatSession {
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    this.#agent = chat.spawnerName === undefined ? undefined : { id: chat.spawnerId, name: chat.spawnerName }
     this.#usage = chat.totalTokens ? { tokens: chat.totalTokens, cost: chat.totalCost || undefined } : undefined
     this.#agentActive = chat.activeAgent !== undefined
     this.#activeModel = chat.activeAgent?.id

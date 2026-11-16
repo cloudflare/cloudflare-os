@@ -81,6 +81,7 @@ function WorkspaceChat() {
         initialTitle={initialTitle}
         sending={sending}
         onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
+        onOpenAgent={(agentId) => navigate({ to: '/workspace/$workspaceId/agent/$agentId', params: { workspaceId, agentId } })}
         onOpenSettings={(tab) => navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: { tab }, state: { fromChat: true } })}
         onOpenAttachment={openAttachment}
         onOpenOutput={openOutput}

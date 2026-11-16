@@ -1,4 +1,4 @@
-import { createFileRoute, notFound, useNavigate, useRouter } from '@tanstack/react-router'
+import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
 import { AgentPane } from '@/automations/AgentPane'
 import { useAutomationLink } from '../-automationLink'
 
@@ -18,7 +18,6 @@ export const Route = createFileRoute('/_app/workspace/$workspaceId/agent/$agentI
 function AgentPage() {
   const { workspaceId, agentId } = Route.useParams()
   const navigate = useNavigate()
-  const router = useRouter()
   const link = useAutomationLink()
   return (
     <AgentPane
@@ -26,8 +25,7 @@ function AgentPage() {
       workspaceId={workspaceId}
       agentId={agentId}
       link={link}
-      // Back to where it was opened from, else the workspace.
-      onBack={() => (router.history.canGoBack() ? router.history.back() : void navigate({ to: '/workspace/$workspaceId', params: { workspaceId } }))}
+      onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
     />
   )
 }
