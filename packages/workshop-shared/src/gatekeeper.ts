@@ -1715,12 +1715,14 @@ export type ObservationDescription = {
    * checked against them.
    *
    * IDs must be stable, non-secret, and sufficient for `verifyObserverAccess()` to check access;
-   * the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone surrogates)
-   * with a JavaScript `length` of 1–2048 (UTF-16 code units), and a single observation may report
-   * at most 10,000 IDs totalling at most 500,000 code units, before deduplication; report a
-   * coarser ID (a containing folder or list, say) for a read that reveals more. `[]` means
-   * nothing restricts it. A binding-wide requirement every read relies on (such as tenant
-   * membership) belongs in `Gatekeeper.addObserver()`, which runs at every admission.
+   * the Workshop treats them as opaque (but for the admin gatekeeper's
+   * ADMIN_BINDING_SUBRESOURCE, which a workspace reads on that gatekeeper's observations). Each
+   * ID must be well-formed Unicode (no lone surrogates) with a JavaScript `length` of 1–2048
+   * (UTF-16 code units), and a single observation may report at most 10,000 IDs totalling at most
+   * 500,000 code units, before deduplication; report a coarser ID (a containing folder or list,
+   * say) for a read that reveals more. `[]` means nothing restricts it. A binding-wide
+   * requirement every read relies on (such as tenant membership) belongs in
+   * `Gatekeeper.addObserver()`, which runs at every admission.
    *
    * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
    * approved the read (a hook firing's on the gadget the hook wakes, or the workspace for a user
