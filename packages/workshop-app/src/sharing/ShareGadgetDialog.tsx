@@ -66,10 +66,10 @@ const LEVELS: readonly AccessChoice<GadgetLevel>[] = [
 
 const LEVEL_LABEL = { use: 'Can use', view: 'Can view' } as const
 
-const LINK: readonly AccessChoice<'on' | 'off'>[] = [
-  { value: 'on', label: 'Can use', hint: 'Anyone with the link can open it' },
-  { value: 'off', label: 'No access', hint: 'Only people you add can open it' },
-]
+// As people are given it, so that the link reads as one more of them.
+const LINK_USE: AccessChoice<GadgetLevel | 'off'> = { value: 'use', label: 'Can use', hint: 'Anyone with the link opens it live' }
+const LINK_VIEW: AccessChoice<GadgetLevel | 'off'> = { value: 'view', label: 'Can view', hint: 'Anyone with the link sees it as you last left it' }
+const LINK_OFF: AccessChoice<GadgetLevel | 'off'> = { value: 'off', label: 'No access', hint: 'Only people you add can open it' }
 
 // "Just now" and "Yesterday" mid-sentence, after "from".
 const inSentence = (when: string) => (when === 'Just now' || when === 'Yesterday' ? when.toLowerCase() : when)
@@ -143,10 +143,10 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
       setProblem(messageOf(error))
     }
   }
-  const setLinkOn = (on: boolean) => {
+  const setLink = (to: GadgetLevel | 'off') => {
     if (linkPending) return
     setLinkPending(true)
-    void attempt(() => session.setLinkOn(on)).finally(() => setLinkPending(false))
+    void attempt(() => session.setLink(to)).finally(() => setLinkPending(false))
   }
 
   const link = ready?.link
@@ -160,14 +160,17 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
     if (!standing || !link || link.status === 'loading') return <span className="px-3 text-kumo-subtle">…</span>
     if (link.status === 'failed') return 'Couldn’t check'
     if (standing.ownerOnly) return 'No access'
-    const label = linkOn ? 'Can use' : 'No access'
+    const value = linkOn ? link.level : 'off'
+    // Only seeing it is offered where the deployment keeps views, or where the link already does.
+    const options = [LINK_USE, ...(viewsAvailable || value === 'view' ? [LINK_VIEW] : []), LINK_OFF]
+    const label = options.find((option) => option.value === value)?.label ?? 'No access'
     if (!standing.canShare) return label
     return (
       <AccessMenu
-        label={linkPending ? (linkOn ? 'Turning off…' : 'Turning on…') : label}
+        label={linkPending ? 'Changing…' : label}
         of={`anyone in ${siteName}`}
         disabled={linkPending}
-        choices={{ options: LINK, value: linkOn ? 'on' : 'off', onChange: (value) => setLinkOn(value === 'on') }}
+        choices={{ options, value, onChange: setLink }}
       />
     )
   }

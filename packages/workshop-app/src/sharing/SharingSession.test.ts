@@ -87,7 +87,7 @@ describe('SharingSession', () => {
     const session = new SharingSession(() => overseer, { gadget: GADGET })
     session.start()
     await vi.waitFor(() => expect(session.getSnapshot()).toMatchObject({
-      link: { status: 'on', linkIds: ['old'], url: 'https://os.example/app/ws-3#share=again' },
+      link: { status: 'on', level: 'use', linkIds: ['old'], url: 'https://os.example/app/ws-3#share=again' },
     }))
     expect(overseer.newShareLinkKey).toHaveBeenCalledWith('old')
   })
@@ -97,12 +97,23 @@ describe('SharingSession', () => {
     const session = new SharingSession(() => overseer, { gadget: GADGET })
     session.start()
     await vi.waitFor(() => expect(session.getSnapshot()).toMatchObject({ link: { status: 'on' } }))
-    await session.setLinkOn(false)
+    await session.setLink('off')
     expect(overseer.revokeShareLink).toHaveBeenCalledWith('old', ['grace'])
     expect(session.getSnapshot()).toMatchObject({ link: { status: 'off' } })
-    await session.setLinkOn(true)
+    await session.setLink('use')
     expect(overseer.createShareLink).toHaveBeenCalledWith({ gadgetId: 3 })
-    expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', linkIds: ['new'], url: 'https://os.example/app/ws-3#share=fresh' } })
+    expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', level: 'use', linkIds: ['new'], url: 'https://os.example/app/ws-3#share=fresh' } })
+  })
+
+  it('makes the link only show the gadget’s view with a new one, keeping whoever came in by the old', async () => {
+    const { overseer } = fakeOverseer({ links: [link('old', 3)] })
+    const session = new SharingSession(() => overseer, { gadget: GADGET })
+    session.start()
+    await vi.waitFor(() => expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', level: 'use' } }))
+    await session.setLink('view')
+    expect(overseer.createShareLink).toHaveBeenCalledWith({ gadgetId: 3, viewOnly: true })
+    expect(overseer.revokeShareLink).toHaveBeenCalledWith('old', ['grace'])
+    expect(session.getSnapshot()).toMatchObject({ link: { status: 'on', level: 'view', linkIds: ['new'] } })
   })
 
   it('says why it could not be read, and is safe to stop before anything arrives', async () => {

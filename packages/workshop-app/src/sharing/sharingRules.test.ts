@@ -98,7 +98,15 @@ describe('links', () => {
       { linkId: 'c', created, createdBy: ada, role: 'use' as const, gadgetId: 4 },
       { linkId: 'd', created, createdBy: ada, role: 'use' as const, gadgetId: 3 },
     ]
-    expect(gadgetLinksOf(links, 3)).toEqual(['a', 'd'])
+    expect(gadgetLinksOf(links, 3)).toEqual({ linkIds: ['a', 'd'], level: 'use', shown: 'a' })
+    expect(gadgetLinksOf(links, 5)).toBeUndefined()
+  })
+
+  it('takes the link to let people only see the gadget where every link to it does', () => {
+    const created = new Date(0)
+    const view = { linkId: 'v', created, createdBy: ada, role: 'use' as const, gadgetId: 3, viewOnly: true as const }
+    expect(gadgetLinksOf([view], 3)).toEqual({ linkIds: ['v'], level: 'view', shown: 'v' })
+    expect(gadgetLinksOf([view, { linkId: 'u', created, createdBy: ada, role: 'use' as const, gadgetId: 3 }], 3)).toMatchObject({ level: 'use', shown: 'u' })
   })
 
   it('carries the key in the fragment, and reads it back', () => {

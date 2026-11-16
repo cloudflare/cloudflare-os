@@ -30,15 +30,15 @@ export type SharingOverseer = Pick<Overseer, Calls> & Disposable & {
 }
 
 /**
- * A gadget's link: whether anyone who can sign in to the deployment may open it from its address.
- * On, it carries a key minted for this dialog, ready to copy: a clipboard write is refused once the
+ * A gadget's link: whether anyone who can sign in to the deployment may open it from its address,
+ * and whether to use it live or only see its view (`level`). On, it carries a key minted for this dialog, ready to copy: a clipboard write is refused once the
  * click that asked for it has passed, so the key cannot be waited for then.
  */
 export type LinkState =
   | { status: 'loading' }
   | { status: 'failed' }
   | { status: 'off' }
-  | { status: 'on'; linkIds: string[]; url?: string }
+  | { status: 'on'; level: GadgetLevel; linkIds: string[]; url?: string }
 
 export type SharingSnapshot =
   | { status: 'loading' }
@@ -147,12 +147,13 @@ export class SharingSession {
 
   async #loadLink(run: number, overseer: SharingOverseer, gadget: NonNullable<SharingOptions['gadget']>) {
     try {
-      const linkIds = gadgetLinksOf(await overseer.listShareLinks(), gadget.id)
+      const links = gadgetLinksOf(await overseer.listShareLinks(), gadget.id)
       if (run !== this.#run) return
-      if (linkIds.length === 0) return this.#update({ link: { status: 'off' } })
-      this.#update({ link: { status: 'on', linkIds } })
-      const { key } = await overseer.newShareLinkKey(linkIds[0])
-      if (run === this.#run) this.#update({ link: { status: 'on', linkIds, url: withShareKey(gadget.page, key) } })
+      if (!links) return this.#update({ link: { status: 'off' } })
+      const { linkIds, level, shown } = links
+      this.#update({ link: { status: 'on', level, linkIds } })
+      const { key } = await overseer.newShareLinkKey(shown)
+      if (run === this.#run) this.#update({ link: { status: 'on', level, linkIds, url: withShareKey(gadget.page, key) } })
     } catch {
       if (run === this.#run) this.#update({ link: { status: 'failed' } })
     }
@@ -206,28 +207,31 @@ export class SharingSession {
   }
 
   /**
-   * Turns the gadget's link on, or off. Off keeps everyone who already opened it through the link:
+   * Sets what the gadget's link lets anyone in to: using it live, only seeing its view, or nothing.
+   * A link's grant cannot change, so another is made in its place, before the old one goes, so that
+   * there is always one that works. Whoever already came in by the old one keeps what it gave them:
    * they are listed with the rest and taken off one at a time, never all at once by a switch.
    */
-  async setLinkOn(on: boolean) {
+  async setLink(to: GadgetLevel | 'off') {
     const { gadget } = this.options
     const snapshot = this.#snapshot
     if (!gadget || snapshot.status !== 'ready' || !snapshot.link) return
     const { link } = snapshot
-    if (link.status === 'loading' || link.status === 'failed' || on === (link.status === 'on')) return
+    if (link.status === 'loading' || link.status === 'failed' || to === (link.status === 'on' ? link.level : 'off')) return
     const overseer = this.#require()
     const run = this.#run
-    if (on) {
-      const { key, linkId } = await overseer.createShareLink({ gadgetId: gadget.id })
-      if (run === this.#run) this.#update({ link: { status: 'on', linkIds: [linkId], url: withShareKey(gadget.page, key) } })
-      return
+    let next: LinkState = { status: 'off' }
+    if (to !== 'off') {
+      const { key, linkId } = await overseer.createShareLink({ gadgetId: gadget.id, ...(to === 'view' ? { viewOnly: true as const } : {}) })
+      next = { status: 'on', level: to, linkIds: [linkId], url: withShareKey(gadget.page, key) }
     }
-    if (link.status !== 'on') return
-    for (const linkId of link.linkIds) {
-      const affected = await overseer.previewRevokeShareLink(linkId)
-      await overseer.revokeShareLink(linkId, affected.map(({ profile }) => profile.id))
+    if (link.status === 'on') {
+      for (const linkId of link.linkIds) {
+        const affected = await overseer.previewRevokeShareLink(linkId)
+        await overseer.revokeShareLink(linkId, affected.map(({ profile }) => profile.id))
+      }
     }
-    if (run === this.#run) this.#update({ link: { status: 'off' } })
-    await this.#reloadPeople()
+    if (run === this.#run) this.#update({ link: next })
+    if (link.status === 'on') await this.#reloadPeople()
   }
 }

@@ -87,11 +87,17 @@ export const gadgetShareRefusal = (
 }
 
 /**
- * A gadget's links: the one its dialog turns on and off, and any made before a gadget had only
- * one, which still let people in. Together they are "the" link.
+ * A gadget's links: the one its dialog sets, and any made before a gadget had only one, which
+ * still let people in. Together they are "the" link, which lets people use it live if any of them
+ * does, else only see its view (`level`), and the one of them to copy, which does what that says
+ * (`shown`); undefined where there is none.
  */
-export const gadgetLinksOf = (links: readonly ShareLinkInfo[], gadgetId: WorkpieceId) =>
-  links.filter((link) => link.role === 'use' && link.gadgetId === gadgetId).map(({ linkId }) => linkId)
+export const gadgetLinksOf = (links: readonly ShareLinkInfo[], gadgetId: WorkpieceId): { linkIds: string[]; level: GadgetLevel; shown: string } | undefined => {
+  const its = links.filter((link) => link.role === 'use' && link.gadgetId === gadgetId)
+  if (its.length === 0) return undefined
+  const live = its.find(({ viewOnly }) => !viewOnly)
+  return { linkIds: its.map(({ linkId }) => linkId), level: live ? 'use' : 'view', shown: (live ?? its[0]!).linkId }
+}
 
 const SHARE = 'share='
 
