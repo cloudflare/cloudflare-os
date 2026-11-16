@@ -2464,8 +2464,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     this.#putActionRecord(action.approvalId, { action, state: "staged" });
   }
 
-  #markActionPending(action: GitLabAction): void {
-    const record = this.#requireActionRecord(action.approvalId);
+  /**
+   * Promotes a staged action to pending, unless it has already left `staged`: the overseer can
+   * apply or reject it before `submitAction()` replies, and promoting the retired record would
+   * revive it as a simulated pending action and unbind its provisional ID. `record` is updated in
+   * place, so a caller holding it writes back the new state.
+   */
+  #markActionPending(record: StoredActionRecord | undefined): void {
+    if (record?.state !== "staged") return;
+    const action = record.action;
     record.state = "pending";
     this.#putActionRecord(action.approvalId, record);
     if (action.type === "createIssue" || action.type === "createMergeRequest") {
@@ -2473,6 +2480,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         kind: action.type === "createIssue" ? "issue" : "mergeRequest",
       });
     }
+    this.#clearCaches();
   }
 
   #markActionApproved(action: GitLabAction, revertInfo?: GitLabRevertInfo): void {
@@ -2658,12 +2666,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         ...presentation, ...describeGitLabAction(action), ...autoApprovalOf(action),
       });
     } catch (error) {
+      // Rolled back only while still staged: a record that left "staged" was applied, rejected or
+      // is held for a retry, which proves the overseer received it and only the reply was lost.
+      const state = this.#getActionRecord(action.approvalId)?.state;
+      if (state !== undefined && state !== "staged") return;
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
       this.#pendingActionsCache = undefined;
       throw error;
     }
-    this.#markActionPending(action);
-    this.#clearCaches();
+    this.#markActionPending(this.ctx.storage.kv.get<StoredActionRecord>(this.#actionRecordKey(action.approvalId)));
   }
 
   // -- prepare ----------------------------------------------------------------------------
@@ -2851,6 +2862,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     }
     const action = record.action;
     const projectPath = this.#projectPath();
+    // An apply proves the overseer holds the action, even if its submit's reply is yet to arrive
+    // or is lost: pending, it is kept for a retry should this apply fail.
+    this.#markActionPending(record);
 
     switch (action.type) {
       case "createIssue": {

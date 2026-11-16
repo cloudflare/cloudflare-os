@@ -2724,8 +2724,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return this.#pendingActionsCache;
   }
 
-  #markActionPending(action: GitHubAction): void {
-    const record = this.#requireActionRecord(action.approvalId);
+  /**
+   * Promotes a staged action to pending, unless it has already left `staged`: the overseer can
+   * apply or reject it before `submitAction()` replies, and promoting the retired record would
+   * revive it as a simulated pending action and unbind its provisional ID. `record` is updated in
+   * place, so a caller holding it writes back the new state.
+   */
+  #markActionPending(record: StoredActionRecord | undefined): void {
+    if (record?.state !== "staged") return;
+    const action = record.action;
     record.state = "pending";
     this.#putActionRecord(action.approvalId, record);
     this.#pendingActionsCache = undefined;
@@ -2734,6 +2741,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         kind: action.type === "createIssue" ? "issue" : "pull",
       });
     }
+    this.#clearCaches();
   }
 
   #markActionApproved(action: GitHubAction, revertInfo?: GitHubRevertInfo): void {
@@ -4084,13 +4092,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         ...autoApprovalOf(action),
       });
     } catch (error) {
+      // Rolled back only while still staged: a record that left "staged" was applied, rejected or
+      // is held for a retry, which proves the overseer received it and only the reply was lost.
+      const state = this.#getActionRecord(action.approvalId)?.state;
+      if (state !== undefined && state !== "staged") return;
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
       this.#pendingActionsCache = undefined;
       throw error;
     }
 
-    this.#markActionPending(action);
-    this.#clearCaches();
+    this.#markActionPending(this.#getLiveActionRecord(action.approvalId));
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GitHubRepoSession | GitHubIssue | GitHubPullRequest> {
@@ -4367,6 +4378,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     }
 
     const action = record.action;
+    // An apply proves the overseer holds the action, even if its submit's reply is yet to arrive
+    // or is lost: pending, it is kept for a retry should this apply fail.
+    this.#markActionPending(record);
     switch (action.type) {
       case "createIssue": {
         const response = await this.#withApi(api => api.createIssue(action.owner, action.repo, {
