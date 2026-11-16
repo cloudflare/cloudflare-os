@@ -12,6 +12,7 @@ import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { MemberListItem } from '@/blocks/MemberListItem'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
+import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
@@ -73,6 +74,15 @@ const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'untitled', workspaceLabel: 'UW', title: 'Untitled Workspace' },
   { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
   { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
+]
+
+// More than fit in the menu, one with a look of its own and one with a title too long for the button.
+const pickerWorkspaces: WorkspacePickerProps['workspaces'] = [
+  ...previewWorkspaces.map(({ id, workspaceLabel, title }) => ({ id, label: workspaceLabel, title })),
+  { id: 'paris', label: 'CA', title: 'Create a new slideshow about the history of Paris and its many bridges', look: { shape: 'rocket', color: 'blue' } },
+  { id: 'roadmap', label: 'QR', title: 'Quarterly roadmap' },
+  { id: 'onboarding', label: 'OC', title: 'Onboarding checklist' },
+  { id: 'budget', label: 'BT', title: 'Budget tracker' },
 ]
 
 const ShimmerTextPreview = () => {
@@ -218,11 +228,6 @@ const DropdownMenuPlayground = () => {
   )
 }
 
-const PREVIEW_PLACES = [
-  { id: 'q3', title: 'Q3 planning', label: 'QP' },
-  { id: 'platform', title: 'Platform team', label: 'PT' },
-]
-
 const PREVIEW_MODELS = [
   { id: 'sonnet', name: 'Claude Sonnet 5.5' },
   { id: 'opus', name: 'Claude Opus 5.5', description: 'Slower, for harder work' },
@@ -234,7 +239,6 @@ function Gallery() {
   const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'gatekeepers'>()
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const [previewModel, setPreviewModel] = useState(PREVIEW_MODELS[0].id)
-  const [place, setPlace] = useState<string>()
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
     model: {
@@ -253,6 +257,7 @@ function Gallery() {
     return true
   }
   const [replying, setReplying] = useState(true)
+  const [startWorkspace, setStartWorkspace] = useState<string>()
   const [startsWithFormat, setStartsWithFormat] = useState(true)
   const [sendFailed, setSendFailed] = useState(true)
   const [working, setWorking] = useState(true)
@@ -425,22 +430,12 @@ function Gallery() {
           </div>
         </div>
       </Section>
-      <Section title="ChatStart, WorkspacePicker (the home page, before the first message; under the composer, where the chat goes: on its own, or in one of the user's named workspaces, with the way to make another)">
-        <div className="flex h-96 w-full rounded-3xl bg-kumo-base">
+      <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them)">
+        <div className="flex h-[32rem] w-full rounded-3xl bg-kumo-base">
           <ChatStart
             greeting="Hello Ada, what should we do today?"
             onSend={previewSend}
-            below={(
-              <WorkspacePicker
-                workspaces={PREVIEW_PLACES}
-                value={place}
-                onChange={(id) => {
-                  setPlace(id)
-                  setMenuAction(`Preview: the chat starts ${id ? `in ${PREVIEW_PLACES.find((each) => each.id === id)?.title}` : 'on its own'}.`)
-                }}
-                onCreate={() => setMenuAction('Preview: new workspace selected.')}
-              />
-            )}
+            below={<WorkspacePicker workspaces={pickerWorkspaces} value={startWorkspace} onValueChange={setStartWorkspace} />}
           />
         </div>
       </Section>

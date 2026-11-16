@@ -38,7 +38,7 @@ export const ChatStart = ({ greeting, onSend, initialDraft, commands, format, pr
       <div className="mt-7 w-full">
         <Composer onSend={onSend} initialDraft={initialDraft} commands={commands} format={format} problem={problem} addActions={addActions} autoFocus={autoFocus} />
       </div>
-      {below && <div className="mt-3 flex justify-center">{below}</div>}
+      {below && <div className="mt-6 flex w-full justify-center">{below}</div>}
     </div>
     {after && <div className="row-start-3 flex w-full max-w-md flex-col pt-12">{after}</div>}
   </div>

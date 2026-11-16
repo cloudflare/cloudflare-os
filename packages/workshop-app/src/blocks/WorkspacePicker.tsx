@@ -1,62 +1,68 @@
-import { CaretDownIcon, CheckIcon, PlusIcon } from '@phosphor-icons/react'
-import { ChatMark } from '@/components/ChatMark'
+import { PlusIcon } from '@phosphor-icons/react'
 import { DropdownMenu } from '@/components/DropdownMenu'
+import { OptionPicker } from '@/components/OptionPicker'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import type { WorkspaceLook } from '@/components/workspaceLook'
 
 export type WorkspacePickerProps = {
-  /** The named workspaces a chat can be started in. */
-  workspaces: readonly { id: string; title: string; label: string }[]
-  /** The one chosen; none, for a chat on its own. */
-  value?: string
-  onChange: (id: string | undefined) => void
-  /** Goes to make a new workspace. */
-  onCreate: () => void
+  /** The workspaces there are to choose from, in the order they are offered. */
+  workspaces: {
+    id: string
+    title: string
+    /** Two letters shown on the icon. */
+    label: string
+    /** How its icon is drawn, when not as any workspace's is. */
+    look?: WorkspaceLook
+  }[]
+  /** The id of the one chosen. With none, it is a new workspace, yet to be made. */
+  value: string | undefined
+  onValueChange: (id: string | undefined) => void
 }
 
+// The option that is no workspace: an id none has, theirs being URL-safe base64.
+const NEW = ':new'
+const NEW_TITLE = 'New workspace'
+
 /**
- * Where a new chat goes, under the composer that starts it: on its own ("No workspace"), or in one
- * of the user's named workspaces, with the way to make another. Quiet until it is pointed at, as
- * most chats start on their own.
+ * Where something is to be: in a new workspace, or in one of those there are. A button that says
+ * which, and opens to them all under a field to find one by.
  */
-export const WorkspacePicker = ({ workspaces, value, onChange, onCreate }: WorkspacePickerProps) => {
-  const chosen = value === undefined ? undefined : workspaces.find(({ id }) => id === value)
-  const tick = (on: boolean) => (on
-    ? <CheckIcon aria-label="Chosen" weight="bold" className="size-3.5 shrink-0" />
-    : <span aria-hidden="true" className="size-3.5 shrink-0" />)
+export const WorkspacePicker = ({ workspaces, value, onValueChange }: WorkspacePickerProps) => {
+  const chosen = workspaces.find(({ id }) => id === value)
+  const title = chosen?.title ?? NEW_TITLE
+
   return (
     <DropdownMenu
-      label={(
-        <span className="flex min-w-0 items-center gap-2">
-          {chosen ? <WorkspaceIcon label={chosen.label} small /> : null}
-          <span className="min-w-0 truncate">{chosen?.title ?? 'No workspace'}</span>
-          <CaretDownIcon aria-hidden="true" weight="bold" className="size-3 shrink-0" />
-        </span>
-      )}
-      aria-label={`Start it in: ${chosen?.title ?? 'no workspace'}`}
+      // One that was chosen is shown as it is drawn everywhere else. In a span, so that it keeps its
+      // own size rather than taking the Button's size for an icon.
+      icon={chosen && <span className="flex"><WorkspaceIcon label={chosen.label} {...chosen.look} small /></span>}
+      // Cut off where there is not room for all of a long title.
+      label={<span className="min-w-0 truncate">{title}</span>}
+      // Said with what it is a choice of, or "New workspace" reads as a button that makes one.
+      aria-label={`Workspace: ${title}`}
+      // Quiet under the composer until it is pointed at.
+      triggerClassName="max-w-full min-w-0 shrink text-kumo-subtle hover:text-kumo-default"
       triggerVariant="ghost"
-      triggerClassName="h-8 max-w-64 px-3 text-sm text-kumo-subtle not-data-disabled:hover:text-kumo-default"
+      caret
+      picker
       align="center"
+      inPlace
     >
-      <DropdownMenu.Item label="No workspace" onSelect={() => onChange(undefined)}>
-        <ChatMark small />
-        <span className="min-w-0 flex-1">
-          <span className="block">No workspace</span>
-          <span className="block text-sm text-kumo-subtle">A chat on its own</span>
-        </span>
-        {tick(chosen === undefined)}
-      </DropdownMenu.Item>
-      {workspaces.length > 0 && <DropdownMenu.Separator />}
-      {workspaces.map((workspace) => (
-        <DropdownMenu.Item key={workspace.id} label={workspace.title} onSelect={() => onChange(workspace.id)}>
-          <WorkspaceIcon label={workspace.label} small />
-          <span className="min-w-0 flex-1 truncate">{workspace.title}</span>
-          {tick(workspace.id === chosen?.id)}
-        </DropdownMenu.Item>
-      ))}
-      <DropdownMenu.Separator />
-      <DropdownMenu.Item icon={PlusIcon} onSelect={onCreate}>
-        <span className="text-kumo-subtle">New workspace</span>
-      </DropdownMenu.Item>
+      {(close) => (
+        <OptionPicker
+          single
+          aria-label="Workspace"
+          options={[
+            { id: NEW, label: NEW_TITLE, icon: <PlusIcon aria-hidden="true" className="size-4" /> },
+            ...workspaces.map((workspace) => ({ id: workspace.id, label: workspace.title, icon: <WorkspaceIcon label={workspace.label} {...workspace.look} small /> })),
+          ]}
+          value={chosen?.id ?? NEW}
+          onValueChange={(id) => {
+            onValueChange(id === NEW ? undefined : id)
+            close()
+          }}
+        />
+      )}
     </DropdownMenu>
   )
 }

@@ -13,15 +13,17 @@ import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
 import { useApi } from '@/rpc/ApiContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { workspaceTitle } from '@/workspaces/workspaceList'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 
 /**
- * The start of a new conversation: on its own, in a workspace of its own that sending the first
- * message creates, or in one of the user's named workspaces, as the picker under the composer
- * says. A skill chosen to use elsewhere (`useSkill`) is what the draft starts with; `?format=` is
- * what the first message asks for something as, by the format's id (`document`), as the library's
- * New menu starts one. Further down, the gadgets lately worked on, or a few of the blueprints the
- * deployment features to start one from.
+ * The start of a new conversation: in a new workspace, which sending the first message creates
+ * with it, unless one of the user's named workspaces has been chosen for it under the composer
+ * (`WorkspacePicker`). A skill chosen to use elsewhere (`useSkill`) is what the draft starts with;
+ * `?format=` is what the first message asks for something as, by the format's id (`document`), as
+ * the library's New menu starts one. Further down, the gadgets lately worked on, or a few of the
+ * blueprints the deployment features to start one from.
  */
 export const Route = createFileRoute('/_app/')({
   validateSearch: (search: Record<string, unknown>): { format?: string } => ({ format: typeof search.format === 'string' ? search.format : undefined }),
@@ -41,14 +43,16 @@ function Home() {
   const location = useLocation()
   const skill = location.state.useSkill
   const workspaces = useWorkspaces()
-  // Where the chat goes: a named workspace, or none.
+  const looks = useWorkspaceLooks()
+  // Where the chat goes: one of the user's named workspaces, or a new one. It lasts for the visit.
   const [where, setWhere] = useState<string>()
-  // Those the user works in, starred first: not one only an app of was shared with them.
+  // Those the user may chat in, starred first, then as listed: not one only an app of was shared
+  // with them, nor a chat on its own.
   const named = useMemo(() => (workspaces.status === 'ready' ? workspaces.workspaces : [])
     .filter((workspace) => isNamedWorkspace(workspace) && workspace.role !== 'use')
-    .toSorted((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || a.title.localeCompare(b.title))
-    .map(({ id, title }) => ({ id, title, label: workspaceLabel(title) })), [workspaces])
-  // One that has gone meanwhile is no longer where it goes.
+    .toSorted((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
+    .map((workspace) => ({ id: workspace.id, title: workspaceTitle(workspace), label: workspaceLabel(workspace.title), look: looks[workspace.id] })), [workspaces, looks])
+  // One that is no longer listed is not chosen, so what the page says is what sending does.
   const into = named.some(({ id }) => id === where) ? where : undefined
 
   const { format: formatId } = Route.useSearch()
@@ -63,7 +67,7 @@ function Home() {
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
       start={(text, files, modelId, command, formats) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace()), text, files, modelId, command, formats)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
-      below={<WorkspacePicker workspaces={named} value={into} onChange={setWhere} onCreate={() => void navigate({ to: '/workspaces/new' })} />}
+      below={<WorkspacePicker workspaces={named} value={into} onValueChange={setWhere} />}
       after={(
         <RecentGadgets
           onOpen={(entry) => navigate(pageOf(entry.workspaceId, entry.item))}
