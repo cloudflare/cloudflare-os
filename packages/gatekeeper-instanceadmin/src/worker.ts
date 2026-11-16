@@ -3,7 +3,7 @@
 // own: the Workshop lends each session the Admin API of the workspace's owner, and decides what
 // each call may do.
 
-import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import type {
@@ -29,6 +29,10 @@ import { ADMIN_ACTIONS, type AdminActions, type BoundAdminActions } from "./acti
 import type { DeploymentConfiguratorRpc } from "./configurator/deployment-configurator-types";
 import { ADMIN_SUBRESOURCE, type AdminSession, forwarderFor } from "./forward.js";
 import DEPLOYMENT_CONFIGURATOR_HTML from "./generated/deployment-configurator-ui.txt";
+import {
+  IssueReportHookDeliveryImpl, type IssueReportHookKind, type IssueReportHookParams,
+  type IssueReportHookTarget, bindIssueReportHook, issueReportHookDriver,
+} from "./hooks.js";
 import { IssueReportSession } from "./report-session.js";
 import { ADMIN_SCHEMA, generatedDeclarations } from "./surface.js";
 import TYPES_CODE from "./types.txt";
@@ -65,6 +69,15 @@ const NO_CONNECT_FLOW = "The admin gatekeeper is auto-provisioned and has no con
 /** The binding's declarations: the ones generated from the schema, then the hand-written ones. */
 const TYPES = `${generatedDeclarations()}\n${TYPES_CODE}`;
 
+// The hook controller and the hooks' driver are reached through ctx.exports, so the entry module
+// exports them.
+export { IssueReportHookController, IssueReportHookDriver } from "./hooks.js";
+
+/** Binds `hook` on the session's queue as a hook of `kind`: the facet's part of subscribing. */
+type Subscribe = (
+  queue: RpcStub<AdminAgentQueue>, kind: IssueReportHookKind, hook: RpcStub<IssueReportHookTarget>,
+) => Promise<void>;
+
 /**
  * The session of the whole binding: the schema's methods, and beside them the ones AdminBinding
  * declares by hand. It borrows the queue its base owns.
@@ -75,11 +88,13 @@ const TYPES = `${generatedDeclarations()}\n${TYPES_CODE}`;
 class BindingSession extends forwarderFor(ADMIN_SCHEMA.entry) {
   readonly #queue: RpcStub<AdminAgentQueue>;
   readonly #actions: BoundAdminActions;
+  readonly #subscribe: Subscribe;
 
-  constructor(queue: RpcStub<AdminAgentQueue>, actions: BoundAdminActions) {
+  constructor(queue: RpcStub<AdminAgentQueue>, actions: BoundAdminActions, subscribe: Subscribe) {
     super(queue, { restricted: true, subresource: ADMIN_SUBRESOURCE, actions });
     this.#queue = queue;
     this.#actions = actions;
+    this.#subscribe = subscribe;
   }
 
   /**
@@ -93,6 +108,31 @@ class BindingSession extends forwarderFor(ADMIN_SCHEMA.entry) {
           "be a string.");
     }
     return new IssueReportSession(reportId, this.#queue.dup(), this.#actions);
+  }
+
+  /**
+   * Binds `hook`, a persistent stub, to be called for each issue report filed. It reads nothing
+   * through the binding and observes nothing: the hook is bound on the queue, disabled until a
+   * person enables it.
+   */
+  async subscribeIssueReported(hook: RpcStub<IssueReportHookTarget>): Promise<void> {
+    await this.#bind("subscribeIssueReported", "reported", hook);
+  }
+
+  /** As subscribeIssueReported(), for each investigation that ends. */
+  async subscribeInvestigationComplete(hook: RpcStub<IssueReportHookTarget>): Promise<void> {
+    await this.#bind("subscribeInvestigationComplete", "investigationComplete", hook);
+  }
+
+  async #bind(
+    method: string, kind: IssueReportHookKind, hook: RpcStub<IssueReportHookTarget>,
+  ): Promise<void> {
+    // A stub arrives as an object or, for one that may be a function, as a function.
+    if ((typeof hook !== "object" && typeof hook !== "function") || hook === null) {
+      throw new TypeError(`Invalid arguments for AdminBinding.${method}: hook must be a ` +
+          "persistent stub of the callback.");
+    }
+    await this.#subscribe(this.#queue, kind, hook);
   }
 }
 
@@ -122,6 +162,7 @@ export class InstanceAdminGatekeeper
       snippet: "This deployment's Admin API, as the workspace's owner.",
       suggestedBindingName: "ADMIN",
       tsType: "AdminBinding",
+      hookTsType: "IssueReportHook",
     };
   }
 
@@ -149,7 +190,16 @@ export class InstanceAdminGatekeeper
   @skipRpcValidation()
   async startSession(queue: RpcStub<AdminAgentQueue>): Promise<AdminSession> {
     // The queue is disposed when this call returns, so the session keeps its own copy.
-    return new BindingSession(queue.dup(), this.#actions);
+    return new BindingSession(queue.dup(), this.#actions,
+        (bindOn, kind, hook) => bindIssueReportHook(this.ctx, bindOn, kind, hook));
+  }
+
+  /**
+   * What a hook's delivery stub reaches: a target that delivers events of the hook's kind, never
+   * the facet itself.
+   */
+  [restore](params: IssueReportHookParams): IssueReportHookDeliveryImpl {
+    return new IssueReportHookDeliveryImpl(params);
   }
 
   /** Returns no catalog: the binding's types say everything there is to know. */
@@ -210,13 +260,6 @@ export class InstanceAdminGatekeeper
     throw new Error("The admin gatekeeper's actions cannot be reverted.");
   }
 }
-
-/**
- * The Durable Object this Worker's migration names beside the facet, for the deployment's issue
- * report hooks. It holds nothing: no hook is subscribed. Exported because the runtime refuses to
- * start a Worker whose migration names a class it doesn't export.
- */
-export class IssueReportHookDriver extends DurableObject<Cloudflare.Env> {}
 
 /**
  * An admin's account. It holds no credential and no state: every account is alike, and the
@@ -361,8 +404,13 @@ export class GatekeeperVendor
     return TYPES;
   }
 
-  /** Takes the issue report store's events and stores nothing: no hook is subscribed to them. */
-  async issueReportEvents(_events: IssueReportEvent[]): Promise<void> {}
+  /**
+   * Takes the issue report store's events for the hooks subscribed to them, and resolves once the
+   * driver has stored each for delivery. An event with no subscriber is dropped there.
+   */
+  async issueReportEvents(events: IssueReportEvent[]): Promise<void> {
+    await issueReportHookDriver(this.ctx.exports).ingest(events);
+  }
 }
 
 export default GatekeeperVendor;

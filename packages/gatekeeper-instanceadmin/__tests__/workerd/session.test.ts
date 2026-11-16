@@ -4,7 +4,7 @@
 // every Admin API method.
 
 import { createExecutionContext } from "cloudflare:test";
-import { DurableObject, RpcStub, RpcTarget, env } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, env } from "cloudflare:workers";
 import type { ApiShape } from "@gadgets/api-schema/schema";
 import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
 import {
@@ -170,6 +170,7 @@ describe("the facet", () => {
       snippet: "This deployment's Admin API, as the workspace's owner.",
       suggestedBindingName: "ADMIN",
       tsType: "AdminBinding",
+      hookTsType: "IssueReportHook",
     });
   });
 
@@ -339,6 +340,12 @@ describe("the Worker", () => {
       const exportedClass = exported[name] as { prototype?: unknown } | undefined;
       expect(exportedClass?.prototype, name).toBeInstanceOf(DurableObject);
     }
+  });
+
+  // The facet mints a hook's controller through ctx.exports, which holds only what the entry
+  // module exports.
+  it("exports the hook controller", () => {
+    expect(WORKER.IssueReportHookController.prototype).toBeInstanceOf(WorkerEntrypoint);
   });
 });
 

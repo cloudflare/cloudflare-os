@@ -30,7 +30,66 @@ export interface AdminBinding extends AdminApi {
    *   //   return this.env.ADMIN.openIssueReport(reportId);
    */
   openIssueReport(reportId: string): Promise<IssueReportSession>;
+
+  /**
+   * Call `hook` once for each issue report filed from now on, as it is filed: its images and
+   * the grant its reporter may give with it are attached by later calls, so a subscriber that
+   * reads at once may find no image and be refused content, and reads again later rather than
+   * concluding there is none.
+   *
+   * `hook` is a persistent stub, made with ctx.restore() by the gadget whose [restore]()
+   * returns the callback. Subscribing reads nothing: the hook is bound disabled, and delivers
+   * once a person enables it.
+   */
+  subscribeIssueReported(hook: IssueReportedHook): Promise<void>;
+
+  /**
+   * Call `hook` each time an admin ends a report's investigation: its status leaves
+   * "investigating" for "answered", "waitingOnReporter", "withAdmin" or "closed". `hook` is a
+   * persistent stub, as for subscribeIssueReported().
+   */
+  subscribeInvestigationComplete(hook: InvestigationCompleteHook): Promise<void>;
 }
+
+/**
+ * The callback of subscribeIssueReported(). An event carries ids and labels only: read the
+ * report through the binding the gadget holds. A callback can be called more than once for the
+ * same event: key the work by the report's id.
+ */
+export interface IssueReportedHook {
+  /**
+   * Called as the report is filed: its images and the grant its reporter may give with it are
+   * attached by later calls, so a subscriber that reads at once may find no image and be
+   * refused content, and reads again later rather than concluding there is none.
+   */
+  issueReported(event: {
+    reportId: string;
+    priority: "low" | "medium" | "high";
+    filedAt: Date;
+  }): void;
+}
+
+/**
+ * The callback of subscribeInvestigationComplete(). An event carries ids and labels only. A
+ * callback can be called more than once for the same event, and a report's investigation can
+ * end more than once: key the work by the report's id and its status.
+ */
+export interface InvestigationCompleteHook {
+  /** Called when an admin moved the report from "investigating" to `status`, at `at`. */
+  investigationComplete(event: {
+    reportId: string;
+    status: "answered" | "waitingOnReporter" | "withAdmin" | "closed";
+    at: Date;
+  }): void;
+}
+
+/**
+ * What a gadget's callback implements, as the RpcTarget its [restore]() returns: the method of
+ * each hook it is subscribed to, as IssueReportedHook and InvestigationCompleteHook declare it.
+ * One callback can serve both hooks.
+ */
+export interface IssueReportHook
+  extends Partial<IssueReportedHook>, Partial<InvestigationCompleteHook> {}
 
 /**
  * One issue report and nothing else: the report as its reporter reads it, its images, a reply in

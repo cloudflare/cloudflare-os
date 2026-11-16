@@ -131,6 +131,24 @@ describe("the declarations", () => {
         "workspace as holding it too, and from then on a reply waits for a person.");
   });
 
+  it("say what each hook is called with, that a call can repeat, and what a hook wakes", () => {
+    const preamble = PREAMBLE.replace(/\n {2}/g, " ");
+    expect(preamble).toContain(
+        "subscribeIssueReported() binds a hook that is called once for each issue report filed, " +
+        "with its id, its priority and the time it was filed; subscribeInvestigationComplete() " +
+        "binds one that is called each time an admin ends a report's investigation, with its id, " +
+        "its new status and the time. Both carry ids and labels only");
+    expect(preamble).toContain(
+        "A callback can be called more than once for the same event: it keys its work by the " +
+        "report's id (and status).");
+    expect(preamble).toContain("A hook wakes a gadget's stored callback or this chat, never a new chat.");
+    expect(preamble).toContain(
+        "\"Issue reported\" fires as the report is filed, before its reporter's client has " +
+        "attached its images or given the grant that may come with it (both are later calls), so " +
+        "a subscriber that reads at once may find no image and be refused content, and reads " +
+        "again later rather than concluding there is none.");
+  });
+
   it("are followed by hand-written ones that name, to find a filed request, only what they declare", () => {
     const recipe = HAND_WRITTEN_TYPES.replace(/\n \* /g, " ");
     expect(recipe).toContain(

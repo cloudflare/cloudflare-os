@@ -1,0 +1,618 @@
+// The two hooks, end to end inside the gatekeeper Worker: a session subscribes as an agent's code
+// would, the test enables the hook and answers each firing as the Workshop would, and the issue
+// report store's events arrive through the vendor entrypoint.
+
+import { createExecutionContext, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { RpcStub, RpcTarget, env } from "cloudflare:workers";
+import { MAX_DELIVERY_ATTEMPTS, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
+import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
+import type { IssueReportEvent } from "@gadgets/workshop-shared/admin-gatekeeper";
+import type {
+  HookController, HookDescription, HookInitiator, ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { IssueReportHookDriver } from "../../src/hooks.js";
+import { SERVICES } from "../../src/surface.js";
+import { ROOT, type Session, recordingTarget, rejection } from "./fakes.js";
+import HAND_WRITTEN_TYPES from "../../src/types.txt";
+import { type HookState, type TestFacet, hookState } from "./worker.js";
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+type Subscribe = "subscribeIssueReported" | "subscribeInvestigationComplete";
+type Controller = HookController<RpcTarget>;
+
+/** The Worker's entrypoints, as the Workshop reaches them, and the test worker's beside them. */
+const worker = () => createExecutionContext().exports as unknown as Cloudflare.Exports & {
+  TestHookInitiator(options: { props: { hook: string } }): Fetcher<HookInitiator<RpcTarget>>;
+};
+
+const vendor = () => worker().GatekeeperVendor({});
+const driver = () => env.ISSUE_REPORT_HOOK_DRIVER.getByName("");
+
+/** The queue of the session that subscribes: it keeps what was bound, as the Workshop would. */
+class BindingQueue extends RpcTarget {
+  /** What the session asked of it and of the Admin API it lends, in order. */
+  readonly log: string[] = [];
+  readonly bound: { controller: Controller; description: HookDescription }[] = [];
+  // The omitted name is served too, so a call that reached it would be seen.
+  readonly #admin = recordingTarget(ROOT, [...SERVICES.get(ROOT)!, "setSiteName"], this.log,
+      (name) => ({ answered: name }));
+
+  async getAdminApi() {
+    this.log.push("getAdminApi");
+    return this.#admin;
+  }
+
+  async authorizeObservation(description: ObservationDescription): Promise<void> {
+    this.log.push(`observe ${description.title}`);
+  }
+
+  async submitAction(): Promise<void> {
+    this.log.push("submitAction");
+  }
+
+  async bindHook(controller: Controller, _callback: unknown, description: HookDescription): Promise<void> {
+    this.log.push("bindHook");
+    this.bound.push({ controller, description });
+  }
+}
+
+/** A gadget's callback, which a subscription binds and never calls: a firing gets its own. */
+class Callback extends RpcTarget {
+  issueReported(): void {}
+  investigationComplete(): void {}
+}
+
+/** The hooks a test enabled, disabled after it so that later tests' events don't reach them. */
+const enabled: (() => Promise<void>)[] = [];
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  for (const disable of enabled.splice(0)) await disable();
+});
+
+/** A facet of its own whose `ctx.restore()` works in this pool, and a session over `queue`. */
+async function open(queue: BindingQueue) {
+  const name = crypto.randomUUID();
+  const gatekeeper = env.INSTANCE_ADMIN_GATEKEEPER.getByName(name);
+  await (gatekeeper as unknown as TestFacet).testRestoreThrough(name);
+  const session = await gatekeeper.startSession(queue as never) as unknown as Session;
+  return { gatekeeper, session };
+}
+
+/** Subscribes a hook through a session of the whole binding, as an agent's code would. */
+async function subscribe(method: Subscribe, { enable = true } = {}) {
+  const queue = new BindingQueue();
+  const { gatekeeper, session } = await open(queue);
+  try {
+    using callback = new RpcStub(new Callback());
+    await session[method]!(callback);
+  } finally {
+    session[Symbol.dispose]();
+  }
+  const hook = crypto.randomUUID();
+  const { controller, description } = queue.bound[0]!;
+  const subscription = {
+    gatekeeper, queue, description,
+    state: hookState(hook) as HookState,
+    enable: () => controller.enable(worker().TestHookInitiator({ props: { hook } }), { workspaceId: "triage" }),
+    disable: () => controller.disable(),
+  };
+  if (enable) {
+    await subscription.enable();
+    enabled.push(subscription.disable);
+  }
+  return subscription;
+}
+
+let seq = 0;
+const FILED_AT = new Date("2026-03-04T05:06:07.000Z");
+const ENDED_AT = new Date("2026-03-05T08:09:10.000Z");
+
+const reported = (reportId: string, priority: "low" | "medium" | "high" = "high"): IssueReportEvent =>
+  ({ kind: "reported", seq: ++seq, reportId, priority, at: FILED_AT });
+
+const ended = (
+  reportId: string, status: "answered" | "waitingOnReporter" | "withAdmin" | "closed" = "answered",
+): IssueReportEvent => ({ kind: "investigationComplete", seq: ++seq, reportId, status, at: ENDED_AT });
+
+type Row = { message?: IssueReportEvent; attempts?: number; at?: number; deliveredAt?: number };
+
+/** Everything the driver stores, by key; a hook's stubs as the names they are stored under. */
+const stored = () => runInDurableObject(driver(), (_instance, state) =>
+  new Map([...state.storage.kv.list<unknown>()].map(([key, value]) => {
+    if (!key.startsWith("caps:")) return [key, value];
+    disposeStubs(value as object);
+    return [key, Object.keys(value as object).toSorted()];
+  })));
+
+/** The driver's queued deliveries, delivered or not. */
+const rows = async () => [...await stored()]
+    .filter(([key]) => key.startsWith("msg:")).map(([, row]) => row as Row);
+
+/** Waits until the driver has no delivery due: its own alarm delivers them. */
+const settled = () => vi.waitFor(async () => {
+  const due = (await rows()).filter((row) => row.at !== undefined && row.at <= Date.now());
+  if (due.length > 0) throw new Error(`${due.length} deliveries due`);
+}, { timeout: 10_000, interval: 25 });
+
+/** Takes the store's events as the vendor does, and waits for what is due of them. */
+async function ingest(...events: IssueReportEvent[]): Promise<void> {
+  await vendor().issueReportEvents(events);
+  await settled();
+}
+
+/**
+ * A clock that runs ahead of the runtime's: each step moves it on and runs the driver's alarm
+ * then, since the runtime never wakes the driver for a faked time. Only `Date.now()` is faked,
+ * which is all the driver and the kit's queue read: with the whole `Date` replaced, an event's
+ * real `at` would no longer pass for a Date where the delivery's arguments are validated.
+ */
+function clock() {
+  let ahead = 0;
+  return async (ms: number): Promise<void> => {
+    ahead += ms;
+    // Ahead of the runtime's clock as it is at this step: a retry is timed from its failure.
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + ahead);
+    try {
+      await runDurableObjectAlarm(driver());
+    } finally {
+      now.mockRestore();
+    }
+  };
+}
+
+describe("subscribing", () => {
+  it("binds one hook for new reports, disabled until its controller enables it", async () => {
+    const { queue, description, state, enable, disable } =
+        await subscribe("subscribeIssueReported", { enable: false });
+
+    // Nothing was read and nothing observed: subscribing does not mark the workspace.
+    expect(queue.log).toEqual(["bindHook"]);
+    expect(queue.bound).toHaveLength(1);
+    expect(description.title).toBe("Watch for new issue reports");
+    expect(description.description).toContain("the report's id, its priority and the time it was filed");
+    expect(description.description).toContain("ids and labels only");
+
+    // Bound is not enabled: an event reaches nothing.
+    await ingest(reported("r-unbound"));
+    expect(state.firings).toBe(0);
+    expect([...(await stored()).keys()].filter((key) => key.startsWith("reg:"))).toEqual([]);
+
+    await enable();
+    enabled.push(disable);
+    const registered = [...await stored()].filter(([key]) => key.startsWith("reg:"));
+    expect(registered.map(([, registration]) => registration)).toEqual([{ kind: "reported" }]);
+    await ingest(reported("r-enabled"));
+    expect(state.received.map(({ event }) => (event as { reportId: string }).reportId))
+        .toEqual(["r-enabled"]);
+
+    await disable();
+    const left = [...(await stored()).keys()];
+    expect(left.filter((key) => key.startsWith("reg:") || key.startsWith("caps:"))).toEqual([]);
+    await ingest(reported("r-disabled"));
+    expect(state.firings).toBe(1);
+  });
+
+  it("binds one hook for investigations that end", async () => {
+    const { queue, description } = await subscribe("subscribeInvestigationComplete");
+    expect(queue.log).toEqual(["bindHook"]);
+    expect(description.title).toBe("Watch for investigations that end");
+    expect(description.description).toContain("the report's id, its new status and the time");
+    expect(description.description).toContain("ids and labels only");
+    const registered = [...await stored()].filter(([key]) => key.startsWith("reg:"));
+    expect(registered.map(([, registration]) => registration)).toEqual([{ kind: "investigationComplete" }]);
+  });
+
+  it("refuses a hook that is no stub, and binds nothing", async () => {
+    const queue = new BindingQueue();
+    const { session } = await open(queue);
+    using _session = session;
+    for (const method of ["subscribeIssueReported", "subscribeInvestigationComplete"] as const) {
+      for (const hook of [undefined, "callback", 4]) {
+        expect((await rejection(session[method]!(hook))).message).toBe(
+            `Invalid arguments for AdminBinding.${method}: hook must be a persistent stub of the callback.`);
+      }
+    }
+    expect(queue.log).toEqual([]);
+  });
+
+  it("leaves an omitted method refused on the session that subscribes", async () => {
+    const queue = new BindingQueue();
+    const { session } = await open(queue);
+    using _session = session;
+    using callback = new RpcStub(new Callback());
+    await session.subscribeIssueReported!(callback);
+    expect(await rejection(session.setSiteName!("Mine"))).not.toHaveProperty("message", "did not reject");
+    expect(queue.log).toEqual(["bindHook"]);
+  });
+});
+
+describe("an event", () => {
+  it("of a new report fires each issue-reported hook once, and no investigation hook", async () => {
+    const first = await subscribe("subscribeIssueReported");
+    const second = await subscribe("subscribeIssueReported");
+    const investigation = await subscribe("subscribeInvestigationComplete");
+
+    await ingest(reported("r1", "medium"));
+
+    for (const { state } of [first, second]) {
+      expect(state.firings).toBe(1);
+      expect(state.received).toEqual([{
+        method: "issueReported",
+        event: { reportId: "r1", priority: "medium", filedAt: FILED_AT },
+      }]);
+    }
+    expect(investigation.state.firings).toBe(0);
+    expect(investigation.state.received).toEqual([]);
+  });
+
+  it("of an investigation that ends fires each investigation hook once, and no issue-reported hook", async () => {
+    const investigation = await subscribe("subscribeInvestigationComplete");
+    const issues = await subscribe("subscribeIssueReported");
+
+    await ingest(ended("r1", "waitingOnReporter"));
+
+    expect(investigation.state.firings).toBe(1);
+    expect(investigation.state.received).toEqual([{
+      method: "investigationComplete",
+      event: { reportId: "r1", status: "waitingOnReporter", at: ENDED_AT },
+    }]);
+    expect(issues.state.firings).toBe(0);
+    expect(issues.state.received).toEqual([]);
+  });
+
+  it("the store sends again fires once, and two events for one report fire twice", async () => {
+    const { state } = await subscribe("subscribeInvestigationComplete");
+    const first = ended("r1", "answered");
+
+    await ingest(first);
+    await ingest(first);
+    await ingest(first, { ...first });
+    expect(state.firings).toBe(1);
+
+    // The report is investigated again, and that investigation ends too.
+    const second = ended("r1", "closed");
+    await ingest(first, second);
+    expect(state.received.map(({ event }) => (event as { status: string }).status))
+        .toEqual(["answered", "closed"]);
+    expect(state.firings).toBe(2);
+  });
+
+  it("is observed with the binding's subresource and no restricted mark, before the callback", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    const investigation = await subscribe("subscribeInvestigationComplete");
+
+    await ingest(reported("r1", "low"), ended("r2", "withAdmin"));
+
+    expect(state.order).toEqual(["observe", "call"]);
+    expect(state.observations).toEqual([{
+      title: "Receive an issue report event",
+      description: "Receive the id, the priority and the filing time of a new issue report.",
+      fields: [
+        { label: "Event", kind: "inline", value: "reported" },
+        { label: "Report", kind: "inline", value: "r1" },
+      ],
+      subresources: [ADMIN_BINDING_SUBRESOURCE],
+    }]);
+    expect(state.observations[0]).not.toHaveProperty("containsRestrictedData");
+
+    expect(investigation.state.order).toEqual(["observe", "call"]);
+    expect(investigation.state.observations).toEqual([{
+      title: "Receive an issue report event",
+      description: "Receive the id, the new status and the time of an issue report whose " +
+        "investigation ended.",
+      fields: [
+        { label: "Event", kind: "inline", value: "investigationComplete" },
+        { label: "Report", kind: "inline", value: "r2" },
+      ],
+      subresources: [ADMIN_BINDING_SUBRESOURCE],
+    }]);
+    expect(investigation.state.observations[0]).not.toHaveProperty("containsRestrictedData");
+    // A firing is lent nothing and queues nothing.
+    expect(state.other).toEqual([]);
+    expect(investigation.state.other).toEqual([]);
+  });
+
+  it("whose observation is refused calls no callback, and is tried again", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    const tick = clock();
+    state.refuseObservations = true;
+
+    await ingest(reported("r1"));
+    expect(state.order).toEqual(["observe"]);
+    expect(state.received).toEqual([]);
+
+    state.refuseObservations = false;
+    await tick(MINUTE_MS);
+    expect(state.order).toEqual(["observe", "observe", "call"]);
+    expect(state.received).toHaveLength(1);
+  });
+});
+
+describe("a delivery that fails", () => {
+  it("in the callback is retried from the alarm, and then delivered once", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    const tick = clock();
+    state.failures = 2;
+
+    await ingest(reported("r1"));
+    expect(state.firings).toBe(1);
+    expect(state.received).toEqual([]);
+
+    // Not before its backoff.
+    await tick(MINUTE_MS - 10_000);
+    expect(state.firings).toBe(1);
+    await tick(10_000);
+    expect(state.firings).toBe(2);
+    expect(state.received).toEqual([]);
+
+    await tick(2 * MINUTE_MS);
+    expect(state.firings).toBe(3);
+    expect(state.received).toEqual([{
+      method: "issueReported", event: { reportId: "r1", priority: "high", filedAt: FILED_AT },
+    }]);
+
+    // Delivered, so nothing is left to retry.
+    await tick(HOUR_MS);
+    expect(state.firings).toBe(3);
+  });
+
+  it("because its firing is refused is retried, dropped after the kit's attempts, and a later event delivered", async () => {
+    const { state } = await subscribe("subscribeInvestigationComplete");
+    const tick = clock();
+    // The Workshop refuses a firing while the workspace's owner is not a deployment admin.
+    state.refusals = Infinity;
+
+    await ingest(ended("r1"));
+    for (let attempt = 2; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
+      expect(state.firings).toBe(attempt - 1);
+      await tick(HOUR_MS);
+    }
+    expect(state.firings).toBe(MAX_DELIVERY_ATTEMPTS);
+
+    // Given up on: the owner is an admin again, and the event is not delivered late.
+    state.refusals = 0;
+    await tick(HOUR_MS);
+    expect(state.firings).toBe(MAX_DELIVERY_ATTEMPTS);
+    expect(state.received).toEqual([]);
+
+    // The hook was never unregistered: the next event reaches it.
+    await ingest(ended("r2", "closed"));
+    expect(state.received).toEqual([{
+      method: "investigationComplete", event: { reportId: "r2", status: "closed", at: ENDED_AT },
+    }]);
+  });
+
+  it("for fewer than the kit's attempts delivers the same event once its firing is answered", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    const tick = clock();
+    state.refusals = 3;
+
+    await ingest(reported("r1", "low"));
+    await tick(MINUTE_MS);
+    await tick(2 * MINUTE_MS);
+    expect(state.firings).toBe(3);
+    expect(state.received).toEqual([]);
+
+    await tick(4 * MINUTE_MS);
+    expect(state.firings).toBe(4);
+    expect(state.received).toEqual([{
+      method: "issueReported", event: { reportId: "r1", priority: "low", filedAt: FILED_AT },
+    }]);
+  });
+
+  it("ends when its hook is disabled, which then receives nothing", async () => {
+    const { state, disable } = await subscribe("subscribeIssueReported");
+    const tick = clock();
+    state.failures = Infinity;
+
+    await ingest(reported("r1"));
+    expect(state.firings).toBe(1);
+
+    await disable();
+    state.failures = 0;
+    await tick(HOUR_MS);
+    await ingest(reported("r2"));
+    expect(state.firings).toBe(1);
+    expect(state.received).toEqual([]);
+    // What was queued is finished, not pending.
+    expect((await rows()).filter((row) => row.at !== undefined)).toEqual([]);
+  });
+});
+
+/** A facet of its own, with the methods the test worker adds. */
+const facet = () => env.INSTANCE_ADMIN_GATEKEEPER.getByName(crypto.randomUUID()) as unknown as TestFacet;
+
+describe("the delivery stub", () => {
+  class Queue extends RpcTarget {
+    readonly observed: string[] = [];
+    async authorizeObservation(description: ObservationDescription): Promise<void> {
+      this.observed.push(description.title);
+    }
+  }
+
+  class Hook extends RpcTarget {
+    readonly calls: string[] = [];
+    issueReported(): void {
+      this.calls.push("issueReported");
+    }
+    investigationComplete(): void {
+      this.calls.push("investigationComplete");
+    }
+  }
+
+  it("restores for the two kinds only", async () => {
+    const queue = new Queue();
+    const hook = new Hook();
+    expect((await rejection(facet().testDeliver(
+        { kind: "everything" as never }, new RpcStub(hook), new RpcStub(queue), reported("r1"))))
+        .message).toBe("No such issue report hook.");
+    expect(queue.observed).toEqual([]);
+    expect(hook.calls).toEqual([]);
+  });
+
+  it("delivers events of its own kind and no other", async () => {
+    const queue = new Queue();
+    const hook = new Hook();
+    await facet().testDeliver(
+        { kind: "reported" }, new RpcStub(hook), new RpcStub(queue), ended("r1"));
+    expect(queue.observed).toEqual([]);
+    expect(hook.calls).toEqual([]);
+
+    await facet().testDeliver(
+        { kind: "reported" }, new RpcStub(hook), new RpcStub(queue), reported("r1"));
+    expect(queue.observed).toEqual(["Receive an issue report event"]);
+    expect(hook.calls).toEqual(["issueReported"]);
+  });
+});
+
+describe("the vendor's issueReportEvents()", () => {
+  it("resolves once each event is stored for delivery", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    // Kept from being delivered, so the row is read as it was stored.
+    state.refusals = Infinity;
+    const event = reported("r1", "medium");
+
+    await vendor().issueReportEvents([event, ended("r2")]);
+
+    const queued = (await rows()).filter((row) => row.message !== undefined);
+    expect(queued.map((row) => row.message)).toEqual([event]);
+    await settled();
+  });
+
+  it("rejects when the driver cannot store them, so the store sends them again", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    const event = reported("r1");
+    vi.spyOn(IssueReportHookDriver.prototype, "ingest").mockRejectedValueOnce(new Error("The disk is full."));
+
+    expect((await rejection(vendor().issueReportEvents([event]))).message).toContain("The disk is full.");
+    expect(state.firings).toBe(0);
+
+    // Sent again with the same `seq`, it is taken and delivered once.
+    await ingest(event);
+    await ingest(event);
+    expect(state.firings).toBe(1);
+  });
+
+  it("resolves with no subscriber, storing nothing", async () => {
+    await expect(vendor().issueReportEvents([reported("r1"), ended("r1")])).resolves.toBeUndefined();
+    await expect(vendor().issueReportEvents([])).resolves.toBeUndefined();
+    expect((await rows()).filter((row) => row.message !== undefined)).toEqual([]);
+  });
+});
+
+describe("the driver's storage", () => {
+  const KEY = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
+
+  it("holds each hook's kind and stubs, and ids and labels of events: no report's text or reporter", async () => {
+    const delivered = await subscribe("subscribeIssueReported");
+    const pending = await subscribe("subscribeInvestigationComplete");
+    pending.state.failures = Infinity;
+    const filed = reported("r1", "low");
+    const done = ended("r1", "answered");
+    await ingest(filed, done);
+    expect(delivered.state.received).toHaveLength(1);
+    expect(pending.state.firings).toBe(1);
+
+    const entries = [...await stored()];
+    const of = (pattern: RegExp) => entries.filter(([key]) => pattern.test(key)).map(([, value]) => value);
+    // Every key is one of these, so nothing else is stored.
+    const known = [
+      new RegExp(`^reg:${KEY}$`), new RegExp(`^caps:${KEY}$`), new RegExp(`^msg:${KEY}:\\d+$`),
+      new RegExp(`^queue:(due|finished):\\d{15}:${KEY}:\\d+$`), /^queue:indexed$/,
+    ];
+    expect(entries.map(([key]) => key).filter((key) => !known.some((pattern) => pattern.test(key))))
+        .toEqual([]);
+
+    expect(of(known[0]!).toSorted((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))
+        .toEqual([{ kind: "investigationComplete" }, { kind: "reported" }]);
+    expect(of(known[1]!)).toEqual([["delivery", "initiator"], ["delivery", "initiator"]]);
+    expect(new Set(of(known[3]!))).toEqual(new Set([true]));
+
+    // Of the two hooks enabled here (earlier tests' rows stay until their day has passed): a
+    // delivered event leaves a time; one still to deliver is the event as the store sent it.
+    const hooks = entries.map(([key]) => key).filter((key) => key.startsWith("reg:"))
+        .map((key) => key.slice("reg:".length));
+    const queued = entries
+        .filter(([key]) => hooks.some((hook) => key.startsWith(`msg:${hook}:`)))
+        .map(([, row]) => row as Row);
+    expect(queued.filter((row) => row.message === undefined)).toEqual([{ deliveredAt: expect.any(Number) }]);
+    expect(queued.filter((row) => row.message !== undefined)).toEqual([
+      { message: done, attempts: 1, at: expect.any(Number) },
+    ]);
+  });
+
+  it("holds an event's declared fields and no other the sender added", async () => {
+    const issues = await subscribe("subscribeIssueReported");
+    const investigations = await subscribe("subscribeInvestigationComplete");
+    // Kept from being delivered, so each row is read as it was stored.
+    issues.state.refusals = Infinity;
+    investigations.state.refusals = Infinity;
+    const filed = reported("r1", "low");
+    const done = ended("r2", "closed");
+    // The vendor's argument check lets a property the type does not declare through.
+    const extra = { text: "WHAT WENT WRONG", reporter: { id: "u1", name: "THE REPORTER" } };
+
+    await vendor().issueReportEvents([
+      { ...filed, ...extra, status: "closed" } as IssueReportEvent,
+      { ...done, ...extra, priority: "high" } as IssueReportEvent,
+    ]);
+
+    const entries = [...await stored()];
+    const messages = entries.map(([, row]) => (row as Row).message)
+        .filter((message) => message?.seq === filed.seq || message?.seq === done.seq);
+    expect(messages.toSorted((a, b) => a!.seq - b!.seq)).toEqual([filed, done]);
+    expect(messages.map((message) => Object.keys(message!).toSorted()).toSorted()).toEqual([
+      ["at", "kind", "priority", "reportId", "seq"],
+      ["at", "kind", "reportId", "seq", "status"],
+    ]);
+    const everything = JSON.stringify(entries);
+    expect(everything).toContain('"r1"');
+    expect(everything).not.toContain("WHAT WENT WRONG");
+    expect(everything).not.toContain("THE REPORTER");
+    await settled();
+  });
+});
+
+/** The doc comment that ends just before `signature`, as one line. */
+function docOf(types: string, signature: string): string {
+  const before = types.slice(0, types.indexOf(signature));
+  return before.slice(before.lastIndexOf("/**")).replace(/\n\s*\*\s?/g, " ");
+}
+
+describe("the declarations", () => {
+  const NOT_YET = "its images and the grant its reporter may give with it are attached by later " +
+    "calls, so a subscriber that reads at once may find no image and be refused content, and " +
+    "reads again later rather than concluding there is none.";
+  it("say, where a hook for new reports is subscribed and called, that images and the grant come later", async () => {
+    const types = await env.INSTANCE_ADMIN_GATEKEEPER.getByName("types").getTypeScriptTypes();
+    for (const signature of [
+      "  subscribeIssueReported(hook: IssueReportedHook): Promise<void>;",
+      "  issueReported(event: {",
+    ]) {
+      expect(types).toContain(`\n${signature}\n`);
+      expect(docOf(types, signature), signature).toContain(NOT_YET);
+    }
+    expect(types).toContain("\n  subscribeInvestigationComplete(hook: InvestigationCompleteHook): Promise<void>;\n");
+    expect(docOf(types, "  subscribeIssueReported(hook: IssueReportedHook)")).toContain("persistent stub");
+  });
+
+  it("name one exported interface a hook's callback can implement, which covers both callbacks", async () => {
+    const description = await env.INSTANCE_ADMIN_GATEKEEPER.getByName("types").describe();
+    expect(description.hookTsType).toBe("IssueReportHook");
+    // An interface, since a class cannot implement a union of the two.
+    expect(HAND_WRITTEN_TYPES).toContain("\nexport interface IssueReportHook\n" +
+        "  extends Partial<IssueReportedHook>, Partial<InvestigationCompleteHook> {}\n");
+    const doc = docOf(HAND_WRITTEN_TYPES, "export interface IssueReportHook\n");
+    expect(doc).toContain("RpcTarget");
+    expect(doc).toContain("[restore]()");
+    expect(doc).not.toContain("entrypoint");
+    expect(HAND_WRITTEN_TYPES).toMatch(/^export interface IssueReportedHook \{$/m);
+    expect(HAND_WRITTEN_TYPES).toMatch(/^export interface InvestigationCompleteHook \{$/m);
+    expect(HAND_WRITTEN_TYPES).toContain('priority: "low" | "medium" | "high";');
+    expect(HAND_WRITTEN_TYPES).toContain('status: "answered" | "waitingOnReporter" | "withAdmin" | "closed";');
+  });
+});
