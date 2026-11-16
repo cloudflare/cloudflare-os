@@ -43,13 +43,14 @@ function actor(admin: string): AdminWriteActor {
 }
 
 /** The record of `request`'s step `event`: taken by its requester, through the request's own
- * session and client, unless `by` is given, and with pendingWrite()'s arguments unless `extra`
+ * session and client and from where an agent filed it, unless `by` is given, and with pendingWrite()'s arguments unless `extra`
  * holds the request's own as the audit log keeps them. */
 function recordOf(request: StoredAdminWrite, event: AdminWriteRecord["event"],
     by?: AdminWriteActor, extra: object = {}): unknown {
-  const { requestedBy: admin, sessionId, via } = request;
+  const { requestedBy: admin, sessionId, via, agent } = request;
   return {
-    kind: "write", at: expect.any(Date), ...(by ?? { admin, sessionId, via }),
+    kind: "write", at: expect.any(Date),
+    ...(by ?? { admin, sessionId, via, ...(agent && { agent }) }),
     requestId: request.id, event,
     workspaceId: request.workspaceId, workspaceOwner: request.workspaceOwner,
     workspaceTitle: request.workspaceTitle, method: request.action, args: { chatId: 3 },
@@ -536,6 +537,68 @@ describe("a write record", () => {
       await admin.alarm();
       expect(retentions).toEqual([["expired", 180]]);
     }, { ADMIN_AUDIT_RETENTION_MIN_DAYS: "180" });
+  });
+});
+
+describe("a request filed through the admin gatekeeper", () => {
+  const AGENT = { workspaceId: "c".repeat(64), chatId: 4 };
+  const filed = (overrides: Partial<StoredAdminWrite> = {}) =>
+      requestWrite({ via: "gatekeeper", agent: AGENT, ...overrides });
+
+  it("keeps where it came from: stored, read, and on its \"requested\" and \"expired\" records",
+      async () => {
+    const made = await filed();
+    await harness.inDo(async admin => {
+      expect(harness.storageOf(admin).adminWrites.get(made.id)).toStrictEqual(made);
+      const read = await admin.getWorkspaceWrite(made.id);
+      expect(read).toStrictEqual(made);
+      expect(read).toMatchObject({ requestedBy: ADMIN, via: "gatekeeper", agent: AGENT });
+      age(admin, made.id);
+      await admin.alarm();
+      expect(await admin.getWorkspaceWrite(made.id))
+          .toMatchObject({ state: "expired", via: "gatekeeper", agent: AGENT });
+    });
+    const records = harness.appended as AdminWriteRecord[];
+    expect(records).toStrictEqual([recordOf(made, "requested"), recordOf(made, "expired")]);
+    for (let record of records) {
+      expect(record).toMatchObject({ admin: ADMIN, via: "gatekeeper", agent: AGENT });
+    }
+  });
+
+  it("gives the origin to no step another admin takes in it", async () => {
+    const made = await filed();
+    await harness.inDo(admin => admin.denyWorkspaceWrite(made.id, actor(OTHER_ADMIN)));
+    const [requested, denied] = harness.appended as AdminWriteRecord[];
+    expect(requested).toHaveProperty("agent", AGENT);
+    expect(denied).toStrictEqual(recordOf(made, "denied", actor(OTHER_ADMIN)));
+    expect(denied).not.toHaveProperty("agent");
+    // The request itself still says where it came from.
+    expect(await harness.inDo(admin => admin.getWorkspaceWrite(made.id)))
+        .toMatchObject({ state: "denied", resolvedBy: OTHER_ADMIN, agent: AGENT });
+  });
+
+  it("gives a request filed by a client no origin, stored or recorded", async () => {
+    const made = await requestWrite();
+    await harness.inDo(async admin => {
+      expect(await admin.getWorkspaceWrite(made.id)).not.toHaveProperty("agent");
+      age(admin, made.id);
+      await admin.alarm();
+    });
+    expect(eventsOf(made.id)).toStrictEqual(["requested", "expired"]);
+    for (let record of harness.appended) expect(record).not.toHaveProperty("agent");
+  });
+
+  // The requester is the admin the agent filed it for, whichever chat it came from.
+  it("is that admin's own request, which they cannot approve when it needs a second admin",
+      async () => {
+    const made = await filed({ action: "grantContentAccess", args: {} });
+    expect(await codeOf(harness.inDo(
+        admin => admin.beginWorkspaceWriteApproval(made.id, ADMIN))))
+        .toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    // Another admin gets past that check, to the one for a passkey of their own.
+    expect(await codeOf(harness.inDo(
+        admin => admin.beginWorkspaceWriteApproval(made.id, OTHER_ADMIN))))
+        .toBe(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
   });
 });
 

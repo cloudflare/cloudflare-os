@@ -137,7 +137,8 @@ describe("filing an issue report", () => {
     let report = await run(reports => reports.submit(profile, input(), false));
     await run(reports => reports.reply(profile, report.id, "Any news?"));
     await run(reports => reports.addEntry(
-        { ...GRACE, commitEmail: "grace@corp.example" } as Person, "api", report.id, "Looking.",
+        { ...GRACE, commitEmail: "grace@corp.example" } as Person, { via: "api" }, report.id,
+        "Looking.",
         "public"));
 
     let read = await run(reports => reports.get(report.id));
@@ -317,7 +318,7 @@ describe("who an issue report keeps", () => {
     expect((await run(reports => reports.get(first.id))).entries).toStrictEqual([]);
 
     // What is unseen, the mark and the grant's link take the whole id as well.
-    await run(reports => reports.addEntry(GRACE, "api", first.id, "Try again now.", "public"));
+    await run(reports => reports.addEntry(GRACE, { via: "api" }, first.id, "Try again now.", "public"));
     expect(await run(reports => reports.unseenCount(one.id))).toBe(1);
     expect(await run(reports => reports.unseenCount(two.id))).toBe(0);
     expect(await refusal(() => run(reports => reports.markSeen(two.id, first.id))))
@@ -352,7 +353,7 @@ describe("what a reporter has seen", () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
     let bens = await run(reports => reports.submit(BEN, input(), false));
-    await run(reports => reports.addEntry(GRACE, "api", report.id, "Try again now.", "public"));
+    await run(reports => reports.addEntry(GRACE, { via: "api" }, report.id, "Try again now.", "public"));
 
     let adas = async () => ({
       count: await run(reports => reports.unseenCount("ada")),
@@ -374,7 +375,7 @@ describe("what a reporter has seen", () => {
     expect(await adas()).toStrictEqual({ count: 0, one: false, listed: false });
     // Marking again is fine, and a later answer makes it unseen again.
     await run(reports => reports.markSeen("ada", report.id));
-    await run(reports => reports.addEntry(HEDY, "cli", report.id, "Fixed.", "public"));
+    await run(reports => reports.addEntry(HEDY, { via: "cli" }, report.id, "Fixed.", "public"));
     expect(await adas()).toStrictEqual({ count: 1, one: true, listed: true });
   });
 
@@ -386,8 +387,8 @@ describe("what a reporter has seen", () => {
     }
     for (let id of ids.slice(0, 2)) {
       await run(reports => {
-        reports.addEntry(GRACE, "api", id, "First.", "public");
-        reports.addEntry(GRACE, "api", id, "Second.", "public");
+        reports.addEntry(GRACE, { via: "api" }, id, "First.", "public");
+        reports.addEntry(GRACE, { via: "api" }, id, "Second.", "public");
       });
     }
     expect(await run(reports => reports.unseenCount("ada"))).toBe(2);
@@ -409,7 +410,7 @@ describe("an issue report's thread", () => {
 
     clock.advance(HOUR_MS);
     let note = await run(reports => reports.addEntry(
-        GRACE, "api", report.id, "Looks like the quota bug.", "admins"));
+        GRACE, { via: "api" }, report.id, "Looks like the quota bug.", "admins"));
     expect(note).toMatchObject({
       visibility: "admins", via: "api", text: "Looks like the quota bug.",
       author: { id: "grace@example.test", name: "Grace (admin)" },
@@ -427,7 +428,7 @@ describe("an issue report's thread", () => {
   it("names the admin who changed a status, publicly, and leaves the report seen", async () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
-    await run(reports => reports.setStatus(GRACE, "cli", report.id, "investigating"));
+    await run(reports => reports.setStatus(GRACE, { via: "cli" }, report.id, "investigating"));
 
     let own = await run(reports => reports.getOwn("ada", report.id));
     expect(own.status).toBe("investigating");
@@ -439,21 +440,21 @@ describe("an issue report's thread", () => {
     }]);
 
     // The status it already has adds nothing.
-    await run(reports => reports.setStatus(HEDY, "api", report.id, "investigating"));
+    await run(reports => reports.setStatus(HEDY, { via: "api" }, report.id, "investigating"));
     expect((await run(reports => reports.get(report.id))).entries).toHaveLength(1);
 
     // An admin's written public entry is what makes it unseen.
-    await run(reports => reports.addEntry(GRACE, "cli", report.id, "Found it.", "public"));
+    await run(reports => reports.addEntry(GRACE, { via: "cli" }, report.id, "Found it.", "public"));
     expect((await run(reports => reports.getOwn("ada", report.id))).unseen).toBe(true);
     expect(await run(reports => reports.unseenCount("ada"))).toBe(1);
     // A status set after it leaves it unseen, and one set after it was seen leaves it seen.
-    await run(reports => reports.setStatus(GRACE, "cli", report.id, "answered"));
+    await run(reports => reports.setStatus(GRACE, { via: "cli" }, report.id, "answered"));
     expect(await run(reports => reports.unseenCount("ada"))).toBe(1);
     await run(reports => reports.markSeen("ada", report.id));
-    await run(reports => reports.setStatus(GRACE, "cli", report.id, "closed"));
+    await run(reports => reports.setStatus(GRACE, { via: "cli" }, report.id, "closed"));
     expect(await run(reports => reports.unseenCount("ada"))).toBe(0);
     expect(await refusal(() => run(reports => reports.setStatus(
-        GRACE, "cli", report.id, "resolved" as never)))).toBe("TypeError");
+        GRACE, { via: "cli" }, report.id, "resolved" as never)))).toBe("TypeError");
   });
 
   it("puts a report back in front of the admins when its reporter replies", async () => {
@@ -465,12 +466,12 @@ describe("an issue report's thread", () => {
     expect((await run(reports => reports.reply(ADA, report.id, "More detail."))).status)
         .toBeUndefined();
     expect(await status()).toBe("new");
-    await run(reports => reports.setStatus(GRACE, "api", report.id, "investigating"));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "investigating"));
     await run(reports => reports.reply(ADA, report.id, "And more."));
     expect(await status()).toBe("investigating");
 
     for (let set of ["answered", "waitingOnReporter"] as const) {
-      await run(reports => reports.setStatus(GRACE, "api", report.id, set));
+      await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, set));
       let reply = await run(reports => reports.reply(ADA, report.id, `  After ${set}.  `));
       expect(reply).toStrictEqual({
         id: expect.any(String), at: expect.any(Date), author: { id: "ada", name: "Ada" },
@@ -481,14 +482,14 @@ describe("an issue report's thread", () => {
     // Already with the admins: the next reply sets nothing.
     expect((await run(reports => reports.reply(ADA, report.id, "Hello?"))).status).toBeUndefined();
 
-    await run(reports => reports.setStatus(GRACE, "api", report.id, "closed"));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "closed"));
     expect(await refusal(() => run(reports => reports.reply(ADA, report.id, "One more thing."))))
         .toBe(ISSUE_REPORT_ERROR_CODES.closed);
     expect(await status()).toBe("closed");
     // The admins still write in a closed report, and reopen it by setting a status.
-    await run(reports => reports.addEntry(GRACE, "api", report.id, "Reopening.", "public"));
+    await run(reports => reports.addEntry(GRACE, { via: "api" }, report.id, "Reopening.", "public"));
     await run(reports => reports.setLinks(report.id, ["https://example.com/1"]));
-    await run(reports => reports.setStatus(GRACE, "api", report.id, "investigating"));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "investigating"));
     await run(reports => reports.reply(ADA, report.id, "Thanks."));
   });
 
@@ -501,18 +502,18 @@ describe("an issue report's thread", () => {
       expect(await refusal(() => run(reports => reports.reply(ADA, report.id, text))))
           .toBe("TypeError");
       expect(await refusal(() => run(reports => reports.addEntry(
-          GRACE, "api", report.id, text, "public")))).toBe("TypeError");
+          GRACE, { via: "api" }, report.id, text, "public")))).toBe("TypeError");
     }
     expect(await refusal(() => run(reports => reports.addEntry(
-        GRACE, "api", report.id, "Hello.", "everyone" as never)))).toBe("TypeError");
+        GRACE, { via: "api" }, report.id, "Hello.", "everyone" as never)))).toBe("TypeError");
     expect(await count("entries")).toBe(0);
 
     expect(await refusal(() => run(reports => reports.reply(ADA, unknown, "Hi.")))).toBe(NOT_FOUND);
     expect(await refusal(() => run(reports => reports.getOwn("ada", unknown)))).toBe(NOT_FOUND);
     expect(await refusal(() => run(reports => reports.get(unknown)))).toBe(NOT_FOUND);
     expect(await refusal(() => run(reports => reports.addEntry(
-        GRACE, "api", unknown, "Hi.", "public")))).toBe(NOT_FOUND);
-    expect(await refusal(() => run(reports => reports.setStatus(GRACE, "api", unknown, "closed"))))
+        GRACE, { via: "api" }, unknown, "Hi.", "public")))).toBe(NOT_FOUND);
+    expect(await refusal(() => run(reports => reports.setStatus(GRACE, { via: "api" }, unknown, "closed"))))
         .toBe(NOT_FOUND);
     expect(await refusal(() => run(reports => reports.setLinks(unknown, [])))).toBe(NOT_FOUND);
   });
@@ -524,7 +525,7 @@ describe("an issue report's thread", () => {
     let full = ISSUE_REPORT_ERROR_CODES.threadFull;
     let admins = (visibility: "public" | "admins", times: number) => run(reports => {
       for (let i = 0; i < times; i++) {
-        reports.addEntry(GRACE, "api", report.id, "Entry.", visibility);
+        reports.addEntry(GRACE, { via: "api" }, report.id, "Entry.", visibility);
       }
     });
 
@@ -548,7 +549,7 @@ describe("an issue report's thread", () => {
     // After the reporter's 200th reply an admin still answers, and the reporter reads it.
     await run(reports => reports.markSeen("ada", report.id));
     let answer = await run(reports =>
-        reports.addEntry(GRACE, "api", report.id, "Last word.", "public"));
+        reports.addEntry(GRACE, { via: "api" }, report.id, "Last word.", "public"));
     expect(await run(reports => reports.unseenCount("ada"))).toBe(1);
     let own = await run(reports => reports.getOwn("ada", report.id));
     expect(own.entries.at(-1)).toMatchObject({ id: answer.id, text: "Last word." });
@@ -558,7 +559,7 @@ describe("an issue report's thread", () => {
     expect(await refusal(() => admins("admins", 1))).toBe(full);
 
     // A full thread is still closed, and the change is entered in it.
-    await run(reports => reports.setStatus(HEDY, "cli", report.id, "closed"));
+    await run(reports => reports.setStatus(HEDY, { via: "cli" }, report.id, "closed"));
     let read = await run(reports => reports.get(report.id));
     expect(read.status).toBe("closed");
     expect(read.entries).toHaveLength(3 * MAX_ISSUE_REPORT_THREAD_ENTRIES + 1);
@@ -573,10 +574,10 @@ describe("an issue report's thread", () => {
     // Two changes of status come first: each is a public line of the admins' and no answer, so
     // all 200 answers still go in after them.
     await run(reports => {
-      reports.setStatus(GRACE, "api", report.id, "investigating");
-      reports.setStatus(GRACE, "api", report.id, "answered");
+      reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
+      reports.setStatus(GRACE, { via: "api" }, report.id, "answered");
       for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
-        reports.addEntry(GRACE, "api", report.id, "Answer.", "public");
+        reports.addEntry(GRACE, { via: "api" }, report.id, "Answer.", "public");
       }
     });
     let entries = (await run(reports => reports.get(report.id))).entries;
@@ -584,15 +585,15 @@ describe("an issue report's thread", () => {
     expect(entries.filter(entry => entry.text === "Answer."))
         .toHaveLength(MAX_ISSUE_REPORT_THREAD_ENTRIES);
     expect(await refusal(() => run(reports => reports.addEntry(
-        GRACE, "api", report.id, "The 201st.", "public"))))
+        GRACE, { via: "api" }, report.id, "The 201st.", "public"))))
         .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
     // Their notes are counted apart, and so are the reporter's replies and status lines.
-    await run(reports => reports.addEntry(GRACE, "api", report.id, "A note.", "admins"));
+    await run(reports => reports.addEntry(GRACE, { via: "api" }, report.id, "A note.", "admins"));
     await run(reports => reports.reply(ADA, report.id, "Still here."));
-    await run(reports => reports.setStatus(GRACE, "api", report.id, "answered"));
-    await run(reports => reports.setStatus(GRACE, "api", report.id, "investigating"));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "answered"));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "investigating"));
     expect(await refusal(() => run(reports => reports.addEntry(
-        GRACE, "api", report.id, "The 201st.", "public"))))
+        GRACE, { via: "api" }, report.id, "The 201st.", "public"))))
         .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
   });
 
@@ -608,7 +609,7 @@ describe("an issue report's thread", () => {
       }
       // An admin's entries are not the reporter's replies, even written by the same account: the
       // 100th reply of the day still goes in after one.
-      reports.addEntry(ADA, "api", bens.id, "As an admin.", "public");
+      reports.addEntry(ADA, { via: "api" }, bens.id, "As an admin.", "public");
       reports.reply(ADA, second.id, "The 100th.");
     });
     for (let id of [first.id, second.id]) {
@@ -618,6 +619,185 @@ describe("an issue report's thread", () => {
     await run(reports => reports.reply(BEN, bens.id, "Mine."));
     clock.nextDay();
     await run(reports => reports.reply(ADA, first.id, "A new day."));
+  });
+});
+
+describe("an entry written through the admin gatekeeper", () => {
+  const AGENT = { workspaceId: "c".repeat(64), chatId: 4 };
+
+  it("keeps where it came from for the admins, and shows the reporter its via alone", async () => {
+    let { run, sql } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+
+    let written = await run(reports => reports.addEntry(
+        GRACE, { via: "gatekeeper", agent: AGENT }, report.id, "Try again now.", "public"));
+    expect(written).toStrictEqual({
+      id: expect.any(String), at: expect.any(Date), visibility: "public", via: "gatekeeper",
+      agent: AGENT, text: "Try again now.",
+      author: { id: "grace@example.test", name: "Grace (admin)" },
+    });
+    // A caller with no chat keeps none, and a change of status carries the origin too.
+    let { chatId: _chatId, ...noChat } = AGENT;
+    await run(reports => reports.setStatus(
+        GRACE, { via: "gatekeeper", agent: noChat }, report.id, "answered"));
+    await run(reports => reports.addEntry(HEDY, { via: "cli" }, report.id, "A note.", "admins"));
+
+    let read = await run(reports => reports.get(report.id));
+    expect(read.entries.map(({ via, agent, status }) => ({ via, agent, status })))
+        .toStrictEqual([
+          { via: "gatekeeper", agent: AGENT, status: undefined },
+          { via: "gatekeeper", agent: noChat, status: "answered" },
+          { via: "cli", agent: undefined, status: undefined },
+        ]);
+    expect(read.entries[1].agent).not.toHaveProperty("chatId");
+    expect(read.entries[2]).not.toHaveProperty("agent");
+    expect(await sql("SELECT via, agent FROM entries ORDER BY n")).toStrictEqual([
+      { via: "gatekeeper", agent: JSON.stringify(AGENT) },
+      { via: "gatekeeper", agent: JSON.stringify(noChat) },
+      { via: "cli", agent: null },
+    ]);
+
+    // The reporter reads that an agent wrote it, and nothing of where: not in the report, and
+    // not in the answer to their own reply.
+    let own = await run(reports => reports.getOwn("ada", report.id));
+    expect(own.entries.map(entry => entry.via)).toStrictEqual(["gatekeeper", "gatekeeper"]);
+    for (let entry of own.entries) expect(entry).not.toHaveProperty("agent");
+    expect(JSON.stringify(own)).not.toContain(AGENT.workspaceId);
+    let reply = await run(reports => reports.reply(ADA, report.id, "Still broken."));
+    expect(reply).not.toHaveProperty("agent");
+    expect(reply).not.toHaveProperty("via");
+    let page = await run(reports => reports.listOwn("ada"));
+    expect(JSON.stringify(page)).not.toContain(AGENT.workspaceId);
+  });
+
+  it("copies nothing else of the caller into the entry", async () => {
+    let { run, sql } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let caller = {
+      via: "gatekeeper" as const, agent: { ...AGENT, admin: "mallory" }, insiders: ["ada"],
+    };
+    let written = await run(reports => reports.addEntry(
+        GRACE, caller, report.id, "A note.", "admins"));
+    expect(written.agent).toStrictEqual(AGENT);
+    expect(await sql("SELECT agent FROM entries")).toStrictEqual(
+        [{ agent: JSON.stringify(AGENT) }]);
+  });
+
+  it.each<[string, { via: unknown; agent?: unknown }]>([
+    ["a via that is not one", { via: "browser" }],
+    ["a gatekeeper without an origin", { via: "gatekeeper" }],
+    ["an origin under cli", { via: "cli", agent: AGENT }],
+    ["an origin without a workspace", { via: "gatekeeper", agent: { chatId: 4 } }],
+    ["a chat that is not a whole number", { via: "gatekeeper", agent: { ...AGENT, chatId: 1.5 } }],
+  ])("refuses %s before anything is written", async (_name, caller) => {
+    let { run, count } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let before = await run(reports => reports.get(report.id));
+    let malformed = caller as Parameters<IssueReportsDurableObject["addEntry"]>[1];
+
+    expect(await refusal(() => run(reports => reports.addEntry(
+        GRACE, malformed, report.id, "A note.", "admins")))).toBe("TypeError");
+    expect(await refusal(() => run(reports => reports.setStatus(
+        GRACE, malformed, report.id, "closed")))).toBe("TypeError");
+    // Refused for the caller before the report is looked up, so an unknown report says no more.
+    expect(await refusal(() => run(reports => reports.setStatus(
+        GRACE, malformed, crypto.randomUUID(), "closed")))).toBe("TypeError");
+
+    expect(await count("entries")).toBe(0);
+    expect(await run(reports => reports.get(report.id))).toStrictEqual(before);
+  });
+});
+
+// The schema step is the store's constructor, so a second instance over the same storage runs it
+// as the store's next start does: the pool gives a test no way to restart the object in place and
+// keep what it stored.
+function restart(state: DurableObjectState): IssueReportsDurableObject {
+  return new IssueReportsDurableObject(state, env as unknown as Cloudflare.Env);
+}
+
+describe("a store whose entries table has no agent column", () => {
+  // The table as a store made without the column holds it.
+  const ENTRIES_WITHOUT_AGENT = `CREATE TABLE entries (
+      report_seq INTEGER NOT NULL,
+      n INTEGER NOT NULL,
+      id TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      author_id TEXT NOT NULL,
+      author_name TEXT NOT NULL,
+      visibility TEXT NOT NULL CHECK (visibility IN ('public', 'admins')),
+      via TEXT,
+      text TEXT NOT NULL,
+      status TEXT,
+      PRIMARY KEY (report_seq, n)
+    ) STRICT`;
+  // A table's columns, by name: ALTER TABLE adds a column after the others, and every statement
+  // of the store names its columns, so their order is not compared.
+  const COLUMNS = `SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info('entries')
+      ORDER BY name`;
+
+  it("gains the column when the store next starts, keeping its entries", async () => {
+    let { run, sql } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let { seq } = (await sql<{ seq: number }>("SELECT seq FROM reports"))[0];
+    await run((_reports, state) => {
+      let db = state.storage.sql;
+      db.exec("DROP TABLE entries");
+      db.exec(ENTRIES_WITHOUT_AGENT);
+      db.exec(
+        `INSERT INTO entries (report_seq, n, id, at, author_id, author_name, visibility, via,
+           text, status)
+         VALUES (?, 1, 'entry-1', 1000, 'ada', 'Ada', 'public', NULL, 'Any news?', NULL),
+                (?, 2, 'entry-2', 2000, 'grace@example.test', 'Grace (admin)', 'admins', 'cli',
+                 'Looking.', NULL)`, seq, seq);
+    });
+    expect((await sql<{ name: string }>(COLUMNS)).map(column => column.name))
+        .not.toContain("agent");
+
+    let migrated = await run((_reports, state) => {
+      let restarted = restart(state);
+      let entries = restarted.get(report.id).entries;
+      let added = restarted.addEntry(GRACE, { via: "gatekeeper", agent: { workspaceId: "w" } },
+          report.id, "Try again now.", "public");
+      return { entries, added };
+    });
+    let columns = await sql(COLUMNS);
+    expect(columns.map(column => column.name)).toContain("agent");
+    expect(migrated.entries).toStrictEqual([
+      { id: "entry-1", at: new Date(1000), author: { id: "ada", name: "Ada" },
+        visibility: "public", text: "Any news?" },
+      { id: "entry-2", at: new Date(2000),
+        author: { id: "grace@example.test", name: "Grace (admin)" }, visibility: "admins",
+        via: "cli", text: "Looking." },
+    ]);
+    expect(migrated.added).toMatchObject(
+        { via: "gatekeeper", agent: { workspaceId: "w" }, text: "Try again now." });
+    expect(await sql("SELECT n, agent FROM entries ORDER BY n")).toStrictEqual([
+      { n: 1, agent: null }, { n: 2, agent: null }, { n: 3, agent: `{"workspaceId":"w"}` },
+    ]);
+
+    // A start that finds the column changes nothing.
+    await run((_reports, state) => { restart(state); });
+    expect(await sql(COLUMNS)).toStrictEqual(columns);
+    expect((await run(reports => reports.get(report.id))).entries).toHaveLength(3);
+
+    // A store made with the column holds the same ones.
+    expect(await store().sql(COLUMNS)).toStrictEqual(columns);
+  });
+
+  it("refuses a stored origin that is not JSON, in either table", async () => {
+    let fresh = store();
+    let insert = `INSERT INTO entries (report_seq, n, id, at, author_id, author_name,
+        visibility, via, agent, text) VALUES (1, 9, 'x', 0, 'a', 'A', 'admins', 'gatekeeper',
+        'not json', '')`;
+    await expect(fresh.sql(insert)).rejects.toThrow(/CHECK constraint failed/);
+
+    let altered = store();
+    await altered.run((_reports, state) => {
+      state.storage.sql.exec("DROP TABLE entries");
+      state.storage.sql.exec(ENTRIES_WITHOUT_AGENT);
+      restart(state);
+    });
+    await expect(altered.sql(insert)).rejects.toThrow(/CHECK constraint failed/);
   });
 });
 
@@ -660,7 +840,7 @@ describe("an issue report's links", () => {
   it("shows them to admins only", async () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
-    await run(reports => reports.addEntry(GRACE, "api", report.id, "On it.", "public"));
+    await run(reports => reports.addEntry(GRACE, { via: "api" }, report.id, "On it.", "public"));
     let reporters = async () => ({
       one: await run(reports => reports.getOwn("ada", report.id)),
       page: await run(reports => reports.listOwn("ada")),
@@ -990,7 +1170,7 @@ describe("listing issue reports", () => {
     let b = await file(BEN, "high", "w1");
     let c = await file(ADA, "high", "w2");
     let d = await file(BEN, "low");
-    await run(reports => reports.setStatus(GRACE, "api", c.id, "investigating"));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, c.id, "investigating"));
 
     let listed = async (query: object) =>
         (await run(reports => reports.list({ limit: 10, ...query }))).reports.map(r => r.id);
@@ -1024,8 +1204,8 @@ describe("listing issue reports", () => {
     let report = await run(reports => reports.submit(ADA, input(), false));
     await run(reports => {
       reports.reply(ADA, report.id, "Any news?");
-      reports.addEntry(GRACE, "api", report.id, "Looking.", "public");
-      reports.setStatus(GRACE, "api", report.id, "investigating");
+      reports.addEntry(GRACE, { via: "api" }, report.id, "Looking.", "public");
+      reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
     });
     let own = await run(reports => reports.getOwn("ada", report.id));
     expect(own.entries.map(entry => entry.author)).toStrictEqual(
@@ -1040,7 +1220,7 @@ describe("listing issue reports", () => {
     let graces = await run(reports => reports.submit(GRACE, input(), false));
     await run(reports => {
       reports.reply(GRACE, graces.id, "As the reporter.");
-      reports.addEntry(GRACE, "cli", graces.id, "As an admin.", "public");
+      reports.addEntry(GRACE, { via: "cli" }, graces.id, "As an admin.", "public");
     });
     expect((await run(reports => reports.getOwn(GRACE.id, graces.id)))
         .entries.map(entry => entry.author))
@@ -1072,7 +1252,7 @@ describe("issue report retention", () => {
     let old = await run(reports => reports.submit(ADA, input(), false));
     await run(reports => {
       reports.reply(ADA, old.id, "Hello?");
-      reports.addEntry(GRACE, "api", old.id, "A note.", "admins");
+      reports.addEntry(GRACE, { via: "api" }, old.id, "A note.", "admins");
     });
     clock.advance(2 * DAY_MS);
     let young = await run(reports => reports.submit(ADA, input(), false));

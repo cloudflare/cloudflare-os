@@ -5,14 +5,17 @@ import {
   MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER, MAX_ISSUE_REPORT_LINKS, MAX_ISSUE_REPORT_LINK_LENGTH,
   MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_TEXT_LENGTH,
   MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError,
-  type AdminAccessGrant, type AdminIssueReport, type AdminIssueReportPage,
+  type AdminAccessGrant, type AdminAccessRecord, type AdminAgentOrigin, type AdminIssueReport,
+  type AdminIssueReportPage,
   type AdminIssueReportQuery, type AdminVia, type AiChatAuthorInfo, type IssueReport,
   type IssueReportAuthor, type IssueReportContext, type IssueReportEntry, type IssueReportGrant,
   type IssueReportImage, type IssueReportInput, type IssueReportPriority, type IssueReportStatus,
   type NamedUser, type OwnIssueReport, type OwnIssueReportPage,
 } from "@gadgets/workshop-shared/api";
 import { DurableObject } from "cloudflare:workers";
-import { adminAccessPolicy, adminListLimit, auditOwnerId, namedUser } from "./admin-access.js";
+import {
+  adminAccessPolicy, adminCallerTerms, adminListLimit, auditOwnerId, namedUser,
+} from "./admin-access.js";
 import { sniffImageMimeType } from "./chat-attachment-validation.js";
 import { createWorkshopLogger } from "./observability";
 
@@ -100,6 +103,7 @@ type EntryRow = {
   author_name: string;
   visibility: string;
   via: string | null;
+  agent: string | null;
   text: string;
   status: string | null;
 };
@@ -215,7 +219,8 @@ function adminReportOf(row: ReportRow): AdminIssueReport {
 
 // An entry as `reader` reads it. The reporter reads an entry the admins wrote (its row has a
 // `via`) without its author's id: an admin's id is their account name. The rule is the row's
-// `via`, never a comparison of ids, so it holds for an admin who filed the report too.
+// `via`, never a comparison of ids, so it holds for an admin who filed the report too. Where an
+// agent's entry came from (`agent`) is for admins alone: the reporter reads its `via`.
 function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry {
   let author: IssueReportAuthor = reader === "reporter" && row.via !== null
       ? { name: row.author_name } : { id: row.author_id, name: row.author_name };
@@ -227,6 +232,9 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
     text: row.text,
   };
   if (row.via !== null) entry.via = row.via as AdminVia;
+  if (row.agent !== null && reader === "admins") {
+    entry.agent = JSON.parse(row.agent) as AdminAgentOrigin;
+  }
   if (row.status !== null) entry.status = row.status as IssueReportStatus;
   return entry;
 }
@@ -292,6 +300,7 @@ function fewerBytesThanDeclared(): TypeError {
  *   entries(report_seq INTEGER NOT NULL, n INTEGER NOT NULL, id TEXT NOT NULL,
  *     at INTEGER NOT NULL, author_id TEXT NOT NULL, author_name TEXT NOT NULL,
  *     visibility TEXT NOT NULL CHECK (visibility IN ('public', 'admins')), via TEXT,
+ *     agent TEXT CHECK (agent IS NULL OR json_valid(agent)),
  *     text TEXT NOT NULL, status TEXT, PRIMARY KEY (report_seq, n)) STRICT;
  *   index (author_id, at)
  *   grants(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, scope TEXT NOT NULL, workspace_id TEXT,
@@ -300,7 +309,8 @@ function fewerBytesThanDeclared(): TypeError {
  *     state TEXT NOT NULL CHECK (state IN ('pending', 'stored')), type TEXT,
  *     byte_length INTEGER NOT NULL, started_at INTEGER NOT NULL, n INTEGER NOT NULL) STRICT;
  *   indexes (report_seq, n), (reporter_id), (state, started_at)
- * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own; a bare
+ * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own, and its
+ * `agent` is the AdminAgentOrigin, as JSON, of one written through the admin gatekeeper; a bare
  * change of status is an admins' public entry whose text is ''. An image is 'pending' from its
  * upload's reservation, when `started_at` and `n` (its place among its report's images) are set
  * and `byte_length` is the length its sender declared, until its object is in the bucket; only
@@ -346,10 +356,18 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       author_name TEXT NOT NULL,
       visibility TEXT NOT NULL CHECK (visibility IN ('public', 'admins')),
       via TEXT,
+      agent TEXT CHECK (agent IS NULL OR json_valid(agent)),
       text TEXT NOT NULL,
       status TEXT,
       PRIMARY KEY (report_seq, n)
     ) STRICT`);
+    // A store whose entries table has no `agent` column gains it here: CREATE TABLE IF NOT EXISTS
+    // leaves an existing table as it is.
+    if (sql.exec("SELECT 1 FROM pragma_table_info('entries') WHERE name = 'agent'")
+        .toArray().length === 0) {
+      sql.exec(
+          "ALTER TABLE entries ADD COLUMN agent TEXT CHECK (agent IS NULL OR json_valid(agent))");
+    }
     // The reporter's replies of a day are counted across all their reports.
     sql.exec("CREATE INDEX IF NOT EXISTS entries_author ON entries (author_id, at)");
     sql.exec(`CREATE TABLE IF NOT EXISTS grants (
@@ -823,14 +841,17 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Adds an entry `admin` wrote to a report's thread, for the reporter ("public") or for admins
-   * alone ("admins"), and returns it. It changes no status, and works on a closed report. A
-   * public one makes the report unseen by its reporter. Throws (TypeError) for a text or a
-   * visibility that is not one; refused `notFound`, and `threadFull` once the admins have written
-   * MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility.
+   * alone ("admins"), and returns it. `caller` is how the admin's call is labelled, kept with the
+   * entry as adminCallerTerms() gives it. It changes no status, and works on a closed report. A
+   * public one makes the report unseen by its reporter. Throws (TypeError) for a caller, a text
+   * or a visibility that is not one; refused `notFound`, and `threadFull` once the admins have
+   * written MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility.
    */
-  addEntry(admin: Pick<AiChatAuthorInfo, "id" | "name">, via: AdminVia, reportId: string,
+  addEntry(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string,
       text: string, visibility: IssueReportEntry["visibility"]): IssueReportEntry {
     let author = namedUser(admin);
+    let label = adminCallerTerms(caller);
     let body = writtenText(text);
     if (visibility !== "public" && visibility !== "admins") {
       throw new TypeError("Invalid visibility.");
@@ -840,21 +861,24 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (written >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
-    return entryOf(this.#addEntry(seq, author, visibility, via, body), "admins");
+    return entryOf(this.#addEntry(seq, author, visibility, label, body), "admins");
   }
 
   /**
    * Sets a report's status, entered in its thread as a public line with no text that names
-   * `admin`. A status the report already has changes nothing. Never refused `threadFull`, so a
-   * full thread can still be closed, and it leaves the report as seen as it was. Throws
-   * (TypeError) for a status that is not one; refused `notFound`.
+   * `admin` and is labelled as `caller` (see addEntry()). A status the report already has changes
+   * nothing. Never refused `threadFull`, so a full thread can still be closed, and it leaves the
+   * report as seen as it was. Throws (TypeError) for a caller or a status that is not one;
+   * refused `notFound`.
    */
-  setStatus(admin: Pick<AiChatAuthorInfo, "id" | "name">, via: AdminVia, reportId: string,
+  setStatus(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string,
       status: IssueReportStatus): void {
     let author = namedUser(admin);
+    let label = adminCallerTerms(caller);
     if (!ISSUE_REPORT_STATUSES.includes(status)) throw new TypeError("Invalid status.");
     let report = this.#reportSeq(reportId);
-    if (report.status !== status) this.#addEntry(report.seq, author, "public", via, "", status);
+    if (report.status !== status) this.#addEntry(report.seq, author, "public", label, "", status);
   }
 
   /** Replaces a report's links with `links` as reportLinks() keeps them. Throws (TypeError) for
@@ -1125,7 +1149,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   #entries(reportSeq: number, reader: "reporter" | "admins"): IssueReportEntry[] {
     let visible = reader === "reporter" ? "AND visibility = 'public'" : "";
     return this.ctx.storage.sql.exec<EntryRow>(
-      `SELECT n, id, at, author_id, author_name, visibility, via, text, status FROM entries
+      `SELECT n, id, at, author_id, author_name, visibility, via, agent, text, status FROM entries
        WHERE report_seq = ? ${visible} ORDER BY n`, reportSeq).toArray()
         .map(row => entryOf(row, reader));
   }
@@ -1140,13 +1164,17 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   // Adds an entry to a report's thread, in one step with what it changes of the report: when its
   // thread last grew; its status, when the entry sets one; and, for a public entry an admin wrote
   // (a `via` and a text), `last_admin_public`, which makes the report unseen. A bare change of
-  // status has no text, so it does not. Returns the entry's row.
+  // status has no text, so it does not. `label` is an admin's checked label (adminCallerTerms()),
+  // or null for the reporter's own entry. Returns the entry's row.
   #addEntry(reportSeq: number, author: NamedUser, visibility: IssueReportEntry["visibility"],
-      via: AdminVia | null, text: string, status?: IssueReportStatus): EntryRow {
+      label: Pick<AdminAccessRecord, "via" | "agent"> | null, text: string,
+      status?: IssueReportStatus): EntryRow {
     let sql = this.ctx.storage.sql;
+    let via = label?.via ?? null;
     let row: EntryRow = {
       n: 0, id: crypto.randomUUID(), at: Date.now(), author_id: author.id,
-      author_name: author.name, visibility, via, text, status: status ?? null,
+      author_name: author.name, visibility, via,
+      agent: label?.agent ? JSON.stringify(label.agent) : null, text, status: status ?? null,
     };
     this.ctx.storage.transactionSync(() => {
       row.n = sql.exec<{ n: number }>(
@@ -1154,10 +1182,10 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
         reportSeq).one().n;
       sql.exec(
         `INSERT INTO entries (report_seq, n, id, at, author_id, author_name, visibility, via,
-           text, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           agent, text, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         reportSeq, row.n, row.id, row.at, row.author_id, row.author_name, row.visibility,
-        row.via, row.text, row.status);
+        row.via, row.agent, row.text, row.status);
       let answers = via !== null && visibility === "public" && text !== "";
       sql.exec(
         `UPDATE reports SET updated_at = ?, status = COALESCE(?, status),

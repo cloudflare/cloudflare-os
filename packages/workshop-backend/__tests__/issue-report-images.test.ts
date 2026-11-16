@@ -401,7 +401,7 @@ describe("an issue report's image", () => {
     expect(await refusal(() => add(reports, ADA, report.id, imageBytes(100))))
         .toBe(CODES.tooManyImages);
     let closed = await reports.file();
-    await reports.run(store => store.setStatus(ADA, "api", closed.id, "closed"));
+    await reports.run(store => store.setStatus(ADA, { via: "api" }, closed.id, "closed"));
     expect(await refusal(() => add(reports, ADA, closed.id, imageBytes(100)))).toBe(CODES.closed);
     expect(await reports.count("images")).toBe(5);
     expect(await objectsOf(closed.id)).toStrictEqual([]);
@@ -470,7 +470,7 @@ describe("an issue report's image", () => {
     // That it is closed, before its images are counted.
     let closed = await reports.file();
     await fill(closed.id);
-    await reports.run(store => store.setStatus(ADA, "api", closed.id, "closed"));
+    await reports.run(store => store.setStatus(ADA, { via: "api" }, closed.id, "closed"));
     expect(await refusal(() => add(reports, ADA, closed.id, image))).toBe(CODES.closed);
 
     // The reporter's uploads in flight, before the bytes they hold: two that fill the quota.

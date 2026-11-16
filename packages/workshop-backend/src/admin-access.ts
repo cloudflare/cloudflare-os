@@ -21,7 +21,8 @@ import {
   MAX_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ISSUE_REPORT_RETENTION_DAYS, createAdminAccessError,
   createAdminWriteError,
   isAdminWorkspaceAccess,
-  type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminFileContent,
+  type ActionLogEntry, type AdminAccessRecord, type AdminAgentOrigin, type AdminChatState,
+  type AdminFileContent,
   type AdminSettingChange, type AdminSettingRecord, type AdminVia, type AdminViewAccess,
   type AdminWorkspaceAccess, type AdminWorkspaceMethod, type AdminWriteRecord,
   type AiChatAuthorInfo, type AiChatHistoryPage, type AiChatMetadata,
@@ -184,13 +185,64 @@ export function adminAccessPolicy(
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
 
 /** Who takes a step in a write request, as its AdminWriteRecord says. */
-export type AdminWriteActor = Pick<AdminWriteRecord, "admin" | "sessionId" | "via">;
+export type AdminWriteActor = Pick<AdminWriteRecord, "admin" | "sessionId" | "via" | "agent">;
+
+/**
+ * Who an AdminApiImpl acts for and how its calls are labelled: a client's session (`via` from its
+ * User-Agent), or a workspace's lend to the admin gatekeeper, which alone says "gatekeeper" and
+ * always with where the call came from. The union is the rule: no value has "gatekeeper" without
+ * an origin, or an origin without it.
+ */
+export type AdminCaller =
+  | { via: Exclude<AdminVia, "gatekeeper">; agent?: undefined }
+  | { via: "gatekeeper"; agent: AdminAgentOrigin };
+
+/**
+ * `caller` as a record keeps it, once it is shown to be well formed: `{ via }` for "api" and
+ * "cli", `{ via, agent }` for "gatekeeper" with a non-empty `workspaceId` string and a `chatId`
+ * that is absent or a whole number. Throws TypeError for anything else, a "gatekeeper" without an
+ * origin and an origin without "gatekeeper" included. THE one check of a `via`: AdminApiImpl
+ * labels everything it sends with what this returns, so a view's terms reach openForAdmin()
+ * checked, and applyAdminWrite(), endAdminGrant() and the issue report store, which are handed
+ * a label over a Durable Object binding, call it instead of comparing strings.
+ */
+export function adminCallerTerms(caller: { via: unknown; agent?: unknown })
+    : Pick<AdminAccessRecord, "via" | "agent"> {
+  let { via, agent } = caller;
+  if (via === "api" || via === "cli") {
+    if (agent !== undefined) {
+      throw new TypeError(`An admin call made via "${via}" has no agent origin.`);
+    }
+    return { via };
+  }
+  if (via !== "gatekeeper") {
+    throw new TypeError(`Invalid admin via: ${JSON.stringify(via)}`);
+  }
+  if (typeof agent !== "object" || agent === null) {
+    throw new TypeError(`An admin call made via "gatekeeper" needs its agent origin.`);
+  }
+  let { workspaceId, chatId } = agent as { workspaceId?: unknown; chatId?: unknown };
+  if (typeof workspaceId !== "string" || !workspaceId ||
+      workspaceId.length > MAX_ADMIN_AUDIT_ARG_LENGTH) {
+    throw new TypeError("An agent origin's workspaceId must be a non-empty string of at most " +
+        `${MAX_ADMIN_AUDIT_ARG_LENGTH} characters.`);
+  }
+  if (chatId === undefined) {
+    return { via, agent: { workspaceId } };
+  }
+  if (typeof chatId !== "number" || !Number.isInteger(chatId) || chatId < 0) {
+    throw new TypeError("An agent origin's chatId must be a whole number.");
+  }
+  return { via, agent: { workspaceId, chatId } };
+}
 
 /** What an admin view is minted with (see OverseerDurableObject.openForAdmin() and
  * UserDurableObject.openForAdmin()), fixed for the view's life. */
 export type AdminViewTerms = {
   /** Recorded on every record the view makes (see AdminVia). */
   via: AdminVia;
+  /** Recorded with `via` on every record the view makes. */
+  agent?: AdminAgentOrigin;
   /** When the view stops working. */
   expiresAt: Date;
 };

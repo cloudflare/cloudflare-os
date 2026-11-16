@@ -56,6 +56,7 @@ const STALE_MESSAGE =
 const VIA_LABELS: Record<AdminWriteRequest['via'], string> = {
   cli: 'through the CLI',
   api: 'through the API',
+  gatekeeper: 'through an agent',
 }
 
 const TICK_MS = 15_000

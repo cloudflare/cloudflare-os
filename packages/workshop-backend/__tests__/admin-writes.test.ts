@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_WRITE_ACTIONS, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  type AdminVia, type AdminWriteAction, type AdminWriteArgs,
+  type AdminAgentOrigin, type AdminVia, type AdminWriteAction, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
 import {
   adminWriteArgs, adminWriteDigest, adminWriteTitle, entersActionLog, needsSecondAdmin,
@@ -195,7 +195,8 @@ describe("adminWriteDigest", () => {
     requestedAt: new Date("2026-01-02T03:04:05.000Z"),
     expiresAt: new Date("2026-01-02T03:14:05.000Z"),
   };
-  const hex = async (value: typeof request) => (await adminWriteDigest(value)).toHex();
+  const hex = async (value: typeof request & { agent?: AdminAgentOrigin }) =>
+      (await adminWriteDigest(value)).toHex();
 
   it("is a SHA-256 that depends on no key order and on nothing else stored", async () => {
     const digest = await adminWriteDigest(request);
@@ -241,5 +242,26 @@ describe("adminWriteDigest", () => {
     ["expiry", { expiresAt: new Date("2026-01-02T03:14:05.001Z") }],
   ])("differs when the %s changes", async (_what, change) => {
     expect(await hex({ ...request, ...change })).not.toBe(await hex(request));
+  });
+
+  it("gives a request with no agent a digest that has no key for one", async () => {
+    // Pinned as a constant: a passkey's signature over a request is over these bytes, so a
+    // request that names no agent must digest to them whatever else a request may carry.
+    const pinned = "e75963268a84ee47d351fb78ef9284c824111acca0c0dffeb4ab4909fb27cc4a";
+    expect(await hex(request)).toBe(pinned);
+    expect(await hex({ ...request, agent: undefined })).toBe(pinned);
+  });
+
+  it("covers where an agent's request came from", async () => {
+    const filed = { ...request, via: "gatekeeper" as AdminVia };
+    const origin = { workspaceId: "c".repeat(64), chatId: 4 };
+    const digest = await hex({ ...filed, agent: origin });
+    expect(digest).not.toBe(await hex(filed));
+    expect(await hex({ ...filed, agent: { chatId: 4, workspaceId: origin.workspaceId } }))
+        .toBe(digest);
+    expect(await hex({ ...filed, agent: { ...origin, chatId: 5 } })).not.toBe(digest);
+    expect(await hex({ ...filed, agent: { ...origin, workspaceId: "d".repeat(64) } }))
+        .not.toBe(digest);
+    expect(await hex({ ...filed, agent: { workspaceId: origin.workspaceId } })).not.toBe(digest);
   });
 });

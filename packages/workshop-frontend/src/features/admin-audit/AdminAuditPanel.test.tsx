@@ -921,6 +921,19 @@ describe('AdminAuditPanel', () => {
       expect(detail(details, 'Via')).toBe('API')
     })
 
+    it('names a call and a write request made through the admin gatekeeper as an agent\'s', async () => {
+      const agent = { workspaceId: 'ws-triage', chatId: 4 }
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ via: 'gatekeeper', agent }),
+        writeRecord({ via: 'gatekeeper', agent }),
+      ]))
+      await render(settingsWith(), admin)
+
+      expect(detail(await expand(0), 'Via')).toBe('Agent')
+      expect(detail(await expand(1), 'Via')).toBe('Agent')
+    })
+
     it('shows a refused approval: who tried, the check that failed, and the passkey the answer named if it was their own', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([

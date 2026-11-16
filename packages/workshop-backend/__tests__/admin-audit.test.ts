@@ -115,6 +115,35 @@ describe("AdminAuditDurableObject.list", () => {
     expect(page.nextCursor).toBeUndefined();
   });
 
+  it("returns where a gatekeeper's call came from, and gives no other record the key",
+      async () => {
+    let log = auditLog();
+    let withChat = { workspaceId: "w".repeat(64), chatId: 4 };
+    let records: AdminAuditRecord[] = [
+      access({ via: "gatekeeper", agent: withChat }),
+      access({ via: "gatekeeper", agent: { workspaceId: withChat.workspaceId } }),
+      write({ via: "gatekeeper", agent: withChat }),
+      write({ via: "gatekeeper", agent: withChat, event: "expired" }),
+      userAccess({ via: "gatekeeper", agent: withChat }),
+      access(),
+      userAccess(),
+      write(),
+      setting(),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    // Strictly, so that an origin comes back with exactly its keys and a record without one
+    // gains none.
+    let listed = (await log.list({ limit: 50 }, RETENTION)).records;
+    expect(listed).toStrictEqual(records.toReversed());
+    expect(listed.filter(record => "agent" in record)).toHaveLength(5);
+    expect(listed.slice(0, 4).every(record => !("agent" in record))).toBe(true);
+    expect(listed[4]).toMatchObject({ kind: "user", agent: withChat });
+    expect(listed[6]).toHaveProperty("agent", withChat);
+    expect(listed[7]).toHaveProperty("agent", { workspaceId: withChat.workspaceId });
+    expect((listed[7] as AdminAccessRecord).agent).not.toHaveProperty("chatId");
+  });
+
   it("stores each field once", async () => {
     let log = auditLog();
     await log.append(access(), RETENTION);

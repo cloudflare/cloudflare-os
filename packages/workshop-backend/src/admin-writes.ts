@@ -148,17 +148,17 @@ export function entersActionLog(action: AdminWriteAction): boolean {
 
 /** The SHA-256 an approval signs: of the canonical JSON (adminAuditValue()) of everything about
  * the request that its approval page shows and that never changes: its id, workspace (id, title
- * and owner as stored), action, arguments, reason, requester, `via`, and the times it was made and
- * expires. */
+ * and owner as stored), action, arguments, reason, requester, `via`, where an agent's request came
+ * from (`agent`), and the times it was made and expires. */
 export async function adminWriteDigest(request: Pick<StoredAdminWrite,
     "id" | "workspaceId" | "workspaceTitle" | "workspaceOwner" | "action" | "args" | "reason" |
-    "requestedBy" | "via" | "requestedAt" | "expiresAt">): Promise<Uint8Array> {
-  let { id, workspaceId, workspaceTitle, workspaceOwner, action, args, reason, requestedBy, via } =
-      request;
+    "requestedBy" | "via" | "agent" | "requestedAt" | "expiresAt">): Promise<Uint8Array> {
+  let { id, workspaceId, workspaceTitle, workspaceOwner, action, args, reason, requestedBy, via,
+        agent } = request;
   // Sorted keys at every level, so the digest does not depend on how the request was built or
-  // stored.
+  // stored. An undefined value adds no key, so a request with no `agent` digests without one.
   let canonical = adminAuditValue({
-    id, workspaceId, workspaceTitle, workspaceOwner, action, args, reason, requestedBy, via,
+    id, workspaceId, workspaceTitle, workspaceOwner, action, args, reason, requestedBy, via, agent,
     requestedAt: request.requestedAt.getTime(), expiresAt: request.expiresAt.getTime(),
   });
   return new Uint8Array(

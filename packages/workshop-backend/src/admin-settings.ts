@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminApprovalRefusal, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminIssueReport, AdminIssueReportPage, AdminIssueReportQuery, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiChatAuthorInfo, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, IssueReportEntry, IssueReportStatus, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminAccessRecord, AdminApi, AdminApprovalRefusal, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminIssueReport, AdminIssueReportPage, AdminIssueReportQuery, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiChatAuthorInfo, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, IssueReportEntry, IssueReportStatus, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -20,7 +20,7 @@ import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
 import type { IssueReportsDurableObject } from './issue-reports.js';
-import { type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
+import { type AdminCaller, type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminCallerTerms, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
 import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, needsSecondAdmin, newPasskeyChallenge } from './admin-writes.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
 import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
@@ -151,7 +151,8 @@ function requireAdmin(env: Cloudflare.Env, admin: string, writes: boolean): void
 
 // The admin who made a write request, as the actor of the steps recorded in their name.
 function writeRequester(request: StoredAdminWrite): AdminWriteActor {
-  return { admin: request.requestedBy, sessionId: request.sessionId, via: request.via };
+  let { requestedBy, sessionId, via, agent } = request;
+  return { admin: requestedBy, sessionId, via, ...(agent && { agent }) };
 }
 
 /**
@@ -1957,15 +1958,18 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   #sessionId = crypto.randomUUID();
 
   /**
-   * `adminUserId` is the requesting admin's canonical id and `via` the label derived from their
-   * client's User-Agent (AdminVia). The capability's audit `sessionId` is minted here, so there is
-   * one per AuthenticatedApi.getAdminApi() call. Reaches the AdminSettings, UserDirectory,
+   * `adminUserId` is the admin's canonical id and `caller` how their calls are labelled (see
+   * AdminCaller). The capability's audit `sessionId` is minted here, so there is one per
+   * capability. Reaches the AdminSettings, UserDirectory,
    * AdminAudit, Overseer, User and IssueReports namespaces through `ctx.exports`, and reads ADMINS
    * and the admin access bounds from `env`. `ctx` is kept for its waitUntil(), under which an
-   * approved write is run and settled even if its client hangs up (see approveWorkspaceWrite()).
+   * approved write is run and settled even if its client hangs up (see approveWorkspaceWrite()):
+   * it is a request's ExecutionContext, or the state of the workspace that lends this to the
+   * admin gatekeeper.
    */
-  constructor(private ctx: ExecutionContext, private env: Cloudflare.Env,
-              private adminUserId: string, private via: AdminVia) {
+  constructor(private ctx: Pick<ExecutionContext, "exports" | "waitUntil">,
+              private env: Cloudflare.Env, private adminUserId: string,
+              private caller: AdminCaller) {
     super();
     this.admin = ctx.exports.AdminSettings.getByName("");
     this.directories = ctx.exports.UserDirectoryDurableObject;
@@ -1977,7 +1981,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   // Who makes a change through `method` of this capability, as its audit record says.
   #actor(method: AdminSettingMethod): AdminSettingActor {
-    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via, method };
+    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via, method };
+  }
+
+  // How a record or a stored value made through this capability is labelled: the caller's `via`
+  // and, for the admin gatekeeper, where the call came from. Nothing else of the caller is copied.
+  #label(): Pick<AdminAccessRecord, "via" | "agent"> {
+    return adminCallerTerms(this.caller);
   }
 
   getSettings(): Promise<AdminSettingsView> {
@@ -2230,7 +2240,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       let listing = await this.#directoryListing(id.toString());
       await this.audits.getByName("").append({
         kind: "workspace", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId,
+        ...this.#label(), workspaceId: id.toString(), workspaceOwner: listing.ownerId,
         workspaceTitle: listing.title, method: "inspectWorkspace",
         args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, requested, access,
         exposed: "metadata", refused,
@@ -2240,7 +2250,8 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openForAdmin(id, trimmedReason, { via: this.via, access: requested, expiresAt });
+    return this.#openForAdmin(
+        id, trimmedReason, { ...this.#label(), access: requested, expiresAt });
   }
 
   // Mint the view. A workspace that turns out not to exist leaves the directory (see
@@ -2296,7 +2307,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       // Appended without a retention, as a view's records are.
       await this.audits.getByName("").append({
         kind: "user", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, userId, method: "inspectUser",
+        ...this.#label(), userId, method: "inspectUser",
         args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, access: "off",
         refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
       });
@@ -2308,7 +2319,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
     return this.users.getByName(userId).openForAdmin(
-        this.adminUserId, trimmedReason, this.#sessionId, { via: this.via, expiresAt });
+        this.adminUserId, trimmedReason, this.#sessionId, { ...this.#label(), expiresAt });
   }
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {
@@ -2357,7 +2368,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   // Who takes a step in a write request through this capability, as its audit record says.
   #writeActor(): AdminWriteActor {
-    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via };
+    return { admin: this.adminUserId, sessionId: this.#sessionId, ...this.#label() };
   }
 
   // A stored request as the API returns it: without what only the server keeps, and with the page
@@ -2400,7 +2411,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       id: crypto.randomUUID(), workspaceId: id.toString(),
       workspaceTitle: cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH),
       workspaceOwner: auditOwnerId(listing.ownerId),
-      action, args: clean, reason, requestedBy: this.adminUserId, via: this.via,
+      action, args: clean, reason, requestedBy: this.adminUserId, ...this.#label(),
       sessionId: this.#sessionId, requestedAt,
       expiresAt: new Date(requestedAt.getTime() + ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000),
       state: "pending",
@@ -2544,13 +2555,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       visibility: IssueReportEntry["visibility"]): Promise<IssueReportEntry> {
     this.#requireAdmin();
     return await this.issueReports.getByName("").addEntry(
-        await this.#profile(), this.via, reportId, text, visibility);
+        await this.#profile(), this.#label(), reportId, text, visibility);
   }
 
   async setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void> {
     this.#requireAdmin();
     await this.issueReports.getByName("").setStatus(
-        await this.#profile(), this.via, reportId, status);
+        await this.#profile(), this.#label(), reportId, status);
   }
 
   async setIssueReportLinks(reportId: string, links: string[]): Promise<void> {

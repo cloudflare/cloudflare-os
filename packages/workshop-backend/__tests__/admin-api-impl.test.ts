@@ -1,16 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_WRITE_ERROR_CODES,
   ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
   MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError, createAdminGrantError,
   createAdminWriteError, getAdminAccessErrorCode, getAdminGrantErrorCode, getAdminWriteErrorCode,
-  type AdminAccessRecord, type AdminPasskeyAssertion, type AdminPasskeyRegistration,
-  type AdminUserAccessRecord, type AdminVia, type AdminWriteArgs,
+  type AdminAccessRecord, type AdminAgentOrigin, type AdminPasskeyAssertion,
+  type AdminPasskeyRegistration, type AdminUserAccessRecord, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
-import type { AdminWorkspaceViewTerms } from "../src/admin-access.js";
+import type {
+  AdminCaller, AdminViewTerms, AdminWorkspaceViewTerms,
+} from "../src/admin-access.js";
 import { AdminApiImpl } from "../src/admin-settings.js";
 import type { AdminWriteApprover, StoredAdminWrite } from "../src/admin-writes.js";
+import type { IssueReportsDurableObject } from "../src/issue-reports.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
   DEFAULT_ADMIN_CONFIG, type AdminConfig,
@@ -19,6 +23,7 @@ import {
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+    TEST_ISSUE_REPORTS: DurableObjectNamespace<IssueReportsDurableObject>;
   }
 }
 
@@ -82,8 +87,8 @@ function deployment(options: {
     },
   } } as unknown as ExecutionContext;
   const deploymentEnv = { ADMINS: [ADMIN], ...options.vars } as unknown as Cloudflare.Env;
-  const mint = (adminUserId = ADMIN, via: AdminVia = "cli") => {
-    const api = new AdminApiImpl(ctx, deploymentEnv, adminUserId, via);
+  const mint = (adminUserId = ADMIN, caller: AdminCaller = { via: "cli" }) => {
+    const api = new AdminApiImpl(ctx, deploymentEnv, adminUserId, caller);
     calls.length = 0;
     return api;
   };
@@ -285,7 +290,7 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     });
     const id = workspaceId();
     const before = Date.now();
-    const minted = await mint(ADMIN, "api").inspectWorkspace(id, ` ${REASON} `, options);
+    const minted = await mint(ADMIN, { via: "api" }).inspectWorkspace(id, ` ${REASON} `, options);
     expect(await minted.describe()).toBe("the minted view");
     const after = Date.now();
 
@@ -434,7 +439,7 @@ describe("AdminApiImpl.inspectUser", () => {
       handlers: { user: { openForAdmin: () => view } },
     });
     const before = Date.now();
-    const minted = await mint(ADMIN, "api").inspectUser(USER, ` ${REASON} `, options);
+    const minted = await mint(ADMIN, { via: "api" }).inspectUser(USER, ` ${REASON} `, options);
     expect(await minted.describe()).toBe("the minted view");
     const after = Date.now();
 
@@ -486,8 +491,8 @@ describe("AdminApiImpl.inspectUser", () => {
 describe("AdminApiImpl settings", () => {
   it("says who changes a setting, through which method and session", async () => {
     const { mint, callsTo } = deployment();
-    const first = mint(ADMIN, "cli");
-    const second = mint(ADMIN, "api");
+    const first = mint(ADMIN, { via: "cli" });
+    const second = mint(ADMIN, { via: "api" });
     await first.setSiteName("Acme");
     await first.setUserModelsEnabled(false);
     await second.setSiteName("Acme");
@@ -869,7 +874,7 @@ describe("AdminApiImpl write requests", () => {
     const id = workspaceId();
     const before = Date.now();
     // An argument given as undefined is one not given, and is not stored.
-    const view = await mint(ADMIN, "api").requestWorkspaceWrite(
+    const view = await mint(ADMIN, { via: "api" }).requestWorkspaceWrite(
         id, "stopAgent", { chatId: 3, gatekeeperId: undefined }, `  ${REASON}  `);
 
     // In order: the id, the directory, then the one call that records and stores.
@@ -919,7 +924,7 @@ describe("AdminApiImpl write requests", () => {
 
   it("requests and denies through the capability's own session and `via`", async () => {
     const { mint, callsTo } = writesDeployment();
-    const api = mint(ADMIN, "cli");
+    const api = mint(ADMIN, { via: "cli" });
     await api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON);
     await api.denyWorkspaceWrite(REQUEST_ID);
     const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
@@ -928,7 +933,7 @@ describe("AdminApiImpl write requests", () => {
         [REQUEST_ID, { admin: ADMIN, sessionId: stored.sessionId, via: "cli" }]);
 
     // Another capability of the same admin is another session, with a `via` of its own.
-    await mint(ADMIN, "api").denyWorkspaceWrite(REQUEST_ID);
+    await mint(ADMIN, { via: "api" }).denyWorkspaceWrite(REQUEST_ID);
     const [, later] = callsTo("admin", "denyWorkspaceWrite")[0].args;
     expect(later).toStrictEqual({ admin: ADMIN, sessionId: expect.any(String), via: "api" });
     expect((later as { sessionId: string }).sessionId).not.toBe(stored.sessionId);
@@ -989,7 +994,7 @@ describe("AdminApiImpl write requests", () => {
         async () => {
       const { mint, callsTo } = deployment({ ...CONTENT, handlers });
       const id = workspaceId();
-      const view = await mint(ADMIN, "api").requestWorkspaceWrite(
+      const view = await mint(ADMIN, { via: "api" }).requestWorkspaceWrite(
           id, "grantContentAccess", {}, REASON);
 
       const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
@@ -1022,7 +1027,7 @@ describe("AdminApiImpl write requests", () => {
     // Whatever the level, and with writes off: these deployments set neither.
     it("has the workspace end it, through the capability's own session and `via`", async () => {
       const { mint, calls, callsTo } = deployment();
-      const api = mint(ADMIN, "cli");
+      const api = mint(ADMIN, { via: "cli" });
       const id = workspaceId();
 
       expect(await api.endWorkspaceGrant(id, GRANT_ID, `  ${REASON}  `)).toBeUndefined();
@@ -1107,7 +1112,7 @@ describe("AdminApiImpl write requests", () => {
           return { ...request, state: "applied", outcome: "3 rejected", unrecorded: true };
         },
       } });
-      const approving = mint(ADMIN, "cli").approveWorkspaceWrite(REQUEST_ID, ASSERTION);
+      const approving = mint(ADMIN, { via: "cli" }).approveWorkspaceWrite(REQUEST_ID, ASSERTION);
       await vi.waitFor(() => expect(callsTo("admin", "settleWorkspaceWrite")).toHaveLength(1));
 
       expect(named(calls)).toEqual([
@@ -1218,8 +1223,8 @@ describe("AdminApiImpl write requests", () => {
           return request;
         },
       } });
-      const first = mint(ADMIN, "api");
-      const second = mint(ADMIN, "cli");
+      const first = mint(ADMIN, { via: "api" });
+      const second = mint(ADMIN, { via: "cli" });
       const [won, lost] = await Promise.allSettled([
         first.approveWorkspaceWrite(REQUEST_ID, ASSERTION),
         second.approveWorkspaceWrite(REQUEST_ID, ASSERTION),
@@ -1276,9 +1281,9 @@ describe("AdminApiImpl issue reports", () => {
          cursor: undefined, limit: 3 }]],
     ["getIssueReport", api => api.getIssueReport("report"), "get", ["report"]],
     ["addIssueReportEntry", api => api.addIssueReportEntry("report", "Which chart?", "public"),
-      "addEntry", [PROFILE, "cli", "report", "Which chart?", "public"]],
+      "addEntry", [PROFILE, { via: "cli" }, "report", "Which chart?", "public"]],
     ["setIssueReportStatus", api => api.setIssueReportStatus("report", "closed"), "setStatus",
-      [PROFILE, "cli", "report", "closed"]],
+      [PROFILE, { via: "cli" }, "report", "closed"]],
     ["setIssueReportLinks", api => api.setIssueReportLinks("report", ["https://example.com/1"]),
       "setLinks", ["report", ["https://example.com/1"]]],
     ["readIssueReportImage", api => api.readIssueReportImage("report", "image"), "readImage",
@@ -1303,16 +1308,16 @@ describe("AdminApiImpl issue reports", () => {
   it("writes in a thread as the caller's own account names them, with how they reached it",
       async () => {
     const { mint, callsTo } = reportDeployment(() => null);
-    const api = mint(ADMIN, "api");
+    const api = mint(ADMIN, { via: "api" });
     await api.addIssueReportEntry("report", "A note", "admins");
     await api.setIssueReportStatus("report", "investigating");
     // An admin whose account has no profile is named by their id.
     const byId = { type: "user", id: ADMIN, name: ADMIN };
     expect(callsTo("users", "getByName").map(call => call.args)).toStrictEqual([[ADMIN], [ADMIN]]);
     expect(callsTo("report", "addEntry")[0].args)
-        .toStrictEqual([byId, "api", "report", "A note", "admins"]);
+        .toStrictEqual([byId, { via: "api" }, "report", "A note", "admins"]);
     expect(callsTo("report", "setStatus")[0].args)
-        .toStrictEqual([byId, "api", "report", "investigating"]);
+        .toStrictEqual([byId, { via: "api" }, "report", "investigating"]);
   });
 
   it("lists with the default page size, the query passed field by field",
@@ -1343,5 +1348,161 @@ describe("AdminApiImpl issue reports", () => {
           .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
     }
     expect(calls).toStrictEqual([]);
+  });
+});
+
+describe("AdminApiImpl lent to the admin gatekeeper", () => {
+  const AGENT: AdminAgentOrigin = { workspaceId: "c".repeat(64), chatId: 4 };
+  const GATEKEEPER: AdminCaller = { via: "gatekeeper", agent: AGENT };
+  const LISTING = { title: "Quarterly plan", ownerId: "ada" };
+  const USER = "ada@example.test";
+  const ON = { ADMIN_WORKSPACE_WRITES: "on", PUBLIC_BASE_URL: "https://workshop.example/" };
+
+  // What each caller's label is on the terms of a view of a workspace and of a user's account,
+  // the record of a refused open of each, a stored write request and its view, and the actor of
+  // a step taken in a request.
+  async function labels(caller: AdminCaller) {
+    const opening = deployment({ handlers: {
+      overseer: { openForAdmin: () => ({}) }, user: { openForAdmin: () => ({}) },
+    } });
+    await opening.mint(ADMIN, caller).inspectWorkspace(workspaceId(), REASON);
+    const terms = opening.callsTo("overseer", "openForAdmin")[0]!.args[3] as
+        AdminWorkspaceViewTerms;
+    await opening.mint(ADMIN, caller).inspectUser(USER, REASON);
+    const userTerms = opening.callsTo("user", "openForAdmin")[0]!.args[3] as AdminViewTerms;
+
+    const off = deployment({
+      config: { adminWorkspaceAccess: "off" },
+      handlers: { directory: { workspaceListing: () => LISTING } },
+    });
+    const error = await rejection(off.mint(ADMIN, caller).inspectWorkspace(workspaceId(), REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.accessOff);
+    const refused = off.callsTo("audit", "append")[0]!.args[0] as AdminAccessRecord;
+    await rejection(off.mint(ADMIN, caller).inspectUser(USER, REASON));
+    const refusedUser = off.callsTo("audit", "append")[0]!.args[0] as AdminUserAccessRecord;
+
+    const writes = deployment({
+      vars: ON, handlers: { directory: { workspaceListing: () => LISTING } },
+    });
+    const api = writes.mint(ADMIN, caller);
+    const view = await api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON);
+    const stored = writes.callsTo("admin", "requestWorkspaceWrite")[0]!.args[0] as
+        StoredAdminWrite;
+    await api.denyWorkspaceWrite(stored.id);
+    const actor = writes.callsTo("admin", "denyWorkspaceWrite")[0]!.args.at(-1) as object;
+    return { terms, userTerms, refused, refusedUser, stored, view, actor };
+  }
+
+  it("labels an open, a refused open and a write request with where the call came from",
+      async () => {
+    const { terms, userTerms, refused, refusedUser, stored, view, actor } =
+        await labels(GATEKEEPER);
+    expect(terms).toStrictEqual(
+        { via: "gatekeeper", agent: AGENT, access: "metadata", expiresAt: terms.expiresAt });
+    expect(userTerms).toStrictEqual(
+        { via: "gatekeeper", agent: AGENT, expiresAt: userTerms.expiresAt });
+    expect(refused).toMatchObject({
+      kind: "workspace", admin: ADMIN, via: "gatekeeper", agent: AGENT,
+      method: "inspectWorkspace", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+    });
+    expect(refusedUser).toMatchObject({
+      kind: "user", admin: ADMIN, via: "gatekeeper", agent: AGENT, userId: USER,
+      method: "inspectUser", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+    });
+    expect(stored).toMatchObject({ requestedBy: ADMIN, via: "gatekeeper", agent: AGENT });
+    expect(view).toMatchObject({ requestedBy: ADMIN, via: "gatekeeper", agent: AGENT });
+    expect(actor).toStrictEqual(
+        { admin: ADMIN, sessionId: stored.sessionId, via: "gatekeeper", agent: AGENT });
+    // Each holds its own copy: the caller's object is not what a record keeps.
+    for (let labelled of [terms, userTerms, refused, refusedUser, stored]) {
+      expect(labelled.agent).toStrictEqual(AGENT);
+      expect(labelled.agent).not.toBe(AGENT);
+    }
+  });
+
+  it("copies nothing of the caller but its via and its origin", async () => {
+    const caller = { ...GATEKEEPER, insiders: ["ada"], admin: "mallory" } as AdminCaller;
+    const { terms, userTerms, refused, refusedUser, stored } = await labels(caller);
+    expect(Object.keys(terms).toSorted()).toEqual(["access", "agent", "expiresAt", "via"]);
+    expect(Object.keys(userTerms).toSorted()).toEqual(["agent", "expiresAt", "via"]);
+    for (let labelled of [refused, refusedUser, stored]) {
+      expect(labelled).not.toHaveProperty("insiders");
+    }
+    expect([refused.admin, refusedUser.admin, stored.requestedBy]).toEqual([ADMIN, ADMIN, ADMIN]);
+  });
+
+  it("gives a client's session no origin anywhere", async () => {
+    const { terms, userTerms, refused, refusedUser, stored, view, actor } =
+        await labels({ via: "cli" });
+    for (let labelled of [terms, userTerms, refused, refusedUser, stored, view, actor]) {
+      expect(labelled).toHaveProperty("via", "cli");
+      expect(labelled).not.toHaveProperty("agent");
+    }
+  });
+
+  // Neither a workspace nor an account checks the terms it is opened with, so a label that is
+  // not one must never reach either.
+  it("refuses a caller that is not one, at its first labelled call", async () => {
+    const { mint, calls } = deployment({ handlers: {
+      overseer: { openForAdmin: () => ({}) }, user: { openForAdmin: () => ({}) },
+    } });
+    for (let caller of [
+      { via: "gatekeeper" }, { via: "gatekeeper", agent: null },
+      { via: "gatekeeper", agent: { workspaceId: "" } },
+      { via: "gatekeeper", agent: { ...AGENT, chatId: -1 } },
+      { via: "cli", agent: AGENT }, { via: "api", agent: AGENT }, { via: "browser" },
+      { via: undefined },
+    ]) {
+      const api = mint(ADMIN, caller as AdminCaller);
+      expect(await rejection(api.inspectWorkspace(workspaceId(), REASON)), JSON.stringify(caller))
+          .toBeInstanceOf(TypeError);
+      expect(await rejection(api.inspectUser(USER, REASON)), JSON.stringify(caller))
+          .toBeInstanceOf(TypeError);
+      expect(calls.filter(call => call.method === "openForAdmin" || call.method === "append"))
+          .toEqual([]);
+    }
+  });
+
+  it("writes an issue report entry and a status line that admins read with the origin",
+      async () => {
+    // The store is the real one, so what comes back is what an admin reads.
+    const reports = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
+    const onStore = <T>(call: (store: IssueReportsDurableObject) => T | Promise<T>) =>
+        runInDurableObject(reports, call);
+    const report = await onStore(store => store.submit(
+        { id: "ada", name: "Ada" }, { text: "The export fails.", priority: "low" }, false));
+    const profile = { type: "user", id: ADMIN, name: "Grace (admin)" };
+    type Store = IssueReportsDurableObject;
+    const deploymentOf = () => deployment({ handlers: {
+      user: { whoamiIfExists: () => profile },
+      report: {
+        addEntry: (...args: Parameters<Store["addEntry"]>) =>
+            onStore(store => store.addEntry(...args)),
+        setStatus: (...args: Parameters<Store["setStatus"]>) =>
+            onStore(store => store.setStatus(...args)),
+        get: (id: string) => onStore(store => store.get(id)),
+      },
+    } });
+
+    const lent = deploymentOf().mint(ADMIN, GATEKEEPER);
+    const entry = await lent.addIssueReportEntry(report.id, "Looks like the quota.", "admins");
+    expect(entry).toMatchObject({ via: "gatekeeper", agent: AGENT, visibility: "admins" });
+    await lent.setIssueReportStatus(report.id, "investigating");
+    const person = deploymentOf().mint(ADMIN, { via: "cli" });
+    await person.addIssueReportEntry(report.id, "Confirmed.", "admins");
+
+    const read = await person.getIssueReport(report.id);
+    expect(read.entries.map(({ via, agent, text, status }) => ({ via, agent, text, status })))
+        .toStrictEqual([
+          { via: "gatekeeper", agent: AGENT, text: "Looks like the quota.", status: undefined },
+          { via: "gatekeeper", agent: AGENT, text: "", status: "investigating" },
+          { via: "cli", agent: undefined, text: "Confirmed.", status: undefined },
+        ]);
+    expect(read.entries[2]).not.toHaveProperty("agent");
+    // The reporter reads the status line as an agent's, without where it came from.
+    const own = await onStore(store => store.getOwn("ada", report.id));
+    expect(own.entries).toHaveLength(1);
+    expect(own.entries[0]).toMatchObject({ via: "gatekeeper", status: "investigating" });
+    expect(own.entries[0]).not.toHaveProperty("agent");
   });
 });

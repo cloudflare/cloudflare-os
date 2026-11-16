@@ -71,7 +71,8 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCommitLogDepth,
+  ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCallerTerms,
+  adminCommitLogDepth,
   adminContentRefusal, adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId,
   blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
   commitHoldsContent, creationHoldsContent, cutAdminAuditText, fileHoldsContent,
@@ -12262,10 +12263,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * Refuses, writing and recording nothing:
    *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
    *     and again once its owner and the approver have been read;
-   *   - a malformed grant (TypeError): a blank or over-long reason, a `via` that is not "api" or
-   *     "cli", arguments that are not the action's, a `workspaceOwner` that is not a non-empty
-   *     string, a `passkey` that is not one of 1 to MAX_ADMIN_AUDIT_ARG_LENGTH characters, or an
-   *     `expiresAt` that is not a valid Date;
+   *   - a malformed grant (TypeError): a blank or over-long reason, a `via` that
+   *     adminCallerTerms() refuses or that is "gatekeeper" (an approval is a person's, with a
+   *     passkey, never an agent's), arguments that are not the action's, a `workspaceOwner` that
+   *     is not a non-empty string, a `passkey` that is not one of 1 to MAX_ADMIN_AUDIT_ARG_LENGTH
+   *     characters, or an `expiresAt` that is not a valid Date;
    *   - a request that expired more than a minute ago, the allowance for clock skew
    *     (`requestNotPending`);
    *   - an approver or a requester who is no longer a deployment admin (`notAdmin`), and writes
@@ -12303,8 +12305,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     let reason = validateAdminAccessReason(grant.reason);
-    if (grant.via !== "api" && grant.via !== "cli") {
-      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    if (adminCallerTerms(grant).via === "gatekeeper") {
+      throw new TypeError("An admin write is never approved through the admin gatekeeper.");
     }
     let args = adminWriteArgs(grant.action, grant.args);
     // A request is never stored without an owner, so a grant without one is malformed, not a
@@ -12428,8 +12430,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * an AdminWriteRecord keeps them. Reachable only over the Workshop's Durable Object binding.
    *
    * Refuses, writing and recording nothing: a workspace never initialised or since deleted
-   * (`workspaceNotFound`), a blank or over-long reason and a `via` that is not "api" or "cli"
-   * (TypeError), an actor who is not a deployment admin (`notAdmin`), and an id that names no
+   * (`workspaceNotFound`), a blank or over-long reason and a `via` that adminCallerTerms()
+   * refuses or that is "gatekeeper" (TypeError: ending the admins' grant is never an agent's
+   * step), an actor who is not a deployment admin (`notAdmin`), and an id that names no
    * live grant with source "admins" here (`notFound`): an owner's grant is the owner's to end.
    * It asks for neither writes nor a level: ending a grant only takes access away.
    *
@@ -12444,8 +12447,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
     let endReason = validateAdminAccessReason(reason);
-    if (actor.via !== "api" && actor.via !== "cli") {
-      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    if (adminCallerTerms(actor).via === "gatekeeper") {
+      throw new TypeError("An admin grant is never ended through the admin gatekeeper.");
     }
     if (!isDeploymentAdmin(impl.env, actor.admin)) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
@@ -15261,6 +15264,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       admin: this.#adminId,
       sessionId: this.#sessionId,
       via: this.#terms.via,
+      ...(this.#terms.agent && {agent: this.#terms.agent}),
       // A title has no length limit of its own, and an uncut one could overflow the
       // deployment-wide row and so refuse every investigation of this workspace.
       workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),

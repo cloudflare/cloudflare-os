@@ -280,7 +280,13 @@ describe("refusals that write and record nothing", () => {
 
   it.each([
     ["a blank reason", {}, { reason: "   " }],
-    ["a via that is neither api nor cli", {}, { via: "browser" }],
+    ["a via that is not one", {}, { via: "browser" }],
+    // An approval is a person's: one labelled as the admin gatekeeper's is refused, with where it
+    // came from or without.
+    ["an approver who came through the admin gatekeeper", {},
+      { via: "gatekeeper", agent: { workspaceId: "c".repeat(64), chatId: 4 } }],
+    ["a gatekeeper via with no origin", {}, { via: "gatekeeper" }],
+    ["an origin under a client's via", {}, { agent: { workspaceId: "c".repeat(64) } }],
     ["arguments the action does not take", { gatekeeperId: 3 }, {}],
     ["a missing argument", { chatId: undefined }, {}],
     ["an invalid expiry", {}, { expiresAt: new Date(NaN) }],
@@ -1059,8 +1065,14 @@ describe("endAdminGrant", () => {
       await expect(ws.instance.endAdminGrant(ENDER, grant.id, reason))
           .rejects.toBeInstanceOf(TypeError);
     }
-    await expect(ws.instance.endAdminGrant({ ...ENDER, via: "agent" as any }, grant.id, END_REASON))
-        .rejects.toBeInstanceOf(TypeError);
+    let agent = { workspaceId: "c".repeat(64), chatId: 4 };
+    for (let label of [
+      { via: "agent" }, { via: "gatekeeper", agent }, { via: "gatekeeper" }, { via: "cli", agent },
+    ]) {
+      await expect(ws.instance.endAdminGrant(
+          { ...ENDER, ...label } as AdminWriteActor, grant.id, END_REASON), JSON.stringify(label))
+          .rejects.toBeInstanceOf(TypeError);
+    }
     expect(await codeOf(
         ws.instance.endAdminGrant({ ...ENDER, admin: OWNER.id }, grant.id, END_REASON)))
         .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
