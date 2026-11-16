@@ -40,6 +40,8 @@ function Library() {
       onUseSkill={({ id, name, description }) => navigate({ to: '/', state: { useSkill: { id, name, description } } })}
       onOpenBlueprint={(blueprintId, use) => navigate({ ...blueprintPage(blueprintId), state: use ? { useBlueprint: true } : undefined })}
       blueprintHref={(blueprintId) => router.buildLocation(blueprintPage(blueprintId)).href}
+      // Something is made by a chat started on the home page, which starts with the format asked for.
+      onNew={(format) => navigate({ to: '/', search: { format: format?.id } })}
     />
   )
 }

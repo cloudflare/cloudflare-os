@@ -34,6 +34,7 @@ import { KindMarksPreview } from '@/gallery/KindMarksPreview'
 import { LibraryPreview } from '@/gallery/LibraryPreview'
 import { PendingPreview } from '@/gallery/PendingPreview'
 import { GadgetTrustPreview } from '@/gallery/GadgetTrustPreview'
+import { LibraryListPreview } from '@/gallery/LibraryListPreview'
 import { ListViewPreview } from '@/gallery/ListViewPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
@@ -240,6 +241,7 @@ function Gallery() {
     return true
   }
   const [replying, setReplying] = useState(true)
+  const [startsWithFormat, setStartsWithFormat] = useState(true)
   const [sendFailed, setSendFailed] = useState(true)
   const [working, setWorking] = useState(true)
 
@@ -321,6 +323,7 @@ function Gallery() {
       </Section>
       <TabsPreview />
       <ListViewPreview />
+      <LibraryListPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded (an admin's account menu) and collapsed to a rail (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
@@ -424,6 +427,18 @@ function Gallery() {
               : undefined}
           />
           <div><Button disabled={replying} onClick={() => setReplying(true)}>Reply to a message</Button></div>
+        </div>
+      </Section>
+      <Section title="Composer (starting with a format, as from the library’s New menu: what the message asks for something as sits above the draft, which can then be sent with no words; the cross makes it an ordinary message again)">
+        <div className="flex w-full flex-col gap-3">
+          <Composer
+            onSend={(text, files) => {
+              setMenuAction(`Preview: sent “${startsWithFormat ? ['Document', text].filter(Boolean).join(' ') : text}”, with ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}.`)
+              return true
+            }}
+            format={startsWithFormat ? { noun: 'Document', icon: 'fileText', onRemove: () => setStartsWithFormat(false) } : undefined}
+          />
+          <div><Button disabled={startsWithFormat} onClick={() => setStartsWithFormat(true)}>Start with a document</Button></div>
         </div>
       </Section>
       <Section title="Composer (the agent working: Stop, with Send beside it for words that steer; stopping puts what was waiting in the draft)">

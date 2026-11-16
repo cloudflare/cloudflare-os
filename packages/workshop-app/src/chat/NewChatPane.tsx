@@ -1,9 +1,10 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import type { MessageFormatRef } from '@gadgets/workshop-shared/api'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatStart } from '@/blocks/ChatStart'
 import { Composer } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
-import { UserMessage } from '@/blocks/UserMessage'
+import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { StartLayout } from '@/layouts/StartLayout'
@@ -13,6 +14,7 @@ import { useSkills } from '@/skills/SkillsContext'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { skillCommandOf } from './slashCommands'
 import { describeModelProblem, modelFor } from './models'
+import { startWithFormat, type StartFormat } from './startWithFormat'
 import { useModels } from './useModels'
 
 /** Where a conversation that was started is. */
@@ -23,10 +25,16 @@ export type NewChatPaneProps = {
   /** Greet with this and the composer in the middle of the page until the first message is sent. */
   greeting?: string
   /**
-   * Starts the conversation with its first message and the files it carries, or with a skill and
-   * the words it is given (see `startConversation`).
+   * The format the first message asks for something as (a Document, a Spreadsheet, …), which the
+   * composer starts with, and the way to start with none after all.
    */
-  start: (text: string, files: File[], modelId: string, command?: ComposerCommand) => Promise<StartedChat>
+  format?: StartFormat & { onRemove: () => void }
+  /**
+   * Starts the conversation with its first message and the files it carries, `formats` saying
+   * where the message names a format; or with a skill and the words it is given (see
+   * `startConversation`).
+   */
+  start: (text: string, files: File[], modelId: string, command?: ComposerCommand, formats?: MessageFormatRef[]) => Promise<StartedChat>
   /** A skill chosen elsewhere, such as on its page, to start with. */
   initialCommand?: ComposerCommand
   /** The conversation exists: open it. */
@@ -38,7 +46,7 @@ export type NewChatPaneProps = {
 }
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
-export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand, below, after }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, start, onStarted, initialCommand, below, after }: NewChatPaneProps) => {
   const { models, prefer } = useModels()
   // The model chosen here, which also becomes the one every new chat starts with.
   const [picked, setPicked] = useState<string>()
@@ -46,8 +54,9 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
   const commands = useLibraryCommands()
   const refreshWorkspaces = useRefreshWorkspaces()
   const connection = useConnectionNotice()
-  // The message being sent, shown until the conversation opens; or why it could not be sent.
-  const [pending, setPending] = useState<{ text: string; files: File[]; command?: ComposerCommand }>()
+  // The message being sent, as it was written and with the skill or format it started with, shown
+  // until the conversation opens; or why it could not be sent.
+  const [pending, setPending] = useState<{ text: string; files: File[]; command?: ComposerCommand; format?: StartFormat }>()
   const [problem, setProblem] = useState<string>()
   // A message that did not go, for the greeting's composer, which is gone while it is sent, to
   // start from when it comes back.
@@ -62,9 +71,12 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
       return false
     }
     setProblem(undefined)
-    setPending({ text, files, command })
+    // A skill is sent as itself, so a format does not go with it.
+    const asked = command ? undefined : format
+    setPending({ text, files, command, format: asked })
     try {
-      const started = await start(text, files, model.model.id, command)
+      const message = asked ? startWithFormat(asked, text) : { text, formats: undefined }
+      const started = await start(message.text, files, model.model.id, command, message.formats)
       refreshWorkspaces()
       await onStarted(started)
       return true
@@ -95,21 +107,30 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} addActions={addActions} below={below} after={after} autoFocus />
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} addActions={addActions} below={below} after={after} autoFocus />
       </StartLayout>
     )
   }
 
+  // As the message will be drawn: the skill or the format as what it is, then what was written.
+  const lead: UserMessagePart | undefined = pending?.command
+    ? { type: 'command', name: pending.command.name }
+    : pending?.format && { type: 'format', noun: pending.format.noun, icon: pending.format.icon }
+  const pendingParts: UserMessagePart[] = pending
+    ? [
+        ...(lead ? [lead] : []),
+        ...(pending.text ? [{ type: 'text' as const, text: lead ? ` ${pending.text}` : pending.text }] : []),
+      ]
+    : []
+
   return (
-    <ChatLayout header={header} composer={<Composer onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} addActions={addActions} />}>
+    // The message being sent has its format in it, so the composer under it starts with none.
+    <ChatLayout header={header} composer={<Composer onSend={send} initialDraft={unsent} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
       {/* Spaced like the conversation this becomes. */}
       <div className="flex flex-col gap-2">
         {pending && (
           <UserMessage
-            parts={[
-              ...(pending.command ? [{ type: 'command', name: pending.command.name } as const] : []),
-              ...(pending.text ? [{ type: 'text', text: pending.command ? ` ${pending.text}` : pending.text } as const] : []),
-            ]}
+            parts={pendingParts}
             attachments={pending.files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type }))}
           />
         )}

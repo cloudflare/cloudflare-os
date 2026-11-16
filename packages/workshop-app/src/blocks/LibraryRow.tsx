@@ -1,11 +1,11 @@
-import type { ReactElement, ReactNode } from 'react'
-import { DotsThreeIcon, StarIcon, type Icon } from '@phosphor-icons/react'
+import type { ReactElement } from 'react'
+import { DotsThreeIcon, type Icon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
 import { ContextMenu } from '@/components/ContextMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
-import type { FileThumbnail } from './file-preview/useFileThumbnail'
 import { LinkButton } from '@/components/LinkButton'
+import { RowAction } from './RowAction'
+import { LIST_ACTION, StarButton } from './StarButton'
 
 /** Something that can be done with a thing in the Library, from its More menu or by right-clicking it. */
 export type LibraryAction = {
@@ -15,18 +15,15 @@ export type LibraryAction = {
   onSelect: () => void
 }
 
-/** What a Library row or tile shows, and what it does. */
+/** What a Library row or card shows, and what it does. */
 export type LibraryItemProps = {
   title: string
+  /** A line under the title: what it is, which workspace it is in, and whose that is. */
+  detail?: string
   /** What kind of thing it is, shown when it has no picture of its own. */
   icon: ReactElement
-  /** A picture of it, such as an image file's own, in place of its icon. */
+  /** A picture of it, such as an image file's own, filling its icon's place. */
   thumbnail?: string
-  /**
-   * A glimpse of it where it has no picture of its own: a gadget's screen, a document's first
-   * page. A tile shows it under its name; a row, too small for one, shows its icon.
-   */
-  preview?: FileThumbnail | null
   /** When it was, as the list it is in puts it. */
   time?: string
   /** How many changes it has waiting on the viewer to approve, said in place of when it was. */
@@ -41,45 +38,22 @@ export type LibraryItemProps = {
   onSelect: () => void
 }
 
-export const ACTION = 'text-kumo-subtle not-data-disabled:hover:bg-kumo-contrast/5 not-data-disabled:hover:text-kumo-default'
+/** How a button over a Library entry is drawn (`LIST_ACTION`), for the blocks that share its menu. */
+export const ACTION = LIST_ACTION
 
 /** The items of a Library entry's menu, for its More menu and its right-click menu alike. */
 export const libraryMenu = (actions: LibraryAction[]) =>
   actions.map(({ key, label, icon, onSelect }) => <DropdownMenu.Item key={key} icon={icon} onSelect={onSelect}>{label}</DropdownMenu.Item>)
 
 /**
- * What a Library entry shows of itself in a row's icon place: its own picture, cut to a rounded
- * square, or the glyph of what it is.
+ * What a Library entry shows of itself in its icon's place, a rounded square: its own picture
+ * filling it, or the glyph of what it is on a fill.
  */
 export const LibraryGlyph = ({ icon, thumbnail, className }: { icon: ReactElement; thumbnail?: string; className?: string }) =>
   thumbnail
-    ? <img src={thumbnail} alt="" className={cn('size-5 shrink-0 rounded-[5px] object-cover ring-1 ring-kumo-contrast/6', className)} />
-    : <span className={cn('flex shrink-0 text-kumo-default [&>svg]:size-5', className)}>{icon}</span>
+    ? <img src={thumbnail} alt="" className={cn('size-10 shrink-0 rounded-xl object-cover ring-1 ring-kumo-contrast/6', className)} />
+    : <span className={cn('grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-subtle [&>svg]:size-5', className)}>{icon}</span>
 
-/**
- * One of the row's buttons at its end, which slides out from under the edge, pushing the time in,
- * while the row is pointed at or has focus, or its menu is open; always out to a finger, and while
- * `shown`. As a workspace's row has (`WorkspaceRow`).
- */
-const Action = ({ shown, children }: { shown?: boolean; children: ReactNode }) => (
-  <span
-    className={cn(
-      'flex shrink-0 justify-end transition-[width,opacity] duration-75 ease-[cubic-bezier(0.2,0,0.15,1)] motion-reduce:transition-none',
-      shown
-        ? 'w-10 opacity-100'
-        : 'pointer-events-none w-0 opacity-0 group-has-focus-visible:pointer-events-auto group-has-focus-visible:w-10 group-has-focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:w-10 group-hover:opacity-100 group-has-data-popup-open:pointer-events-auto group-has-data-popup-open:w-10 group-has-data-popup-open:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:w-10 pointer-coarse:opacity-100',
-    )}
-  >
-    {children}
-  </span>
-)
-
-/**
- * A gadget or a file in the Library, on one line: what it is (or its own picture), its name, and
- * when it was at the far end. Pointed at, More and its star slide out at the end; a starred one
- * keeps its star out, last, so that it stays where it is as More slides out before it. Right-click
- * it for the same menu as More.
- */
 /** What a Library entry with changes waiting says of them: "3 to approve". */
 export const WaitingLabel = ({ count, className }: { count: number; className?: string }) => (
   <span className={cn('flex shrink-0 items-center gap-1.5 text-kumo-warning', className)}>
@@ -88,7 +62,20 @@ export const WaitingLabel = ({ count, className }: { count: number; className?: 
   </span>
 )
 
-export const LibraryRow = ({ title, icon, thumbnail, time, waiting, starred, onStarredChange, actions, href, onSelect }: LibraryItemProps) => (
+/** A Library entry's More menu, at its end or in its corner. */
+export const LibraryMore = ({ title, actions, side }: { title: string; actions: LibraryAction[]; side?: 'top' | 'bottom' }) => (
+  <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant="ghost" triggerClassName={LIST_ACTION} side={side} align="end">
+    {libraryMenu(actions)}
+  </DropdownMenu>
+)
+
+/**
+ * A gadget or a file in the Library, on one line: what it is (or its own picture), its title over
+ * where it is from, and at the far end when it was, or what waits on the viewer. Pointed at, More
+ * and its star slide out at the end; a starred one keeps its star out, last, so that it stays where
+ * it is as More slides out before it. Right-click it for the same menu as More.
+ */
+export const LibraryRow = ({ title, detail, icon, thumbnail, time, waiting, starred, onStarredChange, actions, href, onSelect }: LibraryItemProps) => (
   <ContextMenu menu={libraryMenu(actions)} aria-label={`More for ${title}`} className="block">
     <div className="group relative flex items-center rounded-2xl pr-1.5 hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5">
       <LinkButton
@@ -98,29 +85,23 @@ export const LibraryRow = ({ title, icon, thumbnail, time, waiting, starred, onS
         className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl py-3 pr-2.5 pl-3 text-left text-base after:absolute after:inset-0 after:content-['']"
       >
         <LibraryGlyph icon={icon} thumbnail={thumbnail} />
-        <span className="min-w-0 flex-1 truncate font-medium text-kumo-default">{title}</span>
+        <span className="min-w-0 flex-1 leading-snug">
+          <span className="block truncate font-medium text-kumo-default">{title}</span>
+          {detail && <span className="block truncate text-kumo-subtle">{detail}</span>}
+        </span>
         {waiting ? <WaitingLabel count={waiting} /> : time && <span className="shrink-0 text-end text-kumo-subtle">{time}</span>}
       </LinkButton>
       {actions.length > 0 && (
-        <Action>
+        <RowAction>
           <span className="relative flex">
-            <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant="ghost" triggerClassName={ACTION} align="end">
-              {libraryMenu(actions)}
-            </DropdownMenu>
+            <LibraryMore title={title} actions={actions} />
           </span>
-        </Action>
+        </RowAction>
       )}
       {starred !== undefined && onStarredChange && (
-        <Action shown={starred}>
-          <Button
-            variant="ghost"
-            icon={<StarIcon weight={starred ? 'fill' : 'regular'} />}
-            aria-label={`Star ${title}`}
-            aria-pressed={starred}
-            onClick={() => onStarredChange(!starred)}
-            className={cn('relative', ACTION)}
-          />
-        </Action>
+        <RowAction shown={starred}>
+          <StarButton title={title} starred={starred} onStarredChange={onStarredChange} className="relative" />
+        </RowAction>
       )}
     </div>
   </ContextMenu>

@@ -1,10 +1,9 @@
-import type { ReactNode } from 'react'
-import { StarIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
-import { Button } from '@/components/Button'
 import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { CardAction } from './CardAction'
 import { MemberAvatars, type ListedMember } from './MemberAvatars'
+import { LIST_ACTION, StarButton } from './StarButton'
 import { WorkspaceMoreMenu } from './WorkspaceMoreMenu'
 
 export type WorkspaceCardProps = {
@@ -21,23 +20,7 @@ export type WorkspaceCardProps = {
   onSelect: () => void
 }
 
-const ACTION = 'text-kumo-subtle not-data-disabled:hover:bg-kumo-contrast/5 not-data-disabled:hover:text-kumo-default'
 const HIGHLIGHT = 'group-hover:bg-kumo-contrast/5 group-has-focus-visible:bg-kumo-contrast/5 group-has-data-popup-open:bg-kumo-contrast/5'
-
-/**
- * One of the card's buttons in its corner, out of sight until the card is pointed at or has focus,
- * or its menu is open. Always there to a finger, which cannot point, and while `shown`.
- */
-const Action = ({ shown, children }: { shown?: boolean; children: ReactNode }) => (
-  <span
-    className={cn(
-      'relative flex transition-opacity duration-75 motion-reduce:transition-none',
-      !shown && 'opacity-0 group-hover:opacity-100 group-has-focus-visible:opacity-100 group-has-data-popup-open:opacity-100 pointer-coarse:opacity-100',
-    )}
-  >
-    {children}
-  </span>
-)
 
 /**
  * One workspace on the Workspaces page, as a card: its icon, and under it its title, on two lines
@@ -64,20 +47,13 @@ export const WorkspaceCard = ({ workspaceLabel, title, time, members, starred, o
     </LinkButton>
     <span className="absolute top-2 right-2 flex">
       {href && (
-        <Action>
-          <WorkspaceMoreMenu title={title} href={href} triggerClassName={ACTION} />
-        </Action>
+        <CardAction>
+          <WorkspaceMoreMenu title={title} href={href} triggerClassName={LIST_ACTION} />
+        </CardAction>
       )}
-      <Action shown={starred}>
-        <Button
-          variant="ghost"
-          icon={<StarIcon weight={starred ? 'fill' : 'regular'} />}
-          aria-label={`Star ${title}`}
-          aria-pressed={starred}
-          onClick={() => onStarredChange(!starred)}
-          className={ACTION}
-        />
-      </Action>
+      <CardAction shown={starred}>
+        <StarButton title={title} starred={starred} onStarredChange={onStarredChange} />
+      </CardAction>
     </span>
   </div>
 )

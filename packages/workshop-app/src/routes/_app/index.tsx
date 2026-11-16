@@ -9,6 +9,7 @@ import { RecentGadgets } from '@/library/RecentGadgets'
 import { skillCommandOf } from '@/chat/slashCommands'
 import { startConversation } from '@/chat/startConversation'
 import { useProfile } from '@/profile/ProfileContext'
+import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
 import { useApi } from '@/rpc/ApiContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -17,10 +18,13 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 /**
  * The start of a new conversation: on its own, in a workspace of its own that sending the first
  * message creates, or in one of the user's named workspaces, as the picker under the composer
- * says. A skill chosen to use elsewhere (`useSkill`) is what the draft starts with. Further down, a
- * few of the blueprints the deployment features, to start a gadget from instead.
+ * says. A skill chosen to use elsewhere (`useSkill`) is what the draft starts with; `?format=` is
+ * what the first message asks for something as, by the format's id (`document`), as the library's
+ * New menu starts one. Further down, the gadgets lately worked on, or a few of the blueprints the
+ * deployment features to start one from.
  */
 export const Route = createFileRoute('/_app/')({
+  validateSearch: (search: Record<string, unknown>): { format?: string } => ({ format: typeof search.format === 'string' ? search.format : undefined }),
   component: Home,
 })
 
@@ -47,13 +51,17 @@ function Home() {
   // One that has gone meanwhile is no longer where it goes.
   const into = named.some(({ id }) => id === where) ? where : undefined
 
+  const { format: formatId } = Route.useSearch()
+  // One the deployment does not offer starts nothing.
+  const format = startableFormats(useOutputFormats(formatId !== undefined)).find(({ id }) => id === formatId)
   return (
     <NewChatPane
       // A skill chosen again starts the draft again.
       key={location.state.key}
       greeting={greeting(user.name)}
       initialCommand={skill && skillCommandOf(skill, skill.source)}
-      start={(text, files, modelId, command) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace()), text, files, modelId, command)}
+      format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
+      start={(text, files, modelId, command, formats) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace()), text, files, modelId, command, formats)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
       below={<WorkspacePicker workspaces={named} value={into} onChange={setWhere} onCreate={() => void navigate({ to: '/workspaces/new' })} />}
       after={(

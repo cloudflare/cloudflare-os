@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { Button } from '@/components/Button'
 import { libraryGroups, type LibraryEntry } from '@/library/libraryEntries'
-import { LibraryList } from '@/library/LibraryList'
+import { LibraryEntryList } from '@/library/LibraryEntryList'
 import { useLibraryEntries } from '@/library/useLibraryEntries'
 
 export type WorkspaceLibraryListProps = {
@@ -31,7 +31,7 @@ export const WorkspaceLibraryList = ({ workspaceId, onOpen, href }: WorkspaceLib
       {!library.loading && !library.problem && groups.length === 0 && (
         <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. What this workspace makes shows here.</p>
       )}
-      {groups.length > 0 && <LibraryList groups={groups} library={library} onOpen={onOpen} href={href} />}
+      {groups.length > 0 && <LibraryEntryList groups={groups} library={library} onOpen={onOpen} href={href} />}
     </>
   )
 }

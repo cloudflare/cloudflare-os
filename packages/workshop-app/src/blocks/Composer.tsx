@@ -2,11 +2,13 @@ import { useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import type { FormatIconName } from '@/components/FormatIcon'
 import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
 import { ComposerCommandLine } from './ComposerCommandLine'
 import { ComposerCommandPicker, type ComposerCommand } from './ComposerCommandPicker'
 import { ComposerConnectionLines, type ComposerConnection } from './ComposerConnectionLines'
+import { ComposerFormat } from './ComposerFormat'
 import { ComposerProblem } from './ComposerProblem'
 import { ComposerReply } from './ComposerReply'
 import { leadingCommand, matchCommands, slashTokenAt, type SlashToken } from './slashCommands'
@@ -45,6 +47,13 @@ export type ComposerProps = {
    * message knows what it replies to.
    */
   reply?: { quote: string; onShow?: () => void; onCancel: () => void }
+  /**
+   * The draft starts with a format (a Document, a Spreadsheet, …): what it asks for something as,
+   * shown above the draft, and the way to make the draft an ordinary message again. It can then be
+   * sent with no words, as the format is something to say. Whoever sends the message knows what it
+   * starts with.
+   */
+  format?: { noun: string; icon: FormatIconName; onRemove: () => void }
   /** Why the last message did not go, shown over the composer until dismissed. */
   problem?: { message: string; onDismiss: () => void }
   /**
@@ -69,7 +78,7 @@ const MAX_ROWS = 6
 const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, commands = [], reply, format, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
@@ -106,7 +115,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
   const connectionsRefused = !!command && connections.length > 0
   const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0 && connections.length === 0 && !command
   const canSend = !sending && !filesRefused && !connectionsRefused &&
-    (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || connections.length > 0)
+    (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || connections.length > 0 || !!format)
   const showSend = !stop || canSteer
   const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(commands, slash.query) : []
   const picking = matches.length > 0
@@ -274,6 +283,13 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
             onShow={reply?.onShow}
             onCancel={() => {
               reply?.onCancel()
+              inputRef.current?.focus()
+            }}
+          />
+          <ComposerFormat
+            format={format}
+            onRemove={() => {
+              format?.onRemove()
               inputRef.current?.focus()
             }}
           />

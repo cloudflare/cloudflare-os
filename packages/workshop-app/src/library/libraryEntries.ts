@@ -1,4 +1,4 @@
-import type { ChatFileSummary, FavoriteItem, FavoriteItemRef, FavoriteItemSpec, LibraryItemRef, OutputSummary } from '@gadgets/workshop-shared/api'
+import type { BlueprintOutput, ChatFileSummary, FavoriteItem, FavoriteItemRef, FavoriteItemSpec, LibraryItemRef, OutputSummary } from '@gadgets/workshop-shared/api'
 import { formatAsideRef, type AsideItem } from '@/aside/asideItems'
 import { groupByTime } from '@/chat/timeGroups'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -23,6 +23,8 @@ export type LibraryEntry = {
   /** Made, as a gadget is; or a file, sent in a chat or kept by a connected service. */
   section: 'gadget' | 'file'
   title: string
+  /** The format a gadget was made as, where it was made as one. */
+  output?: BlueprintOutput
   /** When it was last worked on, sent or starred, whichever the Library knows of. */
   at: Date
   workspaceId: string
@@ -94,6 +96,7 @@ const gadgetEntry = (gadget: Gadget, sources: LibrarySources, starred: ReadonlyS
     item,
     section: 'gadget',
     title,
+    output,
     at: gadget.at,
     workspaceId,
     workspaceTitle: gadget.workspaceTitle || undefined,

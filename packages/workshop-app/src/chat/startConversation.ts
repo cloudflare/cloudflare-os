@@ -1,4 +1,4 @@
-import type { Overseer } from '@gadgets/workshop-shared/api'
+import type { MessageFormatRef, Overseer } from '@gadgets/workshop-shared/api'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { missingCommand, slashRequestFor } from './slashCommands'
 import { assertAttachable, uploadAttachments } from './uploadAttachments'
@@ -9,8 +9,9 @@ export type NewConversationOverseer = Pick<Overseer, 'newChat' | 'getMetadata' |
 /**
  * Starts a conversation: a chat that begins with `text` and carries `files`, answered by `modelId`,
  * in the workspace `open` creates or opens; or, with `command`, one that begins with the skill or
- * command given `text`, as the workspace knows it. Resolves with the workspace's and the chat's ids once
- * the chat exists; the workspace's connection is released before returning.
+ * command given `text`, as the workspace knows it. `formats` says where the text names a format, for
+ * it to be drawn as one. Resolves with the workspace's and the chat's ids once the chat exists; the
+ * workspace's connection is released before returning.
  */
 export const startConversation = async (
   open: () => NewConversationOverseer,
@@ -18,6 +19,7 @@ export const startConversation = async (
   files: readonly File[],
   modelId: string,
   command?: ComposerCommand,
+  formats?: MessageFormatRef[],
 ): Promise<{ workspaceId: string; chatId: number }> => {
   // Before `open`, which may create a workspace, so that none is made for a message that cannot be sent.
   assertAttachable(files)
@@ -31,7 +33,7 @@ export const startConversation = async (
             if (!request) throw new Error(missingCommand(command))
             return overseer.newChat(request, modelId)
           })
-        : uploadAttachments(overseer, files).then((attachments) => overseer.newChat(text, modelId, undefined, attachments)),
+        : uploadAttachments(overseer, files).then((attachments) => overseer.newChat(text, modelId, undefined, attachments, formats)),
       overseer.getMetadata(),
     ])
     return { workspaceId: metadata.id, chatId }

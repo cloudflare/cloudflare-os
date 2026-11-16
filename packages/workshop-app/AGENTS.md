@@ -315,13 +315,43 @@ out of its old group, as a copy left there, and grows into its new one. A row re
 group slides over a surface that stays still. `groupedLayout.ts` draws the surface: rows whose
 padding meets share one rounded run, so groups never notch where they meet.
 
+## The Library page
+
+`/library` (the sidebar's Library button) lists everything the user's workspaces, and those shared
+with them, have made (`useLibrary`), the way the Workspaces page lists workspaces: the starred
+first, then the rest in the order chosen, as rows (`LibraryRow`) or cards (`LibraryCard`, which
+has no room to say which workspace an output is in). `library/libraryList.ts` (plain, tested) says
+how it can be ordered (last active, which is its workspace's; date created; name; type, each type
+a group of its own however few it has), narrowed (starred, whose it is, and its type and its
+workspace, each a menu of its own) and searched.
+
+The types are what the old Outputs page had: apps (an output made as no format), then the formats
+the deployment offers (`listOutputFormats()`, `useOutputFormats`), in its order and whether or not
+anything has been made as one, then whatever else is in the library, such as a format no longer
+offered.
+
+The backend keeps no star for an output, so the stars and their order are this device's
+(`prefs/libraryStars.ts`, with the rules in `library/libraryStars.ts`): they do not follow the
+user to another browser. They should be the server's, as a workspace's `pinned` is, once the
+backend can say so. A star for an output that is not listed is kept: it may only not have been
+read yet, as while the index catches up.
+
+Its New button is a menu of the formats that can be started by asking for one (not those whose
+blueprint has something to set up first), and a plain button until there are any. Choosing one goes
+to the home page with `?format=<id>`, whose composer then starts with the format
+(`ComposerFormat`, a line over the draft, as a reply's is), and can be sent with no words. The
+first message names the format ahead of what was written and says where the name is
+(`chat/startWithFormat.ts`), which is what the old composer's Start with menu sent: the agent
+reads the name and makes one from the deployment's blueprint, and the feed draws it as a chip.
+
 ## Lists
 
 A list that is more than a few rows has the same controls over it (`ListToolbar`), on one line: a
 search at the start, a round button that opens out over the room when clicked or tabbed to
 (`SearchField`); then rows or cards, the order, the filters, and what the list offers to do, such
-as New. Each is drawn only if given, so a list has the ones it has a use for. The Workspaces page
-is the first; use the same pieces for the next rather than building beside them:
+as New. Each is drawn only if given, so a list has the ones it has a use for. The Workspaces and
+Library pages have them; use the same pieces for the next rather than building beside them, down
+to a row's and a card's buttons (`RowAction`, `CardAction`, `StarButton`):
 
 - `components/listView.ts` (plain, tested) has what a list says of itself: its orders
   (`ListOrder`), its filters (`ListFilter`) and how a search and the filters narrow it. An order is

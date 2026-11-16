@@ -1,19 +1,31 @@
 import { useState } from 'react'
 import { ArrowSquareOutIcon, ArrowUpRightIcon, LinkIcon, MinusCircleIcon, StarIcon, TrashIcon } from '@phosphor-icons/react'
 import { asideItemIcon } from '@/aside/asideItemIcon'
+import { LibraryCard } from '@/blocks/LibraryCard'
 import { LibraryRow, type LibraryAction, type LibraryItemProps } from '@/blocks/LibraryRow'
-import { LibraryTile } from '@/blocks/LibraryTile'
+import { CardGrid } from '@/components/CardGrid'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { GroupedList } from '@/components/GroupedList'
+import type { ListViewMode } from '@/components/listView'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { LibraryEntry, LibraryGroup } from './libraryEntries'
+import { entryDetail } from './libraryList'
 import type { LibraryEntriesState } from './useLibraryEntries'
 import { useLibraryPicture } from './useLibraryPicture'
 
-export type LibraryListProps = {
+export type LibraryEntryListProps = {
   groups: LibraryGroup[]
-  /** As rows, grouped by when, or as a grid of tiles. */
-  view?: 'list' | 'grid'
+  /** As rows, or as cards. */
+  view?: ListViewMode
+  /**
+   * Whether each says which workspace it is in, as where they are from many do. A card has no room
+   * to, whatever this says.
+   */
+  withWorkspace?: boolean
+  /** Rows show their groups' labels over them, as where nothing else sets the groups apart. */
+  headed?: boolean
+  /** Puts the starred group in another order, giving the keys in the new one. */
+  onReorderStarred?: (keys: string[]) => void
   /** What can be done with the entries: star, take out, delete. */
   library: Pick<LibraryEntriesState, 'setStarred' | 'remove' | 'deleteGadget'>
   onOpen: (entry: LibraryEntry) => void
@@ -30,18 +42,15 @@ const copyLink = (href: string) => {
 
 // Each its own component, so that each fetches its own picture.
 const Row = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryRow {...props} thumbnail={useLibraryPicture(entry).photo} />
-const Tile = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => {
-  const { ref, photo, preview } = useLibraryPicture(entry)
-  return <LibraryTile ref={ref} {...props} thumbnail={photo} preview={preview} />
-}
+const Card = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryCard {...props} thumbnail={useLibraryPicture(entry).photo} />
 
 /**
- * Library entries as rows in groups, or tiles in a grid, each starred from its row and with a menu
+ * Library entries as rows or cards in groups, each starred from its row and with a menu
  * of what can be done with it: open it, here or in another tab, star it, take it out of the
  * Library, and for someone who builds where it was made, delete a gadget, once asked. A star or a
  * removal shows at once, and is undone, with why, if it does not hold.
  */
-export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: LibraryListProps) => {
+export const LibraryEntryList = ({ groups, view = 'list', withWorkspace = true, headed = true, onReorderStarred, library, onOpen, href }: LibraryEntryListProps) => {
   const connection = useConnectionNotice()
   // Why the last star or removal did not hold.
   const [problem, setProblem] = useState<string>()
@@ -90,6 +99,7 @@ export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: Li
     return {
       entry,
       title: entry.title,
+      detail: entryDetail(entry, { workspace: withWorkspace && view === 'list' }),
       icon: asideItemIcon(entry.item),
       time,
       waiting: entry.waiting,
@@ -107,22 +117,25 @@ export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: Li
       {view === 'list'
         ? (
             <GroupedList
-              headed
+              headed={headed}
               groups={groups.map(({ key, label, rows }) => ({
                 key,
                 label,
                 rows: rows.map(({ entry, time }) => ({ key: entry.key, content: <Row {...propsOf(entry, time)} /> })),
+                onReorder: key === 'starred' ? onReorderStarred : undefined,
               }))}
             />
           )
-        : groups.map(({ key, label, rows }) => (
-            <section key={key} aria-labelledby={`library-${key}`} className="appears flex flex-col gap-2 px-1">
-              <h2 id={`library-${key}`} className="px-2 text-sm font-medium text-kumo-subtle">{label}</h2>
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(min(7rem,calc(50%-0.375rem)),1fr))] gap-3">
-                {rows.map(({ entry, time }) => <Tile key={entry.key} {...propsOf(entry, time)} />)}
-              </div>
-            </section>
-          ))}
+        : (
+            <CardGrid
+              groups={groups.map(({ key, label, rows }) => ({
+                key,
+                label,
+                cards: rows.map(({ entry, time }) => ({ key: entry.key, content: <Card {...propsOf(entry, time)} /> })),
+                onReorder: key === 'starred' ? onReorderStarred : undefined,
+              }))}
+            />
+          )}
       <ConfirmDialog
         open={deleting !== undefined}
         onOpenChange={(open) => !open && setDeleting(undefined)}
