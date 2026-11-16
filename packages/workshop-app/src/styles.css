@@ -16,6 +16,15 @@
        it. Inherited, so it holds for everything that scrolls. */
     scrollbar-color: color-mix(in oklch, var(--color-kumo-contrast) 40%, transparent) transparent;
   }
+
+  /* As tall as the page is laid out in, for the app's frame to be held to (`routes/__root.tsx`):
+     an on-screen keyboard on Android makes that shorter, which a height in viewport units takes
+     no account of. */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
 }
 
 /* The size of everything that is fully rounded: buttons, a header's badges, tabs, the search
