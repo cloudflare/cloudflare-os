@@ -1242,6 +1242,20 @@ function getMarkdownComponents(
         </a>
       );
     },
+    // An image in a message is never fetched. Whoever writes the message chooses its address, and
+    // the reader's browser loading it would carry whatever the address holds to that server --
+    // past any limit on the agent's own network access. A web address is offered as a link
+    // instead; any other source, including a relative one, which would be requested with the
+    // reader's cookies, is left as its alt text.
+    img: ({ src, alt }) => {
+      const safeSrc = safeExternalUrl(typeof src === "string" ? src : undefined);
+      if (!safeSrc) return alt ? <>{alt}</> : null;
+      return (
+        <a href={safeSrc} target="_blank" rel="noopener noreferrer">
+          {alt || safeSrc}
+        </a>
+      );
+    },
   };
 }
 

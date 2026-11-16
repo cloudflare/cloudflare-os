@@ -95,3 +95,62 @@ describe("MarkdownMessage line breaks", () => {
     expect(writeText).toHaveBeenCalledWith("const answer = 42;");
   });
 });
+
+// Loading an image would send its address to whoever runs the server it names, so a message's
+// images must never become requests: a web address is a link, anything else just its alt text.
+describe("MarkdownMessage images", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  afterEach(async () => {
+    if (root) await act(async () => root.unmount());
+    container?.remove();
+  });
+
+  async function render(message: string, preserveLineBreaks?: boolean) {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root.render(createElement(MarkdownMessage, { message, preserveLineBreaks })));
+  }
+
+  it("links a web image rather than loading it", async () => {
+    await render("Status: ![the chart](https://example.com/c.png?d=secret)");
+
+    expect(container.querySelector("img")).toBeNull();
+    const link = container.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("https://example.com/c.png?d=secret");
+    expect(link?.textContent).toBe("the chart");
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("labels a web image with no alt text by its address", async () => {
+    await render("![](https://example.com/pixel.gif)");
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")?.textContent).toBe("https://example.com/pixel.gif");
+  });
+
+  it("leaves an image that isn't on the web as its alt text", async () => {
+    await render([
+      "![relative](/gatekeeper/github/connect)",
+      "![protocol-relative](//example.com/x.png)",
+      "![script](javascript:alert(1))",
+      "![](//example.com/no-alt.png)",
+    ].join("\n\n"));
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    expect([...container.querySelectorAll("p")].map((p) => p.textContent))
+      .toEqual(["relative", "protocol-relative", "script", ""]);
+  });
+
+  it("treats a person's message the same way", async () => {
+    await render("look ![x](https://example.com/x.png)", true);
+
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("https://example.com/x.png");
+  });
+});
