@@ -1,6 +1,7 @@
 // What the admin gatekeeper suites share: adminWorkspace(), the ONE way a test gets a workspace
-// that has the admin connection. It adds the connection and sets the vendor's mode, so that a
-// later condition of the lend is met here once and not in every suite.
+// that has the admin connection. It gives the owner the vendor's account, adds the connection and
+// sets the vendor's mode, so that every condition of the lend is met here once and not in every
+// suite.
 
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
@@ -10,6 +11,7 @@ import type {
 import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { UserDurableObject } from "../src/user.js";
 import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 import type { FakeAdminCall, FakeAdminOutcome } from "./test-worker.js";
@@ -17,6 +19,7 @@ import type { FakeAdminCall, FakeAdminOutcome } from "./test-worker.js";
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+    TEST_USER: DurableObjectNamespace<UserDurableObject>;
     TEST_ADMIN_AUDIT: DurableObjectNamespace<AdminAuditDurableObject>;
   }
 }
@@ -61,6 +64,9 @@ export type AdminWorkspace = {
   /** The workspace's id, as an AdminAgentOrigin names it. */
   id: string;
   owner: AiChatAuthorInfo;
+  /** The owner's account: a real user object, which reads `env` and `config` as the workspace
+   * does, and which the workspace asks whether its owner holds the vendor's account. */
+  ownerDo: DurableObjectStub<UserDurableObject>;
   /** The admin connection's id. */
   gatekeeperId: number;
   /** The facet behind the connection: the fake admin gatekeeper. */
@@ -86,9 +92,11 @@ export type AdminWorkspace = {
  * Overseer.newGatekeeper() adds one (a "gatekeeper" record of ADMIN_GATEKEEPER_VENDOR_ID) over
  * the fake admin gatekeeper, with the vendor's mode set explicitly ("optional" unless `mode`
  * says otherwise). Its owner is `owner` (ADMIN by default) and its deployment admins are ADMIN
- * and OTHER_ADMIN, or `admins`. The workspace reads its environment and the admin config from
- * `ws.env` and `ws.config`, so a test changes either between two calls. `connection: false`
- * leaves the connection out.
+ * and OTHER_ADMIN, or `admins`. An owner who is one of those admins has provisioned the vendor's
+ * account (FakeAdminVendor in test-worker.ts), as an admin adds it from Connectors, before the
+ * mode is set; `account: false` leaves them without it. The workspace and its owner's account
+ * read their environment and the admin config from `ws.env` and `ws.config`, so a test changes
+ * either between two calls. `connection: false` leaves the connection out.
  */
 export async function adminWorkspace(
     run: (ws: AdminWorkspace) => Promise<void>,
@@ -97,22 +105,42 @@ export async function adminWorkspace(
       admins?: string[];
       mode?: AmbientGatekeeperMode;
       connection?: boolean;
+      account?: boolean;
     } = {}): Promise<void> {
+  let owner = options.owner ?? ADMIN;
+  let config: AdminWorkspace["config"] = {
+    ambientGatekeeperModes: { [ADMIN_GATEKEEPER_VENDOR_ID]: "optional" },
+    disabledGatekeepers: [],
+  };
+  let workspaceEnv = {
+    ...env,
+    ADMINS: options.admins ?? [ADMIN.id, OTHER_ADMIN.id],
+    BLUEPRINTS: {
+      get: async (key: string) => key === ADMIN_CONFIG_KEY ? JSON.stringify(config) : null,
+    },
+  };
+
+  let ownerName = `admin-agent-owner-${crypto.randomUUID()}`;
+  await runInDurableObject(env.TEST_USER.getByName(ownerName), async (user: UserDurableObject) => {
+    Object.assign(user, { env: workspaceEnv });
+    // The account as a first sign-in leaves it, written here so that the deployment's user
+    // directory, which the suites list, is not told of it.
+    let { storage } = user as unknown as { storage: {
+      created: { put(created: boolean): void }; profile: { put(profile: AiChatAuthorInfo): void };
+    } };
+    storage.created.put(true);
+    storage.profile.put(owner);
+    if ((options.account ?? true) && workspaceEnv.ADMINS.includes(owner.id)) {
+      await user.provisionAmbientAccount(ADMIN_GATEKEEPER_VENDOR_ID);
+    }
+  });
+  config.ambientGatekeeperModes[ADMIN_GATEKEEPER_VENDOR_ID] = options.mode ?? "optional";
+
   let stub = env.TEST_OVERSEER.getByName(`admin-agent-${crypto.randomUUID()}`);
   await runInDurableObject(stub, async (instance: OverseerDurableObject, state) => {
     let impl = (instance as unknown as { impl: any }).impl;
-    let owner = options.owner ?? ADMIN;
-    let config: AdminWorkspace["config"] = {
-      ambientGatekeeperModes: { [ADMIN_GATEKEEPER_VENDOR_ID]: options.mode ?? "optional" },
-      disabledGatekeepers: [],
-    };
-    let workspaceEnv = {
-      ...env,
-      ADMINS: options.admins ?? [ADMIN.id, OTHER_ADMIN.id],
-      BLUEPRINTS: {
-        get: async (key: string) => key === ADMIN_CONFIG_KEY ? JSON.stringify(config) : null,
-      },
-    };
+    // A stub made here, inside the workspace, which is where it is called from.
+    let ownerDo = env.TEST_USER.getByName(ownerName);
     // The lend reads the environment through the impl, a hook's start through the object.
     impl.env = workspaceEnv;
     Object.assign(instance, { env: workspaceEnv });
@@ -126,6 +154,8 @@ export async function adminWorkspace(
         id, whoami: async () => owner, getGadget: async () => null,
         getChatContext: async () => ({ profile: owner }),
         liveAccountAdminGrant: async () => null,
+        holdsGatekeeperAccount: (vendorId: string) => ownerDo.holdsGatekeeperAccount(vendorId),
+        listProvidedAccounts: () => ownerDo.listProvidedAccounts(),
         messageArrived: async () => {}, setWorkspaceLastActive: async () => {},
         getWorkspace: async () => null, syncWorkspaceOutputs: async () => {},
       }),
@@ -148,7 +178,7 @@ export async function adminWorkspace(
     }
 
     await run({
-      impl, instance, state, id: state.id.toString(), owner, gatekeeperId,
+      impl, instance, state, id: state.id.toString(), owner, ownerDo, gatekeeperId,
       facet: gatekeeperId < 0 ? undefined : await impl.getGatekeeperFacet(gatekeeperId),
       env: workspaceEnv as unknown as AdminWorkspace["env"],
       config,

@@ -8,6 +8,8 @@ import type {
   GatekeeperUiFrame,
   GatekeeperUserSelection,
   GatekeeperUserVerifier,
+  SupportedResource,
+  VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
@@ -19,7 +21,9 @@ import type {GitOid, GitPullHints, GitPullTransfer} from "@gadgets/workshop-shar
 import type {
   ActionDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import type {
+  AdminAgentApi, AdminAgentQueue, IssueReportEvent,
+} from "@gadgets/workshop-shared/admin-gatekeeper";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -145,6 +149,11 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
     this.#record(`ensureResources(${resourceUrlPatterns.join(",")})`);
     if (resourceUrlPatterns.length === 0) return {};
     return { url: `https://gk.example/expand/${this.ctx.props.name}` };
+  }
+
+  /** No resource to connect, as an account that offers none answers. */
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [];
   }
 
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -441,5 +450,103 @@ export class FakeAdminGatekeeper extends DurableObject<Cloudflare.Env> {
   /** The names of everything kept. */
   async kept(): Promise<string[]> {
     return [...this.#kept.keys()];
+  }
+}
+
+/** The one resource an account of the fake admin vendor offers to connect. */
+export const FAKE_ADMIN_RESOURCE: SupportedResource = {
+  urlPattern: "instanceadmin://deployment", title: "Deployment",
+  description: "The deployment's Admin API",
+};
+
+/** What the fake admin vendor has been asked, whichever instance was asked. */
+const adminVendorCalls = { describe: 0, createAccount: 0 };
+const adminVendorEvents: IssueReportEvent[][] = [];
+
+/**
+ * Stands for the admin gatekeeper's vendor: bound as GATEKEEPER_INSTANCEADMIN (vitest.config.ts),
+ * so every user object of the pool finds it. It auto-provisions an account that declares no
+ * singleton and no UI and offers one resource, and it records the issue report events it is sent.
+ */
+export class FakeAdminVendor extends WorkerEntrypoint<Cloudflare.Env> {
+  async describe(): Promise<VendorDescription> {
+    adminVendorCalls.describe++;
+    return {
+      displayName: "Deployment admin", url: "https://workshop.example/",
+      autoProvisionsAccount: true,
+    };
+  }
+
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [FAKE_ADMIN_RESOURCE];
+  }
+
+  async connectAccount(): Promise<{ url: string }> {
+    throw new Error("The admin gatekeeper has no connect flow.");
+  }
+
+  async createAccount() {
+    adminVendorCalls.createAccount++;
+    return this.ctx.exports.FakeAdminAccount({ props: {} });
+  }
+
+  async issueReportEvents(events: IssueReportEvent[]): Promise<void> {
+    adminVendorEvents.push(events);
+  }
+
+  /** How often describe() and createAccount() were called, and each batch of events sent. */
+  async calls(): Promise<typeof adminVendorCalls & { issueReportEvents: IssueReportEvent[][] }> {
+    return { ...adminVendorCalls, issueReportEvents: [...adminVendorEvents] };
+  }
+}
+
+/** An account of the fake admin vendor, whose one resource is the fake admin gatekeeper. */
+export class FakeAdminAccount extends WorkerEntrypoint<Cloudflare.Env> {
+  async describe(): Promise<AccountDescription> {
+    return { displayName: "Deployment admin", uniqueName: "deployment-admin" };
+  }
+
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [FAKE_ADMIN_RESOURCE];
+  }
+
+  async getGatekeeperClassFor(_url: string) {
+    return {
+      class: this.ctx.exports.FakeAdminGatekeeper({ props: {} }), resource: FAKE_ADMIN_RESOURCE,
+    };
+  }
+
+  async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
+    return this.ctx.exports.FakeGatekeeperVerifier({ props: { name: "deployment-admin" } });
+  }
+
+  /** Reached only through a stored record a test made declare a singleton: describe() declares
+   * none. */
+  async getSingletonGatekeeperClass() {
+    return this.ctx.exports.FakeAdminGatekeeper({ props: {} });
+  }
+
+  async revoke(): Promise<void> {}
+}
+
+/**
+ * A second vendor that auto-provisions its account, bound as GATEKEEPER_AMBIENTFIXTURE: one any
+ * user may hold, and which offers no resource, as the ambient gatekeepers other than the admin
+ * gatekeeper do.
+ */
+export class FakeAmbientVendor extends WorkerEntrypoint<Cloudflare.Env> {
+  async describe(): Promise<VendorDescription> {
+    return {
+      displayName: "Ambient fixture", url: "https://workshop.example/",
+      autoProvisionsAccount: true,
+    };
+  }
+
+  async getSupportedResources(): Promise<SupportedResource[]> {
+    return [];
+  }
+
+  async createAccount() {
+    return this.ctx.exports.FakeGatekeeperAccount({ props: { name: "ambient-fixture" } });
   }
 }

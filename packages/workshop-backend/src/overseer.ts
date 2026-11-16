@@ -371,6 +371,12 @@ function isAdminGatekeeper(record: GatekeeperRecord | undefined): boolean {
   return connectionVendorId(record) === ADMIN_GATEKEEPER_VENDOR_ID;
 }
 
+// What a connection of the admin gatekeeper is told once its workspace's owner holds no account
+// of that gatekeeper (see OverseerImpl.lendAdminApi()).
+const ADMIN_ACCOUNT_REMOVED = "This workspace's owner has removed the deployment admin account, " +
+    "so this connection reaches nothing. Add the account again from Connectors, or remove the " +
+    "connection.";
+
 // Whether the deployment has turned the gatekeeper `vendorId` off: an admin disabled the
 // connector, or set its provisioning mode to "disabled". The one test behind every "Gatekeeper is
 // disabled." of this file: a hook's firing (startHook()) and the admin gatekeeper's lend
@@ -7582,19 +7588,23 @@ class OverseerImpl implements AgentHooks {
    * Lend connection `gatekeeperId`, the admin gatekeeper's, this workspace's owner's Admin API
    * for `use` (see AdminAgentUse). Throws, lending nothing, unless the connection is the admin
    * gatekeeper's, the deployment has not turned that gatekeeper off, the owner is a deployment
-   * admin now, a session a member opened directly from the connection was opened by the owner
-   * and, for an approved action, whoever approved it is an admin too; and for an auto-approved
+   * admin now and still holds an account of that gatekeeper (the account keeps no credential the
+   * gatekeeper could end, so removing it ends its connections here, where the power is lent), a
+   * session a member opened directly from the connection was opened by the owner and, for an
+   * approved action, whoever approved it is an admin too; and for an auto-approved
    * action, unless the workspace holds no restricted data. The origin recorded with every call
    * is this workspace and the chat `caller` is tied to, if any. THE one place an AdminApiImpl is
    * made with via "gatekeeper": it hands that AdminApiImpl to restrictAdminApi() (admin-agent.ts)
    * and returns the result.
    *
    * What a lend costs, none of it cached, so that turning the gatekeeper off stops the very next
-   * call: one read of the admin config (readAdminConfig(), a single KV get) when the lend is
-   * made, and one more before each call through it and through a view it returned. The first
-   * call does not reuse the lend's read: a lend can be held for its whole life before its first
-   * call. A binding in an agent's or a gadget's code opens a session for each call it makes
-   * (GatekeeperLoopback), so each such call costs two config reads.
+   * call and removing the account the next lend: one read of the admin config
+   * (readAdminConfig(), a single KV get) and one call to the owner's user object
+   * (holdsGatekeeperAccount()) when the lend is made, and one more config read before each call
+   * through it and through a view it returned. The first call does not reuse the lend's read: a
+   * lend can be held for its whole life before its first call. A binding in an agent's or a
+   * gadget's code opens a session for each call it makes (GatekeeperLoopback), so each such call
+   * costs two config reads and one call to the owner's user object.
    */
   async lendAdminApi(gatekeeperId: number, caller: GatekeeperCaller, use: AdminAgentUse)
       : Promise<AdminAgentLend> {
@@ -7611,6 +7621,10 @@ class OverseerImpl implements AgentHooks {
     let admin = await this.getOwnerProfileId();
     if (!isDeploymentAdmin(this.env, admin)) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!await retryOnDoReset(() => this.ownerUserDo().holdsGatekeeperAccount(
+        ADMIN_GATEKEEPER_VENDOR_ID), this.logger)) {
+      throw new Error(ADMIN_ACCOUNT_REMOVED);
     }
     // Every call is recorded as the owner's. A chat keeps who prompted its agent and an action
     // who decided it; a session another member opened from the connection itself would leave
@@ -12937,6 +12951,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (vendorId === ADMIN_GATEKEEPER_VENDOR_ID &&
         !isDeploymentAdmin(this.env, await this.impl.getOwnerProfileId())) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    // Nor once that owner holds no account of it, as for a lend (lendAdminApi()).
+    if (vendorId === ADMIN_GATEKEEPER_VENDOR_ID &&
+        !await retryOnDoReset(() => this.impl.ownerUserDo().holdsGatekeeperAccount(
+            ADMIN_GATEKEEPER_VENDOR_ID), this.impl.logger)) {
+      throw new Error(ADMIN_ACCOUNT_REMOVED);
     }
 
     // Re-read after the awaits: the KV read leaves the input gate open, so a disable/delete may

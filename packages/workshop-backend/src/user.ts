@@ -3,6 +3,7 @@ import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubs
 import { ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_LIFETIME_SECONDS, createAdminAccessError, type AdminAccessGrant, type AdminUserView } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
+import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -28,6 +29,7 @@ import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./a
 import { adminAccessPolicy, namedUser } from "./admin-access.js";
 import { isAdminGrantLive, isAdminGrantPrunable, newAdminGrant } from "./admin-grants.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
+import { isDeploymentAdmin } from "./auth/config.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import {
   authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
@@ -41,6 +43,10 @@ import type { AdminViewTerms } from "./admin-access.js";
 import { openAdminUserView } from "./admin-user-view.js";
 
 const logger = createWorkshopLogger("workshop.user");
+
+// What a user who may not hold a vendor's account is told (see UserDurableObject's
+// #offersVendor()).
+const ADMINS_ONLY_GATEKEEPER = "Only deployment admins can add this gatekeeper.";
 
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
@@ -1498,6 +1504,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return grant && isAdminGrantLive(grant) ? grant : null;
   }
 
+  /**
+   * Whether this user has a connected account of gatekeeper `vendorId` that they may hold now
+   * (#offersVendor()). It reads this user's stored accounts and nothing else: no account is
+   * provisioned and no vendor is asked. Binding-only: what a workspace asks of its owner's
+   * account before it lends that owner's Admin API to the admin gatekeeper
+   * (OverseerImpl.lendAdminApi()).
+   */
+  async holdsGatekeeperAccount(vendorId: string): Promise<boolean> {
+    vendorId = vendorId.toLowerCase();
+    return this.#offersVendor(vendorId) && this.#hasAccountForVendor(vendorId);
+  }
+
   /** AuthenticatedApi.getAccountAdminGrant(). An ended grant kept for as long as the admin audit
    * log keeps its records is deleted here. */
   async getAccountAdminGrant(): Promise<AdminAccessGrant | null> {
@@ -2258,8 +2276,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let promises: Promise<GatekeeperVendorInfo | null>[] = [];
 
     for (let [id, vendor] of this.vendors) {
-      if (disabledGatekeeperSet.has(id)) {
-        continue;  // Whole gatekeeper disabled by admin.
+      if (disabledGatekeeperSet.has(id) || !this.#offersVendor(id)) {
+        continue;  // Whole gatekeeper disabled by admin, or one this user may not hold.
       }
       promises.push((async () => {
         if (filter && !(await checkGatekeeperVendorFilter(vendor, id, filter))) {
@@ -2271,6 +2289,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             vendor.describe(),
             vendor.getSupportedResources(options),
           ]);
+          if (description.autoProvisionsAccount &&
+              ambientGatekeeperMode(config, id) === "disabled") {
+            // No user can hold the account, so a picker that listed its resources could only fail.
+            return null;
+          }
           let enabledResources =
               filterEnabledResources(config, id, supportedResources)
                   .filter(resource => resource.connectable !== false || resource.creatable);
@@ -2297,6 +2320,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!vendor) {
       throw new Error("No such service: " + vendorId);
     }
+    if (!this.#offersVendor(vendorId)) throw new Error(ADMINS_ONLY_GATEKEEPER);
     if ((await readAdminConfig(this.env)).disabledGatekeepers.includes(vendorId.toLowerCase())) {
       throw new Error(`The "${vendorId}" gatekeeper is disabled on this deployment.`);
     }
@@ -2353,6 +2377,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return false;
   }
 
+  // Whether this user may hold an account of `vendorId` at all: every vendor but the admin
+  // gatekeeper, whose account lends an agent its user's deployment admin power and so goes only
+  // to a user who is a deployment admin now. Admin status comes from the environment, so it is
+  // read on every use, never stored: a demoted admin's account stays, hidden and refused, until
+  // they are an admin again. A user not yet created has only the placeholder profile, so none.
+  #offersVendor(vendorId: string): boolean {
+    return vendorId.toLowerCase() !== ADMIN_GATEKEEPER_VENDOR_ID ||
+        (this.storage.created.get() && isDeploymentAdmin(this.env, this.storage.profile.get().id));
+  }
+
   // Resolve every bound vendor that auto-provisions an account (VendorDescription.autoProvisionsAccount),
   // describing them in parallel and dropping any whose describe() fails. Shared discovery step for both
   // listing and auto-provisioning ambient gatekeepers; callers apply their own admin-mode filter.
@@ -2373,14 +2407,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * The ambient gatekeepers the user can opt into now: mode "optional" and not yet added. Backs the
-   * Connectors "Available" section. ("enabled" ones are already provisioned; "disabled" ones aren't
-   * offered.)
+   * The ambient gatekeepers the user can opt into now: mode "optional", not yet added, and one this
+   * user may hold (#offersVendor()). Backs the Connectors "Available" section. ("enabled" ones are
+   * already provisioned; "disabled" ones aren't offered.)
    */
   async listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
     let config = await readAdminConfig(this.env);
     return (await this.#ambientVendors())
-        .filter(({vendorId}) =>
+        .filter(({vendorId}) => this.#offersVendor(vendorId) &&
             ambientGatekeeperMode(config, vendorId) === "optional" && !this.#hasAccountForVendor(vendorId))
         // Same shape as listGatekeeperVendors; ambient gatekeepers expose no resources.
         .map(({vendorId, description}) => ({id: vendorId, description, supportedResources: []}));
@@ -2392,7 +2426,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Opt into an ambient gatekeeper on demand: mint its connected account for this user (no OAuth).
-   * Only when the vendor's mode isn't "disabled" and the user has no account yet. Idempotent.
+   * Only when the vendor's mode isn't "disabled", the user may hold its account (#offersVendor())
+   * and has none yet. Idempotent.
    */
   provisionAmbientAccount(vendorId: string): Promise<void> {
     vendorId = vendorId.toLowerCase();
@@ -2408,6 +2443,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error("No such service: " + vendorId);
 
+    if (!this.#offersVendor(vendorId)) throw new Error(ADMINS_ONLY_GATEKEEPER);
     if (ambientGatekeeperMode(await readAdminConfig(this.env), vendorId) === "disabled") {
       throw new Error(`The "${vendorId}" gatekeeper is disabled on this deployment.`);
     }
@@ -2465,7 +2501,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     let config = await readAdminConfig(this.env);
     for (let {vendorId, vendor} of await this.#ambientVendors()) {
-      if (provisioned.has(vendorId)) continue;
+      if (provisioned.has(vendorId) || !this.#offersVendor(vendorId)) continue;
       // Only "enabled" (forced) vendors are auto-provisioned for everyone. "optional" vendors are
       // added on demand by the user (provisionAmbientAccount); "disabled" ones never.
       if (!shouldAutoProvisionAccount(config, vendorId)) continue;
@@ -2496,6 +2532,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       // A "disabled" ambient gatekeeper's account stays dormant: don't surface its singleton capsule
       // or management UI. (Its data is preserved, so re-enabling restores it.)
       if (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled") continue;
+      // Likewise an account its user may not hold now.
+      if (!this.#offersVendor(rec.vendorId)) continue;
       result.push({ accountId: rec.id, vendorId: rec.vendorId, description: rec.description });
     }
     return result;
@@ -2513,6 +2551,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // Present only when description.singleton is set; gate on that, then call through the derived
     // SingletonAccountStub view (see its definition for why the cast is needed).
     if (!record?.description.singleton) return null;
+    if (!this.#offersVendor(record.vendorId)) throw new Error(ADMINS_ONLY_GATEKEEPER);
     return (record.account as unknown as SingletonAccountStub).getSingletonGatekeeperClass();
   }
 
@@ -2535,10 +2574,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The account record behind one of this user's gatekeeper apps, or undefined
   // if `accountId` is not a UI-providing account the deployment currently
   // offers (the same test listProvidedAccounts applies, since a "disabled"
-  // ambient gatekeeper's account stays dormant).
+  // ambient gatekeeper's account stays dormant) and this user may hold.
   async #uiAccountRecord(accountId: number): Promise<ConnectedAccountRecord | undefined> {
     let record = this.storage.connectedAccounts.get(accountId);
-    if (!record?.description.providesUi) return undefined;
+    if (!record?.description.providesUi || !this.#offersVendor(record.vendorId)) return undefined;
     let config = await readAdminConfig(this.env);
     if (config.disabledGatekeepers.includes(record.vendorId)) return undefined;
     if (record.autoProvisioned) {
@@ -2651,7 +2690,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let disabledGatekeeperSet = new Set(config.disabledGatekeepers);
 
     const subscriberUserId = this.storage.profile.get().id;
+    let offersVendor = (vendorId: string) => this.#offersVendor(vendorId);
+
     async function notifyAdd(record: ConnectedAccountRecord) {
+      // An account its user may not hold now is in no list.
+      if (!offersVendor(record.vendorId)) return;
       // Ambient (auto-provisioned) accounts only appear in the Connectors list when their vendor is
       // "optional" — i.e. the user opted in and can manage/remove it. "enabled" (forced) accounts have
       // nothing to manage, and "disabled" ones are dormant, so both are hidden.
@@ -3216,10 +3259,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // Block whole gatekeepers + disabled resources at the core-side chokepoints where a gatekeeper
   // class is minted (reached only via the user/UI-facing Overseer.newGatekeeper, blueprint
   // instantiation, and the agent's createExternalResource -- never from gadget code). An ambient
-  // gatekeeper an admin set to "disabled" is blocked here too. Blocking here prevents minting a
+  // gatekeeper an admin set to "disabled" is blocked here too, and so is a vendor whose account
+  // this user may not hold (#offersVendor()). Blocking here prevents minting a
   // capability to a disabled resource even if the request bypasses the (separately filtered)
   // picker/agent listings.
   async #assertResourceEnabled(vendorId: string, resource: SupportedResource) {
+    if (!this.#offersVendor(vendorId)) throw new Error(ADMINS_ONLY_GATEKEEPER);
     let config = await readAdminConfig(this.env);
     let normalized = vendorId.toLowerCase();
     if (config.disabledGatekeepers.includes(normalized) ||
@@ -3243,9 +3288,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * overseer passes the returned verifier to a gatekeeper's `addObserver()` or
    * `verifyObserverAccess()` so the gatekeeper can check whether this user is allowed to observe
    * the data read through it, or to a gatekeeper's `applyCreation()` to create the resource in
-   * this account. Returns null if the account no longer exists (or never existed). Throws if the
-   * account belongs to a different vendor (not a legitimate UI state — only reachable by bypassing
-   * client-side filtering).
+   * this account. Returns null if the account no longer exists (or never existed), or is one
+   * this user may not hold now (#offersVendor()). Throws if the account belongs to a different
+   * vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
    *
    * Account *selection* (which of the user's accounts to use for a given binding) is done by the
    * frontend; this method validates and resolves a chosen account to its verifier.
@@ -3253,7 +3298,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async getVerifier(accountId: number, expectedVendorId: string)
       : Promise<Fetcher<GatekeeperUserVerifier> | null> {
     let account = this.storage.connectedAccounts.get(accountId);
-    if (!account) return null;
+    if (!account || !this.#offersVendor(account.vendorId)) return null;
     if (account.vendorId !== expectedVendorId) {
       // Details stay server-side: this error reaches the browser via ensureObserver → open.
       console.error(
@@ -3269,6 +3314,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async #eligibleGatekeeperAccounts(vendorId: string): Promise<ConnectedAccountRecord[]> {
     if (!this.storage.created.get()) return [];
     vendorId = vendorId.toLowerCase();
+    if (!this.#offersVendor(vendorId)) return [];
 
     let config = await readAdminConfig(this.env);
     if (config.disabledGatekeepers.includes(vendorId)) return [];

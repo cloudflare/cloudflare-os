@@ -21,6 +21,7 @@ import {
 } from "@gadgets/workshop-shared/admin-agent";
 import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
 import type { UserDurableObject } from "../src/user.js";
+import type { FakeAdminVendor } from "./test-worker.js";
 import {
   ADMIN, NOT_ADMIN, OTHER_ADMIN, adminWorkspace, type AdminWorkspace,
 } from "./admin-agent-helpers.js";
@@ -31,6 +32,7 @@ import "./test-worker.js";
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
+    GATEKEEPER_INSTANCEADMIN: Service<FakeAdminVendor>;
   }
 }
 
@@ -40,6 +42,10 @@ const ENDED = "This Admin API session has ended. Open a new one.";
 // What createAdminAccessError(notAdmin) says, as it arrives over RPC.
 const NOT_ADMIN_MESSAGE =
     "Only a deployment admin can inspect a workspace or a user, or change a workspace.";
+// What a connection is told once its workspace's owner holds no account of the admin gatekeeper.
+const ACCOUNT_REMOVED = "This workspace's owner has removed the deployment admin account, so " +
+    "this connection reaches nothing. Add the account again from Connectors, or remove the " +
+    "connection.";
 const AGENT: GatekeeperCaller = { from: "agent", chatId: 5 };
 const OPEN = (ws: AdminWorkspace, options?: object) =>
     ({ method: "inspectWorkspace", args: options ? [ws.id, REASON, options] : [ws.id, REASON] });
@@ -593,6 +599,170 @@ describe("who is lent the Admin API", () => {
     });
     ws.env.ADMINS = [];
     expect((await ws.instance.startHook(2)).callback).toBeDefined();
+  }));
+});
+
+// The ids of the accounts of the admin gatekeeper in the owner's storage, offered or not.
+function ownerAccounts(ws: AdminWorkspace): Promise<number[]> {
+  return runInDurableObject(ws.ownerDo, user => {
+    let { storage } = user as unknown as { storage: {
+      nextAccountId: { get(): number };
+      connectedAccounts: { get(id: number): { vendorId: string } | undefined };
+    } };
+    let ids: number[] = [];
+    for (let id = 0; id < storage.nextAccountId.get(); id++) {
+      if (storage.connectedAccounts.get(id)?.vendorId === "instanceadmin") ids.push(id);
+    }
+    return ids;
+  });
+}
+
+// A hook of the admin connection, as a subscription to its issue reports leaves one.
+function bindHook(ws: AdminWorkspace, id: number) {
+  ws.impl.storage.boundHooks.put({
+    id, actionId: id, gatekeeperId: ws.gatekeeperId, vendorId: "instanceadmin",
+    controller: {} as any, callback: {} as any,
+    description: { title: "Issue reported", description: "Wakes the triage gadget." },
+    enabled: true,
+  });
+}
+
+describe("the owner's account of the admin gatekeeper", () => {
+  it("ends its connections when it is removed, and brings them back when it is added again",
+      () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws);
+    bindHook(ws, 1);
+    enableRule(ws, "issueReportNote");
+    let id = await queueAction(ws, 1, "issueReportStatus",
+        [{ method: "setIssueReportStatus", args: [reportId, "investigating"] }]);
+    expect(stateOf(ws, id)).toBe("pending");
+    using session = await ws.session(AGENT);
+    expect((await session.read({ method: "listUsers" }, { api: "before" })).error).toBeUndefined();
+
+    let [accountId] = await ownerAccounts(ws);
+    await ws.ownerDo.disconnectAccount(accountId!);
+    expect(await ownerAccounts(ws)).toEqual([]);
+
+    // Nothing more is lent: to a session, to an approved action or to a hook's firing.
+    expect(await session.read(OPEN(ws), { api: "after", result: "view" }))
+        .toEqual({ error: ACCOUNT_REMOVED });
+    using next = await ws.session(AGENT);
+    expect(await next.read({ method: "listUsers" })).toEqual({ error: ACCOUNT_REMOVED });
+    expect(await approve(ws, id)).toBe(ACCOUNT_REMOVED);
+    expect(await ws.facet.outcomes(1)).toBeUndefined();
+    await expect(ws.instance.startHook(1)).rejects.toThrow(ACCOUNT_REMOVED);
+    expect(await ws.facet.kept()).toEqual(["before"]);
+    expect(await ws.records()).toEqual([]);
+    // What was lent before stays lent until its session ends.
+    expect((await ws.facet.onKept("before", { method: "listUsers" })).error).toBeUndefined();
+
+    // The connection, its rule, its hook and its pending action are all kept.
+    expect(ws.impl.storage.gatekeepers.get(ws.gatekeeperId)).toBeDefined();
+    expect([...ws.impl.storage.autoApproveTags.list()]).toHaveLength(1);
+    expect(ws.impl.storage.boundHooks.get(1)).toMatchObject({ enabled: true });
+    expect(stateOf(ws, id)).toBe("pending");
+
+    await ws.ownerDo.provisionAmbientAccount("instanceadmin");
+    let [addedId] = await ownerAccounts(ws);
+    expect(addedId).not.toBe(accountId);
+    expect(await session.read(OPEN(ws), { result: "view" })).toEqual({ kept: "view" });
+    expect((await ws.instance.startHook(1)).callback).toBeDefined();
+    expect(await approve(ws, id)).toBeUndefined();
+    expect(stateOf(ws, id)).toBe("approved");
+    expect((await ws.impl.issueReports.getByName("").get(reportId)).status).toBe("investigating");
+  }));
+
+  it("lends nothing through a connection whose owner never had the account",
+      () => adminWorkspace(async ws => {
+    expect(await ownerAccounts(ws)).toEqual([]);
+    bindHook(ws, 1);
+    using session = await ws.session(AGENT);
+    expect(await session.read({ method: "listUsers" }, { api: "api" }))
+        .toEqual({ error: ACCOUNT_REMOVED });
+    let id = await queueAction(ws, 1, "issueReportStatus", []);
+    expect(await approve(ws, id)).toBe(ACCOUNT_REMOVED);
+    expect(stateOf(ws, id)).toBe("pending");
+    await expect(ws.instance.startHook(1)).rejects.toThrow(ACCOUNT_REMOVED);
+    expect(await ws.facet.kept()).toEqual([]);
+
+    // A hook of any other vendor is not asked the question.
+    ws.impl.storage.boundHooks.put(
+        { ...ws.impl.storage.boundHooks.get(1), id: 2, vendorId: "othervendor" });
+    expect((await ws.instance.startHook(2)).callback).toBeDefined();
+  }, { account: false }));
+
+  it("is held only by a user who is an admin now and has it", () => adminWorkspace(async ws => {
+    let holds = (vendorId = "instanceadmin") => ws.ownerDo.holdsGatekeeperAccount(vendorId);
+    let accounts = await ownerAccounts(ws);
+    expect(accounts).toHaveLength(1);
+    let asked = await env.GATEKEEPER_INSTANCEADMIN.calls();
+
+    expect(await holds()).toBe(true);
+    expect(await holds("InstanceAdmin")).toBe(true);
+    expect(await holds("ambientfixture")).toBe(false);
+    // A user who is not an admin holds none, whatever their storage keeps.
+    ws.env.ADMINS = [OTHER_ADMIN.id];
+    expect(await holds()).toBe(false);
+    ws.env.ADMINS = [ADMIN.id];
+    expect(await holds()).toBe(true);
+
+    // The question provisions nothing and asks no vendor.
+    expect(await ownerAccounts(ws)).toEqual(accounts);
+    expect(await env.GATEKEEPER_INSTANCEADMIN.calls()).toEqual(asked);
+
+    await ws.ownerDo.disconnectAccount(accounts[0]!);
+    expect(await holds()).toBe(false);
+    expect(await ownerAccounts(ws)).toEqual([]);
+
+    // Nor a user who never signed in, though ADMINS names the profile every user object starts
+    // with and the object's storage keeps a record: being created is all that is missing.
+    let unsigned = await runInDurableObject(
+        env.TEST_USER.getByName(`never-signed-in-${crypto.randomUUID()}`),
+        async (user: UserDurableObject) => {
+      let { storage } = user as unknown as { storage: {
+        created: { put(created: boolean): void }; profile: { get(): { id: string } };
+        nextAccountId: { put(id: number): void }; connectedAccounts: { put(record: unknown): void };
+      } };
+      Object.assign(user, { env: { ...ws.env, ADMINS: [storage.profile.get().id] } });
+      let account = await env.GATEKEEPER_INSTANCEADMIN.createAccount();
+      storage.connectedAccounts.put({
+        id: 0, account, description: await account.describe(), vendorId: "instanceadmin",
+        autoProvisioned: true,
+      });
+      storage.nextAccountId.put(1);
+      let before = [await user.holdsGatekeeperAccount("instanceadmin"), await user.whoamiIfExists()];
+      storage.created.put(true);
+      return [...before, await user.holdsGatekeeperAccount("instanceadmin")];
+    });
+    expect(unsigned).toEqual([false, null, true]);
+  }));
+
+  it("cannot be removed while the mode forces it", () => adminWorkspace(async ws => {
+    let [accountId] = await ownerAccounts(ws);
+    // Caught inside the account's object: the pool reports a refusal that leaves it as unhandled.
+    let refusal = await runInDurableObject(ws.ownerDo, user => (user as UserDurableObject)
+        .disconnectAccount(accountId!).then(() => undefined, error => (error as Error).message));
+    expect(refusal).toBe("This account is provided automatically and can't be disconnected.");
+    expect(await ws.ownerDo.holdsGatekeeperAccount("instanceadmin")).toBe(true);
+    using session = await ws.session(AGENT);
+    expect((await session.read({ method: "listUsers" })).error).toBeUndefined();
+  }, { mode: "enabled" }));
+
+  it("is provisioned again, once the mode forces it, when a workspace of its user is opened",
+      () => adminWorkspace(async ws => {
+    let [accountId] = await ownerAccounts(ws);
+    await ws.ownerDo.disconnectAccount(accountId!);
+    using session = await ws.session(AGENT);
+    expect(await session.read({ method: "listUsers" })).toEqual({ error: ACCOUNT_REMOVED });
+
+    ws.config.ambientGatekeeperModes.instanceadmin = "enabled";
+    expect(await session.read({ method: "listUsers" })).toEqual({ error: ACCOUNT_REMOVED });
+    await ws.impl.ensureAmbientCapsules();
+    expect(await ownerAccounts(ws)).toHaveLength(1);
+    expect((await session.read({ method: "listUsers" })).error).toBeUndefined();
+    // Opening provisioned the account, and still added no connection of its own.
+    expect([...ws.impl.storage.gatekeepers.list()].map((record: any) => record.id))
+        .toEqual([ws.gatekeeperId]);
   }));
 });
 
