@@ -13,6 +13,7 @@ import { clampSize, resistSize } from '@/components/resizing'
 import { ShimmerText } from '@/components/ShimmerText'
 import { useMenuPages } from '@/components/useMenuPages'
 import { CopyLinkButton } from './CopyLinkButton'
+import { GadgetAgentsMenu, type GadgetAgentsMenuProps } from './GadgetAgentsMenu'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { SidePaneTitle } from './SidePaneTitle'
 import { WorkspaceCrumb, type WorkspaceCrumbProps } from './WorkspaceCrumb'
@@ -84,6 +85,8 @@ export type SidePaneProps = Placement & {
   onShare?: () => void
   /** Goes to the one shown's own settings: a gadget's. */
   onOpenSettings?: () => void
+  /** The agents the one shown calls on (`GadgetAgentsMenu`): a gadget's, for whoever builds where it is. */
+  agents?: Omit<GadgetAgentsMenuProps, 'title' | 'compact'>
   /** Goes to the code of the one shown: a gadget's, on its settings page. */
   onViewCode?: () => void
   /** Saves the one shown as a file of a kind it offers, such as a gadget as a PDF. */
@@ -121,7 +124,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, openIn, onShare, onOpenSettings, onViewCode, exports, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, openIn, onShare, onOpenSettings, agents, onViewCode, exports, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -201,6 +204,12 @@ export const SidePane = (props: SidePaneProps) => {
             {people.length > 0 && (
               <HeaderBubble className="me-1.5">
                 <AvatarStack people={people} aria-label="Also here" />
+              </HeaderBubble>
+            )}
+            {/* Beside a chat, its glyph alone: the chat is what is being worked in there. */}
+            {agents && active && !fullScreen && (
+              <HeaderBubble key="agents">
+                <GadgetAgentsMenu {...agents} title={active.title} compact={narrow || beside !== undefined} />
               </HeaderBubble>
             )}
             {page?.chat && active && !fullScreen && (

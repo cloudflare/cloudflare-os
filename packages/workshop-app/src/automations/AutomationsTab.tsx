@@ -4,9 +4,8 @@ import { AutomationRow } from '@/blocks/AutomationRow'
 import { ListGroup } from '@/blocks/ListGroup'
 import { useLibrary } from '@/library/useLibrary'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { formatActivity } from '@/workspaces/formatActivity'
 import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
-import type { Agent } from './agents'
+import { runsWords, type Agent } from './agents'
 import { placeOf, type Automation, type AutomationPlace } from './automations'
 import { cadenceWords, scheduleStanding } from './cadence'
 import { useAgents } from './useAgents'
@@ -39,12 +38,6 @@ const GROUPS = [
   { kind: 'schedule', label: 'Scheduled' },
   { kind: 'event', label: 'When something happens' },
 ] as const
-
-const COUNT = new Intl.NumberFormat('en')
-
-// An agent's runs, in words: how many, and when the latest was.
-const runsWords = ({ runs }: Agent, now: Date) =>
-  runs.length === 0 ? 'Hasn’t run yet' : `${runs.length === 1 ? 'One run' : `${COUNT.format(runs.length)} runs`} · latest ${formatActivity(runs[0].lastActive, now).replace(/^(Just now|Yesterday)$/, (word) => word.toLowerCase())}`
 
 // What an event hook was asked to watch, when it says.
 const watching = ({ hook }: Automation) => (hook.resourceTitle ? `Watches ${hook.resourceTitle}` : undefined)

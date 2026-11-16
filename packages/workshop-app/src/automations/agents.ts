@@ -1,4 +1,5 @@
 import type { AgentSpawnerInfo, AiChatMetadata } from '@gadgets/workshop-shared/api'
+import { formatActivity } from '@/workspaces/formatActivity'
 
 /** One run of an agent: the conversation it had, as its workspace lists it. */
 export type AgentRun = {
@@ -66,3 +67,12 @@ export const calledByGadget = (gadgetId: number) => (agent: Agent) => agent.gadg
 
 /** Whether an agent is one a chat's agent has started, for the chat's Automations tab. */
 export const startedInChat = (chatId: number) => (agent: Agent) => agent.startedFrom.has(chatId)
+
+const COUNT = new Intl.NumberFormat('en')
+
+/** When something was, in words that can follow others: "2 hours ago", "just now", "yesterday". */
+export const activityWords = (at: Date, now?: Date) => formatActivity(at, now).replace(/^(Just now|Yesterday)$/, (word) => word.toLowerCase())
+
+/** An agent's runs, in words: how many, and when the latest was. */
+export const runsWords = ({ runs }: Agent, now?: Date) =>
+  runs.length === 0 ? 'Hasn’t run yet' : `${runs.length === 1 ? 'One run' : `${COUNT.format(runs.length)} runs`} · latest ${activityWords(runs[0].lastActive, now)}`

@@ -23,6 +23,8 @@ import { useFilePreview, type FileState } from './useFilePreview'
 import { useFileReview } from './useFileReview'
 import { useGadgetConnection } from './useGadgetConnection'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
+import { activityWords, runsWords } from '@/automations/agents'
+import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorktree } from './useWorktree'
@@ -39,9 +41,10 @@ export type AsidePaneProps = {
   onFullScreenChange: (on: boolean) => void
   /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
   narrow?: boolean
-  /** Goes to a gadget's own settings, from the pane's more. */
-  /** Goes to a gadget's own settings, or with `code`, to its code. */
-  onOpenSettings?: (output: AsideOutput, title: string, tab?: 'code') => void
+  /** Goes to a gadget's own settings, or with a tab, to its code or its automations. */
+  onOpenSettings?: (output: AsideOutput, title: string, tab?: 'code' | 'automations') => void
+  /** Goes to the page of an agent a gadget calls on, with its runs. */
+  onOpenAgent?: (workspaceId: string, agentId: number) => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -87,7 +90,7 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange, narrow, onOpenSettings } = props
+  const { item, link, onFullScreenChange, narrow, onOpenSettings, onOpenAgent } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
@@ -191,7 +194,20 @@ export const AsidePane = (props: AsidePaneProps) => {
     onDismiss: exporting.exports.dismiss,
   }
 
+  // The agents it calls on, for whoever builds where it is, whose they are: that they work for it,
+  // and when they last did, with their runs a step away.
+  const settingsOpen = gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
+  const agents = useGadgetAgents(gadget && onOpenAgent && listed !== undefined && listed.role !== 'use' ? gadget : undefined)
+  const latestRun = agents[0]?.runs[0]
+  const agentsMenu = gadget && onOpenAgent && agents.length > 0 ? {
+    agents: agents.map((agent) => ({ key: String(agent.id), name: agent.name, runs: runsWords(agent), waiting: agent.runs.some(({ waiting }) => waiting) })),
+    latest: latestRun && activityWords(latestRun.lastActive),
+    onOpenAgent: (key: string) => onOpenAgent(gadget.workspaceId, Number(key)),
+    onOpenAutomations: settingsOpen ? () => onOpenSettings(gadget, title, 'automations') : undefined,
+  } : undefined
+
   const shared = {
+    agents: agentsMenu,
     // Named by what it is once drawn, when nothing said before.
     active: paneItem(item.kind === 'connected' && connectedKind ? { ...item, connected: { ...item.connected, fileKind: connectedKind } } : item, title),
     people: snapshot.people,
@@ -202,13 +218,9 @@ export const AsidePane = (props: AsidePaneProps) => {
     onShare: shareable ? () => setSharing(true) : undefined,
     // For whoever builds where it was made, as its settings are theirs: not for one shared with the
     // viewer to use or only see, nor one they cannot open.
-    onOpenSettings: gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
-      ? () => onOpenSettings(gadget, title)
-      : undefined,
+    onOpenSettings: settingsOpen ? () => onOpenSettings(gadget, title) : undefined,
     // Its code is for whoever builds where it was made, as its settings page shows it.
-    onViewCode: gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
-      ? () => onOpenSettings(gadget, title, 'code')
-      : undefined,
+    onViewCode: settingsOpen ? () => onOpenSettings(gadget, title, 'code') : undefined,
     exports,
     narrow,
   }

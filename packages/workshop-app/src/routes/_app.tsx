@@ -174,13 +174,16 @@ const AppFrame = () => {
     absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: fromChat } }).href)
 
   // A gadget's own settings, which the way back from comes back to.
-  const openSettings = (output: AsideOutput, title: string, tab?: 'code') =>
+  const openSettings = (output: AsideOutput, title: string, tab?: 'code' | 'automations') =>
     navigate({
       to: '/app/$itemId/settings',
       params: { itemId: itemPageId(output.workspaceId, { kind: 'output', workpieceId: output.workpieceId }) },
       search: { tab },
       state: { fromItem: true, gadgetTitle: title },
     })
+  // The page of an agent a gadget calls on.
+  const openAgent = (inWorkspace: string, agentId: number) =>
+    navigate({ to: '/workspace/$workspaceId/agent/$agentId', params: { workspaceId: inWorkspace, agentId } })
   let asideElement: ReactNode = null
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
@@ -199,6 +202,7 @@ const AppFrame = () => {
         onFullScreenChange={setFullScreen}
         narrow={narrow}
         onOpenSettings={openSettings}
+        onOpenAgent={openAgent}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
         // Opened otherwise, such as from the library, there is nothing to collapse into. On a
         // narrow screen, where it is beside nothing, it goes up.
@@ -228,6 +232,7 @@ const AppFrame = () => {
         onFullScreenChange={setFullScreen}
         narrow={narrow}
         onOpenSettings={openSettings}
+        onOpenAgent={openAgent}
         onSelect={(key) => aside.show(key, chatRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
