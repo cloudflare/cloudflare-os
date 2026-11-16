@@ -148,13 +148,13 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
 
   async #call(callback: RpcStub<IssueReportHookTarget>, event: IssueReportEvent): Promise<void> {
     if (event.kind === "reported") {
-      const { reportId, priority, at: filedAt } = event;
+      const { id: eventId, reportId, priority, at: filedAt } = event;
       await (callback as RpcStub<RpcTarget & IssueReportedHook>)
-          .issueReported({ reportId, priority, filedAt });
+          .issueReported({ eventId, reportId, priority, filedAt });
     } else {
-      const { reportId, status, at } = event;
+      const { id: eventId, reportId, status, at } = event;
       await (callback as RpcStub<RpcTarget & InvestigationCompleteHook>)
-          .investigationComplete({ reportId, status, at });
+          .investigationComplete({ eventId, reportId, status, at });
     }
   }
 }
@@ -206,10 +206,10 @@ export class IssueReportHookController
  * is ids and labels whatever its sender added.
  */
 function declaredFields(event: IssueReportEvent): IssueReportEvent {
-  const { seq, reportId, at } = event;
+  const { id, reportId, at } = event;
   return event.kind === "reported"
-      ? { kind: event.kind, seq, reportId, priority: event.priority, at }
-      : { kind: event.kind, seq, reportId, status: event.status, at };
+      ? { kind: event.kind, id, reportId, priority: event.priority, at }
+      : { kind: event.kind, id, reportId, status: event.status, at };
 }
 
 /**
@@ -243,7 +243,7 @@ export class IssueReportHookDriver extends DurableObject<Cloudflare.Env> {
   /**
    * Queues each event's declared fields once for each enabled hook of its kind, then brings the
    * alarm forward. Resolving means every event is stored for delivery, or has no subscriber and
-   * is dropped. An event's `seq` is its id in the queue, so one the store sends again is not
+   * is dropped. An event's `id` is its id in the queue too, so one the store sends again is not
    * queued twice while the queue remembers it.
    */
   async ingest(events: IssueReportEvent[]): Promise<void> {
@@ -251,7 +251,7 @@ export class IssueReportHookDriver extends DurableObject<Cloudflare.Env> {
     const hooks = this.#hooks.entries();
     for (const event of events.map(declaredFields)) {
       for (const [key, { kind }] of hooks) {
-        if (kind === event.kind) this.#hooks.enqueue(key, String(event.seq), event, now);
+        if (kind === event.kind) this.#hooks.enqueue(key, event.id, event, now);
       }
     }
     await this.#wake();

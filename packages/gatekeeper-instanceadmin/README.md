@@ -549,8 +549,8 @@ whole binding.
 
 | Hook | Subscribed with | Fires | Its event |
 | --- | --- | --- | --- |
-| Issue reported | `subscribeIssueReported(hook)` | Once for each report filed. | `{ reportId, priority, filedAt }` |
-| Investigation complete | `subscribeInvestigationComplete(hook)` | Each time an admin moves a report from `investigating` to `answered`, `waitingOnReporter`, `withAdmin` or `closed`. | `{ reportId, status, at }` |
+| Issue reported | `subscribeIssueReported(hook)` | Once for each report filed. | `{ eventId, reportId, priority, filedAt }` |
+| Investigation complete | `subscribeInvestigationComplete(hook)` | Each time an admin moves a report from `investigating` to `answered`, `waitingOnReporter`, `withAdmin` or `closed`. | `{ eventId, reportId, status, at }` |
 
 An event is ids and labels only: the subscriber reads the report through its own binding.
 Subscribing reads nothing and marks nothing. The hook is bound disabled, and delivers once a
@@ -564,7 +564,8 @@ queues each event for the hooks enabled for its kind. Polling would need the Wor
 something it could call at any time, a stored capability into the report store or a binding:
 the standing power this design rules out. A Worker that misbehaved could then list every
 report of the deployment whenever it liked, with no workspace involved. A pushed event hands it
-an id, a priority or a status, and a time, which is exactly what a subscriber receives.
+its own id, a report's id, a priority or a status, and a time, which is exactly what a
+subscriber receives.
 
 What the Worker does keep is each enabled hook's `HookInitiator`, as every gatekeeper with
 hooks does, and that is a narrower standing power, not none: a Worker that misbehaved could
@@ -583,13 +584,15 @@ events again from the store's alarm. It holds back neither a later event nor the
 retention pass.
 
 **Delivery is at least once, twice over.** The store sends an event again until the vendor
-resolves, with the same `seq`, and the kit's queue ignores a repeat for
+resolves, with the same `id`, and the kit's queue ignores a repeat for
 `DELIVERED_RETENTION_MS`. The kit retries a firing that failed, up to `MAX_DELIVERY_ATTEMPTS`
 times. So a subscriber sees an event twice only when its own callback failed or timed out after
-doing part of its work: a callback keys its work by the report's id, and for an investigation
-by the event's `at` too. A report can be investigated again and end with the status it ended
-with before, which is a second event: its `at` differs, while every delivery of one event
-carries the `at` the store wrote with it.
+doing part of its work: a callback of either hook keys its work by the event's `eventId`. The
+store writes that id with the event, so every delivery of one event carries it and no two
+events share it. A report can be investigated again and end with the status it ended with
+before, in the same millisecond too, which is a second event: its `eventId` differs where its
+`at` may not. The id is random rather than the store's count of its events, which would tell a
+subscriber how many reports the deployment has had and how many investigations have ended.
 
 **A callback has `HOOK_CALLBACK_TIMEOUT_MS` (30 seconds) to answer.** The deployment has one
 driver, and its alarm waits for every delivery it started, so a callback that did not settle

@@ -66,17 +66,20 @@ export class Gadget extends DurableObject {
     await this.env.ADMIN.subscribeInvestigationComplete(await this.ctx.restore({ type: "hook" }));
   }
   async failNext() { await this.ctx.storage.put("fail", true); }
-  async failed() { return !(await this.ctx.storage.get("fail")); }
+  async failed() {
+    return (await this.ctx.storage.get("fail")) ? null : (await this.ctx.storage.get("failed")) ?? null;
+  }
   async calls() { return (await this.ctx.storage.get("calls")) ?? []; }
-  async handled() { return [...(await this.ctx.storage.list({ prefix: "handled:" })).keys()]; }
+  async handled() { return [...(await this.ctx.storage.list({ prefix: "handled:" })).values()]; }
   async record(kind, event) {
     if (await this.ctx.storage.get("fail")) {
+      await this.ctx.storage.put("failed", event);
       await this.ctx.storage.delete("fail");
       throw new Error("The callback failed this once.");
     }
     const calls = (await this.ctx.storage.get("calls")) ?? [];
     await this.ctx.storage.put("calls", [...calls, { kind, event }]);
-    await this.ctx.storage.put("handled:" + kind + ":" + event.reportId + ":" + (event.status ?? ""), true);
+    await this.ctx.storage.put("handled:" + event.eventId, event.reportId);
   }
 }
 class Hook extends RpcTarget {
@@ -87,7 +90,11 @@ class Hook extends RpcTarget {
 
 type Call = { kind: string; event: Record<string, unknown> };
 type Recorder = {
-  subscribe(): void; failNext(): void; failed(): boolean; calls(): Call[]; handled(): string[];
+  subscribe(): void; failNext(): void; calls(): Call[];
+  /** The event of the call that failed, once the failure failNext() asked for has happened. */
+  failed(): Call["event"] | null;
+  /** The report of each event the gadget handled, which it keys by the event's id. */
+  handled(): string[];
 };
 
 /** The calls the gadget has received, once there are `count` of them. */
@@ -120,7 +127,9 @@ it("calls a gadget's stored callback once for each new report and each end of an
   const report = await fileReport(await newMember(suite, "hooked"), { priority: "high" });
   expect(await callsOf(facet, 1)).toEqual([{
     kind: "issueReported",
-    event: { reportId: report.id, priority: "high", filedAt: report.filedAt },
+    event: {
+      eventId: expect.any(String), reportId: report.id, priority: "high", filedAt: report.filedAt,
+    },
   }]);
 
   // Leaving "investigating" ends an investigation, each time it does; entering it does not.
@@ -130,11 +139,15 @@ it("calls a gadget's stored callback once for each new report and each end of an
   await admin.setIssueReportStatus(report.id, "closed");
   const calls = await callsOf(facet, 3);
   expect(calls.slice(1)).toEqual([
-    { kind: "investigationComplete",
-      event: { reportId: report.id, status: "answered", at: expect.any(Date) } },
-    { kind: "investigationComplete",
-      event: { reportId: report.id, status: "closed", at: expect.any(Date) } },
+    { kind: "investigationComplete", event: {
+      eventId: expect.any(String), reportId: report.id, status: "answered", at: expect.any(Date),
+    } },
+    { kind: "investigationComplete", event: {
+      eventId: expect.any(String), reportId: report.id, status: "closed", at: expect.any(Date),
+    } },
   ]);
+  // Each event has an id of its own, which is all a subscriber needs to tell them apart.
+  expect(new Set(calls.map(call => call.event.eventId)).size).toBe(3);
   // Ids and labels only: nothing of the report's text or of who filed it.
   expect(JSON.stringify(calls)).not.toContain(report.text);
   expect(JSON.stringify(calls)).not.toContain(report.reporter.id);
@@ -147,21 +160,21 @@ it("calls a gadget's stored callback once for each new report and each end of an
   expect(await isRestricted(ws)).toBe(false);
 });
 
-it("delivers an event again after a callback that failed, which a gadget that keys its work " +
-    "by the report's id handles once", async () => {
+it("delivers an event again, with the same id, after a callback that failed, which a gadget " +
+    "that keys its work by the event's id handles once", async () => {
   const { facet } = recording;
   const before = (await facet.calls()).length;
   await facet.failNext();
   const report = await fileReport(await newMember(suite, "retried"));
-  await waitFor("the failed delivery", async () => await facet.failed() || null);
+  const failed = await waitFor("the failed delivery", () => facet.failed());
+  expect(failed).toEqual(
+      { eventId: expect.any(String), reportId: report.id, priority: "medium", filedAt: report.filedAt });
   expect(await facet.calls()).toHaveLength(before);
 
   // The driver tries again a minute after a delivery that failed.
   const calls = await callsOf(facet, before + 1, 90_000);
-  expect(calls.slice(before)).toEqual([
-    { kind: "issueReported", event: expect.objectContaining({ reportId: report.id }) },
-  ]);
-  expect((await facet.handled()).filter(key => key.includes(report.id))).toHaveLength(1);
+  expect(calls.slice(before)).toEqual([{ kind: "issueReported", event: failed }]);
+  expect((await facet.handled()).filter(reportId => reportId === report.id)).toHaveLength(1);
 });
 
 /** What a triage agent is told of its interface: one call, with a stub that reaches one report. */
@@ -398,8 +411,9 @@ it("triages a report with no person: a gadget hands a spawned agent a stub that 
   });
   expect(calls).toEqual([
     { kind: "issueReported", event: expect.objectContaining({ reportId: report.id, priority: "low" }) },
-    { kind: "investigationComplete",
-      event: { reportId: report.id, status: "answered", at: expect.any(Date) } },
+    { kind: "investigationComplete", event: {
+      eventId: expect.any(String), reportId: report.id, status: "answered", at: expect.any(Date),
+    } },
   ]);
   expect(await isRestricted(ws)).toBe(false);
 });

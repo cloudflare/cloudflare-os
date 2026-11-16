@@ -320,8 +320,8 @@ describe("the vendor", () => {
   it("serves the binding's declarations, and takes the report store's events", async () => {
     expect(await vendor().getTypeScriptTypes()).toBe(await facet().getTypeScriptTypes());
     await expect(vendor().issueReportEvents([
-      { kind: "reported", seq: 1, reportId: "r1", priority: "low", at: new Date(0) },
-      { kind: "investigationComplete", seq: 2, reportId: "r1", status: "answered", at: new Date(1) },
+      { kind: "reported", id: "e1", reportId: "r1", priority: "low", at: new Date(0) },
+      { kind: "investigationComplete", id: "e2", reportId: "r1", status: "answered", at: new Date(1) },
     ])).resolves.toBeUndefined();
   });
 });

@@ -6,7 +6,7 @@ import type { IssueReportEvent } from "@gadgets/workshop-shared/admin-gatekeeper
 import type {
   AiChatAuthorInfo, AmbientGatekeeperMode, IssueReportPriority, IssueReportStatus,
 } from "@gadgets/workshop-shared/api";
-import type { IssueReportsDurableObject } from "../src/issue-reports.js";
+import { IssueReportsDurableObject } from "../src/issue-reports.js";
 import {
   DEFAULT_ADMIN_CONFIG, type AdminConfig,
 } from "../src/storage-schema/admin-settings-storage.js";
@@ -30,6 +30,8 @@ const DAY_MS = 24 * HOUR_MS;
 const EVENT_BATCH = 100;
 const EVENT_RETRY_MS = MINUTE_MS;
 const EVENT_MAX_AGE_MS = DAY_MS;
+// An event's id: random, and so no number of the store's.
+const EVENT_ID = expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
 
 type Person = Pick<AiChatAuthorInfo, "id" | "name">;
 const ADA: Person = { id: "ada", name: "Ada" };
@@ -120,9 +122,12 @@ function store(deployment: Partial<Deployment> = {}) {
       await reports.alarm();
     }),
     alarmAt: () => run((_reports, state) => state.storage.getAlarm()),
-    // The `seq` of each event that still waits.
+    // The `seq` of each event that still waits, which never leaves the store.
     waiting: async () =>
         (await sql<{ seq: number }>("SELECT seq FROM events ORDER BY seq")).map(({ seq }) => seq),
+    // The id of each event that still waits, oldest first.
+    waitingIds: async () =>
+        (await sql<{ id: string }>("SELECT id FROM events ORDER BY seq")).map(({ id }) => id),
   };
 }
 
@@ -158,7 +163,7 @@ describe("telling the admin gatekeeper of a filed report", () => {
     let report = await reports.file("high");
     await reports.settled();
     expect(await sent()).toStrictEqual([[{
-      kind: "reported", seq: 1, reportId: report.id, priority: "high", at: report.filedAt,
+      kind: "reported", id: EVENT_ID, reportId: report.id, priority: "high", at: report.filedAt,
     }]]);
     expect(report.filedAt.getTime()).toBe(Date.now());
     expect(await reports.waiting()).toStrictEqual([]);
@@ -170,7 +175,7 @@ describe("telling the admin gatekeeper of a filed report", () => {
     await reports.settled();
     let [[event]] = await sent();
     expect(Object.keys(event).toSorted()).toStrictEqual(
-        ["at", "kind", "priority", "reportId", "seq"]);
+        ["at", "id", "kind", "priority", "reportId"]);
     expect(JSON.stringify(event)).not.toContain(report.text);
     expect(JSON.stringify(event)).not.toContain(ADA.id);
   });
@@ -188,9 +193,9 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     await reports.setStatus(report.id, status);
     await reports.settled();
     expect(await sent()).toStrictEqual([
-      [expect.objectContaining({ kind: "reported", seq: 1 })],
+      [expect.objectContaining({ kind: "reported" })],
       [{
-        kind: "investigationComplete", seq: 2, reportId: report.id, status,
+        kind: "investigationComplete", id: EVENT_ID, reportId: report.id, status,
         at: new Date(Date.now()),
       }],
     ]);
@@ -215,7 +220,7 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
         .toStrictEqual(["answered", "new", "investigating", "new"]);
   });
 
-  it("sends a second event, numbered after the first, when a report is investigated again",
+  it("sends a second event, with an id of its own, when a report is investigated again",
       async () => {
     let reports = store();
     let report = await reports.file();
@@ -223,13 +228,44 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
       await reports.setStatus(report.id, status);
       await reports.settled();
     }
-    expect((await sent()).flat().slice(1)).toStrictEqual([
-      expect.objectContaining({ kind: "investigationComplete", seq: 2, status: "answered" }),
-      expect.objectContaining({ kind: "investigationComplete", seq: 3, status: "closed" }),
+    let events = (await sent()).flat();
+    expect(events.slice(1)).toStrictEqual([
+      expect.objectContaining({ kind: "investigationComplete", id: EVENT_ID, status: "answered" }),
+      expect.objectContaining({ kind: "investigationComplete", id: EVENT_ID, status: "closed" }),
     ]);
+    expect(new Set(events.map(event => event.id)).size).toBe(3);
   });
 
-  it("tells two ends with the same status apart by their time, which a resend keeps", async () => {
+  // The clock does not move: both ends are written with one time.
+  it("gives two ends of one millisecond, with the same status, an id each, which a resend keeps",
+      async () => {
+    fakeClock();
+    let reports = store();
+    let report = await reports.file();
+    await reports.settled();
+    await vendor.answerEvents("reject");
+    for (let status of ["investigating", "answered", "investigating", "answered"] as const) {
+      await reports.setStatus(report.id, status);
+    }
+    await reports.settled();
+    expect(await reports.waiting()).toStrictEqual([2, 3]);
+    await vendor.answerEvents("take");
+    await reports.alarm();
+
+    let calls = (await sent()).slice(1);
+    let taken = calls.at(-1)!;
+    let end = {
+      kind: "investigationComplete", reportId: report.id, status: "answered",
+      at: new Date(Date.now()),
+    };
+    expect(taken).toStrictEqual([{ ...end, id: EVENT_ID }, { ...end, id: EVENT_ID }]);
+    expect(taken[1]!.id).not.toBe(taken[0]!.id);
+    // Each call that was rejected carried the same events, under the same ids.
+    expect(calls.length).toBeGreaterThan(1);
+    for (let call of calls) expect(call).toStrictEqual(taken.slice(0, call.length));
+  });
+
+  it("tells two ends with the same status apart by their ids, which a resend keeps", async () => {
     let clock = fakeClock();
     let reports = store();
     let report = await reports.file();
@@ -245,8 +281,9 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     await reports.alarm();
 
     let [first, second, resent] = (await sent()).flat().slice(1);
-    expect(first).toMatchObject({ seq: 2, reportId: report.id, status: "answered" });
-    expect(second).toMatchObject({ seq: 3, reportId: report.id, status: "answered" });
+    expect(first).toMatchObject({ id: EVENT_ID, reportId: report.id, status: "answered" });
+    expect(second).toMatchObject({ id: EVENT_ID, reportId: report.id, status: "answered" });
+    expect(second!.id).not.toBe(first!.id);
     expect(second!.at.getTime() - first!.at.getTime()).toBe(2 * HOUR_MS);
     expect(resent).toStrictEqual(second);
   });
@@ -263,31 +300,37 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
 });
 
 describe("a delivery the admin gatekeeper does not take", () => {
-  it("is sent again by the alarm with the same numbers, then forgotten", async () => {
+  it("is sent again by the alarm with the same ids, then forgotten", async () => {
     let reports = store();
     await vendor.answerEvents("reject");
     let first = await reports.file("low");
     let second = await reports.file("high");
     await reports.settled();
     expect(await reports.waiting()).toStrictEqual([1, 2]);
+    let ids = await reports.waitingIds();
+    expect(ids).toStrictEqual([EVENT_ID, EVENT_ID]);
+    expect(ids[1]).not.toBe(ids[0]);
 
     await vendor.answerEvents("take");
     await reports.alarm();
     let calls = await sent();
     expect(calls.at(-1)).toStrictEqual([
-      { kind: "reported", seq: 1, reportId: first.id, priority: "low", at: first.filedAt },
-      { kind: "reported", seq: 2, reportId: second.id, priority: "high", at: second.filedAt },
+      { kind: "reported", id: ids[0], reportId: first.id, priority: "low", at: first.filedAt },
+      { kind: "reported", id: ids[1], reportId: second.id, priority: "high", at: second.filedAt },
     ]);
-    // What was rejected first was the first event, under the same number.
+    // What was rejected first was the first event, under the same id.
     expect(calls[0]).toStrictEqual([calls.at(-1)![0]]);
     expect(await reports.waiting()).toStrictEqual([]);
 
-    // A number is never used twice, even once its event is gone.
+    // Neither a number nor an id is used twice, even once its event is gone.
+    await vendor.answerEvents("reject");
     let third = await reports.file();
     await reports.settled();
+    expect(await reports.waiting()).toStrictEqual([3]);
     expect((await sent()).at(-1)).toStrictEqual([
-      expect.objectContaining({ seq: 3, reportId: third.id }),
+      expect.objectContaining({ id: EVENT_ID, reportId: third.id }),
     ]);
+    expect(ids).not.toContain((await sent()).at(-1)![0]!.id);
   });
 
   it("fails neither the filing nor the change of status", async () => {
@@ -336,7 +379,7 @@ describe("a delivery the admin gatekeeper does not take", () => {
     await vendor.answerEvents("take");
     await reports.alarm();
     expect((await sent()).at(-1)).toStrictEqual([
-      expect.objectContaining({ kind: "investigationComplete", seq: 2, status: "answered" }),
+      expect.objectContaining({ kind: "investigationComplete", status: "answered" }),
     ]);
   });
 
@@ -348,18 +391,73 @@ describe("a delivery the admin gatekeeper does not take", () => {
     // The rest are written as an end of an investigation writes them, without 250 changes of
     // status.
     await reports.sql(
-      `INSERT INTO events (kind, report_id, label, at)
-       SELECT 'investigationComplete', ?, 'answered', ? + value
+      `INSERT INTO events (id, kind, report_id, label, at)
+       SELECT 'end-' || value, 'investigationComplete', ?, 'answered', ? + value
        FROM json_each(?)`,
       report.id, Date.now(), JSON.stringify(Array.from({ length: 2 * EVENT_BATCH + 49 }, (_, i) => i)));
+
+    expect(await reports.waiting())
+        .toStrictEqual(Array.from({ length: 2 * EVENT_BATCH + 50 }, (_, i) => i + 1));
+    let ids = await reports.waitingIds();
 
     await vendor.answerEvents("take");
     let before = (await sent()).length;
     await reports.alarm();
     let calls = (await sent()).slice(before);
     expect(calls.map(call => call.length)).toStrictEqual([EVENT_BATCH, EVENT_BATCH, 50]);
-    expect(calls.flat().map(event => event.seq))
-        .toStrictEqual(Array.from({ length: 2 * EVENT_BATCH + 50 }, (_, i) => i + 1));
+    expect(calls.flat().map(event => event.id)).toStrictEqual(ids);
+    expect(ids.slice(1)).toStrictEqual(
+        Array.from({ length: 2 * EVENT_BATCH + 49 }, (_, i) => `end-${i}`));
+    expect(await reports.waiting()).toStrictEqual([]);
+  });
+});
+
+describe("a store whose events table has no id column", () => {
+  // The table as a store made without the column holds it.
+  const EVENTS_WITHOUT_ID = `CREATE TABLE events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      report_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      at INTEGER NOT NULL
+    ) STRICT`;
+
+  it("gains the column when the store next starts, with an id for each event that waited, and " +
+      "tells of a report filed then", async () => {
+    let reports = store();
+    await reports.run((_host, state) => {
+      let db = state.storage.sql;
+      db.exec("DROP TABLE events");
+      db.exec(EVENTS_WITHOUT_ID);
+      db.exec(`INSERT INTO events (kind, report_id, label, at)
+               VALUES ('reported', 'r-old', 'low', 1000),
+                      ('investigationComplete', 'r-old', 'answered', 2000)`);
+    });
+
+    // The store is made again over the same storage, as its next start makes it: the pool gives
+    // a test no way to restart the object in place and keep what it stored.
+    let filed = await reports.run(async (host, state) => {
+      let restarted = new IssueReportsDurableObject(state, host["env"]);
+      let column = state.storage.sql.exec(
+          `SELECT type, "notnull" FROM pragma_table_info('events') WHERE name = 'id'`).toArray();
+      expect(column).toStrictEqual([{ type: "TEXT", notnull: 1 }]);
+      let ids = state.storage.sql.exec<{ id: string }>("SELECT id FROM events ORDER BY seq")
+          .toArray().map(({ id }) => id);
+      expect(ids).toStrictEqual([EVENT_ID, EVENT_ID]);
+      expect(ids[1]).not.toBe(ids[0]);
+      return {
+        ids, report: await restarted.submit(ADA, { text: "It broke.", priority: "high" }, false),
+      };
+    });
+    await reports.settled();
+
+    expect(await sent()).toStrictEqual([[
+      { kind: "reported", id: filed.ids[0], reportId: "r-old", priority: "low", at: new Date(1000) },
+      { kind: "investigationComplete", id: filed.ids[1], reportId: "r-old", status: "answered",
+        at: new Date(2000) },
+      { kind: "reported", id: EVENT_ID, reportId: filed.report.id, priority: "high",
+        at: filed.report.filedAt },
+    ]]);
     expect(await reports.waiting()).toStrictEqual([]);
   });
 });
@@ -392,7 +490,7 @@ describe("a deployment whose admin gatekeeper is not there to be told", () => {
     expect(await sent()).toStrictEqual([]);
     let report = await reports.file();
     await reports.settled();
-    expect(await sent()).toStrictEqual([[expect.objectContaining({ seq: 2, reportId: report.id })]]);
+    expect(await sent()).toStrictEqual([[expect.objectContaining({ reportId: report.id })]]);
   });
 
   it("empties the table of what waited when the gatekeeper is turned off", async () => {
@@ -419,6 +517,7 @@ describe("a deployment whose admin gatekeeper is not there to be told", () => {
     await reports.settled();
     expect(await sent()).toStrictEqual([]);
     expect(await reports.waiting()).toStrictEqual([1]);
+    let [id] = await reports.waitingIds();
 
     await expect(reports.alarm()).resolves.toBeUndefined();
     expect(await sent()).toStrictEqual([]);
@@ -431,7 +530,7 @@ describe("a deployment whose admin gatekeeper is not there to be told", () => {
     reports.on.configFails = false;
     await reports.alarm();
     expect(await sent()).toStrictEqual([[{
-      kind: "reported", seq: 1, reportId: report.id, priority: "medium", at: report.filedAt,
+      kind: "reported", id, reportId: report.id, priority: "medium", at: report.filedAt,
     }]]);
     expect(await reports.waiting()).toStrictEqual([]);
     expect(await reports.alarmAt()).toBe(Date.now() + DAY_MS);
@@ -510,12 +609,13 @@ describe("what arms the store's alarm for an event", () => {
     await reports.alarm();
     expect(await reports.count("reports")).toBe(0);
     expect(await reports.waiting()).toStrictEqual([1]);
+    let [id] = await reports.waitingIds();
     expect(await reports.alarmAt()).toBe(Date.now() + EVENT_RETRY_MS);
 
     await vendor.answerEvents("take");
     await reports.alarm();
     expect((await sent()).at(-1)).toStrictEqual([
-      expect.objectContaining({ kind: "reported", seq: 1, reportId: report.id }),
+      expect.objectContaining({ kind: "reported", id, reportId: report.id }),
     ]);
     // Empty of reports and of events, the store has no alarm.
     expect(await reports.waiting()).toStrictEqual([]);
@@ -614,6 +714,7 @@ describe("an admin gatekeeper that does not answer", () => {
     let second = await reports.file("high");
     expect(second.status).toBe("new");
     expect(await reports.waiting()).toStrictEqual([1, 2]);
+    let ids = await reports.waitingIds();
 
     // The alarm runs its pass before it waits for the call: the stale upload is swept.
     await pendingUpload(reports, first.id, 11 * MINUTE_MS);
@@ -642,10 +743,10 @@ describe("an admin gatekeeper that does not answer", () => {
     // The next delivery is a call of its own, and carries both events, oldest first.
     await reports.alarm();
     expect(await sent()).toStrictEqual([
-      [{ kind: "reported", seq: 1, reportId: first.id, priority: "low", at: first.filedAt }],
+      [{ kind: "reported", id: ids[0], reportId: first.id, priority: "low", at: first.filedAt }],
       [
-        { kind: "reported", seq: 1, reportId: first.id, priority: "low", at: first.filedAt },
-        { kind: "reported", seq: 2, reportId: second.id, priority: "high", at: second.filedAt },
+        { kind: "reported", id: ids[0], reportId: first.id, priority: "low", at: first.filedAt },
+        { kind: "reported", id: ids[1], reportId: second.id, priority: "high", at: second.filedAt },
       ],
     ]);
     expect(await reports.waiting()).toStrictEqual([]);

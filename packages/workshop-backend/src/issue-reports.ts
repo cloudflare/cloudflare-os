@@ -114,6 +114,7 @@ type PendingImage = ImageKey & {
 
 type EventRow = {
   seq: number;
+  id: string;
   kind: IssueReportEvent["kind"];
   report_id: string;
   label: string;
@@ -266,8 +267,8 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
 
 // An event as the admin gatekeeper is sent it: a row's `label` is the priority of a report that
 // was filed, or the status an investigation ended with.
-function eventOf({ seq, kind, report_id: reportId, label, at }: EventRow): IssueReportEvent {
-  let event = { seq, reportId, at: new Date(at) };
+function eventOf({ id, kind, report_id: reportId, label, at }: EventRow): IssueReportEvent {
+  let event = { id, reportId, at: new Date(at) };
   return kind === "reported"
       ? { kind, ...event, priority: label as IssueReportPriority }
       : { kind, ...event, status: label as Exclude<IssueReportStatus, "new" | "investigating"> };
@@ -351,8 +352,8 @@ function fewerBytesThanDeclared(): TypeError {
  *     state TEXT NOT NULL CHECK (state IN ('pending', 'stored')), type TEXT,
  *     byte_length INTEGER NOT NULL, started_at INTEGER NOT NULL, n INTEGER NOT NULL) STRICT;
  *   indexes (report_seq, n), (reporter_id), (state, started_at)
- *   events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, report_id TEXT NOT NULL,
- *     label TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+ *   events(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, kind TEXT NOT NULL,
+ *     report_id TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
  * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own, and its
  * `agent` is the AdminAgentOrigin, as JSON, of one written through the admin gatekeeper; a bare
  * change of status is an admins' public entry whose text is ''. An image is 'pending' from its
@@ -363,9 +364,10 @@ function fewerBytesThanDeclared(): TypeError {
  * `events` holds what the admin gatekeeper is still to be told (see IssueReportEvent): a report
  * that was filed, an investigation that ended. A row is written in one step with the change it
  * tells of and deleted once the gatekeeper has taken it; nothing else of a report leaves the
- * store this way, and nothing but the delivery reads the table. On a deployment whose admin
- * gatekeeper is not bound or is turned off the table is emptied instead, so turning the
- * gatekeeper on tells it of nothing that came before.
+ * store this way, and nothing but the delivery reads the table. The event is known outside the
+ * store by the row's random `id`: its `seq`, which counts the deployment's events, stays here.
+ * On a deployment whose admin gatekeeper is not bound or is turned off the table is emptied
+ * instead, so turning the gatekeeper on tells it of nothing that came before.
  */
 export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   // The delivery of the waiting events that is under way, if one is: see #deliverEvents().
@@ -451,11 +453,21 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     // twice. Emptied when the gatekeeper is not bound or is turned off.
     sql.exec(`CREATE TABLE IF NOT EXISTS events (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL,
       kind TEXT NOT NULL,
       report_id TEXT NOT NULL,
       label TEXT NOT NULL,
       at INTEGER NOT NULL
     ) STRICT`);
+    // A store whose events table has no `id` column gains it here, as `entries` gains `agent`,
+    // and each event that waits in it is given its id.
+    if (sql.exec("SELECT 1 FROM pragma_table_info('events') WHERE name = 'id'")
+        .toArray().length === 0) {
+      sql.exec("ALTER TABLE events ADD COLUMN id TEXT NOT NULL DEFAULT ''");
+      for (let { seq } of sql.exec<{ seq: number }>("SELECT seq FROM events").toArray()) {
+        sql.exec("UPDATE events SET id = ? WHERE seq = ?", crypto.randomUUID(), seq);
+      }
+    }
   }
 
   // --- The reporter ---
@@ -1088,8 +1100,8 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   #addEvent(kind: IssueReportEvent["kind"], reportId: string,
       label: IssueReportPriority | IssueReportStatus, at: number): void {
     this.ctx.storage.sql.exec(
-        "INSERT INTO events (kind, report_id, label, at) VALUES (?, ?, ?, ?)",
-        kind, reportId, label, at);
+        "INSERT INTO events (id, kind, report_id, label, at) VALUES (?, ?, ?, ?, ?)",
+        crypto.randomUUID(), kind, reportId, label, at);
   }
 
   // An event row is waiting: wake within EVENT_RETRY_MS, so that it outlives an object evicted
@@ -1116,7 +1128,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   // is to be told, and every row is deleted.
   //
   // A call that is rejected, or has not settled within EVENT_RETRY_MS, ends the delivery: its
-  // rows stay for alarm() to offer again, with the same `seq`, except those older than
+  // rows stay for alarm() to offer again, with the same `id`, except those older than
   // EVENT_MAX_AGE_MS, which are dropped. A call given up on is not waited for: whatever it
   // comes to later deletes nothing, since by then another delivery may be sending the same
   // rows. So a gatekeeper that hangs holds back neither a later event nor the alarm.
@@ -1127,7 +1139,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     try {
       for (;;) {
         rows = sql.exec<EventRow>(
-          "SELECT seq, kind, report_id, label, at FROM events ORDER BY seq LIMIT ?",
+          "SELECT seq, id, kind, report_id, label, at FROM events ORDER BY seq LIMIT ?",
           EVENT_BATCH).toArray();
         if (rows.length === 0) return;
         let vendor = getAuthVendorBinding(this.env, ADMIN_GATEKEEPER_VENDOR_ID) as

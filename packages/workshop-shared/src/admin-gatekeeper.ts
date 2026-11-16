@@ -88,14 +88,16 @@ export interface AdminGatekeeper<Session> extends Gatekeeper<Session> {
  *   - "reported": a report was filed. Its images, and the grant its reporter may give with
  *     it, are attached by later calls: a subscriber that reads at once may find neither yet.
  *   - "investigationComplete": an admin moved a report from "investigating" to `status`.
- * `seq` numbers the store's events, each once, in order: a delivery repeated after a failure
- * repeats its `seq`.
+ * `id` is the event's own, and what a hook's subscriber tells events apart by: random, so that
+ * it says nothing of how many events the deployment has had, the same each time the event is
+ * sent, and never another event's. `at` would not do: a report's investigation can end twice
+ * in one millisecond, with the same status.
  */
 export type IssueReportEvent =
-  | { kind: "reported"; seq: number; reportId: string; priority: IssueReportPriority; at: Date }
+  | { kind: "reported"; id: string; reportId: string; priority: IssueReportPriority; at: Date }
   | {
     kind: "investigationComplete";
-    seq: number;
+    id: string;
     reportId: string;
     status: Exclude<IssueReportStatus, "new" | "investigating">;
     at: Date;
@@ -106,7 +108,7 @@ export interface AdminGatekeeperVendor extends GatekeeperVendor {
   /**
    * Take `events`, oldest first, for the hooks subscribed to them. Resolving means every event
    * is stored for delivery (or has no subscriber): the store then forgets them. A rejection
-   * makes the store send them again, so an event can arrive more than once, with the same `seq`.
+   * makes the store send them again, so an event can arrive more than once, with the same `id`.
    */
   issueReportEvents(events: IssueReportEvent[]): Promise<void>;
 }

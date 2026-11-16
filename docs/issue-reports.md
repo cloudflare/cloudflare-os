@@ -196,22 +196,25 @@ owner is one. A hook wakes a gadget's stored callback or an existing chat; it op
   `addIssueReportImage()` or given the grant that may come with the report. A subscriber that
   reads at once may see no image and be refused content, and reads again later.
 - **Delivery is at least once.** A subscriber sees an event twice only when its own callback
-  failed or timed out part of the way through, so a callback keys its work by the report's id,
-  and for an investigation by the event's time too: a report investigated again can end with
-  the status it ended with before, which is a second event with a later time.
+  failed or timed out part of the way through, so a callback of either hook keys its work by
+  the event's `eventId`: the same each time one event is delivered, and different for a report
+  investigated again that ends with the status it ended with before, which is a second event
+  and can carry the same time.
 - **A callback answers within 30 seconds.** It starts long work and returns; one that takes
   longer is given up on and called again later, so that it holds back no other subscriber's
   events.
 
 **The store's outgoing events.** The report store tells the gatekeeper; the gatekeeper holds
-nothing it could ask with. The store writes one row per event (`events`: a sequence number, the
-kind, the report's id, the priority or the status, and the time) in the same step as the change
-it reports, and deletes the row once the gatekeeper has taken it.
+nothing it could ask with. The store writes one row per event (`events`: a sequence number, a
+random id, the kind, the report's id, the priority or the status, and the time) in the same
+step as the change it reports, and deletes the row once the gatekeeper has taken it. The
+sequence number orders the rows and stays in the store; the id is what the gatekeeper and a
+subscriber know the event by, so neither learns how many events the deployment has had.
 
 - **It sends them oldest first**, `EVENT_BATCH` (100) a call, as soon as the change is stored
   and again from its alarm.
 - **A call that is rejected, or has not settled within `EVENT_RETRY_MS` (a minute), is given up
-  on**, and its rows are offered again with the same sequence numbers. A row not taken for
+  on**, and its rows are offered again with the same ids. A row not taken for
   `EVENT_MAX_AGE_MS` (a day) is dropped.
 - **Where the gatekeeper is not bound or is turned off, every row is deleted**: nobody is to be
   told, and turning the gatekeeper on later replays nothing.
@@ -517,7 +520,8 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   with a report, while the bucket answers and while it does not.
 - `issue-report-events.test.ts`: the events the store sends the admin gatekeeper. One for each
   report filed and each end of an investigation, and none for any other change of status; a
-  delivery that is not taken, offered again with its sequence number and dropped after a day; a
+  delivery that is not taken, offered again with its id and dropped after a day; two ends of
+  one millisecond, each with its id; a store whose `events` table gains the `id` column; a
   deployment whose gatekeeper is off or not bound; what arms the alarm; the retention pass
   running first; and a gatekeeper that does not answer.
 - `issue-reports.test.ts` also covers an entry and a status line written through the admin

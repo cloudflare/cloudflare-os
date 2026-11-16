@@ -54,9 +54,10 @@ export interface AdminBinding extends AdminApi {
 /**
  * The callback of subscribeIssueReported(). An event carries ids and labels only: read the
  * report through the binding the gadget holds. A callback can be called more than once for the
- * same event: key the work by the report's id. A callback answers within 30 seconds: it starts
- * long work (a call to an agent is recorded and returns) and does not wait for it. One that
- * takes longer counts as failed and is called again later.
+ * same event: key the work by `eventId`, which is the same each time one event is delivered and
+ * differs between two events. A callback answers within 30 seconds: it starts long work (a call
+ * to an agent is recorded and returns) and does not wait for it. One that takes longer counts
+ * as failed and is called again later.
  */
 export interface IssueReportedHook {
   /**
@@ -65,6 +66,8 @@ export interface IssueReportedHook {
    * refused content, and reads again later rather than concluding there is none.
    */
   issueReported(event: {
+    /** Random and opaque: this event's own id. */
+    eventId: string;
     reportId: string;
     priority: "low" | "medium" | "high";
     filedAt: Date;
@@ -74,13 +77,15 @@ export interface IssueReportedHook {
 /**
  * The callback of subscribeInvestigationComplete(). An event carries ids and labels only. A
  * callback can be called more than once for the same event, and a report's investigation can
- * end more than once, with the same status too: key the work by the report's id and `at`, which
- * is the same each time one event is delivered and differs between two ends. It answers within
- * 30 seconds, as IssueReportedHook's does.
+ * end more than once, with the same status and at the same `at` too: key the work by `eventId`,
+ * which is the same each time one event is delivered and differs between two ends. It answers
+ * within 30 seconds, as IssueReportedHook's does.
  */
 export interface InvestigationCompleteHook {
   /** Called when an admin moved the report from "investigating" to `status`, at `at`. */
   investigationComplete(event: {
+    /** Random and opaque: this event's own id. */
+    eventId: string;
     reportId: string;
     status: "answered" | "waitingOnReporter" | "withAdmin" | "closed";
     at: Date;

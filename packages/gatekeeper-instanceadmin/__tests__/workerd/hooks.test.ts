@@ -107,16 +107,16 @@ async function subscribe(method: Subscribe, { enable = true } = {}) {
   return subscription;
 }
 
-let seq = 0;
 const FILED_AT = new Date("2026-03-04T05:06:07.000Z");
 const ENDED_AT = new Date("2026-03-05T08:09:10.000Z");
 
 const reported = (reportId: string, priority: "low" | "medium" | "high" = "high"): IssueReportEvent =>
-  ({ kind: "reported", seq: ++seq, reportId, priority, at: FILED_AT });
+  ({ kind: "reported", id: crypto.randomUUID(), reportId, priority, at: FILED_AT });
 
 const ended = (
   reportId: string, status: "answered" | "waitingOnReporter" | "withAdmin" | "closed" = "answered",
-): IssueReportEvent => ({ kind: "investigationComplete", seq: ++seq, reportId, status, at: ENDED_AT });
+): IssueReportEvent =>
+  ({ kind: "investigationComplete", id: crypto.randomUUID(), reportId, status, at: ENDED_AT });
 
 type Row = { message?: IssueReportEvent; attempts?: number; at?: number; deliveredAt?: number };
 
@@ -236,13 +236,14 @@ describe("an event", () => {
     const second = await subscribe("subscribeIssueReported");
     const investigation = await subscribe("subscribeInvestigationComplete");
 
-    await ingest(reported("r1", "medium"));
+    const filed = reported("r1", "medium");
+    await ingest(filed);
 
     for (const { state } of [first, second]) {
       expect(state.firings).toBe(1);
       expect(state.received).toEqual([{
         method: "issueReported",
-        event: { reportId: "r1", priority: "medium", filedAt: FILED_AT },
+        event: { eventId: filed.id, reportId: "r1", priority: "medium", filedAt: FILED_AT },
       }]);
     }
     expect(investigation.state.firings).toBe(0);
@@ -253,18 +254,19 @@ describe("an event", () => {
     const investigation = await subscribe("subscribeInvestigationComplete");
     const issues = await subscribe("subscribeIssueReported");
 
-    await ingest(ended("r1", "waitingOnReporter"));
+    const done = ended("r1", "waitingOnReporter");
+    await ingest(done);
 
     expect(investigation.state.firings).toBe(1);
     expect(investigation.state.received).toEqual([{
       method: "investigationComplete",
-      event: { reportId: "r1", status: "waitingOnReporter", at: ENDED_AT },
+      event: { eventId: done.id, reportId: "r1", status: "waitingOnReporter", at: ENDED_AT },
     }]);
     expect(issues.state.firings).toBe(0);
     expect(issues.state.received).toEqual([]);
   });
 
-  it("the store sends again fires once, and two events for one report fire twice", async () => {
+  it("the store sends again fires once, and two events alike but for their ids fire twice", async () => {
     const { state } = await subscribe("subscribeInvestigationComplete");
     const first = ended("r1", "answered");
 
@@ -273,11 +275,16 @@ describe("an event", () => {
     await ingest(first, { ...first });
     expect(state.firings).toBe(1);
 
-    // The report is investigated again, and that investigation ends too.
-    const second = ended("r1", "closed");
+    // The report is investigated again, and that investigation ends with the same status in the
+    // same millisecond: only the id says it is a second event, to the queue and to the callback.
+    const second = ended("r1", "answered");
+    expect({ ...second, id: first.id }).toEqual(first);
     await ingest(first, second);
-    expect(state.received.map(({ event }) => (event as { status: string }).status))
-        .toEqual(["answered", "closed"]);
+    expect(state.received.map(({ event }) => event)).toEqual([
+      { eventId: first.id, reportId: "r1", status: "answered", at: ENDED_AT },
+      { eventId: second.id, reportId: "r1", status: "answered", at: ENDED_AT },
+    ]);
+    expect(second.id).not.toBe(first.id);
     expect(state.firings).toBe(2);
   });
 
@@ -333,12 +340,13 @@ describe("an event", () => {
 });
 
 describe("a delivery that fails", () => {
-  it("in the callback is retried from the alarm, and then delivered once", async () => {
+  it("in the callback is retried from the alarm with the same event id, and then delivered once", async () => {
     const { state } = await subscribe("subscribeIssueReported");
     const tick = clock();
     state.failures = 2;
 
-    await ingest(reported("r1"));
+    const filed = reported("r1");
+    await ingest(filed);
     expect(state.firings).toBe(1);
     expect(state.received).toEqual([]);
 
@@ -351,9 +359,10 @@ describe("a delivery that fails", () => {
 
     await tick(2 * MINUTE_MS);
     expect(state.firings).toBe(3);
-    expect(state.received).toEqual([{
-      method: "issueReported", event: { reportId: "r1", priority: "high", filedAt: FILED_AT },
-    }]);
+    const event = { eventId: filed.id, reportId: "r1", priority: "high", filedAt: FILED_AT };
+    expect(state.received).toEqual([{ method: "issueReported", event }]);
+    // Each call that failed was given the event the last one was, under the same id.
+    expect(state.failed).toEqual([event, event]);
 
     // Delivered, so nothing is left to retry.
     await tick(HOUR_MS);
@@ -380,7 +389,8 @@ describe("a delivery that fails", () => {
     // An event for another hook is delivered meanwhile.
     await ingest(ended("r2"));
     expect(other.state.received).toEqual([{
-      method: "investigationComplete", event: { reportId: "r2", status: "answered", at: ENDED_AT },
+      method: "investigationComplete",
+      event: { eventId: expect.any(String), reportId: "r2", status: "answered", at: ENDED_AT },
     }]);
 
     // The slow callback is called again after its backoff, and answers this time.
@@ -388,7 +398,8 @@ describe("a delivery that fails", () => {
     await tick(MINUTE_MS);
     expect(slow.state.firings).toBe(2);
     expect(slow.state.received).toEqual([{
-      method: "issueReported", event: { reportId: "r1", priority: "high", filedAt: FILED_AT },
+      method: "issueReported",
+      event: { eventId: expect.any(String), reportId: "r1", priority: "high", filedAt: FILED_AT },
     }]);
     answer.resolve();
   });
@@ -415,7 +426,8 @@ describe("a delivery that fails", () => {
     // The hook was never unregistered: the next event reaches it.
     await ingest(ended("r2", "closed"));
     expect(state.received).toEqual([{
-      method: "investigationComplete", event: { reportId: "r2", status: "closed", at: ENDED_AT },
+      method: "investigationComplete",
+      event: { eventId: expect.any(String), reportId: "r2", status: "closed", at: ENDED_AT },
     }]);
   });
 
@@ -433,7 +445,8 @@ describe("a delivery that fails", () => {
     await tick(4 * MINUTE_MS);
     expect(state.firings).toBe(4);
     expect(state.received).toEqual([{
-      method: "issueReported", event: { reportId: "r1", priority: "low", filedAt: FILED_AT },
+      method: "issueReported",
+      event: { eventId: expect.any(String), reportId: "r1", priority: "low", filedAt: FILED_AT },
     }]);
   });
 
@@ -524,7 +537,7 @@ describe("the vendor's issueReportEvents()", () => {
     expect((await rejection(vendor().issueReportEvents([event]))).message).toContain("The disk is full.");
     expect(state.firings).toBe(0);
 
-    // Sent again with the same `seq`, it is taken and delivered once.
+    // Sent again with the same `id`, it is taken and delivered once.
     await ingest(event);
     await ingest(event);
     expect(state.firings).toBe(1);
@@ -554,8 +567,8 @@ describe("the driver's storage", () => {
     const of = (pattern: RegExp) => entries.filter(([key]) => pattern.test(key)).map(([, value]) => value);
     // Every key is one of these, so nothing else is stored.
     const known = [
-      new RegExp(`^reg:${KEY}$`), new RegExp(`^caps:${KEY}$`), new RegExp(`^msg:${KEY}:\\d+$`),
-      new RegExp(`^queue:(due|finished):\\d{15}:${KEY}:\\d+$`), /^queue:indexed$/,
+      new RegExp(`^reg:${KEY}$`), new RegExp(`^caps:${KEY}$`), new RegExp(`^msg:${KEY}:${KEY}$`),
+      new RegExp(`^queue:(due|finished):\\d{15}:${KEY}:${KEY}$`), /^queue:indexed$/,
     ];
     expect(entries.map(([key]) => key).filter((key) => !known.some((pattern) => pattern.test(key))))
         .toEqual([]);
@@ -596,11 +609,11 @@ describe("the driver's storage", () => {
 
     const entries = [...await stored()];
     const messages = entries.map(([, row]) => (row as Row).message)
-        .filter((message) => message?.seq === filed.seq || message?.seq === done.seq);
-    expect(messages.toSorted((a, b) => a!.seq - b!.seq)).toEqual([filed, done]);
+        .filter((message) => message?.id === filed.id || message?.id === done.id);
+    expect(messages.toSorted((a, b) => a!.reportId.localeCompare(b!.reportId))).toEqual([filed, done]);
     expect(messages.map((message) => Object.keys(message!).toSorted()).toSorted()).toEqual([
-      ["at", "kind", "priority", "reportId", "seq"],
-      ["at", "kind", "reportId", "seq", "status"],
+      ["at", "id", "kind", "priority", "reportId"],
+      ["at", "id", "kind", "reportId", "status"],
     ]);
     const everything = JSON.stringify(entries);
     expect(everything).toContain('"r1"');
@@ -647,5 +660,19 @@ describe("the declarations", () => {
     expect(HAND_WRITTEN_TYPES).toMatch(/^export interface InvestigationCompleteHook \{$/m);
     expect(HAND_WRITTEN_TYPES).toContain('priority: "low" | "medium" | "high";');
     expect(HAND_WRITTEN_TYPES).toContain('status: "answered" | "waitingOnReporter" | "withAdmin" | "closed";');
+  });
+
+  it("give each callback's event its own id, and say to key the work by it since an event can repeat", () => {
+    for (const hook of ["IssueReportedHook", "InvestigationCompleteHook"]) {
+      const doc = docOf(HAND_WRITTEN_TYPES, `export interface ${hook} {`);
+      expect(doc, hook).toContain("can be called more than once for the same event");
+      expect(doc, hook).toContain("key the work by `eventId`, which is the same each time one event is delivered");
+      // No other key is offered: a report's id and a time are shared by two ends of one millisecond.
+      expect(doc, hook).not.toMatch(/by the report's id/);
+    }
+    for (const method of ["issueReported", "investigationComplete"]) {
+      const event = HAND_WRITTEN_TYPES.slice(HAND_WRITTEN_TYPES.indexOf(`  ${method}(event: {`));
+      expect(event.slice(0, event.indexOf("}): void;")), method).toContain("\n    eventId: string;\n");
+    }
   });
 });

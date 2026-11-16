@@ -33,6 +33,8 @@ export type HookState = {
   observations: ObservationDescription[];
   /** Each call of the callback: its method and its event. */
   received: { method: string; event: unknown }[];
+  /** The event of each call of the callback that failed. */
+  failed: unknown[];
   /** What each firing did, in order: "observe" and "call". */
   order: string[];
   /** Everything else a firing's queue was asked for: there should be nothing. */
@@ -47,7 +49,7 @@ export function hookState(hook: string): HookState {
   if (!state) {
     hookStates.set(hook, state = {
       firings: 0, refusals: 0, refuseObservations: false, failures: 0,
-      observations: [], received: [], order: [], other: [],
+      observations: [], received: [], failed: [], order: [], other: [],
     });
   }
   return state;
@@ -74,6 +76,7 @@ class RecordingHook extends RpcTarget {
     if (this.#state.hold) return await this.#state.hold;
     if (this.#state.failures > 0) {
       this.#state.failures--;
+      this.#state.failed.push(event);
       throw new Error("The test hook failed.");
     }
     this.#state.order.push("call");
