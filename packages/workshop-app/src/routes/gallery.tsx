@@ -231,6 +231,7 @@ const PREVIEW_MODELS = [
 
 function Gallery() {
   const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
+  const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'gatekeepers'>()
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const [previewModel, setPreviewModel] = useState(PREVIEW_MODELS[0].id)
   const [place, setPlace] = useState<string>()
@@ -353,27 +354,28 @@ function Gallery() {
       <LibraryListPreview />
       <HeaderPreview />
       <ShellPreview />
-      <Section title="Sidebar, expanded (an admin's account menu) and collapsed to a rail (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
+      <Section title="Sidebar, expanded and collapsed to a rail, with an admin's account menu: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
         <div className="flex gap-4">
-          <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
-            <Sidebar
-              user={{ name: 'Ada Lovelace' }}
-              workspaces={previewWorkspaces}
-              selectedWorkspaceId={selectedWorkspace}
-              onSelectWorkspace={setSelectedWorkspace}
-              // An admin's account menu has Admin.
-              onOpenAdmin={() => {}}
-            />
-          </div>
-          <div className="flex h-[32rem] w-14 shrink-0 rounded-3xl bg-kumo-canvas p-2">
-            <Sidebar
-              user={{ name: 'Ada Lovelace' }}
-              workspaces={previewWorkspaces}
-              selectedWorkspaceId={selectedWorkspace}
-              onSelectWorkspace={setSelectedWorkspace}
-              collapsed
-            />
-          </div>
+          {(['icons', 'rows'] as const).flatMap((layout) => [false, true].map((collapsed) => (
+            <div key={`${layout}-${collapsed}`} className={`flex h-[32rem] shrink-0 flex-col rounded-3xl bg-kumo-canvas p-2 ring-1 ring-kumo-line ${collapsed ? 'w-14' : 'w-64'}`}>
+              <Sidebar
+                user={{ name: 'Ada Lovelace' }}
+                workspaces={previewWorkspaces}
+                selectedWorkspaceId={sidebarPage ? undefined : selectedWorkspace}
+                onSelectWorkspace={(id) => {
+                  setSelectedWorkspace(id)
+                  setSidebarPage(undefined)
+                }}
+                connectionsPage={{ current: sidebarPage === 'gatekeepers', onOpen: () => setSidebarPage('gatekeepers') }}
+                library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library') }}
+                workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
+                collapsed={collapsed}
+                layout={layout}
+                // An admin's account menu has Admin.
+                onOpenAdmin={() => {}}
+              />
+            </div>
+          )))}
         </div>
       </Section>
       <MascotPreview />

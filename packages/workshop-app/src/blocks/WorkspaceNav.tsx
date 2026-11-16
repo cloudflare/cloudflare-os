@@ -1,6 +1,8 @@
+import { useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { WorkspaceListItem, type WorkspaceListItemProps } from './WorkspaceListItem'
 import { WorkspaceRailItem } from './WorkspaceRailItem'
+import { useScrollFadeFallback } from './useScrollFadeFallback'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 
 export type SidebarWorkspace = Omit<WorkspaceListItemProps, 'selected' | 'onSelect'> & { id: string }
@@ -13,6 +15,8 @@ export type WorkspaceNavProps = {
   notice?: string
   /** Each workspace is its icon alone, on the collapsed sidebar's rail. */
   rail?: boolean
+  /** What scrolls fades out at either end while there is more that way (`.sidebar-fade`). */
+  fades?: boolean
 }
 
 /**
@@ -20,15 +24,17 @@ export type WorkspaceNavProps = {
  * pointed at (see `useWorkspaceUnderlay`). Give it a `key` that changes with `rail`: the
  * highlight measures the rows it started with.
  */
-export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspace, notice, rail = false }: WorkspaceNavProps) => {
+export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspace, notice, rail = false, fades = false }: WorkspaceNavProps) => {
   const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay()
+  const scrollRef = useRef<HTMLElement>(null)
+  useScrollFadeFallback(scrollRef)
   const Item = rail ? WorkspaceRailItem : WorkspaceListItem
   // On the rail, a tint of the text colour: black at 8%, white in dark mode.
   const underlay = cn('pointer-events-none absolute inset-x-0 top-0 -z-10 h-0', rail ? 'rounded-xl bg-kumo-contrast/8' : 'rounded-2xl bg-kumo-fill')
 
   return (
     // Scrolled with no scrollbar, expanded or on the rail.
-    <nav aria-label="Recents" className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto [scrollbar-width:none]">
+    <nav ref={scrollRef} aria-label="Recents" className={cn('flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto [scrollbar-width:none]', fades && 'chat-fade sidebar-fade')}>
       <div ref={listRef} className="relative isolate flex shrink-0 flex-col">
         <div ref={underlayRef} aria-hidden="true" className={underlay} />
         <div ref={hoverUnderlayRef} aria-hidden="true" className={underlay} />
