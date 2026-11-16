@@ -72,6 +72,13 @@ const WORKER_INPUTS: WorkerInput[] = [
     excludeDirs: [...BUILT, "src", "dist-app", ".wrangler"],
   },
   { kind: "dir", path: "packages/gatekeeper-context/src", excludeDirs: ["generated"] },
+  // The real admin gatekeeper, split the same way: its generated configurator module and its
+  // validated tree stay out of watch.
+  {
+    kind: "dir", path: "packages/gatekeeper-instanceadmin",
+    excludeDirs: [...BUILT, "src", ".wrangler"],
+  },
+  { kind: "dir", path: "packages/gatekeeper-instanceadmin/src", excludeDirs: ["generated"] },
   // `typed-storage` is the one package that emits: wrangler loads its `dist/index.js`, so `dist` is
   // output here like anywhere else, and it is the package's config -- not just its source -- that
   // decides what gets emitted.
