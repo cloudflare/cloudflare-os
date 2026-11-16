@@ -11893,11 +11893,19 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
     let session = stub.startGatekeeperSession(
         this.ctx.props.target, this.ctx.props.caller);
 
+    // Each loopback serves one call. Dispose the session once it settles, or the overseer holds it
+    // (and its approval queue) until GC, and enough of them exceed the isolate's memory limit.
+    let release = () => void session.then((s: any) => s[Symbol.dispose](), () => {});
+
     return new Proxy(session, {
       get(target, prop, receiver) {
         // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
         //   we'll get an illegal invocation, as `receiver` points to our Proxy.
-        return Reflect.get(target, prop, target);
+        let value = Reflect.get(target, prop, target);
+        if (typeof value !== "function" || typeof prop !== "string" ||
+            ["then", "catch", "finally", "constructor"].includes(prop)) return value;
+        return (...args: unknown[]) =>
+            Promise.resolve(Reflect.apply(value, target, args)).finally(release);
       },
       getPrototypeOf(target) {
         return WorkerEntrypoint.prototype;
