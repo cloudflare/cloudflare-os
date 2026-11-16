@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AgentSpawnerInfo, ChatConnectionInfo, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, GadgetAccessMode, GadgetView, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AgentSpawnerInfo, ChatConnectionInfo, WorkspaceConnectionInfo, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, GadgetAccessMode, GadgetView, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -13975,6 +13975,42 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return result;
   }
 
+  async listConnections(): Promise<WorkspaceConnectionInfo[]> {
+    let storage = this.impl.storage;
+    let gadgetIds = new Map<WorkpieceId, WorkpieceId[]>();
+    for (let gadget of storage.gadgets.list()) {
+      if (gadget.type !== "gadget" || gadget.pending) continue;
+      for (let [, edge] of this.impl.visibleBindings(gadget)) {
+        let ids = gadgetIds.get(edge.target) ?? [];
+        if (!ids.includes(gadget.id)) gadgetIds.set(edge.target, [...ids, gadget.id]);
+      }
+    }
+    // A chat's use, as listChatConnections reads it from the actions its messages record, but from
+    // the action log itself, which is far smaller than every chat's messages.
+    let chats = new Set([...storage.chatMeta.list()].map(meta => meta.id));
+    let chatIds = new Map<WorkpieceId, Set<number>>();
+    for (let action of storage.actions.list()) {
+      let chatId = "chatId" in action.caller ? action.caller.chatId : undefined;
+      if (chatId === undefined || !chats.has(chatId)) continue;
+      let ids = chatIds.get(action.gatekeeperId) ?? new Set();
+      chatIds.set(action.gatekeeperId, ids.add(chatId));
+    }
+    return [...storage.gatekeepers.list()].flatMap((record): WorkspaceConnectionInfo[] => {
+      let spec = record.creationSpec;
+      if (spec?.type !== "gatekeeper" && spec?.type !== "ambient") return [];
+      let resourceUrl = record.resourceUrl ?? (spec.type === "gatekeeper" ? spec.resourceUrl : undefined);
+      return [{
+        gatekeeperId: record.id,
+        title: record.resourceTitle || "(title unavailable)",
+        vendorId: spec.vendorId.toLowerCase(),
+        ...(spec.type === "gatekeeper" ? {typeUrlPattern: spec.typeUrlPattern} : {ambient: true as const}),
+        ...(resourceUrl !== undefined ? {resourceUrl} : {}),
+        gadgetIds: gadgetIds.get(record.id) ?? [],
+        chatIds: [...chatIds.get(record.id) ?? []],
+      }];
+    });
+  }
+
   async listChatFiles(chatId?: number): Promise<ChatFileSummary[]> {
     let files: ChatFileSummary[] = [];
     for (let record of this.impl.storage.chatAttachmentContent.list()) {
@@ -14987,6 +15023,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
   async listChatFiles(_chatId?: number): Promise<ChatFileSummary[]> { this.#deny(); }
   async listChatConnections(_chatId: number): Promise<ChatConnectionInfo[]> { this.#deny(); }
+  async listConnections(): Promise<WorkspaceConnectionInfo[]> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
   async setChatAutoApprove(_chatId: number, _enabled: boolean): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number): Promise<MergeChangesResult> {

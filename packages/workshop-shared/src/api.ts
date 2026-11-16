@@ -3523,6 +3523,36 @@ export type ChatConnectionInfo = {
   scope: "chat" | "workspace" | "always";
 };
 
+/** A connection to a service in a workspace, as `Overseer.listConnections()` lists it. */
+export type WorkspaceConnectionInfo = {
+  /** The connection. */
+  gatekeeperId: WorkpieceId;
+
+  /** Its title, as the Workshop shows it. */
+  title: string;
+
+  /** Its vendor, for the vendor's logo and kinds of resource. */
+  vendorId: string;
+
+  /**
+   * The kind of resource it is (`SupportedResource.urlPattern`); absent for one every chat has
+   * (`ambient`), which is the vendor's whole account.
+   */
+  typeUrlPattern?: string;
+
+  /** Where it is in its service, once it is somewhere. */
+  resourceUrl?: string;
+
+  /** Every chat has it: it comes with the deployment, made by no one (`autoProvisionsAccount`). */
+  ambient?: true;
+
+  /** The gadgets whose code is bound to it. */
+  gadgetIds: WorkpieceId[];
+
+  /** The chats that have read or changed something through it, as its action log says. */
+  chatIds: number[];
+};
+
 /** An agent spawner in a workspace, as `Overseer.listAgentSpawners()` lists it. */
 export type AgentSpawnerInfo = {
   /** The spawner's connection. */
@@ -4125,6 +4155,13 @@ export interface Overseer extends RpcTarget {
    * to every chat. Each connection is listed once, under the first of those it falls in.
    */
   listChatConnections(chatId: number): Promise<ChatConnectionInfo[]>;
+
+  /**
+   * Every connection to a service in the workspace, whatever uses it or once did: each with the
+   * gadgets bound to it and the chats that read or changed something through it. Models and agent
+   * spawners are not connections to a service, so they are left out.
+   */
+  listConnections(): Promise<WorkspaceConnectionInfo[]>;
 
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
 

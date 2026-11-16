@@ -214,3 +214,51 @@ describe("listing a chat's connections", () => {
     });
   });
 });
+
+describe("listing a workspace's connections", () => {
+  it("lists every connection to a service, with the gadgets bound to it and the chats that used it", async () => {
+    let workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
+    await runInDurableObject(workspace, async (instance: OverseerDurableObject) => {
+      let impl = instance.impl;
+      let ownerId = impl.users.newUniqueId().toString();
+      impl.ownerId = ownerId;
+      impl.ensureAmbientCapsules = async () => {};
+      impl.markOutputsDirty = () => {};
+      let gatekeeper = (id: number, title: string, creationSpec: object) =>
+        impl.storage.gatekeepers.put({id, resourceTitle: title, class: {} as never, creationSpec: creationSpec as never});
+      gatekeeper(10, "Q4 Plan", {type: "gatekeeper", vendorId: "Google", resourceUrl: "https://docs/q4", typeUrlPattern: "https://docs/:id"});
+      gatekeeper(11, "Unused", {type: "gatekeeper", vendorId: "github", typeUrlPattern: "https://github.com/:o/:r"});
+      gatekeeper(12, "Web Search", {type: "ambient", vendorId: "websearch", accountId: 1});
+      // Not connections to a service.
+      gatekeeper(13, "A model", {type: "aiModel", modelId: "m", provider: "p", modelName: "n"});
+      let gadget = (id: number, bindings: object, pending?: object) => impl.storage.gadgets.put({
+        type: "gadget", id, title: `G${id}`, created: new Date(0), bindingName: `G${id}`, bindings: bindings as never,
+        ...(pending ? {pending: pending as never} : {}),
+      });
+      gadget(100, {PLAN: {target: 10}, DRAFT: {target: 11, pending: {chatId: 1}}});
+      gadget(101, {PLAN: {target: 10}});
+      // One still being made in a chat binds nothing yet.
+      gadget(102, {SEARCH: {target: 12}}, {chatId: 1});
+      impl.storage.chatMeta.put({id: 1, title: "One", started: new Date(1), lastActive: new Date(1)});
+      let action = (id: number, gatekeeperId: number, caller: object) => impl.storage.actions.put({
+        id, type: "observation", gatekeeperId, caller, createdAt: new Date(id), state: "approved",
+        description: {title: "Read", description: ""},
+      } as never);
+      action(0, 10, {from: "agent", chatId: 1});
+      action(1, 10, {from: "gadget", gadgetId: 100, chatId: 1});
+      // A deleted chat's, and a hook's, which has none.
+      action(2, 12, {from: "agent", chatId: 9});
+      action(3, 12, {from: "hook", gadgetId: 100});
+
+      using notifyClosed = new NativeRpcStub<() => void>(() => {});
+      using client: Overseer = await instance.open(ownerId, "owner-profile", notifyClosed) as never;
+      expect(await client.listConnections()).toEqual([
+        {gatekeeperId: 10, title: "Q4 Plan", vendorId: "google", typeUrlPattern: "https://docs/:id",
+          resourceUrl: "https://docs/q4", gadgetIds: [100, 101], chatIds: [1]},
+        {gatekeeperId: 11, title: "Unused", vendorId: "github", typeUrlPattern: "https://github.com/:o/:r",
+          gadgetIds: [], chatIds: []},
+        {gatekeeperId: 12, title: "Web Search", vendorId: "websearch", ambient: true, gadgetIds: [], chatIds: []},
+      ]);
+    });
+  });
+});
