@@ -1,11 +1,9 @@
-import { useEffect, useEffectEvent, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
-import { AnimatePresence, animate, motion, useMotionValue, usePresence, useReducedMotion, useTransform, type MotionValue } from 'motion/react'
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { AnimatePresence, spring, usePresence, useReducedMotion } from 'motion/react'
 import { SidebarSimpleIcon } from '@phosphor-icons/react'
-import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'
-import { clampSize } from '@/components/resizing'
-import { CLICK_SLOP, OPENING_TIMING } from './useEdgeHint'
+import { OPENING_TIMING } from './useEdgeHint'
 
 export type NarrowShellProps = {
   /** The page. */
@@ -26,10 +24,8 @@ export type NarrowShellProps = {
   status?: ReactNode
   /** What is open beside the page, which here covers it. */
   aside?: ReactNode
-  /** Shows the aside, when none is showing: pulled out of the window's far edge, or tapped there. */
+  /** Shows the aside, when none is showing: tapped at the window's far edge, where a pill shows. */
   onOpenAside?: () => void
-  /** The aside was swiped away, back off the far edge. Left out, it only springs back. */
-  onCloseAside?: () => void
 }
 
 // The room the sidebar's button takes at the start of a page's header: the button and the header's gap.
@@ -39,135 +35,76 @@ const BUTTON_ROOM = 'calc(var(--control-size) + 6px)'
 const PEEK = 64
 // How far the page beneath moves aside, as a share of its width, as the aside comes over it.
 const PARALLAX = 0.25
-// Pulled or swiped further than this share of the window, the aside opens or goes when let go.
-const COMMITS_AT = 0.3
-// Let go moving faster than this, in pixels a millisecond, the aside goes the way it was flung.
-const FLING = 0.4
-// A sample of how fast a finger moves older than this is not how fast it was going when let go.
-const STALE = 100
 // The aside's surface, over all of the page, with an edge for while it is on its way.
 const SURFACE = 'absolute inset-0 z-30 flex flex-col overflow-hidden bg-kumo-base ring-1 ring-kumo-line'
+// Where the sidebar is, out and put away, and the aside, there and gone, as `translate`.
+const SIDEBAR_AT = { out: '0px', away: `${-PARALLAX * 100}%` }
+const ASIDE_AT = { there: '0px', gone: '100%' }
 
-type EdgeSwipeProps = {
-  /** Which edge it runs down. */
-  side: 'left' | 'right'
-  onStart: () => void
-  /** The finger is `offset` pixels to the right of where it took hold. */
-  onMove: (offset: number) => void
-  /** Let go `offset` pixels to the right of where it took hold, moving right at `velocity` pixels a millisecond. */
-  onEnd: (offset: number, velocity: number) => void
-  /** Tapped, or pressed from the keyboard, rather than pulled. Given, the strip is a button by this name. */
-  tap?: { label: string; onTap: () => void }
-  children?: ReactNode
+/** Where the page is, as `translate`: aside to the far edge for the sidebar, and a little the other way under the aside. */
+const pageAt = (sidebarOpen: boolean, asideShown: boolean) =>
+  `calc(${sidebarOpen ? `100% - ${PEEK}px` : '0px'} - ${asideShown ? PARALLAX * 100 : 0}%)`
+
+// The panes' own spring, sampled for the browser to play: Chrome on Android plays motion moved from
+// script each frame at 60 Hz once the finger has lifted, and its own animations at the display's rate.
+const SLIDE: KeyframeAnimationOptions = (() => {
+  const duration = OPENING_TIMING.duration * 1000
+  const curve = spring({ keyframes: [0, 1], duration, bounce: OPENING_TIMING.bounce })
+  const points = Array.from({ length: 49 }, (_, index) => Number(curve.next((index / 48) * duration).value.toFixed(4)))
+  return { duration, easing: `linear(${points.join(', ')})` }
+})()
+
+type SlideOptions = {
+  /** Where it slides to `to` from when it first appears. Left out, it is simply there. */
+  from?: string
+  /** It has got to `to`. */
+  onDone?: () => void
 }
 
 /**
- * A strip down an edge of the window to be swiped from, below the header so as not to be in the
- * way of the header's buttons. It only reports what is asked of it; whoever places it owns what
- * moves.
+ * Keeps an element's `translate` at `to`, which it renders, and slides it there with the browser's
+ * own animation when `to` changes: from wherever it is, part of the way along a slide turned back.
  */
-const EdgeSwipe = ({ side, onStart, onMove, onEnd, tap, children }: EdgeSwipeProps) => {
-  const drag = useRef<{ pointerId: number; from: number; x: number; at: number; velocity: number; moved: number }>(undefined)
-  // Whether the last time it was taken hold of, it was pulled rather than tapped.
-  const pulled = useRef(false)
-
-  const take = (event: ReactPointerEvent<HTMLElement>) => {
-    if (drag.current || event.button !== 0) return
-    // Nothing is selected, and no drag of the page's own starts, as the finger moves on.
-    event.preventDefault()
-    event.currentTarget.setPointerCapture(event.pointerId)
-    drag.current = { pointerId: event.pointerId, from: event.clientX, x: event.clientX, at: event.timeStamp, velocity: 0, moved: 0 }
-    pulled.current = false
-    onStart()
-  }
-
-  const move = (event: ReactPointerEvent<HTMLElement>) => {
-    const current = drag.current
-    if (current?.pointerId !== event.pointerId) return
-    const elapsed = event.timeStamp - current.at
-    if (elapsed > 0) current.velocity = (event.clientX - current.x) / elapsed
-    current.x = event.clientX
-    current.at = event.timeStamp
-    current.moved = Math.max(current.moved, Math.abs(event.clientX - current.from))
-    onMove(event.clientX - current.from)
-  }
-
-  const letGo = (event: ReactPointerEvent<HTMLElement>) => {
-    const current = drag.current
-    if (current?.pointerId !== event.pointerId) return
-    drag.current = undefined
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
-    pulled.current = current.moved >= CLICK_SLOP
-    const velocity = event.type === 'pointercancel' || event.timeStamp - current.at > STALE ? 0 : current.velocity
-    onEnd(current.x - current.from, velocity)
-  }
-
-  const shared = {
-    onPointerDown: take,
-    onPointerMove: move,
-    onPointerUp: letGo,
-    onPointerCancel: letGo,
-    className: cn('group absolute top-16 bottom-0 z-40 w-6 touch-none outline-none', side === 'left' ? 'left-0' : 'right-0'),
-  }
-
-  return tap ? (
-    <button
-      type="button"
-      aria-label={tap.label}
-      onClick={() => {
-        if (!pulled.current) tap.onTap()
-      }}
-      {...shared}
-    >
-      {children}
-    </button>
-  ) : (
-    <div aria-hidden="true" {...shared}>{children}</div>
-  )
+const useSlide = <Element extends HTMLElement>(to: string, reduceMotion: boolean, { from: initial = to, onDone }: SlideOptions = {}) => {
+  const element = useRef<Element>(null)
+  const from = useRef(initial)
+  const sliding = useRef<Animation>(undefined)
+  const done = useEffectEvent(() => onDone?.())
+  // Before the paint that would show it at `to` already.
+  useLayoutEffect(() => {
+    if (from.current === to || !element.current) return
+    const now = sliding.current?.playState === 'running' ? getComputedStyle(element.current).translate : from.current
+    from.current = to
+    sliding.current?.cancel()
+    sliding.current = undefined
+    if (reduceMotion) return done()
+    const slide = element.current.animate([{ translate: now === 'none' ? '0px' : now }, { translate: to }], SLIDE)
+    slide.onfinish = done
+    sliding.current = slide
+  }, [to, reduceMotion])
+  return element
 }
 
-/** The aside over the page, which stays for as long as going takes, and is swiped away from its near edge. */
-const NarrowAside = ({ open, onClose, children }: {
-  /** How far it has come over the page, 0 to 1. */
-  open: MotionValue<number>
-  onClose?: () => void
+/** The aside over the page, which slides in from the far edge, and stays for as long as going back there takes. */
+const NarrowAside = ({ arrives, children }: {
+  /** It slides in, rather than being there from the start. */
+  arrives: boolean
   children: ReactNode
 }) => {
   const [isPresent, safeToRemove] = usePresence()
   const reduceMotion = useReducedMotion() ?? false
-  const element = useRef<HTMLDivElement>(null)
-  const x = useTransform(open, (amount) => `${(1 - amount) * 100}%`)
-  const width = useRef(0)
-
-  const gone = useEffectEvent(() => {
-    if (!isPresent) safeToRemove?.()
+  const at = isPresent ? ASIDE_AT.there : ASIDE_AT.gone
+  const element = useSlide<HTMLDivElement>(at, reduceMotion, {
+    from: arrives ? ASIDE_AT.gone : at,
+    onDone: () => {
+      if (!isPresent) safeToRemove?.()
+    },
   })
-  // From however far over it is: it may have been pulled part of the way out of the edge, or
-  // swiped part of the way back.
-  useEffect(() => {
-    const moving = animate(open, isPresent ? 1 : 0, { ...(reduceMotion ? { duration: 0 } : OPENING_TIMING), onComplete: gone })
-    return () => moving.stop()
-  }, [isPresent, reduceMotion, open])
 
   return (
-    <motion.div ref={element} style={{ x }} className={SURFACE}>
+    <div ref={element} style={{ translate: at }} className={SURFACE}>
       {children}
-      {isPresent && (
-        <EdgeSwipe
-          side="left"
-          onStart={() => {
-            open.stop()
-            width.current = element.current!.offsetWidth
-          }}
-          onMove={(offset) => open.set(clampSize(1 - offset / width.current, 0, 1))}
-          onEnd={(_, velocity) => {
-            const away = velocity > FLING || (velocity >= -FLING && 1 - open.get() > COMMITS_AT)
-            if (away && onClose) return onClose()
-            animate(open, 1, reduceMotion ? { duration: 0 } : OPENING_TIMING)
-          }}
-        />
-      )}
-    </motion.div>
+    </div>
   )
 }
 
@@ -178,36 +115,23 @@ const NarrowAside = ({ open, onClose, children }: {
  * in sight is tapped to put the sidebar away again, and so is Escape.
  *
  * What is open beside the page on a wider screen comes over all of it here, from the far edge, as
- * the page moves a little aside beneath it. It is had back from that edge, as it is on a wider
- * screen: pulled out of it, which brings it as far as it is pulled, or tapped there, where a pill
- * shows. It goes by its own back button, or swiped back off the edge from its near one.
+ * the page moves a little aside beneath it. It is had back by a tap at that edge, where a pill
+ * shows, and goes by its own back button. Neither is swiped, which the system's own gestures at
+ * the window's edges would take.
  */
-export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside, onCloseAside }: NarrowShellProps) => {
+export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside }: NarrowShellProps) => {
   const reduceMotion = useReducedMotion() ?? false
-  const timing = reduceMotion ? { duration: 0 } : OPENING_TIMING
-  const frame = useRef<HTMLDivElement>(null)
-  const width = useRef(0)
   const shown = Boolean(aside)
   const sidebarOpen = sidebar?.open ?? false
-  // How far the aside has come over the page, and how far the page has moved aside for the
-  // sidebar, each 0 to 1. Motion values, so that pulling and moving render nothing again.
-  const open = useMotionValue(shown ? 1 : 0)
-  const away = useMotionValue(sidebarOpen ? 1 : 0)
-  const asideX = useTransform(open, (amount) => `${(1 - amount) * 100}%`)
-  // The pill stays while held, and gives way to the aside's edge as that comes out over it.
-  const pillShown = useTransform(open, [0, 0.1], [1, 0])
-  const pageX = useTransform(() => `calc(${away.get()} * (100% - ${PEEK}px) - ${open.get() * PARALLAX * 100}%)`)
-  const sidebarX = useTransform(away, (amount) => `${-(1 - amount) * PARALLAX * 100}%`)
-  // Pulled out of the edge, or let go to open, until the aside arrives: until then its surface
-  // comes out empty.
-  const [pulled, setPulled] = useState(false)
-  if (pulled && shown) setPulled(false)
+  // An aside there from the start was not brought, and so does not slide in: it is simply there.
+  const [asideWasThere, setAsideWasThere] = useState(shown)
+  if (asideWasThere && !shown) setAsideWasThere(false)
+  const sidebarAt = sidebarOpen ? SIDEBAR_AT.out : SIDEBAR_AT.away
+  const page = pageAt(sidebarOpen, shown)
+  const sidebarSlide = useSlide<HTMLDivElement>(sidebarAt, reduceMotion)
+  const pageSlide = useSlide<HTMLDivElement>(page, reduceMotion)
   const lead = sidebar?.button ? ({ '--header-lead': BUTTON_ROOM } as CSSProperties) : undefined
 
-  useEffect(() => {
-    const moving = animate(away, sidebarOpen ? 1 : 0, reduceMotion ? { duration: 0 } : OPENING_TIMING)
-    return () => moving.stop()
-  }, [sidebarOpen, away, reduceMotion])
   // Escape is for whatever has focus first, such as a menu that is open.
   const onOpenChange = sidebar?.onOpenChange
   useEffect(() => {
@@ -219,24 +143,24 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside, onC
     return () => window.removeEventListener('keydown', pressed)
   }, [sidebarOpen, onOpenChange])
 
-
   return (
     // Clear of what the system draws over the window's edges, such as a phone's notch.
     <div className="h-full bg-kumo-base pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]">
-      <div ref={frame} style={lead} className="relative size-full overflow-hidden">
+      <div style={lead} className="relative size-full overflow-hidden">
         {sidebar && (
           // On the backdrop, as beside the page on a wider screen.
-          <motion.div
-            style={{ x: sidebarX, width: `calc(100% - ${PEEK}px)` }}
+          <div
+            ref={sidebarSlide}
+            style={{ translate: sidebarAt, width: `calc(100% - ${PEEK}px)` }}
             inert={!sidebarOpen}
             className="absolute inset-y-0 left-0 flex flex-col bg-kumo-canvas px-2 py-1"
           >
             {sidebar.content}
-          </motion.div>
+          </div>
         )}
         {/* Out of reach under the aside, and while the sidebar is out. Its own surface, with an
             edge, over the sidebar. */}
-        <motion.div style={{ x: pageX }} inert={shown || sidebarOpen} className="absolute inset-0 flex flex-col bg-kumo-base ring-1 ring-kumo-line">
+        <div ref={pageSlide} style={{ translate: page }} inert={shown || sidebarOpen} className="absolute inset-0 flex flex-col bg-kumo-base ring-1 ring-kumo-line">
           <main className="flex min-h-0 flex-1 flex-col">{children}</main>
           {sidebar?.button && (
             // Where the page's header starts, which leaves it the room (`--header-lead`).
@@ -246,44 +170,27 @@ export const NarrowShell = ({ children, sidebar, status, aside, onOpenAside, onC
               </HeaderBubble>
             </div>
           )}
-        </motion.div>
+        </div>
         {sidebarOpen && sidebar && (
           // What is in sight of the page, to be tapped to put the sidebar away; it is out of reach itself.
-          <motion.button
+          <button
             type="button"
             aria-label="Hide the sidebar"
-            style={{ x: pageX }}
+            style={{ translate: page }}
             onClick={() => sidebar.onOpenChange(false)}
             className="absolute inset-0 z-40 outline-none"
           />
         )}
         {!shown && !sidebarOpen && onOpenAside && (
-          <EdgeSwipe
-            side="right"
-            tap={{ label: 'Show the side pane', onTap: onOpenAside }}
-            onStart={() => {
-              open.stop()
-              width.current = frame.current!.clientWidth
-              setPulled(true)
-            }}
-            onMove={(offset) => open.set(clampSize(-offset / width.current, 0, 1))}
-            onEnd={(_, velocity) => {
-              const opens = velocity < -FLING || (velocity <= FLING && open.get() > COMMITS_AT)
-              if (!opens) return void animate(open, 0, { ...timing, onComplete: () => setPulled(false) })
-              // The aside that arrives carries on from here.
-              animate(open, 1, timing)
-              onOpenAside()
-            }}
-          >
+          // Down the far edge, below the header so as not to be in the way of its buttons, and
+          // under the aside, which uncovers it as it goes.
+          <button type="button" aria-label="Show the side pane" onClick={onOpenAside} className="group absolute top-16 right-0 bottom-0 z-20 w-6 outline-none">
             {/* In the middle of the window: the strip starts below the header, 4rem down. */}
-            <motion.span aria-hidden="true" style={{ opacity: pillShown }} className="absolute top-[calc(50%-2rem)] right-1.5 h-12 w-1.5 -translate-y-1/2">
-              <span className="absolute inset-0 rounded-full bg-kumo-contrast opacity-25 transition-opacity group-focus-visible:opacity-70" />
-            </motion.span>
-          </EdgeSwipe>
+            <span aria-hidden="true" className="absolute top-[calc(50%-2rem)] right-1.5 h-12 w-1.5 -translate-y-1/2 rounded-full bg-kumo-contrast opacity-25 transition-opacity group-focus-visible:opacity-70" />
+          </button>
         )}
-        {!shown && pulled && <motion.div aria-hidden="true" style={{ x: asideX }} className={SURFACE} />}
         <AnimatePresence initial={false}>
-          {shown ? <NarrowAside key="aside" open={open} onClose={onCloseAside}>{aside}</NarrowAside> : null}
+          {shown ? <NarrowAside key="aside" arrives={!asideWasThere}>{aside}</NarrowAside> : null}
         </AnimatePresence>
         {status && <div className="pointer-events-none absolute inset-x-0 top-2 z-50 flex justify-center">{status}</div>}
       </div>
