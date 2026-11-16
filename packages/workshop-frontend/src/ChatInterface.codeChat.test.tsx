@@ -118,3 +118,17 @@ it("names the chat Back returns to", async () => {
   await view.render(AGENT_CHAT);
   expect(back()).toBe("Back to conversations");
 });
+
+// The editor takes every snapshot of a draft's chat as new code and reloads the draft's preview,
+// losing its state, so another chat's history arriving must not resend one.
+it("doesn't resend the code chat's snapshot when another chat's history loads", async () => {
+  const view = setup();
+  await view.render(WORKING_CHAT);
+  expect(view.changes).toHaveBeenLastCalledWith(expect.objectContaining({chatId: WORKING_CHAT}));
+  const sent = view.changes.mock.calls.length;
+
+  await view.render(AGENT_CHAT, WORKING_CHAT);
+
+  expect(view.historyLoads).toEqual([WORKING_CHAT, AGENT_CHAT]);
+  expect(view.changes).toHaveBeenCalledTimes(sent);
+});

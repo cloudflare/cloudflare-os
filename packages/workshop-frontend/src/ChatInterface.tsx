@@ -2674,7 +2674,16 @@ function ChatInterface({
   // Fetching the page before the selected chat's compaction boundary.
   const [isLoadingEarlier, setIsLoadingEarlier] = useState(false);
   const [updateCounter, setUpdateCounter] = useState(0); // Force re-render when cache updates
-  const [proposedChangesVersion, setProposedChangesVersion] = useState(0); // Incremented only for change-affecting messages
+  // Each chat's count of change-affecting events (a "changes" or "revert" message, a loaded page).
+  // Kept per chat so that one chat's events don't resend another's unchanged code snapshot, which
+  // the editor would take as new code and reload a draft's preview for.
+  const changesVersionsRef = useRef(new Map<number, number>());
+  const [, setChangesVersionTick] = useState(0);
+  // Reads only refs and a state setter, so the subscriber's first-render copy stays current.
+  const bumpChangesVersion = (chatId: number) => {
+    changesVersionsRef.current.set(chatId, (changesVersionsRef.current.get(chatId) ?? 0) + 1);
+    setChangesVersionTick((prev) => prev + 1);
+  };
   // Rows live in refs (chatChangeRowsRef); this state only forces re-renders of their readers (the
   // draft banner) as rows arrive or get pruned. Subscribed consumers are fed synchronously and
   // don't depend on it (see ChatLiveChangeRows).
@@ -2859,7 +2868,7 @@ function ChatInterface({
     let oldest = cacheRef.current.compacted.get(chatId)?.[0];
     if (oldest === undefined || await refreshBoundaryRef.current(chatId, oldest.to + 1)) {
       staleBoundaryChatsRef.current.delete(chatId);
-      setProposedChangesVersion((prev) => prev + 1);
+      bumpChangesVersion(chatId);
     }
   };
 
@@ -3414,14 +3423,16 @@ function ChatInterface({
 
   // Notify parent when the code chat's code-branch snapshot changes (see ChatCodeChanges):
   // its ChatCodeBase plus the current epoch's recorded changes, derived together so the code
-  // view never pairs one's stale value with the other's fresh one. Recomputes when
-  // proposedChangesVersion changes (i.e. a "changes" or "revert" message arrives, or a history
-  // page loads) or when the codeBase's *content* changes -- metadata is redelivered on every
+  // view never pairs one's stale value with the other's fresh one. Recomputes when the code chat's
+  // changes version moves (i.e. a "changes" or "revert" message arrives in it, or a page of its
+  // history loads) or when the codeBase's *content* changes -- metadata is redelivered on every
   // chat activity (title, lastActive, ...), so it is deduped by signature. "merge" messages bump
   // neither directly: the epoch reset they perform arrives through the metadata's codeBase
   // (advanced epoch, cleared pins, bumped generation), redelivered with the merge.
   const codeBaseSignature = codeChatMetadata
     ? JSON.stringify(codeChatMetadata.codeBase ?? null) : undefined;
+  const codeChangesVersion =
+    codeChatId !== null ? (changesVersionsRef.current.get(codeChatId) ?? 0) : 0;
   useEffect(() => {
     if (codeChatId === null || codeBaseSignature === undefined ||
         !cacheRef.current.messages.has(codeChatId) ||
@@ -3446,7 +3457,7 @@ function ChatInterface({
 
     onChatChangesChange?.({ chatId: codeChatId, codeBase, epochChange, rowsThrough });
   }, [
-    proposedChangesVersion,
+    codeChangesVersion,
     codeChatId,
     codeBaseSignature,
     onChatChangesChange,
@@ -3628,7 +3639,7 @@ function ChatInterface({
       // -- recomputing here as well would race the metadata and transiently pair the old epoch's
       // updates with the new epoch's (empty) pin set.
       if (msg.type === "changes" || msg.type === "revert") {
-        setProposedChangesVersion((prev) => prev + 1);
+        bumpChangesVersion(msg.chatId);
       }
 
       // A revert reaching past the oldest loaded boundary changed it on the server; see
@@ -3984,7 +3995,7 @@ function ChatInterface({
     // History may contain change-affecting messages that the subscriber
     // didn't deliver (they predated the subscription). Bump the version so
     // the proposed-changes effect re-evaluates with the loaded messages.
-    setProposedChangesVersion((prev) => prev + 1);
+    bumpChangesVersion(chatId);
     forceUpdate();
   };
 
@@ -4065,7 +4076,7 @@ function ChatInterface({
       cacheHistoryPage(selectedChatId, page);
 
       // The page's own change-affecting messages now stand in for the boundary's merged update.
-      setProposedChangesVersion((prev) => prev + 1);
+      bumpChangesVersion(selectedChatId);
       forceUpdate();
     } catch (err) {
       console.error("Failed to load earlier messages:", err);
