@@ -42,7 +42,10 @@ const copyLink = (href: string) => {
 
 // Each its own component, so that each fetches its own picture.
 const Row = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryRow {...props} thumbnail={useLibraryPicture(entry).photo} />
-const Card = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryCard {...props} thumbnail={useLibraryPicture(entry).photo} />
+const Card = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => {
+  const { ref, photo, preview } = useLibraryPicture(entry)
+  return <LibraryCard ref={ref} {...props} thumbnail={photo} preview={photo ? undefined : preview} />
+}
 
 /**
  * Library entries as rows or cards in groups, each starred from its row and with a menu
