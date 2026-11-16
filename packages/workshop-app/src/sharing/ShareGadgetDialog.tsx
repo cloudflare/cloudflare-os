@@ -162,15 +162,15 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
     if (standing.ownerOnly) return 'No access'
     const value = linkOn ? link.level : 'off'
     // Only seeing it is offered where the deployment keeps views, or where the link already does.
-    const options = [LINK_USE, ...(viewsAvailable || value === 'view' ? [LINK_VIEW] : []), LINK_OFF]
-    const label = options.find((option) => option.value === value)?.label ?? 'No access'
+    const linkOptions = [LINK_USE, ...(viewsAvailable || value === 'view' ? [LINK_VIEW] : []), LINK_OFF]
+    const label = linkOptions.find((option) => option.value === value)?.label ?? 'No access'
     if (!standing.canShare) return label
     return (
       <AccessMenu
         label={linkPending ? 'Changing…' : label}
         of={`anyone in ${siteName}`}
         disabled={linkPending}
-        choices={{ options, value, onChange: setLink }}
+        choices={{ options: linkOptions, value, onChange: setLink }}
       />
     )
   }

@@ -200,8 +200,11 @@ export const AsidePane = (props: AsidePaneProps) => {
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
     openIn: connectedKind && editorUrl ? { label: OPEN_IN[connectedKind], href: editorUrl } : undefined,
     onShare: shareable ? () => setSharing(true) : undefined,
-    // Not for one the viewer cannot open, whose settings they could not see either.
-    onOpenSettings: gadget && onOpenSettings && snapshot.ui.status !== 'denied' ? () => onOpenSettings(gadget, title) : undefined,
+    // For whoever builds where it was made, as its settings are theirs: not for one shared with the
+    // viewer to use or only see, nor one they cannot open.
+    onOpenSettings: gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
+      ? () => onOpenSettings(gadget, title)
+      : undefined,
     // Its code is for whoever builds where it was made, as its settings page shows it.
     onViewCode: gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
       ? () => onOpenSettings(gadget, title, 'code')

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { CaretLeftIcon, ExportIcon, PlusIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, ExportIcon, PlusIcon, ShareNetworkIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { ofGadget } from '@/automations/automations'
 import { calledByGadget } from '@/automations/agents'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
@@ -177,6 +177,23 @@ export const GadgetSettingsPane = ({
           {snapshot.status === 'gone'
             ? <PaneNotice icon={WarningCircleIcon} title="This gadget isn’t here" description="It may have been deleted, or the link is wrong." />
             : <PaneNotice icon={WarningCircleIcon} title="Couldn’t load the gadget" description={snapshot.message} action={{ label: 'Try again', onClick: () => settings.restart() }} />}
+        </div>
+      </PageLayout>
+    )
+  }
+
+  // Shared with them to use or only see, nothing here is theirs: its settings, connections and
+  // automations are its workspace's, which they do not build in. Reached only by its address.
+  if (workspace?.role === 'use') {
+    return (
+      <PageLayout header={header}>
+        <div className="flex min-h-[60vh] flex-col">
+          <PaneNotice
+            icon={ShareNetworkIcon}
+            title={`${title || 'This gadget'} was shared with you`}
+            description="Its settings are for whoever builds in its workspace."
+            action={{ label: 'Back to gadget', onClick: onBack }}
+          />
         </div>
       </PageLayout>
     )
