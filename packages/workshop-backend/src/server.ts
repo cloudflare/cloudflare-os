@@ -454,8 +454,13 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.startResourceConfigurator(accountId, resourceTypeId);
   }
 
-  startCreationConfigurator(accountId: number, resourceTypeId: string) {
-    return this.#user.startCreationConfigurator(accountId, resourceTypeId);
+  startCreationConfigurator(accountId: number, resourceTypeId: string, purpose?: "create" | "save") {
+    return this.#user.startCreationConfigurator(accountId, resourceTypeId, purpose);
+  }
+
+  saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>) {
+    return this.#user.saveFile(accountId, resourceTypeId, destination, name, contentType, file);
   }
 
   async dismissSharedWorkspace(workspaceId: string): Promise<void> {

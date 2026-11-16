@@ -51,6 +51,7 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   // configurator frame, which only the Workshop UI asks for.
   creationConfigurator: true,
   creationConfigurationDescription: "the URL of the test folder to create it in",
+  savableFrom: ["text/csv"],
 }];
 
 const TYPES_CODE = `
@@ -698,6 +699,14 @@ export class TestAccount
 
   startResourceConfigurator(_resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
     throw new Error("The test gatekeeper has no resource configurator; bind a URL directly.");
+  }
+
+  /** Keeps nothing: the URL it returns reports what arrived. */
+  async saveFile(_resourceTypeId: string, destination: string, name: string, contentType: string,
+      file: ReadableStream<Uint8Array>): Promise<{ url: string }> {
+    const saved = new URLSearchParams(
+        { destination, name, contentType, content: await new Response(file).text() });
+    return { url: `https://${VENDOR_HOST}/things/saved?${saved}` };
   }
 
   async commitReconnect(stageId: string): Promise<void> {

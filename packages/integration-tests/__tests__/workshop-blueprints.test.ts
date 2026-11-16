@@ -1018,6 +1018,36 @@ it.concurrent("a gadget's ExportHandler lists and streams its format", async () 
   await ws.deleteSelf();
 });
 
+it.concurrent("a pending export is saved into the user's own account for a type that takes it",
+    async () => {
+  using publicApi = connect(requireHarness().url);
+  using api = await signUp(publicApi, username("gadgetsave"));
+  using ws = await api.newWorkspace();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _subscription = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using app = ws.createGadget("App", undefined, "APP");
+  const gadgetId = await app.getId();
+  await commitText(ws, workpieces, gadgetId, await headOf(workpieces, gadgetId),
+      "server.js", undefined, CSV_EXPORT_SERVER);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)!;
+  const destination = "https://gadgets-test.example/folders/reports";
+
+  // The export is passed unawaited, so it reaches the gatekeeper without visiting this client.
+  const { url } = await api.saveFile(
+      account.id, "thing", destination, "Report", "text/csv", app.export("csv"));
+  expect(Object.fromEntries(new URL(url).searchParams)).toEqual(
+      { destination, name: "Report", contentType: "text/csv", content: "a,b\n1,2\n" });
+
+  await expect(api.saveFile(
+      account.id, "thing", destination, "Report", "text/plain", streamOf(new Uint8Array())))
+      .rejects.toThrow("cannot save that kind of file");
+
+  await ws.deleteSelf();
+});
+
 // Both users register the same model ID, backed by different scripted accounts, so only the
 // installer's own configuration can produce the installer's reply.
 it.concurrent("a gadget's LLM binding runs on its bound model, and an install uses the installer's",
