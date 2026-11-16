@@ -3035,15 +3035,55 @@ export type UiBundle = {
 //  url: string;
 
   /**
-   * Returns the raw JS code to execute in the Gadget iframe.
+   * A legacy UI's `client.js`: one module, which has no default export and imports only `data:`
+   * URLs. The page runs it with the `gadget` stub, `RpcTarget` and `RpcStub` as globals.
    * TODO: For now we just return the code but we should switch to serving over HTTP as described
    *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
    *   Cache API in the browser? Or some other local storage?
    */
   jsCode: string;
+} | {
+  /**
+   * `client.js`, the UI's entry, then every other module it reaches through its imports, each
+   * with its relative imports rewritten to the internal keys the page's import map resolves (see
+   * `ui-page.ts`). Anyone who can use the gadget receives these, so nothing only `server.js`
+   * imports is ever included.
+   *
+   * The page starts the UI by calling `main(gadget, host)` on `client.js`'s default export, where
+   * `host` is a `GadgetHost`, and sets no globals: the `gadget` stub reaches only code `main()`
+   * passes it to, and the modules import `RpcTarget` and `RpcStub` from "capnweb", which the page
+   * maps to the Cap'n Web its RPC session uses.
+   *
+   * That keeps the stub from code that isn't handed it, not from code trying to get it: the
+   * modules share one realm, where one can intercept what another passes around. Nor is the
+   * page's connection to the server reserved for its runtime. Any module can post the iframe's
+   * RPC handshake to the Workshop, and in a browser-mode export any module can replace the
+   * globals the export's RPC session runs through.
+   */
+  modules: UiModule[];
+};
 
-  // Other metadata could be placed here in the future, e.g. to specify what version of support
-  // libraries should be loaded.
+/**
+ * What the page running a gadget's UI offers it besides the gadget's server: the second argument
+ * of `main(gadget, host)` (see `UiBundle.modules`). The Workshop implements it for the live view,
+ * and browser-mode export implements it too, so each method also says what it does during an
+ * export, where there is no Workshop UI.
+ *
+ * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
+ * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
+ * proxies through the frame.
+ *
+ * It has no methods yet.
+ */
+export interface GadgetHost {}
+
+/** One module of a Gadget UI. */
+export type UiModule = {
+  /** The module's path in the gadget's file tree, with no `.` or `..` segments. */
+  path: string;
+
+  /** The module's code, with its relative imports rewritten. */
+  code: string;
 };
 
 /**
@@ -6398,7 +6438,8 @@ export interface GadgetClient extends WorkpieceClient {
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
    *
    * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
-   * agent with no code).
+   * agent with no code). Throws, naming the file and line, when the UI's imports break the rules
+   * for UI code.
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 

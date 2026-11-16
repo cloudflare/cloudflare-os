@@ -289,7 +289,10 @@ it.concurrent.for([
       change: edit(gadgetId, "client.js", row.base, row.theirs),
     });
     const codeBaseOfB = async () => (await ws.listChats()).find(chat => chat.id === chatB)?.codeBase;
-    const preview = async () => (await gadget.getUiBundle(chatB))?.jsCode;
+    const preview = async () => {
+      const bundle = await gadget.getUiBundle(chatB);
+      return bundle && "jsCode" in bundle ? bundle.jsCode : undefined;
+    };
 
     expect(await ws.mergeChanges(chatA)).toEqual({ outcome: "merged" });
     const mainline = await headOf(workpieces, gadgetId, head);
@@ -663,6 +666,25 @@ it.concurrent("draft and mainline code run separately across merge and revert", 
 
     await ws.revertChanges(chatId, (await changesMessages(ws, chatId)).at(-1)!.sequence);
     expect(await running(chatId)).toEqual(["v2", "v2"]);
+  });
+});
+
+it.concurrent("a server.js that imports a module of its own runs", async () => {
+  await withOwner(async client => {
+    const { ws } = client;
+    const { gadgetId, head } = await seedGadget(client, "lib/util.js",
+        `export const version = () => "util";\n`);
+    const chatId = await ws.newChat("Split", null);
+    await ws.submitCodeChange(chatId, {
+      generation: 0, revision: 0, clientId: "editor", seq: 1, pins: [{ gadgetId, baseCommit: head }],
+      change: edit(gadgetId, "server.js", undefined, `import { DurableObject } from "cloudflare:workers";\n` +
+          `import { version } from "./lib/util.js";\n` +
+          `export class Gadget extends DurableObject {\n  version() { return version(); }\n}\n`),
+    });
+    await ws.finalizeChatDraft(chatId);
+    using gadget = await ws.getGadget(gadgetId);
+    using facet = await gadget.connectToGadget(chatId) as VersionedGadget;
+    expect(await facet.version()).toBe("util");
   });
 });
 
