@@ -41,21 +41,21 @@ const showSpawnedChat = async () => {
 };
 afterEach(() => { testRoot.cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it.each([10, 0, undefined])("only offers the useful thread read action (unread count: %s)", async count => {
+const renderChat = async (chat: AiChatMetadata, chats: NonNullable<ReturnType<typeof useUnreadState>>["chats"]) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   const server = makeOverseer();
-  const chat: AiChatMetadata = {id: 1, title: "Unread test", started: new Date(), lastActive: new Date()};
+  const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
   Object.assign(server.overseer, {
     listChats: async () => [chat],
     listModels: async () => [],
     onRpcBroken: () => {},
     subscribeToChat: () => ({[Symbol.dispose]: () => {}}),
+    setChatNotificationsEnabled: setNotifications,
   });
   const markRead = vi.fn<NonNullable<ReturnType<typeof useUnreadState>>["markRead"]>().mockResolvedValue(undefined);
   const markUnread = vi.fn<NonNullable<ReturnType<typeof useUnreadState>>["markUnread"]>().mockResolvedValue(true);
   mock.unread = {
-    chats: count === undefined ? undefined : [{workspaceId: "workspace", chatId: 1,
-      readThroughSequence: 0, unreadMessageCount: count}],
+    chats,
     subscribeToUpdates: () => () => {},
     markRead, markUnread,
     markAllRead: async () => {}, markWorkspaceRead: async () => {},
@@ -67,6 +67,15 @@ it.each([10, 0, undefined])("only offers the useful thread read action (unread c
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
   );
+  if (chat.spawnerName) await showSpawnedChat();
+  return {server, markRead, markUnread, setNotifications};
+};
+
+it.each([10, 0, undefined])("only offers the useful thread read action (unread count: %s)", async count => {
+  const chat: AiChatMetadata = {id: 1, title: "Unread test", started: new Date(), lastActive: new Date()};
+  const {server, markRead, markUnread} = await renderChat(chat, count === undefined ? undefined : [{
+    workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: count,
+  }]);
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Unread test"]')!;
   await act(async () => trigger.click());
   const item = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')]
@@ -97,30 +106,10 @@ it.each([
 ].flatMap(preference => [0, 2].map(count => ({...preference, count}))))(
     "changes notifications without disabling read actions (spawned: $spawned, enabled: $enabled, override: $override, unread: $count)",
     async ({spawned, enabled, override, expectedEnabled, count}) => {
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
-  const server = makeOverseer();
-  const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
   const chat: AiChatMetadata = {id: 1, title: "Notification test", started: new Date(), lastActive: new Date(),
     notificationsRequireParticipation: enabled === undefined ? undefined : true, ...(spawned ? {spawnerName: "Spawner"} : {})};
-  Object.assign(server.overseer, {
-    listChats: async () => [chat], listModels: async () => [], onRpcBroken: () => {},
-    subscribeToChat: () => ({[Symbol.dispose]: () => {}}),
-    setChatNotificationsEnabled: setNotifications,
-  });
-  mock.unread = {
-    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: count,
-      notificationsEnabled: enabled, notificationsEnabledOverride: override}],
-    subscribeToUpdates: () => () => {}, markRead: async () => {}, markUnread: async () => true,
-    markAllRead: async () => {}, markWorkspaceRead: async () => {},
-  };
-  await testRoot.render(
-    <ChatInterface workspaceId="workspace" overseer={server.overseer}
-      selectedChatId={null} onNavigateToChat={() => {}}
-      pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
-      onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
-  );
-  if (spawned) await showSpawnedChat();
+  const {setNotifications} = await renderChat(chat, [{workspaceId: "workspace", chatId: 1,
+    readThroughSequence: 0, unreadMessageCount: count, notificationsEnabled: enabled, notificationsEnabledOverride: override}]);
   expect(document.querySelector('[aria-label="2 unread messages"]') !== null).toBe(expectedEnabled && count > 0);
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Notification test"]')!;
   await act(async () => trigger.click());
@@ -140,27 +129,9 @@ it.each([
 it.each([false, true].flatMap(spawned => [undefined, true].map(requiresParticipation => ({spawned, requiresParticipation}))))(
     "shows the source default before unread enrollment (spawned: $spawned, participation: $requiresParticipation)",
     async ({spawned, requiresParticipation}) => {
-  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
-  const server = makeOverseer();
-  const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
   const chat: AiChatMetadata = {id: 1, title: "Empty chat", started: new Date(), lastActive: new Date(),
     notificationsRequireParticipation: requiresParticipation, ...(spawned ? {spawnerName: "Spawner"} : {})};
-  Object.assign(server.overseer, {
-    listChats: async () => [chat], listModels: async () => [], onRpcBroken: () => {},
-    subscribeToChat: () => ({[Symbol.dispose]: () => {}}), setChatNotificationsEnabled: setNotifications,
-  });
-  mock.unread = {
-    chats: [], subscribeToUpdates: () => () => {}, markRead: async () => {}, markUnread: async () => true,
-    markAllRead: async () => {}, markWorkspaceRead: async () => {},
-  };
-  await testRoot.render(
-    <ChatInterface workspaceId="workspace" overseer={server.overseer}
-      selectedChatId={null} onNavigateToChat={() => {}}
-      pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
-      onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
-  );
-  if (spawned) await showSpawnedChat();
+  const {setNotifications} = await renderChat(chat, []);
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Empty chat"]')!;
   await act(async () => trigger.click());
   const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];

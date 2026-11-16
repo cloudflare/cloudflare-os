@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { NotificationSubscriber, UserNotification } from "@gadgets/workshop-shared/api";
+import type { AgentSpawnerConfig, NotificationSubscriber, Overseer, UserNotification } from "@gadgets/workshop-shared/api";
 import { openAgentSession } from "../src/agent-session.js";
 import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
@@ -34,6 +34,15 @@ interface Spawner extends RpcTarget {
   spawnCallable(title: string, options: { types: string; mainType: string }): Promise<Probe>;
 }
 
+const spawnProbe = async (ws: RpcStub<Overseer>, stubs: DisposableStack, env: AgentSpawnerConfig["env"] = {}) => {
+  const spawner = stubs.use(await ws.newAgentSpawnerGatekeeper({displayName: "Probe", modelId: SCRIPTED_MODEL_ID, env}));
+  const binding = stubs.use(await spawner.openSession() as RpcStub<Spawner>);
+  const callable = stubs.use(await binding.spawnCallable("Permission probe", {
+    types: "interface Probe { /** Ask for a test write. */ run(): void; }", mainType: "Probe",
+  }) as RpcStub<Probe>);
+  return {callable, chat: (await ws.listChats())[0]!};
+};
+
 it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned, enabled }))))(
     "preserves catch-up history and delivers enabled alerts (spawned: $spawned, enabled: $enabled)",
     async ({ spawned, enabled }) => {
@@ -60,15 +69,7 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
     const connection = stubs.use(await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id,
       "https://gadgets-test.example/things/notifications"));
     if (!connection) throw new Error("Test connection was not created");
-    const spawner = stubs.use(await ws.newAgentSpawnerGatekeeper({
-      displayName: "Probe", modelId: SCRIPTED_MODEL_ID,
-      env: { TEST_AMBIENT: await connection.getId() },
-    }));
-    const binding = stubs.use(await spawner.openSession() as RpcStub<Spawner>);
-    const callable = stubs.use(await binding.spawnCallable("Permission probe", {
-      types: "interface Probe { /** Ask for a test write. */ run(): void; }", mainType: "Probe",
-    }) as RpcStub<Probe>);
-    const emptyChat = (await ws.listChats())[0]!;
+    const {callable, chat: emptyChat} = await spawnProbe(ws, stubs, {TEST_AMBIENT: await connection.getId()});
     chatId = emptyChat.id;
     expect(emptyChat.notificationsRequireParticipation).toBe(true);
     expect(await api.getWorkspaceUnreadState(workspaceId)).toEqual([]);
@@ -129,13 +130,8 @@ it("notifies a spawned chat's approval before participation without enabling com
   using connection = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id,
     "https://gadgets-test.example/things/defaultapproval");
   if (!connection) throw new Error("Test connection was not created");
-  using spawner = await ws.newAgentSpawnerGatekeeper({displayName: "Approval", modelId: SCRIPTED_MODEL_ID,
-    env: {TEST_AMBIENT: await connection.getId()}});
-  using binding = await spawner.openSession() as RpcStub<Spawner>;
-  using callable = await binding.spawnCallable("Unattended approval", {
-    types: "interface Probe { run(): void; }", mainType: "Probe",
-  }) as RpcStub<Probe>;
-  const chatId = (await ws.listChats())[0]!.id;
+  using stubs = new DisposableStack();
+  const {callable, chat: {id: chatId}} = await spawnProbe(ws, stubs, {TEST_AMBIENT: await connection.getId()});
   await callable.run();
   await waitForIdleChat(ws, chatId);
   const pending = await waitFor("the blocked approval", async () =>
@@ -171,12 +167,8 @@ it("opts into a spawned chat on first human participation and preserves a later 
   const received = new Notifications();
   using subscriber = stubFor(received);
   using _subscription = await api.subscribeToNotifications(subscriber);
-  using spawner = await ws.newAgentSpawnerGatekeeper({displayName: "Participation", modelId: SCRIPTED_MODEL_ID, env: {}});
-  using binding = await spawner.openSession() as RpcStub<Spawner>;
-  using callable = await binding.spawnCallable("Automated chat", {
-    types: "interface Probe { run(): void; }", mainType: "Probe",
-  }) as RpcStub<Probe>;
-  const chatId = (await ws.listChats())[0]!.id;
+  using stubs = new DisposableStack();
+  const {callable, chat: {id: chatId}} = await spawnProbe(ws, stubs);
   await callable.run();
   await waitForIdleChat(ws, chatId);
   expect(await api.getWorkspaceUnreadState(workspaceId)).toEqual([]);

@@ -871,7 +871,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let key = `${workspaceId}:${chatId}`;
     let current = this.#cursor(workspaceId, chatId);
     if (current.deleted) return false;
-    let hadNotifications = this.#notificationChats.has(key);
     let through = position.readThroughSequence;
     let visible = position.readThroughVisibleSequence;
     // An own-message arrival may already have advanced beyond this source-authorized boundary.
@@ -880,15 +879,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       visible = current.readThroughVisibleSequence!;
     }
     let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
-    let cursor = {...current, ...this.#mergeHead(current, position),
+    let changed = this.#storeCursor({...current, ...this.#mergeHead(current, position),
       readThroughSequence: through, readThroughVisibleSequence: visible,
       fanoutEnrolled: true,
       latestVisibleSequence: latest, unreadCount: latest - visible,
-      notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline};
-    let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(
-      cursor.notificationsEnabled === false ? this.#skipChatNotifications(cursor) : cursor));
+      notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline});
     if (changed) this.#unreadChanged(workspaceId, chatId);
-    if (hadNotifications) await this.#armExpirySweep();
     return changed;
   }
 
@@ -1358,10 +1354,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             changed = true;
           } else {
             let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
-            let updated = {...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
-              unreadCount: latest - cursor.readThroughVisibleSequence};
-            changed = this.#storeCursor(updated.notificationsEnabled === false ?
-              this.#skipChatNotifications(updated, baseline.notifiedThroughSequence) : updated) || changed;
+            changed = this.#storeCursor({...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
+              unreadCount: latest - cursor.readThroughVisibleSequence}) || changed;
           }
         }
       });

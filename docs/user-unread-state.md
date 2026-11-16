@@ -30,8 +30,7 @@ suppresses approval alerts too. Before participation, the thread menu offers **E
 and **Mute notifications**, so silencing approvals takes one action. An explicitly muted chat offers
 **Unmute notifications**. The private read state reports the explicit override separately from the
 effective preference. Approval alerts use the ordinary durable outbox and local retries;
-read commands, later automated messages and collaborator reopens do not discard them unless the
-chat is explicitly muted.
+read commands and collaborator reopens leave their delivery state alone.
 
 Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,
 without advancing its read horizon or clearing its unread count. Muted chats keep their catch-up
@@ -215,8 +214,8 @@ The User DO applies this packet synchronously using only local rows, without wai
 notification delivery. It preserves newer heads and own-message read advances received before the packet is processed,
 unless the command explicitly rewinds. It commits changed horizons/counts and publishes updates;
 identical state causes no write. Read commands never deliver queued alerts, so a delivery failure
-cannot reject a successfully committed read. For explicitly muted chats, the command also keeps the
-queue empty and consumes known alert positions. Alert delivery retains its own mutexed processing.
+cannot reject a successfully committed read. They leave existing notification receipts and queued alerts
+unchanged. Alert delivery retains its own mutexed processing.
 
 `AuthenticatedApi.markWorkspaceRead(workspaceId)` and `markAllRead()` operate entirely in the
 User DO. They advance each tracked unread row to its locally received head and visible position,

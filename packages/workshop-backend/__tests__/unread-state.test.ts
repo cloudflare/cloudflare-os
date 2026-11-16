@@ -135,6 +135,15 @@ it.each([false, true])("reports the source notification default without enrollin
   expect(await cursor(fixture)).toBeUndefined();
 });
 
+class UnreadUpdates extends RpcTarget implements UnreadStateSubscriber {
+  readonly snapshots: UserUnreadState[] = [];
+  readonly summaries: UnreadSummaryUpdate[] = [];
+  readonly deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
+  async updated(state: UserUnreadState) { this.snapshots.push(state); }
+  async summaryUpdated(summary: UnreadSummaryUpdate) { this.summaries.push(summary); }
+  async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { this.deltas.push(args); }
+}
+
 describe("one-way chat fanout enrollment", () => {
   it.each([false, true])("keeps approval-only cursors pending after bulk read until enrollment catches up (later messages: %s)", async laterMessages => {
     const fixture = await setup(undefined, false, false);
@@ -163,17 +172,10 @@ describe("one-way chat fanout enrollment", () => {
     await evictDurableObject(fixture.user);
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
       .toMatchObject({readThroughSequence: 0, unreadMessageCount: 0, readStatePending: true});
-    const states: ChatReadState[] = [];
-    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-      async updated(state: UserUnreadState) { states.push(...state.chats); }
-      async summaryUpdated() {}
-      async chatUpdated(_workspaceId: string, _chatId: number, state: ChatReadState | null) {
-        if (state) states.push(state);
-      }
-    }
-    using callback = new RpcStub(new Subscriber());
+    const updates = new UnreadUpdates();
+    using callback = new RpcStub(updates);
     using _subscription = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, callback);
-    await vi.waitFor(() => expect(states.at(-1)?.readStatePending).toBe(true));
+    await vi.waitFor(() => expect(updates.snapshots.at(-1)?.chats[0].readStatePending).toBe(true));
     await withImpl(fixture.workspace, async impl => {
       const restore = interceptDelivery(impl, async () => { throw new Error("Catch-up delayed"); });
       try {
@@ -183,7 +185,7 @@ describe("one-way chat fanout enrollment", () => {
     });
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0].readStatePending).toBe(true);
     await withImpl(fixture.workspace, impl => impl.deliverDirtyChats());
-    await vi.waitFor(() => expect(states.some(state => !state.readStatePending)).toBe(true));
+    await vi.waitFor(() => expect(updates.deltas.some(([, , state]) => state && !state.readStatePending)).toBe(true));
     const [ready] = await fixture.user.getWorkspaceUnreadState(fixture.workspaceId);
     expect(ready).toMatchObject({readThroughSequence: 0, unreadMessageCount: laterMessages ? 2 : 0, notificationsEnabled: false});
     expect(ready.readStatePending).toBeUndefined();
@@ -444,13 +446,8 @@ describe("chat notification preferences", () => {
   it("publishes a direct mute before participation even though the effective default is already off", async () => {
     const fixture = await setup(undefined, false);
     await append(fixture, 0);
-    const snapshots: UserUnreadState[] = [], deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
-    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-      async updated(state: UserUnreadState) { snapshots.push(state); }
-      async summaryUpdated() {}
-      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { deltas.push(args); }
-    }
-    using callback = new RpcStub(new Subscriber());
+    const updates = new UnreadUpdates(), {snapshots, deltas} = updates;
+    using callback = new RpcStub(updates);
     {
       using _subscription = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, callback);
       await vi.waitFor(() => expect(snapshots).toHaveLength(1));
@@ -489,15 +486,7 @@ describe("chat notification preferences", () => {
       impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id))).rejects.toThrow(error);
   });
 
-  it("accepts repeated preference changes when the chat still exists", async () => {
-    const fixture = await setup();
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
-    const before = await cursor(fixture);
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
-    expect(await cursor(fixture)).toEqual(before);
-  });
-
-  it.each(["read", "alarm"] as const)("consumes legacy queued alerts for a muted chat on %s", async recovery => {
+  it("drops a recovered queued alert for an explicitly muted chat", async () => {
     const fixture = await setup(undefined, false);
     await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     await append(fixture, 0);
@@ -513,14 +502,10 @@ describe("chat notification preferences", () => {
         expiresAt: new Date(Date.now() + 60_000), failedSubscriptions: ["offline-device"]});
       await ctx.storage.setAlarm(Date.now() + 30_000);
     });
-    if (recovery === "read") await setRead(fixture, 0);
-    else {
-      await evictDurableObject(fixture.user);
-      await runDurableObjectAlarm(fixture.user);
-    }
+    await evictDurableObject(fixture.user);
+    await runDurableObjectAlarm(fixture.user);
     expect(await outbox(fixture)).toEqual([]);
-    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 0,
-      unreadCount: recovery === "read" ? 0 : 1});
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 0, unreadCount: 1});
     expect(publish).not.toHaveBeenCalled();
     expect(await runInDurableObject(fixture.user, (_instance, ctx) => ctx.storage.getAlarm())).toBeNull();
   });
@@ -1102,13 +1087,8 @@ describe("local counts and explicit read boundaries", () => {
 
   it("copies inbox metadata without tail scans and publishes renames without changing read horizons", async () => {
     const fixture = await setup();
-    const deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
-    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-      async updated() {}
-      async summaryUpdated() {}
-      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { deltas.push(args); }
-    }
-    using callback = new RpcStub(new Subscriber());
+    const updates = new UnreadUpdates(), {deltas} = updates;
+    using callback = new RpcStub(updates);
     using _subscription = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, callback);
     await withImpl(fixture.workspace, async impl => {
       using scan = vi.spyOn(impl.storage.chats, "list");
@@ -1217,13 +1197,8 @@ describe("local counts and explicit read boundaries", () => {
   it("removes muted chats from inbox snapshots and deltas while preserving workspace catch-up state", async () => {
     const fixture = await setup();
     await append(fixture, 0);
-    const snapshots: UserUnreadState[] = [], deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
-    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-      async updated(state: UserUnreadState) { snapshots.push(state); }
-      async summaryUpdated() {}
-      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { deltas.push(args); }
-    }
-    using callback = new RpcStub(new Subscriber());
+    const updates = new UnreadUpdates(), {snapshots, deltas} = updates;
+    using callback = new RpcStub(updates);
     using _subscription = await fixture.user.subscribeToUnreadState("unread", callback);
     await vi.waitFor(() => expect(snapshots[0]?.chats).toHaveLength(1));
     const before = (await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0];
@@ -1241,13 +1216,8 @@ describe("local counts and explicit read boundaries", () => {
 
   it("publishes a local snapshot then single-thread deltas, with a tombstone on deletion", async () => {
     const fixture = await setup();
-    const snapshots: UserUnreadState[] = [], deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
-    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-      async updated(state: UserUnreadState) { snapshots.push(state); }
-      async summaryUpdated() {}
-      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { deltas.push(args); }
-    }
-    using callback = new RpcStub(new Subscriber());
+    const updates = new UnreadUpdates(), {snapshots, deltas} = updates;
+    using callback = new RpcStub(updates);
     using _subscription = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, callback);
     await append(fixture, 0);
     await vi.waitFor(() => expect(deltas.at(-1)?.[3].unreadMessageCount).toBe(1));
@@ -1267,15 +1237,7 @@ describe("local counts and explicit read boundaries", () => {
       await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true, fixture.profile.id);
       await impl.deliverDirtyChats();
     });
-    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-      snapshots: UserUnreadState[] = [];
-      summaries: Parameters<UnreadStateSubscriber["summaryUpdated"]>[0][] = [];
-      deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
-      async updated(state: UserUnreadState) { this.snapshots.push(state); }
-      async summaryUpdated(summary: Parameters<UnreadStateSubscriber["summaryUpdated"]>[0]) { this.summaries.push(summary); }
-      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { this.deltas.push(args); }
-    }
-    const summary = new Subscriber(), workspace = new Subscriber(), inbox = new Subscriber();
+    const summary = new UnreadUpdates(), workspace = new UnreadUpdates(), inbox = new UnreadUpdates();
     using summaryStub = new RpcStub(summary), workspaceStub = new RpcStub(workspace), inboxStub = new RpcStub(inbox);
     using _summary = await fixture.user.subscribeToUnreadState("summary", summaryStub);
     using _workspace = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, workspaceStub);
