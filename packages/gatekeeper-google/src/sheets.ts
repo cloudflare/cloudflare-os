@@ -355,8 +355,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
   #read: NativeRead;
   #changes: SheetsChangeQueue;
   // Replays the queued changes over the grid of each read, as one entity under the spreadsheet's
-  // ID. It keeps nothing between reads: each folds every queued change again over the grid it
-  // fetched.
+  // ID. It keeps nothing between reads: each folds every queued change again, on a grid of the
+  // fold's own, and leaves the grid it fetched as it was.
   #replay = createReplay();
 
   /** `reader` makes the reads with nothing queued: for a spreadsheet not created yet, a blank one. */

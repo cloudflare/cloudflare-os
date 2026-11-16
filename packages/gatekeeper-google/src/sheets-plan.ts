@@ -2,11 +2,11 @@
  * `updateSpreadsheet()` changes: where each lands, their replay over a grid, the requests that make
  * them, and the digest of what they overwrite.
  *
- * Queueing, replay and apply all run `planSheet`, so the cells a read previews and the batch an
- * approval writes come from the same code. Values are sent typed, so Google parses nothing by
- * locale: text stays text, and only input starting with `=` is a formula. Formatting is sent with
- * a field mask naming each field a change gives, so a field reset clears only that field and a
- * field left out is kept. Changes apply in order,
+ * Queueing, replay and apply all run `planInPlace`, which `planSheet` runs on a copy of the grid,
+ * so the cells a read previews and the batch an approval writes come from the same code. Values
+ * are sent typed, so Google parses nothing by locale: text stays text, and only input starting
+ * with `=` is a formula. Formatting is sent with a field mask naming each field a change gives, so
+ * a field reset clears only that field and a field left out is kept. Changes apply in order,
  * as Google applies a batch's requests, so a change addresses the spreadsheet as the changes
  * before it leave it.
  */
@@ -95,15 +95,18 @@ function cellsOf(sheets: readonly SheetMeta[]): number {
 }
 
 /**
- * A grid being changed in place, which no one else holds, with the keys of its entries and formats
- * by sheet once a change needs one sheet's, so it visits only those.
+ * A grid being changed in place, which its maker alone holds: its own array of sheets, maps and
+ * log, sharing with the grid it was made from only the sheets, entries and steps themselves, which
+ * no change writes to. `keys` indexes its entries and formats by sheet while one batch is applied,
+ * so a change that needs one sheet's visits only those, and is gone once the batch is.
  */
-type Working = {
+export type Working = {
   sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; sizes: Map<string, number>;
   log: StructuralStep[]; keys?: Map<number, Set<string>>;
 };
 
-function working(grid: Grid): Working {
+/** A grid of the caller's own holding what `grid` holds, to change in place. `grid` is left as it is. */
+export function working(grid: Grid): Working {
   editorCost.overlayCopies++;
   editorCost.overlayEntries += grid.cells.size + grid.formats.size + grid.sizes.size;
   return {
@@ -597,7 +600,8 @@ function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetF
 
 /**
  * Applies `change` to `work`, recording `by` in the cells it enters, and returns its requests.
- * Throws what `conflict` makes for a change that does not apply.
+ * Throws what `conflict` makes for a change that does not apply, before it writes anything: a
+ * replay in place rests on a change that throws leaving `work` as it was.
  */
 function applyOne(work: Working, change: PlannedChange, by: number, conflict: (reason: string) => Error): unknown[] {
   let find = (id: number) => work.sheets.find(sheet => sheet.id === id);
@@ -1102,6 +1106,22 @@ function resolveLines(
 }
 
 /**
+ * Applies `changes` to `work` in place, in order, the cells they enter recording `by`, and returns
+ * the Sheets requests that make them. Throws `ChangeConflict` for a change that no longer applies,
+ * as `planSheet` does. The change that throws has written nothing, since each decides before it
+ * writes, but the changes of the batch before it have: after a throw `work` may hold a part of
+ * the batch, and its caller drops it or puts it back.
+ */
+export function planInPlace(work: Working, changes: readonly PlannedChange[], by: number): unknown[] {
+  try {
+    return changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
+  } finally {
+    // The index is one batch's: the grid is left holding what a grid holds and nothing more.
+    delete work.keys;
+  }
+}
+
+/**
  * Applies `changes` to `grid` in order, the cells they enter recording `by`, the ID of the queued
  * change they make. Returns the grid as they leave it, and the Sheets requests that make them;
  * `grid` itself when there are none. Throws `ChangeConflict` for a change that no longer applies:
@@ -1113,7 +1133,7 @@ export function planSheet(
 ): { grid: Grid; requests: unknown[] } {
   if (changes.length === 0) return { grid, requests: [] };
   let work = working(grid);
-  let requests = changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
+  let requests = planInPlace(work, changes, by);
   return {
     grid: { sheets: work.sheets, cells: work.cells, formats: work.formats, sizes: work.sizes, log: work.log },
     requests,
