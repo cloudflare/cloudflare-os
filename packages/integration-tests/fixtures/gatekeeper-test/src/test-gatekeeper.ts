@@ -907,7 +907,17 @@ export class TestGatekeeper
       snippet: `The test resource ${name}.`,
       suggestedBindingName: "TEST_THING",
       tsType: "TestThing",
+      hasPreview: true,
     };
+  }
+
+  async getPreviewUi(): Promise<{ path: string; code: string }[]> {
+    return [
+      { path: "client.js", code: `import { text } from "./ui/text.js";\n` +
+        `export default { main() { document.body.textContent = text; } };\n` },
+      { path: "ui/text.js", code: `export const text = "test preview";\n` },
+      { path: "unused.js", code: `export {};\n` },
+    ];
   }
 
   /** Admits each observer whose verifier reports none of `subresources` denied. */

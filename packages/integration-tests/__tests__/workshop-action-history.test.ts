@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcPromise, RpcStub } from "capnweb";
+import { uiModuleKey } from "@gadgets/workshop-shared/ui-page";
 import {
   actionChangeTime, type ActionHistoryFilter, type ActionLogEntry, type ActionsSubscriber,
   type AuthenticatedApi, type GatekeeperClient, type Overseer,
@@ -237,4 +238,24 @@ it("approvals route to the account whose connection staged the write", async () 
   await aliceSide.overseer.approveAction(aliceEntry.id);
   await expect(actionState(aliceLabel)).resolves.toEqual({ pending: [], value: 21, applyCount: 1 });
   expect((await actionState(bobLabel)).applyCount).toBe(1);
+});
+
+it("hands a client the preview its connection's gatekeeper supplies, built from its files", async () => {
+  const [owner] = nextUsernames("previewowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the test account", async () =>
+    (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
+  using ws = await api.newWorkspace();
+  using gatekeeper = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/preview");
+  if (!gatekeeper) throw new Error("Failed to create the test connection");
+
+  expect(await gatekeeper.describe()).toMatchObject({ hasPreview: true });
+  // Built as a gadget's UI is: the import rewritten, and only what client.js reaches included.
+  expect(await gatekeeper.getPreviewUi()).toEqual({ modules: [
+    { path: "client.js", code: `import { text } from "${uiModuleKey("ui/text.js")}";\n` +
+      `export default { main() { document.body.textContent = text; } };\n` },
+    { path: "ui/text.js", code: `export const text = "test preview";\n` },
+  ] });
 });
