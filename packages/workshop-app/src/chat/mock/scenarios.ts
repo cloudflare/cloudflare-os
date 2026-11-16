@@ -128,7 +128,7 @@ const approval: Scenario = {
   id: 'approval',
   title: 'File a ticket',
   description:
-    'Approve the ticket and the agent continues. Choose “Always approve” on the label and the next one is approved by ' +
+    'Approve the ticket and the agent continues. Choose “Always allow” on the label and the next one is approved by ' +
     'your rule. The Slack post does not hold the agent up: its card waits under the answer while the agent keeps ' +
     'writing. Deny it when you like.',
   history: history([user('File a ticket for the chart bug and tell the team.')]),

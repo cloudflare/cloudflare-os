@@ -66,8 +66,14 @@ export const ChatConnectionList = ({ workspaceId, chatId, links }: { workspaceId
         )
       })}
       <p className="px-4 text-sm/5 text-pretty text-kumo-subtle">
-        A change through them asks first, unless the workspace makes that kind of change automatic.
-        {named && <> <WorkspaceConnectionsLink {...links.workspace(workspaceId)} /></>}
+        {workspace?.containsRestrictedData
+          ? 'This workspace contains restricted data, so the chat asks you before every change.'
+          : <>
+              This chat asks you before it changes anything, like editing a doc or sending an email.{' '}
+              {named
+                ? <>To let some changes through, allow them in the <WorkspaceConnectionsLink {...links.workspace(workspaceId)} />.</>
+                : 'When it asks, Always allow lets that kind of change through next time.'}
+            </>}
       </p>
       <ConnectionDetails workspaceId={workspaceId} gatekeeperId={open} onClose={() => setOpen(undefined)} connections={connections} links={links} seeAll={named} />
     </div>

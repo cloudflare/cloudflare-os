@@ -12,7 +12,7 @@ export type BindingRowProps = {
   service?: { name: string; logoUrl?: string; color?: string }
   /** Proposed in a chat, and not accepted yet. */
   pending?: boolean
-  /** What goes ahead through it without asking, in a few words: "Document edits automatic". */
+  /** What goes ahead through it without asking, in a few words: "Document edits allowed". */
   automatic?: string
   /** Goes to where the account it goes through is managed. */
   onManage?: () => void

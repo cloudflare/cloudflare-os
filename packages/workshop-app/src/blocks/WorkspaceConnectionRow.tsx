@@ -7,7 +7,7 @@ export type WorkspaceConnectionRowProps = {
   detail: string
   /** Its kind's icon, or else its service's logo. */
   logo: { name: string; src?: string; color?: string }
-  /** What goes ahead through it without asking, in a few words: "Document edits automatic". */
+  /** What goes ahead through it without asking, in a few words: "Document edits allowed". */
   automatic?: string
   onOpen: () => void
 }

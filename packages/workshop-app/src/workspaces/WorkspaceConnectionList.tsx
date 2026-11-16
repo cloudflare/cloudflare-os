@@ -19,7 +19,7 @@ export type WorkspaceConnectionListProps = {
  * Everything a workspace's chats and gadgets can reach, by service, then what every chat has: each
  * connection with what it is, what uses it, and what goes ahead through it without asking, opening
  * its dialog (`ConnectionDetails`), where that is chosen for the whole workspace. Whatever it is
- * reached from, a change through it asks first unless the workspace makes it automatic, which the
+ * reached from, a change through it asks first unless the workspace allows it, which the
  * list says above it, or that everything asks, once the workspace has read restricted data.
  */
 export const WorkspaceConnectionList = ({ workspaceId, open, onOpenChange, links }: WorkspaceConnectionListProps) => {
@@ -47,8 +47,8 @@ export const WorkspaceConnectionList = ({ workspaceId, open, onOpenChange, links
     <div className="appears flex flex-col gap-6">
       <p className="max-w-xl px-4 text-base/6 text-pretty text-kumo-default">
         {restricted
-          ? 'What this workspace’s chats and gadgets can reach. It has read restricted data, so every change through them asks first.'
-          : 'What this workspace’s chats and gadgets can reach. Reading never asks. A change asks first, unless you make that kind of change automatic here.'}
+          ? 'Everything this workspace’s chats and gadgets can use. It contains restricted data, so they ask you before every change.'
+          : 'Everything this workspace’s chats and gadgets can use. They can always read, and ask you before they change anything, unless you allow that kind of change here.'}
       </p>
       {groups.length === 0 && (
         <p className="px-4 text-base text-pretty text-kumo-subtle">

@@ -27,8 +27,7 @@ export type ConnectionLinks = {
 
 /**
  * The way from a page that shows some of a workspace's connections, a chat's or a gadget's, to all
- * of them, as words ending the line under the list that says changes ask first unless the
- * workspace makes them automatic.
+ * of them: the last words of the line under the list, "…allow them in the workspace's connections."
  */
 export const WorkspaceConnectionsLink = ({ href, onOpen }: ConnectionPlace) => (
   <LinkButton
@@ -36,7 +35,7 @@ export const WorkspaceConnectionsLink = ({ href, onOpen }: ConnectionPlace) => (
     onClick={onOpen}
     className="rounded-sm font-medium whitespace-nowrap text-kumo-default underline-offset-2 outline-none hover:underline focus-visible:underline"
   >
-    See the workspace’s connections
+    workspace’s connections
   </LinkButton>
 )
 
@@ -101,7 +100,7 @@ export const ConnectionDetails = ({ workspaceId, gatekeeperId, onClose, connecti
       key: `gadget:${id}`,
       icon: <GadgetIcon workspaceId={workspaceId} gadget={gadget} />,
       title: gadget.title,
-      detail: madeBy ? `Made by ${madeBy}: it asks anyway` : 'Gadget',
+      detail: madeBy ? `Made by ${madeBy}, so it asks separately` : 'Gadget',
       ...links.use(workspaceId, { type: 'gadget', gadgetId: id }),
     }]
   })
@@ -131,8 +130,8 @@ export const ConnectionDetails = ({ workspaceId, gatekeeperId, onClose, connecti
 
   const builds = workspace !== undefined && workspace.role !== 'use'
   const locked = workspace?.containsRestrictedData
-    ? 'This workspace has read restricted data, so every change asks first, whatever is chosen here.'
-    : builds ? undefined : 'Only whoever builds in this workspace chooses what goes ahead without asking.'
+    ? 'This workspace contains restricted data, so every change asks you first.'
+    : builds ? undefined : 'Only people who can build in this workspace can change these.'
 
   return (
     <ConnectionDetailsDialog

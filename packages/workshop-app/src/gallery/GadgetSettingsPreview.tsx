@@ -28,7 +28,7 @@ export const GadgetSettingsPreview = () => {
               name="GITHUB"
               resource="cloudflare/gadgets"
               service={{ name: 'GitHub', logoUrl: '/favicon.svg' }}
-              automatic="2 changes automatic"
+              automatic="2 changes allowed"
               onManage={() => say('manage connections')}
               onRemove={async () => { await later(); say('GITHUB removed'); return true }}
             />

@@ -91,7 +91,7 @@ const RequestRow = ({ request, restricted, busy, onApprove, onDeny }: {
       </div>
       <div className="flex flex-wrap justify-end gap-2">
         {request.onAlwaysApprove && !restricted && (
-          <Button variant="ghost" disabled={disabled} className="me-auto" onClick={() => run(request.onAlwaysApprove!)}>Always approve</Button>
+          <Button variant="ghost" disabled={disabled} className="me-auto" onClick={() => run(request.onAlwaysApprove!)}>Always allow</Button>
         )}
         <Button disabled={disabled} aria-describedby={`${id}-request`} onClick={() => run(onDeny)}>Deny</Button>
         <Button variant="primary" disabled={disabled} aria-describedby={`${id}-request`} onClick={() => run(onApprove)}>Approve</Button>

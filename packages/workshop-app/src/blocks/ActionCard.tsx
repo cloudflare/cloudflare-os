@@ -178,7 +178,7 @@ export const ActionCard = (props: ActionCardProps) => {
         <div className="flex flex-wrap justify-end gap-2">
           {onAlwaysApprove && !restricted && (
             <Button variant="ghost" disabled={pending} onClick={() => run(onAlwaysApprove)} className="me-auto">
-              Always approve
+              Always allow
             </Button>
           )}
           <Button disabled={pending} aria-describedby={describedBy} onClick={() => run(onDeny)}>Deny</Button>

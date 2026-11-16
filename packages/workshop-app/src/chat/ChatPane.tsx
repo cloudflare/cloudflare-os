@@ -453,9 +453,9 @@ export const ChatPane = ({
       <ConfirmDialog
         open={asked?.open === true}
         onOpenChange={(open) => setAsked((current) => current && { ...current, open })}
-        title={`Always approve “${asked?.rule.actionKind.label}”?`}
-        description="From now on these go ahead without asking, in every chat in this workspace and whichever gadget asks. Any waiting now go ahead too. You can change this on the workspace’s Connections tab."
-        confirm="Always approve"
+        title={`Always allow “${asked?.rule.actionKind.label}”?`}
+        description="From now on, every chat and gadget in this workspace can do this without asking you. Any waiting now go ahead too. You can change this on the workspace’s Connections tab."
+        confirm="Always allow"
         onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
       />
       {shareable && <ShareWorkspaceDialog workspaceId={workspaceId} title={isNamedWorkspace(workspace) ? workspace.title : (title ?? workspace.title)} link={workspaceLink} open={sharing} onOpenChange={setSharing} chat={!isNamedWorkspace(workspace)} />}

@@ -69,8 +69,8 @@ describe('usesLine', () => {
 
 describe('automaticLine', () => {
   it('names one kind as it reads, and counts more', () => {
-    expect(automaticLine([kind('edit', 'Document edits, in any Doc this connection reaches')])).toBe('Document edits automatic')
-    expect(automaticLine([kind('a'), kind('b')])).toBe('2 changes automatic')
+    expect(automaticLine([kind('edit', 'Document edits, in any Doc this connection reaches')])).toBe('Document edits allowed')
+    expect(automaticLine([kind('a'), kind('b')])).toBe('2 changes allowed')
     expect(automaticLine([])).toBeUndefined()
   })
 })

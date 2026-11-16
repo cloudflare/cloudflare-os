@@ -91,10 +91,10 @@ export const ConnectionsPreview = () => {
       <Section title="WorkspaceConnectionRow (a workspace’s Connections tab, by service: what it is and what uses it, and what goes ahead without asking, under the title on a narrow screen; one nothing uses yet; one every chat has)">
         <WorkspaceRowsPreview say={say} />
       </Section>
-      <Section title="ChangeRulesList (every kind of change one connection can make: Ask first or Automatic for its workspace; one that can never go ahead on its own always asks; and as shown where nothing can be chosen)">
+      <Section title="ChangeRulesList (every kind of change one connection can make: Ask first or Allow for its workspace; one that can never go ahead on its own always asks; and as shown where nothing can be chosen)">
         <RulesPreview />
       </Section>
-      <Section title="ConnectionDetailsDialog (one of a workspace’s connections, from its row or a chat’s or gadget’s More: what uses it, gadgets then chats, a published gadget saying it asks anyway, the first five until all; its changes; the account, and from a chat or gadget the rest. Also with nothing using it, in a workspace that has read restricted data, and for whoever only uses it)">
+      <Section title="ConnectionDetailsDialog (one of a workspace’s connections, from its row or a chat’s or gadget’s More: what uses it, gadgets then chats, a published gadget saying it asks separately, the first five until all; its changes; the account, and from a chat or gadget the rest. Also with nothing using it, in a workspace that contains restricted data, and for whoever only uses it)">
         <DetailsPreview say={say} />
       </Section>
       <Section title="ConnectionAccountView (an account’s page, from the Gatekeepers page: what it can reach, with more to grant, which waits for its window; that what goes ahead is each workspace’s, with what still goes ahead everywhere from before, to make ask first; disconnecting, asked first. Signed in, expired, and with nothing left from before)">
@@ -170,9 +170,9 @@ const GADGET_COLOR = 'blue' as const
 const WorkspaceRowsPreview = ({ say }: { say: (what: string) => void }) => (
   <div className="flex w-full max-w-3xl flex-col gap-6">
     {[
-      { label: 'GitHub', rows: [{ title: 'acme/storefront', detail: 'GitHub Repository · Used by Release Notes and 3 chats', automatic: '2 changes automatic' }] },
+      { label: 'GitHub', rows: [{ title: 'acme/storefront', detail: 'GitHub Repository · Used by Release Notes and 3 chats', automatic: '2 changes allowed' }] },
       { label: 'Google', rows: [
-        { title: 'Quarterly planning', detail: 'Google Doc · Used by Tip Jar and a chat', automatic: 'Document edits automatic' },
+        { title: 'Quarterly planning', detail: 'Google Doc · Used by Tip Jar and a chat', automatic: 'Document edits allowed' },
         { title: 'Team calendar', detail: 'Google Calendar · Not used yet' },
       ] },
       { label: 'Every chat has', rows: [{ title: 'Web Search', detail: 'Used in 4 chats' }] },
@@ -197,7 +197,7 @@ const DetailsPreview = ({ say }: { say: (what: string) => void }) => {
   const { changes, set } = useChanges()
   const uses: ConnectionUse[] = [
     { key: 'g1', icon: <FormatIcon name="dashboard" color={GADGET_COLOR} />, title: 'Tip Jar', detail: 'Gadget', onOpen: () => say('open Tip Jar') },
-    { key: 'g2', icon: <FormatIcon name="listChecks" />, title: 'Launch checklist', detail: 'Made by Ada: it asks anyway', onOpen: () => say('open Launch checklist') },
+    { key: 'g2', icon: <FormatIcon name="listChecks" />, title: 'Launch checklist', detail: 'Made by Ada, so it asks separately', onOpen: () => say('open Launch checklist') },
     { key: 'a1', icon: <KindMark name="agent" />, title: 'Weekly digest', detail: 'Agent · 4 runs', onOpen: () => say('open Weekly digest’s latest run') },
     ...['Plan the offsite', 'Q3 board pack', 'Budget review', 'Hiring plan'].map((title, index) => ({
       key: `c${index}`, icon: <span className="size-5 rounded-full bg-kumo-contrast/10" />, title, detail: 'Chat', onOpen: () => say(`open ${title}`),
@@ -223,10 +223,10 @@ const DetailsPreview = ({ say }: { say: (what: string) => void }) => {
         changes={changes}
         onChange={(kind, automatic) => {
           set(kind.tag, automatic)
-          say(`${kind.tag}: ${automatic ? 'automatic' : 'ask first'}`)
+          say(`${kind.tag}: ${automatic ? 'allow' : 'ask first'}`)
         }}
         locked={shown === 'restricted'
-          ? 'This workspace has read restricted data, so every change asks first, whatever is chosen here.'
+          ? 'This workspace contains restricted data, so every change asks you first.'
           : shown === 'uses' ? 'Only whoever builds in this workspace chooses what goes ahead without asking.' : undefined}
         account={{ label: 'Google account', onOpen: () => say('the account’s page') }}
         onSeeAll={shown === 'used' ? undefined : () => say('the workspace’s connections')}

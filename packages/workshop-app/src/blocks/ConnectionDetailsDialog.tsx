@@ -12,7 +12,7 @@ export type ConnectionUse = {
   key: string
   icon: ReactNode
   title: string
-  /** What else to know of it: "Made by Ada: asks anyway". */
+  /** What else to know of it: "Made by Ada, so it asks separately". */
   detail?: string
   href?: string
   onOpen: () => void
@@ -70,7 +70,7 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 
 /**
  * One of a workspace's connections: what it is, and where in its service; every kind of change it
- * can make, each "Ask first" or "Automatic" for the whole workspace (`ChangeRulesList`), which is
+ * can make, each "Ask first" or "Allow" for the whole workspace (`ChangeRulesList`), which is
  * where that is chosen, first, as it is what the dialog is opened for; then what uses it, gadgets,
  * agents, then chats, each opening where it is, the first few until asked for all. Reading never asks, and it says so. Its footer goes to the account it
  * goes through and, from a chat's or a gadget's page, to the workspace's other connections.
@@ -123,10 +123,10 @@ export const ConnectionDetailsDialog = ({
     >
       <Section title="When it changes something">
         <p className="px-1 text-base/5 text-pretty text-kumo-default">
-          Reading never asks. Anything automatic goes ahead from every chat and gadget in this workspace.
+          Reading is always allowed. Changes you allow here go ahead without asking, in any chat or gadget in this workspace.
         </p>
         {changes.length === 0
-          ? <p className="px-1 text-base text-kumo-subtle">It can’t change anything.</p>
+          ? <p className="px-1 text-base text-kumo-subtle">It can only read.</p>
           : <ChangeRulesList changes={changes} onChange={onChange} disabled={locked !== undefined} />}
         {locked && <p className="px-1 text-sm/5 text-kumo-subtle">{locked}</p>}
         {problem && <p role="alert" className="px-1 text-sm/5 text-kumo-danger">{problem}</p>}

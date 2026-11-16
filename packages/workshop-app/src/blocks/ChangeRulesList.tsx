@@ -17,7 +17,7 @@ export type ChangeRulesListProps = {
   disabled?: boolean
 }
 
-const CHOICES = [{ value: 'ask', label: 'Ask first' }, { value: 'auto', label: 'Automatic' }]
+const CHOICES = [{ value: 'ask', label: 'Ask first' }, { value: 'auto', label: 'Allow' }]
 
 /**
  * A kind's label as a row says it: what it is, then how far it reaches, which gatekeepers write
@@ -32,7 +32,7 @@ export const kindLabel = (label: string): { title: string; reach?: string } => {
 
 /**
  * Every kind of change one connection can make, on a tinted surface, each "Ask first" or
- * "Automatic" (`Segmented`); one that can never go ahead on its own says "Always asks" in place of
+ * "Allow" (`Segmented`), allowed meaning it goes ahead without asking,; one that can never go ahead on its own says "Always asks" in place of
  * the choice, so nothing it can do is left unsaid.
  */
 export const ChangeRulesList = ({ changes, onChange, disabled }: ChangeRulesListProps) => {

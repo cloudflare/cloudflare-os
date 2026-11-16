@@ -271,8 +271,12 @@ export const GadgetSettingsPane = ({
                 {/* Someone else's code is told of below, as it asks whatever the workspace lets go ahead. */}
                 {!madeBy && (
                   <p className="px-4 pt-2 text-sm/5 text-pretty text-kumo-subtle">
-                    A change it makes through them asks first, unless the workspace makes that kind of change automatic.
-                    {isNamedWorkspace(workspace) && <> <WorkspaceConnectionsLink {...connectionLinks.workspace(workspaceId)} /></>}
+                    {workspace?.containsRestrictedData
+                      ? 'This workspace contains restricted data, so the gadget asks you before every change.'
+                      : <>
+                          This gadget asks you before it changes anything, like editing a doc or sending an email.
+                          {isNamedWorkspace(workspace) && <>{' '}To let some changes through, allow them in the <WorkspaceConnectionsLink {...connectionLinks.workspace(workspaceId)} />.</>}
+                        </>}
                   </p>
                 )}
               </section>

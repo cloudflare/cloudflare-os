@@ -145,11 +145,11 @@ export const CardBlocksPreview = () => {
             state="pending"
             onApprove={after('approved')}
             onDeny={after('denied')}
-            onAlwaysApprove={after('always approve')}
+            onAlwaysApprove={after('always allow')}
             {...of('standing')}
           />
           <ActionCard {...request} state="pending" incomplete onApprove={after('approved')} onDeny={after('denied')} {...of('incomplete')} />
-          <ActionCard {...request} fields={fields} state="pending" restricted incomplete onApprove={after('approved')} onDeny={after('denied')} onAlwaysApprove={after('always approve')} {...of('restricted')} />
+          <ActionCard {...request} fields={fields} state="pending" restricted incomplete onApprove={after('approved')} onDeny={after('denied')} onAlwaysApprove={after('always allow')} {...of('restricted')} />
           <ActionCard {...request} state="approved" resolution="Approved by Ada Lovelace" {...of('approved')} />
           <ActionCard {...request} state="denied" resolution="Denied by Ada Lovelace" {...of('denied')} />
         </Column>

@@ -49,7 +49,7 @@ const EverywhereNotice = ({ service, kinds, onAskFirst, problem }: NonNullable<C
   return (
     <div className="appears flex flex-col gap-3 rounded-3xl bg-kumo-tint px-4 py-3 sm:flex-row sm:items-center">
       <p className="min-w-0 flex-1 text-base/5 text-pretty text-kumo-default">
-        {LIST.format(kinds)} still {kinds.length === 1 ? 'goes' : 'go'} ahead without asking through {service} in every workspace you own, as you chose before it was chosen in each.
+        {LIST.format(kinds)} {kinds.length === 1 ? 'is' : 'are'} still allowed without asking through {service} in every workspace you own, from an earlier setting.
       </p>
       <Button
         className="shrink-0 self-start sm:self-auto"
@@ -159,7 +159,7 @@ export const ConnectionAccountView = (props: ConnectionAccountViewProps) => {
 
       <Section title="When it changes something">
         <p className="max-w-xl px-4 text-base/6 text-pretty text-kumo-default">
-          Reading never asks. A change through {service.name} asks first, unless the workspace it’s made in makes that kind of change automatic, on its Connections tab.
+          Chats and gadgets can always read through {service.name}, and ask you before they change anything. Each workspace can allow some changes without asking, on its Connections tab.
         </p>
         {everywhere && everywhere.kinds.length > 0 && <EverywhereNotice service={service.name} {...everywhere} />}
       </Section>

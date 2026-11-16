@@ -624,9 +624,11 @@ read or changed through it), grouped by service, then what every chat has
 uses it and what is automatic. A row opens `ConnectionDetails` (`ConnectionDetailsDialog`): what
 uses it, each a link, a gadget made from someone else's blueprint saying it asks anyway; and every
 kind of change its kind of resource declares (`SupportedResource.actionKinds`), each "Ask first" or
-"Automatic" (`Segmented`), or "Always asks" where the gatekeeper never lets it through
+"Allow" (`Segmented`), or "Always asks" where the gatekeeper never lets it through
 (`ChangeRulesList`, `useWorkspaceConnections`). A kind's label splits at ", in " into what it is and
-how far it reaches (`kindLabel`). In a workspace that has read restricted data everything asks, and
+how far it reaches (`kindLabel`). The words are the user's, not the mechanism's: a chat or gadget
+"asks you before it changes anything", "Allow" lets a kind through without asking, a row says
+"Document edits allowed", and a request's button is "Always allow", the same verb. In a workspace that has read restricted data everything asks, and
 the tab and dialog say so instead. A chat's and a gadget's Connections tabs open the same dialog in
 place, with "All connections" to the workspace's tab, and end with a line pointing there. Where the
 dialog goes is the route's (`routes/-connectionLinks.ts`).

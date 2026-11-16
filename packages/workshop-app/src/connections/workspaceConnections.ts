@@ -53,16 +53,16 @@ export const usesLine = (gadgets: readonly string[] | number, chats: number, age
   return `Used by ${LIST.format(chats ? [...named, chatWords] : named)}`
 }
 
-/** What goes ahead without asking through a connection, in a few words: "Document edits automatic", "2 changes automatic". */
+/** What a workspace allows through a connection without asking, in a few words, as its toggle says it: "Document edits allowed", "2 changes allowed". */
 export const automaticLine = (kinds: readonly ActionKind[]) =>
-  kinds.length === 0 ? undefined : kinds.length === 1 ? `${kindLabel(kinds[0]!.label).title} automatic` : `${kinds.length} changes automatic`
+  kinds.length === 0 ? undefined : kinds.length === 1 ? `${kindLabel(kinds[0]!.label).title} allowed` : `${kinds.length} changes allowed`
 
 /**
  * Every kind of change a connection can make, as its kind of resource declares them
  * (`SupportedResource.actionKinds`), or, for one every chat has, every kind its service declares,
  * each once, in the service's order: whether it may go ahead without asking, and whether this
  * workspace lets it (`automatic`, the kinds its rules name). A rule for a kind not declared, made
- * from an action's "Always approve", is listed too, after them, so that it can be undone.
+ * from an action's "Always allow", is listed too, after them, so that it can be undone.
  */
 export const changesOf = (connection: WorkspaceConnectionInfo, resources: readonly SupportedResource[], automatic: readonly ActionKind[]): ChangeRule[] => {
   const declared = connection.ambient ? resources : resources.filter(({ urlPattern }) => urlPattern === connection.typeUrlPattern)
