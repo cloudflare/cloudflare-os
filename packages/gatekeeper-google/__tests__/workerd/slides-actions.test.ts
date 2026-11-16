@@ -1707,8 +1707,9 @@ describe("Google Slides replay cost", () => {
       "outline, a queued move of 99 slides and a queued skip of 100, the oldest change approved, " +
       "the newest rejected, and a read whose newest batch stopped at its second edit. cloneBytes " +
       "is a slide's bytes for each of pageClones, or its label fields' where the slide cloned " +
-      "was read by label; mostOpen is of the fake, which has no limit on connections; pending " +
-      "is the changes awaiting a decision after the phase.",
+      "was read by label; mostOpen is the requests the fake had open at once, which has no limit " +
+      "on connections, where a deployed Worker holds six; pending is the changes awaiting a " +
+      "decision after the phase.",
       print(header), ...lines.map(print),
     ].join("\n"));
   });
@@ -1833,6 +1834,8 @@ describe("Google Slides replay cost", () => {
     // one, and one more for a slide whose number an earlier change of the fold made a digit longer
     // (the footer's padding makes the pages one size as fetched only). A slide a change only names
     // is read by label, `LABEL_BYTES` in place of `PAGE_BYTES`, fetched and through each round trip.
+    // `mostOpen` is the requests the FAKE had open at once. It has no limit on connections, where a
+    // deployed Worker holds six, so the 4 of whole pages and the 6 of labels are the client's bounds.
     expect(measured).toEqual([
       {
         ...none, phase: "queue N, a read after each", pending: N,
@@ -1849,10 +1852,10 @@ describe("Google Slides replay cost", () => {
         // Each queued change is measured once, and each read's 20 slides, about 3.7 KB a slide.
         measuredStrings: 10, longestMeasured: 74_091,
         // One page to queue each change, the moved slide's by label, 20 for each read, and an
-        // outline with each.
+        // outline with each. A read's 20 whole pages go four at a time.
         pageFetches: 105, fetches: 115,
         responseBytes: 104 * PAGE_BYTES + LABEL_BYTES + 10 * OUTLINE_BYTES,
-        mostOpen: 20,
+        mostOpen: 4,
       },
       {
         ...none, phase: "read", pending: N,
@@ -1861,7 +1864,7 @@ describe("Google Slides replay cost", () => {
         pageClones: 4, cloneBytes: 4 * PAGE_BYTES, pageRoundTrips: 39, roundTripUnits: 1_256_363,
         measuredStrings: 1, longestMeasured: 74_090,
         pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES,
-        mostOpen: 20,
+        mostOpen: 4,
       },
       {
         ...none, phase: "outline", pending: N,
@@ -1886,10 +1889,11 @@ describe("Google Slides replay cost", () => {
         roundTripUnits: 2 * (PAGE_BYTES + 233) + 197 * LABEL_BYTES + 2 * 126 + 2,
         // The queued move alone: 99 labels and the slide they follow.
         measuredStrings: 1, longestMeasured: 6_138,
-        // The 100 slides named, at once: 98 by label, and the two a queued batch edits whole.
+        // The 100 slides named, a mixed read: the two a queued batch edits whole, together, and
+        // then the 98 others by label, six at a time.
         pageFetches: 100, fetches: 101,
         responseBytes: 2 * PAGE_BYTES + 98 * LABEL_BYTES + OUTLINE_BYTES,
-        mostOpen: 100,
+        mostOpen: 6,
       },
       {
         ...none, phase: "queue a skip of 100", pending: N + 2,
@@ -1899,9 +1903,10 @@ describe("Google Slides replay cost", () => {
         pageRoundTrips: 296,
         roundTripUnits: 2 * (PAGE_BYTES + 233) + 294 * LABEL_BYTES + 3 * 126 + 6,
         measuredStrings: 1, longestMeasured: 6_130,
+        // The same mixed read: slides 1 and 2 whole, then 98 labels with six open.
         pageFetches: 100, fetches: 101,
         responseBytes: 2 * PAGE_BYTES + 98 * LABEL_BYTES + OUTLINE_BYTES,
-        mostOpen: 100,
+        mostOpen: 6,
       },
       {
         ...none, phase: "approve", pending: N + 1,
@@ -1924,7 +1929,7 @@ describe("Google Slides replay cost", () => {
         measuredStrings: 1, longestMeasured: 77_648,
         // As `read`, less the 71 bytes slide 1 lost when the fake stored its approved edit as one run.
         pageFetches: 20, fetches: 21, responseBytes: 20 * PAGE_BYTES + OUTLINE_BYTES - 71,
-        mostOpen: 20,
+        mostOpen: 4,
       },
     ]);
   });
