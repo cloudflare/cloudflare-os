@@ -68,14 +68,15 @@ const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter
        FROM images i WHERE i.report_seq = r.seq AND i.state = 'stored') AS images
   FROM reports r LEFT JOIN grants g ON g.id = r.grant_id`;
 
-// The kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart. A bare change of
-// status (an admin's public entry with no text) is in none of the first three; one made through
-// the admin gatekeeper is the fourth (see setStatus()).
+// The kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart, and within a kind the
+// entries made through the admin gatekeeper apart from people's (see #threadCount()). A bare
+// change of status (an admin's public entry with no text) is bounded only when it was made
+// through the gatekeeper (see setStatus()).
 const THREAD_KINDS = {
   replies: "visibility = 'public' AND via IS NULL",
   adminPublic: "visibility = 'public' AND via IS NOT NULL AND text <> ''",
   adminOnly: "visibility = 'admins'",
-  agentStatus: "visibility = 'public' AND via = 'gatekeeper' AND text = ''",
+  status: "visibility = 'public' AND via IS NOT NULL AND text = ''",
 } as const;
 
 type ReportRow = {
@@ -924,7 +925,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * entry as adminCallerTerms() gives it. It changes no status, and works on a closed report. A
    * public one makes the report unseen by its reporter. Throws (TypeError) for a caller, a text
    * or a visibility that is not one; refused `notFound`, and `threadFull` once the admins have
-   * written MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility.
+   * written MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility. The entries made through
+   * the admin gatekeeper, which a rule can make with nobody deciding, have a bound of their own
+   * and take no place of a person's.
    */
   addEntry(admin: Pick<AiChatAuthorInfo, "id" | "name">,
       caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string,
@@ -936,7 +939,8 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       throw new TypeError("Invalid visibility.");
     }
     let { seq } = this.#reportSeq(reportId);
-    let written = this.#threadCount(seq, visibility === "public" ? "adminPublic" : "adminOnly");
+    let written = this.#threadCount(
+        seq, visibility === "public" ? "adminPublic" : "adminOnly", label.via === "gatekeeper");
     if (written >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
@@ -962,7 +966,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     let report = this.#reportSeq(reportId);
     if (report.status === status) return;
     if (label.via === "gatekeeper" &&
-        this.#threadCount(report.seq, "agentStatus") >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
+        this.#threadCount(report.seq, "status", true) >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
     let { at } = this.#addEntry(report.seq, author, "public", label, "", status);
@@ -1335,10 +1339,12 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
         .map(row => entryOf(row, reader));
   }
 
-  // How many entries of one of the three bounded kinds a report's thread holds.
-  #threadCount(reportSeq: number, kind: keyof typeof THREAD_KINDS): number {
+  // How many entries of one kind a report's thread holds: those made through the admin
+  // gatekeeper when `agent` is set, and people's otherwise.
+  #threadCount(reportSeq: number, kind: keyof typeof THREAD_KINDS, agent = false): number {
     return this.ctx.storage.sql.exec<{ count: number }>(
-      `SELECT COUNT(*) AS count FROM entries WHERE report_seq = ? AND ${THREAD_KINDS[kind]}`,
+      `SELECT COUNT(*) AS count FROM entries WHERE report_seq = ? AND ${THREAD_KINDS[kind]}
+         AND via IS ${agent ? "" : "NOT"} 'gatekeeper'`,
       reportSeq).one().count;
   }
 

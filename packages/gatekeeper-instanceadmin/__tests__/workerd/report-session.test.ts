@@ -214,6 +214,11 @@ describe("a report session", () => {
     ]) {
       expect((await rejection(call())).message).not.toBe("did not reject");
     }
+    // The Admin API's order, a workspace id and then the reason, is refused: the id would be
+    // recorded as the reason of the open and of every call on the view.
+    expect((await rejection(report.inspectWorkspace!("w".repeat(64), "triage"))).message).toBe(
+        "Invalid arguments for IssueReportSession.inspectWorkspace: it takes the reason alone, " +
+        "a string. The workspace is the report's.");
     expect(admin.calls).toHaveLength(2);
   });
 

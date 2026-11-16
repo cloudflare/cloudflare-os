@@ -74,8 +74,9 @@ export interface IssueReportedHook {
 /**
  * The callback of subscribeInvestigationComplete(). An event carries ids and labels only. A
  * callback can be called more than once for the same event, and a report's investigation can
- * end more than once: key the work by the report's id and its status. It answers within 30
- * seconds, as IssueReportedHook's does.
+ * end more than once, with the same status too: key the work by the report's id and `at`, which
+ * is the same each time one event is delivered and differs between two ends. It answers within
+ * 30 seconds, as IssueReportedHook's does.
  */
 export interface InvestigationCompleteHook {
   /** Called when an admin moved the report from "investigating" to `status`, at `at`. */
@@ -118,12 +119,13 @@ export interface IssueReportSession {
   /**
    * An audited view of the workspace the report names, when its reporter owns it: metadata,
    * and content only while the grant the reporter gave with this report, or the reporter's
-   * account-wide grant, is live. Its description lists no other grant. Throws when the report
-   * names no workspace or one its reporter does not own. When that workspace holds restricted
-   * data, every answer of the view marks THIS workspace as holding restricted data too: from
-   * the first one on, nothing here is applied without a person (a reply through this session
-   * included) and web fetches reach only trusted hosts. The report itself, its images and its
-   * thread never mark.
+   * account-wide grant, is live. Its description lists no other grant. It takes the reason
+   * alone, which the deployment's audit log keeps: the workspace is the report's, and an id
+   * given before the reason is refused. Throws when the report names no workspace or one its
+   * reporter does not own. When that workspace holds restricted data, every answer of the view
+   * marks THIS workspace as holding restricted data too: from the first one on, nothing here is
+   * applied without a person (a reply through this session included) and web fetches reach only
+   * trusted hosts. The report itself, its images and its thread never mark.
    */
   inspectWorkspace(reason: string): Promise<AdminWorkspaceView>;
 }

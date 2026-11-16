@@ -151,7 +151,8 @@ describe("the declarations", () => {
         "its new status and the time. Both carry ids and labels only");
     expect(preamble).toContain(
         "A callback can be called more than once for the same event: it keys its work by the " +
-        "report's id (and status).");
+        "report's id, and for an investigation by the event's time too, since a report's " +
+        "investigation can end twice with the same status.");
     expect(preamble).toContain(
         `A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work ` +
         "and returns without waiting for it. One that takes longer counts as failed and is " +

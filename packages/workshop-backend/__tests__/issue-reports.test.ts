@@ -643,6 +643,43 @@ describe("an issue report's thread", () => {
     await run(reports => reports.addEntry(GRACE, agent, report.id, "An answer.", "public"));
   });
 
+  it.each(["public", "admins"] as const)(
+      "bounds the %s entries written through the admin gatekeeper apart from people's",
+      async visibility => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let agent = { via: "gatekeeper", agent: { workspaceId: "w".repeat(64), chatId: 1 } } as const;
+    await run(reports => {
+      for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
+        reports.addEntry(GRACE, agent, report.id, "An agent's.", visibility);
+      }
+    });
+    // Whichever workspace or chat the call came from.
+    for (let caller of [agent, { via: "gatekeeper", agent: { workspaceId: "x".repeat(64) } }] as const) {
+      expect(await refusal(() => run(reports => reports.addEntry(
+          GRACE, caller, report.id, "The 201st.", visibility))))
+          .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
+    }
+
+    // The agent's entries took no place of a person's: the admins still write all of theirs.
+    await run(reports => {
+      for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
+        reports.addEntry(HEDY, { via: "api" }, report.id, "A person's.", visibility);
+      }
+    });
+    expect(await refusal(() => run(reports => reports.addEntry(
+        HEDY, { via: "api" }, report.id, "The 201st.", visibility))))
+        .toBe(ISSUE_REPORT_ERROR_CODES.threadFull);
+    let { entries } = await run(reports => reports.get(report.id));
+    expect(entries.filter(entry => entry.text === "An agent's."))
+        .toHaveLength(MAX_ISSUE_REPORT_THREAD_ENTRIES);
+    expect(entries.filter(entry => entry.text === "A person's."))
+        .toHaveLength(MAX_ISSUE_REPORT_THREAD_ENTRIES);
+    // The agent's other kind is counted apart too.
+    await run(reports => reports.addEntry(
+        GRACE, agent, report.id, "The other kind.", visibility === "public" ? "admins" : "public"));
+  });
+
   it("refuses the reporter's 101st reply of a UTC day across their reports", async () => {
     let clock = fakeClock();
     let { run } = store();

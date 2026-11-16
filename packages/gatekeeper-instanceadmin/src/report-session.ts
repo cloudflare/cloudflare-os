@@ -166,13 +166,15 @@ export class IssueReportSession extends RpcTarget {
    *
    * Skips validation: the view is a forwarder, whose type declares none of the methods it
    * defines from the schema, and a validated return would be wrapped in a proxy that refuses
-   * them all. So `reason` is checked here, and the Workshop validates it again.
+   * them all. So the arguments are checked here, and the Workshop validates `reason` again.
+   * One argument too many is refused as the generated surface refuses it: a caller that gave
+   * the Admin API's `(workspaceId, reason)` would have the id recorded as its reason.
    */
   @skipRpcValidation()
-  async inspectWorkspace(reason: string): Promise<AdminSession> {
-    if (typeof reason !== "string") {
-      throw new TypeError("Invalid arguments for IssueReportSession.inspectWorkspace: reason " +
-          "must be a string.");
+  async inspectWorkspace(reason: string, ...others: unknown[]): Promise<AdminSession> {
+    if (typeof reason !== "string" || others.some((other) => other !== undefined)) {
+      throw new TypeError("Invalid arguments for IssueReportSession.inspectWorkspace: it takes " +
+          "the reason alone, a string. The workspace is the report's.");
     }
     const admin = await this.#lend.get();
     // The session's own reads: nothing of either is returned, so neither is observed.

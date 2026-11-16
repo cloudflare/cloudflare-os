@@ -132,7 +132,7 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
       ...(fields ? { fields } : {}),
       subresources: [ADMIN_SUBRESOURCE],
     });
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     try {
       await Promise.race([
         this.#call(callback, event),

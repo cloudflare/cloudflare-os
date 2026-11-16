@@ -366,7 +366,7 @@ describe("a delivery that fails", () => {
     const tick = clock();
     // The delivery's own timer, shortened: every other timer keeps its time.
     const setTimer = globalThis.setTimeout;
-    vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...args: unknown[]) =>
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) =>
       setTimer(handler, ms === HOOK_CALLBACK_TIMEOUT_MS ? 50 : ms, ...args)) as typeof setTimeout);
     const answer = Promise.withResolvers<void>();
     slow.state.hold = answer.promise;

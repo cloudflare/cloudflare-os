@@ -1909,9 +1909,12 @@ export type AdminVia = "api" | "cli" | "gatekeeper";
 
 /**
  * Where a call made through the admin gatekeeper came from. The workspace that lent the
- * gatekeeper its owner's Admin API sets it, from what it knows of the caller: neither the
- * gatekeeper nor its caller chooses a field. A record carries it exactly when its `via` is
- * "gatekeeper", and the record's admin is then that workspace's owner.
+ * gatekeeper its owner's Admin API sets it when it makes the lend, from what it knows of the
+ * caller the lend is for: neither the gatekeeper nor its caller sets a field. It names the
+ * lend a call was made on. A lend is a capability the gatekeeper holds while it is live, so
+ * that the gatekeeper used it for that caller and no other is the gatekeeper's word. A record
+ * carries it exactly when its `via` is "gatekeeper", and the record's admin is then that
+ * workspace's owner.
  */
 export type AdminAgentOrigin = {
   /** The workspace whose admin gatekeeper binding made the call. */
@@ -2906,9 +2909,10 @@ export const MAX_ISSUE_REPORTS_PER_DAY = 20;
  * replies, the admins' public entries, and the admins-only ones. Each kind is counted apart, so
  * that a reporter who fills their side cannot stop the admins answering, and a full thread
  * tells a reporter nothing of the admins' notes. A bare change of status is not counted, so a
- * full thread can always be closed; the changes of status made through the admin gatekeeper are
- * a fourth kind, bounded like the others, since a workspace's rule can make one with no person
- * deciding. */
+ * full thread can always be closed. What is written through the admin gatekeeper, which a
+ * workspace's rule can do with no person deciding, is counted apart from what people write: its
+ * public entries, its admins-only ones and its changes of status are three more kinds, each
+ * bounded like the others, so that an agent can fill no part of a thread that people write in. */
 export const MAX_ISSUE_REPORT_THREAD_ENTRIES = 200;
 
 /** The most replies one user may write in the threads of their issue reports in a UTC day. */
@@ -3772,7 +3776,8 @@ export interface AdminApi {
    * admins alone ("admins"). Non-blank text of at most MAX_ISSUE_REPORT_TEXT_LENGTH characters.
    * It changes no status. Refused `notFound`, and `threadFull` once the admins have written
    * MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility (the reporter's replies do not
-   * count). */
+   * count, and the entries written through the admin gatekeeper are counted apart from
+   * people's). */
   addIssueReportEntry(reportId: string, text: string, visibility: IssueReportEntry["visibility"])
       : Promise<IssueReportEntry>;
 

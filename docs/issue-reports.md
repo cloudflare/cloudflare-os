@@ -112,8 +112,10 @@ reaches the reporter: not through a method, a count, a time or an id.
   admins-only ones. A reporter who fills their side cannot stop the admins answering, and a full
   thread (`threadFull`) tells a reporter nothing of the admins' notes, since only their own
   replies count against them. A change of status is in none of the three, so a person can
-  always close a report; the changes made [through an agent](admin-access.md#through-an-agent) are a fourth kind with the
-  same bound, since a workspace's rule can make one with no person deciding.
+  always close a report. What is written [through an agent](admin-access.md#through-an-agent)
+  is counted apart from what people write, since a workspace's rule can write it with no person
+  deciding: an agent's public entries, its admins-only ones and its changes of status each have
+  the same bound of their own, so an agent that fills its share leaves the admins all of theirs.
 - **A reporter reads an admin by name alone.** An admin's entries and status lines reach the
   reporter with the admin's display name and no id: an admin's id is their account name, which
   can be an email address, and a thread only has to say who answered. The id is returned to
@@ -194,8 +196,9 @@ owner is one. A hook wakes a gadget's stored callback or an existing chat; it op
   `addIssueReportImage()` or given the grant that may come with the report. A subscriber that
   reads at once may see no image and be refused content, and reads again later.
 - **Delivery is at least once.** A subscriber sees an event twice only when its own callback
-  failed or timed out part of the way through, so a callback keys its work by the report's id
-  (and its status).
+  failed or timed out part of the way through, so a callback keys its work by the report's id,
+  and for an investigation by the event's time too: a report investigated again can end with
+  the status it ended with before, which is a second event with a later time.
 - **A callback answers within 30 seconds.** It starts long work and returns; one that takes
   longer is given up on and called again later, so that it holds back no other subscriber's
   events.

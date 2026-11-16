@@ -229,6 +229,28 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     ]);
   });
 
+  it("tells two ends with the same status apart by their time, which a resend keeps", async () => {
+    let clock = fakeClock();
+    let reports = store();
+    let report = await reports.file();
+    for (let status of ["investigating", "answered", "investigating"] as const) {
+      await reports.setStatus(report.id, status);
+      await reports.settled();
+      clock.advance(HOUR_MS);
+    }
+    await vendor.answerEvents("reject");
+    await reports.setStatus(report.id, "answered");
+    await reports.settled();
+    await vendor.answerEvents("take");
+    await reports.alarm();
+
+    let [first, second, resent] = (await sent()).flat().slice(1);
+    expect(first).toMatchObject({ seq: 2, reportId: report.id, status: "answered" });
+    expect(second).toMatchObject({ seq: 3, reportId: report.id, status: "answered" });
+    expect(second!.at.getTime() - first!.at.getTime()).toBe(2 * HOUR_MS);
+    expect(resent).toStrictEqual(second);
+  });
+
   it("does not count the reporter's reply as an end", async () => {
     let reports = store();
     let report = await reports.file();

@@ -1259,6 +1259,9 @@ firing, and adding it again restores them. In mode Enabled it cannot be removed.
   they hold against agents and gadgets, not against the Worker.
 - [Non-admins admitted again after the connection is removed read what report sessions left in
   the chats](../packages/gatekeeper-instanceadmin/README.md#what-the-non-admins-who-come-back-can-read).
+  When an admin reports their own workspace that read through the whole binding, and grants its
+  content, that is what the whole binding answered there: the workspace that triages the report
+  is marked as holding restricted data, and is not closed for good.
 - [The latch does not hold back reads through the workspace's other
   connections](../packages/gatekeeper-instanceadmin/README.md#what-the-latch-does-not-hold-back).
 - [What a report session reads of an ordinary reporter's workspace, under the reporter's grant,
@@ -1501,9 +1504,13 @@ gatekeeper's connection of a workspace the record's admin owns, and such a recor
 `agent` (`AdminAgentOrigin`): the workspace whose connection made the call and, when the
 workspace ties the caller to one, the chat. Only the workspace sets them, when it lends the
 gatekeeper its owner's Admin API (`OverseerImpl.lendAdminApi()`): no client, header, argument or
-gatekeeper Worker can claim the value or choose the workspace or the chat. An access record, of
-a workspace or of a user's account, and a write record can carry them. A setting record never
-says `"gatekeeper"`: no setter is open to an agent. The Audit tab names such a record's `via` "Agent" and shows the workspace and the chat
+gatekeeper Worker can claim the value or set the workspace or the chat. They name the lend the
+call was made on; that the gatekeeper used each lend for the caller it was made for is the
+gatekeeper's word (see
+[its README](../packages/gatekeeper-instanceadmin/README.md#what-a-worker-that-keeps-everything-could-do)).
+An access record, of a workspace or of a user's account, and a write record can carry them. A
+setting record never says `"gatekeeper"`: no setter is open to an agent. The Audit tab names
+such a record's `via` "Agent" and shows the workspace and the chat
 it came from.
 
 **There is no kind for grants.** The log records what admins do, and an owner's grant is the

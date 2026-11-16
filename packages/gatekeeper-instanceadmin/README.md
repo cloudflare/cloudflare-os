@@ -119,6 +119,18 @@ workspace included. Once the connection is removed, the collaborators who are ad
 read those chats. Nothing closes that workspace: the rule above reads reads through the whole
 binding and nothing else.
 
+**That includes whole-binding answers, one hop away.** The reporter can be an admin, and the
+workspace the report names one that read through the whole binding: admins-only for good,
+because its chats hold what was read. Under that admin's grant, a report session's view reads
+those chats, Admin API answers included, into the workspace that triages the report. The
+reader is marked as holding restricted data and no more: the view tells the session that the
+reporter's workspace is restricted (`AdminWorkspaceDescription.containsRestrictedData`), not
+why, so the session observes under the report's subresource and `storage.adminReads` stays
+unset. Once the reader's connection is removed, non-admins are admitted to chats that hold
+what the other workspace keeps from them for good. It takes an admin who reports their own
+triage workspace and grants its content, and an owner who then removes the reader's
+connection and shares it.
+
 An owner who means to share such a workspace again deletes those chats first, or keeps triage in
 a workspace that is never shared with non-admins.
 
@@ -194,6 +206,17 @@ A Worker that kept every capability it was given, and misbehaved, could:
 
 - read, within a session's 15 minutes, anything a "read" method answers, for a workspace whose
   agent asked for less;
+- serve one caller with another's lend while that lend is live. A lend is a plain capability,
+  and nothing ties a call on it to the session it was lent for, so the Worker could answer one
+  chat's call with the lend of another chat or of a gadget. The records then name the lend
+  that was used, its owner, its workspace and its chat, and not the caller that was served.
+  Nothing in the Workshop ties a lend to one admin's workspaces either, so the same holds
+  between two admins wherever the Worker can pass a lend from one of its objects to another;
+- fire an enabled hook when it chooses, with an event it made up. Its driver keeps each
+  enabled hook's `HookInitiator`, and the Workshop's `startHook()` checks that the hook is
+  enabled, the gatekeeper is on and the owner is an admin who holds the account, never that
+  the store sent an event. A subscriber's callback that then reads through its binding, as it
+  is told to, opens a session, and with it a 15-minute lend of the reads;
 - misdeclare what is its own to declare: queue a reply drafted through the whole binding under
   the scoped reply's tag (`issue-report-scoped-reply`), or leave the restricted-data flag off a
   read, and so get a rule's approval for what should wait for a person.
@@ -205,11 +228,15 @@ Worker is deployed with the Workshop and trusted for its own declarations.
 
 It can never:
 
-- act with nothing lent: no session open and no approved action being applied;
+- act with nothing lent: no session open and no approved action being applied. It can cause a
+  session only as above, in a workspace where a person enabled a hook whose callback uses the
+  binding;
 - make a second call under one approval;
 - call an omitted method;
 - approve anything;
-- be recorded as anything but `"gatekeeper"`, with the workspace and the chat the Workshop names.
+- be recorded as anything but `"gatekeeper"`, with a workspace and a chat the Workshop named
+  for a lend that was live at the call. An origin says which lend made a call. That the lend
+  was used for the session it was lent for is the Worker's word.
 
 ## The generated surface
 
@@ -323,15 +350,18 @@ kind.
 stores a request every admin sees, takes one of the deployment's pending slots, and puts text an
 agent wrote on an approval page.
 
-**What a rule cannot use up.** A rule applies an action with no person deciding, so the two
-kinds a rule can repeat without end are bounded where they land, in the Workshop:
+**What a rule cannot use up.** A rule applies an action with no person deciding, so what a rule
+can repeat without end is bounded where it lands, in the Workshop, apart from what people do:
 
 - requests filed through the gatekeeper hold at most `MAX_PENDING_AGENT_ADMIN_WRITES` (10) of
   the deployment's `MAX_PENDING_ADMIN_WRITES` (50) pending slots, across every workspace; the
   next is refused `tooManyRequests`, and the requests people make keep the rest;
 - one report takes at most `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) changes of status made
   through the gatekeeper; the next is refused `threadFull`. A person's change of status is
-  never refused, so a report can always be closed.
+  never refused, so a report can always be closed;
+- one report takes at most that many public entries written through the gatekeeper, and that
+  many admins-only ones, each counted apart from the entries people write. An agent that fills
+  its own share of a thread is refused `threadFull` and leaves the admins all of theirs.
 
 **What is refused before a card is made.** A text or a reason the Admin API would refuse, and a
 write request's arguments that do not fit its action (`ADMIN_WRITE_ARGS`, the Workshop's own
@@ -532,9 +562,17 @@ flag, so a workspace that only receives events keeps its rules.
 (`AdminGatekeeperVendor.issueReportEvents()`), and the deployment's one `IssueReportHookDriver`
 queues each event for the hooks enabled for its kind. Polling would need the Worker to hold
 something it could call at any time, a stored capability into the report store or a binding:
-the standing power this design rules out. A Worker that misbehaved could then list reports
-whenever it liked. A pushed event hands it an id, a priority or a status, and a time, which is
-exactly what a subscriber receives.
+the standing power this design rules out. A Worker that misbehaved could then list every
+report of the deployment whenever it liked, with no workspace involved. A pushed event hands it
+an id, a priority or a status, and a time, which is exactly what a subscriber receives.
+
+What the Worker does keep is each enabled hook's `HookInitiator`, as every gatekeeper with
+hooks does, and that is a narrower standing power, not none: a Worker that misbehaved could
+fire a hook with no event behind it (see
+[What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
+It reads nothing by itself. It reaches reports only where a person enabled a hook, only while
+`startHook()` still finds the gatekeeper on and the owner an admin, and only through the
+session the subscriber's own callback opens.
 
 **"Issue reported" fires as the report is filed**, before the reporter's client has attached its
 images or given the grant that may come with it. A subscriber that reads at once may find no
@@ -549,7 +587,9 @@ resolves, with the same `seq`, and the kit's queue ignores a repeat for
 `DELIVERED_RETENTION_MS`. The kit retries a firing that failed, up to `MAX_DELIVERY_ATTEMPTS`
 times. So a subscriber sees an event twice only when its own callback failed or timed out after
 doing part of its work: a callback keys its work by the report's id, and for an investigation
-by its status too.
+by the event's `at` too. A report can be investigated again and end with the status it ended
+with before, which is a second event: its `at` differs, while every delivery of one event
+carries the `at` the store wrote with it.
 
 **A callback has `HOOK_CALLBACK_TIMEOUT_MS` (30 seconds) to answer.** The deployment has one
 driver, and its alarm waits for every delivery it started, so a callback that did not settle
@@ -599,7 +639,9 @@ for any admin, and no more:
 **Where the person is found.** Every record names the owner, so the person behind a call is
 found elsewhere:
 
-- for an agent's turn, in the chat the record names: who prompted it;
+- for an agent's turn, in the chat the record names: who prompted it. The chat is the one the
+  lend was made for, which the Worker is trusted to have served (see
+  [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do));
 - for a decision, in the action's record (`resolvedBy`);
 - for a call with no chat, in the gadget's merged code;
 - for a session opened directly from the connection, the owner: nobody else is lent one, and
@@ -627,8 +669,8 @@ found elsewhere:
 - **The reply split and the restricted-data mark are the Worker's own declarations** (see
   [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
 - **Non-admins admitted again after the connection is removed read what report sessions left in
-  the chats** (see
-  [What the non-admins who come back can read](#what-the-non-admins-who-come-back-can-read)).
+  the chats**, which can be what an admin's own triage workspace read through the whole binding
+  (see [What the non-admins who come back can read](#what-the-non-admins-who-come-back-can-read)).
 - **The latch does not hold back reads through other connections** (see
   [What the latch does not hold back](#what-the-latch-does-not-hold-back)).
 - **A reporter's workspace marked after a report session's view was opened is read unflagged

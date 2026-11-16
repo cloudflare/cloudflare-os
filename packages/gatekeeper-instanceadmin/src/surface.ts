@@ -251,8 +251,9 @@ the user who owns this workspace, a deployment admin.
   id, its priority and the time it was filed; subscribeInvestigationComplete() binds one that is
   called each time an admin ends a report's investigation, with its id, its new status and the
   time. Both carry ids and labels only: the callback reads the report through this binding.
-- A callback can be called more than once for the same event: it keys its work by the report's id
-  (and status).
+- A callback can be called more than once for the same event: it keys its work by the report's
+  id, and for an investigation by the event's time too, since a report's investigation can end
+  twice with the same status.
 - A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work and returns without waiting for it.
   One that takes longer counts as failed and is called again later.
 - A hook wakes a gadget's stored callback or this chat, never a new chat.
