@@ -40,7 +40,7 @@ export const ChatLayout = ({ header, composer, children }: ChatLayoutProps) => {
       {/* Only the bars' own content takes the pointer; the gaps around it let it through. The
           header starts clear of what the frame puts there (`--header-lead`), such as a back button. */}
       {header && (
-        <header ref={headerRef} className="pointer-events-none absolute inset-x-0 top-0 z-10 flex gap-1.5 p-3 ps-[calc(0.75rem+var(--header-lead,0px))] *:pointer-events-auto">
+        <header ref={headerRef} className="@container pointer-events-none absolute inset-x-0 top-0 z-10 flex gap-1.5 p-3 ps-[calc(0.75rem+var(--header-lead,0px))] *:pointer-events-auto">
           {header}
         </header>
       )}

@@ -13,7 +13,7 @@ import { clampSize, resistSize } from '@/components/resizing'
 import { ShimmerText } from '@/components/ShimmerText'
 import { useMenuPages } from '@/components/useMenuPages'
 import { CopyLinkButton } from './CopyLinkButton'
-import { GadgetAgentsMenu, type GadgetAgentsMenuProps } from './GadgetAgentsMenu'
+import { AgentsMenu, type AgentsMenuProps } from './AgentsMenu'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { SidePaneTitle } from './SidePaneTitle'
 import { WorkspaceCrumb, type WorkspaceCrumbProps } from './WorkspaceCrumb'
@@ -85,8 +85,8 @@ export type SidePaneProps = Placement & {
   onShare?: () => void
   /** Goes to the one shown's own settings: a gadget's. */
   onOpenSettings?: () => void
-  /** The agents the one shown calls on (`GadgetAgentsMenu`): a gadget's, for whoever builds where it is. */
-  agents?: Omit<GadgetAgentsMenuProps, 'title' | 'compact'>
+  /** The agents the one shown calls on (`AgentsMenu`): a gadget's, for whoever builds where it is. */
+  agents?: Omit<AgentsMenuProps, 'title' | 'compact'>
   /** Goes to the code of the one shown: a gadget's, on its settings page. */
   onViewCode?: () => void
   /** Saves the one shown as a file of a kind it offers, such as a gadget as a PDF. */
@@ -209,7 +209,7 @@ export const SidePane = (props: SidePaneProps) => {
             {/* Beside a chat, its glyph alone: the chat is what is being worked in there. */}
             {agents && active && !fullScreen && (
               <HeaderBubble key="agents">
-                <GadgetAgentsMenu {...agents} title={active.title} compact={narrow || beside !== undefined} />
+                <AgentsMenu {...agents} title={active.title} compact={narrow || beside !== undefined} />
               </HeaderBubble>
             )}
             {page?.chat && active && !fullScreen && (

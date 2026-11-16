@@ -578,17 +578,21 @@ something happens, on the Library (every workspace the user builds in), a worksp
 chat's settings (what runs in it, and what its cards set up) and a gadget's settings (what runs its
 code). A switch shows at once and is undone with why if refused; Delete asks first. Routes give the
 tab `useAutomationLink` (`routes/-automationLink.ts`), so a row opens where it reports. The chat's
-header has a clock while its cards show an automation, which opens the chat's tab.
+header has a clock while its cards show an automation, which opens the chat's tab; once its agent
+has started agents, `AgentsMenu` takes the clock's place (below).
 
 An agent (an agent spawner, never called that in the UI) is listed under Agents in the same tab
 (`useAgents`, `agents.ts`): `listAgentSpawners`, with each one's runs from `listChats` by
 `spawnerId` (or name, for runs recorded before that), its model named from `listModels`. A gadget's
-tab shows those it calls on, a chat's those its agent started. A gadget's header says so too, so
-that an agent working for it is seen without going to its settings (`GadgetAgentsMenu`, from
-`useGadgetAgents`, which reads again as the live chat list shows a run of the workspace's move): the
-one that ran last, or how many, and when ("Weekly metrics ran 2 hours ago"), or that one waits on
-the viewer; beside a chat or on a phone, its spark alone, with a dot while one waits. Its menu lists
-them with their runs, then the gadget's automations, for whoever builds where it is. A row opens the agent's page
+tab shows those it calls on, a chat's those its agent started. The header of what they work for
+says so too, so that an agent is seen without going to settings (`AgentsMenu`, from
+`useAgentsWorkingFor` and `agentsMenuOf`, read again as the live chat list shows a run of the
+workspace's move): the one that ran last, or how many, and when ("Weekly metrics ran 2 hours ago"),
+or that one waits on the viewer. A gadget's agents are on the gadget's header, never the chat's
+beside it, as the gadget is what they work for wherever it is shown; a chat's are those its agent
+started, in the clock's place, the spark alone while the chat is narrower than 36rem (the header is
+a size container). Beside a chat or on a phone a gadget's are the spark alone, with a dot while one
+waits. Its menu lists them with their runs, then the automations, for whoever builds where it is. A row opens the agent's page
 (`/workspace/$workspaceId/agent/$agentId`, `AgentPane`, drawn by `AgentView`): renamed and its model
 changed through `updateAgentSpawner`, what calls on it, what it can use, and its conversations by
 when, those waiting on a person marked. Its header is its workspace's crumb and its own, named

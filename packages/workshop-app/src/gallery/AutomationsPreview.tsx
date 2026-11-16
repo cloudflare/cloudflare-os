@@ -111,6 +111,27 @@ export const AutomationsPreview = () => {
           </div>
         </div>
       </Section>
+      <Section title="ChatHeader with agents the chat’s agent started (AgentsMenu in the clock’s place, saying which ran last and when; its menu leads to each one’s runs, then the chat’s automations). In a narrow chat, such as one with a gadget beside it, the spark alone">
+        <div className="flex w-full flex-col items-start gap-3">
+          {['w-full', 'w-96'].map((width) => (
+            <div key={width} className={`@container relative flex ${width} items-center gap-1.5`}>
+              <ChatHeader
+                workspace={{ id: 'q3', title: 'Q3 Forecast', label: 'QF', onOpen: () => say('opened Q3 Forecast') }}
+                title="Morning brief"
+                onOpenSettings={() => say('opened the chat’s settings')}
+                automations={{ count: 1, onOpen: () => say('opened the chat’s automations') }}
+                agents={{
+                  agents: [{ key: '9', name: 'Inbox sorter', runs: '31 runs · latest 12 min ago' }],
+                  latest: '12 min ago',
+                  onOpenAgent: () => say('opened Inbox sorter’s page, with its runs'),
+                  onOpenAutomations: () => say('opened the chat’s automations'),
+                }}
+                onShare={() => say('opened sharing')}
+              />
+            </div>
+          ))}
+        </div>
+      </Section>
     </>
   )
 }

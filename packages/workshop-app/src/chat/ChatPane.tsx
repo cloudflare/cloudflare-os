@@ -39,6 +39,8 @@ import { useModels } from './useModels'
 import { missingCommand, slashRequestFor } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { useChatSession } from './useChatSession'
+import { agentsMenuOf } from '@/automations/agentsMenu'
+import { useAgentsWorkingFor } from '@/automations/useAgentsWorkingFor'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -163,6 +165,12 @@ export const ChatPane = ({
   // Making a connection in the workspace is building in it.
   const builds = workspace !== undefined && workspace.role !== 'use'
   const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  // The agents this chat's agent started, for whoever builds here: that they are working for it,
+  // and when they last ran, a step from their runs, in the header.
+  const startedAgents = useAgentsWorkingFor(builds && onOpenAgent ? { workspaceId, chatId } : undefined)
+  const agentsMenu = startedAgents.length > 0 && onOpenAgent
+    ? agentsMenuOf(startedAgents, onOpenAgent, onOpenSettings && (() => onOpenSettings('automations')))
+    : undefined
   // Those who can only use what is in it cannot share it.
   const shareable = workspace !== undefined && workspace.role !== 'use' && workspaceLink !== undefined
   // Why the last message did not go, whether it was stopped here or by the server.
@@ -330,6 +338,7 @@ export const ChatPane = ({
           title={title}
           onOpenSettings={onOpenSettings && (() => onOpenSettings())}
           automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}
+          agents={agentsMenu}
           onShare={shareable ? () => setSharing(true) : undefined}
         />
       )}

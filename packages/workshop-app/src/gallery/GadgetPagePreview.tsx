@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { SidePane } from '@/blocks/SidePane'
-import { GadgetAgentsMenu, type GadgetAgentsMenuProps } from '@/blocks/GadgetAgentsMenu'
+import { AgentsMenu, type AgentsMenuProps } from '@/blocks/AgentsMenu'
 import { GadgetChatMenu, type GadgetChatMenuChat } from '@/blocks/GadgetChatMenu'
 import { FormatIcon } from '@/components/FormatIcon'
 import { Section } from './Section'
@@ -11,13 +11,13 @@ const CHATS: GadgetChatMenuChat[] = [
   { key: '2', title: 'Launch checklist', time: 'Nov 9' },
 ]
 
-const AGENTS: GadgetAgentsMenuProps['agents'] = [
+const AGENTS: AgentsMenuProps['agents'] = [
   { key: '3', name: 'Weekly metrics', runs: '18 runs · latest 2 hours ago' },
   { key: '5', name: 'Speaker notes', runs: 'One run · latest yesterday' },
 ]
 
 // A gadget's own page as the Library opens it, with its workspace before its name and Chat at the far end.
-const Page = ({ chats, named, agents, onAction }: { chats: GadgetChatMenuChat[]; named: boolean; agents?: GadgetAgentsMenuProps['agents']; onAction: (said: string) => void }) => {
+const Page = ({ chats, named, agents, onAction }: { chats: GadgetChatMenuChat[]; named: boolean; agents?: AgentsMenuProps['agents']; onAction: (said: string) => void }) => {
   const [fullScreen, setFullScreen] = useState(false)
   return (
     <div className="flex h-80 w-full max-w-3xl flex-col rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
@@ -63,16 +63,16 @@ export const GadgetPagePreview = () => {
       <Section title="Made in a chat on its own: no crumb, and Chat goes back to that chat">
         <Page chats={[{ key: '0', title: 'Slides for Friday', time: '3d ago' }]} named={false} onAction={setSaid} />
       </Section>
-      <Section title="With agents it calls on: before Chat, the one that ran last, or how many, and when (GadgetAgentsMenu). Its menu lists them with their runs, each opening its page, so what they do is seen without reading their conversations; then its automations">
+      <Section title="With agents it calls on: before Chat, the one that ran last, or how many, and when (AgentsMenu). Its menu lists them with their runs, each opening its page, so what they do is seen without reading their conversations; then its automations">
         <Page chats={CHATS} named agents={AGENTS} onAction={setSaid} />
       </Section>
       <Section title="One agent, a run of which waits on the viewer">
         <Page chats={CHATS} named agents={[{ key: '3', name: 'Weekly metrics', runs: '18 runs · latest 2 hours ago', waiting: true }]} onAction={setSaid} />
       </Section>
-      <Section title="GadgetAgentsMenu beside a chat or on a phone: the glyph alone, with a dot while one waits">
+      <Section title="AgentsMenu beside a chat or on a phone: the glyph alone, with a dot while one waits">
         <span className="flex gap-3">
-          <GadgetAgentsMenu title="Slides" agents={AGENTS} latest="2 hours ago" onOpenAgent={() => {}} compact />
-          <GadgetAgentsMenu title="Slides" agents={[{ ...AGENTS[0], waiting: true }]} latest="2 hours ago" onOpenAgent={() => {}} compact />
+          <AgentsMenu title="Slides" agents={AGENTS} latest="2 hours ago" onOpenAgent={() => {}} compact />
+          <AgentsMenu title="Slides" agents={[{ ...AGENTS[0], waiting: true }]} latest="2 hours ago" onOpenAgent={() => {}} compact />
         </span>
       </Section>
       <Section title="GadgetChatMenu on a phone: the icon alone">

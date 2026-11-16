@@ -23,8 +23,8 @@ import { useFilePreview, type FileState } from './useFilePreview'
 import { useFileReview } from './useFileReview'
 import { useGadgetConnection } from './useGadgetConnection'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
-import { activityWords, runsWords } from '@/automations/agents'
-import { useGadgetAgents } from '@/automations/useGadgetAgents'
+import { agentsMenuOf } from '@/automations/agentsMenu'
+import { useAgentsWorkingFor } from '@/automations/useAgentsWorkingFor'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorktree } from './useWorktree'
@@ -197,14 +197,10 @@ export const AsidePane = (props: AsidePaneProps) => {
   // The agents it calls on, for whoever builds where it is, whose they are: that they work for it,
   // and when they last did, with their runs a step away.
   const settingsOpen = gadget && onOpenSettings && snapshot.ui.status !== 'denied' && listed !== undefined && listed.role !== 'use'
-  const agents = useGadgetAgents(gadget && onOpenAgent && listed !== undefined && listed.role !== 'use' ? gadget : undefined)
-  const latestRun = agents[0]?.runs[0]
-  const agentsMenu = gadget && onOpenAgent && agents.length > 0 ? {
-    agents: agents.map((agent) => ({ key: String(agent.id), name: agent.name, runs: runsWords(agent), waiting: agent.runs.some(({ waiting }) => waiting) })),
-    latest: latestRun && activityWords(latestRun.lastActive),
-    onOpenAgent: (key: string) => onOpenAgent(gadget.workspaceId, Number(key)),
-    onOpenAutomations: settingsOpen ? () => onOpenSettings(gadget, title, 'automations') : undefined,
-  } : undefined
+  const agents = useAgentsWorkingFor(gadget && onOpenAgent && listed !== undefined && listed.role !== 'use' ? { workspaceId: gadget.workspaceId, gadgetId: gadget.workpieceId } : undefined)
+  const agentsMenu = gadget && onOpenAgent && agents.length > 0
+    ? agentsMenuOf(agents, (id) => onOpenAgent(gadget.workspaceId, id), settingsOpen ? () => onOpenSettings(gadget, title, 'automations') : undefined)
+    : undefined
 
   const shared = {
     agents: agentsMenu,
