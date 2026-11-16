@@ -13,7 +13,10 @@ import type {
 } from "../src/drive-types";
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
-import type { DocMetadata, GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import type {
+  DocMetadata, GoogleDocImage, GoogleDocPendingChanges, GoogleDocSession, GoogleDocStyles,
+  GoogleDocTab,
+} from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
@@ -480,6 +483,34 @@ export class TestHooks extends DurableObject<Env> {
 
   async listTabs(facetName: string): Promise<GoogleDocTab[]> {
     return this.#withSession(facetName, session => session.listTabs());
+  }
+
+  async readPendingChanges(facetName: string, tabId: string): Promise<GoogleDocPendingChanges> {
+    return this.#withSession(facetName, session => session.getPendingChanges(tabId));
+  }
+
+  async readStyles(facetName: string, tabId: string): Promise<GoogleDocStyles> {
+    return this.#withSession(facetName, session => session.getStyles(tabId));
+  }
+
+  /** In one session: list the tab's images when `list` is set, then read each of `imageIds`. */
+  async readImages(facetName: string, tabId: string, imageIds: string[], list: boolean): Promise<{
+    images?: GoogleDocImage[];
+    read: ({ mimeType: string; text: string } | { error: string })[];
+  }> {
+    return this.#withSession(facetName, async session => {
+      let images = list ? await session.listImages(tabId) : undefined;
+      let read = [];
+      for (let id of imageIds) {
+        try {
+          let { mimeType, bytes } = await session.readImage(id, tabId);
+          read.push({ mimeType, text: new TextDecoder().decode(bytes) });
+        } catch (error) {
+          read.push({ error: (error as Error).message });
+        }
+      }
+      return { ...images ? { images } : {}, read };
+    });
   }
 
   async applyStorage(facetName: string, operations: StorageOperation[]): Promise<void> {

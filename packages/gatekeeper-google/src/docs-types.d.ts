@@ -157,4 +157,177 @@ export interface GoogleDocSession extends GoogleDocEditSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
+
+  /**
+   * Return tab `tabId` as Google Docs has it saved, alongside what `getContent()` returns for it,
+   * and the changes that make the difference. A change made here may reach Google Docs later;
+   * until it does it is pending, and `getContent()` already shows it.
+   */
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
+
+  /**
+   * Return how tab `tabId` looks in Google Docs beyond what its Markdown says: its page, its named
+   * styles, and what each paragraph sets over its named style.
+   */
+  getStyles(tabId: string): Promise<GoogleDocStyles>;
+
+  /**
+   * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
+   * the order the placeholders appear.
+   */
+  listImages(tabId: string): Promise<GoogleDocImage[]>;
+
+  /**
+   * Read one image `listImages()` returned for tab `tabId`. Throws if the image is not readable
+   * or is larger than 10 MB.
+   */
+  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
+}
+
+/** How a paragraph's text is drawn. Lengths are in points and colors are `#rrggbb`. */
+export type GoogleDocLook = {
+  fontFamily?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+
+  /** The color behind the text. */
+  highlight?: string;
+
+  /** The color behind the whole paragraph. */
+  shading?: string;
+  alignment?: "start" | "center" | "end" | "justify";
+
+  /** Line height as a multiple of single spacing. */
+  lineSpacing?: number;
+  spaceAbove?: number;
+  spaceBelow?: number;
+}
+
+/** How one table cell is drawn. */
+export type GoogleDocCell = {
+  /** The color that fills the cell. */
+  background?: string;
+
+  /** Where the cell's content sits in it; absent for the top. */
+  verticalAlign?: "middle" | "bottom";
+
+  /** Each edge that is not Google Docs' usual 1pt black line; a width of 0 is no line. */
+  borders?: { [side in "top" | "right" | "bottom" | "left"]?: { width: number; color: string } };
+
+  /** The font, size, color and alignment that all of the cell's paragraphs share. */
+  look?: GoogleDocLook;
+}
+
+/** How one tab looks, as Google Docs has it saved. */
+export type GoogleDocStyles = {
+  /** The page's width and margins in points, when the document sets them. */
+  page?: { width: number; marginTop: number; marginRight: number; marginLeft: number };
+
+  /**
+   * Each named style in full, by name: `NORMAL_TEXT`, `TITLE`, `SUBTITLE` and `HEADING_1` to
+   * `HEADING_6`.
+   */
+  named: Record<string, GoogleDocLook>;
+
+  /** The tab's paragraphs, in order. A table's paragraphs are not among them. */
+  paragraphs: {
+    /** The paragraph's line in `getPendingChanges().savedMarkdown`, counting from zero. */
+    line: number;
+
+    /** The named style the paragraph has. */
+    style: string;
+
+    /**
+     * What a link to this heading names it by: such a link reads `#heading=<headingId>` in the
+     * Markdown, after `?tab=<tabId>` when it is to another tab.
+     */
+    headingId?: string;
+
+    /** What the paragraph, or all of its text, sets differently from that named style. */
+    look?: GoogleDocLook;
+
+    /**
+     * The stretches of the paragraph's line that are drawn differently from the rest of it, as
+     * offsets into the line and an index into `runLooks`.
+     */
+    runs?: { start: number; end: number; look: number }[];
+  }[];
+
+  /** What a run sets differently from its paragraph: a font, a size, a color or a highlight. */
+  runLooks: GoogleDocLook[];
+
+  /** The tab's tables, in order. A table inside a table is not among them. */
+  tables: {
+    /** The line of the table's `<table>` in `getPendingChanges().savedMarkdown`. */
+    line: number;
+
+    /** Each column's width in points, when the table fixes them. */
+    columns?: number[];
+
+    /** The table's cells a row at a time, one for each `<td>` the Markdown writes. */
+    rows: GoogleDocCell[][];
+  }[];
+}
+
+/** An image, drawing or chart in a tab. */
+export type GoogleDocImage = {
+  /** Identifies this image within its tab. Pass it to `readImage()`. */
+  id: string;
+
+  /** Displayed width, in points. */
+  width: number;
+
+  /** Displayed height, in points. */
+  height: number;
+
+  /** The image's alt text, when it has any. */
+  description?: string;
+
+  /** False for a drawing, which has a size but no content `readImage()` could return. */
+  readable: boolean;
+}
+
+/** One image's content. */
+export type GoogleDocImageBytes = {
+  /** `image/png`, `image/jpeg`, `image/gif` or `image/webp`. */
+  mimeType: string;
+
+  /** The image file's bytes. */
+  bytes: Uint8Array;
+}
+
+/**
+ * One change that Google Docs has not saved yet: the method that made it and the arguments it was
+ * given.
+ */
+export type GoogleDocPendingChange = {
+  /** Identifies this change among the document's pending changes. */
+  id: number;
+
+  /**
+   * Set when the document has changed so that this change no longer fits. A stale change is left
+   * out of `markdown` and will not be saved.
+   */
+  stale?: true;
+} & ({
+  type: "replaceText";
+  oldMarkdown: string;
+  newMarkdown: string;
+} | {
+  type: "appendText";
+  markdown: string;
+});
+
+/** One tab before and after its pending changes. */
+export type GoogleDocPendingChanges = {
+  /** The tab as Google Docs has it saved, as Markdown. */
+  savedMarkdown: string;
+
+  /** The tab with its pending changes, exactly as `getContent()` returns it. */
+  markdown: string;
+
+  /** The tab's pending changes, oldest first. */
+  changes: GoogleDocPendingChange[];
 }

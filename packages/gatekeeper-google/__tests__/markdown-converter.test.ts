@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TextStyle } from "../src/docs-api";
+import type { Paragraph, TextStyle } from "../src/docs-api";
 import {
   applyMarkdownEdit, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
   computeReplaceOperations,
@@ -793,6 +793,141 @@ describe("Google Docs tables", () => {
     expect(docTabToMarkdown(tab).markdown).toContain("<p>Before [Image] after</p>");
   });
 
+  // Google Docs draws no space between two items of one list where their spacing collapses,
+  // whichever of the paragraph and its named style says so.
+  it("gives a list item whose spacing collapses none beside another item of its list", () => {
+    let item = (text: string, listId: string) => ({ runs: [`${text}\n`], bullet: { listId } });
+    let lists = { a: { listProperties: { nestingLevels: [{ glyphSymbol: "●" }] } }, b: { listProperties: { nestingLevels: [{ glyphSymbol: "●" }] } } };
+    let tab = buildTab([{ runs: ["Before\n"] }, item("One", "a"), item("Two", "a"), item("Other", "b"), item("Kept", "b")], lists);
+    tab.namedStyles = { styles: [{ namedStyleType: "NORMAL_TEXT", paragraphStyle: {
+      namedStyleType: "NORMAL_TEXT", spacingMode: "COLLAPSE_LISTS",
+      spaceAbove: { magnitude: 10, unit: "PT" }, spaceBelow: { magnitude: 4, unit: "PT" },
+    } }] };
+    let paragraphs = tab.body.content.filter(element => element.paragraph).map(element => element.paragraph!);
+    paragraphs[4].paragraphStyle.spacingMode = "NEVER_COLLAPSE";
+
+    let { styles } = docTabToMarkdown(tab);
+
+    expect(styles.paragraphs.map(({ look }) => look)).toEqual([
+      undefined, { spaceBelow: 0 }, { spaceAbove: 0 }, { spaceBelow: 0 }, undefined,
+    ]);
+  });
+
+  it("gives each paragraph's style by its line, and only what it sets over its named style", () => {
+    let tab = buildTab([
+      { runs: ["Report\n"], namedStyleType: "TITLE" },
+      { runs: ["Plain\n"] },
+      { table: [[{ paragraphs: [{ runs: ["Cell\n"] }] }]] },
+      { runs: ["Red and centered\n"] },
+      { runs: ["plain ", { text: "code", style: { weightedFontFamily: { fontFamily: "Consolas" }, backgroundColor: { color: { rgbColor: { red: 1, green: 1 } } } } }, " plain\n"] },
+    ]);
+    let blue = { color: { rgbColor: { blue: 1 } } };
+    tab.namedStyles = { styles: [
+      { namedStyleType: "NORMAL_TEXT",
+        textStyle: { fontSize: { magnitude: 11, unit: "PT" }, weightedFontFamily: { fontFamily: "Arial", weight: 400 } },
+        paragraphStyle: { namedStyleType: "NORMAL_TEXT", alignment: "START", lineSpacing: 115 } },
+      { namedStyleType: "TITLE",
+        textStyle: { fontSize: { magnitude: 26, unit: "PT" }, foregroundColor: blue },
+        paragraphStyle: { namedStyleType: "TITLE", spaceBelow: { magnitude: 3, unit: "PT" } } },
+    ] };
+    tab.documentStyle = {
+      pageSize: { width: { magnitude: 612, unit: "PT" } },
+      marginTop: { magnitude: 72, unit: "PT" }, marginLeft: { magnitude: 54, unit: "PT" }, marginRight: { unit: "PT" },
+    };
+    let paragraphs = tab.body.content.filter(element => element.paragraph).map(element => element.paragraph!);
+    // The title repeats what its named style says; the last paragraph departs from Normal text.
+    paragraphs[0].paragraphStyle.alignment = "START";
+    paragraphs[0].paragraphStyle.headingId = "h.report";
+    paragraphs[2].paragraphStyle.alignment = "CENTER";
+    paragraphs[2].elements[0].textRun!.textStyle = { foregroundColor: { color: { rgbColor: { red: 1 } } } };
+
+    let cell = tab.body.content.find(element => element.table)!.table!.tableRows![0].tableCells![0];
+    cell.tableCellStyle = {
+      backgroundColor: { color: { rgbColor: { green: 1 } } },
+      contentAlignment: "MIDDLE",
+      borderTop: { width: { unit: "PT" }, color: {} },
+      borderLeft: { width: { magnitude: 1, unit: "PT" }, color: { color: { rgbColor: {} } } },
+    };
+    cell.content![0].paragraph!.paragraphStyle.alignment = "CENTER";
+
+    let { markdown, styles } = docTabToMarkdown(tab);
+
+    let lines = markdown.split("\n");
+    expect(lines[styles.tables[0].line]).toBe("<table>");
+    expect(styles.paragraphs.map(({ line }) => lines[line]))
+      .toEqual(["# Report", "Plain", "Red and centered", "plain code plain"]);
+    expect(styles).toEqual({
+      page: { width: 612, marginTop: 72, marginRight: 0, marginLeft: 54 },
+      named: {
+        NORMAL_TEXT: { fontFamily: "Arial", fontSize: 11, bold: false, alignment: "start", lineSpacing: 1.15 },
+        TITLE: {
+          fontFamily: "Arial", fontSize: 26, bold: false, color: "#0000ff", alignment: "start",
+          lineSpacing: 1.15, spaceBelow: 3,
+        },
+      },
+      paragraphs: [
+        // What a link to the heading names it by.
+        { line: expect.any(Number), style: "TITLE", headingId: "h.report" },
+        { line: expect.any(Number), style: "NORMAL_TEXT" },
+        { line: expect.any(Number), style: "NORMAL_TEXT", look: { color: "#ff0000", alignment: "center" } },
+        // A stretch drawn differently from the rest of its line, by where it is in the line.
+        { line: expect.any(Number), style: "NORMAL_TEXT", runs: [{ start: 6, end: 10, look: 0 }] },
+      ],
+      runLooks: [{ fontFamily: "Consolas", highlight: "#ffff00" }],
+      // The usual 1pt black edge is left out; an edge with no width is said.
+      tables: [{
+        line: expect.any(Number),
+        rows: [[{
+          background: "#00ff00", verticalAlign: "middle",
+          borders: { top: { width: 0, color: "#000000" } },
+          look: { alignment: "center" },
+        }]],
+      }],
+    });
+  });
+
+  it("lists a tab's images in the order it writes their placeholders", () => {
+    let inline = (id: string) => ({ richLink: { title: id, uri: "https://example.com" } });
+    let tab = buildTab([
+      { runs: ["Before ", inline("inline-body"), "\n"] },
+      { table: [[{ paragraphs: [{ runs: [inline("inline-cell"), "\n"] }] }]] },
+      { runs: ["After\n"] },
+    ]);
+    let swap = (paragraph: Paragraph) => {
+      for (let element of paragraph.elements) {
+        if (!element.richLink) continue;
+        element.inlineObjectElement = { inlineObjectId: element.richLink.richLinkProperties!.title };
+        delete element.richLink;
+      }
+    };
+    swap(tab.body.content[1].paragraph!);
+    swap(tab.body.content[2].table!.tableRows![0].tableCells![0].content![0].paragraph!);
+    tab.body.content[1].paragraph!.positionedObjectIds = ["positioned"];
+    tab.inlineObjects = {
+      "inline-body": { inlineObjectProperties: { embeddedObject: {
+        description: "A chart",
+        size: { width: { magnitude: 300 }, height: { magnitude: 150 } },
+        imageProperties: { contentUri: "https://docs.google.com/image/body" },
+      } } },
+      // A drawing: sized, with nothing to fetch.
+      "inline-cell": { inlineObjectProperties: { embeddedObject: {
+        size: { width: { magnitude: 40 }, height: { magnitude: 20 } },
+      } } },
+    };
+
+    let { markdown, images } = docTabToMarkdown(tab);
+
+    expect(markdown.match(/\[Image\\?\]/g)).toHaveLength(3);
+    expect(images).toEqual([
+      { id: "positioned", width: 0, height: 0 },
+      {
+        id: "inline-body", width: 300, height: 150, description: "A chart",
+        contentUri: "https://docs.google.com/image/body",
+      },
+      { id: "inline-cell", width: 40, height: 20 },
+    ]);
+  });
+
   it("marks positioned images in body and table paragraphs", () => {
     let bodyTab = buildTab([{ runs: ["Caption\n"] }]);
     bodyTab.body.content[1].paragraph!.positionedObjectIds = ["image-1"];
@@ -829,6 +964,34 @@ describe("Google Docs tables", () => {
     expect(docTabToMarkdown(tab).markdown).toContain(
       '<td rowspan="2" colspan="2"><p>Merged</p></td>',
     );
+  });
+
+  it("leaves out the cells a merged cell covers, which Google still lists", () => {
+    let merged = (text: string, tableCellStyle: { rowSpan?: number; columnSpan?: number }) =>
+      ({ paragraphs: [{ runs: [`${text}\n`] }], tableCellStyle });
+    let tab = buildTab([{ table: [
+      [merged("wide", { columnSpan: 2 }), "", "c"],
+      ["d", "e", merged("tall", { rowSpan: 2 })],
+      ["g", "h", ""],
+    ] }]);
+
+    let { markdown, styles } = docTabToMarkdown(tab);
+
+    let rows = markdown.split("</tr>").slice(0, -1).map(row => row.match(/<td[^>]*>/g));
+    expect(rows).toEqual([
+      ['<td colspan="2">', "<td>"],
+      ["<td>", "<td>", '<td rowspan="2">'],
+      ["<td>", "<td>"],
+    ]);
+    // The styles have a cell for each one written.
+    expect(styles.tables[0].rows.map(row => row.length)).toEqual([2, 3, 2]);
+  });
+
+  it("keeps a cell with text beside a merged cell in a row that lists only its own cells", () => {
+    let wide = { paragraphs: [{ runs: ["wide\n"] }], tableCellStyle: { columnSpan: 2 } };
+    let tab = buildTab([{ table: [[wide, "Keep me"], ["a", "b", "c"]] }]);
+
+    expect(docTabToMarkdown(tab).markdown).toContain("Keep me");
   });
 
   it("separates multiple paragraphs within a cell", () => {

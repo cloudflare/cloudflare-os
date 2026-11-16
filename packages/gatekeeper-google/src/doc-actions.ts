@@ -238,7 +238,9 @@ export async function googleDocRevisionUnchanged(
 export function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
-  operation: "getContent" | "replaceText" | "appendText",
+  operation:
+    "getContent" | "getPendingChanges" | "getStyles" | "listImages" | "readImage" | "replaceText" |
+    "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
@@ -556,7 +558,7 @@ function googleDocActionTabs<T extends { tabId: string }>(tabs: T[], action: Goo
 }
 
 /** Whether `snapshot` already holds `action`'s write, which landed though its reply was lost. */
-function googleDocActionCommitted(snapshot: GoogleDocSnapshot, action: GoogleDocAction): boolean {
+export function googleDocActionCommitted(snapshot: GoogleDocSnapshot, action: GoogleDocAction): boolean {
   let { writeId } = action;
   return writeId !== undefined && googleDocActionTabs(snapshot.tabs, action)
     .some(tab => tab.committedWriteIds.includes(writeId));
