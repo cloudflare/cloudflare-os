@@ -9,7 +9,8 @@ import BLANK_RECORDING from "./blank-presentation.json";
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
-// A slide is read on its own; a text-heavy live slide is about 50 KiB with all its styles.
+// A slide is read on its own; a live slide of a title, a body and a table is about 30 KiB of
+// compact JSON with all its styles.
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -291,11 +292,15 @@ export class GoogleSlidesApi {
     return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
   }
 
+  // Every read asks for compact JSON. Google indents an answer otherwise, and the indentation,
+  // about two thirds of a slide page's bytes, is fetched, held as text and counted against the
+  // read's cap.
   async #get<T>(
     path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
   ): Promise<T> {
     let url = new URL(`${API_BASE}/${path}`);
     for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
+    url.searchParams.set("prettyPrint", "false");
     return this.#send<T>(url, {}, operation, maxBytes);
   }
 

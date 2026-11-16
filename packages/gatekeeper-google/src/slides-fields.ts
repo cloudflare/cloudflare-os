@@ -17,8 +17,8 @@ const LAYOUT_PROPERTIES =
   `objectId,layoutProperties(displayName,masterObjectId),pageProperties(${BACKGROUND_FIELDS})`;
 /**
  * A presentation's slide summaries. They need titles and speaker notes, which a mask can only
- * reach as every shape's text. Styles and geometry, most of a deck's JSON, are left out: 65 KiB for
- * a live 16-slide deck, against 780 KiB with them.
+ * reach as every shape's text. Styles and geometry, most of a deck's JSON, are left out: about
+ * 2 KiB a slide of a live deck, against about 30 KiB with them.
  */
 export const SUMMARY_FIELDS =
   `presentationId,title,locale,pageSize,${MASTER_FIELDS},` +
@@ -29,7 +29,7 @@ export const SUMMARY_FIELDS =
   `notesPage(notesProperties(speakerNotesObjectId),pageElements(objectId,shape(${TEXT_FIELDS})))))`;
 /**
  * A presentation's slide order, masters and layouts, but no slide content: masters and layouts
- * without their elements are about 7 KiB for a live deck of 11 layouts. Google returns `revisionId`
+ * without their elements are about 3 KiB for a live deck of 11 layouts. Google returns `revisionId`
  * only to an account that can edit the presentation. A skip applies against this alone.
  */
 export const OUTLINE_FIELDS =
