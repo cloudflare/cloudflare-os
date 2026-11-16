@@ -222,7 +222,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, status, children }: {
   // As the app is laid out on a narrow screen, without the sidebar.
   if (narrow) {
     return (
-      <NarrowShell status={status} aside={aside} onOpenAside={openAside} onCloseAside={closeAside}>
+      <NarrowShell status={status} aside={aside} onOpenAside={openAside}>
         {page}
       </NarrowShell>
     )

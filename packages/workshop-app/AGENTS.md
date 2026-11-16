@@ -767,9 +767,12 @@ served securely, which has no `crypto.randomUUID()` and no clipboard: make ids s
 A named header bubble that carries on from one elsewhere along the header slides over from there.
 
 What is beside a chat on a wider screen comes over all of it from the far edge, as the page moves
-a little aside beneath it, and is had back from that edge as on a wider screen: pulled out, which
-brings it as far as it is pulled, or tapped, where a pill shows. It goes by a back button at the
-start of its header, or swiped back off the edge from its near one. Going to a chat does not bring
+a little aside beneath it, and is had back by a tap at that edge, where a pill shows. It goes by a
+back button at the start of its header. Neither is swiped: the system's own gestures at the
+window's edges, such as Android's back, would take the swipe. Everything here that moves on its
+own after a tap (the sidebar, the page, the aside) is the browser's own animation of `translate`
+(`NarrowShell`'s `useSlide`), never a value moved from script each frame, which Chrome on Android
+plays at 60 Hz once the finger has lifted, whatever the display's rate. Going to a chat does not bring
 back what was last shown beside it, which would cover the chat. `SidePane` (`narrow`) is then as
 big as it gets: no Expand, Collapse or full screen, and the step down is that back button. It
 fills the window, so the bar squares off its surface's corners as in full screen. The scripted

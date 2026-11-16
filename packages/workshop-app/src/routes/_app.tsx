@@ -360,7 +360,6 @@ const AppFrame = () => {
           status={status}
           aside={pageItem ? undefined : asideElement}
           onOpenAside={openAside}
-          onCloseAside={closeAside}
         >
           {pageItem ? asideElement : <Outlet />}
         </NarrowShell>
