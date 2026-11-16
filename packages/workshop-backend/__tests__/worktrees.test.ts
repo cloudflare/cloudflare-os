@@ -1202,3 +1202,46 @@ describe("logs from the born-pinned version", () => {
         .toBe("one?\n");
   }));
 });
+
+// A spawned agent may modify only worktrees (see assertMayModifyWorkpiece in agent.ts), so its
+// chat holds no gadget changes, not even a user's: one filed there would be credited to the agent.
+describe("a spawned agent's chat", () => {
+  function addSpawnedChat(impl: any, id: number): void {
+    addChat(impl, id);
+    impl.storage.chatContext.put(
+        { chatId: id, spawnerConfig: { displayName: "Spawner", modelId: null, env: {} } });
+  }
+
+  it("takes a user's changes to its worktrees but not to a gadget", () => withImpl(async impl => {
+    addSpawnedChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let { id, baseCommit } = await createThroughBarrier(impl, 1, c1);
+    let gadget = impl.createGadget("Gadget", "GADGET_X", undefined, undefined, c1);
+
+    expect(await submit(impl, 1, "cli-worktree", { [id]: [["notes.txt", { set: "live\n" }]] },
+                        [{ gadgetId: id, baseCommit }]))
+        .toEqual({ generation: 0, revision: 1 });
+    await expect(submit(impl, 1, "cli-gadget", { [gadget.id]: [["a.txt", { set: "two\n" }]] }))
+        .rejects.toThrow(/spawned agent's chat can't hold changes to a gadget/);
+    await expect(submit(impl, 1, "cli-both", {
+      [id]: [["notes.txt", { set: "again\n" }]],
+      [gadget.id]: [["a.txt", { set: "two\n" }]],
+    })).rejects.toThrow(/spawned agent's chat can't hold changes to a gadget/);
+    expect(codeBaseOf(impl, 1).pins.map(pin => pin.gadgetId)).toEqual([id]);
+  }));
+
+  it("refuses a client's gadget creation and provisional binding in it",
+      () => withClient(async (impl, client) => {
+    addSpawnedChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let gadget = impl.createGadget("Gadget", "GADGET_X", undefined, undefined, c1);
+
+    await expect(client.createGadget("Draft", 1, "DRAFT"))
+        .rejects.toThrow(/spawned agent's chat can't hold changes to a gadget/);
+    using stub = await client.getGadget(gadget.id);
+    await expect(stub.bind("RES", 999, 1))
+        .rejects.toThrow(/spawned agent's chat can't hold changes to a gadget/);
+    expect(chatMessages(impl, 1).filter(msg => msg.type === "changes")).toEqual([]);
+    expect([...impl.storage.gadgets.list()].map((g: { id: number }) => g.id)).toEqual([gadget.id]);
+  }));
+});

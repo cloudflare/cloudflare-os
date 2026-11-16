@@ -3072,10 +3072,17 @@ export type UiBundle = {
  * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
  * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
  * proxies through the frame.
- *
- * It has no methods yet.
  */
-export interface GadgetHost {}
+export interface GadgetHost {
+  /**
+   * Shows the user the chat of an agent this gadget spawned, named by its
+   * `SpawnedAgent.getChatToken()` (see `AiChatMetadata.chatToken`). The Workshop opens the chat in
+   * its chat sidebar. Does nothing where there is no chat sidebar (a use-only view, or a
+   * browser-mode export) or while the gadget isn't on screen. Throws if the token names no chat in
+   * this workspace.
+   */
+  openAgentChat(chatToken: string): Promise<void>;
+}
 
 /** One module of a Gadget UI. */
 export type UiModule = {
@@ -3386,7 +3393,9 @@ export interface Overseer extends RpcTarget {
    * `createdGadgets`), and the gadget remains pending (see WorkpieceSummary.chatId) until
    * the user accepts the chat's changes through that message (merging deletes the pending marker;
    * reverting deletes the gadget). Without `chatId` the gadget is created permanently, with an
-   * empty initial commit as its head (see WorkpieceSummary.commitId).
+   * empty initial commit as its head (see WorkpieceSummary.commitId). Throws if `chatId` names a
+   * spawned agent's chat (see AiChatMetadata.spawnerName), which may hold changes only to
+   * worktrees.
    *
    * `bindingName` is the name under which the gadget appears in chat envs and the workspace
    * default binding list (see validateBindingName()). When absent, the server chooses one from
@@ -3509,6 +3518,9 @@ export interface Overseer extends RpcTarget {
    * While an agent turn is active, the call throws a retryable error: keep the queued change and
    * resubmit after the turn ends. (The UI already locks editing during turns; this backstops
    * races.)
+   *
+   * A spawned agent's chat (see AiChatMetadata.spawnerName) may hold changes only to its
+   * worktrees, as its agent may: a submission touching a gadget there is rejected.
    *
    * A submission still rooted in the *previous* generation, when that generation was closed by
    * a merge (a content-preserving bump; see ChatCodeBase.generation), is transformed across the
@@ -4196,6 +4208,14 @@ export type AiChatMetadata = {
    * `Overseer.stopAgent`). Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
+
+  /**
+   * An opaque random ID for the chat. Unlike `id`, a small integer anyone could guess, it can name
+   * the chat to a gadget: the agent spawner that created the chat hands it to the gadget
+   * (`SpawnedAgent.getChatToken()`), whose UI passes it to `GadgetHost.openAgentChat()` to show the
+   * chat. It grants no access to the chat. Absent on chats created before it was introduced.
+   */
+  chatToken?: string;
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
@@ -6501,7 +6521,8 @@ export interface GadgetClient extends WorkpieceClient {
    *
    * If `chatId` is provided, the binding is treated like an edit made in the given chat -- it is
    * proposed, but someone needs to click "accept changes" (call `mergeChanges()`) to make it
-   * final. Until then it exists only in the given chat.
+   * final. Until then it exists only in the given chat. Throws if `chatId` names a spawned
+   * agent's chat (see AiChatMetadata.spawnerName), which may hold changes only to worktrees.
    */
   bind(name: string, target: WorkpieceId, chatId?: number): Promise<void>;
 

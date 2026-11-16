@@ -1201,6 +1201,7 @@ describe("applying a blueprint to a gadget", () => {
       let meta = impl.chatMetaForClient(impl.storage.chatMeta.get(chatId));
       expect(meta).toMatchObject({
         title: "Update from blueprint: Alice's", proposedChangeWorkpieces: [before.id],
+        chatToken: expect.stringMatching(/^[0-9a-f-]{36}$/),
       });
       expect(meta.activeAgent).toBeUndefined();
       expect([...impl.storage.chats.list({ prefix: `${keyString(chatId)}.` })])

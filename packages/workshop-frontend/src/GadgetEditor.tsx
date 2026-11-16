@@ -34,6 +34,7 @@ import {
   BlueprintOutput,
   WorkpiecesSubscriber,
   NotificationMute,
+  AiChatMetadata,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -78,6 +79,7 @@ import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
+import { ChatTokenIndex } from './features/chat/agents/chatTokenIndex'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -482,9 +484,10 @@ export default function GadgetEditor() {
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
-  const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
-    useSearch({ strict: false }) as { chat?: number; w?: number; showChat?: true }
+  const { chat: chatParam, agent: agentParam, w: workpieceParam, showChat: showChatParam } =
+    useSearch({ strict: false }) as { chat?: number; agent?: number; w?: number; showChat?: true }
   const urlChatId = chatParam !== undefined ? chatParam : null
+  const agentChatId = agentParam !== undefined ? agentParam : null
   const urlWorkpieceId = workpieceParam !== undefined ? workpieceParam : null
 
   // ── toasts ─────────────────────────────────────────────────────────────────────
@@ -738,9 +741,10 @@ export default function GadgetEditor() {
   // an accepted gadget exists, dropping back to the chat list should become possible.
   const pinInitialChatSelection =
     singleInitialChat && !hasCommittedCode && !userNavigatedToList
-  const effectiveSelectedChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
-  const isViewActive = agentActivity.chatId === effectiveSelectedChatId && agentActivity.active
-  const isAgentActive = effectiveSelectedChatId !== null && isViewActive
+  // The chat the user works in, which the gadget pane follows: its drafts, the preview, the
+  // console logs. A spawned agent's chat is never it, though one can be shown over it.
+  const workingChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
+  const shownChatId = agentChatId ?? workingChatId
 
   // ── workpiece selection ──────────────────────────────────────────────────────
 
@@ -767,23 +771,25 @@ export default function GadgetEditor() {
 
   const visibleGadgets = useMemo(() => {
     return allGadgets.filter(w =>
-      w.chatId === undefined || w.chatId === effectiveSelectedChatId)
-  }, [allGadgets, effectiveSelectedChatId])
+      w.chatId === undefined || w.chatId === workingChatId)
+  }, [allGadgets, workingChatId])
 
-  // Everything the pane can show for the selected chat: the visible gadgets, then the chat's own
+  // Everything the pane can show for the working chat: the visible gadgets, then the chat's own
   // worktrees (a worktree is chat-scoped for its whole life, exactly as a pending gadget is
-  // until accepted).
+  // until accepted), and those of a spawned agent's chat shown over it, the one kind of
+  // workpiece such a chat can own.
   const visibleWorkpieces: WorkpieceSummary[] = useMemo(() => [
     ...visibleGadgets,
-    ...allWorktrees.filter(w => w.chatId === effectiveSelectedChatId),
-  ], [visibleGadgets, allWorktrees, effectiveSelectedChatId])
+    ...allWorktrees.filter(w => w.chatId === workingChatId),
+    ...agentChatId !== null ? allWorktrees.filter(w => w.chatId === agentChatId) : [],
+  ], [visibleGadgets, allWorktrees, workingChatId, agentChatId])
 
   // Gadgets still pending (created within) the selected chat: their chat content builds up from
   // nothing rather than from a pinned commit (see WorkpieceCodeInterface's pendingGadgetIds).
   const pendingGadgetIds = useMemo(() => new Set(
-    allGadgets.filter(w => w.chatId !== undefined && w.chatId === effectiveSelectedChatId)
+    allGadgets.filter(w => w.chatId !== undefined && w.chatId === workingChatId)
       .map(w => w.id)
-  ), [allGadgets, effectiveSelectedChatId])
+  ), [allGadgets, workingChatId])
 
   // The selected workpiece: explicit URL state wins, followed by the one open in this session
   // (only accepted apps are persisted), then the workspace default and the first visible one.
@@ -809,6 +815,12 @@ export default function GadgetEditor() {
   // export, blueprints) key off this and render their empty states for a worktree.
   const selectedGadgetSummary =
     selectedWorkpieceSummary?.type === 'gadget' ? selectedWorkpieceSummary : undefined
+  // The chat whose code the pane shows: the selected workpiece's own, if it is chat-scoped (a
+  // draft of the working chat, or a worktree of it or of the agent chat shown over it), else the
+  // working chat. A gadget never belongs to a spawned agent's chat, so neither does the frame.
+  const paneChatId = selectedWorkpieceSummary?.chatId ?? workingChatId
+  const isViewActive = agentActivity.chatId === paneChatId && agentActivity.active
+  const isAgentActive = paneChatId !== null && isViewActive
   const selectedGadgetId = selectedGadgetSummary?.id ?? null
   // A gadget still pending in a chat has no committed code for an update to be merged into.
   const canUpdateFromBlueprint = selectedGadgetSummary?.commitId !== undefined
@@ -855,9 +867,9 @@ export default function GadgetEditor() {
   // selection, in which case gadget-dependent views render their empty states for a frame.
   const selectedGadgetStub =
     gadget !== null && gadget.id === selectedGadgetId ? gadget.stub : null
-  // Only the selected chat's streaming drives this editor. Everything downstream then narrows it
+  // Only the pane chat's streaming drives this editor. Everything downstream then narrows it
   // further to the selected workpiece.
-  const streamingActiveFile = streamingActiveFileState?.chatId === effectiveSelectedChatId
+  const streamingActiveFile = streamingActiveFileState?.chatId === paneChatId
     ? streamingActiveFileState.file
     : undefined
   // The file the agent is streaming edits into, when it is in the selected workpiece. (Edits
@@ -954,18 +966,20 @@ export default function GadgetEditor() {
   // chat-scoped instance with identical code (the backend applies the same per-gadget rule in
   // getGadgetFacetFetcher).
   const previewChatId =
-    effectiveSelectedChatId !== null && selectedGadgetId !== null &&
+    workingChatId !== null && selectedGadgetId !== null &&
         selectedChatProposedWorkpieces.includes(selectedGadgetId)
-      ? effectiveSelectedChatId
+      ? workingChatId
       : undefined
 
   // ── console log buffering ────────────────────────────────────────────────────
   const consoleLogSubscriberRef = useRef(new ConsoleLogSubscriberImpl())
   const consoleLogBufferRef = useRef<BufferedLogEntry[]>([])
   const [consoleLogCount, setConsoleLogCount] = useState(0)
-  const selectedChatIdRef = useRef(effectiveSelectedChatId)
-  selectedChatIdRef.current = effectiveSelectedChatId
-  consoleLogSubscriberRef.current.selectedChatIdRef = selectedChatIdRef
+  const workingChatIdRef = useRef(workingChatId)
+  workingChatIdRef.current = workingChatId
+  const paneChatIdRef = useRef(paneChatId)
+  paneChatIdRef.current = paneChatId
+  consoleLogSubscriberRef.current.selectedChatIdRef = workingChatIdRef
   consoleLogSubscriberRef.current.logBufferRef = consoleLogBufferRef
   consoleLogSubscriberRef.current.onBufferUpdated = () =>
     setConsoleLogCount(consoleLogBufferRef.current.length)
@@ -973,7 +987,11 @@ export default function GadgetEditor() {
   useEffect(() => {
     consoleLogBufferRef.current = []
     setConsoleLogCount(0)
-  }, [effectiveSelectedChatId])
+  }, [workingChatId])
+
+  // The gadget's logs are the working chat's, offered to its agent only. They wait while a spawned
+  // agent's chat is shown over it.
+  const shownConsoleLogCount = agentChatId === null ? consoleLogCount : 0
 
   const consumeConsoleLogs = useCallback((): string => {
     const logs = consoleLogBufferRef.current
@@ -992,7 +1010,7 @@ export default function GadgetEditor() {
   const handleClientConsoleLog = useCallback((log: ConsoleLogEvent) => {
     const method = (console as any)[log.level] ?? console.log
     method('client:', ...log.message)
-    if (selectedChatIdRef.current !== null) {
+    if (workingChatIdRef.current !== null) {
       consoleLogBufferRef.current.push({ ...log, source: 'client' as const })
       setConsoleLogCount(consoleLogBufferRef.current.length)
     }
@@ -1072,7 +1090,7 @@ export default function GadgetEditor() {
     for (const app of newlyCreated) known.add(app.id)
 
     const target = newlyCreated.findLast(app =>
-      app.chatId !== undefined && app.chatId === effectiveSelectedChatId)
+      app.chatId !== undefined && app.chatId === workingChatId)
     if (!target) return
 
     setActiveTab('app')
@@ -1083,7 +1101,7 @@ export default function GadgetEditor() {
       search: (prev: Record<string, unknown>) => ({ ...prev, w: target.id }),
       replace: true,
     })
-  }, [workpiecesReady, allGadgets, effectiveSelectedChatId, setWorkspaceVisibility, navigate, id])
+  }, [workpiecesReady, allGadgets, workingChatId, setWorkspaceVisibility, navigate, id])
 
   useEffect(() => {
     const handleResize = () => {
@@ -1118,7 +1136,7 @@ export default function GadgetEditor() {
   const showCodeIfNoUi = useCallback(() => {
     const output = turnOutputRef.current
     if (!output?.wroteFile || output.userSelectedTab) return
-    if (output.chatId !== selectedChatIdRef.current) return
+    if (output.chatId !== paneChatIdRef.current) return
     if (activeTabRef.current !== 'app' || !appShowsNoUiRef.current) return
     output.showedCode = true
     setActiveTab('code')
@@ -1130,7 +1148,7 @@ export default function GadgetEditor() {
   }, [showCodeIfNoUi])
 
   const handleAgentActiveChange = useCallback((chatId: number | null, isActive: boolean) => {
-    if (chatId !== selectedChatIdRef.current) return
+    if (chatId !== paneChatIdRef.current) return
     setAgentActivity({chatId, active: isActive})
     if (chatId === null) {
       turnOutputRef.current = null
@@ -1154,7 +1172,7 @@ export default function GadgetEditor() {
 
   const handleStreamingActiveFileChange = useCallback(
       (chatId: number, file: ActiveFileTarget | null | undefined) => {
-    if (file && chatId === selectedChatIdRef.current) {
+    if (file && chatId === paneChatIdRef.current) {
       let output = turnOutputRef.current
       if (!output || output.chatId !== chatId) {
         output = {chatId, wroteFile: false, showedCode: false, userSelectedTab: false}
@@ -1168,7 +1186,7 @@ export default function GadgetEditor() {
 
   const handleTabSelect = useCallback((tab: RightTab) => {
     let output = turnOutputRef.current
-    if (output?.chatId === selectedChatIdRef.current) output.userSelectedTab = true
+    if (output?.chatId === paneChatIdRef.current) output.userSelectedTab = true
     setActiveTab(tab)
   }, [])
 
@@ -1219,19 +1237,78 @@ export default function GadgetEditor() {
   // Notifications and read receipts apply only to the chat on screen, not one covered by a
   // full-screen preview or, on a phone, by the workspace pane.
   useEffect(() => {
-    if (!chatRendered || isGadgetFullscreen || effectiveSelectedChatId === null) return
-    const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
+    if (!chatRendered || isGadgetFullscreen || shownChatId === null) return
+    const chat = { workspaceId: id!, chatId: shownChatId }
     return reportVisibleChat(() => showFullEditor && isSinglePaneLayout() ? null : chat)
-  }, [chatRendered, isGadgetFullscreen, effectiveSelectedChatId, id, showFullEditor])
+  }, [chatRendered, isGadgetFullscreen, shownChatId, id, showFullEditor])
+
+  // ── the workspace's chats ────────────────────────────────────────────────────
+  const [chatTokens] = useState(() => new ChatTokenIndex())
+  // Whether each of the workspace's chats is a spawned agent's, once ChatInterface has listed
+  // them. Read through the ref, which is current at once: a gadget opening a spawned agent's chat
+  // can find its token in the same report that first lists the chat, and must then open it as
+  // one. The key only re-runs what depends on the kinds.
+  const spawnedByChatIdRef = useRef<ReadonlyMap<number, boolean> | null>(null)
+  const [chatKindsKey, setChatKindsKey] = useState<string | null>(null)
+  const handleChatListChange = useCallback((chats: readonly AiChatMetadata[]) => {
+    const spawnedByChatId = new Map(chats.map(chat => [chat.id, !!chat.spawnerName] as const))
+    spawnedByChatIdRef.current = spawnedByChatId
+    setChatKindsKey([...spawnedByChatId].map(([chatId, spawned]) => `${chatId}${spawned ? 's' : ''}`)
+      .toSorted().join())
+    chatTokens.update(new Map(chats.flatMap(chat =>
+      chat.chatToken === undefined ? [] : [[chat.chatToken, chat.id] as const])))
+  }, [chatTokens])
+  const isSpawnedChat = (chatId: number) => spawnedByChatIdRef.current?.get(chatId) === true
+  // Forgotten on leaving the workspace, before the next one's ChatInterface reports its own.
+  useEffect(() => () => {
+    spawnedByChatIdRef.current = null
+    setChatKindsKey(null)
+  }, [id])
+
+  // Links name every chat as `chat` (a notification's, say), so once the chats are known, move a
+  // spawned agent's chat to `agent`, over no working chat, and a chat that isn't one back to
+  // `chat`. An `agent` naming no chat is dropped, and so is a working chat deleted under one (the
+  // chat pane leaves only a deleted chat it shows). A chat too new to be listed can't be the
+  // working chat under an agent's, since opening it closes the agent's.
+  useEffect(() => {
+    const spawnedByChatId = spawnedByChatIdRef.current
+    if (spawnedByChatId === null) return
+    let chat = urlChatId
+    let agent = agentChatId
+    if (chat !== null && spawnedByChatId.get(chat) === true) {
+      agent = chat
+      chat = null
+    } else if (agent !== null && spawnedByChatId.get(agent) !== true) {
+      if (spawnedByChatId.has(agent)) chat = agent
+      agent = null
+    } else if (agent !== null && chat !== null && !spawnedByChatId.has(chat)) {
+      chat = null
+    }
+    if (chat === urlChatId && agent === agentChatId) return
+    navigate({
+      to: '/workspace/$id',
+      params: { id: id! },
+      search: (prev: Record<string, unknown>) => ({
+        ...prev, chat: chat ?? undefined, agent: agent ?? undefined,
+      }),
+      replace: true,
+    })
+  }, [chatKindsKey, urlChatId, agentChatId, navigate, id])
 
   // ── navigation helper ────────────────────────────────────────────────────────
+  // A spawned agent's chat opens over the working chat, which the gadget pane goes on showing,
+  // and Back from it returns there. Any other chat, or the list, replaces the working chat.
   const navigateToChat = useCallback(
     (chatId: number | null, options?: { replace?: boolean }) => {
-      setUserNavigatedToList(chatId === null)
+      const overWorkingChat = chatId !== null ? isSpawnedChat(chatId) : agentChatId !== null
+      if (!overWorkingChat) setUserNavigatedToList(chatId === null)
+      const nextWorkingChatId = overWorkingChat ? workingChatId : chatId
+      const nextAgentChatId = overWorkingChat ? chatId : null
       // Draft apps can only be previewed from their creating conversation; worktrees are theirs
       // for life.
       const pendingChatId = selectedWorkpieceSummary?.chatId
-      const leavingPendingApp = pendingChatId !== undefined && chatId !== pendingChatId
+      const leavingPendingApp = pendingChatId !== undefined &&
+        pendingChatId !== nextWorkingChatId && pendingChatId !== nextAgentChatId
       if (leavingPendingApp) {
         setWorkspaceTransitionEnabled(true)
         if (workspaceView?.mode === 'activity') {
@@ -1246,7 +1323,10 @@ export default function GadgetEditor() {
         // Keep committed selections, but clear draft selections outside their branch.
         search: (prev: Record<string, unknown>) => ({
           ...prev,
-          chat: chatId !== null ? chatId : undefined,
+          chat: overWorkingChat
+            ? typeof prev.chat === 'number' ? prev.chat : undefined
+            : chatId ?? undefined,
+          agent: nextAgentChatId ?? undefined,
           w: leavingPendingApp
             ? undefined
             : typeof prev.w === 'number' ? prev.w : undefined,
@@ -1254,8 +1334,43 @@ export default function GadgetEditor() {
         replace: options?.replace,
       })
     },
-    [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode]
+    // oxlint-disable-next-line exhaustive-deps -- isSpawnedChat reads a ref.
+    [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode, agentChatId, workingChatId]
   )
+
+  // ── chats a gadget asks to show (GadgetHost.openAgentChat) ──────────────────
+  // A gadget may navigate the user only while it is what the user sees: the pane is open on the
+  // app tab, or the gadget is full screen. The gadget stays mounted behind the chat list, Activity
+  // and the other tabs, and there `isVisible` alone would still let it.
+  const shownGadget = {
+    workspaceId: id,
+    gadgetId: selectedGadgetId,
+    onScreen: activeTab === 'app' && !previewMode &&
+      (isGadgetFullscreen || (showFullEditor && !paneShowsActivity)),
+  }
+  const shownGadgetRef = useRef(shownGadget)
+  shownGadgetRef.current = shownGadget
+  const showChat = (chatId: number) => {
+    exitGadgetFullscreen()
+    navigateToChat(chatId)
+    if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+  }
+  const showChatRef = useRef(showChat)
+  showChatRef.current = showChat
+  const handleOpenAgentChat = async (chatToken: string, signal: AbortSignal) => {
+    const requestedBy = shownGadgetRef.current
+    if (!requestedBy.onScreen) return
+    const chatId = await chatTokens.find(chatToken, signal)
+    // The wait may outlast the view that asked, so the request stands only if its frame's session
+    // is still open (the editor may even have unmounted, leaving shownGadgetRef as it was) and that
+    // is still the gadget on screen.
+    const shown = shownGadgetRef.current
+    if (chatId === undefined || signal.aborted || !shown.onScreen ||
+        shown.workspaceId !== requestedBy.workspaceId || shown.gadgetId !== requestedBy.gadgetId) {
+      return
+    }
+    showChatRef.current(chatId)
+  }
 
   // ── keep single-chat routing aligned with the current mode ──────────────────
   // Keep the URL aligned with simple mode's implied chat-0 selection.
@@ -1450,13 +1565,19 @@ export default function GadgetEditor() {
     handleTabSelect(picked?.type === 'worktree' ? 'code' : 'app')
     setWorkspaceVisibility('open', workpieceId)
     const pendingChatId = picked?.chatId
+    // A spawned agent's worktree opens its chat over the working chat, as navigateToChat does.
+    const ownerIsAgent = pendingChatId !== undefined && isSpawnedChat(pendingChatId)
     navigate({
       to: '/workspace/$id',
       params: { id: id! },
       // Selecting a draft also returns to its creating conversation.
       search: (prev: Record<string, unknown>) => ({
         ...prev,
-        chat: pendingChatId ?? (typeof prev.chat === 'number' ? prev.chat : undefined),
+        chat: (ownerIsAgent ? undefined : pendingChatId) ??
+          (typeof prev.chat === 'number' ? prev.chat : undefined),
+        agent: ownerIsAgent ? pendingChatId
+          : pendingChatId === undefined && typeof prev.agent === 'number' ? prev.agent
+          : undefined,
         w: workpieceId,
       }),
     })
@@ -2038,16 +2159,18 @@ export default function GadgetEditor() {
                   workspaceId={id}
                   overseer={overseer.stub}
                   restricted={metadata?.containsRestrictedData === true}
-                  selectedChatId={effectiveSelectedChatId}
+                  selectedChatId={shownChatId}
+                  codeChatId={paneChatId}
+                  returnChatId={agentChatId !== null ? workingChatId : null}
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
                   onLiveRowsChange={setLiveRows}
                   onLiveEditPreviewsChange={setLiveEditPreviews}
                   chatContent={chatContent}
                   onStreamingActiveFileChange={handleStreamingActiveFileChange}
-                  pendingConsoleLogCount={consoleLogCount}
+                  pendingConsoleLogCount={shownConsoleLogCount}
                   consoleLogPreview={
-                    consoleLogCount > 0 ? formatConsoleLogs(consoleLogBufferRef.current) : ''
+                    shownConsoleLogCount > 0 ? formatConsoleLogs(consoleLogBufferRef.current) : ''
                   }
                   consoleLogSeverity={
                     consoleLogBufferRef.current.some(l => l.level === 'error')
@@ -2060,6 +2183,7 @@ export default function GadgetEditor() {
                   onDiscardConsoleLogs={discardConsoleLogs}
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
+                  onChatListChange={handleChatListChange}
                   onAgentActiveChange={handleAgentActiveChange}
                   autoApproval={autoApproval}
                   onViewActivity={openActivity}
@@ -2259,6 +2383,7 @@ export default function GadgetEditor() {
                   onConsoleLog={handleClientConsoleLog}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                   onNoUiChange={handleNoUiChange}
+                  onOpenAgentChat={handleOpenAgentChat}
                 />
               ) : !previewMode && (
                 <NoGadgetPlaceholder height="100%" />
@@ -2285,7 +2410,7 @@ export default function GadgetEditor() {
                   overseer={overseer.stub}
                   summary={selectedWorkpieceSummary}
                   height="100%"
-                  selectedChatId={effectiveSelectedChatId}
+                  selectedChatId={paneChatId}
                   chatChanges={chatChanges}
                   liveRows={liveRows}
                   liveEditPreviews={liveEditPreviews}
@@ -2307,7 +2432,7 @@ export default function GadgetEditor() {
                   key={selectedGadgetId}
                   overseer={overseer.stub}
                   gadget={selectedGadgetStub}
-                  chatId={effectiveSelectedChatId ?? undefined}
+                  chatId={paneChatId ?? undefined}
                   authenticatedApi={authenticatedApi}
                   onConnectionsChange={() => setUiReloadTrigger(t => t + 1)}
                   isVisible={activeTab === 'connections'}

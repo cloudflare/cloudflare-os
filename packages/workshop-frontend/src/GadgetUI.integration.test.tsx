@@ -38,7 +38,7 @@ interface TestGadget {
 // The main object of the frame's session, as the runtime sees it.
 interface TestFrameRoot {
   gadget: TestGadget
-  host: object
+  host: { openAgentChat(chatToken: unknown): Promise<void> }
   reportConsole(level: ConsoleLogEvent['level'], message: string[],
                 at?: { url?: string; line?: number; column?: number }): void
   escape(): void
@@ -778,5 +778,122 @@ describe('GadgetUI bundle errors and modules', () => {
     ] })
 
     await vi.waitFor(() => expect(loadedCode(container)).toContain('"escaped"'))
+  })
+})
+
+describe('GadgetUI host', () => {
+  let container: HTMLDivElement
+  let root: Root
+  const childSessions: RpcStub<TestFrameRoot>[] = []
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    for (const session of childSessions.splice(0)) session[Symbol.dispose]()
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  // Renders the gadget and connects to it as the frame's runtime does, returning the host.
+  async function renderHost(
+      onOpenAgentChat?: (chatToken: string, signal: AbortSignal) => Promise<void>) {
+    const gadget = fakeGadget('value', 'document.body.textContent = "ui"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px"
+        onOpenAgentChat={onOpenAgentChat} />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const { port1, port2 } = new MessageChannel()
+    const frameRoot = newMessagePortRpcSession<TestFrameRoot>(port1)
+    childSessions.push(frameRoot)
+    dispatchIframeHandshake(container.querySelector('iframe')!, port2)
+    await expect(frameRoot.gadget.read()).resolves.toBe('value')
+    return frameRoot.host
+  }
+
+  it('hands openAgentChat() to the page with the token', async () => {
+    const onOpenAgentChat = vi.fn<(chatToken: string, signal: AbortSignal) => Promise<void>>(async () => {})
+    const host = await renderHost(onOpenAgentChat)
+
+    await host.openAgentChat('tok-a')
+    expect(onOpenAgentChat).toHaveBeenCalledWith('tok-a', expect.any(AbortSignal))
+  })
+
+  it('refuses a token that is not a string, and does nothing without a handler', async () => {
+    const onOpenAgentChat = vi.fn<(chatToken: string, signal: AbortSignal) => Promise<void>>(async () => {})
+    const host = await renderHost(onOpenAgentChat)
+    await expect(host.openAgentChat(7)).rejects.toThrow('chatToken must be a string.')
+    expect(onOpenAgentChat).not.toHaveBeenCalled()
+
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    const unhandled = await renderHost()
+    await expect(unhandled.openAgentChat('tok-a')).resolves.toBeUndefined()
+  })
+
+  it("aborts a request still in progress once the frame's session ends", async () => {
+    let signal!: AbortSignal
+    const opened = deferred<void>()
+    const host = await renderHost(async (_chatToken, requestSignal) => {
+      signal = requestSignal
+      await opened.promise
+    })
+    void host.openAgentChat('tok-a').catch(() => {})
+    await vi.waitFor(() => expect(signal).toBeDefined())
+    expect(signal.aborted).toBe(false)
+
+    await act(async () => root.unmount())
+    expect(signal.aborted).toBe(true)
+    opened.resolve()
+    root = createRoot(container)
+  })
+
+  it('aborts a request still in progress once the frame disposes its session', async () => {
+    let signal!: AbortSignal
+    const opened = deferred<void>()
+    const host = await renderHost(async (_chatToken, requestSignal) => {
+      signal = requestSignal
+      await opened.promise
+    })
+    void host.openAgentChat('tok-a').catch(() => {})
+    await vi.waitFor(() => expect(signal).toBeDefined())
+
+    childSessions.pop()![Symbol.dispose]()
+    await vi.waitFor(() => expect(signal.aborted).toBe(true))
+    opened.resolve()
+  })
+
+  it('aborts a request still in progress once a reload replaces its frame', async () => {
+    let signal!: AbortSignal
+    const opened = deferred<void>()
+    const onOpenAgentChat = async (_chatToken: string, requestSignal: AbortSignal) => {
+      signal = requestSignal
+      await opened.promise
+    }
+    const gadget = fakeGadget('value', 'document.body.textContent = "ui"')
+    const render = (reloadTrigger: number) => root.render(
+      <GadgetUI gadget={gadget.stub} height="100px" reloadTrigger={reloadTrigger}
+        onOpenAgentChat={onOpenAgentChat} />,
+    )
+    await act(async () => render(0))
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+    const { port1, port2 } = new MessageChannel()
+    const frameRoot = newMessagePortRpcSession<TestFrameRoot>(port1)
+    childSessions.push(frameRoot)
+    dispatchIframeHandshake(iframe, port2)
+    await expect(frameRoot.gadget.read()).resolves.toBe('value')
+    void frameRoot.host.openAgentChat('tok-a').catch(() => {})
+    await vi.waitFor(() => expect(signal).toBeDefined())
+
+    // No new frame has connected yet, so only the replacement itself can end the request.
+    await act(async () => render(1))
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBe(iframe))
+    expect(signal.aborted).toBe(true)
+    opened.resolve()
   })
 })

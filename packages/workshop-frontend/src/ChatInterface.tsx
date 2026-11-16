@@ -2358,20 +2358,28 @@ interface ChatInterfaceProps {
   // Latched actions are never auto-approved, so the always-approve affordance is hidden.
   restricted?: boolean;
   selectedChatId: number | null;
+  // The chat whose code the host's code view shows, when that isn't the selected chat: the
+  // Workshop shows a spawned agent's chat over the chat the user works in, whose code it keeps
+  // showing. The reports below marked "the code chat's" follow it. Defaults to `selectedChatId`.
+  codeChatId?: number | null;
+  // The chat Back returns to (by calling `onNavigateToChat(null)`) when that isn't the list: the
+  // chat a spawned agent's chat is shown over. Only names it.
+  returnChatId?: number | null;
   onNavigateToChat: (
     chatId: number | null,
     options?: { replace?: boolean },
   ) => void;
-  // The selected chat's code-branch snapshot (see ChatCodeChanges): its code base and the
+  // The code chat's code-branch snapshot (see ChatCodeChanges): its code base and the
   // current epoch's recorded changes, delivered together so the code view always layers a
   // consistent pair.
   onChatChangesChange?: (changes: ChatCodeChanges | undefined) => void;
-  // The selected chat's live (unmaterialized) change rows, delivered separately from the durable
+  // The code chat's live (unmaterialized) change rows, delivered separately from the durable
   // snapshot so per-keystroke row arrivals don't churn it (see ChatLiveChangeRows).
   onLiveRowsChange?: (rows: ChatLiveChangeRows | undefined) => void;
-  // The selected chat's live edit-preview stream, stable per chat like the row stream (see
+  // The code chat's live edit-preview stream, stable per chat like the row stream (see
   // ChatLiveEditPreviews).
   onLiveEditPreviewsChange?: (previews: ChatLiveEditPreviews | undefined) => void;
+  // The file the code chat's agent is editing.
   onStreamingActiveFileChange?: (chatId: number, file: ActiveFileTarget | null | undefined) => void;
   // The selected chat's uncommitted content, which accepting its changes first checks for merge
   // conflicts nobody resolved. Without it the changes are accepted unchecked.
@@ -2382,7 +2390,9 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
-  // With no selected chat, report whether any chat in the workspace is running.
+  // Reports the workspace's chats once they have loaded, and again whenever any changes.
+  onChatListChange?: (chats: readonly AiChatMetadata[]) => void;
+  // Whether the code chat's agent is running; with no code chat, whether any chat's is.
   onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
   // Shared with the Activity pane, which is the other surface that changes these rules. Rules
   // are not subscribable (listAutoApprovedActionKinds is a one-shot read), so without this a
@@ -2576,6 +2586,8 @@ function ChatInterface({
   overseer,
   restricted,
   selectedChatId,
+  codeChatId: codeChatIdProp,
+  returnChatId,
   onNavigateToChat,
   onChatChangesChange,
   onLiveRowsChange,
@@ -2588,6 +2600,7 @@ function ChatInterface({
   onConsumeConsoleLogs,
   onDiscardConsoleLogs,
   onChatCountChange,
+  onChatListChange,
   onAgentActiveChange,
   autoApproval,
   onViewActivity,
@@ -2661,7 +2674,16 @@ function ChatInterface({
   // Fetching the page before the selected chat's compaction boundary.
   const [isLoadingEarlier, setIsLoadingEarlier] = useState(false);
   const [updateCounter, setUpdateCounter] = useState(0); // Force re-render when cache updates
-  const [proposedChangesVersion, setProposedChangesVersion] = useState(0); // Incremented only for change-affecting messages
+  // Each chat's count of change-affecting events (a "changes" or "revert" message, a loaded page).
+  // Kept per chat so that one chat's events don't resend another's unchanged code snapshot, which
+  // the editor would take as new code and reload a draft's preview for.
+  const changesVersionsRef = useRef(new Map<number, number>());
+  const [, setChangesVersionTick] = useState(0);
+  // Reads only refs and a state setter, so the subscriber's first-render copy stays current.
+  const bumpChangesVersion = (chatId: number) => {
+    changesVersionsRef.current.set(chatId, (changesVersionsRef.current.get(chatId) ?? 0) + 1);
+    setChangesVersionTick((prev) => prev + 1);
+  };
   // Rows live in refs (chatChangeRowsRef); this state only forces re-renders of their readers (the
   // draft banner) as rows arrive or get pruned. Subscribed consumers are fed synchronously and
   // don't depend on it (see ChatLiveChangeRows).
@@ -2846,7 +2868,7 @@ function ChatInterface({
     let oldest = cacheRef.current.compacted.get(chatId)?.[0];
     if (oldest === undefined || await refreshBoundaryRef.current(chatId, oldest.to + 1)) {
       staleBoundaryChatsRef.current.delete(chatId);
-      setProposedChangesVersion((prev) => prev + 1);
+      bumpChangesVersion(chatId);
     }
   };
 
@@ -2863,6 +2885,9 @@ function ChatInterface({
 
   // Refs for accessing current values in subscriber callbacks
   const selectedChatIdRef = useRef<number | null>(null);
+  const codeChatId = codeChatIdProp === undefined ? selectedChatId : codeChatIdProp;
+  const codeChatIdRef = useRef(codeChatId);
+  codeChatIdRef.current = codeChatId;
   const onNavigateToChatRef = useRef(onNavigateToChat);
   onNavigateToChatRef.current = onNavigateToChat;
 
@@ -3013,6 +3038,12 @@ function ChatInterface({
       onChatCountChangeRef.current?.(chatList.length, hasChatZero);
     }
   }, [chatList.length, chatListReady, hasChatZero]);
+
+  const onChatListChangeRef = useRef(onChatListChange);
+  onChatListChangeRef.current = onChatListChange;
+  useEffect(() => {
+    if (chatListReady) onChatListChangeRef.current?.(chatList);
+  }, [chatList, chatListReady]);
 
   // Notify parent which workpieces any chat proposes changes to (code written but not merged).
   // Keyed on the set's content, since chat metadata is redelivered wholesale on every lastActive
@@ -3180,17 +3211,22 @@ function ChatInterface({
   // Keyed on the list's *content*: metadata is redelivered wholesale on every lastActive bump,
   // and pushing a fresh (but equal) array into the parent's state each time would re-render it
   // for nothing.
-  const currentProposedWorkpieces = currentChatMetadata?.proposedChangeWorkpieces;
-  const currentProposedWorkpiecesKey = currentProposedWorkpieces?.join(",") ?? "";
-  const metadataLoaded = currentChatMetadata !== undefined;
+  const codeChatMetadata =
+    codeChatId !== null ? cacheRef.current.chats.get(codeChatId) : null;
+  const returnChat =
+    returnChatId != null ? cacheRef.current.chats.get(returnChatId) : undefined;
+  const backLabel = returnChat ? `Back to ${returnChat.title}` : "Back to conversations";
+  const codeProposedWorkpieces = codeChatMetadata?.proposedChangeWorkpieces;
+  const codeProposedWorkpiecesKey = codeProposedWorkpieces?.join(",") ?? "";
+  const codeMetadataLoaded = codeChatMetadata !== undefined;
   useEffect(() => {
-    if (selectedChatId !== null && !metadataLoaded) {
+    if (codeChatId !== null && !codeMetadataLoaded) {
       return;
     }
 
-    onSelectedChatProposedChangesChangeRef.current?.(currentProposedWorkpieces ?? []);
-    // oxlint-disable-next-line exhaustive-deps -- currentProposedWorkpieces is covered by its key.
-  }, [currentProposedWorkpiecesKey, metadataLoaded, selectedChatId]);
+    onSelectedChatProposedChangesChangeRef.current?.(codeProposedWorkpieces ?? []);
+    // oxlint-disable-next-line exhaustive-deps -- codeProposedWorkpieces is covered by its key.
+  }, [codeProposedWorkpiecesKey, codeMetadataLoaded, codeChatId]);
 
   const currentRowBuffer =
     selectedChatId !== null ? (chatChangeRowsRef.current.get(selectedChatId) ?? null) : null;
@@ -3205,13 +3241,15 @@ function ChatInterface({
   const provisionalToolCalls = currentProvisionalState?.toolCalls ?? [];
   const useConstrainedChatWidth = sidebarMode || constrainChatWidth;
 
-  const currentStreamingActiveFile = currentProvisionalState?.activeEditingFile;
-  // The selected chat's live-row stream in the subscription shape the code view consumes (see
+  const codeStreamingActiveFile = codeChatId !== null
+    ? provisionalRef.current.get(codeChatId)?.activeEditingFile
+    : undefined;
+  // The code chat's live-row stream in the subscription shape the code view consumes (see
   // ChatLiveChangeRows). Identity is stable per chat -- the subscription itself outlives row
   // arrivals and buffer pruning -- so consumers subscribe once per chat.
-  const currentLiveRows = useMemo((): ChatLiveChangeRows | undefined => {
-    if (selectedChatId === null) return undefined;
-    const chatId = selectedChatId;
+  const codeLiveRows = useMemo((): ChatLiveChangeRows | undefined => {
+    if (codeChatId === null) return undefined;
+    const chatId = codeChatId;
     return {
       chatId,
       subscribe: (listener) => {
@@ -3231,13 +3269,13 @@ function ChatInterface({
         };
       },
     };
-  }, [selectedChatId]);
+  }, [codeChatId]);
 
-  // The selected chat's edit-preview stream in subscription shape (see ChatLiveEditPreviews),
+  // The code chat's edit-preview stream in subscription shape (see ChatLiveEditPreviews),
   // stable per chat like the row stream above.
-  const currentLiveEditPreviews = useMemo((): ChatLiveEditPreviews | undefined => {
-    if (selectedChatId === null) return undefined;
-    const chatId = selectedChatId;
+  const codeLiveEditPreviews = useMemo((): ChatLiveEditPreviews | undefined => {
+    if (codeChatId === null) return undefined;
+    const chatId = codeChatId;
     return {
       chatId,
       subscribe: (listener) => {
@@ -3269,7 +3307,7 @@ function ChatInterface({
         };
       },
     };
-  }, [selectedChatId]);
+  }, [codeChatId]);
 
   const isCompacting = currentProvisionalState?.compacting === true;
 
@@ -3285,18 +3323,18 @@ function ChatInterface({
   // Names the chat's own model in the composer even when the picker no longer offers it.
   const chatAgent = activeAgent ?? inferChatAgentFromMessages(currentMessages);
 
-  const isViewActive = selectedChatId === null
-    ? chatList.some(chat => !!chat.activeAgent) : isAgentActive;
+  const isCodeChatActive = codeChatId === null
+    ? chatList.some(chat => !!chat.activeAgent) : !!codeChatMetadata?.activeAgent;
   const onAgentActiveChangeRef = useRef(onAgentActiveChange);
   onAgentActiveChangeRef.current = onAgentActiveChange;
   const previousAgentStateRef = useRef<{chatId: number | null; active: boolean} | null>(null);
   useEffect(() => {
     const previous = previousAgentStateRef.current;
-    if (!previous || selectedChatId !== previous.chatId || isViewActive !== previous.active) {
-      onAgentActiveChangeRef.current?.(selectedChatId, isViewActive);
+    if (!previous || codeChatId !== previous.chatId || isCodeChatActive !== previous.active) {
+      onAgentActiveChangeRef.current?.(codeChatId, isCodeChatActive);
     }
-    previousAgentStateRef.current = {chatId: selectedChatId, active: isViewActive};
-  }, [isViewActive, selectedChatId]);
+    previousAgentStateRef.current = {chatId: codeChatId, active: isCodeChatActive};
+  }, [isCodeChatActive, codeChatId]);
 
   // Loads the page before the oldest message on screen. Held in a ref because the scroll handler is
   // built once, while the loader closes over state that changes each render.
@@ -3383,20 +3421,22 @@ function ChatInterface({
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
 
-  // Notify parent when the selected chat's code-branch snapshot changes (see ChatCodeChanges):
+  // Notify parent when the code chat's code-branch snapshot changes (see ChatCodeChanges):
   // its ChatCodeBase plus the current epoch's recorded changes, derived together so the code
-  // view never pairs one's stale value with the other's fresh one. Recomputes when
-  // proposedChangesVersion changes (i.e. a "changes" or "revert" message arrives, or a history
-  // page loads) or when the codeBase's *content* changes -- metadata is redelivered on every
+  // view never pairs one's stale value with the other's fresh one. Recomputes when the code chat's
+  // changes version moves (i.e. a "changes" or "revert" message arrives in it, or a page of its
+  // history loads) or when the codeBase's *content* changes -- metadata is redelivered on every
   // chat activity (title, lastActive, ...), so it is deduped by signature. "merge" messages bump
   // neither directly: the epoch reset they perform arrives through the metadata's codeBase
   // (advanced epoch, cleared pins, bumped generation), redelivered with the merge.
-  const currentCodeBaseSignature = currentChatMetadata
-    ? JSON.stringify(currentChatMetadata.codeBase ?? null) : undefined;
+  const codeBaseSignature = codeChatMetadata
+    ? JSON.stringify(codeChatMetadata.codeBase ?? null) : undefined;
+  const codeChangesVersion =
+    codeChatId !== null ? (changesVersionsRef.current.get(codeChatId) ?? 0) : 0;
   useEffect(() => {
-    if (selectedChatId === null || currentCodeBaseSignature === undefined ||
-        !cacheRef.current.messages.has(selectedChatId) ||
-        staleBoundaryChatsRef.current.has(selectedChatId)) {
+    if (codeChatId === null || codeBaseSignature === undefined ||
+        !cacheRef.current.messages.has(codeChatId) ||
+        staleBoundaryChatsRef.current.has(codeChatId)) {
       // No chat selected, its metadata or history hasn't loaded yet, or a revert left its oldest
       // boundary stale -- the code view can't build the chat's doc until all are current.
       onChatChangesChange?.(undefined);
@@ -3405,39 +3445,39 @@ function ChatInterface({
 
     // Read messages and metadata directly from the cache (always current) rather than using the
     // memoized currentMessages, so we don't need them as dependencies.
-    const messages = (cacheRef.current.messages.get(selectedChatId) || []).filter(
+    const messages = (cacheRef.current.messages.get(codeChatId) || []).filter(
       (msg) => msg !== undefined,
     );
-    const codeBase = cacheRef.current.chats.get(selectedChatId)?.codeBase;
+    const codeBase = cacheRef.current.chats.get(codeChatId)?.codeBase;
     const { epochChange, rowsThrough } = computeChatEpochChanges(
       messages,
-      cacheRef.current.compacted.get(selectedChatId)?.[0],
+      cacheRef.current.compacted.get(codeChatId)?.[0],
       codeBase,
     );
 
-    onChatChangesChange?.({ chatId: selectedChatId, codeBase, epochChange, rowsThrough });
+    onChatChangesChange?.({ chatId: codeChatId, codeBase, epochChange, rowsThrough });
   }, [
-    proposedChangesVersion,
-    selectedChatId,
-    currentCodeBaseSignature,
+    codeChangesVersion,
+    codeChatId,
+    codeBaseSignature,
     onChatChangesChange,
   ]);
 
   useEffect(() => {
-    onLiveRowsChange?.(currentLiveRows);
-  }, [currentLiveRows, onLiveRowsChange]);
+    onLiveRowsChange?.(codeLiveRows);
+  }, [codeLiveRows, onLiveRowsChange]);
 
   useEffect(() => {
-    onLiveEditPreviewsChange?.(currentLiveEditPreviews);
-  }, [currentLiveEditPreviews, onLiveEditPreviewsChange]);
+    onLiveEditPreviewsChange?.(codeLiveEditPreviews);
+  }, [codeLiveEditPreviews, onLiveEditPreviewsChange]);
 
   const onStreamingActiveFileChangeRef = useRef(onStreamingActiveFileChange);
   onStreamingActiveFileChangeRef.current = onStreamingActiveFileChange;
   useEffect(() => {
-    if (selectedChatId !== null) {
-      onStreamingActiveFileChangeRef.current?.(selectedChatId, currentStreamingActiveFile);
+    if (codeChatId !== null) {
+      onStreamingActiveFileChangeRef.current?.(codeChatId, codeStreamingActiveFile);
     }
-  }, [currentStreamingActiveFile, selectedChatId]);
+  }, [codeStreamingActiveFile, codeChatId]);
 
   // Deliver one edit-preview event to a chat's subscribers. Touches only refs, so the
   // first-render closures the subscriber instance captures stay correct.
@@ -3599,7 +3639,7 @@ function ChatInterface({
       // -- recomputing here as well would race the metadata and transiently pair the old epoch's
       // updates with the new epoch's (empty) pin set.
       if (msg.type === "changes" || msg.type === "revert") {
-        setProposedChangesVersion((prev) => prev + 1);
+        bumpChangesVersion(msg.chatId);
       }
 
       // A revert reaching past the oldest loaded boundary changed it on the server; see
@@ -3731,7 +3771,7 @@ function ChatInterface({
           provisional.activeEditingFile = event.file ?? null;
           // Also tell the editor straight away. The effect above only runs on re-render, which is
           // too late for the tab to follow the very first file of a turn.
-          if (chatId === selectedChatIdRef.current) {
+          if (chatId === codeChatIdRef.current) {
             onStreamingActiveFileChangeRef.current?.(chatId, event.file ?? null);
           }
           break;
@@ -3937,6 +3977,28 @@ function ChatInterface({
   }, [selectedChatId]);
 
 
+  // Caches a chat's freshly loaded tail page.
+  const applyLoadedHistory = (chatId: number, page: AiChatHistoryPage) => {
+    cacheHistoryPage(chatId, page);
+
+    // Update last message timestamp if needed
+    if (page.messages.length > 0) {
+      const lastMsg = page.messages[page.messages.length - 1];
+      if (
+        !cacheRef.current.lastMessageTimestamp ||
+        lastMsg.timestamp > cacheRef.current.lastMessageTimestamp
+      ) {
+        cacheRef.current.lastMessageTimestamp = lastMsg.timestamp;
+      }
+    }
+
+    // History may contain change-affecting messages that the subscriber
+    // didn't deliver (they predated the subscription). Bump the version so
+    // the proposed-changes effect re-evaluates with the loaded messages.
+    bumpChangesVersion(chatId);
+    forceUpdate();
+  };
+
   // Load chat history when selectedChatId changes to a non-null value
   useEffect(() => {
     if (selectedChatId === null) return;
@@ -3949,25 +4011,7 @@ function ChatInterface({
         try {
           const page = await overseer.getChatHistory(selectedChatId);
           if (cancelled) return;
-
-          cacheHistoryPage(selectedChatId, page);
-
-          // Update last message timestamp if needed
-          if (page.messages.length > 0) {
-            const lastMsg = page.messages[page.messages.length - 1];
-            if (
-              !cacheRef.current.lastMessageTimestamp ||
-              lastMsg.timestamp > cacheRef.current.lastMessageTimestamp
-            ) {
-              cacheRef.current.lastMessageTimestamp = lastMsg.timestamp;
-            }
-          }
-
-          // History may contain change-affecting messages that the subscriber
-          // didn't deliver (they predated the subscription). Bump the version so
-          // the proposed-changes effect re-evaluates with the loaded messages.
-          setProposedChangesVersion((prev) => prev + 1);
-          forceUpdate();
+          applyLoadedHistory(selectedChatId, page);
         } catch (err) {
           console.error("Failed to load chat history:", err);
           // If loading fails (e.g., invalid chat ID), navigate back to chat list
@@ -3988,6 +4032,24 @@ function ChatInterface({
     // LSP reports an error here, but tsc does not.
     // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [selectedChatId, overseer]);
+
+  // The code chat's history too, when another chat is shown over it: the code view's snapshot
+  // is built from it, and after a reload nothing else would load it.
+  useEffect(() => {
+    if (codeChatId === null || codeChatId === selectedChatId ||
+        cacheRef.current.messages.has(codeChatId)) return;
+    const chatId = codeChatId;
+    let cancelled = false;
+    overseer.getChatHistory(chatId).then(
+      (page) => { if (!cancelled) applyLoadedHistory(chatId, page); },
+      (err) => {
+        if (!cancelled && !logRpcFailure("Failed to load the code chat's history:", err)) {
+          reportIssue("chat.code-chat-history", err);
+        }
+      },
+    );
+    return () => { cancelled = true; };
+  }, [codeChatId, selectedChatId, overseer]);
 
   // While the chat is shown, the workspace keeps the model provider's cache of it warm. Disposing
   // the call's promise disposes the lease it resolves to, even if it hasn't resolved yet.
@@ -4014,7 +4076,7 @@ function ChatInterface({
       cacheHistoryPage(selectedChatId, page);
 
       // The page's own change-affecting messages now stand in for the boundary's merged update.
-      setProposedChangesVersion((prev) => prev + 1);
+      bumpChangesVersion(selectedChatId);
       forceUpdate();
     } catch (err) {
       console.error("Failed to load earlier messages:", err);
@@ -5844,8 +5906,8 @@ function ChatInterface({
                   <WorkshopIconButton
                     onClick={() => onNavigateToChat(null)}
                     className="!h-8 !w-8 flex-shrink-0"
-                    title="Back to conversations"
-                    aria-label="Back to conversations"
+                    title={backLabel}
+                    aria-label={backLabel}
                   >
                     <CaretLeft size={14} />
                   </WorkshopIconButton>

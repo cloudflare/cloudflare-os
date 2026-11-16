@@ -400,6 +400,25 @@ describe("renderGadgetInBrowser", () => {
     await vi.waitFor(() => expect(released).toBe(1));
   });
 
+  it("gives the page a host whose openAgentChat() does nothing, with no sidebar to open", async () => {
+    let opened: unknown[] = [];
+    let { harness } = makeHarness(undefined, true, async root => {
+      opened.push(await root.host.openAgentChat("some-chat-token"));
+    });
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      {jsCode: ""},
+      "Test Gadget",
+      new NativeRpcStub(new NativeRpcTarget()) as never,
+      {id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf"},
+    );
+
+    expect(await collect(await stream)).toBe("%PDF-1.4");
+    expect(opened).toEqual([undefined]);
+    expect(harness.browserClosed()).toBe(true);
+  });
+
   it("starts a UI sent as modules by calling main(), mapping capnweb for its modules", async () => {
     let { stream, harness } = render(undefined, true, "application/pdf",
         {modules: [{path: "client.js", code: "export default { main() {} };"}]});
