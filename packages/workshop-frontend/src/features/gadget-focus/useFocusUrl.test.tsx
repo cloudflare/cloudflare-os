@@ -210,6 +210,81 @@ describe('useFocusUrl', () => {
     expect(replaceSearch.mock.calls).toEqual([[{ w: 1, at: undefined }], [{ w: 1, at: undefined }]])
   })
 
+  describe('navigation', () => {
+    it('changes when the anchor is set elsewhere, and not when its own write lands', async () => {
+      await render({ search: { w: 1 } })
+      const { navigation } = focus!
+      focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+      await render({})
+      expect(focus).toMatchObject({ anchor: 'cell/B7', navigation })
+
+      await render({ search: { w: 1, at: 'cell/D4' } })
+      expect(focus).toMatchObject({ anchor: 'cell/D4', navigation: navigation + 1 })
+      await render({ search: { w: 1 } })
+      expect(focus).toMatchObject({ anchor: undefined, navigation: navigation + 2 })
+    })
+
+    it('changes each time the anchor is set back to a spot the frame reported on being sent there', async () => {
+      await render({ search: { w: 1 } })
+      const { navigation } = focus!
+      // As a chip clicked in each of two messages in turn would, with the gadget reporting from
+      // navigate as it is asked to.
+      for (const [index, at] of ['cell/B7', 'cell/C1', 'cell/B7', 'cell/C1'].entries()) {
+        await render({ search: { w: 1, at } })
+        expect(focus!.navigation).toBe(navigation + index + 1)
+        focus!.onFocusChange({ anchor: at, label: at })
+        vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+      }
+    })
+
+    it('changes for a spot the frame reported and left before the URL showed it', async () => {
+      await render({ search: { w: 1 } })
+      focus!.onFocusChange({ anchor: 'cell/A1', label: 'A1' })
+      await render({})
+      const { navigation } = focus!
+      // Held back, and the first never written.
+      focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+      focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
+
+      await render({ search: { w: 1, at: 'cell/B7' } })
+      expect(focus).toMatchObject({ anchor: 'cell/B7', navigation: navigation + 1 })
+      vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+      expect(replaceSearch).toHaveBeenCalledOnce()
+    })
+
+    it("doesn't change as the anchor catches up with writes the URL was slow to show", async () => {
+      await render({ search: { w: 1 } })
+      const { navigation } = focus!
+      focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+      focus!.onFocusChange(null)
+      vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+      focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
+      vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+      expect(replaceSearch).toHaveBeenCalledTimes(3)
+
+      for (const at of ['cell/B7', undefined, 'cell/C1']) {
+        await render({ search: { w: 1, at } })
+        expect(focus).toMatchObject({ anchor: at, navigation })
+      }
+      // Once it has caught up, an earlier spot is one set elsewhere.
+      await render({ search: { w: 1, at: 'cell/B7' } })
+      expect(focus!.navigation).toBe(navigation + 1)
+    })
+
+    it("doesn't change when the URL skips to the last of its writes", async () => {
+      await render({ search: { w: 1 } })
+      const { navigation } = focus!
+      focus!.onFocusChange({ anchor: 'cell/B7', label: 'B7' })
+      focus!.onFocusChange({ anchor: 'cell/C1', label: 'C1' })
+      vi.advanceTimersByTime(FOCUS_URL_WRITE_DELAY_MS)
+
+      await render({})
+      expect(focus).toMatchObject({ anchor: 'cell/C1', navigation })
+      await render({ search: { w: 1, at: 'cell/B7' } })
+      expect(focus!.navigation).toBe(navigation + 1)
+    })
+  })
+
   it('gives no focus without a selected gadget', async () => {
     await render({ selectedGadgetId: null })
     expect(focus).toBeUndefined()

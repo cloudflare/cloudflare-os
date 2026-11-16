@@ -1,7 +1,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 // A gadget UI's frame, in Chromium: how the runtime starts each kind of UI, which jsdom can't run.
 
-import { act } from 'react'
+import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -12,8 +12,10 @@ import {
   type ConsoleLogEvent,
   type GadgetClient,
   type UiBundle,
+  type WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import GadgetUI, { type GadgetUIFocus } from './GadgetUI'
+import { FOCUS_URL_WRITE_DELAY_MS, useFocusUrl } from './features/gadget-focus/useFocusUrl'
 
 class TestGadget extends RpcTarget {
   read() {
@@ -145,9 +147,10 @@ class FocusRecorder {
   // Each navigate call a frame made, settled by the test.
   readonly navigations: { anchor: string; resolve: (result: boolean) => void }[] = []
 
-  focus(anchor: string | undefined): GadgetUIFocus {
+  focus(anchor: string | undefined, navigation: number): GadgetUIFocus {
     return {
       anchor,
+      navigation,
       onFocusChange: focus => this.events.push(`change ${JSON.stringify(focus)}`),
       onFocusReset: () => this.events.push('reset'),
     }
@@ -187,6 +190,7 @@ describe('focus', () => {
 
   beforeEach(() => {
     recorder = new FocusRecorder()
+    shown = undefined
   })
 
   afterEach(() => {
@@ -199,14 +203,25 @@ describe('focus', () => {
   } as unknown as RpcStub<GadgetClient>)
 
   // Renders (or rerenders) a GadgetUI with the focus UI, the anchor and the reload trigger given.
-  const show = async (gadget: RpcStub<GadgetClient>, anchor: string | undefined, reloadTrigger = 0) => {
+  // A changed anchor is one set elsewhere, unless it is the frame's `own` report coming back.
+  let shown: { anchor: string | undefined; navigation: number } | undefined
+  const show = async (
+    gadget: RpcStub<GadgetClient>,
+    anchor: string | undefined,
+    reloadTrigger = 0,
+    change: 'elsewhere' | 'own' = 'elsewhere',
+  ) => {
+    const navigation = shown === undefined
+      ? 0
+      : shown.navigation + (shown.anchor !== anchor && change === 'elsewhere' ? 1 : 0)
+    shown = { anchor, navigation }
     await act(async () => {
       root.render(
         <GadgetUI
           gadget={gadget}
           height="100px"
           reloadTrigger={reloadTrigger}
-          focus={recorder.focus(anchor)}
+          focus={recorder.focus(anchor, navigation)}
           onConsoleLog={log => recorder.logs.push(log.message.join(' '))}
         />,
       )
@@ -251,14 +266,14 @@ describe('focus', () => {
     await expect.poll(() => recorder.events).toEqual(['reset', 'navigate cell/C1'])
   })
 
-  it("doesn't echo the frame's own report back to it", async () => {
+  it("doesn't send the frame to its own report as the anchor changes to it", async () => {
     const gadget = focusGadget()
     await show(gadget, undefined)
     const control = await frame(0)
     await control.register()
     await control.report({ anchor: 'cell/B7', label: 'B7' })
 
-    await show(gadget, 'cell/B7')
+    await show(gadget, 'cell/B7', 0, 'own')
     await settle()
     expect(recorder.events).toEqual(['change {"anchor":"cell/B7","label":"B7"}'])
 
@@ -272,7 +287,7 @@ describe('focus', () => {
     const control = await frame(0)
     await control.register()
     await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await show(gadget, 'cell/B7')
+    await show(gadget, 'cell/B7', 0, 'own')
 
     await show(gadget, 'cell/C1')
     await expect.poll(() => recorder.navigations.length).toBe(1)
@@ -280,24 +295,6 @@ describe('focus', () => {
     await settle()
 
     expect(recorder.events).toEqual(['change {"anchor":"cell/B7","label":"B7"}', 'reset', 'navigate cell/C1'])
-  })
-
-  it("doesn't navigate to the frame's earlier report as the anchor catches up with its reports", async () => {
-    const gadget = focusGadget()
-    await show(gadget, undefined)
-    const control = await frame(0)
-    await control.register()
-    await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await control.report({ anchor: 'cell/C1', label: 'C1' })
-
-    await show(gadget, 'cell/B7')
-    await show(gadget, 'cell/C1')
-    await settle()
-    expect(recorder.events.filter(event => event.startsWith('navigate'))).toEqual([])
-
-    // Once the anchor has caught up, the earlier spot is a navigation again.
-    await show(gadget, 'cell/B7')
-    await expect.poll(() => recorder.events.at(-1)).toBe('navigate cell/B7')
   })
 
   it('resets on a code reload, then sends the new frame to the anchor', async () => {
@@ -348,24 +345,6 @@ describe('focus', () => {
     expect(recorder.events).toEqual(['navigate gone', 'change null'])
   })
 
-  it("doesn't navigate as the anchor trails reports through the clear of a spot that no longer resolves", async () => {
-    const gadget = focusGadget()
-    await show(gadget, 'gone')
-    const control = await frame(0)
-    const registration = control.register()
-    await expect.poll(() => recorder.navigations.length).toBe(1)
-    recorder.navigations[0].resolve(false)
-    await registration
-
-    await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await show(gadget, undefined)
-    await control.report({ anchor: 'cell/C1', label: 'C1' })
-    await show(gadget, 'cell/B7')
-    await settle()
-
-    expect(recorder.navigations.map(n => n.anchor)).toEqual(['gone'])
-  })
-
   it('keeps a report made while navigate was pending', async () => {
     await show(focusGadget(), 'gone')
     const control = await frame(0)
@@ -400,7 +379,7 @@ describe('focus', () => {
     const control = await frame(0)
     await control.register()
     await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await show(gadget, 'cell/B7')
+    await show(gadget, 'cell/B7', 0, 'own')
 
     await show(gadget, 'gone')
     await expect.poll(() => recorder.navigations.length).toBe(1)
@@ -435,92 +414,42 @@ describe('focus', () => {
     expect(recorder.navigations.map(n => n.anchor)).toEqual(anchors)
   })
 
-  it("doesn't navigate as the anchor catches up with the frame leaving the spot it was sent to and returning", async () => {
+  it('sends the frame to a spot a link names, though it reported and left it before the URL showed it', async () => {
     const gadget = focusGadget()
-    await show(gadget, 'cell/B7')
-    const control = await frame(0)
-    const registration = control.register()
-    await expect.poll(() => recorder.navigations.length).toBe(1)
-    recorder.navigations[0].resolve(true)
-    await registration
-
-    await control.report({ anchor: 'cell/C1', label: 'C1' })
-    await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await show(gadget, 'cell/C1')
-    await show(gadget, 'cell/B7')
-    await settle()
-
-    expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
-  })
-
-  it('sends the frame back to a spot it reported before it was sent elsewhere and the anchor cleared', async () => {
-    const gadget = focusGadget()
-    await show(gadget, undefined)
-    const control = await frame(0)
-    await control.register()
-    await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await show(gadget, 'cell/B7')
-    await show(gadget, 'cell/C1')
-    await expect.poll(() => recorder.navigations.length).toBe(1)
-    recorder.navigations[0].resolve(true)
-
-    await show(gadget, undefined)
-    await show(gadget, 'cell/B7')
-
-    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/C1', 'cell/B7'])
-  })
-
-  it("doesn't navigate as the anchor trails reports through a null one", async () => {
-    const gadget = focusGadget()
-    await show(gadget, undefined)
+    let search: { w?: WorkpieceId; at?: string } = { w: 1 }
+    let setSearch!: (changes: { w?: WorkpieceId; at: string | undefined }) => void
+    // The URL, with the hook that keeps the frame's focus in it.
+    const Url = () => {
+      const [, rerender] = useState(0)
+      setSearch = changes => {
+        search = { ...search, ...changes }
+        act(() => rerender(count => count + 1))
+      }
+      const focus = useFocusUrl({
+        workspaceId: 'trips',
+        urlWorkpieceId: search.w ?? null,
+        at: search.at,
+        selectedGadgetId: 1,
+        selectionSettled: true,
+        replaceSearch: setSearch,
+      })
+      return <GadgetUI gadget={gadget} height="100px" focus={focus} />
+    }
+    await act(async () => root.render(<Url />))
     const control = await frame(0)
     await control.register()
 
+    // The first is written at once, and holds back the rest.
+    await control.report({ anchor: 'cell/A1', label: 'A1' })
     await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await control.report(null)
-    await show(gadget, 'cell/B7')
     await control.report({ anchor: 'cell/C1', label: 'C1' })
-    await show(gadget, undefined)
-    await control.report({ anchor: 'cell/D4', label: 'D4' })
-    await show(gadget, 'cell/C1')
-    await settle()
+    expect(search.at).toBe('cell/A1')
+    setSearch({ at: 'cell/B7' })
 
-    expect(recorder.navigations).toEqual([])
-  })
-
-  it('navigates to a report the anchor was cleared over, since the URL dropped it', async () => {
-    const gadget = focusGadget()
-    await show(gadget, 'cell/A1')
-    const control = await frame(0)
-    const registration = control.register()
-    await expect.poll(() => recorder.navigations.length).toBe(1)
+    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
     recorder.navigations[0].resolve(true)
-    await registration
-
-    await control.report({ anchor: 'cell/B7', label: 'B7' })
-    await show(gadget, undefined)
-    await control.report({ anchor: 'cell/C1', label: 'C1' })
-    await show(gadget, 'cell/B7')
-
-    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/A1', 'cell/B7'])
-  })
-
-  it("doesn't navigate as the anchor catches up with a null report and the frame's next", async () => {
-    const gadget = focusGadget()
-    await show(gadget, 'cell/B7')
-    const control = await frame(0)
-    const registration = control.register()
-    await expect.poll(() => recorder.navigations.length).toBe(1)
-    recorder.navigations[0].resolve(true)
-    await registration
-
-    await control.report(null)
-    await control.report({ anchor: 'cell/C1', label: 'C1' })
-    await show(gadget, undefined)
-    await show(gadget, 'cell/C1')
-    await settle()
-
-    expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
+    await new Promise(resolve => setTimeout(resolve, FOCUS_URL_WRITE_DELAY_MS + 100))
+    expect(search.at).toBe('cell/B7')
   })
 
   it("ignores a replaced frame's pending navigate failing as its session closes", async () => {

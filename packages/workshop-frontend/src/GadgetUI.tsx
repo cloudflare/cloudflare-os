@@ -199,19 +199,8 @@ class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
   }
 }
 
-// What GadgetUI knows about the frame currently showing, through its host.
+// What GadgetUI holds of the frame currently showing, through its host.
 type FrameFocus = {
-  // The anchor of the frame's last report since it was last sent somewhere, or null.
-  lastReported: string | null
-  // The anchors the frame has reported that the parent's anchor may yet change to, undefined
-  // standing for a null report. The parent's anchor lags the reports (the URL is written after a
-  // pause and rendered later still), so a report the frame has since moved on from can still
-  // arrive, and is not a navigation. When the anchor arrives at one of them, only the frame's last
-  // report can still follow. An anchor set or cleared elsewhere supersedes every report on its way
-  // (the URL drops a write it still holds), and so does sending the frame somewhere: either empties
-  // the set. A report already behind it, such as the frame's report of the spot it was sent to, would
-  // otherwise pass for an echo when the anchor returns to that spot.
-  unacknowledged: Set<string | undefined>
   // Our duplicate of the frame's registered navigate callback.
   navigate: RpcStub<Navigate> | null
 }
@@ -273,16 +262,18 @@ const createSandboxedHtml = (page: UiPage): string => {
 
 /** The spot in the gadget the user is focused on, kept by the parent across frames. */
 export type GadgetUIFocus = {
-  /**
-   * The spot to send the frame to: on registration, and whenever this changes to something the
-   * frame did not itself report.
-   */
+  /** The spot the frame should be showing. A frame is sent to it as it registers. */
   anchor: string | undefined
+  /**
+   * Changes each time `anchor` is set by anything but the frame's own report (a followed link, a
+   * sent message's chip), which sends the frame to it. The frame's reports change `anchor` alone.
+   */
+  navigation: number
   /** The frame reported a focus. Null also clears an anchor that no longer resolves. */
   onFocusChange: (focus: GadgetFocus | null) => void
   /**
-   * What the frame reported no longer stands: the frame was replaced, or is being sent to a spot it
-   * did not report. The anchor still does: the frame is sent to it.
+   * What the frame reported no longer stands: the frame was replaced, or is being sent to the
+   * anchor, which it may never report.
    */
   onFocusReset?: () => void
 }
@@ -372,11 +363,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     focusRef.current?.onFocusReset?.()
   }
 
-  const sendNavigate = async (frame: FrameFocus, navigate: RpcStub<Navigate>, anchor: string) => {
+  const sendNavigate = async (navigate: RpcStub<Navigate>, anchor: string) => {
     const epoch = ++focusEpochRef.current
-    // What the frame reported is behind it now, and so is any write of it the URL still holds.
-    frame.lastReported = null
-    frame.unacknowledged.clear()
     let resolved: boolean
     try {
       const result: unknown = await navigate(anchor)
@@ -394,8 +382,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       }
     }
     if (resolved || epoch !== focusEpochRef.current) return
-    // A null report on the frame's behalf, so its clear coming back is an echo like the frame's.
-    frame.unacknowledged.add(undefined)
     focusRef.current?.onFocusChange(null)
   }
 
@@ -404,8 +390,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       const current = focusRef.current
       if (frameFocusRef.current !== frame || !current) return
       ++focusEpochRef.current
-      frame.lastReported = reported?.anchor ?? null
-      frame.unacknowledged.add(reported?.anchor)
       current.onFocusChange(reported)
     },
     onNavigate: async navigate => {
@@ -414,29 +398,21 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       const retained = navigate.dup()
       frame.navigate = retained
       const anchor = focusRef.current.anchor
-      if (anchor !== undefined) await sendNavigate(frame, retained, anchor)
+      if (anchor !== undefined) await sendNavigate(retained, anchor)
     },
     reportProblem: reportFocusProblem,
   })
 
-  // A pasted link, say. The frame's own reports come back through the URL, and aren't echoed.
-  const anchor = focus?.anchor
+  const navigation = focus?.navigation
   useEffect(() => {
-    // Any change of target supersedes a pending navigate, even one that is only the frame's own
-    // report coming back.
+    // A new target supersedes a pending navigate, even with no frame to send to it.
     ++focusEpochRef.current
     const frame = frameFocusRef.current
-    if (!frame) return
-    const echo = frame.unacknowledged.has(anchor)
-    // An echo means the frame has reported since it was last sent anywhere, so null here is a null
-    // report, which may still clear the anchor.
-    const last = frame.lastReported ?? undefined
-    frame.unacknowledged = new Set(echo && last !== anchor ? [last] : [])
-    if (anchor === undefined || !frame.navigate || echo) return
-    // What the frame last reported is the spot it is leaving, and it may never report the new one.
+    const anchor = focusRef.current?.anchor
+    if (!frame?.navigate || anchor === undefined) return
     focusRef.current?.onFocusReset?.()
-    void sendNavigate(frame, frame.navigate, anchor)
-  }, [anchor])
+    void sendNavigate(frame.navigate, anchor)
+  }, [navigation])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -682,7 +658,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
-          const frame: FrameFocus = { lastReported: null, unacknowledged: new Set(), navigate: null }
+          const frame: FrameFocus = { navigate: null }
           frameFocusRef.current = frame
           rpcSessionRef.current = newMessagePortRpcSession(
               port, new GadgetFrameRoot(forwardingTarget, createHost(frame), frameEvents))

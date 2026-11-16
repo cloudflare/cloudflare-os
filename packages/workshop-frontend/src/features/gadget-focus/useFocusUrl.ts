@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { GadgetFocus, WorkpieceId } from '@gadgets/workshop-shared/api'
 import type { GadgetUIFocus } from '../../GadgetUI'
 
@@ -32,8 +32,8 @@ type FocusUrlOptions = {
 }
 
 /**
- * Keeps the spot the selected gadget's frame reports in the URL's `at`, beside `w`, and sends a
- * new frame back to it. Returns the selected gadget's `GadgetUI` focus.
+ * Keeps the spot the selected gadget's frame reports in the URL's `at`, beside `w`, and sends the
+ * frame to an anchor the URL gets any other way. Returns the selected gadget's `GadgetUI` focus.
  */
 export const useFocusUrl = ({
   workspaceId,
@@ -45,17 +45,32 @@ export const useFocusUrl = ({
 }: FocusUrlOptions): GadgetUIFocus | undefined => {
   const replaceSearchRef = useRef(replaceSearch)
   replaceSearchRef.current = replaceSearch
-  const atRef = useRef(at)
-  atRef.current = at
+  const atApplies = urlWorkpieceId !== null && urlWorkpieceId === selectedGadgetId
+  const anchor = atApplies ? at : undefined
+  const anchorRef = useRef(anchor)
+  anchorRef.current = anchor
   // Open for FOCUS_URL_WRITE_DELAY_MS after a write, holding the latest report since. A report
   // that finds it closed is written at once.
   const holdRef = useRef<{
     timer: ReturnType<typeof setTimeout>
     pending: { focus: GadgetFocus | null } | null
   } | null>(null)
-  // A write that changes `at` and hasn't yet come back through the URL, to tell it apart from `at`
-  // being set elsewhere.
-  const unacknowledgedWriteRef = useRef<{ at: string | undefined } | null>(null)
+  // The anchors our writes have set that haven't yet come back through the URL, oldest first. The
+  // anchor changing to one of them is that write landing; to anything else, it was set elsewhere (a
+  // followed link, a sent message's chip).
+  const unacknowledgedWritesRef = useRef<(string | undefined)[]>([])
+  // The anchor the URL will hold once every write so far has landed.
+  const writtenAnchor = () => {
+    const writes = unacknowledgedWritesRef.current
+    return writes.length > 0 ? writes[writes.length - 1] : anchorRef.current
+  }
+
+  // Counted during render, so the frame gets a new anchor together with whether to go there.
+  const [target, setTarget] = useState({ anchor, navigation: 0 })
+  if (target.anchor !== anchor) {
+    const setElsewhere = !unacknowledgedWritesRef.current.includes(anchor)
+    setTarget({ anchor, navigation: target.navigation + (setElsewhere ? 1 : 0) })
+  }
 
   // Also ends the hold, so the next report, which may be the first from another gadget, isn't
   // held back behind a write it has nothing to do with.
@@ -69,25 +84,25 @@ export const useFocusUrl = ({
   // taken for this one's.
   useEffect(() => () => {
     cancelPendingWrite()
-    unacknowledgedWriteRef.current = null
+    unacknowledgedWritesRef.current = []
   }, [workspaceId, selectedGadgetId])
 
-  // `at` set elsewhere (a followed link) is newer than any report still waiting to be written.
   useEffect(() => {
-    const write = unacknowledgedWriteRef.current
-    unacknowledgedWriteRef.current = null
-    if (write === null || write.at !== at) cancelPendingWrite()
-  }, [at])
+    const writes = unacknowledgedWritesRef.current
+    const landed = writes.indexOf(anchor)
+    unacknowledgedWritesRef.current = landed < 0 ? [] : writes.slice(landed + 1)
+    // An anchor set elsewhere is newer than any report still waiting to be written.
+    if (landed < 0) cancelPendingWrite()
+  }, [anchor])
 
-  const atApplies = urlWorkpieceId !== null && urlWorkpieceId === selectedGadgetId
   useEffect(() => {
     if (at !== undefined && selectionSettled && !atApplies) replaceSearchRef.current({ at: undefined })
   }, [at, selectionSettled, atApplies])
 
   if (selectedGadgetId === null) return undefined
   const write = (focus: GadgetFocus | null) => {
-    // A write that leaves `at` as it is never comes back as a change.
-    if (focus?.anchor !== atRef.current) unacknowledgedWriteRef.current = { at: focus?.anchor }
+    // A write that leaves the anchor as it is never comes back as a change.
+    if (focus?.anchor !== writtenAnchor()) unacknowledgedWritesRef.current.push(focus?.anchor)
     // `w` too, since `at` means nothing without it: with no `w` the editor picks a gadget from this
     // browser's state, so a copied link could open on another.
     replaceSearchRef.current({ w: selectedGadgetId, at: focus?.anchor })
@@ -101,12 +116,12 @@ export const useFocusUrl = ({
     holdRef.current = hold
   }
   return {
-    anchor: atApplies ? at : undefined,
+    anchor,
+    navigation: target.navigation,
     onFocusChange: focus => {
-      // A gadget that reports only null doesn't need `w` pinned. `at` may not yet show our last
+      // A gadget that reports only null doesn't need `w` pinned. The URL may not yet show our last
       // write, which a null report must still clear.
-      const at = unacknowledgedWriteRef.current ? unacknowledgedWriteRef.current.at : atRef.current
-      const report = focus === null && at === undefined ? null : { focus }
+      const report = focus === null && writtenAnchor() === undefined ? null : { focus }
       if (holdRef.current) holdRef.current.pending = report
       else if (report) write(report.focus)
     },
