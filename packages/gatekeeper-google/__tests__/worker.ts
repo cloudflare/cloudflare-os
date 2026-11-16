@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription,
+  HookDescription, ObservationDescription, ResourceDescription, UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
@@ -388,6 +388,10 @@ export class TestHooks extends DurableObject<Env> {
     return throughDrive(facetName)
       ? this.#drive(facetName, DRIVE_DOC).describe()
       : this.#gatekeeper(facetName).describe();
+  }
+
+  previewUi(facetName: string): Promise<UiFile[]> {
+    return this.#gatekeeper(facetName).getPreviewUi();
   }
 
   async #withReadSession<Session, T>(

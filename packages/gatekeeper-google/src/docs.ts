@@ -7,6 +7,7 @@ import { DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
   GatekeeperUserVerifier, Gatekeeper, ResourceDescription, ApprovalQueue, ActionKind, GitCache,
+  type UiFile,
 } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
@@ -37,6 +38,8 @@ import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
+import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
+import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
@@ -232,6 +235,7 @@ export class GoogleDocGatekeeperImpl
         snippet: `Google Doc: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_DOC",
         tsType: "GoogleDocSession",
+        hasPreview: true,
       };
     }
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
@@ -247,11 +251,16 @@ export class GoogleDocGatekeeperImpl
       snippet: `Google Doc: ${doc.title}`,
       suggestedBindingName: "GOOGLE_DOC",
       tsType: "GoogleDocSession",
+      hasPreview: true,
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
     return getGoogleDocTypesCode();
+  }
+
+  async getPreviewUi(): Promise<UiFile[]> {
+    return [{ path: "client.js", code: DOCS_PREVIEW_CLIENT }, ...SHARED_PREVIEW_FILES];
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {

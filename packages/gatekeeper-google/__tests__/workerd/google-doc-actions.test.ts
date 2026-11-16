@@ -2391,6 +2391,17 @@ describe("Google Doc pending changes", () => {
     expect(docs.text()).toBe("Before");
   });
 
+  // What the code does is checked where it runs: the Workshop's ConnectionPreviewPane browser test.
+  it("offers a preview", async () => {
+    new DocsModel().install();
+
+    expect(await hooks().describe("pending-preview")).toMatchObject({ hasPreview: true });
+    let files = await hooks().previewUi("pending-preview");
+    expect(files.map(({ path }) => path)).toEqual(["client.js", "ui/chrome.js"]);
+    expect(files[0].code).toContain("gadget.getPendingChanges(");
+    expect(files[0].code).toContain("from './ui/chrome.js'");
+  });
+
   it("authorizes one read of the tab, like getContent()", async () => {
     let docs = new DocsModel();
     docs.install();

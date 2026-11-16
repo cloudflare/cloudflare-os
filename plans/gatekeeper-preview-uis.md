@@ -327,10 +327,13 @@ readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at 
 
 ### Client
 
-`gatekeeper-google/src/previews/docs.js`, a linted `.js` file that is not type-checked. The
-gatekeeper's bundler imports only `.txt` and `.svg` as text, so `docs.ts` imports it through the
-symlink `previews/docs.txt`, and returns it as `client.js`. The frame calls `main(gadget)` on
-its default export.
+`gatekeeper-google/src/previews/docs/client.js`, a linted `.js` file that is not type-checked.
+What any preview of this gatekeeper needs is a module of its own, `previews/shared/chrome.js`,
+imported as `./ui/chrome.js`: the theme, the outline sheet, the change navigator, the stale
+banner, the loading, updating and error states, and the refresh handling. `getPreviewUi()`
+returns both files. The gatekeeper's bundler imports only `.txt` and `.svg` as text, so each file
+is imported through a `.txt` symlink beside it, and `previews/docs/ui` links to `previews/shared`
+so the import resolves on disk too. The frame calls `main(gadget)` on the client's default export.
 
 It draws a tab in the document's own page, fonts, colors, tables and images, marks insertions and
 deletions, lists the tabs and the tab's headings in an outline, and steps through the changes in
