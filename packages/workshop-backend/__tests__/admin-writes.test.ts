@@ -4,7 +4,8 @@ import {
   type AdminAgentOrigin, type AdminVia, type AdminWriteAction, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
 import {
-  adminWriteArgs, adminWriteDigest, adminWriteTitle, entersActionLog, needsSecondAdmin,
+  adminWriteArgs, adminWriteDigest, adminWriteTitle, entersActionLog, isRequestInsider,
+  needsSecondAdmin,
 } from "../src/admin-writes.js";
 
 // A value each argument accepts.
@@ -263,5 +264,54 @@ describe("adminWriteDigest", () => {
     expect(await hex({ ...filed, agent: { ...origin, workspaceId: "d".repeat(64) } }))
         .not.toBe(digest);
     expect(await hex({ ...filed, agent: { workspaceId: origin.workspaceId } })).not.toBe(digest);
+  });
+
+  it("does not cover who was in the workspace an agent's request was filed from", async () => {
+    const filed = {
+      ...request, via: "gatekeeper" as AdminVia, agent: { workspaceId: "c".repeat(64), chatId: 4 },
+    };
+    const digest = await hex(filed);
+    const withInsiders = { ...filed, insiders: ["admin@example.test", "second@example.test"] };
+    expect(await hex(withInsiders)).toBe(digest);
+    const withNone = { ...filed, insiders: [] };
+    expect(await hex(withNone)).toBe(digest);
+  });
+});
+
+describe("isRequestInsider", () => {
+  const filed = {
+    requestedBy: "owner@example.test",
+    insiders: ["owner@example.test", "member@example.test", "decider@example.test"],
+  };
+
+  it("names the requester", () => {
+    expect(isRequestInsider(filed, "owner@example.test")).toBe(true);
+  });
+
+  it("names everyone the request keeps as an insider", () => {
+    expect(isRequestInsider(filed, "member@example.test")).toBe(true);
+    expect(isRequestInsider(filed, "decider@example.test")).toBe(true);
+  });
+
+  it("names a requester and an insider spelled in another case of ASCII letters", () => {
+    expect(isRequestInsider(filed, "Owner@Example.test")).toBe(true);
+    expect(isRequestInsider(filed, "MEMBER@example.test")).toBe(true);
+    // Only ASCII letters fold: the Kelvin sign is not "k".
+    expect(isRequestInsider({ requestedBy: "owner@example.test", insiders: ["kim@example.test"] },
+        "\u212Aim@example.test")).toBe(false);
+  });
+
+  it("names nobody else", () => {
+    expect(isRequestInsider(filed, "outside@example.test")).toBe(false);
+    expect(isRequestInsider(filed, "member@example.test.evil")).toBe(false);
+    expect(isRequestInsider(filed, "")).toBe(false);
+  });
+
+  it("names the requester alone for a request that keeps no list", () => {
+    const direct = { requestedBy: "owner@example.test" };
+    expect(isRequestInsider(direct, "owner@example.test")).toBe(true);
+    expect(isRequestInsider(direct, "OWNER@example.test")).toBe(true);
+    expect(isRequestInsider(direct, "member@example.test")).toBe(false);
+    expect(isRequestInsider({ ...direct, insiders: [] }, "member@example.test")).toBe(false);
   });
 });

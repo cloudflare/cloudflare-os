@@ -600,6 +600,60 @@ describe("a request filed through the admin gatekeeper", () => {
         admin => admin.beginWorkspaceWriteApproval(made.id, OTHER_ADMIN))))
         .toBe(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
   });
+
+  // An admin who was in neither the workspace the request was filed from nor the harness's list.
+  const OUTSIDE_ADMIN = "outside-admin@example.test";
+  const THREE_ADMINS = { ADMINS: [ADMIN, OTHER_ADMIN, OUTSIDE_ADMIN] };
+  const begin = (id: string, by: string) => codeOf(harness.inDo(
+      admin => admin.beginWorkspaceWriteApproval(id, by), THREE_ADMINS));
+
+  it("keeps who was in the workspace it was filed from, on no record of it", async () => {
+    const insiders = [ADMIN, OTHER_ADMIN];
+    const made = await filed({ action: "grantContentAccess", args: {}, insiders });
+    await harness.inDo(async admin => {
+      expect(harness.storageOf(admin).adminWrites.get(made.id)).toStrictEqual(made);
+      expect(harness.storageOf(admin).adminWrites.get(made.id)?.insiders).toStrictEqual(insiders);
+      age(admin, made.id);
+      await admin.alarm();
+      // A request that has ended still holds the list: nothing reads it by then.
+      expect(harness.storageOf(admin).adminWrites.get(made.id))
+          .toMatchObject({ state: "expired", insiders });
+    });
+    expect(eventsOf(made.id)).toStrictEqual(["requested", "expired"]);
+    for (let record of harness.appended) {
+      expect(record).not.toHaveProperty("insiders");
+      expect(JSON.stringify(record)).not.toContain(OTHER_ADMIN);
+    }
+  });
+
+  it("gives nobody on that list a challenge when it needs a second admin", async () => {
+    const made = await filed(
+        { action: "grantContentAccess", args: {}, insiders: [ADMIN, OTHER_ADMIN] });
+    harness.appended.length = 0;
+
+    expect(await begin(made.id, ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    expect(await begin(made.id, OTHER_ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    // One entry of ADMINS matches a name in any case of ASCII letters, so both are one admin.
+    expect(await begin(made.id, "Other-Admin@Example.test"))
+        .toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    // An admin from outside gets past that check, to the one for a passkey of their own.
+    expect(await begin(made.id, OUTSIDE_ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
+    // Beginning is never recorded, refused or not.
+    expect(harness.appended).toStrictEqual([]);
+  });
+
+  it("keeps the list from no one for an action its requester may approve", async () => {
+    const made = await filed({ insiders: [ADMIN, OTHER_ADMIN] });
+    expect(await begin(made.id, ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
+    expect(await begin(made.id, OTHER_ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
+  });
+
+  it("keeps a request filed with no list to its requester alone", async () => {
+    const made = await filed({ action: "grantContentAccess", args: {} });
+    expect(made).not.toHaveProperty("insiders");
+    expect(await begin(made.id, ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    expect(await begin(made.id, OTHER_ADMIN)).toBe(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
+  });
 });
 
 describe("the alarm", () => {

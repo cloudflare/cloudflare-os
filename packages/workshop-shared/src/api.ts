@@ -2662,10 +2662,12 @@ export type AdminPasskeyRefusal =
     "userVerification" | "credential" | "algorithm" | "signature" | "counter";
 
 /** Why an attempt to approve a write request was refused, as its "refused" record says: a
- * passkey check (see AdminPasskeyRefusal), or "requester": the admin who made the request tried
- * to approve it, for an action that needs a second admin ("grantContentAccess"). An account
- * whose name differs from the requester's only by the case of ASCII letters is the requester:
- * the deployment's list of admins matches names that way, so both are one entry of it. */
+ * passkey check (see AdminPasskeyRefusal), or "requester": the admin who made the request or,
+ * for a request filed through the admin gatekeeper, anyone who was in the workspace it was
+ * filed from, tried to approve it, for an action that needs a second admin
+ * ("grantContentAccess"). An account whose name differs from one of theirs only by the case of
+ * ASCII letters is that person: the deployment's list of admins matches names that way, so both
+ * are one entry of it. */
 export type AdminApprovalRefusal = AdminPasskeyRefusal | "requester";
 
 /**
@@ -3653,7 +3655,8 @@ export interface AdminApi {
    * Start approving a pending write request: the challenge the caller's passkey must sign. Refused
    * `passkeyRequired` while the caller has enrolled none, `requestNotFound`, `requestNotPending`
    * and `originUnset`. Refused `secondAdminRequired` for the requester of a "grantContentAccess"
-   * request.
+   * request or, for a request filed through the admin gatekeeper, anyone who was in the
+   * workspace it was filed from.
    */
   beginWorkspaceWriteApproval(requestId: string): Promise<AdminPasskeyChallenge>;
 
@@ -3664,7 +3667,8 @@ export interface AdminApi {
    * passkeys. Anything else is refused `passkeyRefused`, leaving the request pending and the
    * challenge spent; an attempt on a request that is no longer pending, such as an approval sent
    * a second time, is refused `requestNotPending`; the requester of a "grantContentAccess"
-   * request is refused `secondAdminRequired`, leaving the request pending and the challenge
+   * request or, for a request filed through the admin gatekeeper, anyone who was in the workspace
+   * it was filed from, is refused `secondAdminRequired`, leaving it pending and the challenge
    * spent. Each refusal is recorded ("refused", with the check that failed, "requester" for the
    * last); an id that names no request is refused `requestNotFound`, which has no request to be
    * recorded against. The workspace then records the write ("approved") in the deployment-wide

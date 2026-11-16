@@ -8,6 +8,7 @@ import {
 import {
   adminAuditValue, cutAdminAuditText, type AdminWriteActor,
 } from "./admin-access.js";
+import { sameDeploymentAdmin } from "./auth/config.js";
 
 /** A write request as AdminSettings stores it: the API's, without the URL (derived from the
  * environment when read), with what only the server needs to record its later steps. */
@@ -23,6 +24,12 @@ export type StoredAdminWrite = Omit<AdminWriteRequest, "approvalUrl"> & {
   /** The refused attempts to approve it whose "refused" record could not be written, oldest
    * first: each is kept until the audit log takes it. */
   refusals?: AdminWriteRefusal[];
+  /** For a request filed through the admin gatekeeper for content access: who was in the
+   * workspace it was filed from, by profile id (see AdminCaller.insiders). None of them may
+   * approve it (see isRequestInsider()). Kept with the request and handed to the workspace with
+   * its grant; never returned by the API, recorded, or covered by the digest: it is not
+   * something the approver reads. */
+  insiders?: string[];
 };
 
 /** Who approved a write request, and with which passkey: its credential id as
@@ -41,7 +48,8 @@ export type AdminWriteRefusal =
  * can be initialised again for someone else. */
 export type AdminWriteGrant =
     Pick<StoredAdminWrite,
-        "action" | "args" | "reason" | "requestedBy" | "expiresAt" | "workspaceOwner"> &
+        "action" | "args" | "reason" | "requestedBy" | "insiders" | "expiresAt" |
+        "workspaceOwner"> &
     AdminWriteApprover & { requestId: string };
 
 /** A fresh challenge: 32 random bytes, then `binding` (the digest of what the ceremony confirms:
@@ -137,6 +145,15 @@ export function adminWriteTitle(action: AdminWriteAction, args: AdminWriteArgs):
  * members see, and their requester may approve them. */
 export function needsSecondAdmin(action: AdminWriteAction): boolean {
   return action === "grantContentAccess";
+}
+
+/** Whether admin `approver` may not approve `request` because they had a part in asking for it:
+ * they are its requester or, for a request filed through the admin gatekeeper, one of the
+ * people who were in the workspace it was filed from. Each compared with sameDeploymentAdmin(). */
+export function isRequestInsider(
+    request: Pick<StoredAdminWrite, "requestedBy" | "insiders">, approver: string): boolean {
+  return [request.requestedBy, ...request.insiders ?? []].some(
+      insider => sameDeploymentAdmin(insider, approver));
 }
 
 /** Whether an approved `action` is entered in the workspace's action log, where its members read

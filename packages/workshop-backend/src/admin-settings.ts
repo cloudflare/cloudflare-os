@@ -21,9 +21,9 @@ import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
 import type { IssueReportsDurableObject } from './issue-reports.js';
 import { type AdminCaller, type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminCallerTerms, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
-import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, needsSecondAdmin, newPasskeyChallenge } from './admin-writes.js';
+import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, isRequestInsider, needsSecondAdmin, newPasskeyChallenge } from './admin-writes.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
-import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
+import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 import { type DeployServiceInstall, NO_ANSWER, type VersionAnswer, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
@@ -1095,9 +1095,10 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * request's digest (see adminWriteDigest()), so that the passkey approving it signs what it
    * approves. It replaces the approval challenge `admin` had outstanding, so an admin has one
    * approval ceremony at a time, and it lasts no longer than the request does. Refused
-   * `requestNotPending` for a request that has left "pending", `secondAdminRequired` for the
-   * requester of a request that needs a second admin, and `passkeyRequired` for an admin with no
-   * passkey of their own. Never recorded: beginning answers nothing. */
+   * `requestNotPending` for a request that has left "pending", `secondAdminRequired` for an
+   * insider (see isRequestInsider()) of a request that needs a second admin, and
+   * `passkeyRequired` for an admin with no passkey of their own. Never recorded: beginning
+   * answers nothing. */
   beginWorkspaceWriteApproval(id: string, admin: string): Promise<AdminPasskeyChallenge> {
     return this.#serializeWrites(async () => {
       requireAdmin(this.env, admin, true);
@@ -1106,7 +1107,12 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       if (request.state !== "pending") {
         throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
       }
-      if (needsSecondAdmin(request.action) && sameDeploymentAdmin(admin, request.requestedBy)) {
+      // The approver's canonical id against the request's requester and each stored insider,
+      // with sameDeploymentAdmin(). The list was read once, when the request was filed: a member
+      // who left the workspace since still cannot approve, and an admin who joined it since can.
+      // A member who left before the filing is not on it, and a person present approved the
+      // filing.
+      if (needsSecondAdmin(request.action) && isRequestInsider(request, admin)) {
         throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
       }
       if (this.#passkeysOf(admin).length === 0) {
@@ -1125,9 +1131,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * passkeys, over the approval challenge the actor was last given, issued for this request as it
    * is still stored. A failed passkey check is recorded "refused" and thrown `passkeyRefused`,
    * leaving the request pending; an attempt on a stored request that is no longer pending is
-   * recorded "refused" too, and thrown `requestNotPending`, and so is the requester's attempt on
-   * a request that needs a second admin, thrown `secondAdminRequired`, which leaves the request
-   * pending. The approval itself is not recorded
+   * recorded "refused" too, and thrown `requestNotPending`, and so is an insider's attempt (see
+   * isRequestInsider()) on a request that needs a second admin, thrown `secondAdminRequired`,
+   * which leaves the request pending. The approval itself is not recorded
    * here: the workspace records "approved" before it changes anything. Returns the request.
    */
   approveWorkspaceWrite(id: string, assertion: AdminPasskeyAssertion, actor: AdminWriteActor)
@@ -1150,10 +1156,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         return this.#refuseApproval(
             request, actor, "challenge", passkey, ADMIN_WRITE_ERROR_CODES.requestNotPending);
       }
-      // Before any passkey check: whatever the requester's passkey signed, it is not a second
-      // admin's approval.
-      if (needsSecondAdmin(request.action) &&
-          sameDeploymentAdmin(actor.admin, request.requestedBy)) {
+      // Before any passkey check: whatever an insider's passkey signed, it is not a second
+      // admin's approval (see beginWorkspaceWriteApproval() for what is compared, and when).
+      if (needsSecondAdmin(request.action) && isRequestInsider(request, actor.admin)) {
         return this.#refuseApproval(
             request, actor, "requester", passkey, ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
       }
@@ -2382,7 +2387,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   // A stored request as the API returns it: without what only the server keeps, and with the page
   // of this deployment that approves it.
   #writeView(stored: StoredAdminWrite): AdminWriteRequest {
-    let { sessionId, approver, unrecorded, refusals, ...request } = stored;
+    let { sessionId, approver, unrecorded, refusals, insiders, ...request } = stored;
     let approvalUrl = `${adminPasskeyRelyingParty(this.env).origin}/admin/approve/${stored.id}`;
     return { ...request, approvalUrl };
   }
@@ -2423,6 +2428,8 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       sessionId: this.#sessionId, requestedAt,
       expiresAt: new Date(requestedAt.getTime() + ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000),
       state: "pending",
+      // Who may not approve it besides the requester, when the admin gatekeeper filed it.
+      ...(this.caller.insiders && { insiders: [...this.caller.insiders] }),
     };
     await this.admin.requestWorkspaceWrite(stored);
     return this.#writeView(stored);
@@ -2473,6 +2480,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
         requestId: request.id, action: request.action, args: request.args, reason: request.reason,
         requestedBy: request.requestedBy, expiresAt: request.expiresAt,
         workspaceOwner: request.workspaceOwner, ...request.approver,
+        ...(request.insiders && { insiders: request.insiders }),
       });
     } catch (error) {
       await this.#dropIfMissing(workspace, error);

@@ -9,18 +9,26 @@
 //
 // Time is moved with a spy on Date.now(): a session's deadline is fixed by its queue when the
 // queue is made, and neither the queue nor the lend takes a clock from outside.
+//
+// A write request an action files goes to the deployment's own AdminSettings object, and the
+// workspace's listing is read from its own user directory (see withWrites()).
 
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  AdminAccessRecord, AiChatAuthorInfo, IssueReportEntry,
+import {
+  ADMIN_WRITE_ERROR_CODES, getAdminWriteErrorCode,
+  type AdminAccessRecord, type AdminAuditRecord, type AdminWriteAction, type AdminWriteRecord,
+  type AdminWriteRequest, type AiChatAuthorInfo, type IssueReportEntry,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
+import type { AdminSettings } from "../src/admin-settings.js";
+import type { AdminSettingsStorage } from "../src/storage-schema/admin-settings-storage.js";
 import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
 import type { UserDurableObject } from "../src/user.js";
+import type { UserDirectoryDurableObject } from "../src/user-directory.js";
 import type { FakeAdminVendor } from "./test-worker.js";
 import {
   ADMIN, NOT_ADMIN, OTHER_ADMIN, adminWorkspace, type AdminWorkspace,
@@ -33,6 +41,8 @@ declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
     GATEKEEPER_INSTANCEADMIN: Service<FakeAdminVendor>;
+    TEST_ADMIN_SETTINGS: DurableObjectNamespace<AdminSettings>;
+    TEST_USER_DIRECTORY: DurableObjectNamespace<UserDirectoryDurableObject>;
   }
 }
 
@@ -764,6 +774,206 @@ describe("the owner's account of the admin gatekeeper", () => {
     expect([...ws.impl.storage.gatekeepers.list()].map((record: any) => record.id))
         .toEqual([ws.gatekeeperId]);
   }));
+});
+
+// What the deployment needs before a write request can be filed and its approval begun, around
+// `run`: writes on and the level at "content" for the workspace and for the AdminSettings object
+// the Admin API reaches, which is given the workspace's own environment (so that a test demotes
+// or adds an admin in one place), and the workspace listed in the directory with its owner.
+// Everything is put back afterwards.
+async function withWrites(ws: AdminWorkspace, run: () => Promise<void>): Promise<void> {
+  let settings = env.TEST_ADMIN_SETTINGS.getByName("");
+  let directory = env.TEST_USER_DIRECTORY.getByName("");
+  Object.assign(ws.env, { ADMIN_WORKSPACE_WRITES: "on", ADMIN_WORKSPACE_ACCESS_MAX: "content" });
+  let before = await runInDurableObject(settings, object => {
+    let { storage } = object as unknown as { storage: AdminSettingsStorage };
+    let was = {
+      env: (object as unknown as { env: unknown }).env, config: storage.adminConfig.get(),
+    };
+    Object.assign(object, { env: ws.env });
+    storage.adminConfig.put({ ...was.config, adminWorkspaceAccess: "content" });
+    return was;
+  });
+  await directory.syncWorkspace({ id: ws.id, title: "Triage", ownerId: ws.owner.id }, 1);
+  try {
+    await run();
+  } finally {
+    await directory.removeWorkspace(ws.id);
+    await runInDurableObject(settings, object => {
+      let { storage } = object as unknown as { storage: AdminSettingsStorage };
+      Object.assign(object, { env: before.env });
+      storage.adminConfig.put(before.config);
+    });
+  }
+}
+
+// The one call that files a request for `action` on the workspace itself.
+const requestOf = (ws: AdminWorkspace, action: AdminWriteAction) =>
+    [{ method: "requestWorkspaceWrite", args: [ws.id, action, {}, REASON] }];
+
+// The request action number `action` filed, as its one call answered: what a client is shown.
+async function filedBy(ws: AdminWorkspace, action: number): Promise<AdminWriteRequest> {
+  let [outcome] = (await ws.facet.outcomes(action))!;
+  expect(outcome!.error).toBeUndefined();
+  return outcome!.value as AdminWriteRequest;
+}
+
+// Who the stored request `id` keeps as having been in the workspace it was filed from.
+const insidersOf = (id: string) => runInDurableObject(env.TEST_ADMIN_SETTINGS.getByName(""),
+    object => (object as unknown as { storage: AdminSettingsStorage })
+        .storage.adminWrites.get(id)?.insiders);
+
+// The code `admin` is refused with on beginning to approve request `id`. No admin here has a
+// passkey, so `passkeyRequired` is the answer to one the second-admin rule lets through.
+// Asked inside the object, so that the error is the one thrown.
+const begin = (id: string, admin: AiChatAuthorInfo) => runInDurableObject(
+    env.TEST_ADMIN_SETTINGS.getByName(""), async object => {
+  try {
+    await object.beginWorkspaceWriteApproval(id, admin.id);
+  } catch (error) {
+    return getAdminWriteErrorCode(error);
+  }
+  throw new Error("Expected the approval not to begin: no admin here has a passkey.");
+});
+
+// The write records of the workspace, which is the one each request here names.
+const writeRecords = async (ws: AdminWorkspace) =>
+    (await ws.records() as unknown as AdminAuditRecord[])
+        .filter((record): record is AdminWriteRecord => record.kind === "write");
+
+describe("a request for content access an agent files", () => {
+  // Two more deployment admins: one who is never in the workspace, and one who joins it late.
+  const OUTSIDE_ADMIN: AiChatAuthorInfo =
+      { type: "user", id: "outside-admin@example.test", name: "Outside admin" };
+  const LATE_ADMIN: AiChatAuthorInfo =
+      { type: "user", id: "late-admin@example.test", name: "Late admin" };
+  const ADMINS = { admins: [ADMIN.id, OTHER_ADMIN.id, OUTSIDE_ADMIN.id, LATE_ADMIN.id] };
+  const { secondAdminRequired, passkeyRequired } = ADMIN_WRITE_ERROR_CODES;
+  const OWNER_CALLER = { profileId: ADMIN.id, isOwner: true };
+
+  // Shares the workspace with `user`, as its owner does.
+  async function share(ws: AdminWorkspace, user: AiChatAuthorInfo): Promise<void> {
+    (await ws.impl.getSharingManager()).addCollaborator(
+        { caller: OWNER_CALLER, profile: user, grant: "workspace" });
+  }
+
+  // Takes `user` out of the workspace, as its owner does.
+  async function unshare(ws: AdminWorkspace, user: AiChatAuthorInfo): Promise<void> {
+    (await ws.impl.getSharingManager()).removeCollaborator(OWNER_CALLER, user.id, []);
+  }
+
+  it("cannot be approved by the owner, a member or whoever approved its filing",
+      () => adminWorkspace(ws => withWrites(ws, async () => {
+    await share(ws, OTHER_ADMIN);
+    let id = await queueAction(ws, 1, "contentAccessRequest", requestOf(ws, "grantContentAccess"));
+    expect(await approve(ws, id, OTHER_ADMIN)).toBeUndefined();
+
+    // The request is the owner's, from the chat that queued it, and shows no client the list.
+    let filed = await filedBy(ws, 1);
+    expect(filed).toMatchObject({
+      action: "grantContentAccess", state: "pending", requestedBy: ADMIN.id, via: "gatekeeper",
+      agent: { workspaceId: ws.id, chatId: 5 },
+    });
+    expect(filed).not.toHaveProperty("insiders");
+    expect(await insidersOf(filed.id)).toEqual([ADMIN.id, OTHER_ADMIN.id]);
+    let records = await writeRecords(ws);
+    expect(records).toMatchObject([{ event: "requested", requestId: filed.id, admin: ADMIN.id }]);
+    expect(records[0]).not.toHaveProperty("insiders");
+    expect(JSON.stringify(records)).not.toContain(OTHER_ADMIN.id);
+
+    expect(await begin(filed.id, ADMIN)).toBe(secondAdminRequired);
+    expect(await begin(filed.id, OTHER_ADMIN)).toBe(secondAdminRequired);
+    expect(await begin(filed.id, OUTSIDE_ADMIN)).toBe(passkeyRequired);
+  }), ADMINS));
+
+  it("keeps its list as it was when filed: a member who leaves stays on it, one who joins is not",
+      () => adminWorkspace(ws => withWrites(ws, async () => {
+    await share(ws, OTHER_ADMIN);
+    let id = await queueAction(ws, 1, "contentAccessRequest", requestOf(ws, "grantContentAccess"));
+    // The owner approves the filing: the member had no hand in it, and is on the list all the same.
+    expect(await approve(ws, id, ADMIN)).toBeUndefined();
+    let filed = await filedBy(ws, 1);
+    expect(await insidersOf(filed.id)).toEqual([ADMIN.id, OTHER_ADMIN.id]);
+    expect(await begin(filed.id, OTHER_ADMIN)).toBe(secondAdminRequired);
+
+    await unshare(ws, OTHER_ADMIN);
+    await share(ws, LATE_ADMIN);
+    expect(await insidersOf(filed.id)).toEqual([ADMIN.id, OTHER_ADMIN.id]);
+    expect(await begin(filed.id, OTHER_ADMIN)).toBe(secondAdminRequired);
+    expect(await begin(filed.id, LATE_ADMIN)).toBe(passkeyRequired);
+  }), ADMINS));
+
+  it("counts everyone the workspace is shared with, an admin or not, and whoever decided once",
+      () => adminWorkspace(ws => withWrites(ws, async () => {
+    await share(ws, NOT_ADMIN);
+    await share(ws, OTHER_ADMIN);
+    let id = await queueAction(ws, 1, "contentAccessRequest", requestOf(ws, "grantContentAccess"));
+    expect(await approve(ws, id, OTHER_ADMIN)).toBeUndefined();
+    let insiders = await insidersOf((await filedBy(ws, 1)).id);
+    expect(insiders?.toSorted()).toEqual([ADMIN.id, NOT_ADMIN.id, OTHER_ADMIN.id].toSorted());
+    expect(insiders?.[0]).toBe(ADMIN.id);
+
+    // Whoever approved the filing is on the list, in the sharing list or not.
+    let next = await queueAction(ws, 2, "contentAccessRequest",
+        requestOf(ws, "grantContentAccess"));
+    expect(await approve(ws, next, LATE_ADMIN)).toBeUndefined();
+    let decided = await filedBy(ws, 2);
+    expect(await insidersOf(decided.id)).toContain(LATE_ADMIN.id);
+    expect(await begin(decided.id, LATE_ADMIN)).toBe(secondAdminRequired);
+    expect(await begin(decided.id, OUTSIDE_ADMIN)).toBe(passkeyRequired);
+  }), ADMINS));
+
+  it("is the only request that keeps a list: any other is its requester's to approve",
+      () => adminWorkspace(ws => withWrites(ws, async () => {
+    await share(ws, OTHER_ADMIN);
+    let id = await queueAction(ws, 1, "workspaceWriteRequest", requestOf(ws, "restartWorkspace"));
+    expect(await approve(ws, id, OTHER_ADMIN)).toBeUndefined();
+    let filed = await filedBy(ws, 1);
+    expect(filed).toMatchObject({ action: "restartWorkspace", requestedBy: ADMIN.id });
+    expect(await insidersOf(filed.id)).toBeUndefined();
+    expect(await begin(filed.id, ADMIN)).toBe(passkeyRequired);
+    expect(await begin(filed.id, OTHER_ADMIN)).toBe(passkeyRequired);
+  }), ADMINS));
+
+  // A member who writes code that files a request later, leaves, and approves it from outside
+  // would be nobody the request knows. No rule files it: a person present approves the filing,
+  // and is on the list.
+  it("is never filed by a rule, so a member who left cannot have it filed in their absence",
+      () => adminWorkspace(ws => withWrites(ws, async () => {
+    await share(ws, OTHER_ADMIN);
+    enableRule(ws, "contentAccessRequest", OTHER_ADMIN);
+    enableRule(ws, "workspaceWriteRequest", OTHER_ADMIN);
+    await unshare(ws, OTHER_ADMIN);
+
+    // The code the member left behind asks for content: its own kind waits, whatever the rule.
+    let id = await queueAction(ws, 1, "contentAccessRequest", requestOf(ws, "grantContentAccess"),
+        { claims: { autoApprovable: true } });
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, id)).toBe("pending");
+    expect(await ws.facet.outcomes(1)).toBeUndefined();
+    expect(await writeRecords(ws)).toEqual([]);
+
+    // Only once a person present approves that card is the request filed, with that person on
+    // its list: the owner, alone in the workspace by now.
+    expect(await approve(ws, id, ADMIN)).toBeUndefined();
+    let filed = await filedBy(ws, 1);
+    expect((await writeRecords(ws)).map(record => [record.event, record.requestId]))
+        .toEqual([["requested", filed.id]]);
+
+    // Asked for as an ordinary write request, which a rule does file, it is refused at its call.
+    let disguised = await queueAction(ws, 2, "workspaceWriteRequest",
+        requestOf(ws, "grantContentAccess"));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, disguised)).toBe("pending");
+    expect(await ws.facet.outcomes(2))
+        .toEqual([{ error: "A request for access to content is an action of its own." }]);
+    expect(await writeRecords(ws)).toHaveLength(1);
+
+    // The member who left is a second person, and may approve the request.
+    expect(await insidersOf(filed.id)).toEqual([ADMIN.id]);
+    expect(await begin(filed.id, ADMIN)).toBe(secondAdminRequired);
+    expect(await begin(filed.id, OTHER_ADMIN)).toBe(passkeyRequired);
+  }), ADMINS));
 });
 
 describe("a spawned chat", () => {

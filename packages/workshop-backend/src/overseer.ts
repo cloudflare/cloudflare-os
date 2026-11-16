@@ -99,9 +99,10 @@ import {
   newestAdminGrantFirst,
 } from "./admin-grants";
 import {
-  adminWriteArgs, adminWriteTitle, entersActionLog, needsSecondAdmin, type AdminWriteGrant,
+  adminWriteArgs, adminWriteTitle, entersActionLog, isRequestInsider, needsSecondAdmin,
+  type AdminWriteGrant,
 } from "./admin-writes";
-import { isDeploymentAdmin, sameDeploymentAdmin } from "./auth/config";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
@@ -387,6 +388,14 @@ const ADMINS_ONLY_REFUSALS = {
       "what was read, so only deployment admins can be added to it. Removing the connection " +
       "does not change that.",
 };
+
+/**
+ * Who was in a workspace when it lent the admin gatekeeper its owner's Admin API to file a
+ * request for content access, by profile id: the owner, everyone the workspace is shared with
+ * in any role, and the member who approved the filing (always a person: that action kind is
+ * never auto-approved). The request keeps the list, and none of them may approve it.
+ */
+type AdminAgentInsiders = readonly string[];
 
 // Whether the deployment has turned the gatekeeper `vendorId` off: an admin disabled the
 // connector, or set its provisioning mode to "disabled". The one test behind every "Gatekeeper is
@@ -7617,9 +7626,10 @@ class OverseerImpl implements AgentHooks {
    * session a member opened directly from the connection was opened by the owner and, for an
    * approved action, whoever approved it is an admin too; and for an auto-approved
    * action, unless the workspace holds no restricted data. The origin recorded with every call
-   * is this workspace and the chat `caller` is tied to, if any. THE one place an AdminApiImpl is
-   * made with via "gatekeeper": it hands that AdminApiImpl to restrictAdminApi() (admin-agent.ts)
-   * and returns the result.
+   * is this workspace and the chat `caller` is tied to, if any. A lend that files a request for
+   * content access also says who was here (see AdminAgentInsiders). THE one place an AdminApiImpl
+   * is made with via "gatekeeper": it hands that AdminApiImpl to restrictAdminApi()
+   * (admin-agent.ts) and returns the result.
    *
    * What a lend costs, none of it cached, so that turning the gatekeeper off stops the very next
    * call and removing the account the next lend: one read of the admin config
@@ -7650,6 +7660,8 @@ class OverseerImpl implements AgentHooks {
         ADMIN_GATEKEEPER_VENDOR_ID), this.logger)) {
       throw new Error(ADMIN_ACCOUNT_REMOVED);
     }
+    // Awaited here so that who is in the workspace is read below, in the step that lends.
+    let sharing = await this.getSharingManager();
     // Every call is recorded as the owner's. A chat keeps who prompted its agent and an action
     // who decided it; a session another member opened from the connection itself would leave
     // nobody.
@@ -7672,8 +7684,15 @@ class OverseerImpl implements AgentHooks {
     assertAdminGatekeeper();
     let chatId = "chatId" in caller ? caller.chatId : undefined;
     let agent = {workspaceId: this.ctx.id.toString(), ...(chatId !== undefined && {chatId})};
+    // Membership is read here, once, as the call that files the request is lent.
+    let insiders: AdminAgentInsiders | undefined =
+        use.for === "action" && use.kind === "contentAccessRequest"
+        ? [...new Set([admin, ...sharing.listCollaborators().map(c => c.profile.id),
+                       use.decidedBy])]
+        : undefined;
     return restrictAdminApi(
-        new AdminApiImpl(this.ctx, this.env, admin, {via: "gatekeeper", agent}),
+        new AdminApiImpl(this.ctx, this.env, admin,
+                         {via: "gatekeeper", agent, ...(insiders && {insiders})}),
         this.env, admin, use, off);
   }
 
@@ -12466,14 +12485,17 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *     adminCallerTerms() refuses or that is "gatekeeper" (an approval is a person's, with a
    *     passkey, never an agent's), arguments that are not the action's, a `workspaceOwner` that
    *     is not a non-empty string, a `passkey` that is not one of 1 to MAX_ADMIN_AUDIT_ARG_LENGTH
-   *     characters, or an `expiresAt` that is not a valid Date;
+   *     characters, an `expiresAt` that is not a valid Date, or `insiders` that are not an array
+   *     of strings;
    *   - a request that expired more than a minute ago, the allowance for clock skew
    *     (`requestNotPending`);
    *   - an approver or a requester who is no longer a deployment admin (`notAdmin`), and writes
    *     turned off (`writesOff`);
-   *   - for "grantContentAccess": an approver who is the requester (`secondAdminRequired`, see
-   *     sameDeploymentAdmin()), a request that already gave this workspace its grant
-   *     (`requestNotPending`), and a level in force below "content" (`contentOff`);
+   *   - for "grantContentAccess": an approver who is the requester or, for a request filed
+   *     through the admin gatekeeper, was in the workspace it was filed from
+   *     (`secondAdminRequired`, see isRequestInsider()), a request that already gave this
+   *     workspace its grant (`requestNotPending`), and a level in force below "content"
+   *     (`contentOff`);
    *   - a grant whose `workspaceOwner` is not this workspace's owner (`workspaceChanged`): the
    *     approver confirmed a write to that owner's workspace, and a deleted workspace's id can be
    *     initialised again for someone else. Not `workspaceNotFound`, on which the caller drops the
@@ -12522,6 +12544,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (Number.isNaN(expiresAt)) {
       throw new TypeError("An admin write's expiry must be a valid time.");
     }
+    // Compared below, so a list that could not be compared is refused rather than skipped.
+    let insiders: unknown = grant.insiders;
+    if (insiders !== undefined &&
+        !(Array.isArray(insiders) && insiders.every(insider => typeof insider === "string"))) {
+      throw new TypeError("An admin write's insiders must be a list of names.");
+    }
     if (expiresAt < Date.now() - 60 * 1000) {
       throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
     }
@@ -12536,8 +12564,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (!adminWorkspaceWritesEnabled(impl.env)) {
       throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.writesOff);
     }
-    // What was handed over is checked again: AdminSettings refused the requester's own approval.
-    if (needsSecondAdmin(grant.action) && sameDeploymentAdmin(grant.admin, grant.requestedBy)) {
+    // What was handed over is checked again: AdminSettings refused the approval of the requester
+    // and of everyone the request keeps as an insider (see beginWorkspaceWriteApproval()).
+    if (needsSecondAdmin(grant.action) && isRequestInsider(grant, grant.admin)) {
       throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
     }
     // The deployment's policy, read for "grantContentAccess" alone: a grant is stored only while

@@ -194,8 +194,12 @@ export type AdminWriteActor = Pick<AdminWriteRecord, "admin" | "sessionId" | "vi
  * an origin, or an origin without it.
  */
 export type AdminCaller =
-  | { via: Exclude<AdminVia, "gatekeeper">; agent?: undefined }
-  | { via: "gatekeeper"; agent: AdminAgentOrigin };
+  | { via: Exclude<AdminVia, "gatekeeper">; agent?: undefined; insiders?: undefined }
+  | { via: "gatekeeper"; agent: AdminAgentOrigin;
+      /** Who was in the lending workspace when it lent this to file a request for content
+       * access, by profile id (see OverseerImpl.lendAdminApi()): absent for every other lend.
+       * The request keeps the list, and no record does. */
+      insiders?: readonly string[] };
 
 /**
  * `caller` as a record keeps it, once it is shown to be well formed: `{ via }` for "api" and

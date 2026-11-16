@@ -1161,6 +1161,45 @@ describe("a request that needs a second admin", () => {
         [{ ...actor(ADMIN), refusal: "requester", passkey: passkeyA.credentialId }]);
   });
 
+  describe("filed through the admin gatekeeper from a workspace two admins were in", () => {
+    const OWNER = "triage-owner@example.test";
+    const MEMBER = "triage-member@example.test";
+    const OUTSIDER = "outside-admin@example.test";
+    const agentRequest = (overrides: Partial<StoredAdminWrite> = {}) => contentRequest({
+      requestedBy: OWNER, via: "gatekeeper", agent: { workspaceId: "c".repeat(64), chatId: 4 },
+      insiders: [OWNER, MEMBER], ...overrides,
+    });
+
+    it("refuses the member as it refuses the requester, and lets an admin from outside approve",
+        async () => {
+      harness = adminWritesHarness({ ADMINS: [OWNER, MEMBER, OUTSIDER] });
+      const member = await enrol(MEMBER);
+      const outsider = await enrol(OUTSIDER);
+      const request = await agentRequest();
+      // A request its requester's fellow member may approve: the member's challenge is for it.
+      const other = await agentRequest({ action: "stopAgent", args: { chatId: 3 } });
+      harness.appended.length = 0;
+
+      expect(await harness.inDo(
+          settings => codeOf(settings.beginWorkspaceWriteApproval(request.id, MEMBER))))
+          .toBe(secondAdminRequired);
+      expect(harness.appended).toStrictEqual([]);
+
+      const assertion = await answer(member, MEMBER, other.id);
+      expect(await refusal(assertion, MEMBER, request.id)).toBe(secondAdminRequired);
+      expect(recordsOf(request.id)).toStrictEqual(
+          [refusedRecord(request, MEMBER, "requester", member, { args: {} })]);
+      expect(await stored(request.id)).toStrictEqual(request);
+      expect((await storedPasskey(member))?.lastUsed).toBeUndefined();
+
+      const approved = await approve(
+          await answer(outsider, OUTSIDER, request.id), OUTSIDER, request.id);
+      // The approved request still holds the list: its grant carries it to the workspace.
+      expect(approved).toMatchObject(
+          { state: "approved", resolvedBy: OUTSIDER, insiders: [OWNER, MEMBER] });
+    });
+  });
+
   describe("with two accounts that one entry of ADMINS matches", () => {
     const ALICE = "alice@example.com";
     const ALICE_AGAIN = "Alice@Example.com";

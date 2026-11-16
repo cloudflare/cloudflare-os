@@ -1304,6 +1304,30 @@ describe("AdminApiImpl write requests", () => {
       // The same promise was given to waitUntil(), which the caller's own rejection handles.
       expect(await rejection(waitUntil.mock.calls[0][0])).toBe(failure);
     });
+
+    it("hands the workspace who was in the workspace an agent's request was filed from, " +
+        "and shows it to no client", async () => {
+      const insiders = ["other-admin@example.test", "member-admin@example.test"];
+      const request: ReturnType<typeof approvedWrite> = {
+        ...approvedWrite(), action: "grantContentAccess", args: {}, via: "gatekeeper",
+        agent: { workspaceId: "c".repeat(64), chatId: 4 }, insiders,
+      };
+      const { mint, callsTo } = approvalDeployment(request, {
+        admin: { getWorkspaceWrite: () => request },
+      });
+      const api = mint();
+      const shown = await api.approveWorkspaceWrite(REQUEST_ID, ASSERTION);
+
+      // The workspace checks the approver against the list again, so the grant carries it.
+      expect(callsTo("overseer", "applyAdminWrite")[0].args).toStrictEqual([{
+        requestId: REQUEST_ID, action: "grantContentAccess", args: {}, reason: REASON,
+        requestedBy: "other-admin@example.test", expiresAt: request.expiresAt,
+        workspaceOwner: "bob@example.test", ...APPROVER, insiders,
+      }]);
+      // Neither the approval's answer nor a later read of the request shows it.
+      expect(shown).not.toHaveProperty("insiders");
+      expect(await api.getWorkspaceWrite(REQUEST_ID)).not.toHaveProperty("insiders");
+    });
   });
 });
 
@@ -1475,15 +1499,20 @@ describe("AdminApiImpl lent to the admin gatekeeper", () => {
     }
   });
 
-  it("copies nothing of the caller but its via and its origin", async () => {
-    const caller = { ...GATEKEEPER, insiders: ["ada"], admin: "mallory" } as AdminCaller;
-    const { terms, userTerms, refused, refusedUser, stored } = await labels(caller);
+  it("copies nothing of the caller into a record but its via and its origin", async () => {
+    const insiders = ["ada", "grace"];
+    const caller = { ...GATEKEEPER, insiders, admin: "mallory" } as AdminCaller;
+    const { terms, userTerms, refused, refusedUser, stored, view, actor } = await labels(caller);
     expect(Object.keys(terms).toSorted()).toEqual(["access", "agent", "expiresAt", "via"]);
     expect(Object.keys(userTerms).toSorted()).toEqual(["agent", "expiresAt", "via"]);
-    for (let labelled of [refused, refusedUser, stored]) {
+    for (let labelled of [refused, refusedUser, view, actor]) {
       expect(labelled).not.toHaveProperty("insiders");
     }
     expect([refused.admin, refusedUser.admin, stored.requestedBy]).toEqual([ADMIN, ADMIN, ADMIN]);
+    // The stored request alone keeps who was in the workspace it was filed from, as its own
+    // copy of the list.
+    expect(stored.insiders).toStrictEqual(insiders);
+    expect(stored.insiders).not.toBe(insiders);
   });
 
   it("gives a client's session no origin anywhere", async () => {
@@ -1492,6 +1521,7 @@ describe("AdminApiImpl lent to the admin gatekeeper", () => {
     for (let labelled of [terms, userTerms, refused, refusedUser, stored, view, actor]) {
       expect(labelled).toHaveProperty("via", "cli");
       expect(labelled).not.toHaveProperty("agent");
+      expect(labelled).not.toHaveProperty("insiders");
     }
   });
 

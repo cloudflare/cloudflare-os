@@ -295,6 +295,9 @@ describe("refusals that write and record nothing", () => {
     ["a missing passkey", {}, { passkey: undefined }],
     ["an empty passkey", {}, { passkey: "" }],
     ["a passkey of 257 characters", {}, { passkey: "p".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 1) }],
+    ["insiders that are not a list", {}, { insiders: REQUESTER }],
+    ["an insider that is not a name", {}, { insiders: [REQUESTER, 7] }],
+    ["insiders that are null", {}, { insiders: null }],
   ])("rejects a grant with %s", (_name, args, overrides) => withWorkspace(async ws => {
     let before = stored(ws);
     let grant = grantOf("stopAgent", { chatId: CHAT_ID, ...args },
@@ -866,6 +869,86 @@ describe("grantContentAccess", () => {
     await ws.instance.applyAdminWrite(contentGrantOf({ ...request, admin: "grace@example.com" }));
     expect(storedGrants(ws)).toMatchObject(
         [{ requestedBy: "alice@example.com", grantedBy: { id: "grace@example.com" } }]);
+  }));
+
+  // A request an agent filed through the admin gatekeeper: OWNER_ADMIN's, with a member of the
+  // workspace it was filed from. OUTSIDE_ADMIN had no part in it.
+  const OWNER_ADMIN = "triage-owner@example.test";
+  const MEMBER_ADMIN = "triage-member@example.test";
+  const OUTSIDE_ADMIN = "outside-admin@example.test";
+  const AGENT_ADMINS = { ADMINS: [OWNER_ADMIN, MEMBER_ADMIN, OUTSIDE_ADMIN] };
+  const agentRequest = { requestedBy: OWNER_ADMIN, insiders: [OWNER_ADMIN, MEMBER_ADMIN] };
+
+  it("refuses an approver who was in the workspace the request was filed from, before any record",
+      () => withContentWorkspace(async ws => {
+    setContentLevel(ws, AGENT_ADMINS);
+    let before = stored(ws);
+
+    for (let admin of [MEMBER_ADMIN, OWNER_ADMIN]) {
+      expect(await codeOf(ws.instance.applyAdminWrite(contentGrantOf({ ...agentRequest, admin }))))
+          .toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    }
+    expect(stored(ws)).toStrictEqual(before);
+    expect(storedGrants(ws)).toStrictEqual([]);
+    expect(await deploymentRecords(ws)).toStrictEqual([]);
+
+    // An admin from outside that workspace approves. Neither the record nor the stored grant
+    // keeps the list.
+    let grant = contentGrantOf({ ...agentRequest, admin: OUTSIDE_ADMIN });
+    await ws.instance.applyAdminWrite(grant);
+    let [kept] = storedGrants(ws);
+    expect(storedGrants(ws)).toStrictEqual([{
+      id: expect.any(String), level: "content", source: "admins", scope: "workspace",
+      grantedBy: { id: OUTSIDE_ADMIN, name: OUTSIDE_ADMIN },
+      requestedBy: OWNER_ADMIN, requestId: grant.requestId, reason: REASON,
+      grantedAt: expect.any(Date), expiresAt: expect.any(Date),
+    }]);
+    expect(await deploymentRecords(ws)).toEqual([{
+      kind: "write", event: "approved", at: expect.any(Date),
+      admin: OUTSIDE_ADMIN, sessionId: SESSION_ID, via: "api", requestId: grant.requestId,
+      workspaceId: ws.id, workspaceOwner: OWNER.id, workspaceTitle: "Quarterly plan",
+      method: "grantContentAccess", args: {}, reason: REASON, requestedBy: OWNER_ADMIN,
+      passkey: PASSKEY, grantId: kept.id,
+    }]);
+  }));
+
+  it("takes an insider spelled in another case for that insider",
+      () => withContentWorkspace(async ws => {
+    setContentLevel(ws, AGENT_ADMINS);
+    let before = stored(ws);
+    expect(await codeOf(ws.instance.applyAdminWrite(
+        contentGrantOf({ ...agentRequest, admin: "Triage-Member@Example.test" }))))
+        .toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    expect(stored(ws)).toStrictEqual(before);
+    expect(await deploymentRecords(ws)).toStrictEqual([]);
+  }));
+
+  it("keeps a request with no insiders to its requester alone",
+      () => withContentWorkspace(async ws => {
+    setContentLevel(ws, AGENT_ADMINS);
+    let request = { requestedBy: OWNER_ADMIN };
+    for (let insiders of [undefined, []]) {
+      expect(await codeOf(ws.instance.applyAdminWrite(
+          contentGrantOf({ ...request, insiders, admin: OWNER_ADMIN }))))
+          .toBe(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    }
+    expect(await deploymentRecords(ws)).toStrictEqual([]);
+
+    await ws.instance.applyAdminWrite(contentGrantOf({ ...request, admin: MEMBER_ADMIN }));
+    expect(storedGrants(ws)).toMatchObject(
+        [{ requestedBy: OWNER_ADMIN, grantedBy: { id: MEMBER_ADMIN } }]);
+  }));
+
+  it("lets an insider approve every other action", () => withWorkspace(async ws => {
+    setEnv(ws, AGENT_ADMINS);
+    let spies = spyOnOperations(ws);
+
+    await ws.instance.applyAdminWrite(
+        grantOf("restartWorkspace", {}, { ...agentRequest, admin: MEMBER_ADMIN }));
+
+    expect(spies.scheduleAccessRestart.mock.calls).toHaveLength(1);
+    expect(await deploymentRecords(ws)).toMatchObject(
+        [{ event: "approved", admin: MEMBER_ADMIN, requestedBy: OWNER_ADMIN }]);
   }));
 
   it.each([
