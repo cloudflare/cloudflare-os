@@ -24,9 +24,10 @@ export type SignInFormProps = {
 // 16px at least on a phone, which zooms in on a field with smaller text when it is focused.
 const FIELD_TEXT = 'max-md:text-[16px]'
 
-// As the existing Workshop's sign-up page checks them, before the server is asked.
+// As the server takes a username (`normalizeUsername`), and a password as the existing Workshop's
+// sign-up page did, before the server is asked.
 const usernameProblem = (username: string) =>
-  username && !/^[a-z0-9_-]+$/i.test(username) ? 'Letters, numbers, underscores and hyphens only' : undefined
+  username && !/^[a-z][a-z0-9_]*$/i.test(username) ? 'A letter first, then letters, numbers or underscores' : undefined
 const passwordProblem = (password: string) => (password && password.length < 8 ? 'At least 8 characters' : undefined)
 
 /**
