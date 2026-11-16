@@ -73,7 +73,8 @@ export const ReportComposer = ({ entries, onAdd }: {
     }
     flushSync(() => {
       if (sent) {
-        setText('')
+        // The field takes typing while the entry is sent: what was typed since is kept.
+        setText((current) => (current === text ? '' : current))
         setVisibility('admins')
       }
       setSending(false)
