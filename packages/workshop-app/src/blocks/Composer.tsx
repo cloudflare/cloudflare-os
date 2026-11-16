@@ -292,6 +292,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
           className="composer relative"
         >
           <div className="composer-editor absolute overflow-clip">
+            {/* 16px at least on a phone, which zooms in on a field with smaller text when it is
+                focused; the copies that measure the draft below keep to the same. */}
             <InputArea
               ref={inputRef}
               autoFocus={autoFocus}
@@ -301,7 +303,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
               data-expanded={expanded || undefined}
               data-sending={sending || undefined}
               readOnly={sending}
-              className="composer-input block min-w-0 resize-none rounded-none border-0 bg-transparent p-0 text-base/5 wrap-anywhere shadow-none ring-0 focus:ring-0 data-expanded:[scrollbar-gutter:stable] data-sending:text-kumo-subtle"
+              className="composer-input block min-w-0 resize-none rounded-none border-0 bg-transparent p-0 text-base/5 max-md:text-[16px]/5 wrap-anywhere shadow-none ring-0 focus:ring-0 data-expanded:[scrollbar-gutter:stable] data-sending:text-kumo-subtle"
               placeholder={command ? (command.kind === 'skill' ? 'Add anything it should know…' : 'Send it, or add a note…') : 'Ask anything…'}
               aria-label="Message"
               role={commands.length ? 'combobox' : undefined}
@@ -366,12 +368,12 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
             minRows={1}
             maxRows={MAX_ROWS}
             value={text}
-            className="pointer-events-none invisible absolute top-3 right-2 left-4 w-auto resize-none rounded-none border-0 bg-transparent p-0 pr-4 text-base/5 wrap-anywhere shadow-none ring-0 [scrollbar-gutter:stable]"
+            className="pointer-events-none invisible absolute top-3 right-2 left-4 w-auto resize-none rounded-none border-0 bg-transparent p-0 pr-4 text-base/5 max-md:text-[16px]/5 wrap-anywhere shadow-none ring-0 [scrollbar-gutter:stable]"
           />
           <div
             ref={measureRef}
             aria-hidden="true"
-            className="pointer-events-none invisible absolute top-[11px] right-[var(--composer-end)] left-[42px] text-base/5 wrap-anywhere whitespace-pre-wrap"
+            className="pointer-events-none invisible absolute top-[11px] right-[var(--composer-end)] left-[42px] text-base/5 max-md:text-[16px]/5 wrap-anywhere whitespace-pre-wrap"
           >
             {text + '\u200b'}
           </div>

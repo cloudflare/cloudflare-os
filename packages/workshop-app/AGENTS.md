@@ -693,7 +693,10 @@ away again, as is Escape. It is not swiped. Going anywhere puts it away: like fu
 left behind with the page. A page further in goes up to one of those by its header: a chat, one
 about to be and a chat's settings by the workspace's crumb, and an item's own page by its own way
 up, to the chat it was shown from, the Library page it was opened from (`fromLibrary`), or else
-its workspace's library. The workspace page's New chat is its icon alone.
+its workspace's library. The workspace page's New chat is its icon alone. A field's text is 16px
+at least there (`max-md:text-[16px]`, Kumo's `text-base` being 14px), or iOS zooms the page in
+when it is focused: the composer and its measuring copies, and the sign-in form. Keep to it for
+a new field.
 A named header bubble that carries on from one elsewhere along the header slides over from there.
 
 What is beside a chat on a wider screen comes over all of it from the far edge, as the page moves
