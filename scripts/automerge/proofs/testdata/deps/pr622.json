@@ -1,0 +1,25 @@
+{
+  "pull_request": 622,
+  "base": "bf9eef37c1439b2e90d29f49dbafff662497d169",
+  "head": "3a405936eb3daf9683167fb07eeea5ca830c0d7c",
+  "recorded": "2026-11-02T17:22:32.603Z",
+  "now": "2026-10-01T07:11:32-05:00",
+  "minimum_release_age_minutes": 1440,
+  "manifests": [],
+  "base_lock_names": [
+    "@cloudflare/workers-types"
+  ],
+  "published": {
+    "@cloudflare/workers-types@5.20260924.1": "2026-09-24T01:16:43.141Z"
+  },
+  "osv_queries": [
+    "@cloudflare/workers-types@5.20260924.1",
+    "@cloudflare/workers-types@5.20260903.1"
+  ],
+  "osv_response": {
+    "results": [
+      {},
+      {}
+    ]
+  }
+}

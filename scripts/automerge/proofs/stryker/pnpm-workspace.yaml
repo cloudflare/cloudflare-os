@@ -1,0 +1,14 @@
+# Stryker for proof-tests (../tests.ts), kept out of the root workspace. Adding it to the root
+# lockfile re-resolved the peer sets of every vitest and vite-plus entry; as its own workspace it
+# leaves the root lockfile untouched and only the mutation job installs it.
+#
+# tests.ts copies this directory into the package under test and installs it there, frozen. The
+# vitest runner leaves its `vitest` peer unresolved (autoInstallPeers off), so Node resolves
+# `vitest` upward from the copy and reaches the package's own vitest: Stryker's setup file must
+# register hooks on the same vitest instance that runs the tests.
+packages: []
+
+autoInstallPeers: false
+
+# The root workspace's supply-chain policy (../../../../pnpm-workspace.yaml).
+minimumReleaseAge: 1440

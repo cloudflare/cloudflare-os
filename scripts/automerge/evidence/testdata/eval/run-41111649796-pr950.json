@@ -1,0 +1,701 @@
+{
+  "baselineSha": "929888294ad48c83b309fd456ad810c6299a07cb",
+  "candidateSha": "78699b247acbd3a72ca8e16227100604e640b0ae",
+  "verdict": "inconclusive",
+  "rows": [
+    {
+      "taskId": "change-calendar",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 10,
+        "passed": 8,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 209186.14320700002,
+        "meanModelTurns": 22.3,
+        "meanToolCalls": 26.3,
+        "meanToolErrors": 0.3,
+        "cacheHitRate": 0.9456781797544659,
+        "cacheBreakRate": 0.00009730833570005277,
+        "failedChecks": [
+          {
+            "turn": 4,
+            "check": "earliest-available-applies-every-rule",
+            "evidence": "[{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-20T03:45:00.000Z\",\"toIso\":\"2027-10-20T04:15:00.000Z\",\"durationMinutes\":30},\"actual\":{\"startIso\":\"2027-10-20T03:45:00.000Z\",\"endIso\":\"2027-10-20T04:15:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-20T03:45:00.000Z\",\"endIso\":\"2027-10-20T04:15:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-20T03:46:00.000Z\",\"toIso\":\"2027-10-20T22:30:00.000Z\",\"durationMinutes\":30},\"actual\":null,\"expected\":{\"startIso\":\"2027-10-20T22:00:00.000Z\",\"endIso\":\"2027-10-20T22:30:00.000Z\"},\"match\":false},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-12T23:00:00.000Z\",\"toIso\":\"2027-10-13T01:00:00.000Z\",\"durationMinutes\":120},\"actual\":{\"startIso\":\"2027-10-12T23:00:00.000Z\",\"endIso\":\"2027-10-13T01:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-12T23:00:00.000Z\",\"endIso\":\"2027-10-13T01:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-11T22:00:00.000Z\",\"toIso\":\"2027-10-11T23:00:00.000Z\",\"durationMinutes\":60},\"actual\":{\"startIso\":\"2027-10-11T22:00:00.000Z\",\"endIso\":\"2027-10-11T23:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-11T22:00:00.000Z\",\"endIso\":\"2027-10-11T23:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-11T22:15:00.000Z\",\"toIso\":\"2027-10-11T23:15:00.000Z\",\"durationMinutes\":60},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-13T01:00:00.000Z\",\"toIso\":\"2027-10-16T03:30:00.000Z\",\"durationMinutes\":60},\"actual\":{\"startIso\":\"2027-10-16T02:30:00.000Z\",\"endIso\":\"2027-10-16T03:30:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-16T02:30:00.000Z\",\"endIso\":\"2027-10-16T03:30:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-26T01:00:00.000Z\",\"toIso\":\"2027-10-28T01:00:00.000Z\",\"durationMinutes\":60},\"actual\":{\"startIso\":\"2027-10-28T00:00:00.000Z\",\"endIso\":\"2027-10-28T01:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-28T00:00:00.000Z\",\"endIso\":\"2027-10-28T01:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"edge-cache\",\"fromIso\":\"2027-10-28T01:00:00.000Z\",\"toIso\":\"2027-10-30T04:00:00.000Z\",\"durationMinutes\":60},\"actual\":{\"startIso\":\"2027-10-30T03:00:00.000Z\",\"endIso\":\"2027-10-30T04:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-30T03:00:00.000Z\",\"endIso\":\"2027-10-30T04:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"billing\",\"fromIso\":\"2027-10-27T03:45:00.000Z\",\"toIso\":\"2027-10-29T02:00:00.000Z\",\"durationMinutes\":240},\"actual\":null,\"expected\":{\"startIso\":\"2027-10-28T22:00:00.000Z\",\"endIso\":\"2027-10-29T02:00:00.000Z\"},\"match\":false},{\"query\":{\"service\":\"billing\",\"fromIso\":\"2027-10-28T22:00:00.000Z\",\"toIso\":\"2027-10-29T04:00:00.000Z\",\"durationMinutes\":300},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"dns\",\"fromIso\":\"2027-10-19T22:00:00.000Z\",\"toIso\":\"2027-10-21T07:00:00.000Z\",\"durationMinutes\":480},\"actual\":{\"startIso\":\"2027-10-20T23:00:00.000Z\",\"endIso\":\"2027-10-21T07:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-20T23:00:00.000Z\",\"endIso\":\"2027-10-21T07:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-20T22:00:00.000Z\",\"toIso\":\"2027-10-20T22:45:00.000Z\",\"durationMinutes\":60},\"actual\":null,\"expected\":null,\"match\":true}]",
+            "trials": 1
+          },
+          {
+            "turn": 4,
+            "check": "earliest-available-matches-the-reference",
+            "evidence": "[{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-13T18:00:00.000Z\",\"toIso\":\"2027-10-16T06:00:00.000Z\",\"durationMinutes\":30},\"actual\":{\"startIso\":\"2027-10-16T02:30:00.000Z\",\"endIso\":\"2027-10-16T03:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-16T02:30:00.000Z\",\"endIso\":\"2027-10-16T03:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-15T16:30:00.000Z\",\"toIso\":\"2027-10-16T04:30:00.000Z\",\"durationMinutes\":240},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-12T18:30:00.000Z\",\"toIso\":\"2027-10-13T06:30:00.000Z\",\"durationMinutes\":60},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"edge-cache\",\"fromIso\":\"2027-10-29T21:00:00.000Z\",\"toIso\":\"2027-10-30T09:00:00.000Z\",\"durationMinutes\":480},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"edge-cache\",\"fromIso\":\"2027-10-29T19:15:00.000Z\",\"toIso\":\"2027-10-30T07:15:00.000Z\",\"durationMinutes\":30},\"actual\":null,\"expected\":{\"startIso\":\"2027-10-30T03:00:00.000Z\",\"endIso\":\"2027-10-30T03:30:00.000Z\"},\"match\":false},{\"query\":{\"service\":\"edge-cache\",\"fromIso\":\"2027-10-13T14:46:00.000Z\",\"toIso\":\"2027-10-14T02:46:00.000Z\",\"durationMinutes\":480},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-26T18:46:00.000Z\",\"toIso\":\"2027-10-27T06:46:00.000Z\",\"durationMinutes\":75},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-27T18:15:00.000Z\",\"toIso\":\"2027-10-29T06:15:00.000Z\",\"durationMinutes\":240},\"actual\":{\"startIso\":\"2027-10-28T22:00:00.000Z\",\"endIso\":\"2027-10-29T02:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-28T00:00:00.000Z\",\"endIso\":\"2027-10-28T04:00:00.000Z\"},\"match\":false},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-28T08:15:00.000Z\",\"toIso\":\"2027-10-30T20:15:00.000Z\",\"durationMinutes\":60},\"actual\":{\"startIso\":\"2027-10-29T22:00:00.000Z\",\"endIso\":\"2027-10-29T23:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-28T22:00:00.000Z\",\"endIso\":\"2027-10-28T23:00:00.000Z\"},\"match\":false},{\"query\":{\"service\":\"billing\",\"fromIso\":\"2027-10-30T23:46:00.000Z\",\"toIso\":\"2027-10-31T11:46:00.000Z\",\"durationMinutes\":30},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"billing\",\"fromIso\":\"2027-10-29T20:30:00.000Z\",\"toIso\":\"2027-11-01T08:30:00.000Z\",\"durationMinutes\":480},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"billing\",\"fromIso\":\"2027-10-26T05:00:00.000Z\",\"toIso\":\"2027-10-27T17:00:00.000Z\",\"durationMinutes\":30},\"actual\":null,\"expected\":null,\"match\":true},{\"query\":{\"service\":\"dns\",\"fromIso\":\"2027-10-20T05:30:00.000Z\",\"toIso\":\"2027-10-22T17:30:00.000Z\",\"durationMinutes\":30},\"actual\":{\"startIso\":\"2027-10-21T22:00:00.000Z\",\"endIso\":\"2027-10-21T22:30:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-20T23:00:00.000Z\",\"endIso\":\"2027-10-20T23:30:00.000Z\"},\"match\":false},{\"query\":{\"service\":\"dns\",\"fromIso\":\"2027-10-21T02:30:00.000Z\",\"toIso\":\"2027-10-21T14:30:00.000Z\",\"durationMinutes\":30},\"actual\":{\"startIso\":\"2027-10-21T02:30:00.000Z\",\"endIso\":\"2027-10-21T03:00:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-21T02:30:00.000Z\",\"endIso\":\"2027-10-21T03:00:00.000Z\"},\"match\":true},{\"query\":{\"service\":\"dns\",\"fromIso\":\"2027-10-20T14:00:00.000Z\",\"toIso\":\"2027-10-23T02:00:00.000Z\",\"durationMinutes\":75},\"actual\":{\"startIso\":\"2027-10-21T22:00:00.000Z\",\"endIso\":\"2027-10-21T23:15:00.000Z\"},\"expected\":{\"startIso\":\"2027-10-20T23:00:00.000Z\",\"endIso\":\"2027-10-21T00:15:00.000Z\"},\"match\":false}]",
+            "trials": 1
+          },
+          {
+            "turn": 4,
+            "check": "earliest-available-slots-are-bookable",
+            "evidence": "[{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-20T03:45:00.000Z\",\"toIso\":\"2027-10-20T04:15:00.000Z\",\"durationMinutes\":30},\"slot\":{\"startIso\":\"2027-10-20T03:45:00.000Z\",\"endIso\":\"2027-10-20T04:15:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-20T03:46:00.000Z\",\"toIso\":\"2027-10-20T22:30:00.000Z\",\"durationMinutes\":30},\"slot\":null,\"scheduled\":null,\"cancelled\":null},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-12T23:00:00.000Z\",\"toIso\":\"2027-10-13T01:00:00.000Z\",\"durationMinutes\":120},\"slot\":{\"startIso\":\"2027-10-12T23:00:00.000Z\",\"endIso\":\"2027-10-13T01:00:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-11T22:00:00.000Z\",\"toIso\":\"2027-10-11T23:00:00.000Z\",\"durationMinutes\":60},\"slot\":{\"startIso\":\"2027-10-11T22:00:00.000Z\",\"endIso\":\"2027-10-11T23:00:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}},{\"query\":{\"service\":\"api-gateway\",\"fromIso\":\"2027-10-13T01:00:00.000Z\",\"toIso\":\"2027-10-16T03:30:00.000Z\",\"durationMinutes\":60},\"slot\":{\"startIso\":\"2027-10-16T02:30:00.000Z\",\"endIso\":\"2027-10-16T03:30:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}},{\"query\":{\"service\":\"auth\",\"fromIso\":\"2027-10-26T01:00:00.000Z\",\"toIso\":\"2027-10-28T01:00:00.000Z\",\"durationMinutes\":60},\"slot\":{\"startIso\":\"2027-10-28T00:00:00.000Z\",\"endIso\":\"2027-10-28T01:00:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}},{\"query\":{\"service\":\"edge-cache\",\"fromIso\":\"2027-10-28T01:00:00.000Z\",\"toIso\":\"2027-10-30T04:00:00.000Z\",\"durationMinutes\":60},\"slot\":{\"startIso\":\"2027-10-30T03:00:00.000Z\",\"endIso\":\"2027-10-30T04:00:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}},{\"query\":{\"service\":\"billing\",\"fromIso\":\"2027-10-27T03:45:00.000Z\",\"toIso\":\"2027-10-29T02:00:00.000Z\",\"durationMinutes\":240},\"slot\":null,\"scheduled\":null,\"cancelled\":null},{\"query\":{\"service\":\"dns\",\"fromIso\":\"2027-10-19T22:00:00.000Z\",\"toIso\":\"2027-10-21T07:00:00.000Z\",\"durationMinutes\":480},\"slot\":{\"startIso\":\"2027-10-20T23:00:00.000Z\",\"endIso\":\"2027-10-21T07:00:00.000Z\"},\"scheduled\":{\"ok\":true},\"cancelled\":{\"ok\":true}}]",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "schedules-and-lists-windows",
+            "evidence": "{\"scheduled\":[{\"ok\":true},{\"ok\":false,\"error\":\"OUTSIDE_HOURS\"},{\"ok\":true},{\"ok\":true},{\"ok\":true},{\"ok\":true},{\"ok\":true},{\"ok\":true},{\"ok\":true},{\"ok\":false,\"error\":\"OUTSIDE_HOURS\"},{\"ok\":true}],\"week\":[{\"id\":\"mw-101\",\"service\":\"api-gateway\",\"reason\":\"Rotate TLS certificates\",\"startIso\":\"2027-10-12T23:00:00.000Z\",\"endIso\":\"2027-10-13T01:00:00.000Z\"},{\"id\":\"mw-103\",\"service\":\"api-gateway\",\"reason\":\"Upgrade gateway to v2.8\",\"startIso\":\"2027-10-14T22:00:00.000Z\",\"endIso\":\"2027-10-15T02:30:00.000Z\"},{\"id\":\"mw-104\",\"service\":\"billing\",\"reason\":\"Database index rebuild\",\"startIso\":\"2027-10-16T23:30:00.000Z\",\"endIso\":\"2027-10-17T01:30:00.000Z\"}],\"gateway\":[{\"id\":\"mw-101\",\"service\":\"api-gateway\",\"reason\":\"Rotate TLS certificates\",\"startIso\":\"2027-10-12T23:00:00.000Z\",\"endIso\":\"2027-10-13T01:00:00.000Z\"},{\"id\":\"mw-103\",\"service\":\"api-gateway\",\"reason\":\"Upgrade gateway to v2.8\",\"startIso\":\"2027-10-14T22:00:00.000Z\",\"endIso\":\"2027-10-15T02:30:00.000Z\"}]}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "rejects-invalid-windows-without-changing-anything",
+            "evidence": "{\"attempts\":{\"DUPLICATE_ID\":{\"ok\":false,\"error\":\"DUPLICATE_ID\"},\"UNKNOWN_SERVICE\":{\"ok\":false,\"error\":\"UNKNOWN_SERVICE\"},\"OUTSIDE_HOURS\":{\"ok\":false,\"error\":\"OUTSIDE_HOURS\"},\"INVALID_RANGE_backwards\":{\"ok\":false,\"error\":\"INVALID_RANGE\"},\"INVALID_RANGE_too_long\":{\"ok\":false,\"error\":\"INVALID_RANGE\"},\"OUTSIDE_HOURS_offset\":{\"ok\":false,\"error\":\"OUTSIDE_HOURS\"}},\"count\":9}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "overlap-is-per-service-and-touching-is-allowed",
+            "evidence": "{\"touching\":{\"ok\":true},\"overlapping\":{\"ok\":false,\"error\":\"OVERLAP\"},\"otherService\":{\"ok\":true},\"conflicts\":{\"ids\":[\"mw-100\",\"mw-101\"]},\"cancelled\":[{\"ok\":true},{\"ok\":true},{\"ok\":false,\"error\":\"UNKNOWN_WINDOW\"}]}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          9,
+          9,
+          9
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 1
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 1
+          },
+          {
+            "tool": "executeCode",
+            "message": "This step already made code changes, which take effect when the step ends. End this response and call executeCode again in your next step.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 227429.889542,
+        "meanModelTurns": 27.4,
+        "meanToolCalls": 31.4,
+        "meanToolErrors": 0.5,
+        "cacheHitRate": 0.9517524814487667,
+        "cacheBreakRate": 0.00008900272447228801,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 1
+          },
+          {
+            "tool": "executeCode",
+            "message": "Failed to start Worker:",
+            "count": 1
+          },
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "chat-views",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 124588.15953989999,
+        "meanModelTurns": 11.1,
+        "meanToolCalls": 6.5,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9343809503881484,
+        "cacheBreakRate": 0.00022512933791913621,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10,
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 8,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 91893.3459415,
+        "meanModelTurns": 9.8,
+        "meanToolCalls": 7.6,
+        "meanToolErrors": 0.2,
+        "cacheHitRate": 0.9331821239255693,
+        "cacheBreakRate": 0.0002217274415424839,
+        "failedChecks": [
+          {
+            "turn": 6,
+            "check": "shows-each-category-total",
+            "evidence": "{\"expected\":{\"Food\":420,\"Travel\":185,\"Books\":96},\"text\":\"Where your money goes\\n\\nSelect a category to ask me about it.\\n\\nTotal logged: $701.00\\nFood\\n$420.0060%\\nTravel\\n$185.0026%\\nBooks\\n$96.0014%\"}",
+            "trials": 1
+          },
+          {
+            "turn": 2,
+            "check": "labels-every-month",
+            "evidence": "{\"missing\":[\"Feb\",\"Mar\",\"Apr\",\"Jun\",\"Jul\",\"Sep\",\"Oct\",\"Nov\",\"Dec\"],\"text\":\"Electricity use by month\\n\\nkWh · Lowest: May (290) · Highest: August (610)\\n\\n0\\n200\\n400\\n600\\nJan\\nJan: 410 kWh\\nLine chart of monthly electricity use\"}",
+            "trials": 1
+          },
+          {
+            "turn": 2,
+            "check": "view-runs",
+            "evidence": "{\"unsettled\":null,\"errors\":[\"Failed to execute 'appendChild' on 'Node': The new child element contains the parent.\"],\"visible\":true}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          10,
+          9,
+          9,
+          9,
+          9
+        ],
+        "toolErrors": [
+          {
+            "tool": "readFile",
+            "message": "File does not exist.",
+            "count": 2
+          }
+        ],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "chess",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 10,
+        "passed": 7,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 492750.5701257,
+        "meanModelTurns": 50.1,
+        "meanToolCalls": 51.8,
+        "meanToolErrors": 1,
+        "cacheHitRate": 0.9761392619881475,
+        "cacheBreakRate": 0.0000698117896899219,
+        "failedChecks": [
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-on-the-hard-positions",
+            "evidence": "{\"bothCastles\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1b1\",\"e1c1\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"]},\"blackBothCastles\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a7a5\",\"a7a6\",\"a8b8\",\"a8c8\",\"a8d8\",\"b7b5\",\"b7b6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e7e5\",\"e7e6\",\"e8b8\",\"e8c8\",\"e8c8\",\"e8d8\",\"e8f8\",\"e8g8\",\"e8g8\",\"f7f5\",\"f7f6\",\"g7g5\",\"g7g6\",\"h7h5\",\"h7h6\",\"h8f8\",\"h8g8\"],\"oracle\":[\"a7a5\",\"a7a6\",\"a8b8\",\"a8c8\",\"a8d8\",\"b7b5\",\"b7b6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e7e5\",\"e7e6\",\"e8c8\",\"e8d8\",\"e8f8\",\"e8g8\",\"f7f5\",\"f7f6\",\"g7g5\",\"g7g6\",\"h7h5\",\"h7h6\",\"h8f8\",\"h8g8\"]},\"castleThroughCheck\":{\"at\":\"4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1a2\",\"a1a3\",\"a1a4\",\"a1a5\",\"a1a6\",\"a1a7\",\"a1a8\",\"a1b1\",\"a1c1\",\"a1d1\",\"e1a5\",\"e1b1\",\"e1b4\",\"e1c1\",\"e1c1\",\"e1c3\",\"e1d1\",\"e1d2\",\"e1e2\",\"e1e3\",\"e1e4\",\"e1e5\",\"e1e6\",\"e1g1\",\"e1g3\",\"e1h4\",\"h1f1\",\"h1g1\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"],\"oracle\":[\"a1a2\",\"a1a3\",\"a1a4\",\"a1a5\",\"a1a6\",\"a1a7\",\"a1a8\",\"a1b1\",\"a1c1\",\"a1d1\",\"e1c1\",\"e1d1\",\"e1d2\",\"e1e2\",\"h1f1\",\"h1g1\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"]},\"castleRightsPartlyLost\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w Kq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1b1\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1d1\",\"e1f1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"]},\"enPassantAvailable\":{\"at\":\"rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3\",\"what\":\"legalMoves\",\"gadget\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d1e2\",\"d1f3\",\"d1g4\",\"d1h5\",\"d2d3\",\"d2d4\",\"e1e2\",\"e1e3\",\"e5e6\",\"e5f6\",\"f1a6\",\"f1b5\",\"f1c4\",\"f1d3\",\"f1e2\",\"f2f3\",\"f2f4\",\"g1e2\",\"g1f3\",\"g1h3\",\"g2g3\",\"g2g4\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d1e2\",\"d1f3\",\"d1g4\",\"d1h5\",\"d2d3\",\"d2d4\",\"e1e2\",\"e5e6\",\"e5f6\",\"f1a6\",\"f1b5\",\"f1c4\",\"f1d3\",\"f1e2\",\"f2f3\",\"f2f4\",\"g1e2\",\"g1f3\",\"g1h3\",\"g2g3\",\"g2g4\",\"h2h3\",\"h2h4\"]},\"blackEnPassant\":{\"at\":\"rnbqkbnr/pppp1ppp/8/8/3Pp3/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 3\",\"what\":\"legalMoves\",\"gadget\":[\"a7a5\",\"a7a6\",\"b7b5\",\"b7b6\",\"b8a6\",\"b8c6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"d8e7\",\"d8f6\",\"d8g5\",\"d8h4\",\"e4d3\",\"e4e3\",\"e8e6\",\"e8e7\",\"f7f5\",\"f7f6\",\"f8a3\",\"f8b4\",\"f8c5\",\"f8d6\",\"f8e7\",\"g7g5\",\"g7g6\",\"g8e7\",\"g8f6\",\"g8h6\",\"h7h5\",\"h7h6\"],\"oracle\":[\"a7a5\",\"a7a6\",\"b7b5\",\"b7b6\",\"b8a6\",\"b8c6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"d8e7\",\"d8f6\",\"d8g5\",\"d8h4\",\"e4d3\",\"e4e3\",\"e8e7\",\"f7f5\",\"f7f6\",\"f8a3\",\"f8b4\",\"f8c5\",\"f8d6\",\"f8e7\",\"g7g5\",\"g7g6\",\"g8e7\",\"g8f6\",\"g8h6\",\"h7h5\",\"h7h6\"]},\"enPassantExposesKing\":{\"at\":\"8/8/8/8/k2pP2R/8/8/4K3 b - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a4a1\",\"a4a2\",\"a4a3\",\"a4a5\",\"a4a6\",\"a4a7\",\"a4a8\",\"a4b3\",\"a4b4\",\"a4b5\",\"a4c2\",\"a4c4\",\"a4c6\",\"a4d7\",\"a4e8\",\"d4d3\"],\"oracle\":[\"a4a3\",\"a4a5\",\"a4b3\",\"a4b4\",\"a4b5\",\"d4d3\"]},\"promotion\":{\"at\":\"8/P7/8/8/8/8/8/k6K w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"h1a8\",\"h1b7\",\"h1c1\",\"h1c6\",\"h1d1\",\"h1d5\",\"h1e1\",\"h1e4\",\"h1f1\",\"h1f3\",\"h1g1\",\"h1g2\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"],\"oracle\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"h1g1\",\"h1g2\",\"h1h2\"]},\"promotionByCapture\":{\"at\":\"1n6/P7/8/8/8/8/8/k6K w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"a7b8b\",\"a7b8n\",\"a7b8q\",\"a7b8r\",\"h1a8\",\"h1b7\",\"h1c1\",\"h1d1\",\"h1d5\",\"h1e1\",\"h1e4\",\"h1f1\",\"h1f3\",\"h1g1\",\"h1g2\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"],\"oracle\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"a7b8b\",\"a7b8n\",\"a7b8q\",\"a7b8r\",\"h1g1\",\"h1g2\",\"h1h2\"]},\"blackPromotion\":{\"at\":\"k6K/8/8/8/8/8/p7/8 b - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a2a1b\",\"a2a1n\",\"a2a1q\",\"a2a1r\",\"a8a3\",\"a8a4\",\"a8a5\",\"a8a6\",\"a8a7\",\"a8b7\",\"a8b8\",\"a8c6\",\"a8c8\",\"a8d5\",\"a8d8\",\"a8e4\",\"a8e8\",\"a8f3\",\"a8f8\",\"a8g2\",\"a8h1\"],\"oracle\":[\"a2a1b\",\"a2a1n\",\"a2a1q\",\"a2a1r\",\"a8a7\",\"a8b7\",\"a8b8\"]},\"blackPromotionByCapture\":{\"at\":\"4k3/8/8/8/8/8/6p1/4K2R b K - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"e8a4\",\"e8a8\",\"e8b5\",\"e8b8\",\"e8c6\",\"e8c8\",\"e8d7\",\"e8d8\",\"e8e3\",\"e8e4\",\"e8e5\",\"e8e6\",\"e8e7\",\"e8f7\",\"e8f8\",\"e8g6\",\"e8g8\",\"g2g1b\",\"g2g1n\",\"g2g1q\",\"g2g1r\",\"g2h1b\",\"g2h1n\",\"g2h1q\",\"g2h1r\"],\"oracle\":[\"e8d7\",\"e8d8\",\"e8e7\",\"e8f7\",\"e8f8\",\"g2g1b\",\"g2g1n\",\"g2g1q\",\"g2g1r\",\"g2h1b\",\"g2h1n\",\"g2h1q\",\"g2h1r\"]},\"pinnedBishop\":{\"at\":\"4k3/4r3/8/8/8/8/4B3/4K3 w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"e1a1\",\"e1a5\",\"e1b1\",\"e1b4\",\"e1c1\",\"e1c3\",\"e1d1\",\"e1d2\",\"e1f1\",\"e1f2\",\"e1g1\",\"e1g3\",\"e1h1\",\"e1h4\"],\"oracle\":[\"e1d1\",\"e1d2\",\"e1f1\",\"e1f2\"]},\"inCheck\":{\"at\":\"4k3/8/8/8/8/8/4r3/4K3 w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"e1a1\",\"e1a5\",\"e1b1\",\"e1b4\",\"e1c1\",\"e1c3\",\"e1d1\",\"e1e2\",\"e1f1\",\"e1g1\",\"e1g3\",\"e1h1\",\"e1h4\"],\"oracle\":[\"e1d1\",\"e1e2\",\"e1f1\"]},\"stalemate\":{\"at\":\"7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"h8a1\",\"h8a8\",\"h8b2\",\"h8b8\",\"h8c3\",\"h8c8\",\"h8d4\",\"h8d8\",\"h8e5\",\"h8h1\",\"h8h2\",\"h8h3\",\"h8h4\"],\"oracle\":[]}}",
+            "trials": 2
+          },
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-on-perft-positions",
+            "evidence": "{\"kiwipete\":{\"at\":\"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"c3a4\",\"c3b1\",\"c3b5\",\"c3d1\",\"d2c1\",\"d2e3\",\"d2f4\",\"d2g5\",\"d2h6\",\"d5d6\",\"d5e6\",\"e1b1\",\"e1c1\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e1g1\",\"e2a6\",\"e2b5\",\"e2c4\",\"e2d1\",\"e2d3\",\"e2f1\",\"e5c4\",\"e5c6\",\"e5d3\",\"e5d7\",\"e5f7\",\"e5g4\",\"e5g6\",\"f3d3\",\"f3e3\",\"f3f4\",\"f3f5\",\"f3f6\",\"f3g3\",\"f3g4\",\"f3h3\",\"f3h5\",\"g2g3\",\"g2g4\",\"g2h3\",\"h1f1\",\"h1g1\"],\"oracle\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"c3a4\",\"c3b1\",\"c3b5\",\"c3d1\",\"d2c1\",\"d2e3\",\"d2f4\",\"d2g5\",\"d2h6\",\"d5d6\",\"d5e6\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e2a6\",\"e2b5\",\"e2c4\",\"e2d1\",\"e2d3\",\"e2f1\",\"e5c4\",\"e5c6\",\"e5d3\",\"e5d7\",\"e5f7\",\"e5g4\",\"e5g6\",\"f3d3\",\"f3e3\",\"f3f4\",\"f3f5\",\"f3f6\",\"f3g3\",\"f3g4\",\"f3h3\",\"f3h5\",\"g2g3\",\"g2g4\",\"g2h3\",\"h1f1\",\"h1g1\"]},\"position3\":{\"at\":\"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a5a1\",\"a5a2\",\"a5a3\",\"a5a4\",\"a5a6\",\"a5a7\",\"a5a8\",\"a5c7\",\"b4a4\",\"b4b1\",\"b4b2\",\"b4b3\",\"b4c4\",\"b4d4\",\"b4e4\",\"b4f4\",\"e2e3\",\"e2e4\",\"g2g3\",\"g2g4\"],\"oracle\":[\"a5a4\",\"a5a6\",\"b4a4\",\"b4b1\",\"b4b2\",\"b4b3\",\"b4c4\",\"b4d4\",\"b4e4\",\"b4f4\",\"e2e3\",\"e2e4\",\"g2g3\",\"g2g4\"]},\"position4\":{\"at\":\"r3k2r/Pppp1ppp/1b3nbN/nPB5/B1P1P3/q4N2/Pp1P2PP/R2Q1RK1 b kq - 1 1\",\"what\":\"legalMoves after Bc5\",\"gadget\":[\"a3a2\",\"a3a4\",\"a3b3\",\"a3b4\",\"a3c3\",\"a3c5\",\"a3d3\",\"a3e3\",\"a3f3\",\"a5b3\",\"a5c4\",\"a5c6\",\"a8a7\",\"a8b8\",\"a8c8\",\"a8d8\",\"b2a1b\",\"b2a1n\",\"b2a1q\",\"b2a1r\",\"b2b1b\",\"b2b1n\",\"b2b1q\",\"b2b1r\",\"b6a7\",\"b6c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e8c8\",\"e8c8\",\"e8d8\",\"e8e4\",\"e8e6\",\"f6d5\",\"f6e4\",\"f6g4\",\"f6g8\",\"f6h5\",\"g6e4\",\"g6f5\",\"g6h5\",\"g7h6\",\"h8f8\",\"h8g8\"],\"oracle\":[\"a3a2\",\"a3a4\",\"a3b3\",\"a3b4\",\"a3c3\",\"a3c5\",\"a3d3\",\"a3e3\",\"a3f3\",\"a5b3\",\"a5c4\",\"a5c6\",\"a8a7\",\"a8b8\",\"a8c8\",\"a8d8\",\"b2a1b\",\"b2a1n\",\"b2a1q\",\"b2a1r\",\"b2b1b\",\"b2b1n\",\"b2b1q\",\"b2b1r\",\"b6a7\",\"b6c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e8c8\",\"e8d8\",\"f6d5\",\"f6e4\",\"f6g4\",\"f6g8\",\"f6h5\",\"g6e4\",\"g6f5\",\"g6h5\",\"g7h6\",\"h8f8\",\"h8g8\"]},\"position5\":{\"at\":\"rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8\",\"what\":\"legalMoves\",\"gadget\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c4a6\",\"c4b3\",\"c4b5\",\"c4d3\",\"c4d5\",\"c4e6\",\"c4f7\",\"d1d2\",\"d1d3\",\"d1d4\",\"d1d5\",\"d1d6\",\"d7c8b\",\"d7c8n\",\"d7c8q\",\"d7c8r\",\"e1c3\",\"e1d2\",\"e1f1\",\"e1f2\",\"e1g1\",\"e1g1\",\"e2c3\",\"e2d4\",\"e2f4\",\"e2g1\",\"e2g3\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c4a6\",\"c4b3\",\"c4b5\",\"c4d3\",\"c4d5\",\"c4e6\",\"c4f7\",\"d1d2\",\"d1d3\",\"d1d4\",\"d1d5\",\"d1d6\",\"d7c8b\",\"d7c8n\",\"d7c8q\",\"d7c8r\",\"e1d2\",\"e1f1\",\"e1f2\",\"e1g1\",\"e2c3\",\"e2d4\",\"e2f4\",\"e2g1\",\"e2g3\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"]}}",
+            "trials": 2
+          },
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-through-random-games",
+            "evidence": "{\"seed\":1,\"at\":\"rnb1kbnr/pp1ppppp/1q6/2p5/8/3P3N/PPP1PPPP/RNBQKB1R w KQkq - 1 3\",\"what\":\"legalMoves\",\"gadget\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c2c4\",\"d1d2\",\"d3d4\",\"e1c3\",\"e1d2\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1g1\",\"h3f4\",\"h3g1\",\"h3g5\"],\"oracle\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c2c4\",\"d1d2\",\"d3d4\",\"e1d2\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1g1\",\"h3f4\",\"h3g1\",\"h3g5\"]}",
+            "trials": 2
+          },
+          {
+            "turn": 3,
+            "check": "rules-still-agree-with-the-oracle-after-draws",
+            "evidence": "{\"seed\":4,\"at\":\"rnbqkbnr/ppppp2p/6p1/5p2/6P1/3P4/PPP1PP1P/RNBQKBNR w KQkq - 0 3\",\"what\":\"status.gameOver,threefoldRepetition,draw\",\"gadget\":{\"turn\":\"w\",\"inCheck\":false,\"checkmate\":false,\"stalemate\":false,\"gameOver\":true,\"threefoldRepetition\":true,\"fiftyMoveRule\":false,\"insufficientMaterial\":false,\"draw\":true},\"oracle\":{\"turn\":\"w\",\"inCheck\":false,\"checkmate\":false,\"stalemate\":false,\"gameOver\":false,\"threefoldRepetition\":false,\"fiftyMoveRule\":false,\"insufficientMaterial\":false,\"draw\":false}}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          8,
+          8
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 8
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 9,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 485495.5352326,
+        "meanModelTurns": 50.2,
+        "meanToolCalls": 55.2,
+        "meanToolErrors": 2.3,
+        "cacheHitRate": 0.9749580385918502,
+        "cacheBreakRate": 0.00006405469889387603,
+        "failedChecks": [
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-on-the-hard-positions",
+            "evidence": "{\"bothCastles\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1b1\",\"e1c1\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"]},\"blackBothCastles\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a7a5\",\"a7a6\",\"a8b8\",\"a8c8\",\"a8d8\",\"b7b5\",\"b7b6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e7e5\",\"e7e6\",\"e8b8\",\"e8c8\",\"e8c8\",\"e8d8\",\"e8f8\",\"e8g8\",\"e8g8\",\"f7f5\",\"f7f6\",\"g7g5\",\"g7g6\",\"h7h5\",\"h7h6\",\"h8f8\",\"h8g8\"],\"oracle\":[\"a7a5\",\"a7a6\",\"a8b8\",\"a8c8\",\"a8d8\",\"b7b5\",\"b7b6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e7e5\",\"e7e6\",\"e8c8\",\"e8d8\",\"e8f8\",\"e8g8\",\"f7f5\",\"f7f6\",\"g7g5\",\"g7g6\",\"h7h5\",\"h7h6\",\"h8f8\",\"h8g8\"]},\"castleThroughCheck\":{\"at\":\"4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1a2\",\"a1a3\",\"a1a4\",\"a1a5\",\"a1a6\",\"a1a7\",\"a1a8\",\"a1b1\",\"a1c1\",\"a1d1\",\"e1a5\",\"e1b1\",\"e1b4\",\"e1c1\",\"e1c1\",\"e1c3\",\"e1d1\",\"e1d2\",\"e1e2\",\"e1e3\",\"e1e4\",\"e1e5\",\"e1e6\",\"e1g1\",\"e1g3\",\"e1h4\",\"h1f1\",\"h1g1\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"],\"oracle\":[\"a1a2\",\"a1a3\",\"a1a4\",\"a1a5\",\"a1a6\",\"a1a7\",\"a1a8\",\"a1b1\",\"a1c1\",\"a1d1\",\"e1c1\",\"e1d1\",\"e1d2\",\"e1e2\",\"h1f1\",\"h1g1\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"]},\"castleRightsPartlyLost\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w Kq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1b1\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d2d3\",\"d2d4\",\"e1d1\",\"e1f1\",\"e1g1\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"]},\"enPassantAvailable\":{\"at\":\"rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3\",\"what\":\"legalMoves\",\"gadget\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d1e2\",\"d1f3\",\"d1g4\",\"d1h5\",\"d2d3\",\"d2d4\",\"e1e2\",\"e1e3\",\"e5e6\",\"e5f6\",\"f1a6\",\"f1b5\",\"f1c4\",\"f1d3\",\"f1e2\",\"f2f3\",\"f2f4\",\"g1e2\",\"g1f3\",\"g1h3\",\"g2g3\",\"g2g4\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b2b3\",\"b2b4\",\"c2c3\",\"c2c4\",\"d1e2\",\"d1f3\",\"d1g4\",\"d1h5\",\"d2d3\",\"d2d4\",\"e1e2\",\"e5e6\",\"e5f6\",\"f1a6\",\"f1b5\",\"f1c4\",\"f1d3\",\"f1e2\",\"f2f3\",\"f2f4\",\"g1e2\",\"g1f3\",\"g1h3\",\"g2g3\",\"g2g4\",\"h2h3\",\"h2h4\"]},\"blackEnPassant\":{\"at\":\"rnbqkbnr/pppp1ppp/8/8/3Pp3/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 3\",\"what\":\"legalMoves\",\"gadget\":[\"a7a5\",\"a7a6\",\"b7b5\",\"b7b6\",\"b8a6\",\"b8c6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"d8e7\",\"d8f6\",\"d8g5\",\"d8h4\",\"e4d3\",\"e4e3\",\"e8e6\",\"e8e7\",\"f7f5\",\"f7f6\",\"f8a3\",\"f8b4\",\"f8c5\",\"f8d6\",\"f8e7\",\"g7g5\",\"g7g6\",\"g8e7\",\"g8f6\",\"g8h6\",\"h7h5\",\"h7h6\"],\"oracle\":[\"a7a5\",\"a7a6\",\"b7b5\",\"b7b6\",\"b8a6\",\"b8c6\",\"c7c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"d8e7\",\"d8f6\",\"d8g5\",\"d8h4\",\"e4d3\",\"e4e3\",\"e8e7\",\"f7f5\",\"f7f6\",\"f8a3\",\"f8b4\",\"f8c5\",\"f8d6\",\"f8e7\",\"g7g5\",\"g7g6\",\"g8e7\",\"g8f6\",\"g8h6\",\"h7h5\",\"h7h6\"]},\"enPassantExposesKing\":{\"at\":\"8/8/8/8/k2pP2R/8/8/4K3 b - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a4a1\",\"a4a2\",\"a4a3\",\"a4a5\",\"a4a6\",\"a4a7\",\"a4a8\",\"a4b3\",\"a4b4\",\"a4b5\",\"a4c2\",\"a4c4\",\"a4c6\",\"a4d7\",\"a4e8\",\"d4d3\"],\"oracle\":[\"a4a3\",\"a4a5\",\"a4b3\",\"a4b4\",\"a4b5\",\"d4d3\"]},\"promotion\":{\"at\":\"8/P7/8/8/8/8/8/k6K w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"h1a8\",\"h1b7\",\"h1c1\",\"h1c6\",\"h1d1\",\"h1d5\",\"h1e1\",\"h1e4\",\"h1f1\",\"h1f3\",\"h1g1\",\"h1g2\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"],\"oracle\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"h1g1\",\"h1g2\",\"h1h2\"]},\"promotionByCapture\":{\"at\":\"1n6/P7/8/8/8/8/8/k6K w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"a7b8b\",\"a7b8n\",\"a7b8q\",\"a7b8r\",\"h1a8\",\"h1b7\",\"h1c1\",\"h1d1\",\"h1d5\",\"h1e1\",\"h1e4\",\"h1f1\",\"h1f3\",\"h1g1\",\"h1g2\",\"h1h2\",\"h1h3\",\"h1h4\",\"h1h5\",\"h1h6\",\"h1h7\",\"h1h8\"],\"oracle\":[\"a7a8b\",\"a7a8n\",\"a7a8q\",\"a7a8r\",\"a7b8b\",\"a7b8n\",\"a7b8q\",\"a7b8r\",\"h1g1\",\"h1g2\",\"h1h2\"]},\"blackPromotion\":{\"at\":\"k6K/8/8/8/8/8/p7/8 b - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a2a1b\",\"a2a1n\",\"a2a1q\",\"a2a1r\",\"a8a3\",\"a8a4\",\"a8a5\",\"a8a6\",\"a8a7\",\"a8b7\",\"a8b8\",\"a8c6\",\"a8c8\",\"a8d5\",\"a8d8\",\"a8e4\",\"a8e8\",\"a8f3\",\"a8f8\",\"a8g2\",\"a8h1\"],\"oracle\":[\"a2a1b\",\"a2a1n\",\"a2a1q\",\"a2a1r\",\"a8a7\",\"a8b7\",\"a8b8\"]},\"blackPromotionByCapture\":{\"at\":\"4k3/8/8/8/8/8/6p1/4K2R b K - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"e8a4\",\"e8a8\",\"e8b5\",\"e8b8\",\"e8c6\",\"e8c8\",\"e8d7\",\"e8d8\",\"e8e3\",\"e8e4\",\"e8e5\",\"e8e6\",\"e8e7\",\"e8f7\",\"e8f8\",\"e8g6\",\"e8g8\",\"g2g1b\",\"g2g1n\",\"g2g1q\",\"g2g1r\",\"g2h1b\",\"g2h1n\",\"g2h1q\",\"g2h1r\"],\"oracle\":[\"e8d7\",\"e8d8\",\"e8e7\",\"e8f7\",\"e8f8\",\"g2g1b\",\"g2g1n\",\"g2g1q\",\"g2g1r\",\"g2h1b\",\"g2h1n\",\"g2h1q\",\"g2h1r\"]},\"pinnedBishop\":{\"at\":\"4k3/4r3/8/8/8/8/4B3/4K3 w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"e1a1\",\"e1a5\",\"e1b1\",\"e1b4\",\"e1c1\",\"e1c3\",\"e1d1\",\"e1d2\",\"e1f1\",\"e1f2\",\"e1g1\",\"e1g3\",\"e1h1\",\"e1h4\"],\"oracle\":[\"e1d1\",\"e1d2\",\"e1f1\",\"e1f2\"]},\"inCheck\":{\"at\":\"4k3/8/8/8/8/8/4r3/4K3 w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"e1a1\",\"e1a5\",\"e1b1\",\"e1b4\",\"e1c1\",\"e1c3\",\"e1d1\",\"e1e2\",\"e1f1\",\"e1g1\",\"e1g3\",\"e1h1\",\"e1h4\"],\"oracle\":[\"e1d1\",\"e1e2\",\"e1f1\"]},\"stalemate\":{\"at\":\"7k/5Q2/6K1/8/8/8/8/8 b - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"h8a1\",\"h8a8\",\"h8b2\",\"h8b8\",\"h8c3\",\"h8c8\",\"h8d4\",\"h8d8\",\"h8e5\",\"h8h1\",\"h8h2\",\"h8h3\",\"h8h4\"],\"oracle\":[]}}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-on-perft-positions",
+            "evidence": "{\"kiwipete\":{\"at\":\"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"c3a4\",\"c3b1\",\"c3b5\",\"c3d1\",\"d2c1\",\"d2e3\",\"d2f4\",\"d2g5\",\"d2h6\",\"d5d6\",\"d5e6\",\"e1b1\",\"e1c1\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e1g1\",\"e2a6\",\"e2b5\",\"e2c4\",\"e2d1\",\"e2d3\",\"e2f1\",\"e5c4\",\"e5c6\",\"e5d3\",\"e5d7\",\"e5f7\",\"e5g4\",\"e5g6\",\"f3d3\",\"f3e3\",\"f3f4\",\"f3f5\",\"f3f6\",\"f3g3\",\"f3g4\",\"f3h3\",\"f3h5\",\"g2g3\",\"g2g4\",\"g2h3\",\"h1f1\",\"h1g1\"],\"oracle\":[\"a1b1\",\"a1c1\",\"a1d1\",\"a2a3\",\"a2a4\",\"b2b3\",\"c3a4\",\"c3b1\",\"c3b5\",\"c3d1\",\"d2c1\",\"d2e3\",\"d2f4\",\"d2g5\",\"d2h6\",\"d5d6\",\"d5e6\",\"e1c1\",\"e1d1\",\"e1f1\",\"e1g1\",\"e2a6\",\"e2b5\",\"e2c4\",\"e2d1\",\"e2d3\",\"e2f1\",\"e5c4\",\"e5c6\",\"e5d3\",\"e5d7\",\"e5f7\",\"e5g4\",\"e5g6\",\"f3d3\",\"f3e3\",\"f3f4\",\"f3f5\",\"f3f6\",\"f3g3\",\"f3g4\",\"f3h3\",\"f3h5\",\"g2g3\",\"g2g4\",\"g2h3\",\"h1f1\",\"h1g1\"]},\"position3\":{\"at\":\"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1\",\"what\":\"legalMoves\",\"gadget\":[\"a5a1\",\"a5a2\",\"a5a3\",\"a5a4\",\"a5a6\",\"a5a7\",\"a5a8\",\"a5c7\",\"b4a4\",\"b4b1\",\"b4b2\",\"b4b3\",\"b4c4\",\"b4d4\",\"b4e4\",\"b4f4\",\"e2e3\",\"e2e4\",\"g2g3\",\"g2g4\"],\"oracle\":[\"a5a4\",\"a5a6\",\"b4a4\",\"b4b1\",\"b4b2\",\"b4b3\",\"b4c4\",\"b4d4\",\"b4e4\",\"b4f4\",\"e2e3\",\"e2e4\",\"g2g3\",\"g2g4\"]},\"position4\":{\"at\":\"r3k2r/Pppp1ppp/1b3nbN/nPB5/B1P1P3/q4N2/Pp1P2PP/R2Q1RK1 b kq - 1 1\",\"what\":\"legalMoves after Bc5\",\"gadget\":[\"a3a2\",\"a3a4\",\"a3b3\",\"a3b4\",\"a3c3\",\"a3c5\",\"a3d3\",\"a3e3\",\"a3f3\",\"a5b3\",\"a5c4\",\"a5c6\",\"a8a7\",\"a8b8\",\"a8c8\",\"a8d8\",\"b2a1b\",\"b2a1n\",\"b2a1q\",\"b2a1r\",\"b2b1b\",\"b2b1n\",\"b2b1q\",\"b2b1r\",\"b6a7\",\"b6c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e8c8\",\"e8c8\",\"e8d8\",\"e8e4\",\"e8e6\",\"f6d5\",\"f6e4\",\"f6g4\",\"f6g8\",\"f6h5\",\"g6e4\",\"g6f5\",\"g6h5\",\"g7h6\",\"h8f8\",\"h8g8\"],\"oracle\":[\"a3a2\",\"a3a4\",\"a3b3\",\"a3b4\",\"a3c3\",\"a3c5\",\"a3d3\",\"a3e3\",\"a3f3\",\"a5b3\",\"a5c4\",\"a5c6\",\"a8a7\",\"a8b8\",\"a8c8\",\"a8d8\",\"b2a1b\",\"b2a1n\",\"b2a1q\",\"b2a1r\",\"b2b1b\",\"b2b1n\",\"b2b1q\",\"b2b1r\",\"b6a7\",\"b6c5\",\"c7c6\",\"d7d5\",\"d7d6\",\"e8c8\",\"e8d8\",\"f6d5\",\"f6e4\",\"f6g4\",\"f6g8\",\"f6h5\",\"g6e4\",\"g6f5\",\"g6h5\",\"g7h6\",\"h8f8\",\"h8g8\"]},\"position5\":{\"at\":\"rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8\",\"what\":\"legalMoves\",\"gadget\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c4a6\",\"c4b3\",\"c4b5\",\"c4d3\",\"c4d5\",\"c4e6\",\"c4f7\",\"d1d2\",\"d1d3\",\"d1d4\",\"d1d5\",\"d1d6\",\"d7c8b\",\"d7c8n\",\"d7c8q\",\"d7c8r\",\"e1c3\",\"e1d2\",\"e1f1\",\"e1f2\",\"e1g1\",\"e1g1\",\"e2c3\",\"e2d4\",\"e2f4\",\"e2g1\",\"e2g3\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"],\"oracle\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c4a6\",\"c4b3\",\"c4b5\",\"c4d3\",\"c4d5\",\"c4e6\",\"c4f7\",\"d1d2\",\"d1d3\",\"d1d4\",\"d1d5\",\"d1d6\",\"d7c8b\",\"d7c8n\",\"d7c8q\",\"d7c8r\",\"e1d2\",\"e1f1\",\"e1f2\",\"e1g1\",\"e2c3\",\"e2d4\",\"e2f4\",\"e2g1\",\"e2g3\",\"g2g3\",\"g2g4\",\"h1f1\",\"h1g1\",\"h2h3\",\"h2h4\"]}}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-through-random-games",
+            "evidence": "{\"seed\":1,\"at\":\"rnb1kbnr/pp1ppppp/1q6/2p5/8/3P3N/PPP1PPPP/RNBQKB1R w KQkq - 1 3\",\"what\":\"legalMoves\",\"gadget\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c2c4\",\"d1d2\",\"d3d4\",\"e1c3\",\"e1d2\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1g1\",\"h3f4\",\"h3g1\",\"h3g5\"],\"oracle\":[\"a2a3\",\"a2a4\",\"b1a3\",\"b1c3\",\"b1d2\",\"b2b3\",\"b2b4\",\"c1d2\",\"c1e3\",\"c1f4\",\"c1g5\",\"c1h6\",\"c2c3\",\"c2c4\",\"d1d2\",\"d3d4\",\"e1d2\",\"e2e3\",\"e2e4\",\"f2f3\",\"f2f4\",\"g2g3\",\"g2g4\",\"h1g1\",\"h3f4\",\"h3g1\",\"h3g5\"]}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          9,
+          9
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 20
+          },
+          {
+            "tool": "readFile",
+            "message": "startLine 250 is past the end of the file, which has 246 lines.",
+            "count": 1
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 1
+          },
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "compaction",
+      "model": "claude-sonnet-5-5",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 179013.445266,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.8959716469404647,
+        "cacheBreakRate": 0.020490555593994327,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 121549.81345500001,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.8948512262095206,
+        "cacheBreakRate": 0.020405277417959156,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "compaction",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 149044.30486499998,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9242242116464716,
+        "cacheBreakRate": 0.00757829896455251,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 95201.659623,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9246503096380867,
+        "cacheBreakRate": 0.0075406467304131785,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "incident-desk",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 258772.24130329996,
+        "meanModelTurns": 31.2,
+        "meanToolCalls": 41.4,
+        "meanToolErrors": 1,
+        "cacheHitRate": 0.9616296464381816,
+        "cacheBreakRate": 0.00010395539969130065,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 6
+          },
+          {
+            "tool": "editFile",
+            "message": "INCIDENT_DESK has no file named \"INCIDENT_DESK\".",
+            "count": 1
+          },
+          {
+            "tool": "describeBinding",
+            "message": "Gadget INCIDENT_DESK has no binding named \"INCIDENT_DESK\".",
+            "count": 1
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 1
+          },
+          {
+            "tool": "grep",
+            "message": "Invalid regular expression: /handoff|Handoffs|acknowledged\\\")/: Unmatched ')'",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 257650.1380156,
+        "meanModelTurns": 35.8,
+        "meanToolCalls": 47.4,
+        "meanToolErrors": 1.2,
+        "cacheHitRate": 0.9654276200137097,
+        "cacheBreakRate": 0.00009733522447097047,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 7
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 3
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 2
+          }
+        ],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "ticket-triage-agent",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 9134.834600899998,
+        "meanModelTurns": 1.7,
+        "meanToolCalls": 2.2,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9654339652934801,
+        "cacheBreakRate": 0.00034445428599547286,
+        "failedChecks": [],
+        "turnsReached": [
+          10
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 8045.140828700001,
+        "meanModelTurns": 1.4,
+        "meanToolCalls": 2.3,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9672372990748993,
+        "cacheBreakRate": 0.00032304958811177516,
+        "failedChecks": [],
+        "turnsReached": [
+          10
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      }
+    },
+    {
+      "taskId": "worker-logs",
+      "model": "gpt-6-luna",
+      "reason": "eval definition changed",
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 279221.76301959995,
+        "meanModelTurns": 22.5,
+        "meanToolCalls": 26.9,
+        "meanToolErrors": 0.4,
+        "cacheHitRate": 0.9470119385518393,
+        "cacheBreakRate": 0.0001084465030038,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 2
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 8,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 237939.04434189998,
+        "meanModelTurns": 23.3,
+        "meanToolCalls": 25.5,
+        "meanToolErrors": 0.5,
+        "cacheHitRate": 0.9501104851726913,
+        "cacheBreakRate": 0.00010907111355085493,
+        "failedChecks": [
+          {
+            "turn": 3,
+            "check": "latency-rises-match-the-reference",
+            "evidence": "{\"failed\":[{\"query\":{\"first\":{\"fromIso\":\"2027-03-09T00:00:00Z\",\"toIso\":\"2027-03-09T12:00:00Z\"},\"second\":{\"fromIso\":\"2027-03-09T12:00:00Z\",\"toIso\":\"2027-03-10T00:00:00Z\"},\"colo\":\"SIN\",\"minRiseMs\":0},\"pairs\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":247,\"secondP95Ms\":310,\"riseMs\":63},{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":274,\"secondP95Ms\":314,\"riseMs\":40},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":554,\"secondP95Ms\":589,\"riseMs\":35},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":271,\"secondP95Ms\":296,\"riseMs\":25},{\"worker\":\"webhook-relay\",\"route\":\"/hook/slack\",\"firstP95Ms\":165,\"secondP95Ms\":176,\"riseMs\":11},{\"worker\":\"auth-edge\",\"route\":\"/session\",\"firstP95Ms\":46,\"secondP95Ms\":50,\"riseMs\":4},{\"worker\":\"webhook-relay\",\"route\":\"/hook/stripe\",\"firstP95Ms\":154,\"secondP95Ms\":157,\"riseMs\":3}],\"expected\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":251,\"secondP95Ms\":415,\"riseMs\":164},{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":252,\"secondP95Ms\":296,\"riseMs\":44},{\"worker\":\"webhook-relay\",\"route\":\"/hook/stripe\",\"firstP95Ms\":155,\"secondP95Ms\":176,\"riseMs\":21},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":468,\"secondP95Ms\":481,\"riseMs\":13},{\"worker\":\"auth-edge\",\"route\":\"/session\",\"firstP95Ms\":46,\"secondP95Ms\":53,\"riseMs\":7},{\"worker\":\"auth-edge\",\"route\":\"/token/refresh\",\"firstP95Ms\":40,\"secondP95Ms\":43,\"riseMs\":3}],\"pass\":false},{\"query\":{\"first\":{\"fromIso\":\"2027-03-09T02:00:00Z\",\"toIso\":\"2027-03-09T05:00:00Z\"},\"second\":{\"fromIso\":\"2027-03-09T13:00:00Z\",\"toIso\":\"2027-03-09T21:30:00Z\"},\"worker\":\"checkout-api\",\"minRiseMs\":5},\"pairs\":[{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":203,\"secondP95Ms\":501,\"riseMs\":298},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":259,\"secondP95Ms\":432,\"riseMs\":173},{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":250,\"secondP95Ms\":313,\"riseMs\":63},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":499,\"secondP95Ms\":562,\"riseMs\":63}],\"expected\":[{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":203,\"secondP95Ms\":501,\"riseMs\":298},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":259,\"secondP95Ms\":432,\"riseMs\":173},{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":250,\"secondP95Ms\":313,\"riseMs\":63}],\"pass\":false},{\"query\":{\"first\":{\"fromIso\":\"2027-03-09T00:00:00Z\",\"toIso\":\"2027-03-09T12:00:00Z\"},\"second\":{\"fromIso\":\"2027-03-09T12:00:00Z\",\"toIso\":\"2027-03-10T00:00:00Z\"},\"route\":\"/checkout\",\"minRiseMs\":0},\"pairs\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":247,\"secondP95Ms\":310,\"riseMs\":63},{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":274,\"secondP95Ms\":314,\"riseMs\":40},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":554,\"secondP95Ms\":589,\"riseMs\":35},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":271,\"secondP95Ms\":296,\"riseMs\":25},{\"worker\":\"webhook-relay\",\"route\":\"/hook/slack\",\"firstP95Ms\":165,\"secondP95Ms\":176,\"riseMs\":11},{\"worker\":\"auth-edge\",\"route\":\"/session\",\"firstP95Ms\":46,\"secondP95Ms\":50,\"riseMs\":4},{\"worker\":\"webhook-relay\",\"route\":\"/hook/stripe\",\"firstP95Ms\":154,\"secondP95Ms\":157,\"riseMs\":3}],\"expected\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":247,\"secondP95Ms\":310,\"riseMs\":63}],\"pass\":false}]}",
+            "trials": 1
+          },
+          {
+            "turn": 3,
+            "check": "latency-rises-count-late-events",
+            "evidence": "{\"accepted\":53,\"failed\":[{\"query\":{\"first\":{\"fromIso\":\"2027-03-09T00:00:00Z\",\"toIso\":\"2027-03-09T12:00:00Z\"},\"second\":{\"fromIso\":\"2027-03-09T12:00:00Z\",\"toIso\":\"2027-03-10T00:00:00Z\"},\"colo\":\"SIN\",\"minRiseMs\":0},\"pairs\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":247,\"secondP95Ms\":310,\"riseMs\":63},{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":274,\"secondP95Ms\":314,\"riseMs\":40},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":554,\"secondP95Ms\":589,\"riseMs\":35},{\"worker\":\"a-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-b\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":271,\"secondP95Ms\":296,\"riseMs\":25},{\"worker\":\"eval-probe\",\"route\":\"/near\",\"firstP95Ms\":10,\"secondP95Ms\":31,\"riseMs\":21},{\"worker\":\"webhook-relay\",\"route\":\"/hook/slack\",\"firstP95Ms\":165,\"secondP95Ms\":176,\"riseMs\":11},{\"worker\":\"auth-edge\",\"route\":\"/session\",\"firstP95Ms\":46,\"secondP95Ms\":50,\"riseMs\":4},{\"worker\":\"webhook-relay\",\"route\":\"/hook/stripe\",\"firstP95Ms\":154,\"secondP95Ms\":157,\"riseMs\":3}],\"expected\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":251,\"secondP95Ms\":415,\"riseMs\":164},{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":252,\"secondP95Ms\":296,\"riseMs\":44},{\"worker\":\"a-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-b\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"webhook-relay\",\"route\":\"/hook/stripe\",\"firstP95Ms\":155,\"secondP95Ms\":176,\"riseMs\":21},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":468,\"secondP95Ms\":481,\"riseMs\":13},{\"worker\":\"auth-edge\",\"route\":\"/session\",\"firstP95Ms\":46,\"secondP95Ms\":53,\"riseMs\":7},{\"worker\":\"auth-edge\",\"route\":\"/token/refresh\",\"firstP95Ms\":40,\"secondP95Ms\":43,\"riseMs\":3}],\"pass\":false},{\"query\":{\"first\":{\"fromIso\":\"2027-03-09T02:00:00Z\",\"toIso\":\"2027-03-09T05:00:00Z\"},\"second\":{\"fromIso\":\"2027-03-09T13:00:00Z\",\"toIso\":\"2027-03-09T21:30:00Z\"},\"worker\":\"checkout-api\",\"minRiseMs\":5},\"pairs\":[{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":203,\"secondP95Ms\":501,\"riseMs\":298},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":259,\"secondP95Ms\":432,\"riseMs\":173},{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":250,\"secondP95Ms\":313,\"riseMs\":63},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":499,\"secondP95Ms\":562,\"riseMs\":63},{\"worker\":\"checkout-api\",\"route\":\"/probe\",\"firstP95Ms\":10,\"secondP95Ms\":50,\"riseMs\":40},{\"worker\":\"a-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-b\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30}],\"expected\":[{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":203,\"secondP95Ms\":501,\"riseMs\":298},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":259,\"secondP95Ms\":432,\"riseMs\":173},{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":250,\"secondP95Ms\":313,\"riseMs\":63},{\"worker\":\"checkout-api\",\"route\":\"/probe\",\"firstP95Ms\":10,\"secondP95Ms\":50,\"riseMs\":40}],\"pass\":false},{\"query\":{\"first\":{\"fromIso\":\"2027-03-09T00:00:00Z\",\"toIso\":\"2027-03-09T12:00:00Z\"},\"second\":{\"fromIso\":\"2027-03-09T12:00:00Z\",\"toIso\":\"2027-03-10T00:00:00Z\"},\"route\":\"/checkout\",\"minRiseMs\":0},\"pairs\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":247,\"secondP95Ms\":310,\"riseMs\":63},{\"worker\":\"checkout-api\",\"route\":\"/order/status\",\"firstP95Ms\":274,\"secondP95Ms\":314,\"riseMs\":40},{\"worker\":\"search-index\",\"route\":\"/suggest\",\"firstP95Ms\":554,\"secondP95Ms\":589,\"riseMs\":35},{\"worker\":\"a-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-a\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"eval-probe\",\"route\":\"/tie-b\",\"firstP95Ms\":5,\"secondP95Ms\":35,\"riseMs\":30},{\"worker\":\"checkout-api\",\"route\":\"/cart\",\"firstP95Ms\":271,\"secondP95Ms\":296,\"riseMs\":25},{\"worker\":\"eval-probe\",\"route\":\"/near\",\"firstP95Ms\":10,\"secondP95Ms\":31,\"riseMs\":21},{\"worker\":\"webhook-relay\",\"route\":\"/hook/slack\",\"firstP95Ms\":165,\"secondP95Ms\":176,\"riseMs\":11},{\"worker\":\"auth-edge\",\"route\":\"/session\",\"firstP95Ms\":46,\"secondP95Ms\":50,\"riseMs\":4},{\"worker\":\"webhook-relay\",\"route\":\"/hook/stripe\",\"firstP95Ms\":154,\"secondP95Ms\":157,\"riseMs\":3}],\"expected\":[{\"worker\":\"checkout-api\",\"route\":\"/checkout\",\"firstP95Ms\":247,\"secondP95Ms\":310,\"riseMs\":63}],\"pass\":false}]}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "ingests-resets-and-summarises-per-worker",
+            "evidence": "\"Error: To execute a transaction, please use the state.storage.transaction() or state.storage.transactionSync() APIs instead of the SQL BEGIN TRANSACTION or SAVEPOINT statements. The JavaScript API is safer because it will automatically roll back on exceptions, and because it interacts correctly with Durable Objects' automatic atomic write coalescing.\"",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "hourly-buckets-cover-every-hour-including-empty-ones",
+            "evidence": "{\"buckets\":[{\"hourIso\":\"2027-03-08T22:00:00.000Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-08T23:00:00.000Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-09T00:00:00.000Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-09T01:00:00.000Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-09T02:00:00.000Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-09T03:00:00.000Z\",\"requests\":0,\"errors\":0}],\"expected\":[{\"hourIso\":\"2027-03-08T22:00:00Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-08T23:00:00Z\",\"requests\":0,\"errors\":0},{\"hourIso\":\"2027-03-09T00:00:00Z\",\"requests\":24,\"errors\":0},{\"hourIso\":\"2027-03-09T01:00:00Z\",\"requests\":25,\"errors\":0},{\"hourIso\":\"2027-03-09T02:00:00Z\",\"requests\":27,\"errors\":0},{\"hourIso\":\"2027-03-09T03:00:00Z\",\"requests\":28,\"errors\":0}]}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "ranges-are-half-open-and-filter-by-worker",
+            "evidence": "{\"afternoon\":[],\"onlyOne\":[],\"partialHours\":[],\"singleHour\":[{\"hourIso\":\"2027-03-09T14:00:00.000Z\",\"requests\":0,\"errors\":0}]}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          9,
+          9
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 4
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      }
+    }
+  ]
+}

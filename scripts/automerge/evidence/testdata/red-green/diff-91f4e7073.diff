@@ -1,0 +1,512 @@
+diff --git a/docs/google-chat-capabilities.md b/docs/google-chat-capabilities.md
+index bddd59fdc..aa01bc15f 100644
+--- a/docs/google-chat-capabilities.md
++++ b/docs/google-chat-capabilities.md
+@@ -177 +177,7 @@ metadata already lists its attachments; `message.getAttachment(id)` returns the
+-reads one. Event history, explicit message deletion, outgoing uploads, and generic
++reads one. It also carries `cards`, what a Chat app's cards show (current `cardsV2` and legacy
++`cards` alike): each card's header title and subtitle, its section headers, labels and text items
++as one `text` string, and the http(s) links its buttons, chips, images and clickable text open,
++with their labels. Card text keeps the app's own markup. This content never appears in `text` or
++`formattedText`, which keep their meaning. Cards are read-only data: form inputs, action
++callbacks, and other links are dropped, and the gatekeeper never fetches a card's links or runs
++its actions. Event history, explicit message deletion, outgoing uploads, and generic
+@@ -309,3 +315,5 @@ reaction descendants. Pure tests cover provider thread support, search keywords
+-conversation references, time bounds, scope filtering, and overlays. Durable `spawnCallable`
+-handoff uses the existing gadget restoration mechanism; it is not exercised end-to-end by the
+-Chat gatekeeper suite. Hook tests drive signed Pub/Sub pushes through the worker: push
++conversation references, time bounds, scope filtering, overlays, and card extraction (`cardsV2`
++and legacy cards, card-only messages, and malformed or unsupported widgets); workerd tests check
++that card content reaches history, `getMessage()`, metadata, and hook deliveries without its links
++being fetched. Durable `spawnCallable` handoff uses the existing gadget restoration mechanism; it
++is not exercised end-to-end by the Chat gatekeeper suite. Hook tests drive signed Pub/Sub pushes through the worker: push
+diff --git a/packages/gatekeeper-google/__tests__/chat-api.test.ts b/packages/gatekeeper-google/__tests__/chat-api.test.ts
+index b8aad5f4d..c191c2c84 100644
+--- a/packages/gatekeeper-google/__tests__/chat-api.test.ts
++++ b/packages/gatekeeper-google/__tests__/chat-api.test.ts
+@@ -228,0 +229,182 @@ describe("Chat response mapping", () => {
++  // Alert and bot messages put their details and links in cards, which neither text form carries.
++  it("maps a Chat app's cardsV2 next to its unchanged text", () => {
++    const info = chatMessageInfoFromRaw({
++      name: "spaces/AAAA/messages/BBB",
++      sender: { name: "users/app", displayName: "Alerts", type: "BOT" },
++      createTime: "2024-01-02T03:04:05Z",
++      text: "*firing*: example-service error rate",
++      formattedText: "*firing*: example-service error rate",
++      cardsV2: [{
++        cardId: "alert",
++        card: {
++          header: { title: "example-service-errors is firing", subtitle: "severity: warning" },
++          sections: [{
++            header: "Details",
++            widgets: [
++              { decoratedText: { topLabel: "Started", text: "<b>Start:</b> 2024-01-02 03:00:00Z" } },
++              {
++                textParagraph: {
++                  text: "**cluster:** `test-cluster`<br>**Description:** 4 errors/sec",
++                  textSyntax: "MARKDOWN",
++                },
++              },
++              {
++                buttonList: {
++                  buttons: [
++                    { text: "Runbook", onClick: { openLink: { url: "https://example.com/runbook" } } },
++                    { text: "Silence", onClick: { action: { function: "silence" } } },
++                    {
++                      text: "More",
++                      onClick: {
++                        overflowMenu: {
++                          items: [{ text: "Dashboard", onClick: { openLink: { url: "https://example.com/dash" } } }],
++                        },
++                      },
++                    },
++                  ],
++                },
++              },
++            ],
++          }],
++          fixedFooter: { primaryButton: { text: "Open", onClick: { openLink: { url: "https://example.com/open" } } } },
++        },
++      }],
++    });
++    expect(info.text).toBe("*firing*: example-service error rate");
++    expect(info.formattedText).toBe("*firing*: example-service error rate");
++    expect(info.cards).toEqual([{
++      title: "example-service-errors is firing",
++      subtitle: "severity: warning",
++      text: [
++        "Details",
++        "Started",
++        "<b>Start:</b> 2024-01-02 03:00:00Z",
++        "**cluster:** `test-cluster`<br>**Description:** 4 errors/sec",
++      ].join("\n"),
++      links: [
++        { label: "Runbook", url: "https://example.com/runbook" },
++        { label: "Dashboard", url: "https://example.com/dash" },
++        { label: "Open", url: "https://example.com/open" },
++      ],
++    }]);
++  });
++
++  it("maps a card-only message, legacy cards included", () => {
++    const info = chatMessageInfoFromRaw({
++      name: "spaces/AAAA/messages/BBB",
++      createTime: "2024-01-02T03:04:05Z",
++      cardsV2: [{ card: { sections: [{ widgets: [{ textParagraph: { text: "Build passed" } }] }] } }],
++      cards: [{
++        header: { title: "Legacy" },
++        sections: [{
++          widgets: [
++            { keyValue: { topLabel: "Job", content: "deploy", onClick: { openLink: { url: "https://example.com/job" } } } },
++            { buttons: [
++              { textButton: { text: "Logs", onClick: { openLink: { url: "https://example.com/logs" } } } },
++              { imageButton: { name: "Help", onClick: { openLink: { url: "https://example.com/help" } } } },
++            ] },
++          ],
++        }],
++        cardActions: [{ actionLabel: "Settings", onClick: { openLink: { url: "https://example.com/settings" } } }],
++      }],
++    });
++    expect(info).toMatchObject({ text: "", formattedText: "" });
++    expect(info.cards).toEqual([
++      { text: "Build passed", links: [] },
++      {
++        title: "Legacy",
++        text: "Job\ndeploy",
++        links: [
++          { label: "deploy", url: "https://example.com/job" },
++          { label: "Logs", url: "https://example.com/logs" },
++          { label: "Help", url: "https://example.com/help" },
++          { label: "Settings", url: "https://example.com/settings" },
++        ],
++      },
++    ]);
++  });
++
++  it("gives an ordinary message no cards", () => {
++    expect(chatMessageInfoFromRaw({
++      name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hello",
++    }).cards).toEqual([]);
++  });
++
++  // Card payloads are app-authored: unknown widgets, inputs, malformed fields and non-web links
++  // must be skipped without failing the read or leaking anything that could act on a click.
++  it("skips unsupported, malformed, and non-web card content", () => {
++    const info = chatMessageInfoFromRaw({
++      name: "spaces/AAAA/messages/BBB",
++      createTime: "2024-01-02T03:04:05Z",
++      cardsV2: [
++        { card: { sections: [{ widgets: [{ textInput: { label: "Reason", name: "reason" } }, { divider: {} }] }] } },
++        { card: "not a card" },
++        {},
++        {
++          card: {
++            header: { title: 42 },
++            sections: [
++              "bad section",
++              {
++                widgets: [
++                  null,
++                  { futureWidget: { text: "unknown" } },
++                  { selectionInput: { label: "Pick", items: [{ text: "a", value: "a" }] } },
++                  { textParagraph: { text: { nested: true } } },
++                  { textParagraph: { text: "kept" } },
++                  { buttonList: { buttons: [
++                    { text: "Script", onClick: { openLink: { url: "javascript:alert(1)" } } },
++                    { text: "Relative", onClick: { openLink: { url: "/runbook" } } },
++                    { text: "Mail", onClick: { openLink: { url: "mailto:a@example.com" } } },
++                    { text: "Bad", onClick: { openLink: { url: 7 } } },
++                    { onClick: { openLink: { url: "http://example.com/unlabeled" } } },
++                  ] } },
++                  { image: { imageUrl: "https://example.com/i.png", altText: "Graph" } },
++                ],
++              },
++            ],
++          },
++        },
++      ],
++      cards: "not a list" as unknown as unknown[],
++    });
++    expect(info.cards).toEqual([{
++      text: "kept",
++      links: [{ url: "http://example.com/unlabeled" }],
++    }]);
++  });
++
++  it("reads grid, chip, column, and carousel content one level deep", () => {
++    const info = chatMessageInfoFromRaw({
++      name: "spaces/AAAA/messages/BBB",
++      createTime: "2024-01-02T03:04:05Z",
++      cardsV2: [{
++        card: {
++          sections: [{
++            widgets: [
++              { grid: { title: "Hosts", items: [{ title: "host-1", subtitle: "up" }] } },
++              { chipList: { chips: [{ label: "Docs", onClick: { openLink: { url: "https://example.com/docs" } } }] } },
++              { columns: { columnItems: [{ widgets: [
++                { textParagraph: { text: "left" } },
++                { columns: { columnItems: [{ widgets: [{ textParagraph: { text: "too deep" } }] }] } },
++              ] }] } },
++              { carousel: { carouselCards: [{
++                widgets: [{ textParagraph: { text: "slide" } }],
++                footerWidgets: [{ buttonList: { buttons: [
++                  { text: "Next", onClick: { openLink: { url: "https://example.com/next" } } },
++                ] } }],
++              }] } },
++            ],
++          }],
++        },
++      }],
++    });
++    expect(info.cards).toEqual([{
++      text: "Hosts\nhost-1\nup\nleft\nslide",
++      links: [
++        { label: "Docs", url: "https://example.com/docs" },
++        { label: "Next", url: "https://example.com/next" },
++      ],
++    }]);
++  });
++
+diff --git a/packages/gatekeeper-google/__tests__/chat-state.test.ts b/packages/gatekeeper-google/__tests__/chat-state.test.ts
+index 8d6214056..bbf3f8d9e 100644
+--- a/packages/gatekeeper-google/__tests__/chat-state.test.ts
++++ b/packages/gatekeeper-google/__tests__/chat-state.test.ts
+@@ -29,0 +30 @@ function message(name: string, text: string, extra: Partial<ChatMessageInfo> = {
++    cards: [],
+diff --git a/packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts b/packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+index 180eaa33b..cabcf2b69 100644
+--- a/packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
++++ b/packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+@@ -1254,0 +1255,34 @@ describe("Google Chat gatekeeper behaviors", () => {
++  it("returns a Chat app's card content from every read without following its links", async () => {
++    const backend = chatBackend();
++    backend.state.messages.push({
++      ...threadMessage("alert", "A", "2024-01-01T00:00:00Z"),
++      sender: {name: "users/app", type: "BOT"},
++      text: "firing: example alert",
++      cardsV2: [{cardId: "c", card: {
++        header: {title: "example alert is firing"},
++        sections: [{widgets: [
++          {textParagraph: {text: "<b>cluster:</b> test"}},
++          {buttonList: {buttons: [{text: "Runbook", onClick: {openLink: {url: "https://runbook.example/r"}}}]}},
++        ]}],
++      }}],
++    });
++    const expected = [{
++      title: "example alert is firing",
++      text: "<b>cluster:</b> test",
++      links: [{label: "Runbook", url: "https://runbook.example/r"}],
++    }];
++    const chat = chatHarness(backend);
++    using requests = vi.spyOn(globalThis, "fetch");
++    using space = await chat.session();
++    using messages = await space.listMessages();
++    using page = await messages.next();
++    expect(page![0].info).toMatchObject({text: "firing: example alert", cards: expected});
++    using entry = await space.getMessage(messageName("alert"));
++    expect(entry.info.cards).toEqual(expected);
++    expect((await entry.message.getMetadata()).cards).toEqual(expected);
++    const hosts = requests.mock.calls.map(([input]) =>
++      new URL(typeof input === "string" || input instanceof URL ? input : input.url).hostname);
++    expect(hosts).not.toContain("runbook.example");
++    expect(JSON.stringify((await chat.readQueue()).observations)).toContain("cards");
++  });
++
+diff --git a/packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts b/packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+index 3b6bc9fcd..c054c99ec 100644
+--- a/packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
++++ b/packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+@@ -267,0 +268,22 @@ it("delivers the account's Google Chat posts only to hooks that ask, never what
++it("delivers a Chat app's card content with its message", async () => {
++  mockGoogle();
++  const ada = await connect("ada");
++  await ada.hooks.chatEnableHook();
++
++  const alert: ChatMessageRaw = {
++    ...chatMessage("app"), sender: {name: "users/app", type: "BOT"}, text: "",
++    cardsV2: [{card: {
++      header: {title: "example alert"},
++      sections: [{widgets: [
++        {buttonList: {buttons: [{text: "Runbook", onClick: {openLink: {url: "https://runbook.example/r"}}}]}},
++      ]}],
++    }}],
++  };
++  await push("ada", [alert]);
++  await deliver();
++
++  expect((await ada.hooks.readHook()).received.map(info => info.cards)).toEqual([[{
++    title: "example alert", text: "", links: [{label: "Runbook", url: "https://runbook.example/r"}],
++  }]]);
++});
++
+diff --git a/packages/gatekeeper-google/src/chat-api.ts b/packages/gatekeeper-google/src/chat-api.ts
+index 2efa4226a..5829be1c2 100644
+--- a/packages/gatekeeper-google/src/chat-api.ts
++++ b/packages/gatekeeper-google/src/chat-api.ts
+@@ -14,0 +15 @@ import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
++import { chatCardsFromRaw } from "./chat-cards";
+@@ -292,0 +294,4 @@ export type ChatMessageRaw = {
++  /** Cards a Chat app attached: untrusted and loosely shaped, so read only by `chatCardsFromRaw`. */
++  cardsV2?: { cardId?: string; card?: unknown }[];
++  /** The legacy card format, which older Chat apps still send. */
++  cards?: unknown[];
+@@ -431,0 +437 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
++    cards: chatCardsFromRaw(raw),
+diff --git a/packages/gatekeeper-google/src/chat-cards.ts b/packages/gatekeeper-google/src/chat-cards.ts
+new file mode 100644
+index 000000000..6f906aa9e
+--- /dev/null
++++ b/packages/gatekeeper-google/src/chat-cards.ts
+@@ -0,0 +1,146 @@
++// Read-only extraction of what Chat apps show in message cards, both the current `cardsV2` and the
++// legacy `cards`. The two formats share their header, section, text paragraph, image, and openLink
++// shapes, and their other widget keys don't collide, so one walker reads either.
++//
++// Cards are app-authored and loosely shaped, so every field is read as unknown and kept only when
++// it has the expected type. Nothing here follows a link or runs a card action: action callbacks,
++// form inputs, and widgets with nothing to read are dropped, and only http(s) links are kept.
++
++import type { ChatCard, ChatCardLink } from "./chat-types";
++
++type Json = Record<string, unknown>;
++
++function record(value: unknown): Json | undefined {
++  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Json : undefined;
++}
++
++function list(value: unknown): Json[] {
++  return Array.isArray(value) ? value.map(record).filter(item => item !== undefined) : [];
++}
++
++function str(value: unknown): string | undefined {
++  return typeof value === "string" && value.trim() ? value.trim() : undefined;
++}
++
++function webUrl(value: unknown): string | undefined {
++  const url = str(value);
++  if (url === undefined || !URL.canParse(url)) return undefined;
++  const { protocol } = new URL(url);
++  return protocol === "https:" || protocol === "http:" ? url : undefined;
++}
++
++class CardReader {
++  readonly lines: string[] = [];
++  readonly links: ChatCardLink[] = [];
++
++  text(...values: unknown[]): void {
++    for (const value of values) {
++      const line = str(value);
++      if (line !== undefined) this.lines.push(line);
++    }
++  }
++
++  /** An `onClick` that opens a URL, directly or from an overflow menu; other actions are dropped. */
++  onClick(value: unknown, label: unknown): void {
++    const onClick = record(value);
++    this.#link(record(onClick?.openLink)?.url, label);
++    for (const item of list(record(onClick?.overflowMenu)?.items)) {
++      this.#link(record(record(item.onClick)?.openLink)?.url, item.text);
++    }
++  }
++
++  /** A `cardsV2` button, or a legacy `textButton` / `imageButton` wrapper. */
++  button(value: unknown): void {
++    const button = record(value);
++    if (button === undefined) return;
++    const legacy = record(button.textButton) ?? record(button.imageButton);
++    if (legacy !== undefined) {
++      this.onClick(legacy.onClick, legacy.text ?? legacy.name);
++      return;
++    }
++    this.onClick(button.onClick, button.text ?? button.altText);
++  }
++
++  widgets(value: unknown, nested = false): void {
++    for (const widget of list(value)) this.#widget(widget, nested);
++  }
++
++  #widget(widget: Json, nested: boolean): void {
++    const paragraph = record(widget.textParagraph);
++    if (paragraph) this.text(paragraph.text);
++
++    const decorated = record(widget.decoratedText) ?? record(widget.keyValue);
++    if (decorated) {
++      const text = decorated.text ?? decorated.content;
++      this.text(decorated.topLabel, text, decorated.bottomLabel);
++      this.button(decorated.button);
++      this.onClick(decorated.onClick, text);
++    }
++
++    for (const button of list(record(widget.buttonList)?.buttons)) this.button(button);
++    for (const button of list(widget.buttons)) this.button(button);
++
++    const image = record(widget.image);
++    if (image) this.onClick(image.onClick, image.altText);
++
++    for (const chip of list(record(widget.chipList)?.chips)) this.onClick(chip.onClick, chip.label);
++
++    const grid = record(widget.grid);
++    if (grid) {
++      this.text(grid.title);
++      for (const item of list(grid.items)) this.text(item.title, item.subtitle);
++      this.onClick(grid.onClick, grid.title);
++    }
++
++    // Google doesn't nest columns or carousels, so neither is followed below one level.
++    if (nested) return;
++    for (const column of list(record(widget.columns)?.columnItems)) this.widgets(column.widgets, true);
++    for (const card of list(record(widget.carousel)?.carouselCards)) {
++      this.widgets(card.widgets, true);
++      this.widgets(card.footerWidgets, true);
++    }
++  }
++
++  #link(url: unknown, label: unknown): void {
++    const href = webUrl(url);
++    if (href === undefined) return;
++    const text = str(label);
++    this.links.push({ ...(text !== undefined ? { label: text } : {}), url: href });
++  }
++}
++
++function chatCardFromRaw(value: unknown): ChatCard | undefined {
++  const card = record(value);
++  if (card === undefined) return undefined;
++  const header = record(card.header);
++  const reader = new CardReader();
++  for (const section of list(card.sections)) {
++    reader.text(section.header);
++    reader.widgets(section.widgets);
++  }
++  const footer = record(card.fixedFooter);
++  reader.button(footer?.primaryButton);
++  reader.button(footer?.secondaryButton);
++  for (const action of list(card.cardActions)) reader.onClick(action.onClick, action.actionLabel);
++
++  const title = str(header?.title);
++  const subtitle = str(header?.subtitle);
++  if (title === undefined && subtitle === undefined && reader.lines.length === 0 && reader.links.length === 0) {
++    return undefined;
++  }
++  return {
++    ...(title !== undefined ? { title } : {}),
++    ...(subtitle !== undefined ? { subtitle } : {}),
++    text: reader.lines.join("\n"),
++    links: reader.links,
++  };
++}
++
++/** The readable content of a message's cards, `cardsV2` first; cards with nothing readable are left out. */
++export function chatCardsFromRaw(raw: { cards?: unknown; cardsV2?: unknown }): ChatCard[] {
++  const cards = [
++    ...list(raw.cardsV2).map(entry => entry.card),
++    ...(Array.isArray(raw.cards) ? raw.cards : []),
++  ];
++  return cards.flatMap(card => chatCardFromRaw(card) ?? []);
++}
+diff --git a/packages/gatekeeper-google/src/chat-state.ts b/packages/gatekeeper-google/src/chat-state.ts
+index 7707f5a3a..e5c4e5ba8 100644
+--- a/packages/gatekeeper-google/src/chat-state.ts
++++ b/packages/gatekeeper-google/src/chat-state.ts
+@@ -138,0 +139 @@ export function pendingMessageInfo(
++    cards: [],
+diff --git a/packages/gatekeeper-google/src/chat-types.d.ts b/packages/gatekeeper-google/src/chat-types.d.ts
+index a8c0e6cc3..1baf9bca6 100644
+--- a/packages/gatekeeper-google/src/chat-types.d.ts
++++ b/packages/gatekeeper-google/src/chat-types.d.ts
+@@ -133,0 +134,27 @@ export type ChatAttachmentInfo = {
++/** A link a Chat app's card opens, from a button, chip, image, or clickable text. */
++export type ChatCardLink = {
++  /** The button's or item's label, when it has one. */
++  label?: string;
++  /** The `http` or `https` URL it opens. */
++  url: string;
++};
++
++/**
++ * What a card a Chat app attached to its message shows. Card content is written by the app, so
++ * treat its text and links as untrusted.
++ */
++export type ChatCard = {
++  /** The card header's title, when it has one. */
++  title?: string;
++  /** The card header's subtitle, when it has one. */
++  subtitle?: string;
++  /**
++   * The card's text in display order, one line per section header, label, or text item. Text is
++   * kept as the app wrote it, which may be Chat's card HTML (`<b>`, `<br>`, `<a href="...">`) or
++   * Markdown. Form inputs and other interactive controls are left out.
++   */
++  text: string;
++  /** Links the card opens, in display order. Other card actions are left out. */
++  links: ChatCardLink[];
++};
++
+@@ -170 +197,2 @@ export type ChatMessageInfo = {
+-   * attachment-only message. Use `formattedText` for link URLs and formatting.
++   * attachment-only or card-only message. Use `formattedText` for link URLs and formatting, and
++   * `cards` for what a Chat app's cards show.
+@@ -189,0 +218,5 @@ export type ChatMessageInfo = {
++  /**
++   * Cards a Chat app attached to the message, such as an alert's details and its buttons. Their
++   * content appears only here, never in `text` or `formattedText`. Empty for most messages.
++   */
++  cards: ChatCard[];
+@@ -565,2 +598,2 @@ export interface ChatMessage extends RpcTarget {
+-   * Return the message's current sender, text, mentions, timestamps, attachments, and reaction
+-   * counts. Throws if it has been deleted.
++   * Return the message's current sender, text, mentions, timestamps, attachments, cards, and
++   * reaction counts. Throws if it has been deleted.
+diff --git a/packages/gatekeeper-google/src/chat.ts b/packages/gatekeeper-google/src/chat.ts
+index 028213520..71adf782b 100644
+--- a/packages/gatekeeper-google/src/chat.ts
++++ b/packages/gatekeeper-google/src/chat.ts
+@@ -980 +980 @@ class ChatSpaceImpl extends ChatRpcTarget implements ChatSpace {
+-        "attachments, and reactions.");
++        "cards, attachments, and reactions.");
+@@ -1203 +1203 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
+-      `Read the sender, text, attachments, and reactions of message ${info.id} in ` +
++      `Read the sender, text, cards, attachments, and reactions of message ${info.id} in ` +
+@@ -1403 +1403 @@ class ChatHookDeliveryImpl extends RpcTarget implements ChatHookDelivery {
+-        "including its text, attachments, and reactions.");
++        "including its text, cards, attachments, and reactions.");

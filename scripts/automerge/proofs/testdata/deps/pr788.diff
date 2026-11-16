@@ -1,0 +1,335 @@
+diff --git a/packages/gatekeeper-context/package.json b/packages/gatekeeper-context/package.json
+index 09bf91317..2a8f51b6b 100644
+--- a/packages/gatekeeper-context/package.json
++++ b/packages/gatekeeper-context/package.json
+@@ -35 +35 @@
+-    "@codemirror/language": "^6.12.4",
++    "@codemirror/language": "^6.13.1",
+@@ -37 +37 @@
+-    "@codemirror/view": "^6.43.13",
++    "@codemirror/view": "^6.43.14",
+@@ -40 +40 @@
+-    "@lezer/highlight": "^1.2.4",
++    "@lezer/highlight": "^1.2.5",
+diff --git a/packages/workshop-frontend/package.json b/packages/workshop-frontend/package.json
+index 647d13a8d..1e229a925 100644
+--- a/packages/workshop-frontend/package.json
++++ b/packages/workshop-frontend/package.json
+@@ -28,2 +28,2 @@
+-    "@codemirror/language": "^6.12.4",
+-    "@codemirror/legacy-modes": "^6.5.4",
++    "@codemirror/language": "^6.13.1",
++    "@codemirror/legacy-modes": "^6.5.5",
+@@ -33 +33 @@
+-    "@codemirror/view": "^6.43.13",
++    "@codemirror/view": "^6.43.14",
+@@ -36 +36 @@
+-    "@lezer/highlight": "^1.2.4",
++    "@lezer/highlight": "^1.2.5",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 93111c768..133a06c0e 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -278,2 +278,2 @@ importers:
+-        specifier: ^6.12.4
+-        version: 6.12.4
++        specifier: ^6.13.1
++        version: 6.13.1
+@@ -284,2 +284,2 @@ importers:
+-        specifier: ^6.43.13
+-        version: 6.43.13
++        specifier: ^6.43.14
++        version: 6.43.14
+@@ -293,2 +293,2 @@ importers:
+-        specifier: ^1.2.4
+-        version: 1.2.4
++        specifier: ^1.2.5
++        version: 1.2.5
+@@ -1315,2 +1315,2 @@ importers:
+-        specifier: ^6.12.4
+-        version: 6.12.4
++        specifier: ^6.13.1
++        version: 6.13.1
+@@ -1318,2 +1318,2 @@ importers:
+-        specifier: ^6.5.4
+-        version: 6.5.4
++        specifier: ^6.5.5
++        version: 6.5.5
+@@ -1330,2 +1330,2 @@ importers:
+-        specifier: ^6.43.13
+-        version: 6.43.13
++        specifier: ^6.43.14
++        version: 6.43.14
+@@ -1339,2 +1339,2 @@ importers:
+-        specifier: ^1.2.4
+-        version: 1.2.4
++        specifier: ^1.2.5
++        version: 1.2.5
+@@ -1811,2 +1811,2 @@ packages:
+-  '@codemirror/language@6.12.4':
+-    resolution: {integrity: sha512-1q4PaT+o6PbgpkJt4Q8Fv5XJxTy4FUZ4MWETtyiDw3J0Pyr9E2vqcKL+k9wcvjNTIsauxvE7OfmWj3FRPHQ76A==}
++  '@codemirror/language@6.13.1':
++    resolution: {integrity: sha512-zfvU2r3TyylQLMj/te+5CnQ0rSqZi8B1oTCBbQkagcLW4Xc6imab6qN+pEJhsuNOLaJqiRyBXp9UhWA1DhVvDw==}
+@@ -1814,2 +1814,2 @@ packages:
+-  '@codemirror/legacy-modes@6.5.4':
+-    resolution: {integrity: sha512-/cZr6qZyl08iYNLGsJ862CXXNI51LryRFRE40ejgoIjXZz0C1rGkD3/Ek5jM/8w1ceRjqtt4qx/KLMh4zBTgew==}
++  '@codemirror/legacy-modes@6.5.5':
++    resolution: {integrity: sha512-9ltT214oMb3Y1w5eAZMSigzrjzZnMI2Wa3Feq73rU/i4C56MkwrpfswfQYOr28C5pXr6dWwspNTMyeHXlzWMxg==}
+@@ -1829,2 +1829,5 @@ packages:
+-  '@codemirror/view@6.43.13':
+-    resolution: {integrity: sha512-sihaFrUzAsYBQsL9J2t69y8nfMQGwcYmggAZsk+kjPbjYZMyuf2hU8tUNTZ+P+isb6XRr8JE22TZlJxBoVdH1A==}
++  '@codemirror/streamparser@6.0.0':
++    resolution: {integrity: sha512-JTFPF6xrfjt0mnfGPgzcLiMwYmvIyNaoizp8BYzv8FE8KrT6GBGDZ190rtt+O7Wke3gG/MFHyiY9YGNeimof4w==}
++
++  '@codemirror/view@6.43.14':
++    resolution: {integrity: sha512-hC45YnmJNR1rz42OF57BLoQNFMV12/13drnvibDsR2quNDmldcb4WvYVV81hFQg56i9lcqQMEDqilhX2QDcGQQ==}
+@@ -2409,2 +2412,2 @@ packages:
+-  '@lezer/common@1.5.2':
+-    resolution: {integrity: sha512-sxQE460fPZyU3sdc8lafxiPwJHBzZRy/udNFynGQky1SePYBdhkBl1kOagA9uT3pxR8K09bOrmTUqA9wb/PjSQ==}
++  '@lezer/common@1.5.3':
++    resolution: {integrity: sha512-H0iErY4e43LpXbYDyBci5W4v/RwTgGV3YzYOlJPiGZ8RY8w51kVE+xLn1tg3Z6UmSfyETvtsUK3r7YsgDQEI7Q==}
+@@ -2421,2 +2424,2 @@ packages:
+-  '@lezer/highlight@1.2.4':
+-    resolution: {integrity: sha512-4UeRVFO0lsBaM7GA32zOqbmqNPme9jedo8Ey+5c5656MU3MLitMLIA8aCZTYjUMEpEsuSeXEm78Uea6Iq3bvSg==}
++  '@lezer/highlight@1.2.5':
++    resolution: {integrity: sha512-O1GMVKgtf5YspFaRzpmqkVgMtIk2HG9uMAbH6wdAIdNh3TVzCsch/+cRi+6l2//UGDKe6NB9BW3cvuR5ezMQ0w==}
+@@ -2436,2 +2439,2 @@ packages:
+-  '@lezer/lr@1.4.10':
+-    resolution: {integrity: sha512-rnCpTIBafOx4mRp43xOxDJbFipJm/c0cia/V5TiGlhmMa+wsSdoGmUN3w5Bqrks/09Q/D4tNAmWaT8p6NRi77A==}
++  '@lezer/lr@1.4.11':
++    resolution: {integrity: sha512-UwgZcl1R66H2hDzBrA7kWyYmX6s8p5TQ+e/t7CuvgCtBEPxbEPaHYHu+pJBvTvDotEJpuQkJjbXuHiw5Cixxgw==}
+@@ -6389 +6392 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6391,2 +6394,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
+@@ -6396 +6399 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6398,2 +6401,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
+@@ -6403 +6406 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6409 +6412 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6411 +6414 @@ snapshots:
+-      '@lezer/common': 1.5.2
++      '@lezer/common': 1.5.3
+@@ -6417 +6420 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6419 +6422 @@ snapshots:
+-      '@lezer/common': 1.5.2
++      '@lezer/common': 1.5.3
+@@ -6427 +6430 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6429,2 +6432,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
+@@ -6436 +6439 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6442 +6445 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6445,2 +6448,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
+@@ -6451 +6454 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6458 +6461 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6460,2 +6463,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
+@@ -6467 +6470 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6469 +6472 @@ snapshots:
+-      '@lezer/common': 1.5.2
++      '@lezer/common': 1.5.3
+@@ -6474 +6477 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6480 +6483 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6482,3 +6485,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6489 +6492 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6491,2 +6494,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
+@@ -6498 +6501 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6500,3 +6503,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6505 +6508 @@ snapshots:
+-  '@codemirror/language@6.12.4':
++  '@codemirror/language@6.13.1':
+@@ -6508,5 +6511,6 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
+-      style-mod: 4.1.3
++      '@codemirror/streamparser': 6.0.0
++      '@codemirror/view': 6.43.14
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
++      style-mod: 4.1.4
+@@ -6514 +6518 @@ snapshots:
+-  '@codemirror/legacy-modes@6.5.4':
++  '@codemirror/legacy-modes@6.5.5':
+@@ -6516 +6520 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/streamparser': 6.0.0
+@@ -6521 +6525 @@ snapshots:
+-      '@codemirror/view': 6.43.13
++      '@codemirror/view': 6.43.14
+@@ -6526 +6530 @@ snapshots:
+-      '@codemirror/language': 6.12.4
++      '@codemirror/language': 6.13.1
+@@ -6528,2 +6532,2 @@ snapshots:
+-      '@codemirror/view': 6.43.13
+-      '@lezer/highlight': 1.2.4
++      '@codemirror/view': 6.43.14
++      '@lezer/highlight': 1.2.5
+@@ -6535 +6539 @@ snapshots:
+-      '@codemirror/view': 6.43.13
++      '@codemirror/view': 6.43.14
+@@ -6542 +6546,3 @@ snapshots:
+-  '@codemirror/view@6.43.13':
++  '@codemirror/streamparser@6.0.0': {}
++
++  '@codemirror/view@6.43.14':
+@@ -6947 +6953 @@ snapshots:
+-  '@lezer/common@1.5.2': {}
++  '@lezer/common@1.5.3': {}
+@@ -6951,3 +6957,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6957,3 +6963,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6963,3 +6969,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6967 +6973 @@ snapshots:
+-  '@lezer/highlight@1.2.4':
++  '@lezer/highlight@1.2.5':
+@@ -6969 +6975 @@ snapshots:
+-      '@lezer/common': 1.5.2
++      '@lezer/common': 1.5.3
+@@ -6973,3 +6979,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6979,3 +6985,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6985,3 +6991,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6991,3 +6997,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -6995 +7001 @@ snapshots:
+-  '@lezer/lr@1.4.10':
++  '@lezer/lr@1.4.11':
+@@ -6997 +7003 @@ snapshots:
+-      '@lezer/common': 1.5.2
++      '@lezer/common': 1.5.3
+@@ -7001,2 +7007,2 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
+@@ -7006,3 +7012,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -7012,3 +7018,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -7018,3 +7024,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
+@@ -7024,3 +7030,3 @@ snapshots:
+-      '@lezer/common': 1.5.2
+-      '@lezer/highlight': 1.2.4
+-      '@lezer/lr': 1.4.10
++      '@lezer/common': 1.5.3
++      '@lezer/highlight': 1.2.5
++      '@lezer/lr': 1.4.11
