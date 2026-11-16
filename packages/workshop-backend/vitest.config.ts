@@ -115,6 +115,9 @@ export default defineConfig({
           // `ctx.exports`.
           TEST_ISSUE_REPORTS: { className: 'IssueReportsDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
+          // Likewise only reached through `ctx.exports`: the facet that stands for the admin
+          // gatekeeper where a workspace lends it the Admin API.
+          TEST_ADMIN_GATEKEEPER: { className: 'FakeAdminGatekeeper', useSQLite: true },
         },
       },
     }),
