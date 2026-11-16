@@ -112,11 +112,12 @@ export const AutomationsTab = ({ workspaceIds, filter, agentFilter, withWorkspac
 
   if (snapshot.status === 'loading') return <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading automations…</p>
   if (snapshot.status === 'failed') return <p role="alert" className="px-4 text-center text-base text-kumo-danger">Couldn’t load automations. {snapshot.message}</p>
-  if (all.length === 0 && allAgents.length === 0) return <p className="px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p>
-  if (shown.length === 0 && agents.length === 0) return <p className="px-4 text-center text-base text-kumo-subtle">No automation here says “{query.trim()}”.</p>
+  if (all.length === 0 && allAgents.length === 0) return <p className="appears px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p>
+  if (shown.length === 0 && agents.length === 0) return <p className="appears px-4 text-center text-base text-kumo-subtle">No automation here says “{query.trim()}”.</p>
 
   return (
-    <div className="flex flex-col gap-6">
+    // Faded in as it arrives, as the Library's lists are, and again in another order.
+    <div key={order} className="appears flex flex-col gap-6">
       {GROUPS.map(({ kind, label: groupLabel }) => {
         const rows = shown.filter((automation) => automation.kind === kind)
         if (rows.length === 0) return null

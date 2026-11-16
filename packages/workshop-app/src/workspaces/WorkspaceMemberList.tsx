@@ -35,30 +35,33 @@ export const WorkspaceMemberList = ({ snapshot, session }: WorkspaceMemberListPr
       {snapshot.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading members…</p>}
       {snapshot.status === 'failed' && <p className="px-4 text-center text-base text-kumo-subtle">Couldn’t load members: {snapshot.message}</p>}
       {standing && (
-        <ListGroup label="Members">
-          {workspaceMembers(standing.owner, collaborators).map(({ profile, role }) => {
-            const person = collaborators.find((collaborator) => collaborator.profile.id === profile.id)
-            const removable = person !== undefined && profile.id !== user.id && canChange(person, standing, user.id)
-            return (
-              <MemberListItem
-                key={profile.id}
-                name={profile.name}
-                role={ROLE_LABELS[role]}
-                you={profile.id === user.id}
-                access={removable ? (
-                  <AccessMenu
-                    label={ROLE_LABELS[role]}
-                    of={profile.name}
-                    remove={{
-                      label: role === 'build' ? 'Remove from workspace' : 'Remove access',
-                      onRemove: () => removal.ask({ id: profile.id, name: profile.name }),
-                    }}
+        // Faded in as it arrives, as the Library's lists are.
+        <div className="appears flex flex-col">
+            <ListGroup label="Members">
+              {workspaceMembers(standing.owner, collaborators).map(({ profile, role }) => {
+                const person = collaborators.find((collaborator) => collaborator.profile.id === profile.id)
+                const removable = person !== undefined && profile.id !== user.id && canChange(person, standing, user.id)
+                return (
+                  <MemberListItem
+                    key={profile.id}
+                    name={profile.name}
+                    role={ROLE_LABELS[role]}
+                    you={profile.id === user.id}
+                    access={removable ? (
+                      <AccessMenu
+                        label={ROLE_LABELS[role]}
+                        of={profile.name}
+                        remove={{
+                          label: role === 'build' ? 'Remove from workspace' : 'Remove access',
+                          onRemove: () => removal.ask({ id: profile.id, name: profile.name }),
+                        }}
+                      />
+                    ) : undefined}
                   />
-                ) : undefined}
-              />
-            )
-          })}
-        </ListGroup>
+                )
+              })}
+            </ListGroup>
+        </div>
       )}
       {removal.dialog && <RemovalDialog {...removal.dialog} />}
     </>

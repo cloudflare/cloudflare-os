@@ -146,30 +146,35 @@ export const SkillsTab = ({ sort, query, creating, onCreatingChange, onOpenSkill
       {groups.length === 0 && query.trim() !== '' && (
         <p className="appears px-4 text-center text-base text-kumo-subtle">No skill is called “{query.trim()}”.</p>
       )}
-      {groups.map(({ collection, skills }) => (
-        <SkillGroup
-          key={collection.id}
-          title={titleOf(collection)}
-          icon={collection.icon}
-          detail={collectionDetail(collection, config?.siteName)}
-          onShare={collection.permissions.canShare ? () => setSharing(collection) : undefined}
-          actions={collectionActions(collection)}
-        >
-          {skills.length === 0 ? (
-            <p className="px-3 py-3 text-base text-kumo-subtle">Nothing here yet. New skills you write go here.</p>
-          ) : skills.map((skill) => (
-            <SkillRow
-              key={skill.id}
-              title={skillTitle(skill.name)}
-              description={skill.description}
-              time={formatActivity(skill.lastUpdated)}
-              actions={skillActions(skill, collection)}
-              href={skillHref?.(skill.id)}
-              onSelect={() => onOpenSkill(skill.id)}
-            />
+      {groups.length > 0 && (
+        // Faded in as it arrives, as the Library's lists are, and again in another order.
+        <div key={sort} className="appears flex flex-col gap-6">
+          {groups.map(({ collection, skills }) => (
+            <SkillGroup
+              key={collection.id}
+              title={titleOf(collection)}
+              icon={collection.icon}
+              detail={collectionDetail(collection, config?.siteName)}
+              onShare={collection.permissions.canShare ? () => setSharing(collection) : undefined}
+              actions={collectionActions(collection)}
+            >
+              {skills.length === 0 ? (
+                <p className="px-3 py-3 text-base text-kumo-subtle">Nothing here yet. New skills you write go here.</p>
+              ) : skills.map((skill) => (
+                <SkillRow
+                  key={skill.id}
+                  title={skillTitle(skill.name)}
+                  description={skill.description}
+                  time={formatActivity(skill.lastUpdated)}
+                  actions={skillActions(skill, collection)}
+                  href={skillHref?.(skill.id)}
+                  onSelect={() => onOpenSkill(skill.id)}
+                />
+              ))}
+            </SkillGroup>
           ))}
-        </SkillGroup>
-      ))}
+        </div>
+      )}
       {/* Before their first skill too, so they can keep skills in collections of their own from the start. */}
       {query.trim() === '' && (
         <div className="flex justify-center">

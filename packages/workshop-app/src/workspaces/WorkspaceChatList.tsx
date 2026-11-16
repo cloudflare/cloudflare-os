@@ -19,14 +19,19 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref }: Workspa
     <>
       {chats.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading chats…</p>}
       {chats.status === 'failed' && <p className="px-4 text-center text-base text-kumo-subtle">Couldn’t load chats: {chats.message}</p>}
-      {chats.status === 'ready' && chats.chats.length === 0 && <p className="px-4 text-center text-base text-kumo-subtle">No chats yet.</p>}
-      {groups.map(({ key, label, entries }) => (
-        <ListGroup key={key} label={label}>
-          {entries.map(({ value: { id, title }, time }) => (
-            <ChatListItem key={id} title={title || 'Untitled chat'} time={time} href={chatHref?.(id)} onSelect={() => onOpenChat({ id, title })} />
+      {chats.status === 'ready' && chats.chats.length === 0 && <p className="appears px-4 text-center text-base text-kumo-subtle">No chats yet.</p>}
+      {groups.length > 0 && (
+        // Faded in as it arrives, as the Library's lists are.
+        <div className="appears flex flex-col gap-8">
+          {groups.map(({ key, label, entries }) => (
+            <ListGroup key={key} label={label}>
+              {entries.map(({ value: { id, title }, time }) => (
+                <ChatListItem key={id} title={title || 'Untitled chat'} time={time} href={chatHref?.(id)} onSelect={() => onOpenChat({ id, title })} />
+              ))}
+            </ListGroup>
           ))}
-        </ListGroup>
-      ))}
+        </div>
+      )}
     </>
   )
 }

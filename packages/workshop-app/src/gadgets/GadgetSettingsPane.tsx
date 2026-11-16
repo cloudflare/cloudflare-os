@@ -232,25 +232,28 @@ export const GadgetSettingsPane = ({
                 </div>
                 <ListState list={snapshot.bindings} what="its connections" />
                 {snapshot.bindings.status === 'ready' && (snapshot.bindings.items.length === 0 ? (
-                  <p className="px-4 text-base text-kumo-subtle">Nothing yet. Add a connection, or ask the agent to connect it to a service.</p>
+                  <p className="appears px-4 text-base text-kumo-subtle">Nothing yet. Add a connection, or ask the agent to connect it to a service.</p>
                 ) : (
-                  <ListGroup label="Connected to">
-                    {snapshot.bindings.items.map((binding) => (
-                      <BindingRow
-                        key={binding.name}
-                        name={binding.name}
-                        resource={binding.resourceTitle}
-                        service={serviceOf(binding.vendorId)}
-                        pending={binding.chatId !== undefined}
-                        onManage={onOpenConnections}
-                        onRemove={builds ? async () => {
-                          if (connection?.blocked()) return false
-                          await settings.unbind(binding.name)
-                          return true
-                        } : undefined}
-                      />
-                    ))}
-                  </ListGroup>
+                  // Faded in as it arrives, as the Library's lists are.
+                  <div className="appears flex flex-col">
+                    <ListGroup label="Connected to">
+                      {snapshot.bindings.items.map((binding) => (
+                        <BindingRow
+                          key={binding.name}
+                          name={binding.name}
+                          resource={binding.resourceTitle}
+                          service={serviceOf(binding.vendorId)}
+                          pending={binding.chatId !== undefined}
+                          onManage={onOpenConnections}
+                          onRemove={builds ? async () => {
+                            if (connection?.blocked()) return false
+                            await settings.unbind(binding.name)
+                            return true
+                          } : undefined}
+                        />
+                      ))}
+                    </ListGroup>
+                  </div>
                 ))}
               </section>
               {builds && gadget && (
