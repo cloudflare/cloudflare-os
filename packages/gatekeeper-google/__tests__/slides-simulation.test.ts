@@ -4,7 +4,8 @@ import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import { batchKind } from "../src/slides-actions";
 import type { DesignChange } from "../src/slides-design";
 import {
-  applyChange, batchSlides, slidesToFetch, type CreatedPlaceholder, type Deck, type SlidesAction,
+  applyChange, batchSlides, slidesToFetch, slidesToRead, type CreatedPlaceholder, type Deck,
+  type SlidesAction,
 } from "../src/slides-simulation";
 import type { ShapeElement } from "../src/slides-read-types";
 import { editSlide } from "../src/slides-target";
@@ -413,5 +414,82 @@ describe("Slides batch kinds", () => {
       expect(slidesToFetch(["s1"], [{ id: 1, action }]), kind).toEqual(new Set(["s1", "s2"]));
     }
     expect(batchSlides({ kind: "deleteSlide", payload: { slideId: "s1", slide: { number: 1 } } })).toEqual([]);
+  });
+});
+
+describe("slidesToRead", () => {
+  const queued = (...actions: SlidesAction[]) => actions.map((action, i) => ({ id: i + 1, action }));
+  const copyOf = (slideId: string, newSlideId: string): SlidesAction =>
+    ({ kind: "duplicateSlide", payload: { slideId, newSlideId, objectIds: {}, slide: { number: 1 } } });
+  const batch = (...slideIds: string[]): SlidesAction => ({
+    kind: "editText",
+    payload: { changes: slideIds.map(slideId => ({ op: "editText", slideId, replace: "x" })), slides: {} },
+  });
+  const moved = (...slideIds: string[]): SlidesAction =>
+    ({ kind: "moveSlides", payload: { slideIds, after: null, slides: [] } });
+
+  it("reads by label a slide no queued change edits", () => {
+    expect(slidesToRead([], ["s1", "s2"], [])).toEqual({
+      needed: new Set(["s1", "s2"]), labelOnly: new Set(["s1", "s2"]),
+    });
+    // A queued change that only names a slide, or edits another, leaves it read by label.
+    expect(slidesToRead([], ["s1", "s2"], queued(moved("s1"), batch("s3"), copyOf("s2", "c2")))).toEqual({
+      needed: new Set(["s1", "s2"]), labelOnly: new Set(["s1", "s2"]),
+    });
+    // A slide read whole for itself is not read by label for being named too.
+    expect(slidesToRead(["s1"], ["s1", "s2"], [])).toEqual({
+      needed: new Set(["s1", "s2"]), labelOnly: new Set(["s2"]),
+    });
+  });
+
+  it("reads whole a slide a queued batch edits, with the batch's other slides", () => {
+    expect(slidesToRead([], ["s1", "s4"], queued(batch("s1", "s2"), batch("s3")))).toEqual({
+      needed: new Set(["s1", "s4", "s2"]), labelOnly: new Set(["s4"]),
+    });
+  });
+
+  it("reads whole the slide an edited queued copy was made from", () => {
+    // The copy is edited after it is made, and its source is the copy of another slide.
+    let changes = queued(copyOf("s1", "c1"), copyOf("c1", "c2"), batch("c2"));
+
+    expect(slidesToRead([], ["c2", "s3"], changes)).toEqual({
+      needed: new Set(["c2", "s3", "c1", "s1"]), labelOnly: new Set(["s3"]),
+    });
+    // So is the source of a copy that is read whole.
+    expect(slidesToRead(["c1"], ["s3"], queued(copyOf("s1", "c1")))).toEqual({
+      needed: new Set(["c1", "s3", "s1"]), labelOnly: new Set(["s3"]),
+    });
+  });
+
+  it("reads by label the source of a queued copy that is only named", () => {
+    expect(slidesToRead([], ["c1"], queued(copyOf("s1", "c1"), moved("c1")))).toEqual({
+      needed: new Set(["c1", "s1"]), labelOnly: new Set(["c1", "s1"]),
+    });
+    // An edit to the source alone reads the source whole, and the copy takes what it holds.
+    expect(slidesToRead([], ["c1"], queued(copyOf("s1", "c1"), batch("s1")))).toEqual({
+      needed: new Set(["c1", "s1"]), labelOnly: new Set(["c1"]),
+    });
+  });
+
+  it("needs the slides, in the order, that slidesToFetch gives for them all", () => {
+    let action: SlidesAction = {
+      kind: "updateSlides",
+      payload: {
+        changes: [
+          { op: "setBackground", slideId: "s2", background: "#000000" },
+          { op: "setThemeColors", masterId: "master-1", colors: { DARK1: "#000000" } },
+        ],
+        slides: {},
+      },
+    };
+    let changes = queued(copyOf("s5", "c5"), action, batch("s6", "c5"), moved("s7"));
+    for (let [pages, labelled] of [
+      [["s2"], ["s7", "c5"]], [[], ["s9", "s6", "s1"]], [["master-1"], ["s7"]], [["c5", "s1"], []],
+    ]) {
+      let { needed, labelOnly } = slidesToRead(pages, labelled, changes);
+      expect([...needed]).toEqual([...slidesToFetch([...pages, ...labelled], changes)]);
+      // Nothing is read by label that is read whole for `pages`.
+      expect([...labelOnly].filter(id => slidesToFetch(pages, changes).has(id))).toEqual([]);
+    }
   });
 });

@@ -2,7 +2,7 @@ import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
 import {
-  LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+  LABEL_FIELDS, LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
 } from "./slides-fields";
 import BLANK_RECORDING from "./blank-presentation.json";
 
@@ -345,10 +345,10 @@ export class GoogleSlidesApi {
     return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
   }
 
-  /** Fetch one slide's content, whatever the size of the rest of the presentation. */
-  async getSlide(presentationId: string, slideId: string): Promise<RestSlide> {
+  /** Fetch one slide's content, whatever the size of the rest of the presentation: `fields` of it. */
+  async getSlide(presentationId: string, slideId: string, fields: string = SLIDE_FIELDS): Promise<RestSlide> {
     let slide = await this.#get<RestSlide>(
-      pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
+      pagePath(presentationId, slideId), { fields }, "get slide", MAX_SLIDE_BYTES);
     if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
     return slide;
   }
@@ -361,12 +361,16 @@ export class GoogleSlidesApi {
     return layout;
   }
 
-  /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */
+  /**
+   * Fetch the slides among `ids` that `order`, the deck's slide IDs, still has, in the order of
+   * `ids`: a full page of each, but of each in `labelOnly` only what `LABEL_FIELDS` names.
+   */
   async getSlides(
     presentationId: string, ids: Iterable<string>, order: readonly string[],
+    labelOnly: ReadonlySet<string> = new Set(),
   ): Promise<Map<string, RestSlide>> {
     let slides = await Promise.all([...ids].filter(id => order.includes(id))
-      .map(id => this.getSlide(presentationId, id)));
+      .map(id => this.getSlide(presentationId, id, labelOnly.has(id) ? LABEL_FIELDS : SLIDE_FIELDS)));
     return new Map(slides.map(slide => [slide.objectId!, slide]));
   }
 

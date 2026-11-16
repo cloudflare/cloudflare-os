@@ -42,3 +42,11 @@ export const LAYOUT_PAGE_FIELDS =
 export const SLIDE_FIELDS =
   `objectId,pageProperties(${BACKGROUND_FIELDS}),pageElements,` +
   "slideProperties(layoutObjectId,masterObjectId,isSkipped,notesPage(notesProperties,pageElements))";
+/**
+ * What a change that only names a slide reads of it: its title, which a mask can only reach as
+ * the text of every top-level shape, with each shape's ID and placeholder type, and whether it
+ * is skipped. Replaying the queued changes that move, copy, delete, skip or renumber such a slide
+ * needs nothing else of it.
+ */
+export const LABEL_FIELDS =
+  `objectId,pageElements(objectId,shape(placeholder(type),${TEXT_FIELDS})),slideProperties(isSkipped)`;
