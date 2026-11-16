@@ -1,28 +1,48 @@
 import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Badge } from '@cloudflare/kumo'
-import type { IssueReport, IssueReportEntry } from '@gadgets/workshop-shared/api'
+import type { AdminAgentOrigin, IssueReport, IssueReportEntry } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import { IssueImages } from './IssueImages'
-import { ADMIN_ISSUE_STATUS_NAMES, ISSUE_STATUS_NAMES } from './issueLabels'
+import { ADMIN_ISSUE_STATUS_NAMES, entryAuthorLabel, ISSUE_STATUS_NAMES } from './issueLabels'
 
 const When = ({ at }: { at: Date }) => (
   <time dateTime={at.toISOString()} className="text-xs text-kumo-subtle">{formatFullTimestamp(at)}</time>
 )
 
+// The workspace and the chat an agent's entry came from, worded as the Audit tab words them.
+const AgentOrigin = ({ agent }: { agent: AdminAgentOrigin }) => (
+  <dl className="flex flex-wrap gap-x-3 text-xs text-kumo-subtle">
+    <div className="flex min-w-0 gap-x-1">
+      <dt>From workspace</dt>
+      <dd className="break-all font-mono">{agent.workspaceId}</dd>
+    </div>
+    {agent.chatId !== undefined && (
+      <div className="flex gap-x-1">
+        <dt>From chat</dt>
+        <dd>{agent.chatId}</dd>
+      </div>
+    )}
+  </dl>
+)
+
 // One entry of the thread. Its author is shown by name alone and the row is keyed by the entry's
 // id: an admin's entry carries no author id where the reporter reads it. An entry is an admin's
-// when it says how their call reached the deployment.
+// when it says how their call reached the deployment. Where an agent's entry came from is shown to
+// the admins alone: what the reporter reads carries none of it.
 const Entry = ({ entry, forAdmins }: { entry: IssueReportEntry; forAdmins: boolean }) => {
   const statusNames = forAdmins ? ADMIN_ISSUE_STATUS_NAMES : ISSUE_STATUS_NAMES
+  const author = entryAuthorLabel(entry)
   const viaCli = forAdmins && entry.via === 'cli' && <span className="text-xs text-kumo-subtle">via the CLI</span>
+  const origin = forAdmins && entry.agent !== undefined && <AgentOrigin agent={entry.agent} />
   if (entry.text === '') {
     if (entry.status === undefined) return null
     return (
       <li className="flex flex-wrap items-baseline gap-x-2 px-1 text-xs text-kumo-subtle">
-        <span>{entry.author.name} set the status to {statusNames[entry.status]}</span>
+        <span>{author}{entry.via === 'gatekeeper' ? ',' : ''} set the status to {statusNames[entry.status]}</span>
         {viaCli}
         <When at={entry.at} />
+        {origin}
       </li>
     )
   }
@@ -35,12 +55,13 @@ const Entry = ({ entry, forAdmins }: { entry: IssueReportEntry; forAdmins: boole
       ].join(' ')}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="text-sm font-medium text-kumo-default">{entry.author.name}</span>
+        <span className="text-sm font-medium text-kumo-default">{author}</span>
         {entry.via !== undefined && <Badge variant="outline">Admin</Badge>}
         {adminsOnly && <Badge variant="secondary">Admins only</Badge>}
         {viaCli}
         <When at={entry.at} />
       </div>
+      {origin && <div className="mt-1">{origin}</div>}
       <p className="mt-1 whitespace-pre-wrap break-words text-sm text-kumo-default">{entry.text}</p>
       {entry.status !== undefined && (
         <p className="mt-2 text-xs text-kumo-subtle">Status: {statusNames[entry.status]}</p>
@@ -52,12 +73,14 @@ const Entry = ({ entry, forAdmins }: { entry: IssueReportEntry; forAdmins: boole
 /**
  * One issue report as a conversation: what its reporter wrote, where they were, the images they
  * sent, and the thread's entries, oldest first. A written entry shows its author, time and text;
- * a bare change of status is one quiet line naming who made it. Every text is rendered as plain
- * text. What the reader writes with is passed as children and sits beneath the thread.
+ * a bare change of status is one quiet line naming who made it. One an agent wrote for an admin
+ * names its author as "Agent, for" that admin. Every text is rendered as plain text. What the
+ * reader writes with is passed as children and sits beneath the thread.
  *
  * Read by the admins, an entry for admins alone is marked "Admins only" and set apart from those
- * the reporter reads, an admin's entry made through the CLI says so, a status is named as the
- * admins read it, and the workspace is not linked: it is the reporter's to open, not theirs.
+ * the reporter reads, an admin's entry made through the CLI says so, an agent's says which
+ * workspace and chat it came from, a status is named as the admins read it, and the workspace is
+ * not linked: it is the reporter's to open, not theirs.
  */
 export const IssueThread = ({ report, entries, readImage, forAdmins = false, children }: {
   report: IssueReport

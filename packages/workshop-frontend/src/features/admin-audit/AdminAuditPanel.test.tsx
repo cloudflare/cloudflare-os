@@ -921,17 +921,65 @@ describe('AdminAuditPanel', () => {
       expect(detail(details, 'Via')).toBe('API')
     })
 
-    it('names a call and a write request made through the admin gatekeeper as an agent\'s', async () => {
+    it('names a call and a write request made through the admin gatekeeper as an agent’s, with the workspace and the chat they came from', async () => {
       const agent = { workspaceId: 'ws-triage', chatId: 4 }
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([
         accessRecord({ via: 'gatekeeper', agent }),
-        writeRecord({ via: 'gatekeeper', agent }),
+        writeRecord({ via: 'gatekeeper', agent, event: 'requested' }),
       ]))
       await render(settingsWith(), admin)
 
-      expect(detail(await expand(0), 'Via')).toBe('Agent')
-      expect(detail(await expand(1), 'Via')).toBe('Agent')
+      for (const index of [0, 1]) {
+        const details = await expand(index)
+        expect(detail(details, 'Via')).toBe('Agent')
+        expect(detail(details, 'From workspace')).toBe('ws-triageOpen workspace admin view')
+        expect(detail(details, 'From chat')).toBe('4')
+        // The record's own workspace is still the one the call reached, and each has its link.
+        expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titledOpen workspace admin view')
+        expect([...details.querySelectorAll('a[href^="/admin/workspace/"]')].map((link) => link.getAttribute('href')))
+          .toEqual(['/admin/workspace/ws-titled', '/admin/workspace/ws-triage'])
+      }
+    })
+
+    it('names an agent’s call into a user’s account the same way, with the account it reached', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        userRecord({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 } }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const details = await expand()
+      expect(detail(details, 'Via')).toBe('Agent')
+      expect(detail(details, 'From workspace')).toBe('ws-triageOpen workspace admin view')
+      expect(detail(details, 'From chat')).toBe('4')
+      expect(detail(details, 'Account')).toBe(userRecord().userId)
+      expect(detail(details, 'Workspace')).toBeNull()
+    })
+
+    it('names no chat for an agent’s call the workspace tied to none', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage' } }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const details = await expand()
+      expect(detail(details, 'From workspace')).toBe('ws-triageOpen workspace admin view')
+      expect(detail(details, 'From chat')).toBeNull()
+    })
+
+    it('says nothing of an agent for a call made through the CLI', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord({ via: 'cli' }), writeRecord({ via: 'cli' })]))
+      await render(settingsWith(), admin)
+
+      for (const index of [0, 1]) {
+        const details = await expand(index)
+        expect(detail(details, 'Via')).toBe('CLI')
+        expect(detail(details, 'From workspace')).toBeNull()
+        expect(detail(details, 'From chat')).toBeNull()
+      }
     })
 
     it('shows a refused approval: who tried, the check that failed, and the passkey the answer named if it was their own', async () => {

@@ -549,6 +549,41 @@ describe('an open report', () => {
     expect(statusLine.className).not.toContain('border')
   })
 
+  it('names an agent’s entry and its change of status as the agent’s, for the admin it wrote for', async () => {
+    await renderPage(fakeApi({ opened: [opened({
+      status: 'answered',
+      entries: [
+        adminEntry('e-1', 'Which browser are you using?'),
+        adminEntry('e-2', 'It is fixed in the next release.', { via: 'gatekeeper' }),
+        adminEntry('e-3', '', { via: 'gatekeeper', status: 'answered', at: new Date('2026-10-12T10:05:00Z') }),
+      ],
+    })] }), '/issues?report=r-1')
+
+    const [person, agent, statusLine] = thread()
+    expect(person.textContent).toBe(
+      `Grace AdminAdmin${formatFullTimestamp(new Date('2026-10-12T10:00:00Z'))}Which browser are you using?`)
+    expect(agent.textContent).toBe(
+      `Agent, for Grace AdminAdmin${formatFullTimestamp(new Date('2026-10-12T10:00:00Z'))}It is fixed in the next release.`)
+    expect(statusLine.textContent).toBe(
+      `Agent, for Grace Admin, set the status to Answered${formatFullTimestamp(new Date('2026-10-12T10:05:00Z'))}`)
+  })
+
+  it('shows the reporter nothing of where an agent’s entry came from', async () => {
+    // The server sends the reporter no origin. One that reached the page is not shown either.
+    const agent = { workspaceId: 'ws-triage', chatId: 4 }
+    await renderPage(fakeApi({ opened: [opened({
+      status: 'answered',
+      entries: [
+        adminEntry('e-1', 'It is fixed in the next release.', { via: 'gatekeeper', agent }),
+        adminEntry('e-2', '', { via: 'gatekeeper', agent, status: 'answered' }),
+      ],
+    })] }), '/issues?report=r-1')
+
+    expect(thread()).toHaveLength(2)
+    expect(detail().querySelector('ol[aria-label="Thread"] dl')).toBeNull()
+    expect(text()).not.toMatch(/ws-triage|From workspace|From chat/)
+  })
+
   it('shows the status a written reply set beneath its text', async () => {
     await renderPage(fakeApi({ opened: [opened({
       status: 'withAdmin',

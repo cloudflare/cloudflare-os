@@ -16,6 +16,7 @@ import {
   idsNote,
   namesWorkspaceIds,
   reasonShownNote,
+  requesterLabel,
   WRITE_ACTION_LABELS,
   WRITE_ARG_LABELS,
   WRITE_CONSEQUENCES,
@@ -151,6 +152,17 @@ describe('awaitsAnotherAdmin', () => {
     for (const action of ADMIN_WRITE_ACTIONS.filter((each) => each !== 'grantContentAccess')) {
       expect(awaitsAnotherAdmin({ action, requestedBy: 'alice@example.com' }, 'alice@example.com')).toBe(false)
     }
+  })
+})
+
+describe('requesterLabel', () => {
+  it('says how a person’s request came', () => {
+    expect(requesterLabel({ requestedBy: 'bob', via: 'cli' })).toBe('bob through the CLI')
+    expect(requesterLabel({ requestedBy: 'bob', via: 'api' })).toBe('bob through the API')
+  })
+
+  it('names a request filed through the admin gatekeeper as the requester’s agent’s, not as theirs', () => {
+    expect(requesterLabel({ requestedBy: 'bob', via: 'gatekeeper' })).toBe("bob's agent")
   })
 })
 

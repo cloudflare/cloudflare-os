@@ -246,6 +246,9 @@ const heading = (name: string) =>
   [...container!.querySelectorAll<HTMLElement>('h2, h3')].find((element) => element.textContent === name)
 const detail = () => heading('Issue report')?.closest('section') ?? null
 const thread = () => [...detail()!.querySelectorAll('ol[aria-label="Thread"] > li')]
+// Where a thread entry says it came from, as pairs of term and value.
+const origin = (entry: Element) => [...entry.querySelectorAll('dl > div')].map((pair) =>
+  [pair.querySelector('dt')?.textContent, pair.querySelector('dd')?.textContent])
 // Whether the list is what the panel shows: an open report takes its place.
 const listShown = () => !heading('Issue reports')!.closest('[hidden]')
 // A card of the open report, by its heading.
@@ -593,6 +596,29 @@ describe('an open report', () => {
       `Grace Admin set the status to Investigating${formatFullTimestamp(new Date('2026-10-12T10:05:00Z'))}`,
       `Grace Admin set the status to Closedvia the CLI${formatFullTimestamp(new Date('2026-10-12T10:10:00Z'))}`,
     ])
+  })
+
+  it('names an agent’s entry and its change of status as the agent’s, with the workspace and the chat they came from', async () => {
+    const at = new Date('2026-10-12T10:05:00Z')
+    await renderPanel(fakeAdmin([report('r-1', { status: 'answered', entries: [
+      adminEntry('e-1', 'Which browser are you using?'),
+      adminEntry('e-2', 'Looks like the export worker.', {
+        visibility: 'admins', via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 },
+      }),
+      // An agent's call the workspace tied to no chat.
+      adminEntry('e-3', '', { status: 'answered', via: 'gatekeeper', agent: { workspaceId: 'ws-triage' }, at }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    const [person, note, statusLine] = thread()
+    expect(person.textContent).toBe(
+      `Grace AdminAdmin${formatFullTimestamp(new Date('2026-10-12T10:00:00Z'))}Which browser are you using?`)
+    expect(origin(person)).toEqual([])
+    expect(note.textContent).toContain('Agent, for Grace AdminAdminAdmins only')
+    expect(note.textContent).not.toContain('via the CLI')
+    expect(origin(note)).toEqual([['From workspace', 'ws-triage'], ['From chat', '4']])
+    expect(statusLine.textContent).toBe(
+      `Agent, for Grace Admin, set the status to Answered${formatFullTimestamp(at)}From workspacews-triage`)
+    expect(origin(statusLine)).toEqual([['From workspace', 'ws-triage']])
   })
 
   it('sets the status, which adds a line naming the admin who set it, and shows it in the list', async () => {

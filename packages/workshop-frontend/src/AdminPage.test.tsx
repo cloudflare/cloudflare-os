@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as Kumo from '@cloudflare/kumo'
 import type * as Router from '@tanstack/react-router'
+import { ADMIN_GATEKEEPER_VENDOR_ID } from '@gadgets/workshop-shared/admin-agent'
 import { DEFAULT_SITE_NAME, type AdminApi, type AdminResourceVendor, type AdminSettingsView, type AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import type * as ServerConfigContext from './ServerConfigContext'
 import type * as AuditPanel from './features/admin-audit/AdminAuditPanel'
@@ -384,5 +385,54 @@ describe('AdminPage Reports tab', () => {
 
     expect(mocks.admin.getSettings).toHaveBeenCalledTimes(2)
     expect(reportsProps().retention).toEqual({ effective: 180, chosen: 180, min: 90 })
+  })
+})
+
+// An auto-provisioned vendor's block of the Gatekeepers tab: its name, its mode buttons and
+// whatever is said between.
+const vendorBlock = (page: HTMLElement, name: string) =>
+  [...page.querySelectorAll('h3')].find((heading) => heading.textContent === name)!.parentElement!.parentElement!
+
+// The label and the hint of each mode button, in order.
+const modeOptions = (block: HTMLElement) =>
+  [...block.querySelectorAll('button')].map((option) => [...option.querySelectorAll('span')].map((line) => line.textContent))
+
+// The Gatekeepers tab of a deployment with two auto-provisioned gatekeepers, the admin
+// gatekeeper among them.
+const renderGatekeepers = () => {
+  mocks.search = { tab: 'gatekeepers' }
+  return renderPage(settingsView({
+    adminWorkspaceWrites: false,
+    resourceVendors: [
+      { vendorId: 'context', displayName: 'Context Library', autoProvisions: true, ambientMode: 'optional' },
+      { vendorId: ADMIN_GATEKEEPER_VENDOR_ID, displayName: 'Deployment admin', autoProvisions: true, ambientMode: 'disabled' },
+    ],
+  }))
+}
+
+describe('AdminPage Gatekeepers tab', () => {
+  const ADMINS_ONLY_LINE = 'An admin adds it to a workspace as a connection. Only deployment admins can open a '
+    + 'workspace that has it, or that has read through it.'
+
+  it('says of the admin gatekeeper’s modes that they reach admins alone, and how a workspace gets it', async () => {
+    const block = vendorBlock(await renderGatekeepers(), 'Deployment admin')
+
+    expect(modeOptions(block)).toEqual([
+      ['Disabled', 'Off for every admin'],
+      ['Optional', 'Admins can add it to their account'],
+      ['Enabled', 'Every admin has it'],
+    ])
+    expect([...block.querySelectorAll('p')].map((line) => line.textContent)).toEqual([ADMINS_ONLY_LINE])
+  })
+
+  it('words another auto-provisioned gatekeeper’s modes for every user, with no such line', async () => {
+    const block = vendorBlock(await renderGatekeepers(), 'Context Library')
+
+    expect(modeOptions(block)).toEqual([
+      ['Disabled', 'Off for everyone'],
+      ['Optional', 'Users can add it themselves'],
+      ['Enabled', 'On for everyone automatically'],
+    ])
+    expect(block.querySelector('p')).toBeNull()
   })
 })

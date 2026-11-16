@@ -112,6 +112,20 @@ export const awaitsAnotherAdmin = (
   request.action === 'grantContentAccess'
   && asciiLowerCase(request.requestedBy) === asciiLowerCase(userId)
 
+// How a person's request reached the deployment. An agent's request is worded apart: no person
+// typed it.
+const VIA_LABELS: Record<Exclude<AdminWriteRequest['via'], 'gatekeeper'>, string> = {
+  cli: 'through the CLI',
+  api: 'through the API',
+}
+
+/**
+ * Who made a request and how, as the approval page says it. A request filed through the admin
+ * gatekeeper is its workspace owner's agent's, so that the approver sees no person typed it.
+ */
+export const requesterLabel = ({ requestedBy, via }: Pick<AdminWriteRequest, 'requestedBy' | 'via'>): string =>
+  via === 'gatekeeper' ? `${requestedBy}'s agent` : `${requestedBy} ${VIA_LABELS[via]}`
+
 /**
  * The server's own message for a refusal it names by code (an admin access, write or grant
  * refusal), which says what the admin can do about it. Undefined for any other failure.

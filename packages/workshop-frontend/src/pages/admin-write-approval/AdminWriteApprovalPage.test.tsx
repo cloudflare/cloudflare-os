@@ -669,6 +669,68 @@ describe('a request to read a workspace’s content', () => {
   })
 })
 
+describe('a request an agent filed through the admin gatekeeper', () => {
+  const AGENTS_NOTE = 'An admin who was not in the workspace this request came from must approve it. '
+    + 'You can still deny it.'
+
+  it('says the requester’s agent asked, and shows the workspace and the chat it came from', async () => {
+    await renderContentRequest({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 } })
+
+    expect(row('Requested by')).toBe("bob's agent")
+    expect(row('From workspace')).toBe('ws-triage')
+    expect(row('From chat')).toBe('4')
+    // The workspace the write would reach is still named apart from the one it came from.
+    expect(row('Workspace')).toBe(`Quarterly numbers${WORKSPACE_ID}`)
+  })
+
+  it('names no chat for a request the workspace tied to none', async () => {
+    await renderContentRequest({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage' } })
+
+    expect(row('From workspace')).toBe('ws-triage')
+    expect(row('From chat')).toBeUndefined()
+  })
+
+  it('shows no origin for a request a person made', async () => {
+    await renderContentRequest()
+
+    expect(row('From workspace')).toBeUndefined()
+    expect(row('From chat')).toBeUndefined()
+  })
+
+  it('tells the owner of the workspace it came from that an admin from outside it must approve', async () => {
+    await renderContentRequest({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage' }, requestedBy: 'alice' })
+
+    expect(findButton('Approve with passkey')).toBeUndefined()
+    expect(notice()?.textContent).toBe(NOTICE + AGENTS_NOTE)
+  })
+
+  it('tells an admin the server refuses as one who was in that workspace the same', async () => {
+    const admin = await renderContentRequest({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 } })
+    admin.beginWorkspaceWriteApproval
+      .mockRejectedValue(createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired))
+    expect(notice()).toBeUndefined()
+
+    await click(button('Approve with passkey'))
+
+    expect(findButton('Approve with passkey')).toBeUndefined()
+    expect(notice()?.textContent).toBe(NOTICE + AGENTS_NOTE)
+    expect(alertText()).toBeUndefined()
+    expect(button('Deny').disabled).toBe(false)
+  })
+
+  it('words the refusal of a request made through the CLI as the requester’s own', async () => {
+    const admin = await renderContentRequest({ via: 'cli' })
+    admin.beginWorkspaceWriteApproval
+      .mockRejectedValue(createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired))
+
+    await click(button('Approve with passkey'))
+
+    expect(notice()?.textContent).toBe(
+      NOTICE + 'A request to read a workspace’s content is approved by an admin other than the one who '
+      + 'made it. You can still deny it.')
+  })
+})
+
 describe('denying a request', () => {
   it('denies it, reads it again and shows who denied it', async () => {
     const admin = await renderRequest()

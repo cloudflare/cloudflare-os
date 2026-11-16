@@ -19,6 +19,7 @@ import {
   idsNote,
   namesWorkspaceIds,
   reasonShownNote,
+  requesterLabel,
   WRITE_ACTION_LABELS,
   WRITE_CONSEQUENCES,
   writeArgRows,
@@ -52,12 +53,6 @@ const FAILURES: Record<Operation, string> = {
 
 const STALE_MESSAGE =
   'This request is no longer pending, and the page couldn’t read what became of it. Reload the page.'
-
-const VIA_LABELS: Record<AdminWriteRequest['via'], string> = {
-  cli: 'through the CLI',
-  api: 'through the API',
-  gatekeeper: 'through an agent',
-}
 
 const TICK_MS = 15_000
 const POLL_MS = 5_000
@@ -112,7 +107,11 @@ const Row = ({ label, children }: { label: string; children: ReactNode }) => (
 // What stands where the Approve button would for an admin who cannot approve the request. It takes
 // the focus the button would have had: on a page that opens with it, and when a refused approval
 // puts it in the button's place.
-const SecondAdminNotice = () => {
+const SecondAdminNotice = ({ fromAgent }: {
+  /** Whether an agent filed the request through the admin gatekeeper: such a request is closed to
+   * everyone who was in the workspace it came from, not to its requester alone. */
+  fromAgent: boolean
+}) => {
   const notice = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (document.activeElement === document.body) notice.current?.focus()
@@ -121,8 +120,11 @@ const SecondAdminNotice = () => {
     <div ref={notice} tabIndex={-1} className="space-y-1 focus:outline-none">
       <p className="text-base font-medium text-kumo-strong">Another admin must approve this request</p>
       <p className="text-sm text-kumo-default">
-        A request to read a workspace’s content is approved by an admin other than the one who made
-        it. You can still deny it.
+        {fromAgent
+          ? 'An admin who was not in the workspace this request came from must approve it.'
+          : 'A request to read a workspace’s content is approved by an admin other than the one who '
+            + 'made it.'}
+        {' '}You can still deny it.
       </p>
     </div>
   )
@@ -131,10 +133,12 @@ const SecondAdminNotice = () => {
 /**
  * Where an admin approves a write request with a passkey, or denies it. It shows what the request
  * would do, to which workspace and why, as the request states it, and what became of a request
- * that is no longer pending. It is the Workshop's one page that runs an approval's passkey
- * ceremony; the server takes an approval from any admin session that presents a valid assertion,
- * except the requester's own for a request to read a workspace's content, which the page offers
- * that admin no way to approve.
+ * that is no longer pending. A request an agent filed through the admin gatekeeper says so, with
+ * the workspace and the chat it came from. It is the Workshop's one page that runs an approval's
+ * passkey ceremony; the server takes an approval from any admin session that presents a valid
+ * assertion, except the requester's own for a request to read a workspace's content, which the
+ * page offers that admin no way to approve, and, for an agent's such request, that of anyone who
+ * was in the workspace it came from, whom the page tells so once the server has refused them.
  */
 const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   const { authenticatedApi, currentUser } = useAuthenticatedApi()
@@ -145,7 +149,8 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   const [now, setNow] = useState(() => Date.now())
   const [running, setRunning] = useState<Operation | null>(null)
   const [problem, setProblem] = useState<Problem | null>(null)
-  // Whether the server refused this admin's approval as the requester's own.
+  // Whether the server refused this admin's approval as the requester's own or, for an agent's
+  // request, as that of someone who was in the workspace it came from.
   const [refusedAsRequester, setRefusedAsRequester] = useState(false)
   const statusRegion = useRef<HTMLDivElement>(null)
 
@@ -268,7 +273,8 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
         await readResolved(admin)
         return
       }
-      // The server takes this admin for the requester where the page did not.
+      // The server takes this admin for the requester where the page did not, or knows them to
+      // have been in the workspace an agent's request came from, which the page cannot.
       if (getAdminWriteErrorCode(err) === ADMIN_WRITE_ERROR_CODES.secondAdminRequired) {
         setRefusedAsRequester(true)
         return
@@ -380,7 +386,13 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
             <span className="block whitespace-pre-wrap">{request.reason}</span>
             <span className="mt-1 block text-kumo-subtle">{reasonShownNote(request.action)}</span>
           </Row>
-          <Row label="Requested by">{request.requestedBy} {VIA_LABELS[request.via]}</Row>
+          <Row label="Requested by">{requesterLabel(request)}</Row>
+          {request.agent && (
+            <Row label="From workspace">
+              <span className="font-mono text-xs break-all">{request.agent.workspaceId}</span>
+            </Row>
+          )}
+          {request.agent?.chatId !== undefined && <Row label="From chat">{request.agent.chatId}</Row>}
           <Row label="Expires">
             <time dateTime={request.expiresAt.toISOString()}>{formatFullTimestamp(request.expiresAt)}</time>
             {pending && ` (${timeLeft(request.expiresAt, now)})`}
@@ -393,7 +405,7 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
       )}
       {pending && consequence !== undefined && <Banner variant="alert" description={consequence} />}
 
-      {pending && anotherAdminNeeded && <SecondAdminNotice />}
+      {pending && anotherAdminNeeded && <SecondAdminNotice fromAgent={request.via === 'gatekeeper'} />}
 
       {pending && (
         <div className="flex flex-wrap gap-3">
