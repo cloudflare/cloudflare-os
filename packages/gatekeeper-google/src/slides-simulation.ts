@@ -256,7 +256,7 @@ function withSkipped(slide: RestSlide, skipped: boolean): RestSlide {
 
 /**
  * A deck being changed in place, which its maker alone holds: its own order and maps. Its pages
- * are the fetched deck's until a change writes one, which is then copied once (see `DRAFTS`).
+ * are the fetched deck's until a change writes one, which is copied first (see `DRAFTS`).
  */
 export type DeckDraft = {
   order: string[];
@@ -421,9 +421,9 @@ export type QueuedChange = { readonly id: number; readonly action: SlidesAction 
  * slides or not at all, and a change that no longer applies hides every change queued after it,
  * on whatever slide. The store keeps nothing: every call folds the changes it is given from the
  * first. Each fold works on one deck of its own, changed in place: a page is copied the first
- * time a change of the fold writes it and never again, and the fetched deck and its pages are
- * left as they were. A batch that stops part-way leaves that deck as the changes before it made
- * it.
+ * time a change of the fold writes it, and the fetched deck and its pages are left as they were.
+ * A batch that stops part-way leaves that deck as the changes before it made it: they are applied
+ * again over the fetched deck, which copies the pages they write once more.
  */
 export function createReplay(): SimulationStore<string, Deck, DeckDraft, QueuedChange> {
   return createSimulationStore<string, Deck, DeckDraft, QueuedChange>({

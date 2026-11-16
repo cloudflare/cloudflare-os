@@ -8,7 +8,7 @@ import type {
   RestPageBackgroundFill, RestPageElement, RestPresentation, RestSlide, RestText, RestTextElement,
   RestThemeColorPair,
 } from "../../src/slides-api";
-import { LABEL_FIELDS, LAYOUT_PAGE_FIELDS, SLIDE_FIELDS } from "../../src/slides-fields";
+import { LABEL_FIELDS, LAYOUT_PAGE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS } from "../../src/slides-fields";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
@@ -1575,6 +1575,8 @@ describe("Google Slides replay cost", () => {
   /** The outline of the fixture deck, and its summary, asked compact as the client asks. */
   const OUTLINE_BYTES = 8_826;
   const SUMMARY_BYTES = 237_194;
+  /** One fixture slide's part of that summary, which is all a slide read only there holds. */
+  const SUMMARY_SLIDE_BYTES = 2_347;
 
   /** What a phase is measured in, in the order the table prints them. */
   const MEASURES = [
@@ -1706,7 +1708,7 @@ describe("Google Slides replay cost", () => {
       "outline, a queued move of 99 slides and a queued skip of 100, the oldest change approved, " +
       "the newest rejected, and a read whose newest batch stopped at its second edit. cloneBytes " +
       "is a slide's bytes for each of pageClones, or its label fields' where the slide cloned " +
-      "was read by label; mostOpen is the requests the fake had open at once, which has no limit " +
+      "was read by label, or its part of the summary where it was read only there; mostOpen is the requests the fake had open at once, which has no limit " +
       "on connections, where a deployed Worker holds six; pending is the changes awaiting a " +
       "decision after the phase.",
       print(header), ...lines.map(print),
@@ -1738,6 +1740,13 @@ describe("Google Slides replay cost", () => {
     expect(label).toBeGreaterThan(1_700);
     expect(label).toBeLessThan(2_400);
     expect(label).toBe(LABEL_BYTES);
+    // A slide held only by the summary is its entry there: no read answers that entry alone.
+    let summary = await (await provider.handle(new Request(
+      `https://slides.googleapis.com/v1/presentations/deck-1?fields=${SUMMARY_FIELDS}&prettyPrint=false`,
+    )))!.json() as { slides: unknown[] };
+    expect(summary.slides).toHaveLength(SLIDES);
+    let summarised = new TextEncoder().encode(JSON.stringify(summary.slides[2])).byteLength;
+    expect(summarised).toBe(SUMMARY_SLIDE_BYTES);
 
     // `cloneBytes` is not a running total: `phase` derives it from the phase's clones.
     let totals = (): Record<Measure, number> => ({
@@ -1749,9 +1758,12 @@ describe("Google Slides replay cost", () => {
       .filter(key => /^slides:action:\d+$/.test(key)).length;
     /**
      * Runs one phase and records what it added to each measure. `labelClones` of its clones are
-     * of a slide read by label, each of `LABEL_BYTES`; the others are of a whole page.
+     * of a slide read by label, each of `LABEL_BYTES`, and `summaryClones` of a slide read only
+     * in the summary, each of `SUMMARY_SLIDE_BYTES`; the others are of a whole page.
      */
-    let phase = async (name: string, body: () => Promise<unknown>, labelClones = 0) => {
+    let phase = async (
+      name: string, body: () => Promise<unknown>, labelClones = 0, summaryClones = 0,
+    ) => {
       meter.mostOpen = 0;
       let before = totals();
       await body();
@@ -1761,7 +1773,8 @@ describe("Google Slides replay cost", () => {
       measured.push({
         phase: name,
         ...added,
-        cloneBytes: (added.pageClones - labelClones) * PAGE_BYTES + labelClones * LABEL_BYTES,
+        cloneBytes: (added.pageClones - labelClones - summaryClones) * PAGE_BYTES +
+          labelClones * LABEL_BYTES + summaryClones * SUMMARY_SLIDE_BYTES,
         mostOpen: meter.mostOpen,
         pending: await pending(),
       });
@@ -1796,10 +1809,11 @@ describe("Google Slides replay cost", () => {
     });
     expect(ids).toHaveLength(N);
     await phase("read", read);
+    // Its one clone of a slide read only in the summary is the queued copy of slide 3.
     await phase("outline", async () => {
       let outcome = await slides.call("getPresentation");
       expect(outcome.error).toBeUndefined();
-    });
+    }, 0, 1);
     // In both, a fold's one clone of a slide read by label is the queued copy of slide 3.
     await phase("queue a move of 99",
       () => queue(slides.queued("moveSlides", every.slice(0, 99), id(SLIDES))), 1);
@@ -1854,8 +1868,9 @@ describe("Google Slides replay cost", () => {
       },
       {
         ...none, phase: "outline", pending: N,
-        // The same three clones, the copy's of a summary.
-        pageClones: 3, cloneBytes: 3 * PAGE_BYTES,
+        // The same three clones: slides 1 and 2 whole, and the copy of slide 3 as the summary
+        // holds it.
+        pageClones: 3, cloneBytes: 2 * PAGE_BYTES + SUMMARY_SLIDE_BYTES,
         // The summary, then the two slides queued batches edit, together.
         pageFetches: 2, fetches: 3, responseBytes: SUMMARY_BYTES + 2 * PAGE_BYTES,
         mostOpen: 2,
