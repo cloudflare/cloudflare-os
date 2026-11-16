@@ -311,6 +311,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
               aria-expanded={commands.length ? picking : undefined}
               aria-controls={picking ? pickerId : undefined}
               aria-activedescendant={picking ? `${pickerId}-${active}` : undefined}
+              // A phone's keyboard then labels its return key for sending, which Enter does.
+              enterKeyHint="send"
               value={text}
               onValueChange={setText}
               onChange={(event) => readSlash(event.currentTarget)}
