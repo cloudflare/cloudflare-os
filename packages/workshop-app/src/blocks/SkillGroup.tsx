@@ -1,8 +1,7 @@
 import type { ReactNode } from 'react'
-import { DotsThreeIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { UserPlusIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
-import { DropdownMenu } from '@/components/DropdownMenu'
-import { ACTION, libraryMenu, type LibraryAction } from './LibraryRow'
+import { ACTION, LibraryMore, type LibraryAction } from './LibraryRow'
 import { ListGroup } from './ListGroup'
 
 export type SkillGroupProps = {
@@ -33,11 +32,7 @@ export const SkillGroup = ({ title, icon, detail, onShare, actions, children }: 
         {detail && <span className="truncate text-kumo-subtle">{detail}</span>}
       </h2>
       {onShare && <Button variant="ghost" icon={UserPlusIcon} aria-label={`Share ${title}`} title="Share" onClick={onShare} className={ACTION} />}
-      {actions.length > 0 && (
-        <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant="ghost" triggerClassName={ACTION} align="end">
-          {libraryMenu(actions)}
-        </DropdownMenu>
-      )}
+      {actions.length > 0 && <LibraryMore title={title} actions={actions} />}
     </header>
     <ListGroup label={title}>{children}</ListGroup>
   </section>
