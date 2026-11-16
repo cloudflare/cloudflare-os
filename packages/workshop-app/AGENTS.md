@@ -645,7 +645,12 @@ reach (`resourceGroups`, `connections/connectionGroups.ts`), as the old Workshop
 form may choose any of them, and connecting, or giving access to, one asks for them all. From a chat's + menu (a chat, or a new one in a workspace that exists, `NewChatPane`'s `workspaceId`, for whoever builds in it)
 the connection becomes a line above the draft (`ComposerConnectionLines`) and goes with the message
 as a capsule (`chat/capsules.ts`), so the chat has it from then on; a skill goes alone, so the two
-refuse each other, and none go while the agent works. From a gadget's Connections tab Add binds it
+refuse each other, and none go while the agent works. A link pasted into the draft that one of the user's accounts knows as a kind
+of its own (`linkAccount`: not merely any page, signed in, the one given access, or the only one)
+is connected at once the same way (`useLinkConnections`, over `ComposerProps.onPasteLinks`): a line
+that says it is connecting, holding the draft, then what it is, its name taking the link's place in
+the words; or why it could not be, the link left as written. With no such account, or several,
+the link is left alone. From a gadget's Connections tab Add binds it
 to the gadget (`GadgetSettings.bind`, with the name the gatekeeper suggests). A chat's settings
 have a Connections tab (`ChatConnectionList`, from `listChatConnections`): what is in the chat,
 what the workspace's gadgets hold, and what every chat has.

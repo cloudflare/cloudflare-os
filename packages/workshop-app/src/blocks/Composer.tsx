@@ -19,8 +19,13 @@ import './Composer.css'
 export type ComposerHandle = {
   /** Put the cursor in the message, e.g. once something outside has set up a reply. */
   focus: () => void
-  /** Adds a connection to the draft (from the add menu's Add a connection, once it is made). */
+  /**
+   * Adds a connection to the draft (from the add menu's Add a connection, once it is made), or
+   * changes the one with its key in place, as one made from a pasted link is once it is made.
+   */
   addConnection: (connection: ComposerConnection) => void
+  /** Puts `replacement` in place of the first `text` in the draft, as a link made a connection is named in it. */
+  replaceInDraft: (text: string, replacement: string) => void
 }
 
 export type ComposerProps = {
@@ -64,12 +69,20 @@ export type ComposerProps = {
    */
   stop?: { waiting: readonly string[]; onStop: () => Promise<void> | false }
   addActions?: Omit<ComposerAddActions, 'onUpload'>
+  /**
+   * Given the links in what is pasted into the draft, for whoever can tell what they are and
+   * connect them, adding each as a connection through the handle (`addConnection`).
+   */
+  onPasteLinks?: (urls: string[]) => void
   /** Expand the add menu in place over its button. */
   addMenuInPlace?: boolean
   /** Put the cursor in the message once it is shown. */
   autoFocus?: boolean
   ref?: Ref<ComposerHandle>
 }
+
+// A link in pasted text, up to whatever usually ends one in prose.
+const LINK = /https:\/\/[^\s<>()[\]"']+[^\s<>()[\]"'.,;:!?]/g
 
 /** Lines the message grows to before it scrolls inside the field. */
 const MAX_ROWS = 6
@@ -78,7 +91,7 @@ const MAX_ROWS = 6
 const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, commands = [], reply, format, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, commands = [], reply, format, problem, stop, addActions, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
@@ -112,10 +125,13 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
   const trimmed = text.trim()
   // A command goes on its own, with words alone, once the agent has finished.
   const filesRefused = !!command && attachments.length > 0
-  const connectionsRefused = !!command && connections.length > 0
-  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0 && connections.length === 0 && !command
-  const canSend = !sending && !filesRefused && !connectionsRefused &&
-    (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || connections.length > 0 || !!format)
+  // What goes with the draft: not one still connecting, which holds it, nor one that could not be.
+  const ready = connections.filter(({ pending, problem: failed }) => !pending && !failed)
+  const connecting = connections.some(({ pending }) => pending)
+  const connectionsRefused = !!command && ready.length > 0
+  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0 && ready.length === 0 && !command
+  const canSend = !sending && !connecting && !filesRefused && !connectionsRefused &&
+    (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || ready.length > 0 || !!format)
   const showSend = !stop || canSteer
   const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(commands, slash.query) : []
   const picking = matches.length > 0
@@ -160,9 +176,12 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
   useImperativeHandle(ref, () => ({
     focus: () => inputRef.current?.focus(),
     addConnection: (connection) => {
-      setConnections((current) => (current.some(({ key }) => key === connection.key) ? current : [...current, connection]))
+      setConnections((current) => (current.some(({ key }) => key === connection.key)
+        ? current.map((each) => (each.key === connection.key ? connection : each))
+        : [...current, connection]))
       inputRef.current?.focus()
     },
+    replaceInDraft: (find, replacement) => setText((current) => current.replace(find, () => replacement)),
   }), [])
 
   // The message went, so its draft is done with: unless stopping the agent has put what was
@@ -170,7 +189,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
   const clearSent = (sentText: string, sentCommand: ComposerCommand | undefined, sentConnections: readonly ComposerConnection[]) => {
     setText((current) => (current === sentText ? '' : current))
     setCommand((current) => (current === sentCommand ? undefined : current))
-    setConnections((current) => current.filter((connection) => !sentConnections.includes(connection)))
+    // Those that could not be connected went as the links still in the words.
+    setConnections((current) => current.filter((connection) => !sentConnections.includes(connection) && !connection.problem))
     clearAttachments()
   }
 
@@ -228,9 +248,9 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
           if (!canSend) return
           inputRef.current?.focus()
           // A command typed out in full, which was not chosen from the picker, goes as a command too.
-          const typed = command || stop || attachments.length || connections.length ? undefined : leadingCommand(commands, trimmed)
+          const typed = command || stop || attachments.length || ready.length ? undefined : leadingCommand(commands, trimmed)
           const sentCommand = command ?? typed?.command
-          const sentConnections = connections
+          const sentConnections = ready
           const sent = onSend(typed ? typed.args : trimmed, attachments.map(({ file }) => file), sentCommand, sentConnections.length ? sentConnections : undefined)
           if (typeof sent === 'boolean') {
             if (sent) clearSent(text, command, sentConnections)
@@ -338,7 +358,12 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
               onSelect={(event) => readSlash(event.currentTarget)}
               onBlur={() => setSlash(undefined)}
               onPaste={(event) => {
-                if (!event.clipboardData.files.length) return
+                if (!event.clipboardData.files.length) {
+                  // Pasted as it is; whoever can tells what its links are.
+                  const links = onPasteLinks && event.clipboardData.getData('text/plain').match(LINK)
+                  if (links) onPasteLinks([...new Set(links)])
+                  return
+                }
                 event.preventDefault()
                 addDraftFiles(event.clipboardData.files)
               }}

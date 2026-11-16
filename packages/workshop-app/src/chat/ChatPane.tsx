@@ -26,6 +26,7 @@ import { isNamedWorkspace, UNTITLED_WORKSPACE } from '@/workspaces/workspaceKind
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { withCapsules } from './capsules'
+import { useLinkConnections } from './useLinkConnections'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import type { ChatSnapshot } from './ChatSession'
@@ -154,6 +155,7 @@ export const ChatPane = ({
   const added = useRef(new Map<string, AddedConnection>())
   // Making a connection in the workspace is building in it.
   const builds = workspace !== undefined && workspace.role !== 'use'
+  const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
   // Those who can only use what is in it cannot share it.
   const shareable = workspace !== undefined && workspace.role !== 'use' && workspaceLink !== undefined
   // Why the last message did not go, whether it was stopped here or by the server.
@@ -340,6 +342,7 @@ export const ChatPane = ({
         <Composer
           ref={composer}
           onSend={sendMessage}
+          onPasteLinks={pasteLinks}
           commands={commands}
           addActions={{
             onAddConnection: builds ? () => {

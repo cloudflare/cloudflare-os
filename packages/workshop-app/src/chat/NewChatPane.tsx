@@ -16,6 +16,7 @@ import { allSkills } from '@/skills/skillGroups'
 import { useSkills } from '@/skills/SkillsContext'
 import { useRefreshWorkspaces, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { withCapsules } from './capsules'
+import { useLinkConnections } from './useLinkConnections'
 import { skillCommandOf } from './slashCommands'
 import { describeModelProblem, modelFor } from './models'
 import { startWithFormat, type StartFormat } from './startWithFormat'
@@ -86,6 +87,7 @@ export const NewChatPane = ({ header, startedHeader, greeting, format, start, wo
   // The connections made from the + menu, by the key their line in the draft has.
   const added = useRef(new Map<string, AddedConnection>())
   const [adding, setAdding] = useState(false)
+  const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
   // The message being sent, as it was written and with the skill or format it started with, shown
   // until the conversation opens; or why it could not be sent.
   const [pending, setPending] = useState<{ text: string; files: File[]; command?: ComposerCommand; format?: StartFormat; connections?: ComposerConnection[] }>()
@@ -159,7 +161,7 @@ export const NewChatPane = ({ header, startedHeader, greeting, format, start, wo
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart composerRef={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} addActions={addActions} below={below} after={after} autoFocus />
+        <ChatStart composerRef={composer} onPasteLinks={pasteLinks} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} addActions={addActions} below={below} after={after} autoFocus />
         {addingConnection}
       </StartLayout>
     )
@@ -168,7 +170,7 @@ export const NewChatPane = ({ header, startedHeader, greeting, format, start, wo
   const sent = pending && sentOf(pending)
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={pending ? startedHeader ?? header : header} composer={<Composer ref={composer} onSend={send} initialDraft={unsent} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
+    <ChatLayout header={pending ? startedHeader ?? header : header} composer={<Composer ref={composer} onPasteLinks={pasteLinks} onSend={send} initialDraft={unsent} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
       {/* In the list the conversation will be in, under its header, so that it opens where this is. */}
       <MessageList messages={[]}>
         {sent && <UserMessage parts={sent.parts} attachments={sent.attachments} />}

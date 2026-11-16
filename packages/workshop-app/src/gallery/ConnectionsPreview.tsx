@@ -111,7 +111,7 @@ export const ConnectionsPreview = () => {
         <Button onClick={() => setOpen('setup-create')}>Two accounts</Button>
         <Button onClick={() => setOpen('setup-create-none')}>No account</Button>
       </Section>
-      <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a connection: what kind, found by typing, your services first; then which, in the service’s form; then it sits above the draft, to go with the message, and is refused beside a skill)">
+      <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a connection: what kind, found by typing, your services first; then which, in the service’s form; then it sits above the draft, to go with the message, and is refused beside a skill; a pasted Google Doc link connects by itself, connecting then named in the words, or says why not, with “missing” in it)">
         <AddConnectionPreview say={say} opened={opened} />
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
@@ -417,6 +417,22 @@ const AddConnectionPreview = ({ say, opened }: { say: (what: string) => void; op
           return true
         }}
         addActions={{ onAddConnection: () => setChoosing(true) }}
+        // Paste a Google Doc's link: it connects, named in the words, or, with "missing" in it, says why not.
+        onPasteLinks={(urls) => {
+          for (const url of urls.filter((each) => each.includes('docs.google.com/document'))) {
+            const key = `link:${url}`
+            const service = { name: 'Google' }
+            composer.current?.addConnection({ key, title: 'Google Doc', kind: 'Google Doc', service, pending: true })
+            setTimeout(() => {
+              if (url.includes('missing')) {
+                composer.current?.addConnection({ key, title: 'Google Doc', kind: 'Google Doc', service, problem: 'Couldn’t connect it: Requested entity was not found.' })
+                return
+              }
+              composer.current?.addConnection({ key, title: 'Q3 plan', kind: 'Google Doc', service })
+              composer.current?.replaceInDraft(url, 'Q3 plan')
+            }, 900)
+          }
+        }}
         commands={[{ key: 'brief', name: 'meeting-brief', title: 'Meeting brief', description: 'Before a meeting, gather who is coming.', kind: 'skill' }]}
       />
       <AddConnectionDialog

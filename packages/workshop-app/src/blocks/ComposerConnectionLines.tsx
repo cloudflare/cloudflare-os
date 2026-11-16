@@ -11,6 +11,16 @@ export type ComposerConnection = {
   /** What kind it is, as its service names it: "Repository". */
   kind?: string
   service: { name: string; logoUrl?: string; color?: string }
+  /** Still being made, from a link pasted into the draft: the draft cannot go until it is. */
+  pending?: boolean
+  /** Why it could not be made: it does not go with the draft, and says so until taken off. */
+  problem?: string
+}
+
+// What kind it is, on its service: "GitHub repository", or "Google Doc" as it is named already.
+const kindOf = ({ kind, service }: ComposerConnection) => {
+  if (!kind) return service.name
+  return kind.toLowerCase().startsWith(service.name.toLowerCase()) ? kind : `${service.name} ${kind.toLowerCase()}`
 }
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
@@ -19,7 +29,7 @@ const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const
  * The connections a draft goes with, each a line at the top of the composer the way a skill's is
  * (`ComposerCommandLine`): the service's logo, which one, and what kind, with the way to take it
  * off. Each opens and closes as that line does, and says in its place why it cannot go yet, when
- * it cannot.
+ * it cannot: still connecting, or why it could not be connected.
  */
 export const ComposerConnectionLines = ({ connections, refusal, onRemove }: {
   connections: readonly ComposerConnection[]
@@ -45,9 +55,13 @@ export const ComposerConnectionLines = ({ connections, refusal, onRemove }: {
               <span className="sr-only">Adding the connection:</span>
               <span className="min-w-0 shrink truncate font-medium text-kumo-default">{connection.title}</span>
               {/* Why it cannot go is said once, on the last line. */}
-              {refusal && at === connections.length - 1
+              {connection.problem
+                ? <span role="alert" title={connection.problem} className="min-w-0 flex-1 truncate text-kumo-danger">{connection.problem}</span>
+                : connection.pending
+                ? <span role="status" className="min-w-0 flex-1 truncate text-kumo-subtle">Connecting…</span>
+                : refusal && at === connections.length - 1
                 ? <span role="alert" className="min-w-0 flex-1 truncate text-kumo-danger">{refusal}</span>
-                : <span className="min-w-0 flex-1 truncate text-kumo-subtle">{connection.kind ? `${connection.service.name} ${connection.kind.toLowerCase()}` : connection.service.name}</span>}
+                : <span className="min-w-0 flex-1 truncate text-kumo-subtle">{kindOf(connection)}</span>}
               <Button
                 variant="ghost"
                 icon={<XIcon weight="bold" />}
