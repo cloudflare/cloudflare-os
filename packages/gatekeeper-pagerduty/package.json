@@ -16,7 +16,7 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
-    "jose": "^6.2.13"
+    "jose": "^6.2.16"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",
