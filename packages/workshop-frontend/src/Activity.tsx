@@ -13,8 +13,7 @@ import type { HistoryViewFilter } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { canOfferAlwaysApprove, mayApplyWhileRestricted } from './features/approvals/autoApprovalRules'
-import { useRuleCatalog } from './features/approvals/useRuleCatalog'
-import { useAlwaysApproveTag } from './useAlwaysApproveTag'
+import { useAutoApprovalRules } from './features/approvals/useAutoApprovalRules'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
 import { useVendorBranding } from './useVendorBranding'
@@ -206,25 +205,16 @@ export default function Activity({
     }
   }
 
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed)
-
-  // Read under the latch only while Needs review shows a request a rule might still apply: the
-  // catalog starts every gatekeeper it lists.
-  const { ruleApplies, reread: rereadCatalog } = useRuleCatalog(overseer, {
+  // The stored rule list, as in the chat's tray: a request whose rule exists can wait here
+  // behind an older one, and is not offered that rule again. The catalog is read under the
+  // latch only while Needs review shows a request a rule might still apply: it starts every
+  // gatekeeper it lists.
+  const { rules, alwaysApproveTag } = useAutoApprovalRules(overseer, {
     vendors: false,
     restricted: restricted === true,
     applies: restricted === true && view === 'review' &&
       pendingActions.some(record => record.type === 'action' && mayApplyWhileRestricted(record)),
-  })
-  const reloadTrigger = autoApproval?.reloadTrigger
-  const catalogReadFor = useRef(reloadTrigger)
-  useEffect(() => {
-    if (reloadTrigger === catalogReadFor.current) return
-    catalogReadFor.current = reloadTrigger
-    rereadCatalog()
-  }, [reloadTrigger, rereadCatalog])
-  const rules = { isEnabled: isTagAutoApproved, applies: ruleApplies, restricted: restricted === true }
+  }, setProcessingActions, autoApproval)
 
   const toggleExpanded = (id: number) => {
     setExpandedActionId(previous => (previous === id ? null : id))
@@ -460,7 +450,7 @@ export default function Activity({
       {/* The kind stopped applying: the affordance is gone and confirming could only store a
           rule that does nothing. */}
       {confirmAutoApprove &&
-          ruleApplies(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) && (
+          rules.applies(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) && (
         <AutoApproveConfirmDialog
           open
           actionLabel={confirmAutoApprove.actionKind.label}

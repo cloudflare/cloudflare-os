@@ -99,6 +99,7 @@ export function makeOverseer() {
       return new Promise<RpcStub<{}>>((resolve, reject) =>
         pendingSubscribes.push({ resolve, reject }))
     },
+    listAutoApprovedActionKinds: async () => [],
     approveAction: (id: number) => decide(`approve:${id}`),
     rejectAction: (id: number) => decide(`reject:${id}`),
     listActions: (options?: ListOptions) => {
