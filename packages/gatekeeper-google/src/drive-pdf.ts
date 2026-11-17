@@ -1575,8 +1575,10 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  * The text of a PDF that has text of its own is read the same way, and ends the same ways.
  * `pages` then gives it in pieces, its page headings in them, and each is passed on as it is.
  * It is read with `idleOnceWorking`: until `pages` says it has work that may stall, the text is
- * a conversion's and nothing more, which no model can stall and which may be left unread as
- * long as any conversion's, so the idle time is counted only from then.
+ * a conversion's and nothing more, which may be left unread as long as any conversion's. The
+ * idle time is then counted only while a read of the text is waiting, so that a conversion
+ * that stops arriving still ends the read that waits for it, and from when `pages` says so it
+ * is counted whether or not one is.
  *
  * However the text ends, what `pages` has in flight is given up and what it holds let go, and
  * what the calls made for it came to, in `tally`, is written.
@@ -1604,8 +1606,15 @@ function transcription(
   let moved = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let touch = () => { moved = Date.now(); };
-  /** Begins counting the idle time, once and only while the text has not ended: set as it starts. */
-  let arm!: () => void;
+  /** Whether the idle time is counted whether or not a read is waiting. */
+  let armed = false;
+  /** Counts the idle time from now, when it is not being counted and the text has not ended: set as it starts. */
+  let watch!: () => void;
+  /** Has the idle time counted from now on, read or unread. */
+  let arm = () => {
+    armed = true;
+    watch();
+  };
   /** Lets go of what the text holds once it has ended, failed, been cancelled or sat idle. */
   let letGo = (reason?: unknown) => {
     if (timer !== undefined) clearTimeout(timer);
@@ -1633,7 +1642,7 @@ function transcription(
           event: "google.drive.pdf.transcription_idle", ...pages.fields(index),
         });
       };
-      arm = () => {
+      watch = () => {
         if (timer !== undefined || over.signal.aborted) return;
         touch();
         timer = setTimeout(check, TRANSCRIPTION_IDLE_MS);
@@ -1642,6 +1651,8 @@ function transcription(
     },
     async pull(controller) {
       touch();
+      // A read that waits is watched whatever the text is doing.
+      watch();
       let give = (text: string) => {
         touch();
         controller.enqueue(encoder.encode(text));
@@ -1684,6 +1695,12 @@ function transcription(
         letGo();
         if (!transcriptionFailed(error, pages.fields(index), source)) return controller.error(error);
         controller.error(new Error(source.transcriptionFailed));
+      } finally {
+        // A text with no work that may stall sits unread as long as its reader likes.
+        if (!armed && timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
       }
     },
     cancel: end,

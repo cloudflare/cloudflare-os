@@ -3442,6 +3442,39 @@ describe("a PDF with text whose pages without any are read, however its text end
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("ends a read that waits a minute for a conversion that has stopped arriving, though no page without text was found", async () => {
+    // The first page arrives, and nothing after it.
+    let json = markdownJson(TRAILING_IMAGES);
+    let cut = json.indexOf("### Page 2");
+    let state = { sent: false, cancelled: false };
+    let conversion = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (state.sent) return new Promise<void>(() => {});
+        state.sent = true;
+        controller.enqueue(new TextEncoder().encode(json.slice(0, cut)));
+      },
+      cancel() { state.cancelled = true; },
+    }, { highWaterMark: 0 }));
+    let { renderer, state: rendered } = fakeRenderer([TEXT_PAGE, drawn([21])]);
+    let { result } = await mixed(conversion, renderer);
+    let reader = result.text.getReader();
+    await pumped(reader.read());
+
+    // Unread, it may sit as long as its reader likes: nothing is counted between two reads.
+    await vi.advanceTimersByTimeAsync(2 * TRANSCRIPTION_IDLE_MS);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // A read that waits is another matter.
+    let outcome: unknown = "waiting";
+    readThrough(reader, "### Page 2\n").then(() => { outcome = "read"; }, (error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - 1);
+    expect(outcome).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toEqual(new Error(IDLE));
+    expect([state.cancelled, rendered.events, vi.getTimerCount()]).toEqual([true, [], 0]);
+    expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toHaveLength(1);
+  });
+
   it("counts the minute from when its first page without text is asked of the renderer, ahead of the reader", async () => {
     // The second page's heading and all after it arrive only when let through.
     let json = markdownJson(TRAILING_IMAGES);
