@@ -2356,6 +2356,9 @@ interface ChatInterfaceProps {
   // A rule applies under it only what the kernel says (`AutoApprovalRules.applies`), so "Always
   // approve" is offered for those kinds alone.
   restricted?: boolean;
+  // WorkspaceMetadata.rulesApplyWhileRestricted: once false, no rule applies anything under
+  // the latch, so no rule is offered and none reads as applying.
+  rulesApplyWhileRestricted?: boolean;
   selectedChatId: number | null;
   // The chat whose code the host's code view shows, when that isn't the selected chat: the
   // Workshop shows a spawned agent's chat over the chat the user works in, whose code it keeps
@@ -2584,6 +2587,7 @@ function ChatInterface({
   workspaceId,
   overseer,
   restricted,
+  rulesApplyWhileRestricted,
   selectedChatId,
   codeChatId: codeChatIdProp,
   returnChatId,
@@ -4547,7 +4551,7 @@ function ChatInterface({
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
       // Under the latch a request decided by hand may be one whose rule the kernel stopped
-      // applying, and nothing else says so: have every surface read its answer again.
+      // applying before this client was told: have every surface read its answer again.
       if (restricted) autoApproval?.changed();
     });
 
@@ -4588,6 +4592,7 @@ function ChatInterface({
     // gatekeeper it lists. While the queue has not loaded nothing is asked, and nothing offered.
     applies: restricted === true &&
       trayGroups.some(group => group.entries.some(mayApplyWhileRestricted)),
+    rulesApply: rulesApplyWhileRestricted,
   }, setProcessingActions, autoApproval);
 
   // The pending snapshot pages in, and a run that trusted a partial one could apply a later
