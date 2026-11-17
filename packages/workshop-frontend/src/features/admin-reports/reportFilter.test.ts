@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES } from '@gadgets/workshop-shared/api'
-import { isFiltered, reportSearchOf } from './reportFilter'
+import { isFiltered, matchesChangingFilters, reportSearchOf } from './reportFilter'
 
 describe('reportSearchOf', () => {
   it('keeps every filter and the open report', () => {
@@ -77,5 +77,41 @@ describe('isFiltered', () => {
   // The open report is not a filter of the list.
   it('does not count the open report', () => {
     expect(isFiltered(reportSearchOf({ report: 'r-1' }))).toBe(false)
+  })
+})
+
+describe('matchesChangingFilters', () => {
+  const at = new Date('2026-10-12T12:00:00Z')
+  const held = { status: 'new', assignee: { id: 'grace', name: 'Grace Admin', at, via: 'api' } } as const
+  const free = { status: 'answered' } as const
+
+  it('is true under no filter', () => {
+    expect(matchesChangingFilters(held, {})).toBe(true)
+    expect(matchesChangingFilters(free, {})).toBe(true)
+  })
+
+  it('tells a report by its status', () => {
+    expect(matchesChangingFilters(held, { status: 'new' })).toBe(true)
+    expect(matchesChangingFilters(free, { status: 'new' })).toBe(false)
+  })
+
+  it('tells a report by who holds it, and by whether anybody does', () => {
+    expect(matchesChangingFilters(held, { assignee: 'grace' })).toBe(true)
+    expect(matchesChangingFilters(held, { assignee: 'ada' })).toBe(false)
+    expect(matchesChangingFilters(free, { assignee: 'grace' })).toBe(false)
+    expect(matchesChangingFilters(free, { unassigned: true })).toBe(true)
+    expect(matchesChangingFilters(held, { unassigned: true })).toBe(false)
+  })
+
+  it('needs every filter met, and matches nothing for an assignee together with nobody', () => {
+    expect(matchesChangingFilters(held, { status: 'new', assignee: 'grace' })).toBe(true)
+    expect(matchesChangingFilters(held, { status: 'closed', assignee: 'grace' })).toBe(false)
+    expect(matchesChangingFilters(held, { assignee: 'grace', unassigned: true })).toBe(false)
+    expect(matchesChangingFilters(free, { assignee: 'grace', unassigned: true })).toBe(false)
+  })
+
+  // No write to a report changes these, so a report listed under them stays listed.
+  it('leaves the priority, the reporter and the workspace out', () => {
+    expect(matchesChangingFilters(held, { priority: 'high', reporter: 'rita', workspace: 'ws-1' })).toBe(true)
   })
 })

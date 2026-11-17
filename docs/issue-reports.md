@@ -717,6 +717,10 @@ the activity of the workspace that read, which is deleted with that workspace.
     report. Each change is a line of the thread.
   - **The assignee filter** is anyone, the admin reading the list ("Me") or nobody; a holder's
     name on a row filters the list by that admin, shown as a chip that removes the filter.
+  - **The list stays behind an open report**, and each read of that report replaces its row.
+    A read that shows the report has left the list's filters, or come back under them (its
+    status, or who holds it: a claim under "Nobody", a release under "Me"), loads the list
+    again, so that the admin returns to the list the server gives for those filters.
 
 ## Error codes
 
@@ -814,5 +818,6 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   (`ReportIssueHost.test.tsx`).
 - `features/admin-reports/`: the Reports tab (`AdminReportsPanel.test.tsx` and its browser
   test), the assignee's controls, the take-over dialog, which asks again once the holder
-  changed, and what the status control says the reporter reads included; its filters and its
-  retention setting (`reportFilter.test.ts`, `reportSettings.test.ts`).
+  changed, the list loaded again once the open report crosses its filters, and what the
+  status control says the reporter reads included; its filters and its retention setting
+  (`reportFilter.test.ts`, `reportSettings.test.ts`).

@@ -77,8 +77,15 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
     })
     return added
   }
+  let listsHeld: Promise<void> | undefined
   return {
     held,
+    // Holds every later read of the list until the function it returns is called.
+    holdLists: () => {
+      let release!: () => void
+      listsHeld = new Promise((resolve) => { release = resolve })
+      return release
+    },
     whoami: async () => ada,
     // A change of assignee answers a few frames later too: its button is drawn disabled
     // meanwhile, which is when the browser takes focus from it. Another admin's report is taken
@@ -98,10 +105,12 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
       // A further page answers a few frames later, as a call over the network does: Load more is
       // drawn disabled meanwhile, which is when the browser takes focus from it.
       if (query.cursor !== undefined) await new Promise((resolve) => setTimeout(resolve, 100))
+      await listsHeld
       const matching = [...held.values()].filter((opened) =>
         (query.status === undefined || opened.status === query.status)
         && (query.reporter === undefined || opened.reporter.id === query.reporter)
-        && (query.assignee === undefined || opened.assignee?.id === query.assignee))
+        && (query.assignee === undefined || opened.assignee?.id === query.assignee)
+        && (query.unassigned !== true || opened.assignee === undefined))
       const from = Number(query.cursor ?? 0)
       const to = from + (options.pageSize ?? matching.length)
       return {
@@ -430,6 +439,26 @@ it('keeps focus on the assignee’s button through an assignment, and gives it b
   await expect.element(asking).not.toBeInTheDocument()
   expect(admin.claimIssueReport).toHaveBeenLastCalledWith('r-2', { takeOverFrom: 'grace@example.test' })
   await expect.element(assigneeBlock().getByRole('button', { name: 'Release' })).toHaveFocus()
+})
+
+it('gives the list focus, not a row it is about to drop, on the way back from a report that left its filters', async () => {
+  await viewport(1280, 900)
+  const admin = await renderPanel([report('r-1'), report('r-2')], '/admin?tab=reports&unassigned=true')
+  await input(() => userEvent.click(rowLink('r-1')))
+  const release = admin.holdLists()
+  await tabTo(assigneeBlock().getByRole('button', { name: 'Assign to me' }))
+  await input(() => userEvent.keyboard('{Enter}'))
+  await expect.element(assigneeBlock().getByRole('button', { name: 'Release' })).toHaveFocus()
+
+  // The list is being read again and still shows the row of the report that was claimed.
+  await input(() => userEvent.click(backLink()))
+  await expect.element(rowLink('r-1')).toBeVisible()
+  await expect.element(listing()).toHaveFocus()
+
+  await input(async () => release())
+  await expect.element(rowLink('r-1')).not.toBeInTheDocument()
+  await expect.element(rowLink('r-2')).toBeVisible()
+  await expect.element(listing()).toHaveFocus()
 })
 
 it('asks again on Cancel when the holder changed, so that Enter takes nothing from an admin not yet named', async () => {
