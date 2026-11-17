@@ -8,8 +8,9 @@ import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js"
 import { RpcTarget, connect, signUp, stubFor, withOwnerWorkspace, WorkpieceRecorder } from "../src/rpc-client.js";
 
 // fetch() from executeCode and from a gadget's server code, which a FetchLoopback sends under the
-// workspace's fetch policy. The trusted-host list is deployment-wide, so this file owns its harness
-// and runs serially.
+// workspace's fetch policy, and a gatekeeper's fetches through the Fetcher its approval queue
+// gives it. The trusted-host list is deployment-wide, so this file owns its harness and runs
+// serially.
 let harness: Harness;
 let admin: RpcStub<AdminApi>;
 const fileScope = new DisposableStack();
@@ -234,4 +235,120 @@ it("fetches from a gadget's server code, and refuses the same gadget once restri
         .toMatch(/^403 This workspace has observed sensitive data\./);
     expect(receivedUrls()).toEqual([page]);
   });
+});
+
+// An executeCode step that runs `body`, then makes each of `calls` to the test gatekeeper's fetch
+// methods (see TestSession.fetchUrl()) and logs what came back.
+const gatekeeperFetchCode = (id: string, calls: ["fetchUrl" | "fetchInstalled", string][], body = "") =>
+  ({ toolCall: { id, name: "executeCode", arguments: { code: `export default async function(self, env) {
+  ${body}
+  for (let [method, url] of ${JSON.stringify(calls)}) {
+    let { status, body, refused } = await env.TEST_AMBIENT[method](url);
+    console.log(\`\${method} \${url}: \${status} \${refused ?? "sent"} \${body}\`);
+  }
+}` } } });
+
+// The gatekeeper's own record of each fetchUrl() call, oldest first.
+const gatekeeperFetchAudits = async (session: WorkshopAgentSession) =>
+  (await session.listActions({ filter: "observation" })).entries
+      .filter(entry => entry.description.title === "Ran the test gatekeeper's fetch")
+      .map(entry => entry.description.description).toReversed();
+
+it("fetches through a gatekeeper's Fetcher, which the workspace does not record", async () => {
+  const page = `https://${OTHER_HOST}/from-gatekeeper`;
+  const model = models.script([
+    gatekeeperFetchCode("fetch", [["fetchUrl", page]]),
+    { text: "Done." },
+  ]);
+  await using session = await openSession(model);
+  expect((await session.runTurn("Fetch the page.")).outcome).toEqual({ status: "completed" });
+
+  expect(model.requests[1]).toMatchObject(toolResult("fetch", `fetchUrl ${page}: 200 sent ${PAGE}`));
+  expect(receivedUrls()).toEqual([page]);
+  expect(received[0].headers.get("user-agent")).toBe("Cloudflare-OS/1.0");
+  // The snapshot allowed it, so only the gatekeeper's audit of its own call records it.
+  expect(await fetchObservations(session)).toEqual([]);
+  expect(await gatekeeperFetchAudits(session)).toEqual([`Fetched \`${page}\` through the caller's fetch policy.`]);
+});
+
+it("refuses a gatekeeper's fetch from an untrusted host once restricted, or with a query string", async () => {
+  await admin.setRestrictedWebFetchHosts([TRUSTED_HOST]);
+  try {
+    const other = `https://${OTHER_HOST}/from-gatekeeper`;
+    const plain = `https://${TRUSTED_HOST}/from-gatekeeper`;
+    const query = `https://${TRUSTED_HOST}/from-gatekeeper?q=secret`;
+    const model = models.script([
+      readRestricted(),
+      gatekeeperFetchCode("fetch", [["fetchUrl", other], ["fetchUrl", plain], ["fetchUrl", query]]),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    expect((await session.runTurn("Read the restricted value, then fetch the pages.")).outcome)
+        .toEqual({ status: "completed" });
+
+    expect(model.requests[2]).toMatchObject(toolResult("fetch",
+        `fetchUrl ${other}: 403 denied This workspace has observed sensitive data, so it may only fetch from ${TRUSTED_HOST}`));
+    expect(model.requests[2]).toMatchObject(toolResult("fetch", `fetchUrl ${plain}: 200 sent ${PAGE}`));
+    expect(model.requests[2]).toMatchObject(toolResult("fetch", `fetchUrl ${query}: 403 denied `));
+    expect(receivedUrls()).toEqual([plain]);
+    expect(await fetchObservations(session)).toEqual([]);
+  } finally {
+    await admin.setRestrictedWebFetchHosts([]);
+  }
+});
+
+it("keeps a gatekeeper's Fetcher at the policy it was taken under, until the next call replaces it", async () => {
+  const pages = ["before", "stale", "fresh", "replaced"].map(name => `https://${OTHER_HOST}/${name}`);
+  const [before, stale, fresh, replaced] = pages;
+  const model = models.script([
+    gatekeeperFetchCode("install", [["fetchUrl", before]]),
+    readRestricted(),
+    gatekeeperFetchCode("fetch", [["fetchInstalled", stale], ["fetchUrl", fresh], ["fetchInstalled", replaced]]),
+    { text: "Done." },
+  ]);
+  await using session = await openSession(model);
+  expect((await session.runTurn("Fetch, read the restricted value, then fetch again.")).outcome)
+      .toEqual({ status: "completed" });
+
+  expect(model.requests[1]).toMatchObject(toolResult("install", `fetchUrl ${before}: 200 sent ${PAGE}`));
+  // Taken before the workspace was restricted, the installed Fetcher never updates...
+  expect(model.requests[3]).toMatchObject(toolResult("fetch", `fetchInstalled ${stale}: 200 sent ${PAGE}`));
+  // ...until the gatekeeper's next call takes a new one and installs it in its place.
+  expect(model.requests[3]).toMatchObject(toolResult("fetch",
+      `fetchUrl ${fresh}: 403 denied This workspace has observed sensitive data.`));
+  expect(model.requests[3]).toMatchObject(toolResult("fetch",
+      `fetchInstalled ${replaced}: 403 denied This workspace has observed sensitive data.`));
+  expect(receivedUrls()).toEqual([before, stale]);
+});
+
+it("ends the turn when a gatekeeper's fetch needs approval, and fetches once approved", async () => {
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const page = `https://${OTHER_HOST}/gatekeeper-needs-approval`;
+    const model = models.script([
+      readRestricted(),
+      gatekeeperFetchCode("ask", [["fetchUrl", page]]),
+      gatekeeperFetchCode("fetch-approved", [["fetchUrl", page]]),
+      { text: "Done." },
+    ]);
+    await using session = await openSession(model);
+    const asked = await session.runTurn("Read the restricted value, then fetch the page.");
+
+    // The snapshot refused it, and the workspace asked the user: the turn ends on the card.
+    expect(asked.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(2);
+    const requests = asked.history.filter(msg => msg.type === "webFetchRequest");
+    expect(requests).toEqual([expect.objectContaining({ url: page, state: "pending" })]);
+    expect(received).toEqual([]);
+
+    const resumed = await session.approveWebFetchRequestsAndWait([requests[0].requestId]);
+    expect(resumed.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(4);
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-approved", `fetchUrl ${page}: 200 sent ${PAGE}`));
+    expect(receivedUrls()).toEqual([page]);
+    // The workspace decided this one, so it records it.
+    expect(await fetchObservations(session)).toEqual([`GET \`${page}\``]);
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
+  }
 });
