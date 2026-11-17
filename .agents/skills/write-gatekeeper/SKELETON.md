@@ -130,7 +130,7 @@ function authorizeResourceObservation(
   return queue.authorizeObservation(description);
 }
 
-// Every action declares an auto-approval verdict, and a kind when it can be true (SKILL.md
+// Every action declares an auto-approval verdict, and a kind when it can be true (REVIEW.md
 // "Action kinds and auto-approval"). The user's "always approve" rule is stored under the tag, so never rename it
 // once shipped; the label is what the user sees.
 const MY_EDIT_KIND: ActionKind = { tag: "edit-data", label: "Edit data" };

@@ -1,0 +1,342 @@
+{
+  "source": "evidence/escaped-defects.md (87 escapes, 2026-11-02): every GitHub culprit with a commit that resolves on origin",
+  "base_sha_rule": "base_sha is the first parent of the culprit's squash merge (or of the commit); reviews diff base_sha...head_sha",
+  "code_reader_layers": {
+    "b": true,
+    "c": true,
+    "d": true,
+    "g": true,
+    "a": false,
+    "e": false,
+    "f": false,
+    "i": false,
+    "j": false
+  },
+  "code_reader_layers_reason": "A reader of the diff can see cross-repo export removals (b), broken imports and build graphs (c), logic and test gaps (d) and what post-merge human review found (g). Merge skew (a), live-only behavior (e), eval-only failures (f), deploy config outside the diff (i) and platform runtime behavior (j) are not visible in the diff.",
+  "cases": [
+    {
+      "id": "commit-b2a215e",
+      "pr": null,
+      "commit": "b2a215ec54c08e5205165628b6424d5090b252fb",
+      "title": "Remove \"experimental\" compat flags.",
+      "head_sha": "b2a215ec54c08e5205165628b6424d5090b252fb",
+      "base_sha": "2f3549a18ae8cdb62c1d6476dca1ff2b7e457c82",
+      "lines_changed": 11524,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 49,
+          "fix_pr": 135,
+          "layer": "j",
+          "symptom": "WebSocket aborted when the Overseer DO died",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ],
+      "note": "The escape table names commit b2a215e and infers #56; the commit reached main through a GitLab-era merge with no GitHub pull request."
+    },
+    {
+      "id": "pr-361",
+      "pr": 361,
+      "commit": "b288c0e5e3a8d63a0379e52caf09e0ece6f88c6a",
+      "title": "Add local Workshop trajectory evals",
+      "head_sha": "8007122dc8d938b5d41eaefa8d754915df3285ad",
+      "base_sha": "85facf205b2f5288b00445fa75b6f1451f400580",
+      "lines_changed": 3277,
+      "code_reader_could_catch": true,
+      "escapes": [
+        {
+          "row": 54,
+          "fix_pr": 447,
+          "layer": "c",
+          "symptom": "`pnpm evals` fails loading its config",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        }
+      ],
+      "note": "The escape table names commit b288c0e, which merged in #361."
+    },
+    {
+      "id": "pr-474",
+      "pr": 474,
+      "commit": null,
+      "title": "add deployment-wide user directory for user search",
+      "head_sha": "117635ff21fc63a20c97261d8395f2d06acb4b05",
+      "base_sha": "83c654004111ca8a82e4d294eabeca9ca869f5dc",
+      "lines_changed": 1474,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 58,
+          "fix_pr": 511,
+          "layer": "e",
+          "symptom": "User-search results clipped",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ]
+    },
+    {
+      "id": "pr-525",
+      "pr": 525,
+      "commit": null,
+      "title": "Replace the eval tasks with four harder ones",
+      "head_sha": "ecb13e7c11b889097b293099abec9618a12d9d8d",
+      "base_sha": "3814ad56d8a26bd128be00e521c1a0fcea1110f0",
+      "lines_changed": 4923,
+      "code_reader_could_catch": true,
+      "escapes": [
+        {
+          "row": 63,
+          "fix_pr": 584,
+          "layer": "d",
+          "symptom": "Eval comparisons wrong for five PRs",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        }
+      ]
+    },
+    {
+      "id": "pr-595",
+      "pr": 595,
+      "commit": null,
+      "title": "Trace agent turns for the Agents dashboard",
+      "head_sha": "acdb20de851430f62cac30dfd6acf74b6f227615",
+      "base_sha": "30d0c99b9062d42e99dd69f8eea7d4c2b5938bd6",
+      "lines_changed": 965,
+      "code_reader_could_catch": true,
+      "escapes": [
+        {
+          "row": 66,
+          "fix_pr": 602,
+          "layer": "b",
+          "symptom": "Internal jira build broke: `createTracer` removed",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        }
+      ]
+    },
+    {
+      "id": "pr-611",
+      "pr": 611,
+      "commit": null,
+      "title": "Hide superseded models from pickers while they still resolve",
+      "head_sha": "a70f0979420b604003d62e64843a0c93fb42fbe2",
+      "base_sha": "c5978eb299a9f23c2de6b001ba72d4457ffe3624",
+      "lines_changed": 315,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 67,
+          "fix_pr": 634,
+          "layer": "f",
+          "symptom": "Every eval trial failed on main and every PR; eval not required",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ]
+    },
+    {
+      "id": "pr-531",
+      "pr": 531,
+      "commit": null,
+      "title": "GitLab gatekeeper, for gitlab.com and self-hosted instances",
+      "head_sha": "193770d6b067b3bae2065bbd7a5500a415acc4d7",
+      "base_sha": "9c2b76a067e9b34013de78f82a2dc9c4c627d763",
+      "lines_changed": 33847,
+      "code_reader_could_catch": true,
+      "escapes": [
+        {
+          "row": 71,
+          "fix_pr": 705,
+          "layer": "d",
+          "symptom": "Self-hosted GitLab tokens without `expires_in` rejected",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        },
+        {
+          "row": 72,
+          "fix_pr": 708,
+          "layer": "d",
+          "symptom": "run-local crash: constant exported from GitLab entry",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        }
+      ]
+    },
+    {
+      "id": "pr-717",
+      "pr": 717,
+      "commit": null,
+      "title": "GitHub event hooks",
+      "head_sha": "fab03ae0ee3ce027ad2bd0c1a001d33b1082f0e6",
+      "base_sha": "14182886c6715db26616c5af428fbb50f3d78459",
+      "lines_changed": 7626,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 73,
+          "fix_pr": 742,
+          "layer": "a",
+          "symptom": "Every install on main failed (lockfile)",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ]
+    },
+    {
+      "id": "pr-756",
+      "pr": 756,
+      "commit": null,
+      "title": "listing private context collections does not block workspace sharing",
+      "head_sha": "5e60d93862680cac5439075851bf0f98582137e9",
+      "base_sha": "24bd59ce4ea3278d7d6be0e0c3284dba77bcc5c7",
+      "lines_changed": 717,
+      "code_reader_could_catch": true,
+      "escapes": [
+        {
+          "row": 75,
+          "fix_pr": 761,
+          "layer": "c",
+          "symptom": "Evals failed: Context worker absent from eval build graph",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        }
+      ]
+    },
+    {
+      "id": "pr-719",
+      "pr": 719,
+      "commit": null,
+      "title": "Fix Slack gatekeeper org-wide installation workspace scoping",
+      "head_sha": "1d02b7a298fca4c36046bb1e2462516bdf4e5567",
+      "base_sha": "7ec49d8c865917c7be0401938eadc7218ed9d398",
+      "lines_changed": 1382,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 76,
+          "fix_pr": 740,
+          "layer": "e",
+          "symptom": "Enterprise Slack DM rejected by validation",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        },
+        {
+          "row": 77,
+          "fix_pr": 762,
+          "layer": "e",
+          "symptom": "Slack Connect channels rejected",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ]
+    },
+    {
+      "id": "pr-197",
+      "pr": 197,
+      "commit": null,
+      "title": "add entrypoint-based custom export api",
+      "head_sha": "6569646fe19ea85c35914092477625e8c2f9fdaf",
+      "base_sha": "efdbd5e179cc9c33ca598763975d151a2b00bf0b",
+      "lines_changed": 1800,
+      "code_reader_could_catch": true,
+      "escapes": [
+        {
+          "row": 81,
+          "fix_pr": 256,
+          "layer": "d",
+          "symptom": "`exportGadget` used `.move()` not `.dup()`; caught pre-release",
+          "culprit_inferred": false,
+          "code_reader_could_catch": true
+        }
+      ]
+    },
+    {
+      "id": "pr-284",
+      "pr": 284,
+      "commit": null,
+      "title": "Make the Workshop UI fully responsive on phones",
+      "head_sha": "c494b2903345c497426bbc67800217e7acd66ea7",
+      "base_sha": "dd2b015071fe21de49fe2a68b57ef966dde15877",
+      "lines_changed": 929,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 82,
+          "fix_pr": 287,
+          "layer": "e",
+          "symptom": "Embedded gatekeeper modals broken",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        },
+        {
+          "row": 83,
+          "fix_pr": 288,
+          "layer": "e",
+          "symptom": "Mobile: context settings unreachable",
+          "culprit_inferred": true,
+          "code_reader_could_catch": false
+        },
+        {
+          "row": 84,
+          "fix_pr": 289,
+          "layer": "e",
+          "symptom": "Mobile: connection modal broken",
+          "culprit_inferred": true,
+          "code_reader_could_catch": false
+        },
+        {
+          "row": 85,
+          "fix_pr": 330,
+          "layer": "e",
+          "symptom": "Sidebar height broken on AppShell routes",
+          "culprit_inferred": true,
+          "code_reader_could_catch": false
+        }
+      ],
+      "note": "Rows 83-85 infer #284 from title and date."
+    },
+    {
+      "id": "pr-161",
+      "pr": 161,
+      "commit": null,
+      "title": "Automatically reject clear contribution-policy violations",
+      "head_sha": "be20d7d02e5baac8ada4f7d9dd8fe707e0819687",
+      "base_sha": "0d1825625808d6855c99c530affb496eb050a7d2",
+      "lines_changed": 495,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 86,
+          "fix_pr": 184,
+          "layer": "e",
+          "symptom": "Maintainer PR auto-closed (`author_association` varies by token)",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ]
+    },
+    {
+      "id": "pr-150",
+      "pr": 150,
+      "commit": null,
+      "title": "Add Bonk break-glass command",
+      "head_sha": "6b04894435a96441fd2b72db89521129ea4bd00d",
+      "base_sha": "3fb7ff46542586f7e34db7732cdba87f90cd1560",
+      "lines_changed": 96,
+      "code_reader_could_catch": false,
+      "escapes": [
+        {
+          "row": 87,
+          "fix_pr": 244,
+          "layer": "e",
+          "symptom": "Break-glass bypass lost on re-run",
+          "culprit_inferred": false,
+          "code_reader_could_catch": false
+        }
+      ]
+    }
+  ],
+  "lines_changed_rule": "lines_changed counts added plus removed lines in base_sha...head_sha, the diff the reviewer reads"
+}
