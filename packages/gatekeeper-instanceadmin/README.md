@@ -349,11 +349,11 @@ Workshop holds the approved action to one call of those two methods.
   report" and "from this workspace's owner": the owner is the admin the connection acts as,
   whoever approves the card. It names no person by a read, since queuing reads nothing; which
   admin the owner is, the Workshop decides where the call lands.
-- **It never takes a report over.** The route refuses a claim with `takeOver` set before a
-  card exists, so that no person approves one by mistake, and tells the agent that only a
-  person takes a report from the admin who holds it. The report store refuses it again where
-  the call lands, whatever approved it: it reads the call's label, `via: "gatekeeper"`, which
-  only the Workshop sets.
+- **It never takes a report over.** The route refuses a claim with `takeOverFrom` set,
+  whoever it names, before a card exists, so that no person approves one by mistake, and tells
+  the agent that only a person takes a report from the admin who holds it. The report store
+  refuses it again where the call lands, whatever approved it: it reads the call's label,
+  `via: "gatekeeper"`, which only the Workshop sets.
 - **`assigned` is a refusal that ends the action** (`TERMINAL_REFUSALS`): another admin holds
   the report, nothing was done, and the action is failed for good rather than left with an
   outcome nobody knows. Its card stays pending in the Workshop until a person rejects it, and

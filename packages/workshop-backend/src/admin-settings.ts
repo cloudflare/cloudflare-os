@@ -2592,7 +2592,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   async claimIssueReport(reportId: string, options: IssueReportClaimOptions = {}): Promise<void> {
     this.#requireAdmin();
     await this.issueReports.getByName("").claim(
-        await this.#profile(), this.#label(), reportId, options.takeOver === true);
+        await this.#profile(), this.#label(), reportId, options.takeOverFrom);
   }
 
   async releaseIssueReport(reportId: string): Promise<void> {

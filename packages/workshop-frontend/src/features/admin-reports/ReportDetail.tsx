@@ -139,7 +139,8 @@ export const ReportDetail = ({ admin, reportId, me, onRead }: {
   }
 
   // A claim or a release refused because another admin holds the report is answered by reading
-  // the report again, so that the holder shown is the one the server has.
+  // the report again, so that the holder shown, and the one a take-over is next asked about, is
+  // the one the server has.
   const changeAssignee = async (change: () => Promise<void>) => {
     try {
       await change()
@@ -200,8 +201,9 @@ export const ReportDetail = ({ admin, reportId, me, onRead }: {
         <ReportAssignee
           assignee={report.assignee}
           me={me}
-          onClaim={(takeOver) => changeAssignee(async () => {
-            await (takeOver ? admin.claimIssueReport(report.id, { takeOver: true }) : admin.claimIssueReport(report.id))
+          onClaim={(takeOverFrom) => changeAssignee(async () => {
+            await (takeOverFrom === undefined
+              ? admin.claimIssueReport(report.id) : admin.claimIssueReport(report.id, { takeOverFrom }))
           })}
           onRelease={() => changeAssignee(async () => { await admin.releaseIssueReport(report.id) })}
         />

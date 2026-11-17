@@ -19,11 +19,13 @@ import {
 } from '@tanstack/react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 import { page, userEvent, type Locator } from 'vitest/browser'
-import type {
-  AdminApi,
-  AdminIssueReport,
-  IssueReportAssignee,
-  IssueReportEntry,
+import {
+  createIssueReportError,
+  ISSUE_REPORT_ERROR_CODES,
+  type AdminApi,
+  type AdminIssueReport,
+  type IssueReportAssignee,
+  type IssueReportEntry,
 } from '@gadgets/workshop-shared/api'
 import '../../styles.css'
 
@@ -76,11 +78,17 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
     return added
   }
   return {
+    held,
     whoami: async () => ada,
     // A change of assignee answers a few frames later too: its button is drawn disabled
-    // meanwhile, which is when the browser takes focus from it.
-    claimIssueReport: vi.fn<AdminApi['claimIssueReport']>(async (id) => {
+    // meanwhile, which is when the browser takes focus from it. Another admin's report is taken
+    // only from the admin the claim names, as the server takes it.
+    claimIssueReport: vi.fn<AdminApi['claimIssueReport']>(async (id, claim) => {
       await new Promise((resolve) => setTimeout(resolve, 100))
+      const holder = held.get(id)!.assignee
+      if (holder !== undefined && holder.id !== claim?.takeOverFrom) {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned)
+      }
       const { at } = addEntry(id, {
         text: '', visibility: 'admins', assignment: held.get(id)!.assignee === undefined ? 'claimed' : 'takenOver',
       })
@@ -420,8 +428,36 @@ it('keeps focus on the assignee’s button through an assignment, and gives it b
   await input(() => userEvent.keyboard('{Enter}'))
   await input(() => userEvent.click(asking.getByRole('button', { name: 'Take over' })))
   await expect.element(asking).not.toBeInTheDocument()
-  expect(admin.claimIssueReport).toHaveBeenLastCalledWith('r-2', { takeOver: true })
+  expect(admin.claimIssueReport).toHaveBeenLastCalledWith('r-2', { takeOverFrom: 'grace@example.test' })
   await expect.element(assigneeBlock().getByRole('button', { name: 'Release' })).toHaveFocus()
+})
+
+it('asks again on Cancel when the holder changed, so that Enter takes nothing from an admin not yet named', async () => {
+  await viewport(1280, 900)
+  const admin = await renderPanel([report('r-1', { assignee: heldBy() })], '/admin?tab=reports&report=r-1')
+  const takeOver = assigneeBlock().getByRole('button', { name: 'Take over…' })
+  await tabTo(takeOver)
+  await input(() => userEvent.keyboard('{Enter}'))
+  const asking = page.getByRole('dialog', { name: 'Take this report over from Grace Admin?' })
+  await expect.element(asking).toBeVisible()
+  // Hal took the report after the dialog named Grace.
+  admin.held.set('r-1', report('r-1', { assignee: heldBy({ id: 'hal@example.test', name: 'Hal Admin' }) }))
+
+  // The button that confirmed is disabled while the call runs, which takes focus from it. The
+  // dialog then names Hal, says why, and has focus on Cancel as when it opened.
+  await tabTo(asking.getByRole('button', { name: 'Take over' }))
+  await input(() => userEvent.keyboard('{Enter}'))
+  const askingAgain = page.getByRole('dialog', { name: 'Take this report over from Hal Admin?' })
+  await expect.element(askingAgain).toBeVisible()
+  await expect.element(askingAgain.getByRole('alert'))
+    .toHaveTextContent('Grace Admin no longer holds this report, so it was not taken over.')
+  await expect.element(askingAgain.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+
+  await input(() => userEvent.keyboard('{Enter}'))
+  await expect.element(askingAgain).not.toBeInTheDocument()
+  await expect.element(assigneeBlock()).toMatchTextContent(/^AssigneeHal Admin, since/)
+  await expect.element(takeOver).toHaveFocus()
+  expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: 'grace@example.test' }]])
 })
 
 it('fits the take-over dialog in a phone’s width when the holder’s name has nowhere to break', async () => {

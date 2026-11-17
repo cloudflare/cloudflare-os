@@ -183,7 +183,7 @@ it("calls a gadget's stored callback once for each kind of change to a report", 
   await admin.claimIssueReport(report.id);
   await expect(graceAdmin.claimIssueReport(report.id))
       .rejects.toThrow("Another admin holds this issue report.");
-  await graceAdmin.claimIssueReport(report.id, { takeOver: true });
+  await graceAdmin.claimIssueReport(report.id, { takeOverFrom: OWNER });
   await called("assignment");
   await graceAdmin.releaseIssueReport(report.id);
   await called("assignment");

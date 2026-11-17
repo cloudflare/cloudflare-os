@@ -1070,8 +1070,10 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Makes `admin` the assignee of a report, entered in its thread as a line for admins alone
    * that names them and is labelled as `caller` (see addEntry()). It changes no status. A
-   * report `admin` already holds is left as it is. Another admin's is taken only with
-   * `takeOver`, which a call made through the admin gatekeeper may not set: only a person
+   * report `admin` already holds is left as it is. Another admin's is taken only from the
+   * admin `takeOverFrom` names (by the id the report shows for its assignee), compared in the
+   * step that writes the new holder, so that a report is never taken from an admin the caller
+   * did not name. A call made through the admin gatekeeper may not set it: only a person
    * takes a report from a person. Throws (TypeError) for a caller that is not one and for a
    * take-over through the gatekeeper; refused `notFound`, `assigned` for a report another
    * admin holds, and `threadFull` for a call made through the gatekeeper once
@@ -1079,16 +1081,16 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * Tells the admin gatekeeper ("changed").
    */
   async claim(admin: Pick<AiChatAuthorInfo, "id" | "name">,
-      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string, takeOver: boolean)
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string, takeOverFrom?: string)
       : Promise<void> {
     let holder = namedUser(admin);
     let label = adminCallerTerms(caller);
-    if (label.via === "gatekeeper" && takeOver) {
+    if (label.via === "gatekeeper" && takeOverFrom !== undefined) {
       throw new TypeError("Only a person takes an issue report over.");
     }
     let report = this.#reportSeq(reportId);
     if (report.assignee_id === holder.id) return;
-    if (report.assignee_id !== null && !takeOver) {
+    if (report.assignee_id !== null && report.assignee_id !== takeOverFrom) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
     }
     let { at } = this.#assign(

@@ -3112,10 +3112,14 @@ export type IssueReportAssignee = {
 
 /** Options for AdminApi.claimIssueReport(). */
 export type IssueReportClaimOptions = {
-  /** Take the report from the admin who holds it. Only a person does: a call made through the
-   * admin gatekeeper is refused with it set, so that no agent and no gadget takes a report
-   * from a person. A client sets it after asking, naming the holder. */
-  takeOver?: boolean;
+  /** Take the report from this admin, by the id a report shows for its assignee
+   * (IssueReportAssignee.id): the holder the caller confirmed. It takes the report only from
+   * them. Once another admin holds the report the claim is refused `assigned` as one without
+   * it is, and once nobody does it is a claim like any other. Only a person takes a report
+   * over: a call made through the admin gatekeeper is refused with it set, so that no agent
+   * and no gadget takes a report from a person. A client sets it after asking, naming the
+   * holder. */
+  takeOverFrom?: string;
 };
 
 /**
@@ -3875,10 +3879,10 @@ export interface AdminApi {
   /** Claim an issue report: make the caller its assignee (see IssueReportAssignee). Entered in
    * its thread as a line only admins read, which names the caller. It changes no status. A
    * report the caller already holds is left as it is. Refused `notFound`, and `assigned` when
-   * another admin holds the report, unless `options.takeOver` is set, which takes it from
-   * them. A call made through the admin gatekeeper is refused with `takeOver` set, and
-   * `threadFull` once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the report's assignee were
-   * made through it. */
+   * another admin holds the report, unless `options.takeOverFrom` is that admin's id, which
+   * takes it from them. A call made through the admin gatekeeper is refused with
+   * `takeOverFrom` set, and `threadFull` once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the
+   * report's assignee were made through it. */
   claimIssueReport(reportId: string, options?: IssueReportClaimOptions): Promise<void>;
 
   /** Release an issue report the caller holds, which then has no assignee. Entered in its

@@ -646,19 +646,24 @@ describe("what a session refuses", () => {
     const { log, admin, queue } = workshop();
     using session = await openSession(queue);
 
-    expect((await rejection(session.claimIssueReport!("report-1", { takeOver: true }))).message)
-        .toBe(TAKE_OVER_BY_PERSON);
+    // Whoever it names, an admin or nobody.
+    for (const takeOverFrom of ["grace@example.test", ""]) {
+      expect((await rejection(session.claimIssueReport!("report-1", { takeOverFrom }))).message)
+          .toBe(TAKE_OVER_BY_PERSON);
+    }
     expect(TAKE_OVER_BY_PERSON).toMatch(/^Only a person takes an issue report/);
+    expect(TAKE_OVER_BY_PERSON).toContain("without takeOverFrom");
     // An option the claim does not have is the argument check's to refuse.
-    expect((await rejection(session.claimIssueReport!("report-1", { takeOver: "yes" }))).message)
+    expect((await rejection(session.claimIssueReport!("report-1", { takeOverFrom: true }))).message)
         .toMatch(/^Invalid arguments for AdminApi\.claimIssueReport: /);
-    expect((await rejection(session.releaseIssueReport!("report-1", { takeOver: true }))).message)
-        .toMatch(/^Invalid arguments for AdminApi\.releaseIssueReport: /);
+    expect((await rejection(session.releaseIssueReport!("report-1", { takeOverFrom: "grace" })))
+        .message).toMatch(/^Invalid arguments for AdminApi\.releaseIssueReport: /);
     expect(log).toEqual([]);
     expect(admin.calls).toEqual([]);
 
     // Without the option, or with it unset, the claim is queued.
-    expect(await session.claimIssueReport!("report-1", { takeOver: false })).toBeUndefined();
+    expect(await session.claimIssueReport!("report-1", { takeOverFrom: undefined }))
+        .toBeUndefined();
     expect(await session.claimIssueReport!("report-1")).toBeUndefined();
     expect(log).toEqual(["submit issue-report-assignment", "submit issue-report-assignment"]);
     expect(queue.observations).toEqual([]);

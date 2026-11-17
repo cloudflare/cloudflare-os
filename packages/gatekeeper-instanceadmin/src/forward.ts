@@ -85,7 +85,7 @@ const ACT_ROUTES: { [M in ActMethod]: ActRoute<M> } = {
   claimIssueReport: (actions, queue, reportId, options) => {
     // Refused here, before a card exists for a person to approve by mistake; the Workshop's
     // store refuses it again where the call lands, whatever approved it.
-    if (options?.takeOver) throw new Error(TAKE_OVER_BY_PERSON);
+    if (options?.takeOverFrom !== undefined) throw new Error(TAKE_OVER_BY_PERSON);
     return actions.submit(queue, "issueReportAssignment", { reportId, assignment: "claim" });
   },
   releaseIssueReport: (actions, queue, reportId) =>

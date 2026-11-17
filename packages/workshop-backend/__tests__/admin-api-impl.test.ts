@@ -1366,7 +1366,7 @@ describe("AdminApiImpl issue reports", () => {
     ["setIssueReportStatus", api => api.setIssueReportStatus("report", "closed"), "setStatus",
       [PROFILE, { via: "cli" }, "report", "closed"]],
     ["claimIssueReport", api => api.claimIssueReport("report"), "claim",
-      [PROFILE, { via: "cli" }, "report", false]],
+      [PROFILE, { via: "cli" }, "report", undefined]],
     ["releaseIssueReport", api => api.releaseIssueReport("report"), "release",
       [PROFILE, { via: "cli" }, "report"]],
     ["setIssueReportLinks", api => api.setIssueReportLinks("report", ["https://example.com/1"]),
@@ -1396,20 +1396,22 @@ describe("AdminApiImpl issue reports", () => {
     const api = mint(ADMIN, { via: "api" });
     await api.addIssueReportEntry("report", "A note", "admins");
     await api.setIssueReportStatus("report", "investigating");
-    await api.claimIssueReport("report", { takeOver: true });
+    await api.claimIssueReport("report", { takeOverFrom: "grace@example.test" });
     await api.claimIssueReport("report", {});
+    await api.claimIssueReport("report");
     await api.releaseIssueReport("report");
     // An admin whose account has no profile is named by their id.
     const byId = { type: "user", id: ADMIN, name: ADMIN };
     expect(callsTo("users", "getByName").map(call => call.args))
-        .toStrictEqual(Array.from({ length: 5 }, () => [ADMIN]));
+        .toStrictEqual(Array.from({ length: 6 }, () => [ADMIN]));
     expect(callsTo("report", "addEntry")[0].args)
         .toStrictEqual([byId, { via: "api" }, "report", "A note", "admins"]);
     expect(callsTo("report", "setStatus")[0].args)
         .toStrictEqual([byId, { via: "api" }, "report", "investigating"]);
-    // A take-over is the caller's own word, and nothing but `true` is one.
+    // The holder a take-over names is the caller's own word, passed as it was given.
     expect(callsTo("report", "claim").map(call => call.args)).toStrictEqual([
-      [byId, { via: "api" }, "report", true], [byId, { via: "api" }, "report", false],
+      [byId, { via: "api" }, "report", "grace@example.test"],
+      [byId, { via: "api" }, "report", undefined], [byId, { via: "api" }, "report", undefined],
     ]);
     expect(callsTo("report", "release")[0].args).toStrictEqual([byId, { via: "api" }, "report"]);
   });
@@ -1469,6 +1471,8 @@ describe("AdminApiImpl issue reports", () => {
       },
     });
 
+    // Who holds the report, by the id a take-over names: the id whoami() gave its holder.
+    let holder: string | undefined;
     for (let [adminUserId, name] of [[ADMIN, "Ada Admin"], [long, "Lo Ng"]]) {
       const { mint, calls } = of(adminUserId, name);
       const api = mint(adminUserId);
@@ -1479,11 +1483,12 @@ describe("AdminApiImpl issue reports", () => {
       expect(named(calls)).toStrictEqual(["users.getByName", "user.whoamiIfExists"]);
 
       const entry = await api.addIssueReportEntry(report.id, "Mine.", "admins");
-      await api.claimIssueReport(report.id, { takeOver: true });
+      await api.claimIssueReport(report.id, { takeOverFrom: holder });
       const read = await api.getIssueReport(report.id);
       expect(entry.author).toStrictEqual(me);
       expect(read.assignee).toMatchObject(me);
       expect(read.entries.at(-1)).toMatchObject({ author: me, assignment: expect.any(String) });
+      holder = me.id;
     }
     expect((await of(long, "Lo Ng").mint(long).whoami()).id).not.toBe(long);
     expect((await of(ADMIN, "Ada Admin").mint().whoami()).id).toBe(ADMIN);

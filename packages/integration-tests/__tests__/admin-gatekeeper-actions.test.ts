@@ -399,7 +399,8 @@ it("never lets an agent take a report from a person", async () => {
 
   // The gatekeeper refuses the call itself, so no card exists for a person to approve.
   const turn = await agentTurn(owner, ws, attempt("takeOver",
-      `env.ADMIN.claimIssueReport(${json(report.id)}, { takeOver: true })`), { connection });
+      `env.ADMIN.claimIssueReport(${json(report.id)}, { takeOverFrom: ${json(GRACE)} })`),
+      { connection });
   expect(await turn.results()).toEqual({
     takeOver: { error: expect.stringContaining("Only a person takes an issue report") },
   });
@@ -407,10 +408,12 @@ it("never lets an agent take a report from a person", async () => {
   expect(await adminActions(ws)).toEqual([]);
   expect(await assigneeOf(report.id)).toEqual(hers);
 
-  // A person's plain claim is refused as well; their take-over, through their own Admin API,
-  // is what takes it.
+  // A person's plain claim is refused as well, and so is their take-over from an admin who
+  // does not hold the report; their take-over from its holder, through their own Admin API, is
+  // what takes it.
   await expect(admin.claimIssueReport(report.id)).rejects.toThrow(ASSIGNED);
-  await admin.claimIssueReport(report.id, { takeOver: true });
+  await expect(admin.claimIssueReport(report.id, { takeOverFrom: HEIDI })).rejects.toThrow(ASSIGNED);
+  await admin.claimIssueReport(report.id, { takeOverFrom: GRACE });
   expect(await assigneeOf(report.id))
       .toEqual({ id: OWNER, name: OWNER, at: expect.any(Date), via: "api" });
   expect(await assignments(report.id))

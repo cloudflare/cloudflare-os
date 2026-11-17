@@ -421,12 +421,12 @@ describe("an approved action of the admin gatekeeper", () => {
 
   it("refuses a take-over to a lent call", () => adminWorkspace(async ws => {
     let reportId = await fileReport(ws);
-    await ws.impl.issueReports.getByName("").claim(OTHER_ADMIN, { via: "api" }, reportId, false);
+    await ws.impl.issueReports.getByName("").claim(OTHER_ADMIN, { via: "api" }, reportId);
     let held = { id: OTHER_ADMIN.id, via: "api" };
 
     // The store refuses it where the call lands, whatever was approved.
     let takeOver = await queueAction(ws, 12, "issueReportAssignment",
-        [{ method: "claimIssueReport", args: [reportId, { takeOver: true }] }]);
+        [{ method: "claimIssueReport", args: [reportId, { takeOverFrom: OTHER_ADMIN.id }] }]);
     expect(await approve(ws, takeOver)).toBe("Only a person takes an issue report over.");
     expect(await assigneeOf(ws, reportId)).toMatchObject(held);
 

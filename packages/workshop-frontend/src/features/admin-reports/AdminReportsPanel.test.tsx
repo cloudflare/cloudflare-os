@@ -170,7 +170,7 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
     claimIssueReport: vi.fn<AdminApi['claimIssueReport']>(async (id, claim) => {
       const opened = get(id)
       if (opened.assignee?.id === ada.id) return
-      if (opened.assignee !== undefined && claim?.takeOver !== true) {
+      if (opened.assignee !== undefined && opened.assignee.id !== claim?.takeOverFrom) {
         throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned)
       }
       assign(opened, opened.assignee === undefined ? 'claimed' : 'takenOver')
@@ -1196,7 +1196,7 @@ describe('the assignee of an open report', () => {
     await click(button('Take over', dialog()!))
     await settle()
 
-    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOver: true }]])
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: 'grace@example.test' }]])
     expect(dialog()).toBeNull()
     expect(holder()).toBe(`You, since ${formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))}`)
     expect(assigneeButtons()).toEqual(['Release'])
@@ -1544,45 +1544,125 @@ describe('a draft in the composer', () => {
   })
 })
 
+// The dialog, asked about Grace, who held the report when this admin read it.
+const askAboutGrace = async () => {
+  const admin = await renderPanel(
+    fakeAdmin([report('r-1', { assignee: heldBy() })]), '/admin?tab=reports&report=r-1',
+  )
+  await click(button('Take over…'))
+  expect(dialog()?.textContent).toContain('Take this report over from Grace Admin?')
+  return admin
+}
+const dialogAlerts = () => [...dialog()!.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)
+
 describe('a take-over after the holder changed', () => {
+  const GRACE = { id: 'grace@example.test', name: 'Grace Admin' }
   const HAL = { id: 'hal@example.test', name: 'Hal Admin' }
-  const then = formatFullTimestamp(new Date('2026-10-12T13:00:00Z'))
+  const IDA = { id: 'ida@example.test', name: 'Ida Admin' }
+  const THEN = new Date('2026-10-12T13:00:00Z')
+  const then = formatFullTimestamp(THEN)
   const now = formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))
 
   const line = (id: string, author: typeof HAL, assignment: NonNullable<IssueReportEntry['assignment']>) =>
-    adminEntry(id, '', { visibility: 'admins', assignment, author, at: new Date('2026-10-12T13:00:00Z') })
-
-  it.each([
-    {
-      name: 'takes a report over from whoever holds it when the holder changed after the dialog named one',
-      held: report('r-1', {
-        entries: [line('e-1', HAL, 'takenOver')], assignee: heldBy({ ...HAL, at: new Date('2026-10-12T13:00:00Z') }),
-      }),
-      lines: [`Hal Admin took this report over${then}`, `Ada Admin took this report over${now}`],
-    },
-    {
-      name: 'takes a report nobody holds any more when its holder released it after the dialog named them',
-      held: report('r-1', { entries: [line('e-1', { id: 'grace@example.test', name: 'Grace Admin' }, 'released')] }),
-      lines: [`Grace Admin released this report${then}`, `Ada Admin took this report${now}`],
-    },
-  ])('$name', async ({ held, lines }) => {
-    const admin = await renderPanel(
-      fakeAdmin([report('r-1', { assignee: heldBy() })]), '/admin?tab=reports&report=r-1',
-    )
-    await click(button('Take over…'))
-    expect(dialog()?.textContent).toContain('Take this report over from Grace Admin?')
-    // What the store holds once somebody else wrote to the report after this admin read it.
-    admin.held.set('r-1', held)
+    adminEntry(id, '', { visibility: 'admins', assignment, author, at: THEN })
+  // The report as the store holds it once `admin` took it over, after this admin read it.
+  const takenBy = (admin: typeof HAL) => report('r-1', {
+    entries: [line('e-1', admin, 'takenOver')], assignee: heldBy({ ...admin, at: THEN }),
+  })
+  it('takes nothing from an admin the dialog did not name, and asks again about the one who holds the report', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', takenBy(HAL))
 
     await click(button('Take over', dialog()!))
     await settle()
 
-    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOver: true }]])
+    // Refused: the report is Hal's still, and is read again to say so.
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: GRACE.id }]])
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(admin.held.get('r-1')!.assignee).toMatchObject(HAL)
+    expect(holder()).toBe(`Hal Admin, since ${then}`)
+    expect(thread().map((entry) => entry.textContent)).toEqual([`Hal Admin took this report over${then}`])
+    // The dialog stays, asks about Hal and says why, in place of a refusal beneath the block.
+    expect(dialog()?.textContent).toContain('Take this report over from Hal Admin?')
+    expect(dialog()?.textContent).toContain(`Hal Admin holds this report since ${then}.`)
+    expect(dialogAlerts()).toEqual(['Grace Admin no longer holds this report, so it was not taken over.'])
+    expect(alerts()).toEqual([])
+    expect(findButton('Take over', dialog()!)?.disabled).toBe(false)
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls.at(-1)).toEqual(['r-1', { takeOverFrom: HAL.id }])
+    expect(admin.claimIssueReport).toHaveBeenCalledTimes(2)
+    expect(dialog()).toBeNull()
+    expect(alerts()).toEqual([])
+    expect(holder()).toBe(`You, since ${now}`)
+    expect(thread().map((entry) => entry.textContent))
+      .toEqual([`Hal Admin took this report over${then}`, `Ada Admin took this report over${now}`])
+  })
+
+  it('asks again each time the holder changed, and takes nothing when the admin then cancels', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', takenBy(HAL))
+    await click(button('Take over', dialog()!))
+    await settle()
+    admin.held.set('r-1', takenBy(IDA))
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls)
+      .toEqual([['r-1', { takeOverFrom: GRACE.id }], ['r-1', { takeOverFrom: HAL.id }]])
+    expect(dialog()?.textContent).toContain('Take this report over from Ida Admin?')
+    expect(dialogAlerts()).toEqual(['Hal Admin no longer holds this report, so it was not taken over.'])
+
+    await click(button('Cancel', dialog()!))
+    await settle()
+
+    expect(dialog()).toBeNull()
+    expect(admin.claimIssueReport).toHaveBeenCalledTimes(2)
+    expect(admin.held.get('r-1')!.assignee).toMatchObject(IDA)
+    expect(holder()).toBe(`Ida Admin, since ${then}`)
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(alerts()).toEqual([])
+
+    // Asked anew, the dialog names the holder and nobody before them.
+    await click(button('Take over…'))
+
+    expect(dialog()?.textContent).toContain('Take this report over from Ida Admin?')
+    expect(dialogAlerts()).toEqual([])
+  })
+
+  it('takes a report nobody holds any more when its holder released it after the dialog named them', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', report('r-1', { entries: [line('e-1', GRACE, 'released')] }))
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: GRACE.id }]])
     expect(admin.releaseIssueReport).not.toHaveBeenCalled()
     expect(alerts()).toEqual([])
     expect(dialog()).toBeNull()
     expect(holder()).toBe(`You, since ${now}`)
-    expect(thread().map((entry) => entry.textContent)).toEqual(lines)
+    expect(thread().map((entry) => entry.textContent))
+      .toEqual([`Grace Admin released this report${then}`, `Ada Admin took this report${now}`])
+  })
+
+  it('closes the dialog on the refusal when the report could not be read again', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', takenBy(HAL))
+    admin.getIssueReport.mockRejectedValueOnce(new Error('offline'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    // Who holds the report now is not known, so nobody is asked about.
+    expect(dialog()).toBeNull()
+    expect(alerts()).toEqual(['Another admin holds this issue report.'])
+    expect(holder()).toContain('Grace Admin, since')
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(admin.held.get('r-1')!.assignee).toMatchObject(HAL)
   })
 })
 

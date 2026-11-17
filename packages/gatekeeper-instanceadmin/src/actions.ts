@@ -40,7 +40,7 @@ export type AssignmentPayload = { reportId: string; assignment: "claim" | "relea
 /** What an agent is told when it asks to take a report over. */
 export const TAKE_OVER_BY_PERSON = "Only a person takes an issue report from the admin who " +
   "holds it: an admin does, in the Workshop, the CLI or the API. Call claimIssueReport() " +
-  "without takeOver, which is refused when another admin holds the report.";
+  "without takeOverFrom, which is refused when another admin holds the report.";
 
 /** A write request to file, as requestWorkspaceWrite() takes it. */
 export type WriteRequestPayload = {

@@ -306,7 +306,7 @@ describe("the card of an assignment", () => {
     using _session = session;
     await session.claimIssueReport!(REPORT_ID);
     await session.claimIssueReport!(REPORT_ID, {});
-    await session.claimIssueReport!(REPORT_ID, { takeOver: false });
+    await session.claimIssueReport!(REPORT_ID, { takeOverFrom: undefined });
     await session.releaseIssueReport!(REPORT_ID);
 
     const cards = queue.submitted.map((entry) => entry.description);

@@ -356,11 +356,11 @@ describe("a change to a report", () => {
       change: "note",
     }],
     ["a claim", {
-      write: (host, id, caller) => host.claim(GRACE, caller, id, false),
+      write: (host, id, caller) => host.claim(GRACE, caller, id),
       change: "assignment",
     }],
     ["a release", {
-      before: (host, id, caller) => host.claim(GRACE, caller, id, false),
+      before: (host, id, caller) => host.claim(GRACE, caller, id),
       write: (host, id, caller) => host.release(GRACE, caller, id),
       change: "assignment",
     }],
@@ -377,8 +377,8 @@ describe("a change to a report", () => {
       change: "reply", status: "withAdmin",
     }],
     ["a take-over", {
-      before: (host, id) => host.claim(HEDY, PERSON, id, false),
-      write: (host, id) => host.claim(GRACE, PERSON, id, true),
+      before: (host, id) => host.claim(HEDY, PERSON, id),
+      write: (host, id) => host.claim(GRACE, PERSON, id, HEDY.id),
       change: "assignment",
     }],
     ["links that differ from the report's", {
@@ -448,7 +448,7 @@ describe("a change to a report", () => {
     let report = await reports.file();
     let other = await reports.file();
     await reports.run(async host => {
-      await host.claim(GRACE, PERSON, report.id, false);
+      await host.claim(GRACE, PERSON, report.id);
       await host.setLinks(report.id, [LINK]);
     });
     await reports.settled();
@@ -459,9 +459,9 @@ describe("a change to a report", () => {
     await reports.run(async host => {
       await host.setStatus(GRACE, PERSON, report.id, "new");
       await host.setStatus(GRACE, AGENT, report.id, "new");
-      await host.claim(GRACE, PERSON, report.id, false);
-      await host.claim(GRACE, PERSON, report.id, true);
-      await host.claim(GRACE, AGENT, report.id, false);
+      await host.claim(GRACE, PERSON, report.id);
+      await host.claim(GRACE, PERSON, report.id, HEDY.id);
+      await host.claim(GRACE, AGENT, report.id);
       await host.release(GRACE, PERSON, other.id);
       await host.release(GRACE, AGENT, other.id);
       await host.setLinks(report.id, [LINK]);
@@ -481,12 +481,12 @@ describe("a change to a report", () => {
     let closed = await reports.file();
     let full = await reports.file();
     await reports.run(async host => {
-      await host.claim(HEDY, PERSON, report.id, false);
+      await host.claim(HEDY, PERSON, report.id);
       await host.setStatus(GRACE, PERSON, closed.id, "closed");
       for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
         await host.addEntry(GRACE, AGENT, full.id, "A note.", "admins");
         await host.setStatus(GRACE, AGENT, full.id, i % 2 === 0 ? "answered" : "withAdmin");
-        if (i % 2 === 0) await host.claim(GRACE, AGENT, full.id, false);
+        if (i % 2 === 0) await host.claim(GRACE, AGENT, full.id);
         else await host.release(GRACE, AGENT, full.id);
       }
       for (let i = 0; i < MAX_ISSUE_REPORT_REPLIES_PER_DAY; i++) {
@@ -512,7 +512,7 @@ describe("a change to a report", () => {
     let calls: [string, (host: Host) => unknown][] = [
       [codes.notFound, host => host.setStatus(GRACE, PERSON, unknown, "closed")],
       [codes.notFound, host => host.addEntry(GRACE, PERSON, unknown, "A note.", "admins")],
-      [codes.notFound, host => host.claim(GRACE, PERSON, unknown, false)],
+      [codes.notFound, host => host.claim(GRACE, PERSON, unknown)],
       [codes.notFound, host => host.release(GRACE, PERSON, unknown)],
       [codes.notFound, host => host.setLinks(unknown, [LINK])],
       [codes.notFound, host => host.setLinks(unknown, [])],
@@ -522,12 +522,14 @@ describe("a change to a report", () => {
       [codes.tooManyReplies, host => host.reply(ADA, full.id, REPLY)],
       [codes.threadFull, host => host.addEntry(GRACE, AGENT, full.id, "A note.", "admins")],
       [codes.threadFull, host => host.setStatus(GRACE, AGENT, full.id, "closed")],
-      [codes.threadFull, host => host.claim(GRACE, AGENT, full.id, false)],
-      [codes.assigned, host => host.claim(GRACE, PERSON, report.id, false)],
-      [codes.assigned, host => host.claim(GRACE, AGENT, report.id, false)],
+      [codes.threadFull, host => host.claim(GRACE, AGENT, full.id)],
+      [codes.assigned, host => host.claim(GRACE, PERSON, report.id)],
+      [codes.assigned, host => host.claim(GRACE, AGENT, report.id)],
       [codes.assigned, host => host.release(GRACE, PERSON, report.id)],
+      // A take-over from an admin who does not hold the report.
+      [codes.assigned, host => host.claim(GRACE, PERSON, report.id, ADA.id)],
       // The take-over through the gatekeeper, and what is not a status, a text or a link.
-      ["TypeError", host => host.claim(GRACE, AGENT, report.id, true)],
+      ["TypeError", host => host.claim(GRACE, AGENT, report.id, HEDY.id)],
       ["TypeError", host => host.setStatus(GRACE, PERSON, report.id, "done" as IssueReportStatus)],
       ["TypeError", host => host.addEntry(GRACE, PERSON, report.id, " ", "public")],
       ["TypeError", host => host.addEntry(GRACE, { via: "web" } as never, report.id, "A note.",

@@ -243,17 +243,25 @@ assigns another person.
 
 | The report | What a claim does |
 | --- | --- |
-| Nobody holds it | The caller holds it. |
+| Nobody holds it | The caller holds it, whatever `options.takeOverFrom` names. |
 | The caller holds it | Nothing: no line and no event. |
 | Another admin holds it | Refused `assigned` (`ISSUE_REPORT_ASSIGNED`), a code no other refusal carries. |
-| Another admin holds it, and `options.takeOver` is set | The caller holds it instead. |
+| Another admin holds it, and `options.takeOverFrom` is that admin's id | The caller holds it instead. |
+| Another admin holds it, and `options.takeOverFrom` names anyone else | Refused `assigned`, as a claim without it. |
 
 - **Two admins' claims that race have one winner.** The store reads the holder and writes the
   new one in one step, so the second claim finds the report held and is refused `assigned`.
-- **Only a person takes a report over.** The Workshop sets `takeOver` after asking, naming the
-  holder. A call made through the admin gatekeeper is refused with it set: the store reads how
-  the call is labelled, and only a workspace sets that label on the Admin API it lends. So no
-  agent and no gadget takes a report from a person.
+- **A take-over takes a report only from the holder the caller confirmed.** `takeOverFrom` is
+  that admin's id, as the report shows it (`IssueReportAssignee.id`), and the store compares
+  it with the holder in the step that writes the new one. A report that changed hands after
+  the caller read it is therefore not taken from an admin the caller never named: the call is
+  refused `assigned`, and the caller reads the report again and asks about the admin who holds
+  it then. Two take-overs from one holder that race have one winner for the same reason. A
+  report its holder released meanwhile has nobody to take it from, and is claimed.
+- **Only a person takes a report over.** The Workshop sets `takeOverFrom` after asking, naming
+  the holder. A call made through the admin gatekeeper is refused with it set, whoever it
+  names: the store reads how the call is labelled, and only a workspace sets that label on the
+  Admin API it lends. So no agent and no gadget takes a report from a person.
 - **A holder who is no longer a deployment admin stays shown as the assignee.** The store never
   asks who is an admin, and any admin can take the report over.
 
@@ -703,7 +711,10 @@ the activity of the workspace that read, which is deleted with that workspace.
     report offers the one thing its reader can do: "Assign to me" for a report nobody holds,
     "Release" for their own, and "Take over…" for another admin's, which asks first in a dialog
     that names the holder. A claim refused because another admin took the report first reads
-    the report again and shows that holder. Each change is a line of the thread.
+    the report again and shows that holder. A take-over is from the holder the dialog named:
+    refused because another admin holds the report by then, it leaves the dialog open, which
+    asks again, names that admin and says that the one it named before no longer holds the
+    report. Each change is a line of the thread.
   - **The assignee filter** is anyone, the admin reading the list ("Me") or nobody; a holder's
     name on a row filters the list by that admin, shown as a chip that removes the filter.
 
@@ -720,7 +731,7 @@ Expected refusals carry a code from `ISSUE_REPORT_ERROR_CODES` (read with
 | `ISSUE_REPORT_TOO_MANY` | The reporter filed `MAX_ISSUE_REPORTS_PER_DAY` reports today. |
 | `ISSUE_REPORT_TOO_MANY_REPLIES` | The reporter wrote `MAX_ISSUE_REPORT_REPLIES_PER_DAY` replies today. |
 | `ISSUE_REPORT_THREAD_FULL` | The thread holds `MAX_ISSUE_REPORT_THREAD_ENTRIES` entries of the kind being written. |
-| `ISSUE_REPORT_ASSIGNED` | Another admin holds the report (a claim without take-over, or a release by someone who does not hold it). |
+| `ISSUE_REPORT_ASSIGNED` | Another admin holds the report (a claim that does not take it over from that admin, or a release by someone who does not hold it). |
 | `ISSUE_REPORT_TOO_MANY_IMAGES` | The report already has five images, uploads in progress included. |
 | `ISSUE_REPORT_IMAGE_TOO_LARGE` | The declared length is over 5 MiB. |
 | `ISSUE_REPORT_IMAGE_NOT_RECOGNISED` | The bytes are not a PNG's, a JPEG's or a WebP's. |
@@ -746,7 +757,8 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   none of the three; and an admins-only status line counted as a change of status, never as a
   note.
 - `issue-reports.test.ts` also covers the assignee: a claim, the holder's own, another admin's
-  refused with its code, two that race, a person's take-over, a take-over refused through the
+  refused with its code, two that race, a person's take-over from the holder they name, one
+  refused from anyone else, two from one holder that race, a take-over refused through the
   admin gatekeeper, a release by the holder alone, a holder who is no longer an admin, the
   list's two filters, each change as one admins-only line, the bound on those made through the
   gatekeeper, nothing of it in what the reporter reads, and a store that gains the columns.
@@ -801,6 +813,6 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   `MyIssuesSummary.test.tsx`), and the one dialog every Report issue item opens
   (`ReportIssueHost.test.tsx`).
 - `features/admin-reports/`: the Reports tab (`AdminReportsPanel.test.tsx` and its browser
-  test), the assignee's controls, the take-over dialog and what the status control says the
-  reporter reads included; its filters and its retention setting (`reportFilter.test.ts`,
-  `reportSettings.test.ts`).
+  test), the assignee's controls, the take-over dialog, which asks again once the holder
+  changed, and what the status control says the reporter reads included; its filters and its
+  retention setting (`reportFilter.test.ts`, `reportSettings.test.ts`).

@@ -167,7 +167,7 @@ describe("the declarations", () => {
         "reportId: Awaitable<string>, options?: Awaitable<IssueReportClaimOptions>): Promise<void>;");
     expect(member(declarations, ROOT, "releaseIssueReport")!.signature)
         .toBe("  releaseIssueReport(reportId: Awaitable<string>): Promise<void>;");
-    expect(declarations).toContain("takeOver?: boolean;");
+    expect(declarations).toContain("takeOverFrom?: string;");
     for (const name of ["claimIssueReport", "releaseIssueReport"]) {
       expect(member(declarations, ROOT, name)!.doc.startsWith(`${QUEUED_DOC}\n\n`), name).toBe(true);
     }

@@ -317,7 +317,7 @@ describe("a report session", () => {
     expect(refused).not.toBe("did not reject");
     for (const call of [
       () => refusalOf(report, "claimIssueReport", REPORT_ID),
-      () => refusalOf(report, "claimIssueReport", REPORT_ID, { takeOver: true }),
+      () => refusalOf(report, "claimIssueReport", REPORT_ID, { takeOverFrom: "linus" }),
       () => refusalOf(report, "claimIssueReport"),
       () => refusalOf(report, "releaseIssueReport", REPORT_ID),
       () => refusalOf(report, "releaseIssueReport"),

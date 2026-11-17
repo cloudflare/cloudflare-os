@@ -1206,7 +1206,7 @@ them):
   always waits for a person, and so does a request for content access. A claim and a release
   are one kind of action, for the workspace's owner, whoever in the workspace asked: a claim
   makes the owner the report's assignee and is refused where another admin holds the report. It
-  is never a take-over, which only a person makes (see
+  is never a take-over, which only a person makes, from the holder they name (see
   [issue-reports.md](issue-reports.md#the-assignee)). An action refused where it lands, such
   a claim included, stays pending until a person rejects it, and the connection's later
   actions wait behind it (see [its limits](issue-reports.md#limits)).
