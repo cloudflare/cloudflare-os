@@ -45,8 +45,11 @@ export interface AdminBinding extends AdminApi {
 
   /**
    * Call `hook` each time an admin ends a report's investigation: its status leaves
-   * "investigating" for any status but "new". `hook` is a persistent stub, as for
-   * subscribeIssueReported().
+   * "investigating" for any status but "new". An event whose status is "fixSuggested" or
+   * "fixInProgress", which the report's reporter reads as "withAdmin", marks THIS workspace as
+   * holding restricted data, as reading the report through this binding does: from then on
+   * nothing here is applied without a person, a reply through a report session included.
+   * `hook` is a persistent stub, as for subscribeIssueReported().
    */
   subscribeInvestigationComplete(hook: InvestigationCompleteHook): Promise<void>;
 
@@ -62,8 +65,11 @@ export interface AdminBinding extends AdminApi {
    * comes for an action that changed nothing when it ran (a claim of a report this workspace's
    * owner already holds, a status the report already has), for one that was denied, or for
    * one refused where it lands (`assigned`, `threadFull`): code that waits to learn what
-   * became of an action reads the report as well, and never waits on the event alone. `hook`
-   * is a persistent stub, as for subscribeIssueReported().
+   * became of an action reads the report as well, and never waits on the event alone. Every
+   * event but a "reply" tells what the report's reporter is not shown, and marks THIS
+   * workspace as holding restricted data, as reading the report through this binding does:
+   * from then on nothing here is applied without a person, a reply through a report session
+   * included. `hook` is a persistent stub, as for subscribeIssueReported().
    */
   subscribeIssueReportChanged(hook: IssueReportChangedHook): Promise<void>;
 }
@@ -96,7 +102,9 @@ export interface IssueReportedHook {
  * callback can be called more than once for the same event, and a report's investigation can
  * end more than once, with the same status and at the same `at` too: key the work by `eventId`,
  * which is the same each time one event is delivered and differs between two ends. It answers
- * within 30 seconds, as IssueReportedHook's does.
+ * within 30 seconds, as IssueReportedHook's does. Receiving an event whose `status` is
+ * "fixSuggested" or "fixInProgress" marks this workspace as holding restricted data (see
+ * subscribeInvestigationComplete()).
  */
 export interface InvestigationCompleteHook {
   /** Called when an admin moved the report from "investigating" to `status`, at `at`. */
@@ -119,7 +127,9 @@ export interface InvestigationCompleteHook {
  * is the same each time one event is delivered and differs between two writes. The events of
  * one report can arrive in any order, and two calls for it can run at once: never keep the
  * last event's `status` as the report's, and never take two calls for one report to run one
- * after the other. It answers within 30 seconds, as IssueReportedHook's does.
+ * after the other. It answers within 30 seconds, as IssueReportedHook's does. Receiving an
+ * event of any `change` but "reply" marks this workspace as holding restricted data (see
+ * subscribeIssueReportChanged()).
  */
 export interface IssueReportChangedHook {
   /** Called when the report was written to, at `at`. */

@@ -218,13 +218,13 @@ and reads `fixProposed` under the name "Fix in review".
 
 The two statuses are kept out of the reporter's view of the report: the reporter's API, their
 lists, the thread they read, and a session limited to the report. They are not kept out of what
-an admin, or an admin's code, may write to the reporter. The [hooks](#hooks) carry a status as
-admins read it, and receiving an event does not mark a workspace as holding restricted data. So
-a subscriber in a workspace that holds none can learn `fixSuggested` or `fixInProgress` from an
-event and say so in a public reply through a session limited to the report, which a rule there
-applies with no person. The same goes for the rest of what a "Report changed" event says: that,
+an admin, or an admin's code with a person's approval, may write to the reporter. The
+[hooks](#hooks) carry a status as admins read it, and a "Report changed" event also says that,
 and when, a note for admins alone was written, the report's assignee changed or its links were
-replaced (see [Limits](#limits)).
+replaced. Receiving an event that tells any of this marks the subscriber's workspace as
+holding restricted data, as reading the report through the admin connection does. No rule
+applies anything there from then on, so a reply through a session limited to the report, which
+a rule applies in a workspace that holds none, waits for a person (see [Hooks](#hooks)).
 
 ## The assignee
 
@@ -328,6 +328,27 @@ owner is one. A hook wakes a gadget's stored callback or an existing chat; it op
   longer is given up on and called again later, so that it holds back other subscribers' events
   for no longer than that (see [Limits](#limits)).
 
+**Which events mark the workspace.** The gatekeeper observes each delivery in the subscriber's
+workspace before it calls the callback, and flags the observation as restricted data when the
+event tells something the report's reporter is not shown:
+
+| Event | Marks the workspace |
+| --- | --- |
+| Issue reported | Never: the report's id, its priority and when it was filed are the reporter's own. |
+| Investigation complete | When its status is `fixSuggested` or `fixInProgress`. Leaving `investigating` always changes the status the reporter reads, so that it ended, and when, is public: only the status can be hidden. |
+| Report changed, `reply` | Never: a reply is a public entry, and so is the status the reporter's reopening reply set. |
+| Report changed, `status` | Always. The event does not say whether the reporter was shown the change: a move between statuses the reporter reads as the same one is a line for admins alone. |
+| Report changed, `assignment`, `note`, `links` | Always: each is for admins alone, and so is the time it was written. |
+
+- **The mark is the one a read through the admin connection makes**: no rule applies anything
+  in that workspace from then on, its web fetches reach only the hosts the deployment trusts,
+  and it admits only deployment admins for good (see
+  [the README](../packages/gatekeeper-instanceadmin/README.md#restricted-data)).
+- **Subscribing marks nothing**, and neither does an event that says only what the reporter
+  has: a workspace that receives "Issue reported" events and replies alone keeps its rules.
+- **One event is enough, of any report.** A workspace whose rule is to answer reporters with
+  no person subscribes to "Issue reported" alone (see [Limits](#limits)).
+
 **The store's outgoing events.** The report store tells the gatekeeper; the gatekeeper holds
 nothing it could ask with. The store writes one row per event (`events`: a sequence number, a
 random id, the kind, the report's id, a label, the status a write set, and the time) in the
@@ -391,21 +412,20 @@ What the design accepts, stated as it is:
    reply, a status or an assignment), through the Workshop or the CLI.
 7. **"Assign to me" through a gadget assigns the workspace's owner**, whoever in that workspace
    pressed the button.
-8. **`fixSuggested` and `fixInProgress` are hidden from the reporter's view, not from what an
-   admin's code may write, and neither is the fact of a write only admins read.** An event
-   carries the status as admins read it and what the write was, its observation is not flagged
-   as restricted, and a public reply through a session limited to the report is applied by a
-   rule in a workspace that holds no restricted data (see
-   [What the reporter reads](#what-the-reporter-reads)). So a subscriber there can tell a
-   reporter, with no person in between, which of the two statuses the report has, and that and
-   when admins wrote a note, changed the report's assignee or replaced its links: never a
-   note's text, a link or an admin's name, which no event carries.
+8. **An event that tells what the reporter is not shown marks the workspace that receives it,
+   for good**: an investigation that ended as `fixSuggested` or `fixInProgress`, and every
+   "Report changed" event but a `reply` (see [Hooks](#hooks)). So what an event says of the
+   admins' own statuses, notes, assignments and links reaches the reporter only through a
+   person. The mark is coarse: a status change is flagged even where the reporter was shown
+   it, and one such write to any report of the deployment marks every workspace subscribed
+   to its hook. What marks nothing, "Issue reported" and a `reply` change, says nothing the
+   reporter does not have.
 9. **One queue delivers every hook of the deployment.** A run of it attempts 20 deliveries, the
    earliest due first, and lasts as long as its slowest callback: up to 30 seconds. "Report
    changed" fires far more often than the other two hooks: a reporter can write
    `MAX_ISSUE_REPORT_REPLIES_PER_DAY` (100) replies a day where they can file
-   `MAX_ISSUE_REPORTS_PER_DAY` (20) reports; a looping subscriber whose writes a rule applies
-   can make `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) of each of the four kinds on one report; and
+   `MAX_ISSUE_REPORTS_PER_DAY` (20) reports; code whose writes a rule applies can make
+   `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) of each of the four kinds on one report; and
    each event is one delivery for every enabled hook of its kind. So one slow or failing
    subscriber of it can delay other workspaces' "Issue reported" deliveries by minutes. A
    delivery is delayed, never lost: N deliveries due ahead of it cost at most ceil(N / 20)
@@ -765,8 +785,9 @@ gatekeeper and a scripted model:
   holds it; an agent never takes a report from a person; a claim assigns the workspace's owner,
   whoever asked; and a session limited to one report reads what its reporter reads.
 - `admin-gatekeeper-hooks.test.ts`: a gadget's stored callback is called once for each kind of
-  change to a report, and both hooks fire, each with an id of its own, when a report leaves
-  `investigating`.
+  change to a report, both hooks fire, each with an id of its own, when a report leaves
+  `investigating`, and a workspace is marked by an event that tells of a note and by neither
+  a new report nor a reply.
 
 The gatekeeper's own suites are listed in
 [its README](../packages/gatekeeper-instanceadmin/README.md#tests).

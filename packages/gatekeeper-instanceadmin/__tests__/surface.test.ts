@@ -183,6 +183,12 @@ describe("the declarations", () => {
         "every write to a report after it was filed (a status, an assignment, a thread entry, " +
         "its links), with its id, what the write was and the time. All carry ids and labels " +
         "only: the callback reads the report through this binding.");
+    // Receiving an event is not free of the mark a read makes.
+    expect(preamble).toContain(
+        "An event that tells what its report's reporter is not shown marks this workspace as " +
+        "holding restricted data, as a read does: an investigation that ended as " +
+        "\"fixSuggested\" or \"fixInProgress\", and every change but a \"reply\". A new report " +
+        "and a \"reply\" never mark.");
     expect(preamble).toContain(
         "A callback can be called more than once for the same event: it keys its work by the " +
         "event's id (eventId), which is the same each time one event is delivered and never " +

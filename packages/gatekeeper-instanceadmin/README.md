@@ -75,11 +75,13 @@ say who called, and a rule would apply what it queued with nobody deciding.
 
 ### After the connection is removed
 
-Which workspaces stay closed is decided by one fact, the mark a read makes:
+Which workspaces stay closed is decided by one fact, the mark a read makes. A hook's delivery
+of an event that tells what a report's reporter is not shown makes the same mark, and counts
+as a read through the whole binding here (see [Hooks](#hooks)):
 
 - **A workspace that never read through the whole binding is ordinary again at once.** It may
-  have opened report sessions, queued actions or received hooks. The people kept in its sharing
-  list are admitted at their next open, with nobody inviting them.
+  have opened report sessions, queued actions or received events that mark nothing. The people
+  kept in its sharing list are admitted at their next open, with nobody inviting them.
 - **A workspace that has read through the whole binding stays admins-only for good.** Its chats
   hold what was read, and nothing lifts the rule.
 
@@ -220,7 +222,7 @@ A Worker that kept every capability it was given, and misbehaved, could:
   is told to, opens a session, and with it a 15-minute lend of the reads;
 - misdeclare what is its own to declare: queue a reply drafted through the whole binding under
   the scoped reply's tag (`issue-report-scoped-reply`), or leave the restricted-data flag off a
-  read, and so get a rule's approval for what should wait for a person.
+  read or a hook's delivery, and so get a rule's approval for what should wait for a person.
 
 The split between a reply through the binding and a reply through a report session, and the
 restricted-data mark, hold against agents and gadgets, which choose neither. They are the
@@ -439,8 +441,14 @@ Workshop enforces what it enforces for restricted data everywhere:
 - web fetches reach only the hosts the deployment trusts with such data;
 - a push is refused.
 
-**A report session's reads do not mark, and neither does a hook's delivery.** A report session
-returns only what the reporter could see, and an event is an id and a label.
+**A report session's reads do not mark, and neither does a hook's delivery of what the
+reporter has**: a new report, or a public reply. A report session returns only what the
+reporter could see.
+
+**A hook's delivery that tells more marks as a read does.** An investigation that ended as
+`fixSuggested` or `fixInProgress`, and every "Report changed" event but a `reply`, tell what
+the reporter is not shown: each is observed with `containsRestrictedData` under the binding's
+subresource (see [Hooks](#hooks)).
 
 **The one exception: a reporter's workspace that itself holds restricted data.** When the
 reporter's own workspace is marked, every answer of the session's view of that workspace,
@@ -457,8 +465,8 @@ view. A workspace marked after that is read unflagged until the view ends, at mo
 `ADMIN_AGENT_LEND_SECONDS` later.
 
 **So the one place a rule applies an action** is a workspace that has never read through the
-binding, nor a restricted reporter's workspace through a report session. It is the one way a
-reply reaches a reporter with no person in between.
+binding, nor a restricted reporter's workspace through a report session, nor received an event
+that marks. It is the one way a reply reaches a reporter with no person in between.
 
 **The order.** The latch is set before a read is forwarded and read again before each apply,
 and the lend itself refuses an auto-approved action in a marked workspace. A reply drafted, or
@@ -611,9 +619,38 @@ whole binding.
 An event is ids and labels only: the subscriber reads the report through its own binding.
 Subscribing reads nothing and marks nothing. The hook is bound disabled, and delivers once a
 person enables it. A hook wakes a gadget's stored callback or an existing chat, as hooks do; it
-opens no chat. A delivery is observed with the binding's subresource and no restricted-data
-flag, so a workspace that only receives events keeps its rules. The third hook is built as the
-other two are: who may subscribe, and whose firings the Workshop refuses, are the same.
+opens no chat. The third hook is built as the other two are: who may subscribe, and whose
+firings the Workshop refuses, are the same.
+
+**Which deliveries mark the workspace.** Each delivery is observed in the subscriber's
+workspace under the binding's subresource, before the callback is called. The observation
+carries `containsRestrictedData` when the event tells its subscriber something the report's
+reporter is not shown (`tellsWhatReporterIsNotShown()`, in `src/hooks.ts`):
+
+| Event | Flagged | Why |
+| --- | --- | --- |
+| Issue reported | Never | The report's id, its priority and when it was filed are the reporter's own. |
+| Investigation complete | When `status` is `fixSuggested` or `fixInProgress` | The reporter reads both as `withAdmin`. Leaving `investigating` always changes the status the reporter reads, so that it ended, and when, is a public line of the thread. |
+| Report changed, `reply` | Never | A reply is a public entry, the reporter's own or an admin's, and the status a reopening reply carries is public. |
+| Report changed, `status` | Always | The event carries the status as admins read it and not the one it replaced, so it does not say whether the reporter was shown the change: a move between statuses the reporter reads as the same one is a line for admins alone. |
+| Report changed, `assignment`, `note`, `links` | Always | Each is for admins alone, and so is the time it was written. |
+
+- **A flagged delivery marks the workspace exactly as a read through the whole binding does**,
+  since its observation names the same subresource: the latch, and admins-only for good (see
+  [Restricted data](#restricted-data) and
+  [After the connection is removed](#after-the-connection-is-removed)).
+- **Why.** A callback in a workspace that has read nothing can open a report session and reply
+  with what an event told it, and the rule for a scoped reply applies that reply with no
+  person deciding. Reading the same through `getIssueReport()` marks the workspace first, and
+  so does being told it.
+- **What marks nothing says nothing the reporter does not have.** A workspace that subscribes
+  only to "Issue reported", or receives only replies, keeps its rules. Subscribing itself
+  reads nothing and marks nothing.
+- **The hooks fire for every report of the deployment**, so a workspace that subscribes to
+  "Report changed" is marked by the first status, assignment, note or links written to any
+  report, and one that subscribes to "Investigation complete" by the first investigation that
+  ends as a fix suggested or in progress. A triage workspace whose rule answers reporters
+  subscribes to "Issue reported" alone.
 
 **What "Report changed" fires for.** One write to a report is one event, whose `change` says
 what the write was (`ISSUE_REPORT_CHANGES`):
@@ -708,9 +745,11 @@ one driver and one queue for the hooks of all three kinds:
   attempted within ceil(N / 20) further runs.
 
 The third hook raises N. A reporter can cause `MAX_ISSUE_REPORT_REPLIES_PER_DAY` (100) events a
-day, where filing gives `MAX_ISSUE_REPORTS_PER_DAY` (20). A subscriber that writes on every
-event, with rules that apply its writes, can cause `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) of
-each of the four kinds written through the gatekeeper: up to 800 on one report. Each event is
+day, where filing gives `MAX_ISSUE_REPORTS_PER_DAY` (20). Code whose writes rules apply can
+cause `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) of each of the four kinds written through the
+gatekeeper: up to 800 on one report. A subscriber that writes on every event does so with no
+person only for replies: the event of its first note, status or assignment marks its
+workspace, and no rule applies what it queues after that. Each event is
 one delivery for every enabled hook of its kind. With 800 events, three subscribed hooks and
 every callback timing out, that is 2,400 deliveries, 120 runs, and an hour before an "Issue
 reported" delivery behind them is attempted. It is delayed, never lost and never reordered
@@ -773,7 +812,7 @@ for any admin, and no more:
 | `addIssueReportEntry()`, `setIssueReportStatus()` | None | The entry or status line, with `via: "gatekeeper"` and, for admins, the origin | An action, with its card |
 | `claimIssueReport()`, `releaseIssueReport()` | None | A line only admins read, with no text: who claimed or released the report, with `via: "gatekeeper"` and the origin. The report's assignee carries the same `via` and origin while the claim holds. | An action, with its card |
 | `listUsers()`, `listWorkspaces()`, `getSettings()`, `isBlueprintFeatured()`, `listAdminAudit()`, `getAdminAuditStats()`, `whoami()`, `listIssueReports()`, `getIssueReport()`, `readIssueReportImage()`, `getWorkspaceWrite()`, and a report session's `get()` and `readImage()` | None | | An observation |
-| A hook's delivery, of any of the three | None | | An observation, with the binding's subresource and no restricted-data flag |
+| A hook's delivery, of any of the three | None | | An observation, with the binding's subresource, and the restricted-data flag when the event tells what the reporter is not shown (see [Hooks](#hooks)) |
 
 - **In the audit log**: the calls the Admin API records for any admin. A report session's view
   adds the one `describe` it makes when it opens.
@@ -864,14 +903,14 @@ found elsewhere:
   note, a public reply, a status or an assignment), through the Workshop or the CLI.
 - **A claim through a gadget assigns the workspace's owner**, whoever in that workspace pressed
   its "Assign to me" button.
-- **`fixSuggested` and `fixInProgress` are hidden from the reporter's view, not from what an
-  admin's code may write, and neither is the fact of a write only admins read.** An event
-  carries the status as admins read it and what the write was, its observation is not flagged
-  as restricted, and a public reply through a report session is applied by a rule in a
-  workspace that holds no restricted data. So a subscriber there can tell a reporter, with no
-  person in between, which of the two its report has, and that and when admins wrote a note,
-  changed the report's assignee or replaced its links: never a note's text, a link or an
-  admin's name, which no event carries.
+- **An event that tells what the reporter is not shown marks the workspace that receives it,
+  for good**: an investigation that ended as `fixSuggested` or `fixInProgress`, and every
+  "Report changed" event but a `reply` (see [Hooks](#hooks)). So what an event says of the
+  admins' own statuses, notes, assignments and links reaches the reporter only through a
+  person. The mark is coarse: a status change is flagged even where the reporter was shown
+  it, and one such write to any report of the deployment marks every workspace subscribed to
+  its hook. What marks nothing, "Issue reported" and a `reply` change, says nothing the
+  reporter does not have.
 - **One queue delivers every hook of the deployment**, 20 deliveries a run, each run as long
   as its slowest callback (up to 30 seconds). One slow or failing subscriber of "Report
   changed" can delay other workspaces' "Issue reported" deliveries by minutes, and by up to
@@ -931,8 +970,8 @@ the schema when it is stale and building the configurator frame.
   those the kind table does not omit; the declarations, with each "act" method resolving to
   nothing and no omitted method, `whoami()` as a read, and a claim and a release as queued;
   what the preamble says of whom the binding acts as, of the changed hook firing for a
-  workspace's own writes and of what sends no event; and every load-time check refusing the
-  schema it is for.
+  workspace's own writes, of what sends no event and of which events mark the workspace; and
+  every load-time check refusing the schema it is for.
 - `__tests__/workerd/session.test.ts`: the facet, the account and the vendor; a session's
   reads, lent, then observed, then forwarded, each marking under the binding's id, `whoami()`
   among them; a view a session opened; what a session refuses, a claim that asks to take a
@@ -950,7 +989,9 @@ the schema when it is stale and building the configurator frame.
 - `__tests__/workerd/hooks.test.ts`: subscribing; an event firing each hook of its kind once,
   each kind of write to a report among them, and a report that leaves `investigating` firing
   two hooks with an event id each; a delivery that fails; many changed events holding an
-  "Issue reported" delivery back by whole runs without losing it; the delivery stub; the
+  "Issue reported" delivery back by whole runs without losing it; which deliveries carry the
+  restricted-data flag, for each kind of write and each status an investigation ends with;
+  the delivery stub; the
   vendor's `issueReportEvents()`, through its argument validation: a batch that mixes kinds it
   knows with one it does not delivers the known ones, a known kind with an unknown label is
   dropped alone, and an event that is not ids and labels is still refused; the driver's
@@ -972,8 +1013,8 @@ removal, a blueprint, a demoted owner), `admin-gatekeeper-actions.test.ts` (the 
 rules, the restricted-data order, the report session and what it reads of a fix, two admins'
 workspaces claiming one report, a take-over an agent never makes) and
 `admin-gatekeeper-hooks.test.ts` (the three hooks into a gadget's stored callback, once for each
-kind of change to a report, a spawned chat with and without the binding, the hand-off and a
-forged stub).
+kind of change to a report, the workspace marked by an event its reporter is not shown and
+by no other, a spawned chat with and without the binding, the hand-off and a forged stub).
 
 ## Reviewing a change here
 
@@ -987,6 +1028,8 @@ forged stub).
   `ADMIN_BINDING_SUBRESOURCE`, or before its lend resolved;
 - a report session's observation that names `ADMIN_BINDING_SUBRESOURCE`, or its view of a
   restricted workspace observed without the flag;
+- a hook's delivery of an event that tells what the reporter is not shown observed without
+  the flag, or a field added to an event without a verdict in `tellsWhatReporterIsNotShown()`;
 - a comparison of a reporter's id with an owner's outside the report store;
 - a lend or a hook firing that does not ask the owner's account
   (`UserDurableObject.holdsGatekeeperAccount()`);

@@ -1240,7 +1240,9 @@ sets the platform's restricted-data latch on the workspace, in this version. Fro
 rule applies anything there, so every action waits for a person, and web fetches reach only the
 hosts the deployment trusts. A report session's reads do not mark, with one exception: its view
 of a reporter's workspace that itself holds restricted data marks the workspace that reads it,
-without closing it for good.
+without closing it for good. A hook's event that tells what a report's reporter is not shown
+marks the workspace that receives it as a read through the whole binding does, for good; a new
+report and a public reply mark nothing (see [issue-reports.md](issue-reports.md#hooks)).
 
 **Where the person behind a call is found.** Every record names the owner, so:
 
@@ -2106,8 +2108,9 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   request applied by their rules; the restricted-data mark and its order; the session limited
   to one report, its reply reaching the reporter with no person, and the mark of a reporter's
   restricted workspace; the three hooks firing into a gadget's stored callback, once for each
-  kind of change to a report; two admins' workspaces claiming one report, of which exactly one
-  holds it; and a spawned agent handed one report's session.
+  kind of change to a report, and which of their events mark the workspace; two admins'
+  workspaces claiming one report, of which exactly one holds it; and a spawned agent handed
+  one report's session.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it

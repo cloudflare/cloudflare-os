@@ -106,7 +106,8 @@ it("calls a gadget's stored callback once for each new report and each end of an
   expect(JSON.stringify(calls)).not.toContain(report.reporter.id);
   expect(JSON.stringify(calls)).not.toContain(unseen.id);
 
-  // Once each, and neither subscribing nor a firing marks the workspace.
+  // Once each. Neither subscribing nor these events mark the workspace: a new report, and an
+  // investigation that ended with a status the reporter reads, say nothing the reporter lacks.
   await new Promise(resolve => setTimeout(resolve, 500));
   expect(await facet.calls()).toHaveLength(3);
   expect(await observationTitles(ws)).toEqual(Array(3).fill("Receive an issue report event"));
@@ -216,9 +217,10 @@ it("calls a gadget's stored callback once for each kind of change to a report", 
   ]) {
     expect(JSON.stringify(calls), hidden).not.toContain(hidden);
   }
-  // Neither subscribing nor a firing marks the workspace.
+  // The workspace read nothing and is marked all the same, from its first event: a status is
+  // flagged whatever it set.
   expect(await observationTitles(ws)).toEqual(Array(expected).fill("Receive an issue report event"));
-  expect(await isRestricted(ws)).toBe(false);
+  expect(await isRestricted(ws)).toBe(true);
 });
 
 it("fires both hooks when a report leaves investigating, each with an id of its own", async () => {
@@ -247,6 +249,30 @@ it("fires both hooks when a report leaves investigating, each with an id of its 
 
   await new Promise(resolve => setTimeout(resolve, 500));
   expect(await facet.calls()).toHaveLength(3);
+});
+
+it("marks a workspace told of a note, which its reporter is not shown, and not one told only " +
+    "of a new report and a reply", async () => {
+  const { ws, facet } = await watcher(
+      "Triage, told of a note", ["subscribeIssueReported", "subscribeIssueReportChanged"]);
+  for (const hook of await ws.listHooks()) await ws.enableHook(hook.id);
+  const reporter = await newMember(suite, "noted");
+  const told = async (count: number) =>
+    (await callsOf(facet, count)).map(call => call.event.change ?? call.kind);
+
+  // A new report and a reply to it: the reporter has both, so the workspace keeps its rules.
+  const report = await fileReport(reporter);
+  expect(await told(1)).toEqual(["issueReported"]);
+  await reporter.api.replyToIssueReport(report.id, "It fails on every page");
+  expect(await told(2)).toEqual(["issueReported", "reply"]);
+  expect(await isRestricted(ws)).toBe(false);
+
+  // That admins wrote a note, and when, is theirs alone: being told of it marks the workspace
+  // as reading the report would.
+  await admin.addIssueReportEntry(report.id, "Likely the quota", "admins");
+  expect(await told(3)).toEqual(["issueReported", "reply", "note"]);
+  expect(await isRestricted(ws)).toBe(true);
+  expect(await observationTitles(ws)).toEqual(Array(3).fill("Receive an issue report event"));
 });
 
 /** What a triage agent is told of its interface: one call, with a stub that reaches one report. */

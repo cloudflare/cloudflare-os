@@ -266,6 +266,9 @@ the user who owns this workspace, a deployment admin.
   it was filed (a status, an assignment, a thread entry, its links), with its id, what the write
   was and the time. All carry ids and labels only: the callback reads the report through this
   binding.
+- An event that tells what its report's reporter is not shown marks this workspace as holding
+  restricted data, as a read does: an investigation that ended as "fixSuggested" or
+  "fixInProgress", and every change but a "reply". A new report and a "reply" never mark.
 - subscribeIssueReportChanged() fires for writes this workspace's own code made too. That is how
   code learns that an action it queued was applied; a callback that writes to a report must not
   answer its own change. No event comes for an action that changed nothing (a claim of a report
