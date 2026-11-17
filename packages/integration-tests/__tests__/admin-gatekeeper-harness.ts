@@ -14,9 +14,11 @@ import {
 } from "@gadgets/workshop-shared/api";
 import type { ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { softwareAuthenticator } from "../../workshop-backend/__tests__/software-authenticator.js";
+import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { loadAllChatHistory } from "../src/agent-session.js";
 import {
-  ADMIN_USERNAME, startHarness, type GatekeeperSpec, type Harness, type WorkerConfig,
+  ADMIN_USERNAME, startHarness, TEST_VENDOR_ID, type GatekeeperSpec, type Harness,
+  type WorkerConfig,
 } from "../src/harness.js";
 import {
   SCRIPTED_MODEL_CONFIG, SCRIPTED_MODEL_ID, SCRIPTED_MODEL_PROFILE, scriptedChatCompletions,
@@ -225,6 +227,38 @@ export async function addAdminConnection(ws: RpcStub<Overseer>, accountId: numbe
   const client = await ws.newGatekeeper(accountId, DEPLOYMENT_URL);
   if (client === null) throw new Error("The admin connection was not added");
   return { id: await client.getId(), client, description: await client.describe() };
+}
+
+/**
+ * A connection of the fixture gatekeeper in a workspace, its owner's own session of it, and the
+ * owner's account of the fixture.
+ */
+export type TestConnection = { id: WorkpieceId; session: RpcStub<TestSession>; accountId: number };
+
+/**
+ * Adds a connection of the fixture gatekeeper to `ws`, a workspace of `user`, and opens their own
+ * session of it: another vendor's connection beside the admin's, whose `readValue(true)` records
+ * an observation flagged as restricted data and whose `writeValue()` queues an action. The
+ * suite's harness must have booted the fixture (see startAdminHarness()).
+ *
+ * The account is added to `user` if they have none. While they hold it, each workspace they make
+ * has a connection of its singleton, about which a collaborator is asked when opening the
+ * workspace: a case disconnects `accountId` when it ends, passing or failing (onTestFinished()),
+ * so that later cases share as before.
+ */
+export async function addTestConnection(
+    suite: Suite, user: SuiteUser, ws: RpcStub<Overseer>, thing: string): Promise<TestConnection> {
+  await user.api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor(`${user.name}'s test gatekeeper account`, async () =>
+    (await listConnectedAccounts(user.api))
+        .find(found => found.vendorId === TEST_VENDOR_ID) ?? null);
+  using client = await ws.newGatekeeper(account.id, `https://gadgets-test.example/things/${thing}`);
+  if (client === null) throw new Error("The test connection was not added");
+  return {
+    id: await client.getId(),
+    session: suite.scope.use(await client.openSession() as RpcStub<TestSession>),
+    accountId: account.id,
+  };
 }
 
 /** A workspace of `user`, titled so that the admins' directory lists it under a known name. */

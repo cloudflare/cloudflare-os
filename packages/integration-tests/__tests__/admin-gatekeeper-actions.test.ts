@@ -1,25 +1,26 @@
 import type { RpcStub } from "capnweb";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, onTestFinished } from "vitest";
 import { ADMIN_AGENT_ACTIONS } from "@gadgets/workshop-shared/admin-agent";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, createAdminAccessError,
   OPEN_WORKSPACE_ERROR_CODES, type AdminApi, type Overseer,
 } from "@gadgets/workshop-shared/api";
-import type { Harness } from "../src/harness.js";
+import { TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR, type Harness } from "../src/harness.js";
 import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
 import { waitFor, type ConnectedAccount } from "../src/rpc-client.js";
 import {
-  addAdminConnection, adminActions, adminApiOf, agentTurn, approveWrite, auditRecords,
-  buildGadget, enableEveryRule, enrolPasskey, EVERY_TAG, fileReport, GRACE, HEIDI, isRestricted,
-  listed, newMember, newUser, newWorkspace, observationTitles, openAs, opening, OWNER,
-  pendingActions, provisionAdminAccount, recordingGadget, reporterThread, requestsFiled,
-  scriptedTurn, settle, startAdminHarness, TAGS, turnModels, VENDOR, type AdminConnection,
-  type Authenticator, type Suite, type SuiteUser,
+  addAdminConnection, addTestConnection, adminActions, adminApiOf, agentTurn, approveWrite,
+  auditRecords, buildGadget, codeResults, codeStep, enableEveryRule, enrolPasskey, EVERY_TAG,
+  fileReport, gadgetIds, GRACE, HEIDI, isRestricted, listed, newMember, newUser, newWorkspace,
+  observationTitles, openAs, opening, OWNER, pendingActions, provisionAdminAccount,
+  recordingGadget, reporterThread, requestsFiled, scriptedTurn, settle, startAdminHarness, TAGS,
+  turnModels, VENDOR, type AdminConnection, type Authenticator, type Suite, type SuiteUser,
 } from "./admin-gatekeeper-harness.js";
 
 // The gatekeeper's seven action kinds, what a rule may apply, and what marks a workspace as holding
 // restricted data: any read through the whole binding, and what a session limited to one report
-// reads of a reporter's workspace that is itself marked.
+// reads of a reporter's workspace that is itself marked. The fixture gatekeeper is booted beside
+// the admin's: another vendor, whose restricted data a workspace can read as well.
 //
 // The issue reports, the audit log and the passkeys are deployment-wide, so this file owns its
 // harness and runs serially. Each case that depends on what a workspace has read uses a
@@ -50,7 +51,8 @@ let heidiKey: Authenticator;
 
 beforeAll(async () => {
   network.install();
-  harness = await startAdminHarness();
+  harness = await startAdminHarness(
+      [{ binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR }]);
   suite = { harness, models, scope };
   owner = await newUser(suite, OWNER);
   grace = await newUser(suite, GRACE);
@@ -566,6 +568,315 @@ it("marks the workspace at any read through the binding, after which a rule appl
   expect(await requestsFiled(admin, wanted.id, id)).toHaveLength(1);
 });
 
+/** Code that reads through the whole binding, which marks the workspace, as `users`. */
+const readUsers =
+    attempt("users", "env.ADMIN.listUsers({ limit: 1 }).then(page => page.users.length)");
+const setStatus = (reportId: string, status: string) =>
+  `env.ADMIN.setIssueReportStatus(${json(reportId)}, "${status}")`;
+/** Each of the actions as [tag, "approved", false]: what a person's approval leaves of them. */
+const approvedByPerson = (actions: { description: { actionKind?: { tag: string } } }[]) =>
+  actions.map(action => [tagOf(action), "approved", false]);
+
+/**
+ * Approves `waiting`, the workspace's pending actions in order, one at a time, and checks after
+ * each that those behind it still wait: each was held by itself, not by the one in front.
+ */
+async function approveEach(ws: RpcStub<Overseer>, waiting: { id: number }[]): Promise<void> {
+  for (const [index, action] of waiting.entries()) {
+    await ws.approveAction(action.id);
+    await settle(ws);
+    expect((await pendingActions(ws, waiting.length - index - 1)).map(left => left.id))
+        .toEqual(waiting.slice(index + 1).map(left => left.id));
+  }
+}
+
+// Two workspaces the cases below leave marked, whose catalogs a later case reads: one that the
+// admin binding alone marked, and one that also read another vendor's restricted data.
+let marked: Triage;
+let mixed: Triage;
+
+it("applies an agent's note, its change of status and its claim with no person in a workspace " +
+    "that read through the whole binding, and holds its replies and its write request", async () => {
+  const reporter = await newMember(suite, "ruled");
+  const report = await fileReport(reporter);
+  const wanted = await newWorkspace(suite, reporter, "Ruled target");
+  await listed(admin, reporter.name, wanted.id);
+  marked = await triageWorkspace("Triage, rules under the mark", { rules: true });
+  const { ws, id, connection } = marked;
+
+  // One turn, two runs of code: the first reads, which marks the workspace, and the second
+  // writes. Nothing waits for anyone, so the turn runs to its end.
+  const { chatId, script } = await scriptedTurn(owner, ws, [
+    codeStep(readUsers),
+    codeStep(`
+      ${attempt("note", addEntry(report.id, "The quota was hit", "admins"))}
+      ${attempt("status", setStatus(report.id, "fixProposed"))}
+      ${attempt("claim", claim(report.id))}`),
+    { text: "Done." },
+  ], { connection });
+  expect(script.done()).toBe(true);
+  expect(await codeResults(ws, chatId)).toEqual([
+    { users: { value: 1 } },
+    { note: { value: null }, status: { value: null }, claim: { value: null } },
+  ]);
+  expect(await isRestricted(ws)).toBe(true);
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportNote, "approved", true], [TAGS.issueReportStatus, "approved", true],
+    [TAGS.issueReportAssignment, "approved", true],
+  ]);
+  // The read that marked the workspace came before the first of them was queued.
+  const marking = (await ws.listActions({ filter: "observation" })).entries.find(entry =>
+    entry.type === "observation" && entry.description.containsRestrictedData);
+  expect(marking!.id).toBeLessThan((await adminActions(ws))[0]!.id);
+
+  // Admins read all three, each written through the gatekeeper from this chat.
+  const origin = { workspaceId: id, chatId };
+  expect(await adminThread(report.id)).toEqual([
+    expect.objectContaining(
+        { text: "The quota was hit", visibility: "admins", via: "gatekeeper", agent: origin }),
+    expect.objectContaining(
+        { status: "fixProposed", visibility: "public", via: "gatekeeper", agent: origin }),
+    expect.objectContaining(
+        { assignment: "claimed", visibility: "admins", via: "gatekeeper", agent: origin }),
+  ]);
+  expect(await assigneeOf(report.id)).toEqual(
+      { id: OWNER, name: OWNER, at: expect.any(Date), via: "gatekeeper", agent: origin });
+  // The reporter reads the status, and neither the note nor who holds the report.
+  const own = await reporter.api.getIssueReport(report.id);
+  expect(own.status).toBe("fixProposed");
+  expect(own.entries).toEqual([expect.objectContaining(
+      { text: "", status: "fixProposed", visibility: "public", author: { name: OWNER } })]);
+  for (const hidden of ["The quota was hit", "assignee", "assignment", "claimed"]) {
+    expect(json(own), hidden).not.toContain(hidden);
+  }
+
+  // A further turn of the chat. A reply through a session limited to the report and a write
+  // request have a rule as well, and a public reply never has one that applies: all three wait.
+  const held = await agentTurn(owner, ws, `
+    ${attempt("scoped", scopedReply(report.id, "A scoped reply"))}
+    ${attempt("request", `env.ADMIN.requestWorkspaceWrite(
+        ${json(wanted.id)}, "restartWorkspace", {}, "Stuck after the report")`)}
+    ${attempt("reply", addEntry(report.id, "A public reply", "public"))}`, { chatId });
+  await settle(ws);
+  const waiting = await pendingActions(ws, 3);
+  expect(waiting.map(tagOf)).toEqual(
+      [TAGS.issueReportScopedReply, TAGS.workspaceWriteRequest, TAGS.issueReportReply]);
+  expect(held.paused()).toBe(true);
+  const replies = async () =>
+    (await reporterThread(reporter, report.id)).flatMap(entry => entry.text ? [entry.text] : []);
+  expect(await replies()).toEqual([]);
+  expect(await requestsFiled(admin, wanted.id, id)).toEqual([]);
+
+  await approveEach(ws, waiting);
+  await held.resumed();
+  expect((await decisions(ws)).slice(3)).toEqual(approvedByPerson(waiting));
+  expect(await replies()).toEqual(["A scoped reply", "A public reply"]);
+  expect(await requestsFiled(admin, wanted.id, id)).toHaveLength(1);
+});
+
+it("holds a note behind a reply that waits for a person, and applies it once the reply is " +
+    "decided", async () => {
+  const reporter = await newMember(suite, "queued");
+  const report = await fileReport(reporter);
+  const { ws, connection } = await triageWorkspace("Triage, a note behind a reply", { rules: true });
+
+  const turn = await agentTurn(owner, ws, `
+    ${readUsers}
+    ${attempt("reply", addEntry(report.id, "A public reply", "public"))}
+    ${attempt("note", addEntry(report.id, "A note", "admins"))}`, { connection });
+  expect(await isRestricted(ws)).toBe(true);
+  // A connection's actions are applied in order: the note's rule applies it in this workspace,
+  // and not ahead of the reply.
+  await settle(ws);
+  const [reply, note] = await pendingActions(ws, 2);
+  expect([reply, note].map(action => tagOf(action!)))
+      .toEqual([TAGS.issueReportReply, TAGS.issueReportNote]);
+  expect(turn.paused()).toBe(true);
+  expect(await adminThread(report.id)).toEqual([]);
+
+  // Rejecting the reply decides it: the note is applied with no person. A rejection ends the
+  // turn, so the note is waited for and not the turn.
+  await ws.rejectAction(reply!.id);
+  await pendingActions(ws, 0);
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportReply, "rejected", false], [TAGS.issueReportNote, "approved", true],
+  ]);
+  expect((await adminThread(report.id)).map(({ text, visibility }) => [text, visibility]))
+      .toEqual([["A note", "admins"]]);
+  expect(await reporterThread(reporter, report.id)).toEqual([]);
+});
+
+it("applies nothing by rule in a workspace that also read another vendor's restricted data",
+    async () => {
+  const reporter = await newMember(suite, "mixed");
+  const [first, second] = [await fileReport(reporter), await fileReport(reporter)];
+
+  // The other vendor's restricted data is read first, then the admin binding: the workspace
+  // holds what admins could not already read, so every rule is on and none applies.
+  const early = await triageWorkspace("Triage, another vendor's data first", { rules: true });
+  const firstThing = await addTestConnection(suite, owner, early.ws, "read-first");
+  // The fixture's account has no part in the workspaces the owner makes after this case,
+  // whether it passes or fails.
+  onTestFinished(() => owner.api.disconnectAccount(firstThing.accountId));
+  await firstThing.session.readValue(true);
+  expect(await isRestricted(early.ws)).toBe(true);
+  const turn = await agentTurn(owner, early.ws, `
+    ${readUsers}
+    ${attempt("note", addEntry(first.id, "A note", "admins"))}
+    ${attempt("status", setStatus(first.id, "investigating"))}
+    ${attempt("claim", claim(first.id))}`, { connection: early.connection });
+  await settle(early.ws);
+  const waiting = await pendingActions(early.ws, 3);
+  expect(waiting.map(tagOf))
+      .toEqual([TAGS.issueReportNote, TAGS.issueReportStatus, TAGS.issueReportAssignment]);
+  expect(turn.paused()).toBe(true);
+  expect(await adminThread(first.id)).toEqual([]);
+  // A person's approval still applies each.
+  await approveEach(early.ws, waiting);
+  await turn.resumed();
+  expect(await decisions(early.ws)).toEqual(approvedByPerson(waiting));
+  expect(await admin.getIssueReport(first.id))
+      .toMatchObject({ status: "investigating", assignee: { id: OWNER, via: "gatekeeper" } });
+
+  // The admin binding is read first, and a note is applied by its rule.
+  mixed = await triageWorkspace("Triage, another vendor's data afterwards", { rules: true });
+  const { ws, connection } = mixed;
+  const before = await agentTurn(owner, ws, `
+    ${readUsers}
+    ${attempt("note", addEntry(second.id, "Before", "admins"))}`, { connection });
+  await before.resumed();
+  expect(await decisions(ws)).toEqual([[TAGS.issueReportNote, "approved", true]]);
+
+  // Then the other vendor's restricted data is read: the next note waits, for good. A further
+  // read through the admin binding, from another chat since this one waits on the note, does
+  // not make the workspace hold only what admins can read. A read drains nothing, so the note's
+  // rule is stored again, which drains the connection: the note still waits.
+  const thing = await addTestConnection(suite, owner, ws, "read-afterwards");
+  await thing.session.readValue(true);
+  const after = await agentTurn(owner, ws,
+      attempt("note", addEntry(second.id, "After", "admins")), { chatId: before.chatId });
+  await settle(ws);
+  const [held] = await pendingActions(ws, 1);
+  expect(after.paused()).toBe(true);
+  const again = await agentTurn(owner, ws, readUsers, { connection });
+  expect(await again.results()).toEqual({ users: { value: 1 } });
+  await ws.setAutoApprovedActionKind(connection.id, ADMIN_AGENT_ACTIONS.issueReportNote.kind);
+  await settle(ws);
+  expect((await pendingActions(ws, 1)).map(action => action.id)).toEqual([held!.id]);
+  expect((await adminThread(second.id)).map(entry => entry.text)).toEqual(["Before"]);
+
+  await ws.approveAction(held!.id);
+  await after.resumed();
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportNote, "approved", true], [TAGS.issueReportNote, "approved", false],
+  ]);
+  expect((await adminThread(second.id)).map(entry => entry.text)).toEqual(["Before", "After"]);
+});
+
+// The kind the fixture gatekeeper tags every write with, and offers a rule for.
+const SET_VALUE = { tag: "set-value", label: "Set value" };
+
+it("never applies by rule an action of another connection in a marked workspace", async () => {
+  const report = await fileReport(await newMember(suite, "beside"));
+  const { ws, connection } = await triageWorkspace("Triage, another connection", { rules: true });
+  const thing = await addTestConnection(suite, owner, ws, "written");
+  // The fixture's account has no part in the workspaces the owner makes after this case,
+  // whether it passes or fails.
+  onTestFinished(() => owner.api.disconnectAccount(thing.accountId));
+  await ws.setAutoApprovedActionKind(thing.id, SET_VALUE);
+  /** The other connection's writes, oldest first. */
+  const writes = async () => (await ws.listActions({ filter: "action" })).entries
+      .filter(entry => entry.type === "action" && entry.gatekeeperId === thing.id)
+      .toSorted((a, b) => a.id - b.id);
+  /** Each of them as [state, whether a rule applied it]. */
+  const outcomes = async () => (await writes()).map(entry =>
+    entry.type === "action" && [entry.state, entry.autoApproved === true]);
+
+  // Its rule applies its write while nothing marks the workspace.
+  await thing.session.writeValue(1, { autoApprovable: true });
+  await waitFor("the first write to be applied", async () =>
+    (await writes()).some(entry => entry.type === "action" && entry.state === "approved") || null);
+  expect(await outcomes()).toEqual([["approved", true]]);
+
+  // The admin binding marks the workspace, and a rule still applies its own note.
+  const turn = await agentTurn(owner, ws, `
+    ${readUsers}
+    ${attempt("note", addEntry(report.id, "A note", "admins"))}`, { connection });
+  await turn.resumed();
+  expect(await isRestricted(ws)).toBe(true);
+  expect(await decisions(ws)).toEqual([[TAGS.issueReportNote, "approved", true]]);
+
+  // The other connection's write waits, though its author calls it auto-approvable and its rule
+  // is on: the exception is the admin connection's and no other vendor's. The write resolves
+  // only once decided, so it is held rather than awaited here.
+  const write = thing.session.writeValue(2, { autoApprovable: true });
+  await waitFor("the second write to be queued", async () => (await writes()).length === 2 || null);
+  await settle(ws);
+  expect(await outcomes()).toEqual([["approved", true], ["pending", false]]);
+
+  await ws.approveAction((await writes())[1]!.id);
+  await expect(write).resolves.toEqual(expect.any(Number));
+  expect(await outcomes()).toEqual([["approved", true], ["approved", false]]);
+});
+
+it("tells a subscriber that its own rule-applied action was applied", async () => {
+  const report = await fileReport(await newMember(suite, "told"));
+  const { ws, connection } = await triageWorkspace("Triage, told of its own note", { rules: true });
+  const watching = await recordingGadget(
+      suite, owner, ws, connection, ["subscribeIssueReportChanged"]);
+  const hooks = await ws.listHooks();
+  for (const hook of hooks) await ws.enableHook(hook.id);
+
+  const turn = await agentTurn(owner, ws, `
+    ${readUsers}
+    ${attempt("note", addEntry(report.id, "A note", "admins"))}`, { connection });
+  await turn.resumed();
+  expect(await isRestricted(ws)).toBe(true);
+  expect(await decisions(ws)).toEqual([[TAGS.issueReportNote, "approved", true]]);
+
+  // Nobody decided anything, so the hook is how the workspace's code learns that the note it
+  // queued was applied: one call, which says that a note was added and not what it says.
+  const told = async () =>
+    (await watching.calls()).filter(call => call.event.reportId === report.id);
+  await waitFor("the hook's call for the note", async () => (await told()).length > 0 || null);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  expect(await told()).toEqual([{ kind: "issueReportChanged", event: {
+    eventId: expect.any(String), reportId: report.id, change: "note", at: expect.any(Date),
+  } }]);
+
+  // The gadget has no part in the rest of the file's reports.
+  for (const hook of hooks) await ws.disableHook(hook.id);
+});
+
+/**
+ * Whether a rule applies each kind the catalog lists for the workspace's admin connection: its
+ * five kinds, once each and every rule on, in a workspace that has no gadget.
+ */
+async function offeredWithNoGadget({ ws, connection }: Triage): Promise<Record<string, boolean>> {
+  expect(await gadgetIds(ws)).toEqual([]);
+  const offers = await ws.listPreApprovableActions();
+  expect(offers).toHaveLength(5);
+  for (const offer of offers) {
+    expect(offer).toMatchObject({ gatekeeperId: connection.id, alreadyEnabled: true });
+  }
+  return ruleApplies(ws, connection);
+}
+
+it("lists the admin connection in the catalog though no gadget binds it", async () => {
+  // Where the admin binding alone marked the workspace, a rule applies three of the kinds.
+  expect(await offeredWithNoGadget(marked)).toEqual({
+    [TAGS.issueReportNote]: true, [TAGS.issueReportStatus]: true,
+    [TAGS.issueReportAssignment]: true,
+    [TAGS.workspaceWriteRequest]: false, [TAGS.issueReportScopedReply]: false,
+  });
+  // Where another vendor's restricted data was read as well, a rule applies none.
+  expect(await offeredWithNoGadget(mixed)).toEqual({
+    [TAGS.issueReportNote]: false, [TAGS.issueReportStatus]: false,
+    [TAGS.issueReportAssignment]: false,
+    [TAGS.workspaceWriteRequest]: false, [TAGS.issueReportScopedReply]: false,
+  });
+});
+
 it("holds a scoped reply for a person in a workspace whose agent read the report through " +
     "the whole binding", async () => {
   const reporter = await newMember(suite, "readfirst");
@@ -971,7 +1282,7 @@ const getChat = (chatId: number) =>
 let restricted: { id: string; chatId: number; granted: string; plain: string };
 
 it("carries the mark of a reporter's restricted workspace into the workspace whose report " +
-    "session reads it, from the view's first answer", async () => {
+    "session reads it, from the view's first answer, as the admin connection's own", async () => {
   const hers = await newWorkspace(suite, heidi, "Heidi's own triage");
   const herConnection = await addAdminConnection(
       hers.ws, (await provisionAdminAccount(heidi)).id);
@@ -1013,18 +1324,26 @@ it("carries the mark of a reporter's restricted workspace into the workspace who
     ["Issue report: inspectWorkspace", false], ["Admin view: getChat", true],
   ]);
 
-  // From then on nothing is applied without a person, a reply through the session included,
-  // and no public site is fetched.
-  const reply = await agentTurn(owner, ws, inSession(granted.id,
-      attempt("scoped", `report.reply("We read your workspace")`)), { chatId });
+  // The mark is the admin connection's, whose session made it: a rule still applies a note
+  // through the whole binding. A reply through the session waits for a person, and no public
+  // site is fetched.
+  const reply = await agentTurn(owner, ws, `
+    ${attempt("note", addEntry(granted.id, "Read under her grant", "admins"))}
+    ${inSession(granted.id, attempt("scoped", `report.reply("We read your workspace")`))}`,
+      { chatId });
   await settle(ws);
   const [held] = await pendingActions(ws, 1);
   expect(tagOf(held!)).toBe(TAGS.issueReportScopedReply);
   expect(reply.paused()).toBe(true);
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportNote, "approved", true], [TAGS.issueReportScopedReply, "pending", false],
+  ]);
+  expect((await adminThread(granted.id)).map(({ text, visibility }) => [text, visibility]))
+      .toEqual([["Read under her grant", "admins"]]);
   expect(await reporterThread(heidi, granted.id)).toEqual([]);
   await ws.approveAction(held!.id);
   await reply.resumed();
-  expect(await decisions(ws)).toEqual([[TAGS.issueReportScopedReply, "approved", false]]);
+  expect((await decisions(ws))[1]).toEqual([TAGS.issueReportScopedReply, "approved", false]);
   expect((await reporterThread(heidi, granted.id)).map(entry => entry.text))
       .toEqual(["We read your workspace"]);
   expect(await fetchPublicPage(ws, chatId)).toContain(WEB_FETCH_PROHIBITED);

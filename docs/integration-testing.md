@@ -102,6 +102,11 @@ that has its connection, how each read is recorded, the seven action kinds and w
 the session limited to one report, the three hooks, and what reaches a spawned agent. Nothing of the
 gatekeeper or of the Admin API is faked.
 
+The actions suite boots the fixture gatekeeper beside it, as another vendor whose restricted data a
+workspace reads as well (`addTestConnection()`). The fixture's account provides a singleton, which
+joins every workspace its holder makes and which a collaborator is asked about, so a case
+disconnects the account when it ends.
+
 `__tests__/admin-gatekeeper-harness.ts` holds what the three share. Its scripted model
 (`turnModels()`) finds a turn's steps by a marker in the message that starts the turn, not by the
 order requests arrive in: these suites leave a turn paused on an action while another chat runs, and
