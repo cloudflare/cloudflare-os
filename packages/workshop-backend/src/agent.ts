@@ -802,7 +802,7 @@ Note that there is no index.html. Instead, client.js must build the entire UI us
 
 Make Gadget UIs responsive and usable on both desktop and phones by default.
 
-Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
+Both the client and server run inside a strictly isolated sandbox. The client cannot make requests to the Internet at all. The server's \`fetch()\` can make GET and HEAD requests to public \`https:\` URLs, under the same rules as your \`webFetch\` tool: most request headers are not forwarded (so no credentials), and a refused request comes back as a 403 or 405 response whose body says why. For anything else, such as other methods or authenticated APIs, a Gadget communicates with the outside world through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
 Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
 
@@ -1343,7 +1343,7 @@ Edit content of a file. If you need to edit multiple places in a file or across 
 let WEBFETCH_TOOL_DESCRIPTION = `
 Fetch the contents of a public web URL via HTTPS GET. Use this to look up documentation, fetch API references, or read pages the user has linked, when doing so would help you answer accurately. Prefer it over guessing when you're unsure about an API or library.
 
-The Gadget's own code (server.js / client.js) still cannot make network requests at runtime; \`webFetch\` is a tool for *you*, not something you can call from gadget code.
+\`webFetch\` is a tool for *you*, not something gadget code can call. A Gadget's server code and your \`executeCode\` code can instead call \`fetch()\` for GET and HEAD requests under the same rules; a Gadget's client code cannot make network requests.
 
 Only https:// URLs to public hosts are allowed; credentials in the URL are not permitted, and the request is sent with no cookies and no authorization headers. Bodies longer than about 32K characters are cut off; the frontmatter's \`truncated\` field says so.
 
@@ -1390,7 +1390,7 @@ NOTE: You do NOT need this tool to use a resource yourself with \`executeCode\` 
 `.trim();
 
 let EXECUTE_CODE_INTRO = `
-Executes one-off JavaScript code, returning the output it logs to the console. The code runs in a sandbox where it cannot talk to the internet, except through the bindings in its 'env' object; fetch() will not work. Otherwise, the code can call any built-in APIs available in Cloudflare Workers.
+Executes one-off JavaScript code, returning the output it logs to the console. The code runs in a sandbox whose \`fetch()\` can make only GET and HEAD requests to public https:// URLs, under the same rules as \`webFetch\`: most request headers are not forwarded (so no credentials), and a refused request comes back as a 403 or 405 response whose body says why. For anything else, such as other methods or authenticated APIs, use the bindings in its 'env' object. Otherwise, the code can call any built-in APIs available in Cloudflare Workers.
 `.trim();
 
 let EXECUTE_CODE_SELF_PARAM = `

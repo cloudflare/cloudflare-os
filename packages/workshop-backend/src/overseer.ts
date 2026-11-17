@@ -3270,6 +3270,13 @@ class OverseerImpl implements AgentHooks {
     return this.ctx.exports.GatekeeperLoopback({props});
   }
 
+  // A fetcher that asks this workspace about each of `caller`'s requests (see fetch-loopback.ts).
+  // `executionId` names the executeCode call it is minted for, which it stops working with.
+  makeFetchLoopback(caller: GatekeeperCaller, executionId?: string) {
+    let props: FetchLoopbackProps = {overseerId: this.ctx.id.toString(), caller, executionId};
+    return this.ctx.exports.FetchLoopback({props});
+  }
+
   // Build the flat `env` handed to a gadget's dynamically-loaded worker: the gadget's named
   // bindings plus `GADGET` (the gadget's self-stub, kept for back-compat with existing gadget
   // code). `forChatId` scopes visibility of provisional binding edges: an edge pending in that
@@ -5314,7 +5321,9 @@ class OverseerImpl implements AgentHooks {
         mainModule: "server.js",
         modules,
         env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId),
-        globalOutbound: null,
+        // The worker is cached across calls, which may read restricted data, so its fetcher asks
+        // the workspace about every request.
+        globalOutbound: this.makeFetchLoopback({from: "gadget", chatId, gadgetId}),
 
         // TODO: Switch to streaming tails when the workerd log spam issue is fixed.
         tails: [this.ctx.exports.GadgetTailLoopback({props: tailProps})],
@@ -6664,14 +6673,10 @@ class OverseerImpl implements AgentHooks {
   // AgentHooks.getWebFetchEnv(): the Workers AI binding for document conversion, and a fetcher
   // that asks this workspace about every request.
   getWebFetchEnv(chatId: number): WebFetchEnv {
-    let props: FetchLoopbackProps = {
-      overseerId: this.ctx.id.toString(),
-      caller: {from: "agent", chatId},
-    };
     return {
       ai: this.env.WORKERS_AI,
       gateway: getAiGatewayConfig(this.env),
-      fetcher: this.ctx.exports.FetchLoopback({props}),
+      fetcher: this.makeFetchLoopback({from: "agent", chatId}),
     };
   }
 
@@ -10343,7 +10348,9 @@ class OverseerImpl implements AgentHooks {
         // The agent's env holds the chat's named bindings (see getEnvForAgent).
         env: this.getEnvForAgent(chatId, bindings, executionId),
         tails: [this.ctx.exports.CodeModeTailLoopback({props: tailProps})],
-        globalOutbound: null,
+        // The code can read restricted data through its env and fetch on the next line, so its
+        // fetcher asks the workspace about every request.
+        globalOutbound: this.makeFetchLoopback({from: "agent", chatId}, executionId),
       };
 
       let entrypoint = this.env.LOADER.load(workerDef).getEntrypoint<CodeModeEntrypoint>();
