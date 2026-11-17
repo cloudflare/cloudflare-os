@@ -30,9 +30,9 @@ const PREVIEW_SCALE = 0.6
 /**
  * What a recipient who may only view a gadget opens: a snapshot of the gadget (see
  * Overseer.getGadgetSnapshot), taken when this mounts and discarded when it unmounts, so the share
- * dialog's own lifetime bounds the copy. It is live to use, since
- * writes stay in the copy, and a bar above it, like the recipient's top bar, refreshes, exports and
- * opens it full screen.
+ * dialog's own lifetime bounds the copy. The preview is interactive, and its writes stay in the
+ * copy. A bar above it, like the recipient's top bar, refreshes it, exports it and opens it full
+ * screen.
  */
 export const ShareSnapshotPreview = ({
   overseer, gadgetId, gadgetTitle, workspaceTitle, ownerName, fullscreen, onFullscreenChange,

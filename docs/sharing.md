@@ -115,7 +115,7 @@ Before gadgets were shared individually, edges and links granted `use` without n
 - An edge becomes one edge per gadget, keeping its sharer (or link), timestamp and note, so it is supported, severed and kept exactly as before. Grants that conferred nothing at the time are frozen too, since they would confer again if their sharer regained `build`.
 - A link keeps its id, keys, creator and note. Frozen to one gadget, it becomes an ordinary gadget link (`gadgetId`), listed in that gadget's dialog. Frozen to several, it names them in `gadgetIds`: it grants those that can still be shared, and can be copied (`newShareLinkKey`) and revoked like any link. Frozen to none, it could never grant anything again, so it is revoked.
 
-No new grant of every gadget, or of several at once, can be made: the sharing RPCs take only `"workspace"` or `{gadgetId}`.
+No new grant of every gadget, or of several at once, can be made: the sharing RPCs take only `"workspace"`, `{gadgetId}` or `{gadgetId, mode: "view"}`.
 
 ### Share links in the graph
 
@@ -197,7 +197,7 @@ A `build` collaborator is verified as an observer of everything the workspace ha
 
 Because access is recomputed from the graph on every `open()` and `getGadget()`, the live computation is the *sole* source of truth for access -- there is no eager cleanup whose bugs could grant access to an unreachable user. This is what makes lazy revocation safe: severing an edge is enough to deny access, even though the unreachable records linger in storage.
 
-A share-key redemption goes through the same gate. The redeeming open() then verifies a `build` recipient as an observer like any other collaborator, and a gadget recipient when they get the gadget; a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
+A share-key redemption goes through the same gate. The redeeming open() then verifies a `build` recipient as an observer like any other collaborator, and a gadget recipient when they get the gadget live (a recipient who may only view it is never verified: see "Static snapshots"); a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
 
 Deployment admins can inspect a workspace outside the sharing graph: `AdminApi.inspectWorkspace()` mints a read-only `AdminWorkspaceView` through `openForAdmin()`, which never consults the permission graph, adds no collaborator and joins no session. It is a deliberate exception, bounded by an environment-set access cap and an audit recorded before anything an admin reads leaves the server; see [admin-access.md](admin-access.md).
 
