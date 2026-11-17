@@ -13,29 +13,29 @@ export type SaveRequest = { target: SaveTarget; storageKey: string | null; saved
 const ITEM = '!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint'
 
 /**
- * `vendors` are the services a gadget might be saved to, or null until they are known: listed
- * ahead of the menu opening, so its save items arrive with the rest instead of after. Empty when
- * `enabled` is false, and when they could not be listed, which `retry` is then there to try again.
+ * `vendors` are the services a gadget might be saved to, or null until they are first known:
+ * listed ahead of the menu opening, so its save items arrive with the rest instead of after, and
+ * again in the background on `refresh`, since one that could not be reached may be back. Empty
+ * when `enabled` is false.
  */
 export const useSaveVendors = (enabled: boolean) => {
   const authenticatedApi = useOptionalAuthenticatedApi()?.authenticatedApi
-  const [listed, setListed] = useState<{ vendors: GatekeeperVendorInfo[] | null; failed?: boolean }>({ vendors: null })
-  const [attempt, retry] = useReducer((attempts: number) => attempts + 1, 0)
+  const [vendors, setVendors] = useState<GatekeeperVendorInfo[] | null>(null)
+  const [listing, refresh] = useReducer((listings: number) => listings + 1, 0)
 
   useEffect(() => {
     if (!enabled || !authenticatedApi) return
     let cancelled = false
-    setListed({ vendors: null })
     authenticatedApi.listGatekeeperVendors().then(
-      vendors => { if (!cancelled) setListed({ vendors }) },
+      listed => { if (!cancelled) setVendors(listed) },
       err => {
         console.error('Failed to list the services to save to:', err)
-        if (!cancelled) setListed({ vendors: [], failed: true })
+        if (!cancelled) setVendors(known => known ?? [])
       })
     return () => { cancelled = true }
-  }, [authenticatedApi, enabled, attempt])
+  }, [authenticatedApi, enabled, listing])
 
-  return { vendors: enabled && authenticatedApi ? listed.vendors : [], retry: listed.failed ? retry : undefined }
+  return { vendors: enabled && authenticatedApi ? vendors : [], refresh }
 }
 
 /**

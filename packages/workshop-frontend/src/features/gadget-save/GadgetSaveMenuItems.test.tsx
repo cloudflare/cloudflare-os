@@ -134,42 +134,41 @@ describe('GadgetSaveMenuItems', () => {
 
 describe('useSaveVendors', () => {
   const seen: (GatekeeperVendorInfo[] | null)[] = []
-  let retry: (() => void) | undefined
+  let refresh: () => void
   const Probe = ({ enabled }: { enabled: boolean }) => {
     const listed = useSaveVendors(enabled)
     seen.push(listed.vendors)
-    retry = listed.retry
+    refresh = listed.refresh
     return null
   }
+  const down = { ...vendor, unavailable: true } as GatekeeperVendorInfo
   afterEach(() => { seen.length = 0 })
 
-  it('is null until the services are listed', async () => {
+  it('is null until the services are first listed', async () => {
     await act(async () => root.render(<Probe enabled />))
     expect([seen[0], seen.at(-1)]).toEqual([null, [vendor]])
-    expect(retry).toBeUndefined()
   })
 
-  it('lists the services again on a retry, which only a failure offers', async () => {
+  it('lists them again on a refresh, keeping what it knows until then and through a failure', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const listGatekeeperVendors = vi.fn<() => Promise<GatekeeperVendorInfo[]>>()
-      .mockRejectedValueOnce(new Error('offline')).mockResolvedValue([vendor])
+      .mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce([down])
+      .mockResolvedValueOnce([vendor]).mockRejectedValueOnce(new Error('offline'))
     testState.authenticatedApi = { listGatekeeperVendors }
     await act(async () => root.render(<Probe enabled />))
     expect(seen.at(-1)).toEqual([])
 
-    await act(async () => retry!())
-    expect(seen.slice(-2)).toEqual([null, [vendor]])
-    expect(retry).toBeUndefined()
+    for (const known of [[down], [vendor], [vendor]]) {
+      const before = seen.at(-1)
+      seen.length = 0
+      await act(async () => refresh())
+      expect([seen[0], seen.at(-1)]).toEqual([before, known])
+    }
   })
 
-  it('is empty when the services cannot be listed, or are not wanted', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    const listGatekeeperVendors = vi.fn<() => Promise<never>>(async () => { throw new Error('offline') })
+  it('is empty, asking nothing, when the services are not wanted', async () => {
+    const listGatekeeperVendors = vi.fn<() => Promise<GatekeeperVendorInfo[]>>()
     testState.authenticatedApi = { listGatekeeperVendors }
-    await act(async () => root.render(<Probe enabled />))
-    expect(seen.at(-1)).toEqual([])
-
-    listGatekeeperVendors.mockClear()
     await act(async () => root.render(<Probe enabled={false} />))
     expect(seen.at(-1)).toEqual([])
     expect(listGatekeeperVendors).not.toHaveBeenCalled()

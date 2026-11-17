@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   ) => Promise<void>>(),
   toast: vi.fn<(toast: unknown) => void>(),
   saveVendors: [] as object[] | null,
-  retrySaveVendors: undefined as (() => void) | undefined,
+  refreshSaveVendors: vi.fn<() => void>(),
   closeSave: undefined as (() => void) | undefined,
 }))
 
@@ -75,7 +75,7 @@ vi.mock('./fileTransfers', () => ({
 // A save item that asks for a save, and a dialog that says which Gadget it would save.
 vi.mock('./features/gadget-save/GadgetSaveMenuItems', () => ({
   useSaveVendors: (enabled: boolean) =>
-    ({ vendors: enabled ? mocks.saveVendors : [], retry: mocks.retrySaveVendors }),
+    ({ vendors: enabled ? mocks.saveVendors : [], refresh: mocks.refreshSaveVendors }),
   GadgetSaveMenuItems: ({ onSelect }: { onSelect: (request: object) => void }) => (
     <button type="button" onClick={() => onSelect({})}>save item</button>
   ),
@@ -310,16 +310,12 @@ describe('GadgetExportMenu', () => {
     expect(dialog()).toContain('saving Budget')
   })
 
-  it('lists the services to save to again on opening, after they could not be listed', async () => {
-    mocks.retrySaveVendors = vi.fn<() => void>()
-    try {
-      await show({ gadget: client() })
-      expect(mocks.retrySaveVendors).not.toHaveBeenCalled()
-      await act(async () => button('open export menu')!.click())
-      expect(mocks.retrySaveVendors).toHaveBeenCalledOnce()
-    } finally {
-      mocks.retrySaveVendors = undefined
-    }
+  it('lists the services to save to again each time it opens', async () => {
+    mocks.refreshSaveVendors.mockClear()
+    await show({ gadget: client() })
+    expect(mocks.refreshSaveVendors).not.toHaveBeenCalled()
+    await act(async () => button('open export menu')!.click())
+    expect(mocks.refreshSaveVendors).toHaveBeenCalledOnce()
   })
 
   it('offers saves only with a save scope, and drops a pending save when its Gadget or preview changes', async () => {
@@ -345,13 +341,16 @@ describe('GadgetExportMenu', () => {
     // The editor follows the agent to another Gadget, through none: the save does not follow.
     await askToSave()
     await show({})
-    await show({ gadget: client(), gadgetTitle: 'Budget' })
+    const budget = client()
+    await show({ gadget: budget, gadgetTitle: 'Budget' })
     expect(dialog()).toBeUndefined()
 
+    // Nor does it come back when the preview it was asked of does.
     await askToSave()
     expect(dialog()).toContain('saving Budget')
-    await act(async () => root.render(
-      <GadgetExportMenu gadget={report} gadgetTitle="Report" saveScope={scope} chatId={4} />))
+    await show({ gadget: budget, gadgetTitle: 'Budget', chatId: 4 })
+    expect(dialog()).toBeUndefined()
+    await show({ gadget: budget, gadgetTitle: 'Budget' })
     expect(dialog()).toBeUndefined()
   })
 })
