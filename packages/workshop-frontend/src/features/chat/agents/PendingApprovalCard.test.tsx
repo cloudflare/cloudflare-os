@@ -2,7 +2,10 @@
 /* eslint-disable react/react-in-jsx-scope */
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { entry, makeTestRoot } from "../../../action-test-harness";
+import { entry, makeTestRoot, pushEntry } from "../../../action-test-harness";
+import {
+  INCOMPLETE_DESCRIPTION_COPY, PUSH_DESCRIPTION_COPY,
+} from "../../../components/IncompleteDescriptionNotice";
 import { RESTRICTED_APPROVAL_COPY } from "../../../components/RestrictedApprovalNotice";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 
@@ -28,12 +31,14 @@ const pending = (over: Record<string, unknown> = {}) => entry(1, {
 
 async function render(record: ReturnType<typeof pending>, restricted = false) {
   const onResolve = vi.fn<(decision: "approve" | "deny") => void>();
+  const onReviewPush = vi.fn<() => void>();
   await testRoot.render(
     <PendingApprovalCard
       record={record} restricted={restricted} busy={false} onResolve={onResolve}
+      onReviewPush={onReviewPush}
     />,
   );
-  return {onResolve};
+  return {onResolve, onReviewPush};
 }
 
 const button = (label: string) =>
@@ -102,9 +107,48 @@ it("reports each decision to the surface holding the card", async () => {
 it("refuses a second decision while one is in flight", async () => {
   const onResolve = vi.fn<(decision: "approve" | "deny") => void>();
   await testRoot.render(
-    <PendingApprovalCard record={pending()} restricted={false} busy onResolve={onResolve} />,
+    <PendingApprovalCard
+      record={pending()} restricted={false} busy onResolve={onResolve} onReviewPush={() => {}}
+    />,
   );
 
   expect(button("Approve")!.disabled).toBe(true);
   expect(button("Deny")!.disabled).toBe(true);
+});
+
+it("offers Review commits in place of Approve for a push in a restricted workspace", async () => {
+  const {onResolve, onReviewPush} = await render(pushEntry(1), true);
+
+  expect(button("Approve")).toBeUndefined();
+  expect(button("Deny")).toBeDefined();
+  // In Approve's place, and named by the same review text Approve would be.
+  const review = button("Review commits")!;
+  const described = review.getAttribute("aria-describedby")!.split(" ")
+    .map(id => document.getElementById(id)?.textContent).join("\n");
+  expect(described).toContain(RESTRICTED_APPROVAL_COPY);
+  expect(described).toContain(PUSH_DESCRIPTION_COPY);
+
+  await act(async () => { review.click(); });
+  expect(onReviewPush).toHaveBeenCalledTimes(1);
+  expect(onResolve).not.toHaveBeenCalled();
+});
+
+it("offers both for a push in an unrestricted workspace", async () => {
+  const {onResolve, onReviewPush} = await render(pushEntry(1));
+
+  await act(async () => { button("Review commits")!.click(); });
+  expect(onReviewPush).toHaveBeenCalledTimes(1);
+  expect(onResolve).not.toHaveBeenCalled();
+
+  await act(async () => { button("Approve")!.click(); });
+  expect(onResolve).toHaveBeenLastCalledWith("approve");
+});
+
+it("points a push at the review of its commits instead of calling its description incomplete",
+    async () => {
+  await render(pushEntry(1));
+
+  const notice = document.body.querySelector('[role="note"]');
+  expect(notice?.textContent).toBe(PUSH_DESCRIPTION_COPY);
+  expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY);
 });

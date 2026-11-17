@@ -63,10 +63,13 @@ vi.mock('./ThemeContext', async (importOriginal) => ({
 }))
 
 import {
-  clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
+  clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot, pushEntry,
+  settlePushReview,
 } from './action-test-harness'
 import ChatInterface from './ChatInterface'
-import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
+import {
+  INCOMPLETE_DESCRIPTION_COPY, PUSH_DESCRIPTION_COPY,
+} from './components/IncompleteDescriptionNotice'
 import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
@@ -122,7 +125,7 @@ function renderChat(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
-      restricted={props.restricted}
+      restricted={props.restricted === true}
       rulesApplyWhileRestricted={props.rulesApplyWhileRestricted}
       autoApproval={props.autoApproval}
       selectedChatId={props.selectedChatId ?? null}
@@ -735,6 +738,82 @@ describe('rule offers in a restricted workspace', () => {
     await workspace.server.settleDecision()
 
     expect(changed).not.toHaveBeenCalled()
+  })
+})
+
+describe('push approval', () => {
+  const pushLog = (over: Partial<Record<string, unknown>> = {}) =>
+    pushEntry(1, { description: { ...pushEntry(1).description, ...over } })
+
+  // Renders chat 1 with the push's card in the transcript. With `inTray` false the loaded queue
+  // omits the push, so the card is the only surface that can decide it.
+  async function renderPush(log: ActionLogEntry, options: { restricted: boolean, inTray?: boolean }) {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { restricted: options.restricted, selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: options.inTray === false ? [] : [log] })
+    chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+    return server
+  }
+
+  const DECISIONS = ['Deny', 'Review commits', 'Approve']
+  const decisionLabels = () => [...document.querySelectorAll('button')]
+    .map(button => button.textContent ?? '').filter(label => DECISIONS.includes(label))
+  const press = async (label: string) => {
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(button => button.textContent === label)!.click())
+    await settlePushReview()
+  }
+  // This file renders no dialog (Kumo's is replaced above), so a review that opened shows as
+  // the read it makes. What its Approve and Deny do is covered where the dialog renders.
+
+  for (const [surface, log, inTray] of [
+    ['the blocking callout', pushLog({ awaitDecision: true }), true],
+    ['the transcript card', pushLog(), false],
+  ] as const) {
+    it(`offers Review commits in place of Approve on ${surface} in a restricted workspace`, async () => {
+      const server = await renderPush(log, { restricted: true, inTray })
+      expect(decisionLabels()).toEqual(['Deny', 'Review commits'])
+      expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+      expect(document.body.textContent).toContain(PUSH_DESCRIPTION_COPY)
+      expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
+
+      await press('Review commits')
+      expect(server.pushReviewCalls).toEqual([1])
+      expect(server.decisionCalls).toEqual([])
+    })
+
+    it(`offers both on ${surface} in an unrestricted workspace`, async () => {
+      const server = await renderPush(log, { restricted: false, inTray })
+      expect(decisionLabels()).toEqual(['Deny', 'Review commits', 'Approve'])
+      expect(document.body.textContent).toContain(PUSH_DESCRIPTION_COPY)
+
+      await press('Review commits')
+      expect(server.pushReviewCalls).toEqual([1])
+      expect(server.decisionCalls).toEqual([])
+
+      await press('Approve')
+      expect(server.decisionCalls).toEqual(['approve:1'])
+    })
+  }
+
+  it('points at the review from a card whose push is decided in the tray, which has the button', async () => {
+    const server = await renderPush(pushLog(), { restricted: true })
+    await openDisclosure('Push 1')
+
+    // The card says where the commits are read, and offers nothing: its controls are in the tray.
+    expect(document.body.textContent).toContain('Waiting for review')
+    expect(document.body.textContent).toContain(PUSH_DESCRIPTION_COPY)
+    expect(decisionLabels()).toEqual([])
+
+    await openTray()
+    expect(decisionLabels()).toEqual(['Deny', 'Review commits'])
+    await press('Review commits')
+    expect(server.pushReviewCalls).toEqual([1])
+    expect(server.decisionCalls).toEqual([])
   })
 })
 

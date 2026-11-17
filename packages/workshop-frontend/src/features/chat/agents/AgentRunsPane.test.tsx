@@ -3,7 +3,9 @@
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ActionLogEntry, AiChatMetadata } from "@gadgets/workshop-shared/api";
-import { entry, makeOverseer, makeTestRoot } from "../../../action-test-harness";
+import {
+  entry, makeOverseer, makeTestRoot, pushEntry, pushReviewDialog, settlePushReview,
+} from "../../../action-test-harness";
 import { RESTRICTED_APPROVAL_COPY } from "../../../components/RestrictedApprovalNotice";
 import { AgentRunsPane } from "./AgentRunsPane";
 import { deriveAgents } from "./agentList";
@@ -55,8 +57,8 @@ async function renderPane(
   return {approveAction, onOpenRun};
 }
 
-const button = (label: string) =>
-  [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim() === label);
+const button = (label: string, within: ParentNode = document.body) =>
+  [...within.querySelectorAll("button")].find(b => b.textContent?.trim() === label);
 
 it("lifts a run's action approval to the top rather than hiding it in the run", async () => {
   await renderPane([run(1), run(2)], new Map([[2, [request(10)]]]));
@@ -93,4 +95,31 @@ it("keeps a day's worth of small runs visible in the cost", async () => {
   // What a scheduled task costs in a day is a fraction of a cent, and the same runs read
   // "$0.0007" apiece in the chat list: rounding the total to "$0.00" here would say it was free.
   expect(document.body.textContent).toContain("$0.0012");
+});
+
+it("offers Review commits in place of Approve for a push in a restricted workspace", async () => {
+  const {approveAction} = await renderPane([run(1)], new Map([[1, [pushEntry(10)]]]), true);
+
+  expect(button("Approve")).toBeUndefined();
+  await act(async () => { button("Review commits")!.click(); });
+  await settlePushReview();
+
+  // The review is where the push is approved, once it has loaded whole.
+  expect(approveAction).not.toHaveBeenCalled();
+  await act(async () => { button("Approve", pushReviewDialog()!)!.click(); });
+  expect(approveAction).toHaveBeenCalledWith(10, undefined);
+  expect(pushReviewDialog()).toBeNull();
+});
+
+it("offers both for a push in an unrestricted workspace", async () => {
+  const {approveAction} = await renderPane([run(1)], new Map([[1, [pushEntry(10)]]]));
+
+  await act(async () => { button("Review commits")!.click(); });
+  await settlePushReview();
+  // Outside the mark the review is an offer: it shows the commits and decides nothing.
+  expect(button("Approve", pushReviewDialog()!)).toBeUndefined();
+  expect(approveAction).not.toHaveBeenCalled();
+
+  await act(async () => { button("Approve")!.click(); });
+  expect(approveAction).toHaveBeenCalledWith(10, undefined);
 });

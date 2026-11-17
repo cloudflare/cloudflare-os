@@ -7,6 +7,8 @@ import {
 } from '../../components/IncompleteDescriptionNotice'
 import { RestrictedApprovalNotice } from '../../components/RestrictedApprovalNotice'
 import { AlwaysApproveButton, ResolveButton } from '../../components/ResolveButton'
+import { ApproveControl } from './ApproveControl'
+import { isPush } from './pushApproval'
 import { safeExternalUrl } from '../../utils/safeExternalUrl'
 import { formatRelativeTime } from '../../utils/formatRelativeTime'
 
@@ -18,7 +20,8 @@ const titleClass = 'm-0 truncate text-[13px] font-medium leading-[18px] tracking
  * Shared by every surface that asks for a decision rather than merely reporting one, so the
  * restricted-mode rules live in one place: the description and fields are shown in full and
  * uncapped, the notice explains that the approver is the leak check, and the buttons name that
- * review text through `aria-describedby` even though it follows them in DOM order.
+ * review text through `aria-describedby` even though it follows them in DOM order. A push
+ * offers "Review commits", which takes Approve's place while restricted (see ApproveControl).
  *
  * The controls sit in the header rather than below the body. That keeps them in view however
  * tall the request is — a single `json` field can run past a viewport — so a surface embedding
@@ -47,6 +50,8 @@ export function ReviewRequest({
   decide: {
     onApprove: () => void
     onReject: () => void
+    /** Opens the review of a push's commits; only a push offers it. */
+    onReviewPush: () => void
     onAlwaysApprove?: () => void
   }
 }) {
@@ -109,12 +114,21 @@ export function ReviewRequest({
             {formatRelativeTime(record.createdAt)}
           </p>
         </div>
-        <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">
+        {/* A push that also offers a rule carries four controls, more than the narrowest pane
+            holds on a line: they wrap within the row's width rather than run past its edge. */}
+        <div className="ml-auto flex max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-0.5">
           {decide.onAlwaysApprove && (
             <AlwaysApproveButton onClick={decide.onAlwaysApprove} disabled={processing} />
           )}
           <ResolveButton tone="deny" onClick={decide.onReject} disabled={processing} describedBy={describedBy} />
-          <ResolveButton tone="approve" onClick={decide.onApprove} disabled={processing} describedBy={describedBy} />
+          <ApproveControl
+            record={record}
+            restricted={restricted}
+            disabled={processing}
+            describedBy={describedBy}
+            onApprove={decide.onApprove}
+            onReviewPush={decide.onReviewPush}
+          />
         </div>
       </div>
 
@@ -136,7 +150,9 @@ export function ReviewRequest({
         </p>
       ))}
 
-      {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2 max-w-2xl" />}
+      {incomplete && (
+        <IncompleteDescriptionNotice id={incompleteId} push={isPush(record)} className="mt-2 max-w-2xl" />
+      )}
     </article>
   )
 }

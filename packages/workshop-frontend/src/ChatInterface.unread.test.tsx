@@ -61,7 +61,7 @@ const renderChat = async (chat: AiChatMetadata, chats: NonNullable<ReturnType<ty
     markAllRead: async () => {}, markWorkspaceRead: async () => {},
   };
   await testRoot.render(
-    <ChatInterface workspaceId="workspace" overseer={server.overseer}
+    <ChatInterface workspaceId="workspace" overseer={server.overseer} restricted={false}
       selectedChatId={null} onNavigateToChat={() => {}}
       pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}

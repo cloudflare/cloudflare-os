@@ -7,6 +7,8 @@ import {
 import { ResolveButton } from '../../../components/ResolveButton'
 import { RestrictedApprovalNotice } from '../../../components/RestrictedApprovalNotice'
 import { safeExternalUrl } from '../../../utils/safeExternalUrl'
+import { ApproveControl } from '../../approvals/ApproveControl'
+import { isPush } from '../../approvals/pushApproval'
 
 /**
  * A request blocking one run, shown where the agent list sends the user: in full, and decidable
@@ -22,15 +24,18 @@ import { safeExternalUrl } from '../../../utils/safeExternalUrl'
  * person approving from the agent list is the only one who will.
  *
  * Deciding is the surrounding surface's job, not the card's: approving a creation opens a modal,
- * which must outlive a popover that closes the moment the modal takes the click.
+ * which must outlive a popover that closes the moment the modal takes the click. The review of a
+ * push's commits is the surface's too, for the same reason.
  */
-export const PendingApprovalCard = ({ record, restricted, busy, onResolve }: {
+export const PendingApprovalCard = ({ record, restricted, busy, onResolve, onReviewPush }: {
   record: ActionLogEntry
   /** The workspace has read restricted data, making the approver responsible for what leaves. */
   restricted: boolean
   /** True while this record's decision is in flight. */
   busy: boolean
   onResolve: (decision: 'approve' | 'deny') => void
+  /** Opens the review of a push's commits; only a push offers it. */
+  onReviewPush: () => void
 }) => {
   const reviewId = useId()
   const requestId = `${reviewId}-request`
@@ -70,7 +75,7 @@ export const PendingApprovalCard = ({ record, restricted, busy, onResolve }: {
 
       <div className="max-h-[340px] overflow-y-auto px-3.5 pb-2">
         {restricted && <RestrictedApprovalNotice id={restrictedId} className="mb-2" />}
-        {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mb-2" />}
+        {incomplete && <IncompleteDescriptionNotice id={incompleteId} push={isPush(record)} className="mb-2" />}
         {record.description.description && (
           <p
             id={requestId}
@@ -86,19 +91,21 @@ export const PendingApprovalCard = ({ record, restricted, busy, onResolve }: {
         )}
       </div>
 
-      <div className="flex items-center justify-end gap-0.5 border-t border-kumo-warning/30 px-2 py-1.5">
+      <div className="flex flex-wrap items-center justify-end gap-0.5 border-t border-kumo-warning/30 px-2 py-1.5">
         <ResolveButton
           tone="deny"
           onClick={() => onResolve('deny')}
           disabled={busy}
           describedBy={describedBy}
         />
-        <ResolveButton
-          tone="approve"
+        <ApproveControl
+          record={record}
+          restricted={restricted}
           variant="filled"
-          onClick={() => onResolve('approve')}
           disabled={busy}
           describedBy={describedBy}
+          onApprove={() => onResolve('approve')}
+          onReviewPush={onReviewPush}
         />
       </div>
     </article>

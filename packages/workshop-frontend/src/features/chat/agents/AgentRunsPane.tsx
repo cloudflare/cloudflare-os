@@ -82,7 +82,8 @@ export const AgentRunsPane = ({
   activityLineOf: (chatId: number) => string | undefined
 }) => {
   const [processing, setProcessing] = useState<Set<number>>(new Set())
-  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessing)
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessing, restricted)
   const waiting = agent.runs.flatMap(run => pendingForRun.get(run.id) ?? [])
 
   return (
@@ -123,6 +124,7 @@ export const AgentRunsPane = ({
                 restricted={restricted}
                 busy={processing.has(record.id)}
                 onResolve={decision => void resolveAction(record, decision)}
+                onReviewPush={() => reviewPush(record)}
               />
             ))}
           </section>
@@ -145,6 +147,7 @@ export const AgentRunsPane = ({
         </div>
       </div>
       {creationAccountModal}
+      {pushReviewDialog}
     </div>
   )
 }

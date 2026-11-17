@@ -33,7 +33,7 @@ function request(
   id: number,
   title: string,
   fields: unknown[] = [],
-  over: { origin?: PendingChange['origin'], autoApprovable?: boolean } = {},
+  over: { origin?: PendingChange['origin'], autoApprovable?: boolean, pushedCommits?: string[] } = {},
 ): PendingChange {
   return {
     id,
@@ -50,6 +50,7 @@ function request(
       autoApprovable: over.autoApprovable === true,
       actionKind: APPEND,
       fields,
+      ...(over.pushedCommits ? { pushedCommits: over.pushedCommits } : {}),
     },
   } as PendingChange
 }
@@ -111,6 +112,7 @@ async function render({
         processing: new Set<number>(),
         onApprove: () => {},
         onReject: () => {},
+        onReviewPush: () => {},
         onAlwaysApprove: () => {},
         onManageRules: () => {},
       }}
@@ -407,4 +409,68 @@ it('keeps the rule list in rows, and its switches in keyboard order, under the l
   await input(() => userEvent.tab())
   await expect.element(ruleSwitch(issueReportStatus.kind.label)).toHaveFocus()
   await expect.element(ruleSwitch(issueReportReply.kind.label)).toBeDisabled()
+})
+
+it("puts Review commits in Approve's place on a restricted push, within the narrowest pane", async () => {
+  await render({
+    groups: [group([
+      request(1, 'Push 3 commits to the branch main of acme/widgets', [], { pushedCommits: ['1a2b3c4'.padEnd(40, '0')] }),
+    ], 1, 'acme/widgets')],
+    restricted: true,
+    width: 280,
+  })
+  await input(() => userEvent.click(host!.querySelector('button[aria-expanded="false"]')!))
+
+  const row = host!.querySelector('article')!
+  const controls = [...row.querySelectorAll('button')]
+  expect(controls.map(control => control.textContent)).toEqual(['Deny', 'Review commits'])
+
+  // The row is no wider than the pane, and both controls are whole inside what the tray shows.
+  expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth)
+  const shown = host!.querySelector('[class*="max-h-[min(18rem"]')!.getBoundingClientRect()
+  const [deny, review] = controls.map(control => control.getBoundingClientRect())
+  for (const box of [deny, review]) {
+    expect(box.width).toBeGreaterThan(0)
+    expect(box.left).toBeGreaterThanOrEqual(shown.left)
+    expect(box.right).toBeLessThanOrEqual(shown.right + 1)
+    expect(box.top).toBeGreaterThanOrEqual(shown.top)
+    expect(box.bottom).toBeLessThanOrEqual(shown.bottom + 1)
+  }
+  // Side by side on one line, in the order Deny and Approve keep, the label unbroken.
+  expect(review.left).toBeGreaterThanOrEqual(deny.right)
+  expect(review.top).toBe(deny.top)
+  expect(review.height).toBe(deny.height)
+})
+
+it('keeps all four controls of a push that offers a rule within the narrowest pane', async () => {
+  // Always approve, Deny, Review commits and Approve are wider together than the pane: they
+  // wrap, where a single line would put Approve past the tray's edge.
+  await render({
+    groups: [group([
+      request(1, 'Push 3 commits to the branch main of acme/widgets', [], {
+        autoApprovable: true, pushedCommits: ['1a2b3c4'.padEnd(40, '0')],
+      }),
+    ], 1, 'acme/widgets')],
+    width: 280,
+  })
+  await input(() => userEvent.click(host!.querySelector('button[aria-expanded="false"]')!))
+
+  const row = host!.querySelector('article')!
+  // The row's title is a disclosure button; the decisions are the rest.
+  const controls = [...row.querySelectorAll('button:not([aria-expanded])')]
+  expect(controls.map(control => control.textContent))
+    .toEqual(['Always approve', 'Deny', 'Review commits', 'Approve'])
+
+  expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth)
+  const shown = host!.querySelector('[class*="max-h-[min(18rem"]')!.getBoundingClientRect()
+  for (const control of controls) {
+    const box = control.getBoundingClientRect()
+    expect(box.width).toBeGreaterThan(0)
+    expect(box.left).toBeGreaterThanOrEqual(shown.left)
+    expect(box.right).toBeLessThanOrEqual(shown.right + 1)
+    expect(box.top).toBeGreaterThanOrEqual(shown.top)
+    expect(box.bottom).toBeLessThanOrEqual(shown.bottom + 1)
+    // No label breaks across lines to make room.
+    expect(box.height).toBeLessThanOrEqual(24)
+  }
 })

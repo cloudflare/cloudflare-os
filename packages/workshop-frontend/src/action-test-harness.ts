@@ -12,7 +12,9 @@ import type {
   ActionHistoryPage,
   ActionLogEntry,
   ActionsSubscriber,
+  FileAtCommit,
   Overseer,
+  PushReview,
 } from '@gadgets/workshop-shared/api'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -42,6 +44,62 @@ export function entry(id: number, over: Partial<Record<string, unknown>> = {}): 
     },
     ...over,
   } as ActionLogEntry
+}
+
+const fixtureOid = (name: string, id: number) => `${name}${id}`.padEnd(40, '0')
+
+/** A pending push: an action that names the commit it sends, as a git host's gatekeeper queues. */
+export function pushEntry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
+  return entry(id, {
+    description: {
+      title: `Push ${id}`, description: `Push commit ${fixtureOid('c', id).slice(0, 7)} to branch main`,
+      implementsRevert: false, autoApprovable: false, pushedCommits: [fixtureOid('c', id)],
+    },
+    ...over,
+  })
+}
+
+/** The path and content of the one file the push of `pushEntry()` sends. */
+export const PUSHED_FILE = { path: 'notes.txt', text: 'one line\n' }
+
+/**
+ * What the push of `pushEntry(id)` sends, as Overseer.getPushReview() lists it on one page: a
+ * root commit, its root directory and one added text file.
+ */
+export function pushReviewOf(id: number): PushReview {
+  const commit = fixtureOid('c', id)
+  const text = `tree ${fixtureOid('d', id)}\nauthor Ada <ada@example.com> 1700000000 +0000\n` +
+    `committer Ada <ada@example.com> 1700000000 +0000\n\nSubject of push ${id}\n`
+  return {
+    entries: [
+      { kind: 'commit', oid: commit, parents: [], size: text.length, text },
+      {
+        kind: 'path', commit, path: '', entry: { kind: 'dir', oid: fixtureOid('d', id) },
+        parents: [], sent: { kind: 'dir', size: 37 },
+      },
+      {
+        kind: 'path', commit, path: PUSHED_FILE.path, entry: { kind: 'file', oid: fixtureOid('f', id) },
+        parents: [], sent: { kind: 'text', size: PUSHED_FILE.text.length },
+      },
+    ],
+    objectCount: 3,
+    stackedOn: [],
+  }
+}
+
+/** Lets an open push review's pages and the file store's batched reads settle. */
+export async function settlePushReview() {
+  await act(async () => {
+    for (let turn = 0; turn < 5; turn++) await new Promise(resolve => setTimeout(resolve, 0))
+  })
+}
+
+/** The open push review, or null: the one dialog titled "Review commits". */
+export function pushReviewDialog(): HTMLElement | null {
+  return [...document.querySelectorAll<HTMLElement>('[role="dialog"]')]
+    .find(dialog =>
+      document.getElementById(dialog.getAttribute('aria-labelledby') ?? '')?.textContent === 'Review commits',
+    ) ?? null
 }
 
 type ListOptions = Parameters<Overseer['listActions']>[0]
@@ -77,6 +135,8 @@ function parkedQueue() {
  * pending queries ({filter: 'pending'}) on their own queue drained by
  * resolvePendingQuery()/rejectPendingQuery(), every other filter on the history queue drained by
  * resolvePage()/rejectPage(). `ops` records the initiation order across all three surfaces.
+ * getPushReview answers at once with `pushReviewOf(actionId)`, and readFilesAtCommit with
+ * `PUSHED_FILE`'s text, so a push's review loads whole.
  */
 export function makeOverseer() {
   const ops: Array<'subscribe' | 'list' | 'listPending'> = []
@@ -91,6 +151,7 @@ export function makeOverseer() {
     decisions.push({ call, settle: { resolve, reject } }))
   const subscriptionDispose = vi.fn<() => void>()
   let subscriber: ActionsSubscriber | undefined
+  const pushReviewCalls: number[] = []
   const overseer = {
     subscribeToActions: (...args: unknown[]) => {
       ops.push('subscribe')
@@ -102,6 +163,12 @@ export function makeOverseer() {
     listAutoApprovedActionKinds: async () => [],
     approveAction: (id: number) => decide(`approve:${id}`),
     rejectAction: (id: number) => decide(`reject:${id}`),
+    getPushReview: async (actionId: number) => {
+      pushReviewCalls.push(actionId)
+      return pushReviewOf(actionId)
+    },
+    readFilesAtCommit: async (_commitId: string, paths: string[]) =>
+      paths.map((path): [string, FileAtCommit] => [path, { kind: 'text', text: PUSHED_FILE.text }]),
     listActions: (options?: ListOptions) => {
       if (options?.filter === 'pending') {
         ops.push('listPending')
@@ -119,6 +186,8 @@ export function makeOverseer() {
     listCalls: historyQueue.calls,
     pendingQueryCalls: pendingQueue.calls,
     subscriptionDispose,
+    /** The action ids whose push review was asked for, oldest first. */
+    pushReviewCalls,
     async resolveSubscription() {
       await act(async () => {
         pendingSubscribes.shift()!.resolve(

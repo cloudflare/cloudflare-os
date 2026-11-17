@@ -34,8 +34,9 @@ interface ActivityProps {
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
   // A rule applies under it only what the kernel says (`AutoApprovalRules.applies`), so "Always
   // approve" is offered for those kinds alone. A stored rule that applies nothing says so and
-  // stays revocable.
-  restricted?: boolean
+  // stays revocable. Required, because approving a push goes through the review of its commits
+  // while it is true (see useResolveAction).
+  restricted: boolean
   // WorkspaceMetadata.rulesApplyWhileRestricted: once false, no rule applies anything under
   // the latch, so no rule is offered and none reads as applying.
   rulesApplyWhileRestricted?: boolean
@@ -200,8 +201,9 @@ export default function Activity({
 
   // Under the latch a request decided by hand may be one whose rule the kernel stopped applying
   // before this client was told: have every surface read its answer again.
-  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessingActions,
-    () => { if (restricted) autoApproval?.changed() })
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessingActions, restricted,
+      () => { if (restricted) autoApproval?.changed() })
 
   const handleToggleHook = async (hookId: number, enabled: boolean) => {
     setTogglingHooks(previous => new Set(previous).add(hookId))
@@ -272,6 +274,7 @@ export default function Activity({
                   decide={{
                     onApprove: () => void resolveAction(record, 'approve'),
                     onReject: () => void resolveAction(record, 'deny'),
+                    onReviewPush: () => reviewPush(record),
                     onAlwaysApprove: autoApproveTarget
                       ? () => setConfirmAutoApprove(autoApproveTarget)
                       : undefined,
@@ -487,6 +490,7 @@ export default function Activity({
         />
       )}
       {creationAccountModal}
+      {pushReviewDialog}
     </div>
   )
 }

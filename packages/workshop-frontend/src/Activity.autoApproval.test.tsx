@@ -67,6 +67,7 @@ async function mount() {
     return (
       <Activity
         overseer={overseer}
+        restricted={false}
         view="auto"
         onViewChange={() => {}}
         autoApproval={channel}

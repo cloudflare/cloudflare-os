@@ -172,7 +172,7 @@ describe('in chat', () => {
       viewChat: () => ({ [Symbol.dispose]: () => {} }),
     })
     await render(
-      <ChatInterface workspaceId="workspace" overseer={server.overseer} selectedChatId={1}
+      <ChatInterface workspaceId="workspace" overseer={server.overseer} restricted={false} selectedChatId={1}
         onNavigateToChat={() => {}} pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
         onConsumeConsoleLogs={() => ''} onDiscardConsoleLogs={() => {}} onOpenGadget={() => {}}
         outputOfWorkpiece={() => undefined} />,
