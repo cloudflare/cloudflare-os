@@ -517,8 +517,12 @@ known, and nothing says what calls on it or what it thinks with, until the backe
 
 ## A gadget's settings
 
-A gadget's More menu, beside a chat or as its own page, has View code and Gadget settings for
-whoever may build in its workspace, which go to its settings page (`/app/<id>/settings`,
+A gadget's More menu, beside a chat or as its own page, has View code for whoever may build in
+its workspace, which shows its code in the gadget's place in the pane (`GadgetCodeView`), over the
+gadget, which keeps running under it: the title becomes a trail, the gadget's name (a button back,
+as is the menu's item for it then) and Code after it, growing out of the bubble. The code opened
+again is at the file it was left at. The menu also has Gadget settings for whoever may build there,
+which goes to its settings page (`/app/<id>/settings`,
 `GadgetSettingsPane`), laid out as a skill's page is: what it is drawn as, its title, renamed
 where it is, and what its template says it is for, which is the template's and only read here.
 The way back to the gadget goes back where it was opened from it (`fromItem`). Under them, a tab
@@ -530,9 +534,7 @@ each (`?tab=`, kept in place in the history):
   agent and the model it thinks with, or a model. One is taken away from the gadget, asked for
   twice, and stays in the workspace. Nothing is added here: the agent asks for what it needs in a
   chat.
-- Code: the code as it was last kept (`useGadgetCode`, `listTree()` and `readFilesAtCommit()`,
-  kept for a while by commit, which never changes), its files beside the one shown
-  (`CodeBrowser`, `?file=`), highlighted once the language's parser has loaded (`CodeView`).
+- Code: the same `GadgetCodeView` as a card, its file in the address (`?file=`).
 - Settings: where it is from, and deleting it.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
@@ -683,15 +685,28 @@ change to its files in that chat, the chat's changes being accepted or thrown aw
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
 the one shown is connected: going to another tab and back starts it over.
 
+Code, a gadget's or a worktree's, is read only, in CodeMirror (`components/CodeEditor`): found
+with the app's own find bar and go to line (`codePanels`), folded, its indentation guided, lines
+picked from the gutter for a link to them, and its scroll kept per file. Its colours are the
+`--color-code-*` tokens of `theme.css` (`codeEditorTheme`), so it follows the theme with no
+script, and a language's parser loads the first time a file in it is shown (`codeLanguages`).
+Every `@codemirror/*` package must resolve to the one `@codemirror/view` that `workshop-frontend`
+uses too, or the editor's extensions fail its `instanceof` checks: check the lockfile after adding
+one. `CodeBrowser` lays it out by its own width (container queries, not the window's): the files
+as a tree beside the code (`CodeFileTree`, arrow keys and all), a drawer the file's header opens
+where it is narrow, Cmd or Ctrl with P to go to a file (`CodeQuickOpen`), and a status line. Its
+history (`useCodeHistory`, `getCommitLog()`) lists each time the code was kept; picking one shows
+only what changed then, each file as a diff from the commit before (`@codemirror/merge`, unified
+or side by side, `prefs/codePrefs`), with what was compared over it and the way back. Reads are
+kept by commit, which never changes (`gadgets/codeReads`). A gadget's first commit, which it was
+made with and is empty, is not listed.
+
 A worktree (a repository an agent checked out, `WorktreeSummary`) is shown as its code
-(`WorktreeView` over `CodeBrowser`, read by `aside/useWorktree` through `gadgets/useGadgetCode`):
-as kept (`pinBase`), the files changed since it was made (`listChangedPaths` from `baseCommit`)
-marked with a brand dot and listed first, and above them a line of how many changed and its
-agent's commits (`getCommitLog` from `headCommit`, back to `baseCommit`), which open into a list.
-`CodeBrowser` lays the files out by its own width (container queries, not the window's): beside a
-chat the list is a drawer the file's header opens. `CodeView` shows a file with line numbers,
-coloured once `highlightCode` (Lezer's parsers, imported only then) has read it, in the
-`--color-code-*` tokens of `theme.css`. The `worktree` scenario plays one.
+(`WorktreeView` over `CodeBrowser`, read by `aside/useWorktree`): as kept (`pinBase`), opening on
+everything its agent changed since it was made (`baseCommit` to `pinBase`) where there is any,
+which leads its history, then its agent's commits (`getCommitLog` from `headCommit`, back to
+`baseCommit`). The `worktree` scenario plays one, and the `output` scenario's gadget has a history
+of its code to view.
 
 A file is shown as what it is (`aside/filePreview.ts`, tested; `FileView` draws each kind): an
 image, audio, video, Markdown, and text or code as written. A PDF is drawn page by page with

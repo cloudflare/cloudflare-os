@@ -1,6 +1,6 @@
+import type { ReactNode } from 'react'
 import { CaretLeftIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
-import { CodeBrowser, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import { ListGroup } from '@/blocks/ListGroup'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SettingRow } from '@/blocks/SettingRow'
@@ -62,8 +62,8 @@ export type GadgetSettingsViewProps = {
   services: ReadonlyMap<string, BindingService>
   /** Takes a binding away from it, by the name its code knows it by. */
   onUnbind: (name: string) => void
-  /** Its code as it was last kept, for the Code tab. */
-  code: Omit<CodeBrowserProps, 'empty' | 'className'>
+  /** Its code as it was last kept, and its history (`GadgetCodeView`), for the Code tab. */
+  code: ReactNode
   /** Deletes it, for everyone it is shared with, asked for twice. */
   onDelete: () => void
   /** Back to the gadget itself. */
@@ -174,7 +174,7 @@ export const GadgetSettingsView = ({
             </Tabs.Panel>
             {/* Wider than the settings, as code is: a line of it reads whole. */}
             <Tabs.Panel value="code" className="flex flex-col gap-3 lg:-mx-24">
-              <CodeBrowser {...code} empty="It has no code yet. Once a chat writes some and it’s kept, it shows here." />
+              {code}
               <p className="px-5 text-sm text-kumo-subtle">The code as it was last kept. To change it, ask in a chat: what the agent writes shows here once it’s kept.</p>
             </Tabs.Panel>
             <Tabs.Panel value="settings" className="flex flex-col gap-12">

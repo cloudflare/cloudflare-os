@@ -173,7 +173,7 @@ export const GadgetSettingsPreview = () => {
                   say(`env.${name} removed`)
                 })
               }}
-              code={code}
+              code={<CodeBrowser {...code} frame="card" className="h-[560px]" />}
               onDelete={() => say('deleted the gadget')}
               onBack={() => say('back to the gadget')}
               onOpenWorkspace={() => say('open the workspace')}

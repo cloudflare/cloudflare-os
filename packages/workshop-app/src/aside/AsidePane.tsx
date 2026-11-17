@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
@@ -6,7 +7,8 @@ import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { formatActivity } from '@/workspaces/formatActivity'
+import type { CodeLines } from '@/components/CodeEditor'
+import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { asideItemIcon } from './asideItemIcon'
@@ -14,7 +16,7 @@ import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
-import { useWorktree } from './useWorktree'
+import { SINCE_MADE, useWorktree } from './useWorktree'
 
 export type AsidePaneProps = {
   /** The one shown. */
@@ -68,8 +70,17 @@ export const AsidePane = (props: AsidePaneProps) => {
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
   const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
   const title = snapshot.title ?? item.title
+  // A gadget's, which a worktree, with no settings of its own, is not.
+  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
+  // Its code, shown in its place, over it: the gadget keeps running under it, so that going back is
+  // to it as it was, and the code, opened again, is at the file it was left at. Kept by the item it
+  // is of, so that another starts as itself.
+  const [code, setCode] = useState<{ key: string; open: boolean; file?: string; lines?: CodeLines }>()
+  const codeHere = code?.key === item.key ? code : undefined
+  const viewingCode = gadget !== undefined && codeHere?.open === true
   // As the page, it names the tab; beside one, the page does.
-  useDocumentTitle(props.placement === 'page' ? title : undefined)
+  useDocumentTitle(props.placement === 'page' ? (viewingCode ? `Code · ${title}` : title) : undefined)
+  const reduceMotion = useReducedMotion() ?? false
 
   // A gadget is shared with its workspace, by whoever can share what is in it. Its link is to its
   // own page, without the chat it was shown from, whose changes are not for whoever it lets in.
@@ -106,10 +117,36 @@ export const AsidePane = (props: AsidePaneProps) => {
   ) : item.output.type === 'worktree' ? (
     <WorktreeContent key={item.key} worktree={item.output} />
   ) : (
-    <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
+    <>
+      <div inert={viewingCode} className="flex min-h-0 flex-1 flex-col">
+        <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
+      </div>
+      <AnimatePresence initial={false}>
+        {viewingCode && gadget && (
+          <motion.div
+            key={`code:${item.key}`}
+            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 16, scale: 0.99 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
+            transition={{ type: 'spring', duration: 0.38, bounce: 0 }}
+            className="absolute inset-0 flex flex-col bg-kumo-tint"
+          >
+            <GadgetCodeView
+              workspaceId={gadget.workspaceId}
+              commitId={snapshot.commitId}
+              file={codeHere?.file}
+              onShowFile={(file) => setCode({ key: item.key, open: true, file })}
+              lines={codeHere?.lines}
+              onLinesChange={(lines) => setCode((was) => was && { ...was, lines })}
+              frame="pane"
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   )
-  // A gadget's, which a worktree, with no settings of its own, is not.
-  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
+  // Its code is its workspace's, which whoever it was shared with to use does not build in.
+  const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
@@ -117,7 +154,8 @@ export const AsidePane = (props: AsidePaneProps) => {
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
     onOpenSettings: gadget && onOpenSettings && (() => onOpenSettings(gadget, title)),
-    onViewCode: gadget && onOpenSettings && (() => onOpenSettings(gadget, title, 'code')),
+    onViewCode: readsCode ? () => setCode({ ...codeHere, key: item.key, open: !viewingCode }) : undefined,
+    viewingCode,
     onShare: share ? () => setSharing(true) : undefined,
     narrow,
   }
@@ -205,20 +243,20 @@ const SIZE = new Intl.NumberFormat('en', { notation: 'compact', style: 'unit', u
 
 // A worktree's code, and what its agent did to it.
 const WorktreeContent = ({ worktree }: { worktree: AsideOutput }) => {
-  const { changes, code, show } = useWorktree(worktree)
+  const { changes, code, show, comparing, compare } = useWorktree(worktree)
   return (
     <WorktreeView
       changes={changes.status === 'ready'
-        ? {
-            status: 'ready',
-            changedFiles: changes.changed.size,
-            commits: changes.commits.map(({ oid, message, timestamp }) => ({ id: oid, summary: message.split('\n')[0], time: formatActivity(timestamp) })),
-          }
+        ? { status: 'ready', changedFiles: changes.changed.size, commits: changes.commits.map(historyEntry) }
         : changes}
+      comparing={comparing}
+      onCompare={compare}
+      since={SINCE_MADE}
       files={code.files}
       shown={code.shown}
       onShow={show}
       file={code.file}
+      before={code.before}
       onRetry={code.retry}
     />
   )

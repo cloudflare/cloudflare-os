@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { TreeNode } from '@gadgets/workshop-shared/api'
 import { codeLanguage } from '@/files/codeLanguage'
-import { highlightLines } from '@/components/highlightCode'
-import { codeFiles, commitsSince, shownFile, withChanged } from './gadgetCode'
+import { changedFiles, codeFiles, commitsSince, shownFile } from './gadgetCode'
 
 const file = (name: string): TreeNode => ({ name, kind: 'file' })
 const commit = (oid: string) => ({ oid, parents: [], message: oid, author: { name: 'A', email: 'a@x' }, timestamp: new Date(0) })
@@ -52,26 +51,20 @@ describe('codeLanguage', () => {
   })
 })
 
-describe('highlightLines', () => {
-  it('keeps every character, line by line, and marks what each run is', () => {
-    const text = 'const n = 1 // one\nconst s = "two"\n\n'
-    const lines = highlightLines(text, 'javascript')
-    expect(lines.map((line) => line.map(({ text: run }) => run).join('')).join('\n')).toBe(text)
-    expect(lines[0]).toContainEqual({ text: 'const', kind: 'keyword' })
-    expect(lines[0]).toContainEqual({ text: '1', kind: 'number' })
-    expect(lines[0]).toContainEqual({ text: '// one', kind: 'comment' })
-    expect(lines[1]).toContainEqual({ text: '"two"', kind: 'string' })
-  })
-})
-
-describe('withChanged', () => {
-  it('marks what changed and puts it first, keeping each group’s order', () => {
-    const files = codeFiles([file('a.ts'), file('b.ts'), file('c.ts')])
-    expect(withChanged(files, new Set(['c.ts', 'a.ts']))).toEqual([
-      { path: 'a.ts', kind: 'file', changed: true },
-      { path: 'c.ts', kind: 'file', changed: true },
-      { path: 'b.ts', kind: 'file' },
+describe('changedFiles', () => {
+  it('lists what changed in the later commit’s order, marked added or changed, then what was taken away', () => {
+    const before = codeFiles([file('server.ts'), file('client.ts'), file('old.ts'), file('same.ts')])
+    const after = codeFiles([file('client.ts'), file('server.ts'), file('new.ts'), file('same.ts')])
+    expect(changedFiles(after, before, ['new.ts', 'old.ts', 'server.ts'])).toEqual([
+      { path: 'server.ts', kind: 'file', role: 'What it keeps and does', change: 'modified' },
+      { path: 'new.ts', kind: 'file', change: 'added' },
+      { path: 'old.ts', kind: 'file', change: 'removed' },
     ])
+  })
+
+  it('lists nothing where nothing changed', () => {
+    const files = codeFiles([file('a.ts')])
+    expect(changedFiles(files, files, [])).toEqual([])
   })
 })
 

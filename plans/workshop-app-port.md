@@ -17,7 +17,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 4. Composer slash commands, skills and connection lines. **Done.**
 5. Inline views and file previews (Office, worktrees). **Done**, but inline views wait on main.
 6. Sharing. **Done**, of the workspace only.
-7. Gadget settings and the Code tab. **Done.**
+7. Gadget settings and the Code tab. **Done.** View code shows the code in the pane, with its history as diffs (CodeMirror).
 8. Real blueprints behind Templates, real skills behind `SkillStore`. **Done.**
 9. Automations, read only. **Done.**
 10. ⌘K search **(done)** and right-click menus.
@@ -67,3 +67,5 @@ agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnrea
 | No model picker in the composer, only in settings | user decision, matches the scaffold's owner | none |
 | Templates keeps the scaffold's name, not Blueprints | user decision | none |
 | A gadget's kind (app or doc) can't be changed, and it has no icon picker | `setKind` is ours | `setKind` |
+| Code is read only: nothing is edited beside a chat yet, and a chat's changes not yet kept don't show in View code | editing goes through `submitCodeChange` and the old app's OT client, still to port | none |
+| View code has no link to a file or its lines; the settings page's Code tab has the file only | the item's address has no place for them | none |

@@ -8,9 +8,12 @@ export type CodeFile = {
   kind: 'file' | 'executable' | 'symlink' | 'submodule'
   /** What it is to the gadget, in a few words, for the files every gadget has. */
   role?: string
-  /** Changed since it was made, for a worktree. */
-  changed?: true
+  /** How it changed, where the code is being compared with how it was before. */
+  change?: CodeChange
 }
+
+/** How a file changed between two commits. */
+export type CodeChange = 'added' | 'modified' | 'removed'
 
 // The files every gadget is made of, by name without extension, and what each is to it.
 const ROLES: Record<string, string> = {
@@ -59,12 +62,18 @@ export const shownFile = (files: readonly CodeFile[], asked: string | undefined)
   files.find(({ path }) => path === asked) ?? files[0]
 
 /**
- * A worktree's files, the ones changed since it was made (`changed`, from `listChangedPaths`)
- * marked and first, each group in the order given.
+ * The files that changed between two commits (`listChangedPaths`), as they are listed when the two
+ * are compared: in the order the later commit's files are (`codeFiles`), each marked as added or
+ * changed, then those taken away, from the earlier commit's files, marked so.
  */
-export const withChanged = (files: readonly CodeFile[], changed: ReadonlySet<string>): CodeFile[] => {
-  const marked = files.map((file) => (changed.has(file.path) ? { ...file, changed: true as const } : file))
-  return [...marked.filter((file) => file.changed), ...marked.filter((file) => !file.changed)]
+export const changedFiles = (after: readonly CodeFile[], before: readonly CodeFile[], paths: readonly string[]): CodeFile[] => {
+  const changed = new Set(paths)
+  const earlier = new Set(before.map(({ path }) => path))
+  const later = new Set(after.map(({ path }) => path))
+  return [
+    ...after.filter(({ path }) => changed.has(path)).map((file): CodeFile => ({ ...file, change: earlier.has(file.path) ? 'modified' : 'added' })),
+    ...before.filter(({ path }) => changed.has(path) && !later.has(path)).map((file): CodeFile => ({ ...file, change: 'removed' })),
+  ]
 }
 
 /**

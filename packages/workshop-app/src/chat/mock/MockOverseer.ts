@@ -16,7 +16,7 @@ import type {
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
-import { DISCONNECTED, MockGadget, RESTARTED, type Handle } from './MockGadget'
+import { DISCONNECTED, MockGadget, RESTARTED, UI_CODE, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
 import { AGENT, stamp, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
 
@@ -49,6 +49,50 @@ const treeOf = (paths: string[]): TreeNode[] => {
   return [...[...folders].map(([name, inside]): TreeNode => ({ name, kind: 'dir', children: treeOf(inside) })), ...files]
 }
 
+// A gadget's code as each of its commits kept it, oldest first: the empty one it was made with,
+// then a chat's changes, each kept. Its commits are made up from its id and how far along they are.
+const GADGET_SERVER = `import { DurableObject } from 'cloudflare:workers'
+
+type Task = { text: string; done: boolean }
+
+/** The review's to-do list, kept as the doc's tasks. */
+export class Gadget extends DurableObject {
+  async getDocument() {
+    return (await this.ctx.storage.get<{ title: string; tasks: Task[] }>('doc')) ?? { title: 'Q3 platform review', tasks: [] }
+  }
+
+  async toggle(index: number) {
+    const doc = await this.getDocument()
+    const task = doc.tasks[index]
+    if (task) task.done = !task.done
+    await this.ctx.storage.put('doc', doc)
+    return doc
+  }
+}
+`
+const GADGET_HISTORY: Array<{ message: string; minutesAgo: number; files: Record<string, string> }> = [
+  { message: 'Make the gadget', minutesAgo: 60 * 26, files: {} },
+  {
+    message: 'Start the review as a to-do list',
+    minutesAgo: 60 * 25,
+    files: {
+      'client.js': UI_CODE.trimStart().replace("  'label:hover { background: rgb(0 0 0 / 0.04); }',\n", '').replace("left ? left + ' of ' + doc.tasks.length + ' left to do' : 'All done'", "left + ' left'"),
+      'server.ts': GADGET_SERVER.replace('    await this.ctx.storage.put(\'doc\', doc)\n', ''),
+    },
+  },
+  {
+    message: 'Keep what is ticked off, and say how much is left',
+    minutesAgo: 14,
+    files: {
+      'client.js': UI_CODE.trimStart(),
+      'server.ts': GADGET_SERVER,
+      'README.md': '# Q3 platform review\n\nThe review as a to-do list: tick a task off once it is done, and everyone sees it.\n',
+    },
+  },
+]
+const gadgetCommit = (id: number, at: number) => `g${at}${String(id).padStart(38, '0')}`
+const gadgetAt = (commitId: string) => (commitId.startsWith('g') ? GADGET_HISTORY[Number(commitId[1])] : undefined)
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 // Made up, and only told apart here. Not `crypto.randomUUID()`, which a page that is not served
 // securely does not have, such as the dev server opened from a phone by its address.
@@ -72,6 +116,7 @@ export class MockOverseer {
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
+  #workpieceSubscribers = new Set<WorkpiecesSubscriber>()
   #files: NonNullable<Scenario['files']>
   #worktrees: Record<number, MockWorktree>
   #blobs = new Map<GitOid, Uint8Array>()
@@ -145,12 +190,24 @@ export class MockOverseer {
   /** Any id is a gadget: the scenarios' outputs are all documents. */
   #gadget(id: number) {
     let gadget = this.#gadgets.get(id)
-    if (!gadget) this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp())))
+    if (!gadget) {
+      this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp())))
+      for (const subscriber of this.#workpieceSubscribers) subscriber.entry(this.#gadgetSummary(id))
+    }
     return gadget
   }
 
-  /** The scenarios' gadgets keep their code; their worktrees are listed, as they are to the chat that made them. */
+  #gadgetSummary(id: number) {
+    return { id, type: 'gadget', title: 'Q3 platform review', commitId: gadgetCommit(id, GADGET_HISTORY.length - 1) } as const
+  }
+
+  /**
+   * The gadgets opened so far, each with the same history of its code, and the worktrees, listed
+   * as they are to the chat that made them.
+   */
   subscribeToWorkpieces(subscriber: WorkpiecesSubscriber) {
+    this.#workpieceSubscribers.add(subscriber)
+    for (const id of this.#gadgets.keys()) subscriber.entry(this.#gadgetSummary(id))
     for (const [key, worktree] of Object.entries(this.#worktrees)) {
       const id = Number(key)
       subscriber.entry({
@@ -164,30 +221,57 @@ export class MockOverseer {
       })
     }
     subscriber.ready()
-    return lease(() => {})
+    return lease(() => void this.#workpieceSubscribers.delete(subscriber))
   }
 
-  // The worktree a commit is one of.
+  // The worktree a commit is one of: an agent's commit between is numbered by its worktree's id.
   #worktreeAt(commitId: string): MockWorktree | undefined {
-    return this.#worktrees[Number(commitId.slice(1))]
+    const number = Number(commitId.slice(1))
+    return this.#worktrees[commitId.startsWith('c') ? Math.floor(number / 100) : number]
+  }
+
+  // A worktree's files at a commit: where it started, without what its agent changed since, which
+  // is made up as added; any later, as kept.
+  #worktreeFiles(commitId: string): Record<string, string> | undefined {
+    const worktree = this.#worktreeAt(commitId)
+    if (!worktree || !commitId.startsWith('b')) return worktree?.files
+    return Object.fromEntries(Object.entries(worktree.files).filter(([path]) => !worktree.changed.includes(path)))
   }
 
   async listTree(commitId: string): Promise<TreeNode[]> {
-    const worktree = this.#worktreeAt(commitId)
-    if (!worktree) throw new Error(`No commit ${commitId}`)
-    return treeOf(Object.keys(worktree.files))
+    const kept = gadgetAt(commitId)
+    if (kept) return treeOf(Object.keys(kept.files))
+    const files = this.#worktreeFiles(commitId)
+    if (!files) throw new Error(`No commit ${commitId}`)
+    return treeOf(Object.keys(files))
   }
 
   async readFilesAtCommit(commitId: string, paths: string[]): Promise<Array<[string, FileAtCommit]>> {
-    const files = this.#worktreeAt(commitId)?.files ?? {}
+    const files = gadgetAt(commitId)?.files ?? this.#worktreeFiles(commitId) ?? {}
     return paths.map((path) => [path, path in files ? { kind: 'text', text: files[path] } : { kind: 'absent' }])
   }
 
-  async listChangedPaths(_fromCommit: string, toCommit: string): Promise<string[]> {
+  async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
+    const [from, to] = [gadgetAt(fromCommit), gadgetAt(toCommit)]
+    if (from && to) {
+      const paths = new Set([...Object.keys(from.files), ...Object.keys(to.files)])
+      return [...paths].filter((path) => from.files[path] !== to.files[path])
+    }
     return this.#worktreeAt(toCommit)?.changed ?? []
   }
 
   async getCommitLog(fromCommit: string): Promise<CommitInfo[]> {
+    if (gadgetAt(fromCommit)) {
+      const id = Number(fromCommit.slice(2))
+      const author = { name: VIEWER.name, email: VIEWER.id }
+      return GADGET_HISTORY.slice(0, Number(fromCommit[1]) + 1).map(({ message, minutesAgo }, at): CommitInfo => ({
+        oid: gadgetCommit(id, at),
+        parents: at === 0 ? [] : [gadgetCommit(id, at - 1)],
+        message: `${message}\n`,
+        author,
+        timestamp: new Date(Date.now() - minutesAgo * 60_000),
+      })).toReversed()
+    }
     const id = Number(fromCommit.slice(1))
     const worktree = this.#worktrees[id]
     if (!worktree) return []
@@ -199,7 +283,9 @@ export class MockOverseer {
       author,
       timestamp: new Date(Date.now() - minutesAgo * 60_000),
     }))
-    return [...commits, { oid: worktreeCommit(id, 'base'), parents: [], message: 'Where it started\n', author, timestamp: new Date(0) }]
+    const log = [...commits, { oid: worktreeCommit(id, 'base'), parents: [], message: 'Where it started\n', author, timestamp: new Date(0) }]
+    // Each made on the one before it.
+    return log.map((commit, at) => ({ ...commit, parents: log[at + 1] ? [log[at + 1].oid] : [] }))
   }
 
   subscribeToPresence(subscriber: PresenceSubscriber) {

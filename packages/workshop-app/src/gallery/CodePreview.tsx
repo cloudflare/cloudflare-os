@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CodeBrowser, type CodeBrowserProps } from '@/blocks/CodeBrowser'
+import { CodeBrowser, type CodeBrowserCommit, type CodeBrowserFile, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { Section } from './Section'
 
@@ -52,7 +52,7 @@ const TEXTS: Record<string, string> = {
   'lib/styles.css': 'button {\n  border-radius: 999px;\n  padding: 8px 14px;\n  color: #1f1f1f;\n}\n',
 }
 
-const FILES = [
+const FILES: CodeBrowserFile[] = [
   { path: 'client.js', role: 'What it shows' },
   { path: 'server.ts', role: 'What it keeps and does' },
   { path: 'README.md', role: 'What it is' },
@@ -61,75 +61,139 @@ const FILES = [
   { path: 'lib/styles.css' },
 ]
 
-const Live = () => {
+// The tip jar as it was before its last change: whole dollars only, and no README.
+const SERVER_BEFORE = `import { DurableObject } from 'cloudflare:workers'
+
+export class Gadget extends DurableObject {
+  async total(): Promise<number> {
+    return (await this.ctx.storage.get<number>('total')) ?? 0
+  }
+
+  async tip(dollars: number): Promise<number> {
+    const total = (await this.total()) + dollars
+    await this.ctx.storage.put('total', total)
+    return total
+  }
+}
+`
+const CLIENT_BEFORE = CLIENT.replace('const AMOUNTS = [2, 5, 10]', 'const AMOUNTS = [1, 5]').replace("  const update = (cents) => { total.textContent = `$${(cents / 100).toFixed(2)}` }", '  const update = (dollars) => { total.textContent = `$${dollars}` }')
+
+const HISTORY: CodeBrowserCommit[] = [
+  { id: 'c3', summary: 'Keep the total in cents, and say what the jar is for', author: 'Ada', time: '12 min ago' },
+  { id: 'c2', summary: 'Show a button for each amount', author: 'Ada', time: 'Yesterday' },
+]
+// What each commit changed, and how each file read before it.
+const CHANGES: Record<string, { files: CodeBrowserFile[]; before: Record<string, string> }> = {
+  c3: {
+    files: [{ path: 'client.js', role: 'What it shows', change: 'modified' }, { path: 'server.ts', role: 'What it keeps and does', change: 'modified' }, { path: 'README.md', role: 'What it is', change: 'added' }],
+    before: { 'client.js': CLIENT_BEFORE, 'server.ts': SERVER_BEFORE, 'README.md': '' },
+  },
+  c2: {
+    files: [{ path: 'client.js', role: 'What it shows', change: 'modified' }, { path: 'lib/old-buttons.js', change: 'removed' }],
+    before: { 'client.js': CLIENT_BEFORE.replace(/  for \(const amount[\s\S]*?\n  }\n/, ''), 'lib/old-buttons.js': 'export const buttons = []\n' },
+  },
+}
+
+const Live = ({ frame, className }: Pick<CodeBrowserProps, 'frame' | 'className'>) => {
   const [shown, setShown] = useState('client.js')
-  const text = TEXTS[shown]
+  const [comparing, setComparing] = useState<string>()
+  const change = comparing ? CHANGES[comparing] : undefined
+  const files = change?.files ?? FILES
+  const path = files.some((file) => file.path === shown) ? shown : files[0]?.path ?? shown
+  const entry = files.find((file) => file.path === path)
+  const text = entry?.change === 'removed' ? '' : TEXTS[path]
+  const before = change?.before[path]
   return (
     <CodeBrowser
-      files={{ status: 'ready', files: FILES }}
-      shown={shown}
+      files={{ status: 'ready', files }}
+      shown={path}
       onShow={setShown}
       file={text === undefined ? { status: 'other', message: 'It isn’t text, so it isn’t shown here.' } : { status: 'text', text }}
+      before={before === undefined ? undefined : { status: 'text', text: before }}
+      history={{ commits: { status: 'ready', commits: HISTORY }, comparing, onCompare: setComparing }}
+      note="Kept 12 min ago"
+      linkTo={(file, lines) => `https://workshop.example/app/tip-jar/code/${file}${lines ? `#L${lines.from}${lines.to > lines.from ? `-L${lines.to}` : ''}` : ''}`}
+      frame={frame}
+      className={className}
     />
   )
 }
 
 // A repository an agent checked out and worked in.
 const REPO_TEXTS: Record<string, string> = {
-  'src/rates.ts': "/** Converts between currencies at the day's rate. */\nexport const convert = (amount: number, rate: number) =>\n  Math.round(amount * rate * 100) / 100\n",
+  'src/rates.ts': "/** Converts between currencies at the day's rate, to the cent. */\nexport const convert = (amount: number, rate: number) =>\n  Math.round(amount * rate * 100) / 100\n\n/** The rate from one currency to another, from a table of each against the dollar. */\nexport const rateOf = (table: Record<string, number>, from: string, to: string) => {\n  const a = table[from]\n  const b = table[to]\n  if (a === undefined || b === undefined) throw new Error(`No rate for ${from} to ${to}`)\n  return b / a\n}\n",
   'src/rates.test.ts': "import { expect, it } from 'vitest'\nimport { convert } from './rates'\n\nit('rounds to the cent', () => {\n  expect(convert(10, 1.23456)).toBe(12.35)\n})\n",
   'README.md': '# Rates\n\nCurrency conversion for the expenses tool.\n',
   'package.json': '{\n  "name": "rates",\n  "type": "module"\n}\n',
   'src/index.ts': "export * from './rates'\n",
 }
-const REPO_FILES = [
-  { path: 'src/rates.ts', changed: true as const },
-  { path: 'src/rates.test.ts', changed: true as const },
+const REPO_BEFORE: Record<string, string> = {
+  'src/rates.ts': "/** Converts between currencies at the day's rate. */\nexport const convert = (amount: number, rate: number) => amount * rate\n\n/** The rate from one currency to another, from a table of each against the dollar. */\nexport const rateOf = (table: Record<string, number>, from: string, to: string) => {\n  const a = table[from]\n  const b = table[to]\n  if (a === undefined || b === undefined) throw new Error(`No rate for ${from} to ${to}`)\n  return b / a\n}\n",
+  'src/rates.test.ts': '',
+}
+const REPO_FILES: CodeBrowserFile[] = [
   { path: 'README.md' },
   { path: 'package.json' },
   { path: 'src/index.ts' },
+  { path: 'src/rates.ts' },
+  { path: 'src/rates.test.ts' },
 ]
-const COMMITS = [
+const REPO_CHANGED: CodeBrowserFile[] = [
+  { path: 'src/rates.ts', change: 'modified' },
+  { path: 'src/rates.test.ts', change: 'added' },
+]
+const COMMITS: CodeBrowserCommit[] = [
   { id: '9f2c1e4a7b', summary: 'Round conversions to the cent', time: '3 min ago' },
   { id: '41d0b77c2e', summary: 'Add a test for rounding', time: '5 min ago' },
 ]
 
 const LiveWorktree = () => {
   const [shown, setShown] = useState('src/rates.ts')
+  const [comparing, setComparing] = useState<string | undefined>('since')
+  const files = comparing ? REPO_CHANGED : REPO_FILES
+  const path = files.some((file) => file.path === shown) ? shown : files[0]?.path ?? shown
+  const before = comparing ? REPO_BEFORE[path] : undefined
   return (
     <WorktreeView
       changes={{ status: 'ready', changedFiles: 2, commits: COMMITS }}
-      files={{ status: 'ready', files: REPO_FILES }}
-      shown={shown}
+      comparing={comparing}
+      onCompare={setComparing}
+      since="since"
+      files={{ status: 'ready', files }}
+      shown={path}
       onShow={setShown}
-      file={{ status: 'text', text: REPO_TEXTS[shown] ?? '' }}
+      file={{ status: 'text', text: REPO_TEXTS[path] ?? '' }}
+      before={before === undefined ? undefined : { status: 'text', text: before }}
     />
   )
 }
 
-const Fixed = (props: Omit<CodeBrowserProps, 'onShow'>) => <CodeBrowser {...props} onShow={() => {}} onRetry={() => {}} />
+const Fixed = (props: Omit<CodeBrowserProps, 'onShow'>) => <CodeBrowser frame="card" {...props} onShow={() => {}} onRetry={() => {}} />
 
-/** A gadget's Code tab. */
+/** A gadget's code, and a worktree's. */
 export const CodePreview = () => (
   <>
-    <Section title="CodeBrowser (a gadget's Code tab: its files beside the one shown, highlighted, with Copy; the arrow keys step through them; a picture says it isn't shown. Where it is narrow, the files are a drawer its header opens)">
-      <div className="w-full max-w-5xl"><Live /></div>
+    <Section title="CodeBrowser (a gadget's code as a card on a page: its files as a tree beside the one shown, highlighted, with find, go to line, ⌘P to go to a file, lines picked from the gutter, and its history, each time it was kept opening to what changed then, as a diff. Where it is narrow, the files are a drawer its header opens)">
+      <div className="w-full max-w-6xl"><Live frame="card" className="h-[620px]" /></div>
     </Section>
-    <Section title="WorktreeView (beside a chat, at the pane's width: what changed and its commits, which open; the files a drawer from the file's header, changed ones marked and first)">
-      <div className="h-[640px] w-full max-w-[480px] rounded-t-3xl bg-kumo-tint"><LiveWorktree /></div>
+    <Section title="CodeBrowser, filling a side pane, as View code shows a gadget's">
+      <div className="h-[640px] w-full max-w-[480px] overflow-hidden rounded-t-3xl bg-kumo-tint"><Live frame="pane" /></div>
+    </Section>
+    <Section title="WorktreeView (beside a chat: everything its agent changed since it was made, as it opens, then each of its commits, or its code as it is)">
+      <div className="h-[640px] w-full max-w-[480px] overflow-hidden rounded-t-3xl bg-kumo-tint"><LiveWorktree /></div>
     </Section>
     <Section title="WorktreeView, as wide as a page, and while it reads what changed">
-      <div className="grid w-full max-w-5xl gap-4">
-        <div className="h-[560px] rounded-3xl bg-kumo-tint"><LiveWorktree /></div>
-        <div className="h-[320px] rounded-3xl bg-kumo-tint">
-          <WorktreeView changes={{ status: 'loading' }} files={{ status: 'loading' }} onShow={() => {}} file={{ status: 'loading' }} />
+      <div className="grid w-full max-w-6xl gap-4">
+        <div className="h-[560px] overflow-hidden rounded-3xl bg-kumo-tint"><LiveWorktree /></div>
+        <div className="h-[320px] overflow-hidden rounded-3xl bg-kumo-tint">
+          <WorktreeView changes={{ status: 'loading' }} onCompare={() => {}} since="since" files={{ status: 'loading' }} onShow={() => {}} file={{ status: 'loading' }} />
         </div>
       </div>
     </Section>
     <Section title="CodeBrowser, while reading, and when it could not be read, or there is no code yet">
-      <div className="grid w-full max-w-5xl gap-4">
-        <Fixed files={{ status: 'loading' }} file={{ status: 'loading' }} />
-        <Fixed files={{ status: 'ready', files: FILES }} shown="server.ts" file={{ status: 'failed', message: 'The workspace didn’t answer.' }} />
+      <div className="grid w-full max-w-6xl gap-4">
+        <Fixed files={{ status: 'loading' }} file={{ status: 'loading' }} className="h-64" />
+        <Fixed files={{ status: 'ready', files: FILES }} shown="server.ts" file={{ status: 'failed', message: 'The workspace didn’t answer.' }} className="h-64" />
         <Fixed files={{ status: 'failed', message: 'The workspace didn’t answer.' }} file={{ status: 'loading' }} />
         <Fixed files={{ status: 'ready', files: [] }} file={{ status: 'loading' }} />
       </div>

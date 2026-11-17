@@ -41,7 +41,7 @@ class MockGadgetServer extends RpcTarget {
  * A gadget's UI: a document whose tasks are ticked off on its server side. Plain DOM, as a page in
  * the sandbox may import nothing. `gadget` is the connection the sandbox's prelude makes.
  */
-const UI_CODE = String.raw`
+export const UI_CODE = String.raw`
 document.head.insertAdjacentHTML('beforeend', '<style>' + [
   'body { margin: 0; font: 15px/1.5 system-ui, sans-serif; color: #1d1d1f; }',
   'main { max-width: 40rem; margin: 0 auto; padding: 40px 32px; }',

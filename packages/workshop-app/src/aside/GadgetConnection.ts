@@ -31,6 +31,8 @@ export type GadgetSnapshot = {
   people: AiChatAuthorInfo[]
   /** The gadget's title as it is now, once the workspace has said. */
   title?: string
+  /** The commit its code was last kept in (its head), once the workspace has said: none before it has any. */
+  commitId?: string
 }
 
 /** A stub, which says when what it reaches can no longer be reached, such as when it restarted. */
@@ -138,7 +140,7 @@ class HeadListener extends RpcTarget implements WorkpiecesSubscriber {
   constructor(
     private readonly gadgetId: number,
     private readonly changed: () => void,
-    private readonly titled: (title: string) => void,
+    private readonly summarized: (summary: { title: string; commitId?: string }) => void,
   ) {
     super()
   }
@@ -147,7 +149,7 @@ class HeadListener extends RpcTarget implements WorkpiecesSubscriber {
 
   entry(summary: WorkpieceSummary) {
     if (summary.id !== this.gadgetId || summary.type !== 'gadget') return
-    this.titled(summary.title)
+    this.summarized({ title: summary.title, commitId: summary.commitId })
     // Its other changes, such as a new title, leave the code as it was.
     if (this.#head && summary.commitId !== this.#head.commitId) this.changed()
     this.#head = { commitId: summary.commitId }
@@ -272,8 +274,8 @@ export class GadgetConnection {
     const { chatId } = this.options
     // Before the code is loaded, so that no change can come between.
     this.#subscriptions = [
-      overseer.subscribeToWorkpieces(new HeadListener(this.workpieceId, changed, (title) => {
-        if (run === this.#run && title !== this.#snapshot.title) this.#publish({ title })
+      overseer.subscribeToWorkpieces(new HeadListener(this.workpieceId, changed, ({ title, commitId }) => {
+        if (run === this.#run && (title !== this.#snapshot.title || commitId !== this.#snapshot.commitId)) this.#publish({ title, commitId })
       })),
       ...(chatId === undefined ? [] : [overseer.subscribeToChat(new ChangeListener(chatId, this.workpieceId, changed))]),
       overseer.subscribeToPresence(

@@ -1,7 +1,7 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
-  ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
+  AppWindowIcon, ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
   CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, UserPlusIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
@@ -56,8 +56,10 @@ export type SidePaneProps = Placement & {
   onDownload?: () => void
   /** Goes to the settings of the one shown, a gadget, for whoever may change it. */
   onOpenSettings?: () => void
-  /** Goes to the code of the one shown, a gadget, which is a tab of its settings. */
+  /** Shows the code of the one shown, a gadget, in its place, or goes back to it from its code. */
   onViewCode?: () => void
+  /** Its code is shown in its place (`onViewCode`), which the title says, with the way back. */
+  viewingCode?: boolean
   /** Shares the one shown with people, for whoever may. */
   onShare?: () => void
   /**
@@ -92,7 +94,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, onShare, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, viewingCode = false, onShare, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -164,7 +166,11 @@ export const SidePane = (props: SidePaneProps) => {
           {active && (
             // Keyed, so that going to another swaps the bubble rather than renaming it.
             <HeaderBubble key={active.key} className="min-w-0">
-              <SidePaneTitle title={active.title} icon={active.icon} />
+              <SidePaneTitle
+                title={active.title}
+                icon={active.icon}
+                trail={viewingCode && onViewCode ? { label: 'Code', icon: <CodeIcon />, onBack: onViewCode } : undefined}
+              />
             </HeaderBubble>
           )}
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
@@ -179,7 +185,9 @@ export const SidePane = (props: SidePaneProps) => {
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {onShare && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
-                  {onViewCode && <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>}
+                  {onViewCode && (viewingCode
+                    ? <DropdownMenu.Item icon={AppWindowIcon} onSelect={onViewCode}>Back to {active?.title ?? 'it'}</DropdownMenu.Item>
+                    : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>)}
                   {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
                 </DropdownMenu>

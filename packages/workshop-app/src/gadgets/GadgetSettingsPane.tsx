@@ -5,7 +5,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from './GadgetSettingsView'
-import { useGadgetCode } from './useGadgetCode'
+import { GadgetCodeView } from './GadgetCodeView'
 import { useBlueprintInfo, useGadgetSettings, useServices } from './useGadgetSettings'
 
 export type GadgetSettingsPaneProps = {
@@ -44,7 +44,6 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const title = gadget?.title ?? initialTitle
   const blueprintId = gadget?.upstream?.blueprintId
   const blueprint = useBlueprintInfo(blueprintId)
-  const code = useGadgetCode(workspaceId, gadget?.commitId, file, tab === 'code')
   useDocumentTitle(title ? `${tab === 'code' ? 'Code' : 'Settings'} · ${title}` : 'Gadget settings')
   // Why the last thing asked for was not done.
   const [problem, setProblem] = useState<string>()
@@ -78,7 +77,17 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
       bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
       services={services}
       onUnbind={(name) => attempt(`remove env.${name}`, () => settings.unbind(name))}
-      code={{ files: code.files, shown: code.shown, onShow: onShowFile, file: code.file, onRetry: code.retry }}
+      code={(
+        <GadgetCodeView
+          workspaceId={workspaceId}
+          commitId={gadget?.commitId}
+          file={file}
+          onShowFile={onShowFile}
+          active={tab === 'code'}
+          frame="card"
+          className="h-[min(72vh,760px)]"
+        />
+      )}
       onDelete={() => attempt('delete the gadget', async () => {
         await settings.remove()
         onDeleted()
