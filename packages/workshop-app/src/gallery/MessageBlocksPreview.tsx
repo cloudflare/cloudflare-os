@@ -3,6 +3,7 @@ import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { messageInfo } from '@/blocks/messageInfo'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { UserMessage } from '@/blocks/UserMessage'
+import { BUDGET_XLSX, Q3_PLAN_DOCX, ROADMAP_PPTX } from '@/chat/mock/officeFiles'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
 
@@ -27,7 +28,7 @@ export const MessageBlocksPreview = () => {
 
   return (
     <>
-      <Section title="UserMessage (plain, a reply, a short reply to a long message, mentions, slash command, attachments, attachments alone, another sender, not read yet)">
+      <Section title="UserMessage (plain, a reply, a short reply to a long message, mentions, slash command, attachments, a Word document, deck and workbook drawn on their tiles once fetched, attachments alone, another sender, not read yet)">
         <Column>
           <UserMessage parts={[{ type: 'text', text: 'Create a dashboard showcasing my Jira stats' }]} onReply={() => say('reply')} />
           <UserMessage parts={[{ type: 'text', text: 'Make it twenty-four, and keep the weekly split.' }]} quote="The chart now covers 12 weeks" />
@@ -53,6 +54,16 @@ export const MessageBlocksPreview = () => {
               { id: 'pdf', name: 'Project brief.pdf', mimeType: 'application/pdf' },
               { id: 'csv', name: 'Quarterly results with a long name.csv', mimeType: 'text/csv' },
             ]}
+            onOpenAttachment={(id) => say(`open attachment ${id}`)}
+          />
+          <UserMessage
+            parts={[{ type: 'text', text: 'The plan, the deck and the budget' }]}
+            attachments={[
+              { id: 'docx', name: 'Q3 plan.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+              { id: 'pptx', name: 'Roadmap.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' },
+              { id: 'xlsx', name: 'Budget.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+            ]}
+            loadAttachment={(id) => (id === 'docx' ? Q3_PLAN_DOCX() : id === 'pptx' ? ROADMAP_PPTX() : BUDGET_XLSX())}
             onOpenAttachment={(id) => say(`open attachment ${id}`)}
           />
           <UserMessage

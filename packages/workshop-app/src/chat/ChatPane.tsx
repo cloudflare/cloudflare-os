@@ -119,6 +119,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         if (key) requestAnimationFrame(() => list.current?.scrollToMessage(key))
       }),
       onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
+      loadAttachment: actions.attachmentContent,
       onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
       outputHref,
       onApprove: (action) => {

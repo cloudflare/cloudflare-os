@@ -3,12 +3,14 @@ import { useApi } from '@/rpc/ApiContext'
 import type { AsideFile } from './asideItems'
 import { saveBytes } from '@/files/saveBytes'
 import { SVG_TYPE, svgDataUrl } from '@/files/svgImage'
-import { previewOf, type FilePreview } from './filePreview'
+import { isOfficeKind, previewOf, type FilePreview, type OfficeKind } from './filePreview'
 
 /** How a file is shown, with an address for its bytes where the browser shows them. */
 export type ShownFile =
   | { kind: 'image' | 'pdf' | 'audio' | 'video'; url: string }
-  | Exclude<FilePreview, { type: string }>
+  /** Drawn by the app from the file's bytes. */
+  | { kind: OfficeKind; bytes: Uint8Array; mimeType: string }
+  | Exclude<FilePreview, { type: string } | { kind: OfficeKind }>
 
 export type FileState =
   | { status: 'loading' }
@@ -88,7 +90,8 @@ export const useFilePreview = (file: AsideFile | undefined): FileState => {
   }
   if (!preview) return { status: 'loading' }
   const download = () => saveBytes(bytes, name)
-  if (!('type' in preview)) return { status: 'ready', preview, download }
+  if (isOfficeKind(preview.kind)) return { status: 'ready', preview: { kind: preview.kind, bytes, mimeType }, download }
+  if (preview.kind === 'markdown' || preview.kind === 'text' || preview.kind === 'none') return { status: 'ready', preview, download }
   // Waiting for its address, which comes with the next render.
   if (address?.bytes !== bytes) return { status: 'loading' }
   return { status: 'ready', preview: { kind: preview.kind, url: address.url }, download }

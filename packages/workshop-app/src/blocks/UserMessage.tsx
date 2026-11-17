@@ -26,6 +26,8 @@ export type UserMessageProps = {
   /** Sent while the agent was working, which has not read it yet. It is dimmed until then. */
   unread?: boolean
   onOpenAttachment?: (id: string) => void
+  /** Fetches a file's bytes, for a glimpse of it on its tile. */
+  loadAttachment?: (id: string) => Promise<Uint8Array>
   /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
   joins?: MessageJoins
   /** Start a reply to the message. */
@@ -57,7 +59,7 @@ const written = (part: UserMessagePart) =>
  * replying to. The two bubbles join as a run does, and what can be done with the message is on
  * the last. Copied, it is what they wrote, without the quote.
  */
-export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, joins, onReply, details }: UserMessageProps) => (
+export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from, unread, onOpenAttachment, loadAttachment, joins, onReply, details }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1 transition-opacity duration-300 motion-reduce:transition-none', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {/* Spaced as the conversation is, so the bubbles find each other and tuck together as a run. */}
@@ -73,7 +75,7 @@ export const UserMessage = ({ parts, quote, onShowQuoted, attachments = [], from
           <ul aria-label="Attachments" className="flex flex-wrap justify-end gap-[5px]">
             {attachments.map(({ id, ...attachment }) => (
               <li key={id} className="flex">
-                <MessageAttachment {...attachment} onOpen={() => onOpenAttachment?.(id)} />
+                <MessageAttachment {...attachment} load={loadAttachment && (() => loadAttachment(id))} onOpen={() => onOpenAttachment?.(id)} />
               </li>
             ))}
           </ul>

@@ -1,5 +1,6 @@
 import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { withQuote } from '../replyQuote'
+import { BUDGET_XLSX, Q3_PLAN_DOCX, ROADMAP_PPTX } from './officeFiles'
 import {
   action,
   AGENT,
@@ -357,6 +358,9 @@ const REVIEW_FILES = [
   },
   { id: 'q2-review', name: 'Q2 platform review.pdf', mimeType: 'application/pdf', size: Q2_REVIEW.length },
   { id: 'q3-notes', name: 'Q3 notes.md', mimeType: 'text/markdown', size: Q3_NOTES.length },
+  { id: 'q3-plan', name: 'Q3 plan.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: 0 },
+  { id: 'roadmap', name: 'Roadmap.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: 0 },
+  { id: 'budget', name: 'Budget.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 0 },
 ]
 
 const output: Scenario = {
@@ -367,7 +371,7 @@ const output: Scenario = {
     'changes are accepted (scripted here: the edits and the accept arrive on their own). The request has files ' +
     'attached: they and the document open beside the chat.',
   history: history([user('Write up the Q3 platform review as a doc.', { attachments: REVIEW_FILES })]),
-  files: { 'q2-review': Q2_REVIEW, 'q3-notes': Q3_NOTES },
+  files: { 'q2-review': Q2_REVIEW, 'q3-notes': Q3_NOTES, 'q3-plan': Q3_PLAN_DOCX, roadmap: ROADMAP_PPTX, budget: BUDGET_XLSX },
   script: [
     ...turn(
       say(agent({ text: 'I’ll start a document for it.' })),

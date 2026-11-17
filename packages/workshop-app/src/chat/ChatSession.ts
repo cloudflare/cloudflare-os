@@ -82,6 +82,7 @@ type Calls =
   | 'sendChatMessage'
   | 'listSlashCommands'
   | 'uploadBlob'
+  | 'getChatAttachmentContent'
   | 'retryAgent'
   | 'stopAgent'
   | 'approveAction'
@@ -169,6 +170,8 @@ const HISTORY_PAGE_SIZE = 50
 const QUOTE_SEARCH_PAGES = 20
 /** How many earlier pages are fetched to see everything a chat's changes would accept. */
 const EPOCH_SEARCH_PAGES = 20
+/** How many fetched files a session keeps, so a chat's tiles and what is opened share their bytes. */
+const KEPT_ATTACHMENTS = 24
 /**
  * How long after a turn ends its changes are left before the user is asked to keep them: the
  * workspace keeps a turn's changes on its own too, a moment after it ends, and a question that
@@ -224,6 +227,8 @@ export class ChatSession {
   // Formats seen while a createGadget call streamed. The durable call does not carry its format,
   // so this is what lets the card it becomes say what was made.
   #outputFormats = new Map<string, OutputFormat>()
+  // Files sent in the chat that were fetched, oldest first, by id.
+  #attachments = new Map<string, Promise<Uint8Array>>()
   // The steps since the last message with the step being written joined on, rebuilt only when
   // either changes.
   #work: WorkEntry[] | undefined
@@ -499,6 +504,23 @@ export class ChatSession {
       await (this.#earlier ?? this.loadEarlier())
       if (this.#nextBeforeSequence === before) return undefined
     }
+  }
+
+  /**
+   * The bytes of a file sent in the chat, fetched once and kept for a while: its message's tile
+   * draws a glimpse of it, and the same bytes serve when it is opened. Fails, to be asked again,
+   * while the workspace cannot be reached.
+   */
+  attachmentContent = (id: string): Promise<Uint8Array> => {
+    const known = this.#attachments.get(id)
+    if (known) return known
+    const overseer = this.#overseer
+    if (!overseer || this.options.connection?.down) return Promise.reject(new Error('The workspace can’t be reached right now.'))
+    const loading = Promise.resolve(overseer.getChatAttachmentContent(this.chatId, id))
+    this.#attachments.set(id, loading)
+    if (this.#attachments.size > KEPT_ATTACHMENTS) this.#attachments.delete(this.#attachments.keys().next().value!)
+    loading.catch(() => this.#attachments.delete(id))
+    return loading
   }
 
   /** Fetches one older page. Concurrent calls are ignored; failures are retryable. */

@@ -20,6 +20,8 @@ export type ChatItemHandlers = {
   /** Go to the message a reply answers. */
   onShowQuoted: (reply: UserItem) => void
   onOpenAttachment: (attachment: ChatAttachment) => void
+  /** Fetches a file sent in the chat, for a glimpse of it on its tile. */
+  loadAttachment?: (id: string) => Promise<Uint8Array>
   onOpenOutput: (output: OutputItem) => void
   /** An output's own page, for its card to link to so that it can be opened in another tab. */
   outputHref?: (output: OutputItem) => string
@@ -77,6 +79,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
             const attachment = item.attachments.find((candidate) => candidate.id === id)
             if (attachment) handlers.onOpenAttachment(attachment)
           }}
+          loadAttachment={handlers.loadAttachment}
           joins={joins}
           onReply={() => handlers.onReply(item)}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
