@@ -7,7 +7,7 @@ import type { GadgetExportFormat } from '@gadgets/workshop-shared/api'
 import { WorkshopIconButton } from './components/WorkshopControls'
 import { makeExportFilename, saveStreamToFile } from './fileTransfers'
 import { GadgetSaveDialog } from './features/gadget-save/GadgetSaveDialog'
-import { GadgetSaveMenuItems, type SaveRequest } from './features/gadget-save/GadgetSaveMenuItems'
+import { GadgetSaveMenuItems, useSaveVendors, type SaveRequest } from './features/gadget-save/GadgetSaveMenuItems'
 import type { SaveScope } from './features/gadget-save/savedFiles'
 
 type Props = {
@@ -27,6 +27,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
   // editor follows the agent to another Gadget, its dialog is gone rather than saving the new one.
   const [saving, setSaving] = useState<{ request: SaveRequest; gadget: object; chatId?: number } | null>(null)
   const formatRequest = useRef(0)
+  const saveVendors = useSaveVendors(!!saveScope)
   const toasts = useKumoToastManager()
 
   useEffect(() => {
@@ -107,7 +108,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
             )}
           />
           <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1">
-            {loading ? (
+            {loading || !saveVendors ? (
               <div role="status" aria-label="Loading export formats" className="space-y-1 py-0.5">
                 {['w-20', 'w-14'].map(width => (
                   <div key={width} className="flex h-7 items-center gap-2 px-2.5">
@@ -141,8 +142,9 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
                 {format.label}
               </DropdownMenu.Item>
             ))}
-            {saveScope && formats && (
+            {saveScope && formats && saveVendors && (
               <GadgetSaveMenuItems
+                vendors={saveVendors}
                 formats={formats}
                 scope={saveScope}
                 onSelect={request => setSaving({ request, gadget, chatId })}

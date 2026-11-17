@@ -3,7 +3,7 @@ import { DropdownMenu } from '@cloudflare/kumo'
 import { ArrowsClockwise, CloudArrowUp } from '@phosphor-icons/react'
 import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { getResourceTypeId } from '@gadgets/workshop-shared/gatekeeper'
-import { useAuthenticatedApi } from '../../AuthContext'
+import { useAuthenticatedApi, useOptionalAuthenticatedApi } from '../../AuthContext'
 import { findSaveTargets, type SaveTarget } from './saveTargets'
 import { readSavedFile, savedFileKey, type SavedFile, type SaveScope } from './savedFiles'
 
@@ -13,26 +13,40 @@ export type SaveRequest = { target: SaveTarget; storageKey: string | null; saved
 const ITEM = '!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint'
 
 /**
+ * The services a gadget might be saved to, or null until they are known: listed ahead of the menu
+ * opening, so its save items arrive with the rest instead of after. Empty when `enabled` is false.
+ */
+export const useSaveVendors = (enabled: boolean): GatekeeperVendorInfo[] | null => {
+  const authenticatedApi = useOptionalAuthenticatedApi()?.authenticatedApi
+  const [vendors, setVendors] = useState<GatekeeperVendorInfo[] | null>(null)
+
+  useEffect(() => {
+    if (!enabled || !authenticatedApi) return
+    let cancelled = false
+    authenticatedApi.listGatekeeperVendors().then(
+      listed => { if (!cancelled) setVendors(listed) },
+      err => {
+        console.error('Failed to list the services to save to:', err)
+        if (!cancelled) setVendors([])
+      })
+    return () => { cancelled = true }
+  }, [authenticatedApi, enabled])
+
+  return enabled && authenticatedApi ? vendors : []
+}
+
+/**
  * The export menu's items that save the gadget to a connected account as a file of a type its
  * gatekeeper can make from one of `formats` (see SupportedResource.savableFrom), and that update
  * the file the last such save made.
  */
-export const GadgetSaveMenuItems = ({ formats, scope, onSelect }: {
+export const GadgetSaveMenuItems = ({ vendors, formats, scope, onSelect }: {
+  vendors: GatekeeperVendorInfo[]
   formats: GadgetExportFormat[]
   scope: SaveScope
   onSelect: (request: SaveRequest) => void
 }) => {
-  const { authenticatedApi, currentUser } = useAuthenticatedApi()
-  const [vendors, setVendors] = useState<GatekeeperVendorInfo[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    authenticatedApi.listGatekeeperVendors().then(
-      listed => { if (!cancelled) setVendors(listed) },
-      err => console.error('Failed to list the services to save to:', err))
-    return () => { cancelled = true }
-  }, [authenticatedApi])
-
+  const { currentUser } = useAuthenticatedApi()
   const targets = findSaveTargets(vendors, formats)
   if (targets.length === 0) return null
 

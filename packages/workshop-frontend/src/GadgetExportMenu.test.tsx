@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     fileType: {description: string; contentType: string; extension: string},
   ) => Promise<void>>(),
   toast: vi.fn<(toast: unknown) => void>(),
+  saveVendors: [] as object[] | null,
 }))
 
 vi.mock('@cloudflare/kumo', () => {
@@ -71,6 +72,7 @@ vi.mock('./fileTransfers', () => ({
 
 // A save item that asks for a save, and a dialog that says which Gadget it would save.
 vi.mock('./features/gadget-save/GadgetSaveMenuItems', () => ({
+  useSaveVendors: (enabled: boolean) => enabled ? mocks.saveVendors : [],
   GadgetSaveMenuItems: ({ onSelect }: { onSelect: (request: object) => void }) => (
     <button type="button" onClick={() => onSelect({})}>save item</button>
   ),
@@ -295,6 +297,14 @@ describe('GadgetExportMenu', () => {
     }
 
     const report = client()
+    // Until the services to save to are known the menu is still loading, so nothing pops in late.
+    mocks.saveVendors = null
+    await show({ gadget: report })
+    await act(async () => button('open export menu')!.click())
+    expect(container.querySelector('[role=status]')).not.toBeNull()
+    expect(button('CSV')).toBeUndefined()
+    mocks.saveVendors = []
+
     await show({ gadget: report, saveScope: undefined })
     await act(async () => button('open export menu')!.click())
     expect(button('save item')).toBeUndefined()

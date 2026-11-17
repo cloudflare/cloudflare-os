@@ -20,12 +20,11 @@ vi.mock('@cloudflare/kumo', () => ({
 }))
 
 vi.mock('../../AuthContext', () => ({
-  useAuthenticatedApi: () => ({
-    authenticatedApi: testState.authenticatedApi, currentUser: { id: 'ada@example.com' },
-  }),
+  useAuthenticatedApi: () => ({ currentUser: { id: 'ada@example.com' } }),
+  useOptionalAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }),
 }))
 
-import { GadgetSaveMenuItems, type SaveRequest } from './GadgetSaveMenuItems'
+import { GadgetSaveMenuItems, useSaveVendors, type SaveRequest } from './GadgetSaveMenuItems'
 import { savedFileKey } from './savedFiles'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -51,9 +50,9 @@ let root: Root
 let container: HTMLDivElement
 const onSelect = vi.fn<(request: SaveRequest) => void>()
 
-const render = async (formats: GadgetExportFormat[] = [html]) => {
+const render = async (formats: GadgetExportFormat[] = [html], vendors = [vendor]) => {
   await act(async () => root.render(
-    <GadgetSaveMenuItems formats={formats} scope={scope} onSelect={onSelect} />))
+    <GadgetSaveMenuItems vendors={vendors} formats={formats} scope={scope} onSelect={onSelect} />))
 }
 
 const labels = () => [...container.querySelectorAll('button')].map(button => button.textContent)
@@ -90,8 +89,7 @@ describe('GadgetSaveMenuItems', () => {
       description: { ...vendor.description, logo: { url: 'data:,office' } },
       supportedResources: [vendor.supportedResources[0], { ...vendor.supportedResources[1], icon: { url: 'data:,sheet' } }],
     }
-    testState.authenticatedApi = { listGatekeeperVendors: async () => [branded] }
-    await render([html, { ...html, id: 'csv', contentType: 'text/csv' }])
+    await render([html, { ...html, id: 'csv', contentType: 'text/csv' }], [branded])
     expect([...container.querySelectorAll('img')].map(img => img.getAttribute('src')))
       .toEqual(['data:,office', 'data:,sheet'])
   })
@@ -131,5 +129,32 @@ describe('GadgetSaveMenuItems', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
     await render()
     expect(labels()).toEqual(['Save to Office Docs…'])
+  })
+})
+
+describe('useSaveVendors', () => {
+  const seen: (GatekeeperVendorInfo[] | null)[] = []
+  const Probe = ({ enabled }: { enabled: boolean }) => {
+    seen.push(useSaveVendors(enabled))
+    return null
+  }
+  afterEach(() => { seen.length = 0 })
+
+  it('is null until the services are listed', async () => {
+    await act(async () => root.render(<Probe enabled />))
+    expect([seen[0], seen.at(-1)]).toEqual([null, [vendor]])
+  })
+
+  it('is empty when the services cannot be listed, or are not wanted', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const listGatekeeperVendors = vi.fn<() => Promise<never>>(async () => { throw new Error('offline') })
+    testState.authenticatedApi = { listGatekeeperVendors }
+    await act(async () => root.render(<Probe enabled />))
+    expect(seen.at(-1)).toEqual([])
+
+    listGatekeeperVendors.mockClear()
+    await act(async () => root.render(<Probe enabled={false} />))
+    expect(seen.at(-1)).toEqual([])
+    expect(listGatekeeperVendors).not.toHaveBeenCalled()
   })
 })
