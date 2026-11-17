@@ -3,7 +3,7 @@
 
 import { StrictMode, act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import type { FileChange } from '@gadgets/workshop-shared/code-change'
 import CodeDiffEditor from './CodeDiffEditor'
@@ -114,6 +114,22 @@ describe('CodeDiffEditor', () => {
     await flushFrames()
   }
 
+  async function mountText(text: string, props: { showInvisibles?: boolean, wrapLines?: boolean }) {
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <ThemeProvider>
+            <CodeDiffEditor filename="notes.txt" original={null} text={text} readOnly {...props} />
+          </ThemeProvider>
+        </StrictMode>,
+      )
+    })
+    await flushFrames()
+  }
+  const splitButton = () =>
+    container.querySelector<HTMLButtonElement>('button[aria-label="Use split diff layout"]')!
+  const modified = () => [...container.querySelectorAll('.cm-content')].at(-1)!
+
   it('shows the document, the pill, and a deletion zone for a replacement', async () => {
     const session = new FakeSession('hello\nthere')
     await mount(session, 'hello\nworld')
@@ -190,5 +206,61 @@ describe('CodeDiffEditor', () => {
       )
     })
     expect(container.textContent).toContain('Select a file to view changes')
+  })
+
+  describe('as a read-only view of text someone has to vouch for', () => {
+    // A zero-width joiner, a bidi embedding, a no-break space, a line separator and a leading
+    // byte order mark, then a line with a space, a tab and trailing spaces, then spaces alone.
+    const HARD_TO_SEE_TEXT = '\uFEFFzero\u200Dwidth \u202Aembedded no\u00A0break line\u2028separator\na \tb  \n   '
+
+    // jsdom lays nothing out, so the container reports the width of a desktop pane: wide enough
+    // for the split layout, and far from the compact width that wraps by itself.
+    beforeEach(() => {
+      const measure = HTMLElement.prototype.getBoundingClientRect
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        return this.querySelector(':scope > .gadgets-diff-surface')
+          ? new DOMRect(0, 0, 1400, 800)
+          : measure.call(this)
+      })
+      window.localStorage.setItem('gadgets:workshop:diffLayout', 'split')
+    })
+    afterEach(() => {
+      vi.restoreAllMocks()
+      window.localStorage.clear()
+    })
+
+    it('marks every hard-to-see character, space and tab with showInvisibles', async () => {
+      await mountText(HARD_TO_SEE_TEXT, { showInvisibles: true })
+      expect(modified().querySelectorAll('.cm-specialChar')).toHaveLength(5)
+      expect(modified().querySelector('.cm-highlightSpace')).not.toBeNull()
+      expect(modified().querySelector('.cm-highlightTab')).not.toBeNull()
+      // The spaces that end the second line, and the line that is spaces only.
+      expect(modified().querySelectorAll('.cm-trailingSpace')).toHaveLength(2)
+    })
+
+    it('marks only what CodeMirror marks by default without showInvisibles', async () => {
+      await mountText(HARD_TO_SEE_TEXT, {})
+      // The byte order mark and the line separator.
+      expect(modified().querySelectorAll('.cm-specialChar')).toHaveLength(2)
+      for (const marked of ['.cm-highlightSpace', '.cm-highlightTab', '.cm-trailingSpace']) {
+        expect(modified().querySelector(marked)).toBeNull()
+      }
+    })
+
+    it('wraps long lines and holds the stacked layout with wrapLines', async () => {
+      await mountText('one long line', { wrapLines: true })
+      expect(container.querySelectorAll('.cm-content')).toHaveLength(1)
+      expect(modified().classList.contains('cm-lineWrapping')).toBe(true)
+      expect(splitButton().disabled).toBe(true)
+      expect(splitButton().getAttribute('aria-pressed')).toBe('false')
+    })
+
+    it('keeps the split layout and unwrapped lines without wrapLines', async () => {
+      await mountText('one long line', {})
+      expect(container.querySelectorAll('.cm-content')).toHaveLength(2)
+      expect(modified().classList.contains('cm-lineWrapping')).toBe(false)
+      expect(splitButton().disabled).toBe(false)
+      expect(splitButton().getAttribute('aria-pressed')).toBe('true')
+    })
   })
 })
