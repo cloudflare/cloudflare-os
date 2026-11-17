@@ -22,6 +22,7 @@ import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
 import { Route as AppLibraryIndexRouteImport } from './routes/_app/library.index'
 import { Route as AppLibraryItemIdRouteImport } from './routes/_app/library.$itemId'
 import { Route as AppSkillsSkillIdRouteImport } from './routes/_app/skills.$skillId'
+import { Route as AppAppItemIdSettingsRouteImport } from './routes/_app/app.$itemId_.settings'
 import { Route as AppLibraryTemplatesIndexRouteImport } from './routes/_app/library.templates.index'
 import { Route as AppLibraryTemplatesTemplateIdRouteImport } from './routes/_app/library.templates.$templateId'
 import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
@@ -93,6 +94,11 @@ const AppSkillsSkillIdRoute = AppSkillsSkillIdRouteImport.update({
   path: '/skills/$skillId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAppItemIdSettingsRoute = AppAppItemIdSettingsRouteImport.update({
+  id: '/app/$itemId_/settings',
+  path: '/app/$itemId/settings',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppLibraryTemplatesIndexRoute =
   AppLibraryTemplatesIndexRouteImport.update({
     id: '/library/templates/',
@@ -143,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/library/': typeof AppLibraryIndexRoute
+  '/app/$itemId/settings': typeof AppAppItemIdSettingsRoute
   '/library/templates/$templateId': typeof AppLibraryTemplatesTemplateIdRoute
   '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/library/templates/': typeof AppLibraryTemplatesIndexRoute
@@ -163,6 +170,7 @@ export interface FileRoutesByTo {
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/library': typeof AppLibraryIndexRoute
+  '/app/$itemId/settings': typeof AppAppItemIdSettingsRoute
   '/library/templates/$templateId': typeof AppLibraryTemplatesTemplateIdRoute
   '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/library/templates': typeof AppLibraryTemplatesIndexRoute
@@ -185,6 +193,7 @@ export interface FileRoutesById {
   '/_app/library/$itemId': typeof AppLibraryItemIdRoute
   '/_app/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/_app/library/': typeof AppLibraryIndexRoute
+  '/_app/app/$itemId_/settings': typeof AppAppItemIdSettingsRoute
   '/_app/library/templates/$templateId': typeof AppLibraryTemplatesTemplateIdRoute
   '/_app/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/_app/library/templates/': typeof AppLibraryTemplatesIndexRoute
@@ -207,6 +216,7 @@ export interface FileRouteTypes {
     | '/library/$itemId'
     | '/skills/$skillId'
     | '/library/'
+    | '/app/$itemId/settings'
     | '/library/templates/$templateId'
     | '/workspace/$workspaceId/new'
     | '/library/templates/'
@@ -227,6 +237,7 @@ export interface FileRouteTypes {
     | '/library/$itemId'
     | '/skills/$skillId'
     | '/library'
+    | '/app/$itemId/settings'
     | '/library/templates/$templateId'
     | '/workspace/$workspaceId/new'
     | '/library/templates'
@@ -248,6 +259,7 @@ export interface FileRouteTypes {
     | '/_app/library/$itemId'
     | '/_app/skills/$skillId'
     | '/_app/library/'
+    | '/_app/app/$itemId_/settings'
     | '/_app/library/templates/$templateId'
     | '/_app/workspace/$workspaceId/new'
     | '/_app/library/templates/'
@@ -357,6 +369,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSkillsSkillIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/app/$itemId_/settings': {
+      id: '/_app/app/$itemId_/settings'
+      path: '/app/$itemId/settings'
+      fullPath: '/app/$itemId/settings'
+      preLoaderRoute: typeof AppAppItemIdSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/library/templates/': {
       id: '/_app/library/templates/'
       path: '/library/templates'
@@ -411,6 +430,7 @@ interface AppRouteChildren {
   AppLibraryItemIdRoute: typeof AppLibraryItemIdRoute
   AppSkillsSkillIdRoute: typeof AppSkillsSkillIdRoute
   AppLibraryIndexRoute: typeof AppLibraryIndexRoute
+  AppAppItemIdSettingsRoute: typeof AppAppItemIdSettingsRoute
   AppLibraryTemplatesTemplateIdRoute: typeof AppLibraryTemplatesTemplateIdRoute
   AppWorkspaceWorkspaceIdNewRoute: typeof AppWorkspaceWorkspaceIdNewRoute
   AppLibraryTemplatesIndexRoute: typeof AppLibraryTemplatesIndexRoute
@@ -428,6 +448,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppLibraryItemIdRoute: AppLibraryItemIdRoute,
   AppSkillsSkillIdRoute: AppSkillsSkillIdRoute,
   AppLibraryIndexRoute: AppLibraryIndexRoute,
+  AppAppItemIdSettingsRoute: AppAppItemIdSettingsRoute,
   AppLibraryTemplatesTemplateIdRoute: AppLibraryTemplatesTemplateIdRoute,
   AppWorkspaceWorkspaceIdNewRoute: AppWorkspaceWorkspaceIdNewRoute,
   AppLibraryTemplatesIndexRoute: AppLibraryTemplatesIndexRoute,

@@ -42,6 +42,8 @@ src/
                 settings (`SkillLibrary`) and one skill's page (`SkillPane`)
   automations/  What runs by itself in a workspace (`useAutomations`), and the tab that lists it
                 (`AutomationsTab`)
+  gadgets/      One gadget's settings page (`GadgetSettingsPane`): what it is bound to, its code,
+                and what can be done to it
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -49,7 +51,7 @@ src/
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`, `automations/`) are the only code that talks to the
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`, `automations/`, `gadgets/`) are the only code that talks to the
 backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
@@ -491,6 +493,30 @@ chat's are those its cards show, as far as its conversation has been loaded.
 After the automations, the workspace's page lists the agents its gadgets call on, by their runs
 among its chats (`spawnerName`), each opening its latest run. An agent that has not run is not
 known, and nothing says what calls on it or what it thinks with, until the backend lists them.
+
+## A gadget's settings
+
+A gadget's More menu, beside a chat or as its own page, has View code and Gadget settings for
+whoever may build in its workspace, which go to its settings page (`/app/<id>/settings`,
+`GadgetSettingsPane`), laid out as a skill's page is: what it is drawn as, its title, renamed
+where it is, and what its template says it is for, which is the template's and only read here.
+The way back to the gadget goes back where it was opened from it (`fromItem`). Under them, a tab
+each (`?tab=`, kept in place in the history):
+
+- Connections, which is the first: what it is bound to (`GadgetSettings`, plain and tested,
+  `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
+  binding says only its service, so one with none is asked what it is (`getCreationSpec()`): an
+  agent and the model it thinks with, or a model. One is taken away from the gadget, asked for
+  twice, and stays in the workspace. Nothing is added here: the agent asks for what it needs in a
+  chat.
+- Code: the code as it was last kept (`useGadgetCode`, `listTree()` and `readFilesAtCommit()`,
+  kept for a while by commit, which never changes), its files beside the one shown
+  (`CodeBrowser`, `?file=`), highlighted once the language's parser has loaded (`CodeView`).
+- Settings: where it is from, and deleting it.
+
+Someone it was shared with to use is told its settings are not theirs. What the old app also had
+here (who has access, publishing it as a template, its exports and automations, changing what it
+is drawn as) is not here yet.
 
 ## Lists
 

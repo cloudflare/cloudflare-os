@@ -97,7 +97,7 @@ export const useGadgetCode = (
       })
       : Promise.resolve(undefined)
     reading.then(
-      (read) => current && setText({ key, state: stateOf(shownKind, read) }),
+      (entry) => current && setText({ key, state: stateOf(shownKind, entry) }),
       (error: unknown) => {
         texts.delete(key)
         if (current) setText({ key, state: { status: 'failed', message: messageOf(error) } })

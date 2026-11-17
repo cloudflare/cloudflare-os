@@ -5,6 +5,7 @@ import { highlightLines } from '@/components/highlightCode'
 import { codeFiles, commitsSince, shownFile, withChanged } from './gadgetCode'
 
 const file = (name: string): TreeNode => ({ name, kind: 'file' })
+const commit = (oid: string) => ({ oid, parents: [], message: oid, author: { name: 'A', email: 'a@x' }, timestamp: new Date(0) })
 
 describe('codeFiles', () => {
   it('lists the screen and server side first, then the README, the rest of the root, and folders', () => {
@@ -75,7 +76,6 @@ describe('withChanged', () => {
 })
 
 describe('commitsSince', () => {
-  const commit = (oid: string) => ({ oid, parents: [], message: oid, author: { name: 'A', email: 'a@x' }, timestamp: new Date(0) })
   it('keeps the commits made after the base, leaving the base out', () => {
     expect(commitsSince([commit('c'), commit('b'), commit('a')], 'a').map(({ oid }) => oid)).toEqual(['c', 'b'])
     expect(commitsSince([commit('a')], 'a')).toEqual([])

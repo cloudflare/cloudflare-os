@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { asideItemFor, formatAsideRef, pageOf, parseAsideRef, parseItemPageId, type AsideItem } from '@/aside/asideItems'
+import { asideItemFor, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
@@ -143,6 +143,18 @@ const AppFrame = () => {
   const linkTo = (inWorkspace: string, item: AsideItem, fromChat: number | undefined) =>
     absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: fromChat } }).href)
 
+  // A gadget's own settings, which the way back from comes back to. Only for whoever may build in
+  // its workspace, which they are about; the server checks again.
+  const builds = (inWorkspace: string) =>
+    workspacesState.status === 'ready' && workspacesState.workspaces.some(({ id, role }) => id === inWorkspace && role !== 'use')
+  const openSettings = (output: AsideOutput, title: string, tab?: 'code') =>
+    navigate({
+      to: '/app/$itemId/settings',
+      params: { itemId: itemPageId(output.workspaceId, { kind: 'output', workpieceId: output.workpieceId }) },
+      search: { tab },
+      state: { fromItem: true, gadgetTitle: title },
+    })
+
   let asideElement: ReactNode = null
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
@@ -158,6 +170,7 @@ const AppFrame = () => {
         fullScreen={fullScreen}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
+        onOpenSettings={builds(pageWorkspaceId) ? openSettings : undefined}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
         // Opened otherwise, such as from the library, there is nothing to collapse into. On a
         // narrow screen, where it is beside nothing, it goes up.
@@ -179,6 +192,7 @@ const AppFrame = () => {
         link={linkTo(besideWorkspaceId, item, chatId)}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
+        onOpenSettings={builds(besideWorkspaceId) ? openSettings : undefined}
         onSelect={(key) => aside.show(key, besideRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}

@@ -30,6 +30,7 @@ import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { CodePreview } from '@/gallery/CodePreview'
+import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { LibraryListPreview } from '@/gallery/LibraryListPreview'
@@ -358,6 +359,7 @@ function Gallery() {
       <ConnectionsPreview />
       <SetUpConnectionPreview />
       <AddConnectionPreview />
+      <GadgetSettingsPreview />
       <SettingsPreview />
       <SearchPreview />
       <HeaderPreview />
