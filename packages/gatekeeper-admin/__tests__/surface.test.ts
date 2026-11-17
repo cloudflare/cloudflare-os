@@ -123,6 +123,26 @@ describe("the declarations", () => {
     expect(preamble).not.toContain("is recorded: in this workspace's activity, and in the deployment's");
   });
 
+  it("say what a rule still applies once the workspace is marked, and while what", () => {
+    const preamble = PREAMBLE.replace(/\n {2}/g, " ");
+    expect(preamble).toContain(
+        "Everything read or received through this connection (a read through this binding, a " +
+        "report session's, and every hook event) marks this workspace as holding restricted " +
+        "data, and keeps it for deployment admins only, even after the connection is removed. " +
+        "From then on web fetches reach only the hosts the deployment trusts, and nothing in it " +
+        "is applied without a person, with one exception: a rule may still apply an " +
+        "admins-only note, a change of status and a claim or release of this binding, and only " +
+        "while no other connection's restricted data has been read here.");
+    // Nowhere does it say that nothing is applied without a person and stop there.
+    const claims = preamble.split("applied without a person").slice(1);
+    expect(claims).toHaveLength(1);
+    expect(claims[0]!.startsWith(", with one exception: a rule may still apply")).toBe(true);
+    // The exception names no public reply and no request: those wait for a person.
+    const bullet = preamble.slice(preamble.indexOf("- Everything read or received"),
+        preamble.indexOf("- A method whose doc starts"));
+    expect(bullet).not.toMatch(/reply|request/);
+  });
+
   it("say what a session limited to one report is for, and what its answers are", () => {
     // One sentence each, whatever line it was wrapped on.
     const preamble = PREAMBLE.replace(/\n {2}/g, " ");
@@ -150,9 +170,7 @@ describe("the declarations", () => {
     expect(preamble).toContain(
         "Everything read or received through this connection (a read through this binding, a " +
         "report session's, and every hook event) marks this workspace as holding restricted " +
-        "data, and keeps it for deployment admins only, even after the connection is removed. " +
-        "From then on nothing in it is applied without a person, and web fetches reach only the " +
-        "hosts the deployment trusts.");
+        "data, and keeps it for deployment admins only, even after the connection is removed.");
     expect(preamble).not.toContain("never mark");
   });
 

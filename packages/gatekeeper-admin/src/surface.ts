@@ -230,8 +230,10 @@ the user who owns this workspace, a deployment admin.
   record there.
 - Everything read or received through this connection (a read through this binding, a report
   session's, and every hook event) marks this workspace as holding restricted data, and keeps it
-  for deployment admins only, even after the connection is removed. From then on nothing in it is
-  applied without a person, and web fetches reach only the hosts the deployment trusts.
+  for deployment admins only, even after the connection is removed. From then on web fetches reach
+  only the hosts the deployment trusts, and nothing in it is applied without a person, with one
+  exception: a rule may still apply an admins-only note, a change of status and a claim or release
+  of this binding, and only while no other connection's restricted data has been read here.
 - A method whose doc starts "Through the admin gatekeeper this call does not run" does nothing when
   you call it: it queues an action and resolves to undefined, and reads do not show what it will do
   until the action is approved.
