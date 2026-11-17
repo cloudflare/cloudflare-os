@@ -224,6 +224,28 @@ describe("a resource an agent creates", () => {
     expect(onlyRecord(impl)).toMatchObject({ resourceTitle: "Notes", createdBy: initiator });
   }));
 
+  it("records the initiator of a turn cancelled while the resource is minted",
+      () => withResourceImpl(async impl => {
+    impl.storage.activeAgents.put({
+      chatId: CHAT_ID, initiatorUserId: OWNER_USER_ID, modelId: "some-model", initiator: OWNER,
+      callbackInitiated: false,
+    });
+    // The owner's Durable Object, answering only once the turn's record is gone, as cancelAgent()
+    // leaves it.
+    impl.users = { ...impl.users, get: (userId: string) => {
+      let user = fakeUser(userId);
+      return { ...user, createResourceGatekeeper: async () => {
+        impl.storage.activeAgents.delete(CHAT_ID);
+        return user.createResourceGatekeeper();
+      } };
+    } };
+
+    await impl.createExternalResource(CHAT_ID, RESOURCE_INPUT);
+
+    expect(impl.storage.activeAgents.get(CHAT_ID)).toBeUndefined();
+    expect(onlyRecord(impl)).toMatchObject({ resourceTitle: "Notes", createdBy: OWNER });
+  }));
+
   it("records no creator when its turn has no record", () => withResourceImpl(async impl => {
     await impl.createExternalResource(CHAT_ID, RESOURCE_INPUT);
 

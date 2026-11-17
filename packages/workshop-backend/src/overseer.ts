@@ -10589,11 +10589,12 @@ class OverseerImpl implements AgentHooks {
   async createExternalResource(
       chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
       : Promise<{gatekeeperId: WorkpieceId}> {
+    // The resource is created by whoever started the turn this tool call belongs to. Read before
+    // the first await: cancelling the turn deletes its record.
+    let createdBy = this.storage.activeAgents.get(chatId)?.initiator;
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
         input.vendorId, input.resourceTypeId, input.title, input.resourceUrlPattern, input.configuration);
     let id = this.allocateWorkpieceId();
-    // The resource is created by whoever started the turn this tool call belongs to.
-    let createdBy = this.storage.activeAgents.get(chatId)?.initiator;
     this.storage.gatekeepers.put({
       id,
       class: minted.class,
