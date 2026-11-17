@@ -16,6 +16,7 @@ in [docs/issue-reports.md](../../docs/issue-reports.md). This file is the design
 | The gatekeeper's contract with the Workshop (`AdminAgentApi`, `AdminAgentQueue`, `AdminGatekeeper`, `IssueReportEvent`) | `packages/workshop-shared/src/admin-gatekeeper.ts` |
 | What a lent call may do (`restrictAdminApi()`, `ADMIN_AGENT_VIEWS`) | `packages/workshop-backend/src/admin-agent.ts` |
 | The lend, the admission rule, the mark of a read (`lendAdminApi()`, `admitsNonOwner()`, `adminReads`) | `packages/workshop-backend/src/overseer.ts` |
+| What a rule applies in a marked workspace (`ruleApplies()`) | `packages/workshop-backend/src/auto-approval.ts` |
 | The events the report store sends | `packages/workshop-backend/src/issue-reports.ts` |
 | The schema, its load-time checks, the declarations | `src/surface.ts` |
 | The sessions | `src/forward.ts` |
@@ -87,8 +88,9 @@ as a read through the whole binding here (see [Hooks](#hooks)):
 
 Each rule reads its own fact:
 
-- Nothing applied by a rule, and web fetches held: the restricted-data latch, which any
-  observation that carries `containsRestrictedData` sets, of any connection.
+- A rule applying only what [Restricted data](#restricted-data) allows, and web fetches held:
+  the restricted-data latch, which any observation that carries `containsRestrictedData` sets,
+  of any connection.
 - Admins-only for good: `storage.adminReads`, which the Workshop sets in the transaction that
   sets the latch, for an observation of this gatekeeper that carries the flag and names
   `ADMIN_BINDING_SUBRESOURCE`. It is never set without the latch.
@@ -97,8 +99,9 @@ While the workspace has the connection it is admins-only whatever it read
 (`hasAdminConnection()`).
 
 No other mark closes a workspace for good. A report session that read a reporter's restricted
-workspace sets the latch alone (see [Restricted data](#restricted-data)): that triage workspace
-waits for a person from then on, and is still ordinary again once the connection is removed.
+workspace sets the latch alone (see [Restricted data](#restricted-data)): that triage
+workspace's replies wait for a person from then on, and it is still ordinary again once the
+connection is removed.
 
 A member who tries to add a non-admin is refused with the reason (`ADMINS_ONLY_REFUSALS`), which
 the Share dialog shows on the person's chip:
@@ -320,15 +323,15 @@ thread entry or a request that does not exist yet.
 The seven action kinds (`ADMIN_AGENT_ACTIONS`). Each card is built from the call's own arguments,
 never from a read, so queuing an action marks nothing:
 
-| Kind | Tag | `autoApprovable` | The card says |
-| --- | --- | --- | --- |
-| `issueReportReply`: a public reply through the binding | `issue-report-reply` | `false` | The report's id and the whole reply, and that it was written with access to what only admins see. |
-| `issueReportScopedReply`: a public reply through a report session | `issue-report-scoped-reply` | `true` | The report's id, its reporter, when it was filed, how it begins, and the whole reply. |
-| `issueReportNote`: an admins-only entry | `issue-report-note` | `true` | The report's id and the whole note. |
-| `issueReportStatus`: a report's status | `issue-report-status` | `true` | The report's id and the status, and what the reporter reads where that is another status. |
-| `issueReportAssignment`: a claim or a release of a report | `issue-report-assignment` | `true` | The report's id, whether it is claimed or released, and that it is for this workspace's owner. |
-| `workspaceWriteRequest`: a write request other than for content | `workspace-write-request` | `true` | The workspace, the action, its arguments and the reason. |
-| `contentAccessRequest`: a request for `"grantContentAccess"` | `content-access-request` | `false` | The same, and that nobody in this workspace can approve the request. |
+| Kind | Tag | `autoApprovable` | `autoApprovableWhileRestricted` | The card says |
+| --- | --- | --- | --- | --- |
+| `issueReportReply`: a public reply through the binding | `issue-report-reply` | `false` | `false` | The report's id and the whole reply, and that it was written with access to what only admins see. |
+| `issueReportScopedReply`: a public reply through a report session | `issue-report-scoped-reply` | `true` | `false` | The report's id, its reporter, when it was filed, how it begins, and the whole reply. |
+| `issueReportNote`: an admins-only entry | `issue-report-note` | `true` | `true` | The report's id and the whole note. |
+| `issueReportStatus`: a report's status | `issue-report-status` | `true` | `true` | The report's id and the status, and what the reporter reads where that is another status. |
+| `issueReportAssignment`: a claim or a release of a report | `issue-report-assignment` | `true` | `true` | The report's id, whether it is claimed or released, and that it is for this workspace's owner. |
+| `workspaceWriteRequest`: a write request other than for content | `workspace-write-request` | `true` | `false` | The workspace, the action, its arguments and the reason. |
+| `contentAccessRequest`: a request for `"grantContentAccess"` | `content-access-request` | `false` | `false` | The same, and that nobody in this workspace can approve the request. |
 
 A scoped reply's card also names the reporter and the report's first line, which the session
 reads for the card alone and may read anyway.
@@ -424,8 +427,11 @@ status is claimed like the rest:
 set again after someone had changed the report's status, it would undo their change, with a
 second status line and a second end of an investigation.
 
-**A verdict of `true` is a ceiling.** A rule applies an action only in a workspace that holds no
-restricted data, which the next section makes rare on purpose.
+**A verdict of `true` is a ceiling.** Every read through the whole binding marks its workspace
+as holding restricted data, and there a rule applies only a note, a status and an assignment,
+and those only while no other connection's restricted data was read (see
+[What a rule applies under the mark](#what-a-rule-applies-under-the-mark)). A scoped reply and
+a write request wait for a person there, whatever their verdict.
 
 ## Restricted data
 
@@ -436,8 +442,10 @@ the platform's own latch: each of its observations carries `containsRestrictedDa
 settings, the audit log, reports and every view method all mark. From the first read on, the
 Workshop enforces what it enforces for restricted data everywhere:
 
-- nothing is applied by a rule: an admins-only note, a status change, a filed request and a
-  report session's reply all wait for a person;
+- every action waits for a person, whatever rules the workspace has, with the one exception
+  the Workshop makes for this gatekeeper's admins-only notes, status changes and assignments
+  (see [What a rule applies under the mark](#what-a-rule-applies-under-the-mark)). A filed
+  request and a reply, a report session's included, always wait there;
 - web fetches reach only the hosts the deployment trusts with such data;
 - a push is refused.
 
@@ -453,8 +461,8 @@ subresource (see [Hooks](#hooks)).
 **The one exception: a reporter's workspace that itself holds restricted data.** When the
 reporter's own workspace is marked, every answer of the session's view of that workspace,
 metadata and content alike, carries the mark into the workspace that reads it, as restricted
-data does everywhere else. Triage of such a report waits for a person from the first view
-answer on: no reply applied by a rule, no public web fetch. "What the reporter could see" does
+data does everywhere else. A reply to such a report waits for a person from the first view
+answer on, and web fetches reach only trusted hosts. "What the reporter could see" does
 not cover what the reporter's workspace is forbidden to send out. The report itself, its images
 and its public thread never mark, and a report from an ordinary workspace is unaffected. This
 mark does not make the triage workspace admins-only for good: only a read through the whole
@@ -464,18 +472,77 @@ Its bound: the session learns whether the reporter's workspace is restricted whe
 view. A workspace marked after that is read unflagged until the view ends, at most
 `ADMIN_AGENT_LEND_SECONDS` later.
 
-**So the one place a rule applies an action** is a workspace that has never read through the
-binding, nor a restricted reporter's workspace through a report session, nor received an event
-that marks. It is the one way a reply reaches a reporter with no person in between.
-
-**The order.** The latch is set before a read is forwarded and read again before each apply,
-and the lend itself refuses an auto-approved action in a marked workspace. A reply drafted, or
-a session opened, before the first read therefore waits for a person after it.
-
 **What marks, and what does not.** A session awaits its lend before its first observation, so a
 call refused before anything was lent (the vendor is off, the owner is not an admin, a member's
 direct session) marks nothing. A read that was lent and that the Admin API itself then refuses
 still marks: the mark is made before the answer is known.
+
+### What a rule applies under the mark
+
+In a workspace that holds no restricted data, a rule applies any kind whose verdict is `true`.
+In a marked one it applies an action only when all three of these hold
+(`ruleApplies()`, `packages/workshop-backend/src/auto-approval.ts`):
+
+1. **The action is of this gatekeeper's connection.** The Workshop reads the vendor from its
+   own stored record of the connection (`isAdminGatekeeper()`), never from a subresource, a tag
+   or anything else a Worker declares. Another vendor's action queued under one of this
+   gatekeeper's tags gets nothing.
+2. **Its kind is `issueReportNote`, `issueReportStatus` or `issueReportAssignment`**: the kinds
+   the Workshop's own table flags `autoApprovableWhileRestricted`
+   (`ADMIN_AGENT_ACTIONS`). The kind is found from the action's tag, and the lent call is then
+   held to that kind's method and visibility, whatever this Worker queued under the tag: a
+   note applied by rule can only add an admins-only entry, a status only set a status, and an
+   assignment only claim or release for the owner, never take a report over. The Workshop
+   holds a lent action to its kind, not to a report (see [Limits](#limits)).
+3. **Every observation that marked the workspace came through this gatekeeper's connection**
+   (`storage.adminRestrictedDataOnly`). It is one value for the workspace, written only in the
+   step that sets the latch: true when this connection sets the latch first, false for good
+   once any other connection's observation carries the flag, and never turned true in a
+   workspace already marked. A report session that carries the mark of a reporter's workspace
+   counts, since it is this connection. So a workspace that also holds another vendor's
+   restricted data, which other admins could not already read, is not exempt, whichever read
+   came first; nor is one marked before workspaces kept track of whose reads marked them.
+
+**Why those three kinds.** While the third condition holds, what the workspace holds is what
+deployment admins can already read, and admins are who reads a note and a change of assignee.
+A status is read by the report's reporter too, which is a limit this design accepts (see
+[Limits](#limits)).
+
+**The exception is the Workshop's, not this Worker's.** Nothing in an action's description or
+in this Worker's declarations asks for it, and no other vendor can have it. The Worker offers
+a rule for each of the five kinds whose verdict is `true` (`getAutoApprovableActions()`),
+marked or not.
+
+**What stays held in a marked workspace:**
+
+- both public replies: the binding's, which waits everywhere, and a report session's;
+- both requests;
+- every action of every other connection, which no rule applies there;
+- web fetches, and a push, which is refused.
+
+A report session's reply is still the one way a reply reaches a reporter with no person in
+between, and only from a workspace that is not marked: one that has never read through the
+binding, nor a restricted reporter's workspace through a report session, nor received an event
+that marks, nor read any other connection's restricted data.
+
+**The order.** The latch, and whose reads set it, are written in one step before a read is
+forwarded. `ruleApplies()` is then read three times: when an action is queued, which decides
+whether the agent's turn pauses for a decision; before each apply; and by the lend itself,
+where the power is handed over.
+
+- A reply drafted, or a session opened, before the first read waits for a person after it.
+- A note queued before the first read is applied by its rule after it, once nothing ahead of
+  it waits.
+- An action judged eligible when it was queued waits for a person if another vendor's
+  restricted read lands before it is applied. The agent's turn did not pause for it, and runs
+  on.
+
+**What the Workshop tells its clients.** The catalog of kinds a rule can be turned on for
+(`Overseer.listPreApprovableActions()`) lists this gatekeeper's connection though no gadget
+binds it, since an agent uses it with none, and says for each kind whether a rule applies it
+in the workspace as it is (`PreApprovableAction.ruleApplies`). The Workshop offers a rule in a
+marked workspace only where that is true. The preamble and the report session's declarations
+tell an agent the same.
 
 ### What the latch does not hold back
 
@@ -868,9 +935,11 @@ found elsewhere:
 - **An ordinary reporter's content, read by a report session, sits in a triage workspace that
   is not marked**, where web fetches and other connections' actions are not held (see
   [What an unmarked triage workspace holds](#what-an-unmarked-triage-workspace-holds)).
-- **A connection's actions apply in order.** A public reply that waits for a person holds back
-  that connection's later notes, status changes, assignments and requests, and a triager's
-  scoped replies too. Give triage a workspace of its own.
+- **A connection's actions apply in order.** A reply or a write request that waits for a
+  person holds back that connection's later notes, status changes and assignments, whatever
+  rule would apply them, and a triager's scoped replies too. In a marked workspace every reply
+  and every request waits, so each one queued there holds what a rule would apply behind it
+  until a person decides. Give triage a workspace of its own.
 - **An action refused where it lands holds them back too, until a person rejects it**
   (`assigned`, `threadFull`, `notFound`). It is never applied, by a rule or by a
   person, yet the Workshop keeps it pending, looking like any action that waits for a
@@ -882,25 +951,37 @@ found elsewhere:
 - **A status is set over whatever the report has by then.** The action is lent no read, so its
   card names no earlier status.
 - **A status the reporter reads is public.** An approved change of status tells the reporter
-  something, through the choice and the order of the statuses a reporter can tell apart. An
-  agent's changes are bounded per report, and two of the statuses read the same to the
-  reporter. It can be any status, `closed` included, which ends the reporter's replies until an
-  admin sets another.
+  something, through the choice and the order of the statuses a reporter can tell apart. With
+  a rule on, no person is in between, in a workspace that has read through the whole binding
+  too: an agent that has read admin data and is steered by a report's text can spell out a
+  little of it to that report's reporter this way. An agent's changes are bounded per report,
+  and two of the statuses read the same to the reporter. A rule-applied status can be any
+  status on any report, `closed` included, which ends the reporter's replies until an admin
+  reopens the report. The reporter sees such a change as any change of status: a line marked
+  as an agent's.
 - **An admins-only note is read by every admin, now and later**, and by any agent that holds
   the whole binding. It can outlive the content grant its text was read under.
 - **The Workshop holds an approved action to its kind's method and visibility** (an
   assignment's two methods), **not to a report.** That the call names the report its card
   named is this Worker's to keep (see
   [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
+  A note, a status or an assignment a rule applies under the mark is held the same way, and
+  no further.
 - **"Report changed" tells every subscribed admin gadget that a report was written to and which
   kind of write it was, never its text or who made it.** A subscriber that writes on every
   event loops until the per-report bounds on what is written through the gatekeeper
-  (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse it `threadFull`.
+  (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse it `threadFull`. Where rules apply
+  their writes, a loop of subscribers that answer each other runs with no person, in a
+  workspace this connection's reads marked as in one that holds no restricted data, and that
+  bound is what ends it.
 - **Those bounds are per report and per kind, not per admin or per workspace.** The store
   counts what was written through the gatekeeper with no author in the count, so every
   admin's agents and gadgets share them. One subscriber's loop spends a kind's bound on a
   report for all of them, after which only a person can write that kind on that report (a
-  note, a public reply, a status or an assignment), through the Workshop or the CLI.
+  note, a public reply, a status or an assignment), through the Workshop or the CLI. Under
+  the mark a rule applies a note, a status and an assignment with no person, so one
+  workspace's loop can spend those three bounds on a report for every admin's agents before
+  anyone looks.
 - **A claim through a gadget assigns the workspace's owner**, whoever in that workspace pressed
   its "Assign to me" button.
 - **An event that tells what the reporter is not shown marks the workspace that receives it,
@@ -970,8 +1051,9 @@ the schema when it is stale and building the configurator frame.
   those the kind table does not omit; the declarations, with each "act" method resolving to
   nothing and no omitted method, `whoami()` as a read, and a claim and a release as queued;
   what the preamble says of whom the binding acts as, of the changed hook firing for a
-  workspace's own writes, of what sends no event and of which events mark the workspace; and
-  every load-time check refusing the schema it is for.
+  workspace's own writes, of what sends no event, of which events mark the workspace and of
+  what a rule still applies once it is marked; and every load-time check refusing the schema
+  it is for.
 - `__tests__/workerd/session.test.ts`: the facet, the account and the vendor; a session's
   reads, lent, then observed, then forwarded, each marking under the binding's id, `whoami()`
   among them; a view a session opened; what a session refuses, a claim that asks to take a
@@ -979,8 +1061,10 @@ the schema when it is stale and building the configurator frame.
 - `__tests__/workerd/actions.test.ts`: each of the seven kinds queued with its card and applied
   as exactly the stored call, once; a status's card for every status, with what its reporter
   reads where that differs; an assignment's card, one kind for a claim and a release; the
-  verdicts, and what splits the two replies and the two requests; what is refused before
-  anything is queued; an action that fails to apply, is lent nothing or is under way.
+  verdicts, and what splits the two replies and the two requests; the Worker declaring nothing
+  of the exception under the mark, on an action or among the kinds it offers a rule for; what
+  is refused before anything is queued; an action that fails to apply, is lent nothing or is
+  under way.
 - `__tests__/workerd/report-session.test.ts`: the allowlist; a session that can name no other
   report; its reply's card; its view, opened for the level in force and refused by the
   workspace's own answer; what its reads record, with the mark of a restricted reporter's
@@ -1001,8 +1085,13 @@ The kernel's side is in `packages/workshop-backend/__tests__/`: `admin-agent-kin
 two tables), `admin-agent.test.ts` (`restrictAdminApi()`, an assignment's one call of its two
 methods, and a view behind it), `admin-agent-lend.test.ts` (the lend, what it records,
 `whoami()` naming the owner, a claim applied as the owner and a take-over refused, restricted
-data, who is lent, the insiders of a content request, a spawned chat),
-`admin-workspace-admission.test.ts` (the admission rule, with and after the connection),
+data and what a rule applies under the mark, with another vendor's restricted read before the
+admin connection's, after it and between an action's submission and its apply, a workspace
+marked before it kept track of whose reads marked it and another vendor's action under a
+note's tag, the catalog, who is lent, the insiders of a content request, a spawned chat),
+`auto-approval.test.ts` (`ruleApplies()`, each of its three conditions failing alone, and the
+drain under the mark), `admin-workspace-admission.test.ts` (the admission rule, with and after
+the connection, and whose reads marked a workspace),
 `issue-report-events.test.ts` (the store's events), `issue-reports.test.ts` (the statuses each
 reader gets, and the assignee), `provisioning-policy.test.ts` and
 `user-ambient-accounts.test.ts` (the mode and who holds the account).
@@ -1010,8 +1099,12 @@ reader gets, and the assignee), `provisioning-policy.test.ts` and
 End to end, with a scripted model, in `packages/integration-tests/__tests__/`:
 `admin-gatekeeper.test.ts` (who is offered it, the records, admission, the two-person rule,
 removal, a blueprint, a demoted owner), `admin-gatekeeper-actions.test.ts` (the verdicts under
-rules, the restricted-data order, the report session and what it reads of a fix, two admins'
-workspaces claiming one report, a take-over an agent never makes) and
+rules, the restricted-data order, a note, a status and a claim applied by rule in a workspace
+that read through the whole binding while both replies and a write request are held, a note
+held behind a reply, a workspace that also read another vendor's restricted data, another
+connection's action under the mark, a subscriber told of its own rule-applied note, the
+catalog, the report session and what it reads of a fix, two admins' workspaces claiming one
+report, a take-over an agent never makes) and
 `admin-gatekeeper-hooks.test.ts` (the three hooks into a gadget's stored callback, once for each
 kind of change to a report, the workspace marked by an event its reporter is not shown and
 by no other, a spawned chat with and without the binding, the hand-off and a forged stub).

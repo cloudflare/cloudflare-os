@@ -139,20 +139,24 @@ through the admins' methods like any other, and its `via` is `"gatekeeper"`.
   reporter with `via` and the admin's name, and the Workshop shows its author as "Agent, for"
   that admin.
 - **Admins also read where it came from** (`agent`: the workspace whose connection made the call
-  and, when there is one, the chat). It is never returned to the reporter.
+  and, when there is one, the chat). It is never returned to the reporter. In the Reports tab
+  an entry that came from a chat shows "Open chat", which opens that workspace at that chat
+  (see [The Workshop](#the-workshop)). The link is built from what the kernel recorded: an
+  entry is plain text, and nothing an agent wrote becomes a link.
 - **A public reply through the whole admin binding always waits for a person**, whatever
   auto-approval rules its workspace has: an agent that can read what only admins see never posts
   to a reporter by itself.
 - **A public reply through a session limited to the report can be applied by a rule**, in a
-  workspace that has read nothing through the whole binding and nothing of a reporter's
-  workspace that holds restricted data. Such a session reads the report as its reporter does,
-  and the reporter's workspace only as the reporter chose to show it, so its answer holds
-  nothing the reporter could not see. Either of those reads marks the workspace as holding
-  restricted data, and no rule applies anything there afterwards.
+  workspace that has read nothing through the whole binding, nothing of a reporter's workspace
+  that holds restricted data, and no other connection's restricted data. Such a session reads
+  the report as its reporter does, and the reporter's workspace only as the reporter chose to
+  show it, so its answer holds nothing the reporter could not see. Any of those reads marks
+  the workspace as holding restricted data, and a rule applies no reply there afterwards.
 - **An admins-only note, a status change, and a claim or a release of the report** are queued
-  as actions too, and applied by a person or, where the workspace has a rule for the kind and
-  holds no restricted data, by that rule. A claim and a release are one kind of action, for the
-  workspace's owner (see [The assignee](#the-assignee)).
+  as actions too, and applied by a person or by a rule for the kind, in a workspace that holds
+  no restricted data or only what the admin connection's own reads marked (see
+  [admin-access.md](admin-access.md#through-an-agent)). A claim and a release are one kind of
+  action, for the workspace's owner (see [The assignee](#the-assignee)).
 
 ## Statuses
 
@@ -393,18 +397,23 @@ What the design accepts, stated as it is:
 
 1. **A status the reporter reads is public.** A change of status that was approved, by a person
    or by a workspace's rule, tells the reporter something: through the choice and the order of
-   the statuses a reporter can tell apart. An agent's changes are bounded per report
+   the statuses a reporter can tell apart. With a rule on, no person is in between, in a
+   workspace that has read through the whole admin connection too: an agent that has read admin
+   data and is steered by a report's text can spell out a little of it to that report's
+   reporter this way. An agent's changes are bounded per report
    (`MAX_ISSUE_REPORT_THREAD_ENTRIES`), and two of the statuses read the same to the reporter.
-   An agent's status can be any status, `closed` included, which ends the reporter's replies
-   until an admin sets another.
+   A rule-applied status can be any status on any report, `closed` included, which ends the
+   reporter's replies until an admin reopens the report. The reporter sees such a change as any
+   change of status: a line marked as an agent's.
 2. **An admins-only note is read by every admin, now and later**, and by any agent that holds
    the whole admin connection. It can outlive the content grant its text was read under.
 3. **The kernel holds an approved action to its kind's method and visibility** (an
    assignment's two methods), **not to a report.** Which report the call names is the
    gatekeeper's to keep to what the approved card said.
-4. **Actions of one connection apply in order.** One that waits for a person holds every later
-   action of that connection behind it, a note, a status and an assignment with a rule included.
-   So does an action refused where it lands (`assigned`, `threadFull`, `notFound`). It is never
+4. **Actions of one connection apply in order.** A reply or a write request that waits for a
+   person on the admin connection in a workspace holds every later note, status and assignment
+   of that connection behind it, whatever rule would apply them, until it is decided. So does
+   an action refused where it lands (`assigned`, `threadFull`, `notFound`). It is never
    applied, by a rule or by a person, yet it stays pending, looking like any action that
    waits for a decision, until a person rejects it: approving it only repeats the refusal. A
    claim that loses to another admin's is the ordinary case. With a rule for assignments on,
@@ -413,11 +422,17 @@ What the design accepts, stated as it is:
 5. **The "Report changed" hook tells every subscribed admin gadget that a report was written
    to and which kind of write it was, never its text or who made it.** A subscriber that
    writes on every event loops until the per-report bounds on what is written through the
-   gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse it `threadFull`.
+   gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse it `threadFull`. Where
+   rules apply their writes, a loop of subscribers that answer each other runs with no person,
+   in a workspace the admin connection's reads marked as in one that holds no restricted data,
+   and that bound is what ends it.
 6. **Those bounds are per report and per kind, not per admin or per workspace.** Every admin's
    agents and gadgets share them. One subscriber's loop spends a kind's bound on a report for
    all of them, after which only a person can write that kind on that report (a note, a public
-   reply, a status or an assignment), through the Workshop or the CLI.
+   reply, a status or an assignment), through the Workshop or the CLI. A rule applies a note,
+   a status and an assignment with no person in a workspace the admin connection's reads
+   marked, so one workspace's loop can spend those three bounds on a report for every admin's
+   agents before anyone looks.
 7. **"Assign to me" through a gadget assigns the workspace's owner**, whoever in that workspace
    pressed the button.
 8. **An event that tells what the reporter is not shown marks the workspace that receives it,
@@ -721,6 +736,15 @@ the activity of the workspace that read, which is deleted with that workspace.
     A read that shows the report has left the list's filters, or come back under them (its
     status, or who holds it: a claim under "Nobody", a release under "Me"), loads the list
     again, so that the admin returns to the list the server gives for those filters.
+  - **"Open chat"** is on an agent's entry, status line or change of assignee that came from a
+    chat, and opens the workspace at the chat the kernel recorded for it. One tied to no chat
+    (merged gadget code, a hook's firing, the owner's own session on the connection) has no
+    link. It is shown to admins only: what the reporter reads never holds the workspace or the
+    chat, and My issues shows no such link. The link grants nothing. An admin who is not a
+    member of that workspace gets the Workshop's "You don't have access to this workspace"
+    page, a workspace that was deleted gives "Workspace not found", and a chat that was deleted
+    opens the workspace at its list of chats. Entries stay plain text, and no link comes from
+    what an agent wrote.
 
 ## Error codes
 
@@ -799,7 +823,10 @@ gatekeeper and a scripted model:
 
 - `admin-gatekeeper-actions.test.ts`: two admins' workspaces claim one report and exactly one
   holds it; an agent never takes a report from a person; a claim assigns the workspace's owner,
-  whoever asked; and a session limited to one report reads what its reporter reads.
+  whoever asked; a session limited to one report reads what its reporter reads; and, in a
+  workspace that read through the whole admin connection, a rule applies a note, a status and
+  a claim with no person and holds both replies and a write request, while one that also read
+  another vendor's restricted data applies nothing.
 - `admin-gatekeeper-hooks.test.ts`: a gadget's stored callback is called once for each kind of
   change to a report, both hooks fire, each with an id of its own, when a report leaves
   `investigating`, and a workspace is marked by an event that tells of a note and by neither
@@ -818,6 +845,7 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   (`ReportIssueHost.test.tsx`).
 - `features/admin-reports/`: the Reports tab (`AdminReportsPanel.test.tsx` and its browser
   test), the assignee's controls, the take-over dialog, which asks again once the holder
-  changed, the list loaded again once the open report crosses its filters, and what the
-  status control says the reporter reads included; its filters and its retention setting
-  (`reportFilter.test.ts`, `reportSettings.test.ts`).
+  changed, the list loaded again once the open report crosses its filters, what the status
+  control says the reporter reads and "Open chat" on an agent's entry included; its filters
+  and its retention setting (`reportFilter.test.ts`, `reportSettings.test.ts`).
+  `MyIssues.test.tsx` covers the reporter being shown no origin and no link.
