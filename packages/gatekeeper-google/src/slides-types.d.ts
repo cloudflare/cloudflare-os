@@ -1,5 +1,6 @@
 import type {
-  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor, ThemeColorName,
+  GooglePresentationReadSession, ParagraphFormat, PresentationInfo, SlideBounds, SlideColor,
+  ThemeColorName,
 } from "./slides-read-types";
 export type * from "./slides-read-types";
 
@@ -245,6 +246,37 @@ export type SlideChange =
   | { op: "setThemeColors"; masterId: string; colors: Partial<Record<ThemeColorName, string>> };
 
 /**
+ * A pending change, for the preview: the session method that made it, as `type`, with its
+ * arguments. An `updateSlides` change that creates an element names it by `id`, the ID the element
+ * will have, in place of `ref`.
+ */
+export type PresentationPendingChange = {
+  /** Changes apply in this order. */
+  id: number;
+  /** Set when the presentation no longer fits it, or a change before it: it is in neither copy. */
+  stale?: true;
+  /** The slides it touches: for a change to a layout or master, every slide made from it. */
+  slideIds: string[];
+} & (
+  | { type: "updateSlides"; changes: (SlideChange & { id?: string })[] }
+  | { type: "duplicateSlide"; slideId: string; newSlideId: string }
+  | { type: "deleteSlide"; slideId: string }
+  | { type: "moveSlides"; after: string | null }
+  | { type: "createSlide"; layoutId: string; after?: string | null; newSlideId: string }
+  | { type: "setSlidesSkipped"; skipped: boolean }
+);
+
+/** What `getPendingChanges()` returns. */
+export type PresentationPendingChanges = {
+  /** Oldest first. */
+  changes: PresentationPendingChange[];
+  /** As Google Slides has it saved. */
+  savedPresentation: PresentationInfo;
+  /** As `getPresentation()` returns it, with the changes applied. */
+  presentation: PresentationInfo;
+};
+
+/**
  * Read/write access to one Google Slides presentation: one bound directly, or one a Google Drive
  * binding with read and write access opened.
  *
@@ -327,4 +359,18 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * them again. Reads show it as `SlideSummary.skipped`. The user may let this apply without asking.
    */
   setSlidesSkipped(slideIds: string[], skipped: boolean): Promise<void>;
+
+  /**
+   * For the preview: the pending changes, with the presentation as saved and as
+   * `getPresentation()` returns it. To read the presentation, call `getPresentation()`.
+   */
+  getPendingChanges(): Promise<PresentationPendingChanges>;
+
+  /**
+   * Return the declarations of the reads that these types leave out, as TypeScript: those that
+   * give what it takes to render the presentation as Google draws it, `readSlideDrawings()`,
+   * `readPicture()`, `listFonts()` and `readFont()`. Call it before writing or changing code that
+   * renders the presentation.
+   */
+  getRenderingTypes(): Promise<string>;
 }

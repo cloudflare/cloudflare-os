@@ -10,7 +10,7 @@ import { READ_AHEAD } from "../src/pdf-read-ahead";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
   GMAIL_TYPES_MODULE_PREFIX, SHEETS_RENDERING_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX,
-  SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  SLIDES_RENDERING_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "../src/type-bundle";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -671,11 +671,12 @@ folder.move("file-1", "folder-9");
 `)).toEqual([]);
   });
 
-  it("declares what renders a document or a spreadsheet apart from its bundle, which it compiles against", () => {
+  it("declares what renders a document, a spreadsheet or a presentation apart from its bundle, which it compiles against", () => {
     for (const [bundle, name, prefix, read] of [
       // The document's declares every type it names, so it has no module prefix.
       [docBundle, "docs-rendering-types.txt", "", "readDrawing(tabId"],
       [sheetsBundle, "sheets-rendering-types.txt", SHEETS_RENDERING_TYPES_MODULE_PREFIX, "readDrawing(range"],
+      [slidesBundle, "slides-rendering-types.txt", SLIDES_RENDERING_TYPES_MODULE_PREFIX, "readSlideDrawings(slideIds"],
     ] as const) {
       let rendering = stripTypeModulePrefix(source(name), prefix);
       expect(bundle(), name).toContain("getRenderingTypes(): Promise<string>;");

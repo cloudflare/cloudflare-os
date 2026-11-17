@@ -153,7 +153,7 @@ export default defineConfig({
         // rendering declarations are sent to an agent that already holds that bundle.
         files: [
           'packages/gatekeeper-google/src/{docs,drive,drive-read,sheets,slides}-types.d.ts',
-          'packages/gatekeeper-google/src/sheets-rendering-types.d.ts',
+          'packages/gatekeeper-google/src/{sheets,slides}-rendering-types.d.ts',
         ],
         rules: {
           'gadgets/self-contained-agent-types': [
