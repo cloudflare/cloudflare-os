@@ -312,7 +312,11 @@ describe("prepareInputs and buildVerdict", () => {
     assert.match(verdict.details.reason ?? "", /MERGE-CONFIDENCE/);
     assert.equal(verdict.details.review_text, "## Findings\n\nNone.\n\n## Summary\n\nFine.");
 
-    const otherHead = buildVerdict(unscored, { ...pr, headSha: first });
+    const scored = workDir();
+    prepareInputs(repo.dir, scored, pr, { round: 1, reviewFromSha: null });
+    writeFileSync(join(scored, "events.jsonl"), events(GOOD_REVIEW));
+    assert.equal(buildVerdict(scored, pr).status, "ok");
+    const otherHead = buildVerdict(scored, { ...pr, headSha: first });
     assert.equal(otherHead.status, "error");
     assert.equal(otherHead.merge_confidence, null);
   });
