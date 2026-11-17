@@ -92,7 +92,8 @@ export function isTurnPrompt(message: AiChatMessage): boolean {
 export function startsAgentTurn(message: AiChatMessage): boolean {
   switch (message.type) {
     case "message": return isTurnPrompt(message);
-    case "agentCallback": case "agentNudge": return true;
+    case "agentCallback": return true;
+    case "agentNudge": return message.text !== undefined;
     case "connectionRequest": return message.state === "accepted";
     case "webFetchRequest": return message.state === "approved";
     default: return false;

@@ -717,7 +717,34 @@ describe("decision handoff using the existing execution row", () => {
       await client.retryAgent(CHAT, MODEL.profile.id);
       await impl.waitForAllAgentsToComplete();
       expect(bodies).toHaveLength(1);
-      expect(bodies[0]).toContain("interrupted repeatedly before it could finish a step");
+      expect(bodies[0]).toContain("your previous turn was abandoned");
+    });
+  });
+
+  it("a plain Retry reruns the turn on the same history, adding nothing the model reads", async () => {
+    const s = await scenario(null);
+    await s.visit(async impl => {
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
+      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The model request failed.");
+      inference();
+      const answer = globalThis.fetch, bodies: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : input);
+        if (url.origin === MODEL.config.apiUrl) {
+          bodies.push(input instanceof Request ? await input.clone().text() : String(init?.body));
+        }
+        return answer(input, init);
+      });
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      const boundary = [...impl.storage.chats.list()].at(-1);
+      expect(boundary?.type).toBe("agentNudge");
+      expect(boundary?.type === "agentNudge" && boundary.text).toBeUndefined();
+      await impl.waitForAllAgentsToComplete();
+      expect(bodies).toHaveLength(1);
+      const messages: {role: string}[] = JSON.parse(bodies[0]).messages;
+      expect(messages.map(m => m.role)).toEqual(["user"]);
+      expect(JSON.stringify(messages)).toContain("Do the work");
     });
   });
 

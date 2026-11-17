@@ -13953,21 +13953,25 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Error records never reach the model, so a Retry of a turn that exhausted its resume
     // attempts would otherwise repeat it unaware. The attempts count model-lookup failures too,
     // so the nudge states only that the turn was interrupted and keeps its advice conditional.
+    // Any other Retry reruns the turn on the same history, telling the model nothing.
     let [last] = [...this.impl.storage.chats.list(
         {prefix: chatKeyPrefix(chatId), reverse: true, limit: 1})];
-    let nudge = last?.type === "error" && last.code === "resume_exhausted"
-        ? "Retry the previous request. Your last attempt was interrupted repeatedly before it " +
-          "could finish a step, and was abandoned. If it was doing heavy work, such as " +
-          "processing a large file, that work may have exceeded the workspace's CPU or memory " +
-          "limits: don't repeat it unchanged, do less per step."
-        : "Retry the previous request.";
+    let text = last?.type === "error" && last.code === "resume_exhausted"
+        ? "The user asked you to try again because your previous turn was abandoned. The " +
+          "Durable Object your agent harness runs in reset repeatedly while you worked on it: " +
+          "the turn was automatically restarted several times, and each time it reset again " +
+          "before your next step could be saved. That step is not in your history. The exact " +
+          "cause is unknown, but your work may have exceeded the CPU or memory limits, for " +
+          "example by processing a large file all at once. Rethink your approach and do the " +
+          "work in small incremental pieces."
+        : undefined;
 
     let result = this.impl.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
     // An explicit retry starts a fresh segment, rather than inheriting an older decision wait
     // if this execution is interrupted before it can commit its first response.
-    this.impl.addChatMessages(chatId, userMeta.profile, [{type: "agentNudge", text: nudge}]);
+    this.impl.addChatMessages(chatId, userMeta.profile, [{type: "agentNudge", text}]);
     meta.activeAgent = userMeta.aiModel.profile;
     meta.lastActive = this.impl.getChatTimestamp();
     this.impl.storage.chatMeta.put(meta);

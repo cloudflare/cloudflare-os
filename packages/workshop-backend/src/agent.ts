@@ -2953,8 +2953,11 @@ async function runAgentPass(
       }
 
       case "agentNudge":
-        // A decision resume's durable handoff, without impersonating a new user prompt.
-        modelMessages.push({ role: "user", content: msg.text, timestamp: msgTimestamp });
+        // A decision resume's durable handoff, without impersonating a new user prompt. A nudge
+        // without text only marks a recovery boundary.
+        if (msg.text !== undefined) {
+          modelMessages.push({ role: "user", content: msg.text, timestamp: msgTimestamp });
+        }
         break;
 
       case "connectionRequest": {
