@@ -191,7 +191,8 @@
 /* The marks reuse the change-bar colors above so the two read as one code. */
 
 /*
- * Beside the vertical scrollbar; the plugin sets `right` and `bottom` to clear the scrollbars.
+ * Beside the vertical scrollbar; the plugin sets `right` and `bottom` to clear the scrollbars
+ * and any bottom panel (Find).
  * It starts below the layout toggle and -N +N pill that float over the editor's top-right
  * corner, which would otherwise cover the marks for the top of the file.
  */
@@ -209,7 +210,6 @@
   position: absolute;
   left: 2px;
   right: 2px;
-  min-height: 2px;
   border-radius: 1px;
 }
 

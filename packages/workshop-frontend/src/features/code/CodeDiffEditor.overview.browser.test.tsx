@@ -3,6 +3,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { userEvent } from 'vitest/browser'
+import { EditorView } from '@codemirror/view'
+import { openSearchPanel } from '@codemirror/search'
 import CodeDiffEditor from './CodeDiffEditor'
 import { ThemeProvider } from '../../ThemeContext'
 import '../../styles.css'
@@ -110,6 +112,37 @@ describe.each(['stacked', 'split'] as const)('the overview strip (%s)', layout =
     await userEvent.click(marks('modified')[0])
     await vi.waitFor(() =>
       expect(inView(changedLine('const line3456 = 3456 + changed'))).toBe(true))
+  })
+
+  it('keeps the mark for a change on the last line of a long file inside the strip', async () => {
+    const original = lines(10_000)
+    mount(layout, original.join('\n'), [...original, 'const appended = true'].join('\n'))
+    await vi.waitFor(() => expect(marks('add')).toHaveLength(1))
+    const mark = marks('add')[0].getBoundingClientRect()
+    expect(mark.height).toBeGreaterThanOrEqual(2)
+    expect(mark.bottom).toBeLessThanOrEqual(strip().getBoundingClientRect().bottom + 0.5)
+
+    await userEvent.click(marks('add')[0])
+    await vi.waitFor(() => expect(inView(changedLine('const appended = true'))).toBe(true))
+  })
+
+  it('stays clear of the Find panel', async () => {
+    const original = lines(400)
+    mount(layout, original.join('\n'), original.with(379, 'const line380 = 380 + changed').join('\n'))
+    await vi.waitFor(() => expect(marks('modified')).toHaveLength(1))
+    act(() => { openSearchPanel(EditorView.findFromDOM(chatScroller())!) })
+    const panel = await vi.waitFor(() => {
+      const found = host!.querySelector('.cm-search')
+      expect(found).not.toBeNull()
+      return found!
+    })
+    await vi.waitFor(() => expect(strip().getBoundingClientRect().bottom)
+      .toBeLessThanOrEqual(panel.getBoundingClientRect().top + 0.5))
+
+    // Playwright refuses to click a covered element, so this also checks the panel isn't on top.
+    await userEvent.click(marks('modified')[0])
+    await vi.waitFor(() =>
+      expect(inView(changedLine('const line380 = 380 + changed'))).toBe(true))
   })
 
   it('marks no part of a replacement red when it has fewer new lines than old', async () => {

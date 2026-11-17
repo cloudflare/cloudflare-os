@@ -22,8 +22,12 @@ type Measurement = {
   scrollHeight: number
   clientHeight: number
   scrollbarWidth: number
-  scrollbarHeight: number
+  /** From the editor's bottom to the scroller's visible bottom: scrollbar plus bottom panels. */
+  bottomInset: number
 }
+
+/** Drawn height of the shortest mark, so a one-line change stays visible in a long file. */
+const MIN_MARK_PX = 2
 
 /**
  * An overview strip for `view`, marking the spans `segments` returns. The strip re-measures on
@@ -40,6 +44,9 @@ class DiffOverview implements PluginValue {
   private readonly dom: HTMLElement
   /** Each mark's change, in scroll-space px. */
   private readonly markSpans = new WeakMap<Element, { top: number; bottom: number }>()
+  // Opening a panel (Find) shrinks the scroller without a geometry or height change in any
+  // ViewUpdate, so watch its size directly.
+  private readonly resizeObserver = new ResizeObserver(() => this.scheduleMeasure())
 
   constructor(
     private readonly view: EditorView,
@@ -53,6 +60,7 @@ class DiffOverview implements PluginValue {
     this.dom.setAttribute('aria-hidden', 'true')
     this.dom.addEventListener('mousedown', this.onMouseDown)
     view.dom.append(this.dom)
+    this.resizeObserver.observe(view.scrollDOM)
     this.scheduleMeasure()
   }
 
@@ -64,6 +72,7 @@ class DiffOverview implements PluginValue {
   }
 
   destroy() {
+    this.resizeObserver.disconnect()
     this.dom.remove()
   }
 
@@ -83,7 +92,9 @@ class DiffOverview implements PluginValue {
       scrollHeight: scroller.scrollHeight,
       clientHeight: scroller.clientHeight,
       scrollbarWidth: scroller.offsetWidth - scroller.clientWidth,
-      scrollbarHeight: scroller.offsetHeight - scroller.clientHeight,
+      // The strip lives in `view.dom`, which also holds the panels (the Find panel sits under
+      // the scroller), so clear everything below the scroller's visible area.
+      bottomInset: view.dom.clientHeight - (scroller.offsetTop + scroller.clientHeight),
     }
   }
 
@@ -92,17 +103,18 @@ class DiffOverview implements PluginValue {
     this.dom.hidden = m.segments.length === 0 || m.scrollHeight <= m.clientHeight
     if (this.dom.hidden) return
     this.dom.style.right = `${m.scrollbarWidth}px`
-    this.dom.style.bottom = `${m.scrollbarHeight}px`
-    // Percentages scale with the strip's height without measuring it; the stylesheet's
-    // min-height keeps a single line visible in a long file.
+    this.dom.style.bottom = `${m.bottomInset}px`
+    // Percentages scale with the strip's height without measuring it. The top is capped so a
+    // minimum-height mark for the last line stays inside the strip rather than clipped below.
     const percent = (y: number) => `${(y / m.scrollHeight) * 100}%`
     this.dom.replaceChildren(...mergeSegments(m.segments).map(segment => {
       const top = m.docOffset + segment.top
       const bottom = m.docOffset + segment.bottom
       const mark = document.createElement('div')
       mark.className = `gadgets-diff-overview-mark gadgets-diff-overview-${segment.kind}`
-      mark.style.top = percent(top)
+      mark.style.top = `min(${percent(top)}, calc(100% - ${MIN_MARK_PX}px))`
       mark.style.height = percent(bottom - top)
+      mark.style.minHeight = `${MIN_MARK_PX}px`
       this.markSpans.set(mark, { top, bottom })
       return mark
     }))
