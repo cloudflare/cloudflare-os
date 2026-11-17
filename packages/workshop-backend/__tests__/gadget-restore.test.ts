@@ -29,6 +29,11 @@ export class Gadget extends DurableObject {
     return "hi";
   }
 
+  instance() {
+    this.id ??= crypto.randomUUID();
+    return this.id;
+  }
+
   mintCallback(tag) {
     return this.ctx.restore({ type: "callback", tag });
   }
@@ -82,6 +87,19 @@ describe("gadget ctx.restore()", () => {
     await impl.ctx.storage.put("callback", callback);
     using restored = await impl.ctx.storage.get("callback");
     expect(await restored.ping()).toBe("pong:a");
+  }));
+
+  it("keeps a connected stub working across a restart for new code or bindings",
+      () => withGadget(async impl => {
+    using gadget = await impl.getGadgetFacet(GADGET_ID);
+    let before = await gadget.instance();
+    expect(await gadget.instance()).toBe(before);
+
+    // What a binding change does (bindWorkpiece / unbindWorkpiece / renameBinding).
+    impl.bumpVersion([GADGET_ID]);
+    let after = await gadget.instance();
+    expect(after).not.toBe(before);
+    expect(await gadget.instance()).toBe(after);
   }));
 
   it("is refused through a bare facet stub (what the fix guards against)",

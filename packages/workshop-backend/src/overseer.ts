@@ -3329,11 +3329,22 @@ class OverseerImpl implements AgentHooks {
   // with no entry has never had its facet loaded this session.
   #runningChatIds = new Map<WorkpieceId, number | null>();
 
+  // How many times each gadget's facet has been restarted to run new code or bindings. A stub
+  // from getGadgetFacet() that sees the count move reconnects, so the restart reloads the gadget
+  // for viewers already connected rather than leaving them calling the stopped instance.
+  // Switching chats (#getGadgetFacetRaw) deliberately leaves it alone: a viewer of another
+  // version must not reconnect and switch the gadget straight back.
+  #facetRestarts = new Map<WorkpieceId, number>();
+
+  #restartGadgetFacet(gadgetId: WorkpieceId, reason: string) {
+    this.#facetRestarts.set(gadgetId, (this.#facetRestarts.get(gadgetId) ?? 0) + 1);
+    this.ctx.facets.abort(this.gadgetFacetName(gadgetId), new Error(reason));
+  }
+
   proposedChangesChanged(chatId: number) {
     for (let [gadgetId, runningChatId] of this.#runningChatIds) {
       if (runningChatId === chatId) {
-        this.ctx.facets.abort(this.gadgetFacetName(gadgetId), new Error(
-            "Gadget restarted because the proposed changes changed."));
+        this.#restartGadgetFacet(gadgetId, "Gadget restarted because the proposed changes changed.");
       }
     }
   }
@@ -5382,6 +5393,9 @@ class OverseerImpl implements AgentHooks {
   async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder)
       : Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
+    let restarts = this.#facetRestarts.get(gadgetId);
+    let current: Promise<Fetcher<DurableObject>> = Promise.resolve(facet);
+    let dispose = (stub: Fetcher<DurableObject>) => (stub as any)[Symbol.dispose]?.();
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
 
     let self = this;
@@ -5392,11 +5406,10 @@ class OverseerImpl implements AgentHooks {
         // The lease ends when the client disposes the stub. (The DO reset that severs sessions
         // releases it implicitly, by discarding this object -- and joinSession's leave is
         // idempotent, so a double dispose is harmless.)
-        if (prop === Symbol.dispose && leaveSession) {
-          let inner = Reflect.get(target, prop, target);
+        if (prop === Symbol.dispose) {
           return () => {
-            leaveSession!();
-            if (typeof inner === "function") Reflect.apply(inner, target, []);
+            leaveSession?.();
+            void current.then(stub => dispose(stub));
           };
         }
 
@@ -5417,7 +5430,15 @@ class OverseerImpl implements AgentHooks {
         //   possibly a runtime bug which needs investigation.
         // TODO: Fix exception reporting it tail workers so we can remove this hack.
         return (...args: any[]) => {
-          let result: Promise<any> = Reflect.apply(method, target, args);
+          if (self.#facetRestarts.get(gadgetId) !== restarts) {
+            restarts = self.#facetRestarts.get(gadgetId);
+            let stale = current;
+            current = self.getGadgetFacetFetcher(gadgetId, chatId);
+            void stale.then(stub => dispose(stub));
+            current.catch(() => {});
+          }
+          let result: Promise<any> = current.then(stub =>
+              Reflect.apply(Reflect.get(stub, prop, stub) as Function, stub, args));
           return result.catch((err: any) => {
             let msg = err;
             if (err instanceof Error) {
@@ -7176,10 +7197,7 @@ class OverseerImpl implements AgentHooks {
     let ids = affectedGadgetIds ?? [...this.storage.gadgets.list()]
         .filter(record => record.type === "gadget")  // worktrees have no facet to restart
         .map(gadget => gadget.id);
-    for (let id of ids) {
-      this.ctx.facets.abort(this.gadgetFacetName(id),
-          new Error("Gadget restarted due to code update."));
-    }
+    for (let id of ids) this.#restartGadgetFacet(id, "Gadget restarted due to code update.");
     this.bumpLastActive();
     return codeVersion;
   }
