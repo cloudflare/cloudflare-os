@@ -11,7 +11,7 @@ import type {
   HookController, HookDescription, HookInitiator, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IssueReportHookDriver } from "../../src/hooks.js";
+import { IssueReportHookDriver, type SentIssueReportEvent } from "../../src/hooks.js";
 import { HOOK_CALLBACK_TIMEOUT_MS, SERVICES } from "../../src/surface.js";
 import { ROOT, type Session, recordingTarget, rejection } from "./fakes.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
@@ -118,6 +118,13 @@ const ended = (
 ): IssueReportEvent =>
   ({ kind: "investigationComplete", id: crypto.randomUUID(), reportId, status, at: ENDED_AT });
 
+/**
+ * An event of a kind the contract does not have, as a store released after this Worker sends
+ * one. That it is a SentIssueReportEvent is what lets the vendor's argument check take it.
+ */
+const unknownKind = (reportId: string): SentIssueReportEvent =>
+  ({ kind: "somethingNew", id: crypto.randomUUID(), reportId, at: ENDED_AT, status: "answered" });
+
 type Row = { message?: IssueReportEvent; attempts?: number; at?: number; deliveredAt?: number };
 
 /** Everything the driver stores, by key; a hook's stubs as the names they are stored under. */
@@ -138,8 +145,12 @@ const settled = () => vi.waitFor(async () => {
   if (due.length > 0) throw new Error(`${due.length} deliveries due`);
 }, { timeout: 10_000, interval: 25 });
 
+/** The driver's keys and rows that hold the event `id`: none once it was dropped. */
+const holding = async (id: string) => [...await stored()]
+    .filter(([key, row]) => key.includes(id) || (row as Row).message?.id === id);
+
 /** Takes the store's events as the vendor does, and waits for what is due of them. */
-async function ingest(...events: IssueReportEvent[]): Promise<void> {
+async function ingest(...events: SentIssueReportEvent[]): Promise<void> {
   await vendor().issueReportEvents(events);
   await settled();
 }
@@ -548,6 +559,95 @@ describe("the vendor's issueReportEvents()", () => {
     await expect(vendor().issueReportEvents([])).resolves.toBeUndefined();
     expect((await rows()).filter((row) => row.message !== undefined)).toEqual([]);
   });
+
+  it("takes a batch that mixes kinds it knows with one it does not, and delivers the known ones", async () => {
+    const issues = await subscribe("subscribeIssueReported");
+    const investigations = await subscribe("subscribeInvestigationComplete");
+    const filed = reported("r1", "medium");
+    const unknown = unknownKind("r2");
+    const done = ended("r3", "closed");
+
+    await expect(vendor().issueReportEvents([filed, unknown, done])).resolves.toBeUndefined();
+    await settled();
+
+    expect(issues.state.firings).toBe(1);
+    expect(issues.state.received).toEqual([{
+      method: "issueReported",
+      event: { eventId: filed.id, reportId: "r1", priority: "medium", filedAt: FILED_AT },
+    }]);
+    expect(investigations.state.firings).toBe(1);
+    expect(investigations.state.received).toEqual([{
+      method: "investigationComplete",
+      event: { eventId: done.id, reportId: "r3", status: "closed", at: ENDED_AT },
+    }]);
+    expect(await holding(unknown.id)).toEqual([]);
+    expect(await holding(filed.id)).not.toEqual([]);
+  });
+
+  it("takes a known kind whose label it does not know, and drops that event alone", async () => {
+    const issues = await subscribe("subscribeIssueReported");
+    const investigations = await subscribe("subscribeInvestigationComplete");
+    const filed = reported("r1");
+    const dropped: SentIssueReportEvent[] = [
+      { ...ended("r2"), status: "somethingNew" },
+      // A status this build knows, and never one an investigation ends with.
+      { ...ended("r3"), status: "investigating" },
+      { ...ended("r4"), status: "new" },
+      { kind: "investigationComplete", id: crypto.randomUUID(), reportId: "r5", at: ENDED_AT },
+      { ...reported("r6"), priority: "somethingNew" },
+    ];
+
+    await expect(vendor().issueReportEvents([...dropped.slice(0, 3), filed, ...dropped.slice(3)]))
+        .resolves.toBeUndefined();
+    await settled();
+
+    expect(issues.state.received).toEqual([{
+      method: "issueReported",
+      event: { eventId: filed.id, reportId: "r1", priority: "high", filedAt: FILED_AT },
+    }]);
+    expect(issues.state.firings).toBe(1);
+    expect(investigations.state.firings).toBe(0);
+    for (const { id } of dropped) expect(await holding(id)).toEqual([]);
+  });
+
+  it("takes an unknown kind when nothing is subscribed", async () => {
+    const unknown = unknownKind("r1");
+    await expect(vendor().issueReportEvents([unknown])).resolves.toBeUndefined();
+    expect(await holding(unknown.id)).toEqual([]);
+    expect((await rows()).filter((row) => row.message !== undefined)).toEqual([]);
+  });
+
+  it("still refuses an event that is not ids and labels, a broken sender's and not a newer one's", async () => {
+    const { state } = await subscribe("subscribeIssueReported");
+    const filed = reported("r1");
+    const { id: _id, ...noId } = reported("r2");
+
+    for (const broken of [
+      noId,
+      { kind: "reported" },
+      { ...reported("r2"), at: FILED_AT.toISOString() },
+      { ...reported("r2"), kind: 4 },
+      { ...reported("r2"), priority: 4 },
+      { ...ended("r2"), status: { is: "answered" } },
+    ]) {
+      const refused = await rejection(vendor().issueReportEvents([filed, broken as never]));
+      expect(refused.message, JSON.stringify(broken)).not.toBe("did not reject");
+    }
+
+    // Nothing of a refused call is stored, the event beside the broken one included.
+    expect(state.firings).toBe(0);
+    expect(await holding(filed.id)).toEqual([]);
+  });
+
+  it("validates the rest of the vendor as before", async () => {
+    expect((await vendor().describe()).autoProvisionsAccount).toBe(true);
+    expect((await vendor().getSupportedResources()).map(({ id }) => id)).toEqual(["deployment"]);
+    expect(await vendor().getTypeScriptTypes()).toContain("subscribeIssueReported");
+    expect((await rejection(vendor().getSupportedResources({ userId: 4 } as never))).message)
+        .not.toBe("did not reject");
+    expect((await rejection(vendor().issueReportEvents("r1" as never))).message)
+        .not.toBe("did not reject");
+  });
 });
 
 describe("the driver's storage", () => {
@@ -602,9 +702,10 @@ describe("the driver's storage", () => {
     // The vendor's argument check lets a property the type does not declare through.
     const extra = { text: "WHAT WENT WRONG", reporter: { id: "u1", name: "THE REPORTER" } };
 
+    // Each also carries the other kind's label.
     await vendor().issueReportEvents([
-      { ...filed, ...extra, status: "closed" } as IssueReportEvent,
-      { ...done, ...extra, priority: "high" } as IssueReportEvent,
+      { ...filed, ...extra, status: "closed" },
+      { ...done, ...extra, priority: "high" },
     ]);
 
     const entries = [...await stored()];

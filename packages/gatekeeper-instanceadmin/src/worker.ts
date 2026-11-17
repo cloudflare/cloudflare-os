@@ -7,7 +7,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cl
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import type {
-  AdminAgentApi, AdminAgentQueue, AdminGatekeeper, AdminGatekeeperVendor, IssueReportEvent,
+  AdminAgentApi, AdminAgentQueue, AdminGatekeeper, AdminGatekeeperVendor,
 } from "@gadgets/workshop-shared/admin-gatekeeper";
 import type {
   AccountDescription,
@@ -31,7 +31,7 @@ import { ADMIN_SUBRESOURCE, type AdminSession, forwarderFor } from "./forward.js
 import DEPLOYMENT_CONFIGURATOR_HTML from "./generated/deployment-configurator-ui.txt";
 import {
   IssueReportHookDeliveryImpl, type IssueReportHookKind, type IssueReportHookParams,
-  type IssueReportHookTarget, bindIssueReportHook, issueReportHookDriver,
+  type IssueReportHookTarget, type SentIssueReportEvent, bindIssueReportHook, issueReportHookDriver,
 } from "./hooks.js";
 import { IssueReportSession } from "./report-session.js";
 import { ADMIN_SCHEMA, generatedDeclarations } from "./surface.js";
@@ -351,10 +351,7 @@ export class InstanceAdminVerifier
 }
 
 @validateRpc()
-export class GatekeeperVendor
-  extends WorkerEntrypoint<Cloudflare.Env>
-  implements AdminGatekeeperVendor
-{
+export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   /** Describes the auto-provisioned admin gatekeeper vendor. */
   async describe(): Promise<VendorDescription> {
     return {
@@ -405,12 +402,20 @@ export class GatekeeperVendor
   }
 
   /**
-   * Takes the issue report store's events for the hooks subscribed to them, and resolves once the
-   * driver has stored each for delivery. An event with no subscriber is dropped there.
+   * Takes the issue report store's events for the hooks subscribed to them, and resolves once
+   * the driver has stored each for delivery. An event with no subscriber, or of a kind or
+   * with a label this Worker does not know, is dropped there, never refused: the store would
+   * send its whole call again.
    */
-  async issueReportEvents(events: IssueReportEvent[]): Promise<void> {
+  async issueReportEvents(events: SentIssueReportEvent[]): Promise<void> {
     await issueReportHookDriver(this.ctx.exports).ingest(events);
   }
 }
 
-export default GatekeeperVendor;
+/**
+ * Not `implements AdminGatekeeperVendor`: capnweb-validate sharpens an implemented
+ * interface's signatures onto the generated validator, which would refuse an event of a kind
+ * this build does not know where issueReportEvents() takes it and drops it. The class is
+ * checked against the contract here instead.
+ */
+export default GatekeeperVendor satisfies new (...args: never[]) => AdminGatekeeperVendor;

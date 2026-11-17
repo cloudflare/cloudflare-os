@@ -23,6 +23,7 @@ import {
 import { createLogger } from "@gadgets/observability/logger";
 import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import type { IssueReportEvent } from "@gadgets/workshop-shared/admin-gatekeeper";
+import { ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES } from "@gadgets/workshop-shared/api";
 import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -30,15 +31,30 @@ import { ADMIN_SUBRESOURCE } from "./forward.js";
 import { HOOK_CALLBACK_TIMEOUT_MS } from "./surface.js";
 import type { InvestigationCompleteHook, IssueReportedHook } from "./types";
 
-// Event names only: an event's report id stays in the workspace's activity.
-const logger = createLogger<{ vendorId: string }>({
+// Event names and counts only: an event's report id stays in the workspace's activity.
+const logger = createLogger<{ vendorId: string; size: number }>({
   component: "gatekeeper.instanceadmin.hooks", vendorId: ADMIN_GATEKEEPER_VENDOR_ID,
 });
 
-/** Which of the two hooks: the kind of the events it is called with. */
-export type IssueReportHookKind = IssueReportEvent["kind"];
+/** The kinds of event this Worker has a hook for. An event of any other kind is dropped. */
+const KINDS = ["reported", "investigationComplete"] as const satisfies
+    readonly IssueReportEvent["kind"][];
 
-const KINDS: readonly IssueReportHookKind[] = ["reported", "investigationComplete"];
+/** Which hook: the kind of the events it is called with. */
+export type IssueReportHookKind = typeof KINDS[number];
+
+/** An event a hook delivers: one of a kind in KINDS. */
+export type IssueReportHookEvent = Extract<IssueReportEvent, { kind: IssueReportHookKind }>;
+
+/**
+ * An event as the store sends it: ids and labels. Looser than IssueReportEvent on purpose:
+ * the store resends a call until every event of it is taken, so an event of a kind, or with
+ * a label, that this Worker's build does not know (a store released after it sends one) must
+ * pass the argument check and be dropped, never reject the call.
+ */
+export type SentIssueReportEvent = {
+  kind: string; id: string; reportId: string; at: Date; priority?: string; status?: string;
+};
 
 /** A gadget's stored callback for either hook, as types.d.ts declares the two. */
 export type IssueReportHookTarget = RpcTarget & (IssueReportedHook | InvestigationCompleteHook);
@@ -47,7 +63,7 @@ export type IssueReportHookTarget = RpcTarget & (IssueReportedHook | Investigati
 export type IssueReportHookParams = { kind: IssueReportHookKind };
 
 /** What a hook's delivery stub reaches: the connection's facet, narrowed to delivering. */
-export type IssueReportHookDelivery = HookDelivery<IssueReportHookTarget, IssueReportEvent>;
+export type IssueReportHookDelivery = HookDelivery<IssueReportHookTarget, IssueReportHookEvent>;
 
 /** Everything a hook needs once enabled, captured when the facet binds it. */
 export type IssueReportHookProps = IssueReportHookParams & {
@@ -117,7 +133,7 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
    */
   async deliver(
     callback: RpcStub<IssueReportHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
-    event: IssueReportEvent,
+    event: IssueReportHookEvent,
   ): Promise<void> {
     // The driver queues an event only for the hooks of its kind.
     if (event.kind !== this.#kind) return;
@@ -146,7 +162,7 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
     }
   }
 
-  async #call(callback: RpcStub<IssueReportHookTarget>, event: IssueReportEvent): Promise<void> {
+  async #call(callback: RpcStub<IssueReportHookTarget>, event: IssueReportHookEvent): Promise<void> {
     if (event.kind === "reported") {
       const { id: eventId, reportId, priority, at: filedAt } = event;
       await (callback as RpcStub<RpcTarget & IssueReportedHook>)
@@ -164,7 +180,7 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
 /** What the driver chooses a hook's events by. */
 type Registration = IssueReportHookParams;
 
-type Capabilities = HookCapabilities<IssueReportHookTarget, IssueReportEvent>;
+type Capabilities = HookCapabilities<IssueReportHookTarget, IssueReportHookEvent>;
 
 /** The deployment's one driver. */
 export const issueReportHookDriver = (exports: Cloudflare.Exports) =>
@@ -200,16 +216,30 @@ export class IssueReportHookController
 
 // ── Driver ──────────────────────────────────────────────────────────
 
+/** Whether `label` is one of `known`, the labels of this Worker's build. */
+const knows = <Label extends string>(
+  known: readonly Label[], label: string | undefined,
+): label is Label => known.includes(label as Label);
+
 /**
- * An event's declared fields and no other. The vendor's argument check lets a property the type
- * does not declare through, and the driver stores what it queues: built from this, a stored event
- * is ids and labels whatever its sender added.
+ * An event's declared fields and no other, or `undefined` for an event to drop: one of a kind
+ * this Worker has no hook for, or with a label its build does not know. The vendor's argument
+ * check takes any kind and any label, and lets a property the type does not declare through,
+ * and the driver stores what it queues: built from this, a stored event is ids and this
+ * build's labels whatever its sender added.
  */
-function declaredFields(event: IssueReportEvent): IssueReportEvent {
-  const { id, reportId, at } = event;
-  return event.kind === "reported"
-      ? { kind: event.kind, id, reportId, priority: event.priority, at }
-      : { kind: event.kind, id, reportId, status: event.status, at };
+function declaredFields(event: SentIssueReportEvent): IssueReportHookEvent | undefined {
+  const { kind, id, reportId, at, priority, status } = event;
+  if (kind === "reported") {
+    return knows(ISSUE_REPORT_PRIORITIES, priority) ? { kind, id, reportId, priority, at } : undefined;
+  }
+  if (kind === "investigationComplete") {
+    // No investigation ends as "new" or "investigating".
+    return knows(ISSUE_REPORT_STATUSES, status) && status !== "new" && status !== "investigating"
+        ? { kind, id, reportId, status, at }
+        : undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -223,7 +253,7 @@ function declaredFields(event: IssueReportEvent): IssueReportEvent {
  * validated or made themselves.
  */
 export class IssueReportHookDriver extends DurableObject<Cloudflare.Env> {
-  readonly #hooks = new HookRegistry<IssueReportHookTarget, IssueReportEvent, Registration>(
+  readonly #hooks = new HookRegistry<IssueReportHookTarget, IssueReportHookEvent, Registration>(
       this.ctx.storage.kv, () => {
         logger.warn("dropped an issue report event after repeated delivery failures", {
           event: "hooks.delivery.dropped",
@@ -242,17 +272,25 @@ export class IssueReportHookDriver extends DurableObject<Cloudflare.Env> {
 
   /**
    * Queues each event's declared fields once for each enabled hook of its kind, then brings the
-   * alarm forward. Resolving means every event is stored for delivery, or has no subscriber and
-   * is dropped. An event's `id` is its id in the queue too, so one the store sends again is not
-   * queued twice while the queue remembers it.
+   * alarm forward. Resolving means every event is stored for delivery, or has no subscriber, or
+   * is of a kind or with a label this Worker does not know, and is dropped. An event's `id` is
+   * its id in the queue too, so one the store sends again is not queued twice while the queue
+   * remembers it.
    */
-  async ingest(events: IssueReportEvent[]): Promise<void> {
+  async ingest(events: SentIssueReportEvent[]): Promise<void> {
     const now = Date.now();
     const hooks = this.#hooks.entries();
-    for (const event of events.map(declaredFields)) {
+    const known = events.flatMap((event) => declaredFields(event) ?? []);
+    for (const event of known) {
       for (const [key, { kind }] of hooks) {
         if (kind === event.kind) this.#hooks.enqueue(key, event.id, event, now);
       }
+    }
+    const size = events.length - known.length;
+    if (size > 0) {
+      logger.warn("dropped issue report events of a kind or label this Worker does not know", {
+        event: "hooks.events.unknown", size,
+      });
     }
     await this.#wake();
   }
