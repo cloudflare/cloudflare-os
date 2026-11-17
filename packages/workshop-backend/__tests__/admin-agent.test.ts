@@ -14,7 +14,7 @@ import {
   getAdminAccessErrorCode,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, type AdminAgentAction,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, adminAgentActionMethods, type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminApi } from "@gadgets/workshop-shared/api";
 import { ADMIN_METHOD_ANSWERS } from "../src/admin-access.js";
@@ -42,6 +42,7 @@ function allowedArgs(kind: AdminAgentAction): unknown[] {
   let { method, visibility, grantsContent } = ADMIN_AGENT_ACTIONS[kind];
   if (method === "addIssueReportEntry") return ["report", "text", visibility];
   if (method === "setIssueReportStatus") return ["report", "answered"];
+  if (typeof method !== "string") return ["report"];
   return ["workspace", grantsContent ? "grantContentAccess" : "stopAgent", {}, "reason"];
 }
 
@@ -70,15 +71,37 @@ describe("adminAgentRefusal", () => {
   });
 
   it.each(ACTIONS)("lets an action of kind %s make its own call and no other", kind => {
-    let own = ADMIN_AGENT_ACTIONS[kind].method;
+    let own = adminAgentActionMethods(kind);
     for (let method of METHODS) {
       let refusal = adminAgentRefusal(action(kind), method, allowedArgs(kind));
-      if (method === own) {
+      if (own.includes(method)) {
         expect(refusal, method).toBeUndefined();
       } else if (ADMIN_AGENT_KINDS[method] === "omitted") {
         expect(refusal).toBe(`AdminApi.${method}() is not available through the admin gatekeeper.`);
       } else {
-        expect(refusal).toBe(`This action may only call AdminApi.${own}().`);
+        expect(refusal).toBe(`This action may only call AdminApi.${own.join("() or AdminApi.")}().`);
+      }
+    }
+  });
+
+  it("lets an approved assignment claim or release, and nothing else", () => {
+    let assignment = action("issueReportAssignment");
+    expect(adminAgentRefusal(assignment, "claimIssueReport", ["report"])).toBeUndefined();
+    expect(adminAgentRefusal(assignment, "releaseIssueReport", ["report"])).toBeUndefined();
+    for (let method of ["whoami", "getIssueReport", "setIssueReportStatus", "addIssueReportEntry"]) {
+      expect(adminAgentRefusal(assignment, method, ["report"])).toBe("This action may only call " +
+          "AdminApi.claimIssueReport() or AdminApi.releaseIssueReport().");
+    }
+  });
+
+  it("refuses a claim and a release to a session and to every other kind", () => {
+    for (let method of ["claimIssueReport", "releaseIssueReport"]) {
+      expect(adminAgentRefusal(SESSION, method, ["report"]))
+          .toBe(`AdminApi.${method}() runs only as an approved action.`);
+      for (let kind of ACTIONS) {
+        if (kind === "issueReportAssignment") continue;
+        expect(adminAgentRefusal(action(kind), method, allowedArgs(kind)), kind).toBe(
+            `This action may only call AdminApi.${ADMIN_AGENT_ACTIONS[kind].method}().`);
       }
     }
   });
@@ -372,6 +395,18 @@ describe("restrictAdminApi", () => {
     expect(calls).toEqual([
       { method: "addIssueReportEntry", args: ["report", "a note", "admins"] },
     ]);
+  });
+
+  it("answers an assignment's one call, a claim or a release, and refuses the other after it", async () => {
+    let claim = lendOver(action("issueReportAssignment"));
+    expect(await claim.api.claimIssueReport("report")).toBe("claimIssueReport answered");
+    expect((await rejection(claim.api.releaseIssueReport("report"))).message)
+        .toBe("This action has made its one call.");
+    expect(claim.calls).toEqual([{ method: "claimIssueReport", args: ["report"] }]);
+
+    let release = lendOver(action("issueReportAssignment", true));
+    expect(await release.api.releaseIssueReport("report")).toBe("releaseIssueReport answered");
+    expect(release.calls).toEqual([{ method: "releaseIssueReport", args: ["report"] }]);
   });
 
   it("makes one call of two an action starts together", async () => {

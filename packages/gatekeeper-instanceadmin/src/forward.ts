@@ -14,7 +14,9 @@ import {
 import type { AdminAgentApi, AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
 import type { AdminApi } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { type BoundAdminActions, entryText, requestArgs, requestReason } from "./actions.js";
+import {
+  type BoundAdminActions, TAKE_OVER_BY_PERSON, entryText, requestArgs, requestReason,
+} from "./actions.js";
 import { type ActMethod, ADMIN_SCHEMA, SERVICES, kindOf } from "./surface.js";
 
 // Event names only: a call's arguments, its result and the Admin API's errors (which can quote an
@@ -80,6 +82,14 @@ const ACT_ROUTES: { [M in ActMethod]: ActRoute<M> } = {
   requestWorkspaceWrite: (actions, queue, workspaceId, action, args, reason) => actions.submit(
       queue, action === "grantContentAccess" ? "contentAccessRequest" : "workspaceWriteRequest",
       { workspaceId, action, args: requestArgs(action, args), reason: requestReason(reason) }),
+  claimIssueReport: (actions, queue, reportId, options) => {
+    // Refused here, before a card exists for a person to approve by mistake; the Workshop's
+    // store refuses it again where the call lands, whatever approved it.
+    if (options?.takeOver) throw new Error(TAKE_OVER_BY_PERSON);
+    return actions.submit(queue, "issueReportAssignment", { reportId, assignment: "claim" });
+  },
+  releaseIssueReport: (actions, queue, reportId) =>
+    actions.submit(queue, "issueReportAssignment", { reportId, assignment: "release" }),
 };
 
 const ROOT = ADMIN_SCHEMA.entry;

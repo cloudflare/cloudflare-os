@@ -19,7 +19,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_WRITE_ERROR_CODES, getAdminWriteErrorCode,
   type AdminAccessRecord, type AdminAuditRecord, type AdminWriteAction, type AdminWriteRecord,
-  type AdminWriteRequest, type AiChatAuthorInfo, type IssueReportEntry,
+  type AdminWriteRequest, type AiChatAuthorInfo, type IssueReportAssignee, type IssueReportEntry,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentAction,
@@ -113,6 +113,16 @@ async function entriesOf(ws: AdminWorkspace, reportId: string): Promise<IssueRep
   return (await ws.impl.issueReports.getByName("").get(reportId)).entries;
 }
 
+// Who holds a report, as admins read it.
+async function assigneeOf(ws: AdminWorkspace, reportId: string)
+    : Promise<IssueReportAssignee | undefined> {
+  return (await ws.impl.issueReports.getByName("").get(reportId)).assignee;
+}
+
+// The one call of a claim or a release of report `reportId`.
+const CLAIM = (reportId: string) => [{ method: "claimIssueReport", args: [reportId] }];
+const RELEASE = (reportId: string) => [{ method: "releaseIssueReport", args: [reportId] }];
+
 describe("a session of the admin gatekeeper", () => {
   it("reads through the lent Admin API", () => adminWorkspace(async ws => {
     using session = await ws.session(AGENT);
@@ -129,7 +139,26 @@ describe("a session of the admin gatekeeper", () => {
         .toEqual({ error: "AdminApi.setIssueReportStatus() runs only as an approved action." });
     expect(await session.read({ method: "setSiteName", args: ["x"] }))
         .toEqual({ error: "AdminApi.setSiteName() is not available through the admin gatekeeper." });
+    expect(await session.read({ method: "claimIssueReport", args: [reportId] }))
+        .toEqual({ error: "AdminApi.claimIssueReport() runs only as an approved action." });
+    expect(await session.read({ method: "releaseIssueReport", args: [reportId] }))
+        .toEqual({ error: "AdminApi.releaseIssueReport() runs only as an approved action." });
     expect(await entriesOf(ws, reportId)).toEqual([]);
+    expect(await assigneeOf(ws, reportId)).toBeUndefined();
+  }));
+
+  it("names the owner through a session's whoami()", () => adminWorkspace(async ws => {
+    using session = await ws.session(AGENT);
+    let { value, error } = await session.read({ method: "whoami" });
+    expect(error).toBeUndefined();
+    expect(value).toEqual({ id: ADMIN.id, name: expect.any(String) });
+
+    // The same id a report the owner holds and an entry in the owner's name carry.
+    let reportId = await fileReport(ws);
+    expect(await approve(ws, await queueAction(ws, 1, "issueReportAssignment", CLAIM(reportId))))
+        .toBeUndefined();
+    expect((await assigneeOf(ws, reportId))!.id).toBe((value as { id: string }).id);
+    expect((await entriesOf(ws, reportId))[0]!.author.id).toBe((value as { id: string }).id);
   }));
 
   it.each<[string, GatekeeperCaller]>([
@@ -348,6 +377,68 @@ describe("an approved action of the admin gatekeeper", () => {
     expect(await entriesOf(ws, reportId)).toHaveLength(1);
   }));
 
+  it("applies an approved claim as the workspace's owner", () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws);
+    let id = await queueAction(ws, 7, "issueReportAssignment", CLAIM(reportId));
+    expect(stateOf(ws, id)).toBe("pending");
+    expect(await assigneeOf(ws, reportId)).toBeUndefined();
+
+    // Whoever approves, the report is the owner's.
+    expect(await approve(ws, id, OTHER_ADMIN)).toBeUndefined();
+    expect(ws.impl.storage.actions.get(id)).toMatchObject(
+        { state: "approved", autoApproved: false, resolvedBy: OTHER_ADMIN });
+    let origin = { via: "gatekeeper", agent: { workspaceId: ws.id, chatId: 5 } };
+    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id, ...origin });
+    expect(await entriesOf(ws, reportId)).toMatchObject([
+      { visibility: "admins", assignment: "claimed", author: { id: ADMIN.id }, ...origin },
+    ]);
+
+    // An approved release is the owner's too, and leaves the report with nobody.
+    let release = await queueAction(ws, 8, "issueReportAssignment", RELEASE(reportId));
+    expect(await approve(ws, release, OTHER_ADMIN)).toBeUndefined();
+    expect(await assigneeOf(ws, reportId)).toBeUndefined();
+    expect((await entriesOf(ws, reportId)).map(entry => entry.assignment))
+        .toEqual(["claimed", "released"]);
+  }));
+
+  it("makes one call of an assignment's two, and no other kind's", () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws);
+    let id = await queueAction(ws, 9, "issueReportAssignment",
+        [...CLAIM(reportId), ...RELEASE(reportId)]);
+    expect(await approve(ws, id)).toBeUndefined();
+    expect((await ws.facet.outcomes(9))![1]).toEqual({ error: "This action has made its one call." });
+    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id });
+
+    let status = await queueAction(ws, 10, "issueReportAssignment",
+        [{ method: "setIssueReportStatus", args: [reportId, "closed"] }]);
+    expect(await approve(ws, status)).toBe("This action may only call " +
+        "AdminApi.claimIssueReport() or AdminApi.releaseIssueReport().");
+    let note = await queueAction(ws, 11, "issueReportNote", RELEASE(reportId));
+    expect(await approve(ws, note)).toBe("This action may only call AdminApi.addIssueReportEntry().");
+    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id });
+    expect((await entriesOf(ws, reportId)).map(entry => entry.assignment)).toEqual(["claimed"]);
+  }));
+
+  it("refuses a take-over to a lent call", () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws);
+    await ws.impl.issueReports.getByName("").claim(OTHER_ADMIN, { via: "api" }, reportId, false);
+    let held = { id: OTHER_ADMIN.id, via: "api" };
+
+    // The store refuses it where the call lands, whatever was approved.
+    let takeOver = await queueAction(ws, 12, "issueReportAssignment",
+        [{ method: "claimIssueReport", args: [reportId, { takeOver: true }] }]);
+    expect(await approve(ws, takeOver)).toBe("Only a person takes an issue report over.");
+    expect(await assigneeOf(ws, reportId)).toMatchObject(held);
+
+    // A claim and a release of another admin's report are refused too.
+    let claim = await queueAction(ws, 13, "issueReportAssignment", CLAIM(reportId));
+    expect(await approve(ws, claim)).toBe("Another admin holds this issue report.");
+    let release = await queueAction(ws, 14, "issueReportAssignment", RELEASE(reportId));
+    expect(await approve(ws, release)).toBe("Another admin holds this issue report.");
+    expect(await assigneeOf(ws, reportId)).toMatchObject(held);
+    expect((await entriesOf(ws, reportId)).map(entry => entry.assignment)).toEqual(["claimed"]);
+  }));
+
   it("ends a lend whose call was never made when the apply returns",
       () => adminWorkspace(async ws => {
     let reportId = await fileReport(ws);
@@ -451,6 +542,36 @@ describe("restricted data", () => {
     // A person still approves it.
     expect(await approve(ws, second)).toBeUndefined();
     expect(await entriesOf(ws, reportId)).toHaveLength(2);
+  }));
+
+  it("lets a rule apply a claim and a release in a workspace that holds no restricted data, " +
+      "and nothing once it does", () => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws);
+    enableRule(ws, "issueReportAssignment");
+
+    let claim = await queueAction(ws, 1, "issueReportAssignment", CLAIM(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(ws.impl.storage.actions.get(claim)).toMatchObject(
+        { state: "approved", autoApproved: true, resolvedBy: ADMIN });
+    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id, via: "gatekeeper" });
+
+    // The one rule is for both calls.
+    let release = await queueAction(ws, 2, "issueReportAssignment", RELEASE(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(ws.impl.storage.actions.get(release)).toMatchObject(
+        { state: "approved", autoApproved: true });
+    expect(await assigneeOf(ws, reportId)).toBeUndefined();
+
+    await latch(ws);
+    let held = await queueAction(ws, 3, "issueReportAssignment", CLAIM(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(stateOf(ws, held)).toBe("pending");
+    expect(await ws.facet.outcomes(3)).toBeUndefined();
+    expect(await assigneeOf(ws, reportId)).toBeUndefined();
+
+    // A person still approves it.
+    expect(await approve(ws, held)).toBeUndefined();
+    expect(await assigneeOf(ws, reportId)).toMatchObject({ id: ADMIN.id });
   }));
 
   it("holds a note queued before the first read once the read has happened",

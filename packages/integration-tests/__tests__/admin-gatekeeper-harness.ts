@@ -386,7 +386,7 @@ export async function settle(ws: RpcStub<Overseer>): Promise<void> {
 }
 
 /**
- * Turns on a rule for each of the six kinds, the two whose verdict is false included, as a member
+ * Turns on a rule for each of the seven kinds, the two whose verdict is false included, as a member
  * who enables everything would: the Workshop keeps a rule for any tag, and a rule alone applies
  * nothing. Returns the tags the workspace then holds a rule for.
  */

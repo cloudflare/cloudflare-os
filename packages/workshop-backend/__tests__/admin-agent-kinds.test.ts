@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID, adminAgentAction, type AdminAgentAction, type AdminAgentKind } from "@gadgets/workshop-shared/admin-agent";
+import { ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID, adminAgentAction, adminAgentActionMethods, type AdminAgentAction, type AdminAgentKind } from "@gadgets/workshop-shared/admin-agent";
 
 // That the table names every AdminApi method, and no other, is a compile-time check
 // (admin-gatekeeper.ts in workshop-shared). These tests hold what the types cannot: which kind a
@@ -21,19 +21,22 @@ describe("ADMIN_AGENT_KINDS", () => {
     }
   });
 
-  it("reads exactly the listings, the getters that hold no secret, reports and views", () => {
+  it("reads exactly the listings, the getters that hold no secret, reports, views and who the admin is", () => {
     expect(methodsOfKind("read")).toEqual([
       "getAdminAuditStats", "getIssueReport", "getSettings", "getWorkspaceWrite",
       "inspectUser", "inspectWorkspace", "isBlueprintFeatured", "listAdminAudit",
-      "listIssueReports", "listUsers", "listWorkspaces", "readIssueReportImage",
+      "listIssueReports", "listUsers", "listWorkspaces", "readIssueReportImage", "whoami",
     ]);
   });
 
   it("queues exactly the methods the action kinds name", () => {
-    let queued = [...new Set(actions.map(([, action]) => action.method))].toSorted();
+    let queued = [...new Set(actions.flatMap(([name]) => adminAgentActionMethods(name)))].toSorted();
     expect(methodsOfKind("act")).toEqual(queued);
-    expect(queued).toEqual(["addIssueReportEntry", "requestWorkspaceWrite", "setIssueReportStatus"]);
-    expect(actions).toHaveLength(6);
+    expect(queued).toEqual([
+      "addIssueReportEntry", "claimIssueReport", "releaseIssueReport", "requestWorkspaceWrite",
+      "setIssueReportStatus",
+    ]);
+    expect(actions).toHaveLength(7);
   });
 
   it("omits every setter, passkey, approval, denial, test and grant ending, but a report's status", () => {
@@ -64,6 +67,7 @@ describe("ADMIN_AGENT_ACTIONS", () => {
   it("gives each kind a tag of its own", () => {
     let tags = actions.map(([, action]) => action.kind.tag);
     expect(new Set(tags).size).toBe(tags.length);
+    expect(tags).toContain("issue-report-assignment");
     for (let [name, action] of actions) {
       expect(action.kind.label, name).not.toBe("");
     }
@@ -91,6 +95,24 @@ describe("ADMIN_AGENT_ACTIONS", () => {
         { method: "addIssueReportEntry", visibility: "admins", autoApprovable: true });
     expect(issueReportStatus).toMatchObject(
         { method: "setIssueReportStatus", visibility: undefined, autoApprovable: true });
+  });
+
+  it("names one method for every kind but an assignment, which names its two", () => {
+    for (let [name, action] of actions) {
+      if (name === "issueReportAssignment") continue;
+      expect(adminAgentActionMethods(name), name).toEqual([action.method]);
+    }
+    let { issueReportAssignment } = ADMIN_AGENT_ACTIONS;
+    expect(adminAgentActionMethods("issueReportAssignment"))
+        .toEqual(["claimIssueReport", "releaseIssueReport"]);
+    expect(issueReportAssignment).toMatchObject(
+        { visibility: undefined, grantsContent: undefined, autoApprovable: true });
+    // No other kind may make either call.
+    for (let [name] of actions) {
+      if (name === "issueReportAssignment") continue;
+      expect(adminAgentActionMethods(name), name).not.toContain("claimIssueReport");
+      expect(adminAgentActionMethods(name), name).not.toContain("releaseIssueReport");
+    }
   });
 
   it("splits filing a write request in two, by whether it asks for content access", () => {
@@ -121,6 +143,7 @@ describe("adminAgentAction", () => {
     expect(adminAgentAction("issue-report-scoped-reply")).toBe("issueReportScopedReply");
     expect(adminAgentAction("issue-report-note")).toBe("issueReportNote");
     expect(adminAgentAction("issue-report-status")).toBe("issueReportStatus");
+    expect(adminAgentAction("issue-report-assignment")).toBe("issueReportAssignment");
     expect(adminAgentAction("workspace-write-request")).toBe("workspaceWriteRequest");
     expect(adminAgentAction("content-access-request")).toBe("contentAccessRequest");
     for (let [name, action] of actions) {

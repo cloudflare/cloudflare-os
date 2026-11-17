@@ -10,7 +10,7 @@ import {
   createAdminAccessError, type AdminApi,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, type AdminAgentAction,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, adminAgentActionMethods, type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminAgentApi, AdminAgentMethod } from "@gadgets/workshop-shared/admin-gatekeeper";
 import { ADMIN_METHOD_ANSWERS } from "./admin-access";
@@ -27,9 +27,9 @@ const logger = createWorkshopLogger("workshop.admin.agent");
  *     the session directly from the connection, outside any chat: such a session is lent
  *     nothing unless the opener is the owner, because its records would name the owner and
  *     leave no trace of who called;
- *   - an approved action of `kind`: ONE call, the one ADMIN_AGENT_ACTIONS names for it, with
- *     its visibility. `autoApproved` says the approval was a rule's, not a person's, and
- *     `decidedBy` is the profile id of whoever approved (the rule's enabler for a rule).
+ *   - an approved action of `kind`: ONE call, one of the calls ADMIN_AGENT_ACTIONS names for
+ *     it, with its visibility. `autoApproved` says the approval was a rule's, not a person's,
+ *     and `decidedBy` is the profile id of whoever approved (the rule's enabler for a rule).
  */
 export type AdminAgentUse =
   | { for: "session"; until: number; live(): void; opener?: string }
@@ -59,7 +59,10 @@ export function adminAgentRefusal(use: AdminAgentUse, method: string, args: read
     return kind === "act" ? `AdminApi.${method}() runs only as an approved action.` : undefined;
   }
   let action = ADMIN_AGENT_ACTIONS[use.kind];
-  if (method !== action.method) return `This action may only call AdminApi.${action.method}().`;
+  let methods = adminAgentActionMethods(use.kind);
+  if (!methods.includes(method)) {
+    return `This action may only call AdminApi.${methods.join("() or AdminApi.")}().`;
+  }
   if (action.visibility !== undefined && args[2] !== action.visibility) {
     return `This action may only write a "${action.visibility}" entry.`;
   }

@@ -9,6 +9,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { REPORT_SUBRESOURCE, scopedReport } from "../../src/report-session.js";
 import { SERVICES } from "../../src/surface.js";
+import HAND_WRITTEN_TYPES from "../../src/types.txt";
 import {
   REPORT_ID, type Recording, type Session, VIEW, issueReport, openBinding, recordingTarget,
   rejection, sampleArguments, workshop,
@@ -181,6 +182,25 @@ describe("a report session's view of a fix", () => {
   });
 });
 
+/**
+ * What calling `name` on `report` is refused with. An RPC stub answers every name, so only a
+ * call's rejection says the session has no such method: the same refusal as for a name nothing
+ * has.
+ */
+const refusalOf = async (report: Session, name: string, ...args: unknown[]) =>
+  (await rejection(report[name]!(...args))).message;
+
+/**
+ * The text of one interface in the declarations an agent is given, to its closing brace. A
+ * session's declarations are its own two interfaces: the rest of the file describes the whole
+ * connection.
+ */
+function declarationOf(name: string): string {
+  const start = HAND_WRITTEN_TYPES.indexOf(`export interface ${name} {`);
+  expect(start, name).toBeGreaterThanOrEqual(0);
+  return HAND_WRITTEN_TYPES.slice(start, HAND_WRITTEN_TYPES.indexOf("\n}\n", start));
+}
+
 describe("a report session", () => {
   it("is opened without a lend, a read or an observation", async () => {
     const { log, queue } = triage();
@@ -285,6 +305,84 @@ describe("a report session", () => {
         "Invalid arguments for IssueReportSession.inspectWorkspace: it takes the reason alone, " +
         "a string. The workspace is the report's.");
     expect(admin.calls).toHaveLength(2);
+  });
+
+  it("has no method that assigns", async () => {
+    const { log, queue } = triage();
+    const { root, report } = await openReport(queue);
+    using _root = root;
+    using _report = report;
+
+    const refused = await refusalOf(report, "noSuchMethod", REPORT_ID);
+    expect(refused).not.toBe("did not reject");
+    for (const call of [
+      () => refusalOf(report, "claimIssueReport", REPORT_ID),
+      () => refusalOf(report, "claimIssueReport", REPORT_ID, { takeOver: true }),
+      () => refusalOf(report, "claimIssueReport"),
+      () => refusalOf(report, "releaseIssueReport", REPORT_ID),
+      () => refusalOf(report, "releaseIssueReport"),
+    ]) {
+      expect((await call()).replace(/claimIssueReport|releaseIssueReport/, "noSuchMethod"))
+          .toBe(refused);
+    }
+
+    expect(log).toEqual([]);
+    expect(queue.submitted).toEqual([]);
+  });
+
+  it("has no whoami()", async () => {
+    const { log, admin, queue } = triage();
+    const { root, report } = await openReport(queue);
+    using _root = root;
+    using _report = report;
+
+    // A session limited to one report names nobody but its reporter: which admin it answers
+    // for is not its to tell.
+    expect((await refusalOf(report, "whoami")).replace("whoami", "noSuchMethod"))
+        .toBe(await refusalOf(report, "noSuchMethod"));
+
+    expect(log).toEqual([]);
+    expect(queue.observations).toEqual([]);
+    expect(admin.calls).toEqual([]);
+  });
+
+  it("declares none of the three, and no assignee", () => {
+    const session = declarationOf("IssueReportSession");
+    const report = declarationOf("ScopedIssueReport");
+    expect(session).toContain("reply(text: string): Promise<void>;");
+    expect(report).toContain("entries: {");
+    for (const name of ["claimIssueReport", "releaseIssueReport", "whoami"]) {
+      expect(session, name).not.toContain(name);
+    }
+    expect(session + report).not.toMatch(/assignee|assignment/i);
+  });
+
+  it("returns no assignee and no assignment line", async () => {
+    const { queue, state } = triage();
+    const held = { id: "grace", name: "Grace", at: new Date("2026-03-04T05:45:00.000Z"), via: "api" };
+    const base = issueReport();
+    state.report = issueReport({
+      assignee: held,
+      entries: [
+        ...base.entries,
+        { id: "e5", at: held.at, author: { id: "grace", name: "Grace" }, visibility: "admins",
+          via: "api", text: "", assignment: "claimed" },
+        { id: "e6", at: new Date("2026-03-04T05:46:00.000Z"), author: { id: "linus", name: "Linus" },
+          visibility: "admins", via: "gatekeeper", agent: { workspaceId: "fixes", chatId: 1 },
+          text: "", assignment: "takenOver" },
+      ],
+    });
+    const { root, report } = await openReport(queue);
+    using _root = root;
+    using _report = report;
+
+    const read = await report.get!();
+
+    // Exactly what it returns of a report nobody holds.
+    expect(read).toEqual(SCOPED);
+    expect(read).not.toHaveProperty("assignee");
+    for (const entry of read.entries) expect(entry).not.toHaveProperty("assignment");
+    expect(JSON.stringify(read)).not.toMatch(/assign|claimed|takenOver|linus/i);
   });
 
   it("refuses a report that does not exist at its first call", async () => {

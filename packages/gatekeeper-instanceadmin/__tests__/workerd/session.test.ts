@@ -15,6 +15,7 @@ import {
   type ActionDescription, matchesResourceUrlPattern, type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it, vi } from "vitest";
+import { TAKE_OVER_BY_PERSON } from "../../src/actions.js";
 import { ADMIN_SUBRESOURCE, forwarderFor } from "../../src/forward.js";
 import { ADMIN_SCHEMA, SERVICES, generatedDeclarations, kindOf } from "../../src/surface.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
@@ -384,6 +385,23 @@ describe("a session's reads", () => {
     }]);
   });
 
+  it("ask who the binding's admin is as any read: observed, flagged and forwarded", async () => {
+    const { log, admin, queue } = workshop();
+    using session = await openSession(queue);
+
+    expect(READS).toContain("whoami");
+    expect(await session.whoami!()).toEqual({ answered: "whoami" });
+
+    expect(log).toEqual(["getAdminApi", "observe Admin API: whoami", "AdminApi.whoami"]);
+    expect(admin.calls).toEqual([{ name: "whoami", args: [] }]);
+    expect(queue.observations).toEqual([{
+      title: "Admin API: whoami",
+      description: "Call `whoami()` of this deployment's Admin API, as this workspace's owner.",
+      subresources: [ADMIN_BINDING_SUBRESOURCE],
+      containsRestrictedData: true,
+    }]);
+  });
+
   it("show no arguments for a call that was given none", async () => {
     const { queue } = workshop();
     using session = await openSession(queue);
@@ -607,16 +625,43 @@ describe("what a session refuses", () => {
     const { log, admin, queue } = workshop();
     using session = await openSession(queue);
 
-    expect(ACTS.toSorted()).toEqual(["addIssueReportEntry", "requestWorkspaceWrite", "setIssueReportStatus"]);
+    expect(ACTS.toSorted()).toEqual([
+      "addIssueReportEntry", "claimIssueReport", "releaseIssueReport", "requestWorkspaceWrite",
+      "setIssueReportStatus",
+    ]);
     for (const name of ACTS) {
       expect(await session[name]!(...sampleArguments(ROOT, name)), name).toBeUndefined();
     }
 
     // The sample entry is an admins-only one, and the sample request asks for content access.
     expect(log.toSorted()).toEqual([
-      "submit content-access-request", "submit issue-report-note", "submit issue-report-status",
+      "submit content-access-request", "submit issue-report-assignment",
+      "submit issue-report-assignment", "submit issue-report-note", "submit issue-report-status",
     ]);
     expect(admin.calls).toEqual([]);
+    expect(queue.observations).toEqual([]);
+  });
+
+  it("to take a report over: the claim is rejected, and nothing is queued", async () => {
+    const { log, admin, queue } = workshop();
+    using session = await openSession(queue);
+
+    expect((await rejection(session.claimIssueReport!("report-1", { takeOver: true }))).message)
+        .toBe(TAKE_OVER_BY_PERSON);
+    expect(TAKE_OVER_BY_PERSON).toMatch(/^Only a person takes an issue report/);
+    // An option the claim does not have is the argument check's to refuse.
+    expect((await rejection(session.claimIssueReport!("report-1", { takeOver: "yes" }))).message)
+        .toMatch(/^Invalid arguments for AdminApi\.claimIssueReport: /);
+    expect((await rejection(session.releaseIssueReport!("report-1", { takeOver: true }))).message)
+        .toMatch(/^Invalid arguments for AdminApi\.releaseIssueReport: /);
+    expect(log).toEqual([]);
+    expect(admin.calls).toEqual([]);
+
+    // Without the option, or with it unset, the claim is queued.
+    expect(await session.claimIssueReport!("report-1", { takeOver: false })).toBeUndefined();
+    expect(await session.claimIssueReport!("report-1")).toBeUndefined();
+    expect(log).toEqual(["submit issue-report-assignment", "submit issue-report-assignment"]);
+    expect(queue.observations).toEqual([]);
   });
 
   it("an act method on a session that was given no actions", async () => {

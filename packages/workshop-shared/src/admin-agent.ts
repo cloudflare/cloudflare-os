@@ -75,8 +75,10 @@ export const ADMIN_AGENT_KINDS = {
   listUsers: "read", listWorkspaces: "read", inspectWorkspace: "read", inspectUser: "read",
   listAdminAudit: "read", getAdminAuditStats: "read", getWorkspaceWrite: "read",
   listIssueReports: "read", getIssueReport: "read", readIssueReportImage: "read",
+  whoami: "read",
   // Actions of the gatekeeper.
   addIssueReportEntry: "act", setIssueReportStatus: "act", requestWorkspaceWrite: "act",
+  claimIssueReport: "act", releaseIssueReport: "act",
   // Omitted.
   getUpdateStatus: "omitted",
   setSignupsEnabled: "omitted", setUserSearchEnabled: "omitted", setSiteName: "omitted",
@@ -95,8 +97,7 @@ export const ADMIN_AGENT_KINDS = {
   setUpdateCheckIntervalMinutes: "omitted", setUpdateMinimumAgeHours: "omitted",
   setUpdateNoticeSnoozeHours: "omitted", setAdminWorkspaceAccess: "omitted",
   setAdminAuditRetentionDays: "omitted", setIssueReportRetentionDays: "omitted",
-  setIssueReportLinks: "omitted", claimIssueReport: "omitted", releaseIssueReport: "omitted",
-  whoami: "omitted", endWorkspaceGrant: "omitted",
+  setIssueReportLinks: "omitted", endWorkspaceGrant: "omitted",
   denyWorkspaceWrite: "omitted", beginWorkspaceWriteApproval: "omitted",
   approveWorkspaceWrite: "omitted", listAdminPasskeys: "omitted",
   beginAdminPasskeyEnrolment: "omitted", addAdminPasskey: "omitted",
@@ -108,8 +109,9 @@ export const ADMIN_AGENT_KINDS = {
  * the gatekeeper the power to run an approved action of a kind only for that kind's call.
  *   - `method`, `visibility`, `grantsContent`: the one AdminApi call an approved action of the
  *     kind may make: addIssueReportEntry() with exactly that visibility, setIssueReportStatus(),
- *     or requestWorkspaceWrite() for "grantContentAccess" (`grantsContent` true) or for any
- *     other action (false).
+ *     claimIssueReport() or releaseIssueReport() (the one kind whose `method` names two), or
+ *     requestWorkspaceWrite() for "grantContentAccess" (`grantsContent` true) or for any other
+ *     action (false).
  *   - `autoApprovable`: the verdict every action of the kind carries
  *     (ActionDescription.autoApprovable). The Workshop refuses to lend to an auto-approval of
  *     an action whose TAG is that of a kind whose verdict is false, whatever verdict the
@@ -138,6 +140,11 @@ export const ADMIN_AGENT_KINDS = {
  * "grantContentAccess" always waits for a person ("contentAccessRequest"): it asks for access
  * to a workspace's content, and whoever approves its filing is counted among the people who may
  * not approve the request itself, which only a person present can be.
+ *
+ * An assignment claims a report for the workspace's owner or releases one the owner holds,
+ * whoever in the workspace asked: the call is the owner's, as every lent call is. It never
+ * takes a report from another admin, which the report store refuses to a call made through
+ * the gatekeeper.
  *
  * A verdict of true is a ceiling, not a promise: a rule applies an action only in a workspace
  * that holds no restricted data, and every read through the admin binding marks its workspace as
@@ -171,6 +178,13 @@ export const ADMIN_AGENT_ACTIONS = {
     autoApprovable: true,
     kind: { tag: "issue-report-status", label: "Set an issue report's status" },
   },
+  issueReportAssignment: {
+    // One kind for the two calls: a rule for claiming is a rule for releasing.
+    method: ["claimIssueReport", "releaseIssueReport"], visibility: undefined,
+    grantsContent: undefined,
+    autoApprovable: true,
+    kind: { tag: "issue-report-assignment", label: "Claim or release an issue report" },
+  },
   workspaceWriteRequest: {
     method: "requestWorkspaceWrite", visibility: undefined, grantsContent: false,
     autoApprovable: true,
@@ -193,6 +207,13 @@ export const ADMIN_AGENT_ACTIONS = {
 
 /** One of the gatekeeper's action kinds, by its name in ADMIN_AGENT_ACTIONS. */
 export type AdminAgentAction = keyof typeof ADMIN_AGENT_ACTIONS;
+
+/** The AdminApi methods an approved action of kind `action` may call: its kind's one method,
+ * or the two of an assignment. */
+export function adminAgentActionMethods(action: AdminAgentAction): readonly string[] {
+  let { method } = ADMIN_AGENT_ACTIONS[action];
+  return typeof method === "string" ? [method] : method;
+}
 
 /** The action kind an ActionKind tag names, or undefined for any other tag. */
 export function adminAgentAction(tag: string | undefined): AdminAgentAction | undefined {

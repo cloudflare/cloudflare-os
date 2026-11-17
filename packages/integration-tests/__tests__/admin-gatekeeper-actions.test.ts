@@ -16,7 +16,7 @@ import {
   turnModels, VENDOR, type AdminConnection, type Authenticator, type Suite, type SuiteUser,
 } from "./admin-gatekeeper-harness.js";
 
-// The gatekeeper's six action kinds, what a rule may apply, and what marks a workspace as holding
+// The gatekeeper's seven action kinds, what a rule may apply, and what marks a workspace as holding
 // restricted data: any read through the whole binding, and what a session limited to one report
 // reads of a reporter's workspace that is itself marked.
 //

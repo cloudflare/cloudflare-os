@@ -1,4 +1,4 @@
-// The six action kinds: what queues each, what its card says, which a rule may approve, and what
+// The seven action kinds: what queues each, what its card says, which a rule may approve, and what
 // applying one does and fails as. Actions are queued through sessions the facet opened and
 // applied through the facet, over RPC, so a refusal's code crosses a hop as it does from the
 // Workshop.
@@ -112,6 +112,23 @@ const CASES: Case[] = [
     fields: [
       { label: "Report", kind: "inline", value: REPORT_ID },
       { label: "Status", kind: "inline", value: "Waiting on the reporter" },
+    ],
+  },
+  {
+    // A claim stands for the kind here; a release has its own cases below.
+    kind: "issueReportAssignment",
+    queue: (binding) => binding.claimIssueReport!(REPORT_ID),
+    queuedLog: ["submit issue-report-assignment"],
+    payload: { reportId: REPORT_ID, assignment: "claim" },
+    call: { name: "claimIssueReport", args: [REPORT_ID] },
+    title: `Assign issue report ${REPORT_ID} to this workspace's owner`,
+    description: "Makes this workspace's owner, the admin this connection acts as, the " +
+      "report's assignee, whoever approves this. Every admin sees who holds a report. Nothing " +
+      "changes if the owner already holds it, and it is refused if another admin does: it never " +
+      "takes a report from anyone.",
+    fields: [
+      { label: "Report", kind: "inline", value: REPORT_ID },
+      { label: "Assignee", kind: "inline", value: "This workspace's owner" },
     ],
   },
   {
@@ -249,13 +266,85 @@ describe("the card of a change of status", () => {
   });
 });
 
+describe("the card of an assignment", () => {
+  it("names the report a release leaves with nobody, and whose release it is", async () => {
+    const { log, admin, queue } = workshop(lends);
+    const { gatekeeper, session } = await openBinding(queue);
+    await session.releaseIssueReport!(REPORT_ID);
+    session[Symbol.dispose]();
+
+    const { issueReportAssignment } = ADMIN_AGENT_ACTIONS;
+    const description: ActionDescription = {
+      title: `Release issue report ${REPORT_ID} from this workspace's owner`,
+      description: "Leaves the report with no assignee, if this workspace's owner, the admin " +
+        "this connection acts as, holds it. Nothing changes if nobody holds it, and it is " +
+        "refused if another admin does.",
+      fields: [
+        { label: "Report", kind: "inline", value: REPORT_ID },
+        { label: "Released by", kind: "inline", value: "This workspace's owner" },
+      ],
+      descriptionIsComplete: true,
+      implementsRevert: false,
+      autoApprovable: issueReportAssignment.autoApprovable,
+      actionKind: { ...issueReportAssignment.kind },
+      awaitDecision: true,
+    };
+    expect(queue.submitted).toEqual([{ action: expect.any(Number), description }]);
+    // Queuing read nothing, so it names the owner in words and marks nothing.
+    expect(log).toEqual(["submit issue-report-assignment"]);
+    expect(queue.observations).toEqual([]);
+    expect(admin.calls).toEqual([]);
+
+    const api = lent();
+    await gatekeeper.applyAdminAction(queue.submitted[0]!.action, api as never);
+    expect(api.calls).toEqual([{ name: "releaseIssueReport", args: [REPORT_ID] }]);
+  });
+
+  it("is one kind for a claim and a release, told apart by the call alone", async () => {
+    const { queue } = workshop(lends);
+    const { session } = await openBinding(queue);
+    using _session = session;
+    await session.claimIssueReport!(REPORT_ID);
+    await session.claimIssueReport!(REPORT_ID, {});
+    await session.claimIssueReport!(REPORT_ID, { takeOver: false });
+    await session.releaseIssueReport!(REPORT_ID);
+
+    const cards = queue.submitted.map((entry) => entry.description);
+    expect(cards.map((card) => card.actionKind?.tag)).toEqual(Array(4).fill("issue-report-assignment"));
+    expect(cards.map((card) => card.autoApprovable)).toEqual(Array(4).fill(true));
+    expect(cards.map((card) => card.title.split(" ")[0])).toEqual(["Assign", "Assign", "Assign", "Release"]);
+  });
+
+  it.each([
+    ["assigned", "Another admin holds this issue report."],
+    ["threadFull", undefined],
+  ] as const)("fails for good on a refusal coded %s, with the store's message", async (name, message) => {
+    const error = refusal(ISSUE_REPORT_ERROR_CODES[name]);
+    if (message !== undefined) expect(error.message).toBe(message);
+    for (const release of [false, true]) {
+      const { queue } = workshop(lends);
+      const { gatekeeper, session } = await openBinding(queue);
+      await (release ? session.releaseIssueReport!(REPORT_ID) : session.claimIssueReport!(REPORT_ID));
+      session[Symbol.dispose]();
+      const id = queue.submitted[0]!.action;
+      const working = lent();
+
+      expect((await rejection(gatekeeper.applyAdminAction(id, failing(error) as never))).message)
+          .toBe(error.message);
+      expect((await rejection(gatekeeper.applyAdminAction(id, working as never))).message)
+          .toBe(error.message);
+      expect(working.calls).toEqual([]);
+    }
+  });
+});
+
 describe("the verdicts", () => {
-  it("let a rule approve four kinds, and never a reply through the binding or a content request", async () => {
+  it("let a rule approve five kinds, and never a reply through the binding or a content request", async () => {
     const offered = (await facet().getAutoApprovableActions()).map((kind) => kind.tag);
 
     expect(offered.toSorted()).toEqual([
-      "issue-report-note", "issue-report-scoped-reply", "issue-report-status",
-      "workspace-write-request",
+      "issue-report-assignment", "issue-report-note", "issue-report-scoped-reply",
+      "issue-report-status", "workspace-write-request",
     ]);
     expect(ADMIN_AGENT_ACTIONS.issueReportReply.autoApprovable).toBe(false);
     expect(ADMIN_AGENT_ACTIONS.contentAccessRequest.autoApprovable).toBe(false);

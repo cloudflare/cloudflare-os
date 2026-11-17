@@ -10,7 +10,8 @@ import { emitDeclarations } from "@gadgets/api-schema/emit/dts";
 import { type ApiShape, FORMAT, type Schema } from "@gadgets/api-schema/schema";
 import ADMIN_SCHEMA_JSON from "@gadgets/api-schema/generated/admin-api.schema.json" with { type: "json" };
 import {
-  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentKind,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentAction,
+  type AdminAgentKind, adminAgentActionMethods,
 } from "@gadgets/workshop-shared/admin-agent";
 
 const ROOT = "AdminApi";
@@ -32,6 +33,7 @@ const RESERVED_NAMES = new Set([
  */
 export const ACT_METHODS = [
   "addIssueReportEntry", "setIssueReportStatus", "requestWorkspaceWrite",
+  "claimIssueReport", "releaseIssueReport",
 ] as const;
 
 /** One of ACT_METHODS. */
@@ -168,7 +170,7 @@ export function assertAdminSchema(schema: Schema, routed: readonly string[] = AC
     }
   }
   const applied = new Set<string>(
-      Object.values(ADMIN_AGENT_ACTIONS).map((action) => action.method));
+      (Object.keys(ADMIN_AGENT_ACTIONS) as AdminAgentAction[]).flatMap(adminAgentActionMethods));
   for (const name of routed) {
     if (!applied.has(name)) refuse(`the route of ${ROOT}.${name} is to no action kind`);
   }
@@ -230,6 +232,10 @@ the user who owns this workspace, a deployment admin.
 - A method whose doc starts "Through the admin gatekeeper this call does not run" does nothing when
   you call it: it queues an action and resolves to undefined, and reads do not show what it will do
   until the action is approved.
+- whoami() names the admin this binding acts as: this workspace's owner. claimIssueReport()
+  and releaseIssueReport() assign a report to that admin or release it, whoever in this
+  workspace asked, and never take a report another admin holds: compare a report's
+  assignee.id with whoami()'s id to tell this workspace's reports from another admin's.
 - A view lasts no longer than the session that opened it: its lifetimeSeconds is capped at what the
   session has left, and it stops answering when the session ends. Open a view where you use it.
 - An Admin API method these declarations lack is not available here.

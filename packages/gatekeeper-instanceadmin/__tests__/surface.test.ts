@@ -6,7 +6,8 @@
 import { emitDeclarations } from "@gadgets/api-schema/emit/dts";
 import type { ApiShape, Schema, SchemaMethod } from "@gadgets/api-schema/schema";
 import {
-  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, ADMIN_AGENT_LEND_SECONDS,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentAction,
+  adminAgentActionMethods,
 } from "@gadgets/workshop-shared/admin-agent";
 import { describe, expect, it } from "vitest";
 import {
@@ -140,6 +141,36 @@ describe("the declarations", () => {
     expect(preamble).toContain(
         "Reading a report session's view of a workspace that holds restricted data marks this " +
         "workspace as holding it too, and from then on a reply waits for a person.");
+  });
+
+  it("say whom the binding acts as, and that an assignment is that admin's alone", () => {
+    const preamble = PREAMBLE.replace(/\n {2}/g, " ");
+    expect(preamble).toContain(
+        "whoami() names the admin this binding acts as: this workspace's owner. " +
+        "claimIssueReport() and releaseIssueReport() assign a report to that admin or release " +
+        "it, whoever in this workspace asked, and never take a report another admin holds: " +
+        "compare a report's assignee.id with whoami()'s id to tell this workspace's reports " +
+        "from another admin's.");
+    // After the bullet on methods that only queue, which the two assignments are.
+    expect(preamble.indexOf("whoami() names the admin")).toBeGreaterThan(
+        preamble.indexOf("until the action is approved."));
+    expect(preamble.indexOf("whoami() names the admin")).toBeLessThan(
+        preamble.indexOf("A view lasts no longer"));
+  });
+
+  it("declare whoami() as a read, and a claim and a release as queued", () => {
+    expect(READS).toContain("whoami");
+    expect(member(declarations, ROOT, "whoami")!.signature).toBe("  whoami(): Promise<NamedUser>;");
+    expect(member(declarations, ROOT, "whoami")!.doc).not.toContain(QUEUED_DOC);
+    // A parameter is declared as the emitter declares any: a value, or a promise for one.
+    expect(member(declarations, ROOT, "claimIssueReport")!.signature).toBe("  claimIssueReport(" +
+        "reportId: Awaitable<string>, options?: Awaitable<IssueReportClaimOptions>): Promise<void>;");
+    expect(member(declarations, ROOT, "releaseIssueReport")!.signature)
+        .toBe("  releaseIssueReport(reportId: Awaitable<string>): Promise<void>;");
+    expect(declarations).toContain("takeOver?: boolean;");
+    for (const name of ["claimIssueReport", "releaseIssueReport"]) {
+      expect(member(declarations, ROOT, name)!.doc.startsWith(`${QUEUED_DOC}\n\n`), name).toBe(true);
+    }
   });
 
   it("say what each hook is called with, that a call can repeat, and what a hook wakes", () => {
@@ -382,8 +413,13 @@ describe("assertAdminSchema() refuses", () => {
 describe("assertAdminSchema() and the actions", () => {
   it("routes exactly the methods the kind table queues, each to an action kind", () => {
     expect([...ACT_METHODS].toSorted()).toEqual(ACTS);
-    const applied = new Set<string>(Object.values(ADMIN_AGENT_ACTIONS).map((action) => action.method));
+    const applied = new Set<string>(
+        (Object.keys(ADMIN_AGENT_ACTIONS) as AdminAgentAction[]).flatMap(adminAgentActionMethods));
     expect([...applied].toSorted()).toEqual(ACTS);
+    expect(ACTS).toEqual([
+      "addIssueReportEntry", "claimIssueReport", "releaseIssueReport", "requestWorkspaceWrite",
+      "setIssueReportStatus",
+    ]);
   });
 
   it("refuses a schema whose act method has no route", () => {

@@ -34,6 +34,14 @@ export type ScopedReplyPayload = EntryPayload & {
 /** A status to set on a report. */
 export type StatusPayload = { reportId: string; status: IssueReportStatus };
 
+/** A report to claim for the workspace's owner, or to release. */
+export type AssignmentPayload = { reportId: string; assignment: "claim" | "release" };
+
+/** What an agent is told when it asks to take a report over. */
+export const TAKE_OVER_BY_PERSON = "Only a person takes an issue report from the admin who " +
+  "holds it: an admin does, in the Workshop, the CLI or the API. Call claimIssueReport() " +
+  "without takeOver, which is refused when another admin holds the report.";
+
 /** A write request to file, as requestWorkspaceWrite() takes it. */
 export type WriteRequestPayload = {
   workspaceId: string; action: AdminWriteAction; args: AdminWriteArgs; reason: string;
@@ -45,6 +53,7 @@ export type AdminActions = {
   issueReportScopedReply: ScopedReplyPayload;
   issueReportNote: EntryPayload;
   issueReportStatus: StatusPayload;
+  issueReportAssignment: AssignmentPayload;
   workspaceWriteRequest: WriteRequestPayload;
   contentAccessRequest: WriteRequestPayload;
 };
@@ -113,15 +122,16 @@ export function requestArgs(action: AdminWriteAction, args: AdminWriteArgs): Adm
 
 /**
  * The coded refusals after which an action can never apply: the Admin API makes each before it
- * writes anything, and no later approval changes it. For an entry or a status, the report does
- * not exist, its thread is full or it is closed; for a request, writes are off, the workspace's
- * id is malformed or the directory does not list it, the deployment has no origin to approve
- * on, too many requests are pending, or content access is off.
+ * writes anything, and no later approval changes it. For an entry, a status or an assignment,
+ * the report does not exist, its thread is full, it is closed or another admin holds it; for a
+ * request, writes are off, the workspace's id is malformed or the directory does not list it, the
+ * deployment has no origin to approve on, too many requests are pending, or content access is off.
  */
 export const TERMINAL_REFUSALS: ReadonlySet<string> = new Set([
   ISSUE_REPORT_ERROR_CODES.notFound,
   ISSUE_REPORT_ERROR_CODES.threadFull,
   ISSUE_REPORT_ERROR_CODES.closed,
+  ISSUE_REPORT_ERROR_CODES.assigned,
   ADMIN_WRITE_ERROR_CODES.writesOff,
   ADMIN_WRITE_ERROR_CODES.originUnset,
   ADMIN_WRITE_ERROR_CODES.workspaceUnlisted,
@@ -211,14 +221,15 @@ const fileRequest = (request: WriteRequestPayload, host: AdminActionHost, ctx: A
       request.workspaceId, request.action, request.args, request.reason));
 
 /**
- * The six action kinds, one per entry of ADMIN_AGENT_ACTIONS, which gives each its tag and its
+ * The seven action kinds, one per entry of ADMIN_AGENT_ACTIONS, which gives each its tag and its
  * verdict: the Workshop enforces the same table, so the two cannot differ. Unfenced: the
  * authority is lent per apply and checked by the Workshop, so there is no connection to pin.
  *
- * Every kind awaits its decision: an entry, a status or a request is in no read until it is
- * applied. Every kind claims before it applies, so that none runs twice: a second run would be
- * a second entry or a second request, and a status set again after someone changed it would
- * undo their change, with a second status line and a second end of an investigation.
+ * Every kind awaits its decision: an entry, a status, an assignment or a request is in no read
+ * until it is applied. Every kind claims before it applies, so that none runs twice: a second
+ * run would be a second entry or a second request, a status set again after someone changed it
+ * would undo their change, with a second status line and a second end of an investigation, and
+ * a report claimed again after its holder released it would be held once more.
  */
 export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
   issueReportReply: {
@@ -291,6 +302,34 @@ export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
     },
     apply: ({ reportId, status }, host, ctx) =>
       callLent(host, ctx, (admin) => admin.setIssueReportStatus(reportId, status)),
+  },
+
+  // The card names the owner in words, never by a read: queuing reads nothing. Which admin
+  // that is, the Workshop decides where the call lands.
+  issueReportAssignment: {
+    kind: ADMIN_AGENT_ACTIONS.issueReportAssignment.kind,
+    autoApprovable: ADMIN_AGENT_ACTIONS.issueReportAssignment.autoApprovable,
+    delivery: "await-decision",
+    claimBeforeApply: true,
+    describe: ({ reportId, assignment }) => assignment === "claim"
+      ? card(
+          `Assign issue report ${reportId} to this workspace's owner`,
+          buildDescription("Makes this workspace's owner, the admin this connection acts " +
+              "as, the report's assignee, whoever approves this. Every admin sees who holds " +
+              "a report. Nothing changes if the owner already holds it, and it is refused " +
+              "if another admin does: it never takes a report from anyone.")
+              .inline("Report", reportId)
+              .inline("Assignee", "This workspace's owner"))
+      : card(
+          `Release issue report ${reportId} from this workspace's owner`,
+          buildDescription("Leaves the report with no assignee, if this workspace's owner, " +
+              "the admin this connection acts as, holds it. Nothing changes if nobody " +
+              "holds it, and it is refused if another admin does.")
+              .inline("Report", reportId)
+              .inline("Released by", "This workspace's owner")),
+    apply: ({ reportId, assignment }, host, ctx) => callLent(host, ctx, (admin) =>
+        assignment === "claim"
+            ? admin.claimIssueReport(reportId) : admin.releaseIssueReport(reportId)),
   },
 
   // The two requests are one call under two kinds: a session queues a request for
