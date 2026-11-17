@@ -532,7 +532,7 @@ export type ActionRecord = {
 
   /**
    * `subresources` is kept only on an observation the Workshop verified them for: it writes the
-   * validated list, and strips the field from a pending creation's simulated read. Kept, it makes
+   * validated list, and strips the field from a simulated resource's read. Kept, it makes
    * the record an observer requirement, attributed by `caller` (see observerContextOf and
    * ObserverLedger.observerScope). Nothing else stores requirements, which is why the
    * action log is append-only: deleting such a record would silently drop checks while its

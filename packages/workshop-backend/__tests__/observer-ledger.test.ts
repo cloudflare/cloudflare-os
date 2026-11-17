@@ -16,7 +16,7 @@ import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { CollaboratorAccess, CollaboratorGrant } from "@gadgets/workshop-shared/api";
 import type {
-  ObservationAuthorizer, ObservationDescription,
+  ApprovalQueue, ObservationAuthorizer, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
@@ -1641,6 +1641,75 @@ describe("pending creation", () => {
       ]);
       expect(rows(impl, WORKSPACE))
           .toEqual([`${gatekeeperId}:next-id`, `${gatekeeperId}:real-id`]);
+    });
+  });
+});
+
+describe("simulated-only creation", () => {
+  it("creates at once, stays simulated for good, and still applies its actions on approval",
+      async () => {
+    let applied: number[] = [];
+    let facet = {
+      describe: async () => ({
+        url: "sandbox://instance/1", title: "Sandbox", snippet: "", suggestedBindingName: "S",
+        tsType: "S",
+      }),
+      verifyObserverAccess: verifyEachObserver,
+      addObserver: async () => {},
+      removeObserver: async () => {},
+      applyCreation: async () => { throw new Error("A simulated-only resource is never created."); },
+      applyAction: async (action: number) => { applied.push(action); },
+      startSession: async (queue: ApprovalQueue) => ({
+        read: (description: ObservationDescription) => queue.authorizeObservation(description),
+        act: () => queue.submitAction(7, {
+          title: "Act", description: "Act", implementsRevert: false, autoApprovable: false,
+        }),
+      }),
+    };
+
+    await inOverseer(`observer-ledger-simulated-${++doCounter}`, async world => {
+      let { impl } = world;
+      impl.env = { ...impl.env, BLUEPRINTS: { get: async () => null } };
+      impl.ownerId = "owner";
+      impl.traceAgentActionApproval = () => {};
+      impl.users = {
+        idFromName: (id: string) => id,
+        idFromString: (id: string) => id,
+        get: (id: string) => ({
+          ...world.clientUser(id),
+          createResourceGatekeeper: async () => ({ class: {}, typeUrlPattern: "sandbox://instance/*" }),
+        }),
+      };
+      impl.getGatekeeperFacet = async () => facet;
+
+      let { gatekeeperId } = await impl.createExternalResource(1, {
+        vendorId: "vendor", resourceUrlPattern: "sandbox://instance/*", title: "Sandbox",
+        bindingName: "S",
+      });
+      expect(impl.storage.gatekeepers.get(gatekeeperId).creationSpec)
+          .toMatchObject({ type: "gatekeeper", simulatedOnly: true });
+      expect([...impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)]).toEqual([]);
+
+      // Its reads record no requirements, and no collaborator is verified against it.
+      let session = await impl.openGatekeeperSession(
+          gatekeeperId, await impl.getGatekeeperFacet(gatekeeperId), { from: "user" });
+      let before = impl.storage.nextActionId.get();
+      await session.read(withSubresources(["simulated-id"]));
+      expect(impl.storage.actions.get(before).description.subresources).toBeUndefined();
+      seedGadget(impl);
+      for (let role of ["build", "use"] as const) {
+        expect(impl.listObserverRequirements(grantOf(role))).toEqual([]);
+        await impl.ensureObserver("carol", world.clientUser("carol"), grantOf(role));
+      }
+      expect(world.checks).toEqual([]);
+
+      // Its own actions still wait for approval, and apply when approved.
+      await session.act();
+      let [queued] = impl.storage.actions.pendingByGatekeeper.get(gatekeeperId);
+      expect(queued).toMatchObject({ type: "action", action: 7, state: "pending" });
+      await impl.applyPendingAction(queued, { type: "user", id: "owner", name: "Owner" }, false);
+      expect(applied).toEqual([7]);
+      expect(impl.storage.actions.get(queued.id).state).toBe("approved");
     });
   });
 });
