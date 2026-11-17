@@ -1807,6 +1807,32 @@ describe("Gmail streamed attachment bytes", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("gives up an open whose token never comes, or comes after the time is out", async () => {
+    vi.useFakeTimers();
+    const calls = stubFetch([]);
+    // The token provider asks Google who the token is for, and the account for the token: neither
+    // heeds the signal the request is made with.
+    const stalled = new GmailApi("me@example.com", () => new Promise<string>(() => {}));
+    const refused = expect(stalled.openAttachmentContent(detached(3))).rejects.toMatchObject(
+      {name: "TimeoutError", message: "Gmail did not answer in time."});
+    await vi.advanceTimersByTimeAsync(60_000);
+    await refused;
+    expect(calls).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // A token that comes a moment after the time is out is used for no request that is sent:
+    // fetch is given a signal that has aborted already.
+    let give!: (token: string) => void;
+    const slow = new GmailApi("me@example.com", () => new Promise<string>(resolve => { give = resolve; }));
+    const late = expect(slow.openAttachmentContent(detached(3))).rejects.toMatchObject({name: "TimeoutError"});
+    await vi.advanceTimersByTimeAsync(60_000);
+    await late;
+    give("token");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls.map(({init}) => init.signal?.aborted)).toEqual([true]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not time the body of an answer that has begun", async () => {
     vi.useFakeTimers();
     let release!: () => void;

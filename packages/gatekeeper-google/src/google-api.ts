@@ -2783,22 +2783,33 @@ export class GmailApi {
    * download. Unlike {@link getAttachmentContent} it has no size limit and does not look at
    * `info.readable`; the bytes must still number `info.size`, or the stream errors.
    *
-   * Only the wait for the answer to begin is timed. Its body is read at the caller's pace, for as
-   * long as an attachment of any size takes, so the caller times a body that stalls.
+   * Only the wait for the answer to begin is timed, the wait for a token to ask with included.
+   * Its body is read at the caller's pace, for as long as an attachment of any size takes, so
+   * the caller times a body that stalls.
    */
   async openAttachmentContent(snapshot: GmailAttachmentSnapshot): Promise<ReadableStream<Uint8Array>> {
     if (snapshot.attachmentId) {
       validateGmailId(snapshot.messageId, "message ID");
       validateGmailId(snapshot.attachmentId, "attachment ID");
       const begin = new AbortController();
-      const timer = setTimeout(
-        () => begin.abort(new DOMException("Gmail did not answer in time.", "TimeoutError")),
-        GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
+      const opening = this.authedFetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
+        {signal: begin.signal});
+      let timer!: ReturnType<typeof setTimeout>;
+      // The signal ends a request that was made. The wait for a token to make it with heeds no
+      // signal, so the open itself is given up when the time is out, and an answer that comes
+      // after all is let go.
+      const late = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          const reason = new DOMException("Gmail did not answer in time.", "TimeoutError");
+          begin.abort(reason);
+          void opening.then(answer => answer.body?.cancel(reason), () => undefined);
+          reject(reason);
+        }, GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
+      });
       let response: Response;
       try {
-        response = await this.authedFetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
-          {signal: begin.signal});
+        response = await Promise.race([opening, late]);
       } finally {
         clearTimeout(timer);
       }
