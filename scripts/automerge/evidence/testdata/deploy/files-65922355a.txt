@@ -1,2 +1,0 @@
-packages/workshop-frontend/src/features/code/FileBrowser.tsx
-packages/workshop-frontend/src/features/code/WorkpieceCodeInterface.tsx

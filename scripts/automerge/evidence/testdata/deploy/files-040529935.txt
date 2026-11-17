@@ -1,2 +1,0 @@
-packages/gatekeeper-google/src/chat-types.d.ts
-packages/gatekeeper-google/src/chat.ts
