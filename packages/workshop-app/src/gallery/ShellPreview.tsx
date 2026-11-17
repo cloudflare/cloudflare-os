@@ -13,7 +13,10 @@ import { Section } from './Section'
 
 const WORKSPACES: SidebarWorkspace[] = [
   { id: 'notes', workspaceLabel: 'EN', title: 'Engineering Notes', subtitle: '4 hours ago' },
-  { id: 'paris', workspaceLabel: 'PS', title: 'Paris slides', subtitle: 'Oct 27' },
+  { id: 'brief', workspaceLabel: 'MB', chat: true, title: 'Morning brief', subtitle: '20 min ago', unread: true },
+  { id: 'paris', workspaceLabel: 'PS', title: 'Paris slides', subtitle: 'Yesterday' },
+  { id: 'chart', workspaceLabel: 'TC', chat: true, title: 'Ticket volume chart', subtitle: 'Oct 29' },
+  { id: 'budget', workspaceLabel: 'HB', title: 'Household budget', subtitle: 'Oct 27', unread: true },
 ]
 
 const output = (workpieceId: number, title: string): AsideItem => ({
