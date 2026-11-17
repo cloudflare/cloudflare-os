@@ -125,6 +125,62 @@ describe("scopedReport()", () => {
   });
 });
 
+/** A bare change of status an admin made, as the admins read it. */
+const moved = (id: string, status: string, visibility = "public") => ({
+  id, at: new Date("2026-03-04T05:50:00.000Z"), author: { id: "grace", name: "Grace" },
+  visibility, via: "api", text: "", status,
+});
+
+describe("a report session's view of a fix", () => {
+  const ADMINS_OWN = /fixSuggested|fixInProgress/;
+
+  it.each(["fixSuggested", "fixInProgress"] as const)(
+      "reads a suggested or in-progress fix as withAdmin, on the report and on a thread line (%s)",
+      async (status) => {
+    const { queue, state } = triage();
+    state.report = issueReport({ status, entries: [moved("e5", status)] });
+    const { root, report } = await openReport(queue);
+    using _root = root;
+    using _report = report;
+
+    const read = await report.get!();
+
+    expect(read.status).toBe("withAdmin");
+    expect(read.entries).toEqual([{
+      id: "e5", at: new Date("2026-03-04T05:50:00.000Z"), author: { name: "Grace" },
+      visibility: "public", via: "api", text: "", status: "withAdmin",
+    }]);
+    expect(JSON.stringify(read)).not.toMatch(ADMINS_OWN);
+  });
+
+  it("reads a proposed fix as itself", () => {
+    const scoped = scopedReport(
+        issueReport({ status: "fixProposed", entries: [moved("e5", "fixProposed")] }) as never);
+    expect(scoped.status).toBe("fixProposed");
+    expect(scoped.entries.map((entry) => entry.status)).toEqual(["fixProposed"]);
+  });
+
+  it("never returns an admins-only status line", async () => {
+    const { queue, state } = triage();
+    state.report = issueReport({
+      status: "fixInProgress",
+      entries: [
+        moved("e5", "withAdmin"), moved("e6", "fixSuggested", "admins"),
+        moved("e7", "fixInProgress", "admins"),
+      ],
+    });
+    const { root, report } = await openReport(queue);
+    using _root = root;
+    using _report = report;
+
+    const read = await report.get!();
+
+    expect(read.status).toBe("withAdmin");
+    expect(read.entries.map((entry: { id: string }) => entry.id)).toEqual(["e5"]);
+    expect(JSON.stringify(read)).not.toMatch(ADMINS_OWN);
+  });
+});
+
 describe("a report session", () => {
   it("is opened without a lend, a read or an observation", async () => {
     const { log, queue } = triage();

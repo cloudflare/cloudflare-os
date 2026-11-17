@@ -7,8 +7,9 @@ import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/action
 import { ADMIN_AGENT_ACTIONS, type AdminAgentAction } from "@gadgets/workshop-shared/admin-agent";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, ISSUE_REPORT_ERROR_CODES,
-  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ISSUE_REPORT_TEXT_LENGTH, createAdminAccessError,
-  createAdminWriteError, createIssueReportError,
+  ISSUE_REPORT_STATUSES, type IssueReportStatus, MAX_ADMIN_ACCESS_REASON_LENGTH,
+  MAX_ISSUE_REPORT_TEXT_LENGTH, createAdminAccessError, createAdminWriteError,
+  createIssueReportError,
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription, ActionField } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it } from "vitest";
@@ -106,7 +107,8 @@ const CASES: Case[] = [
     payload: { reportId: REPORT_ID, status: "waitingOnReporter" },
     call: { name: "setIssueReportStatus", args: [REPORT_ID, "waitingOnReporter"] },
     title: `Set issue report ${REPORT_ID} to Waiting on the reporter`,
-    description: "Changes the report's status. Its reporter sees the change in the thread.",
+    description: "Changes the report's status. Its reporter sees the change in the thread, " +
+      "unless they read the old status and the new one as the same.",
     fields: [
       { label: "Report", kind: "inline", value: REPORT_ID },
       { label: "Status", kind: "inline", value: "Waiting on the reporter" },
@@ -208,6 +210,43 @@ describe("each action kind", () => {
       expect(admin.calls).toHaveLength(before);
     });
   }
+});
+
+describe("the card of a change of status", () => {
+  // Each status as the card names it, and what its reporter reads where that is another status.
+  const NAMED: [IssueReportStatus, string, string?][] = [
+    ["new", "New"],
+    ["investigating", "Investigating"],
+    ["answered", "Answered"],
+    ["waitingOnReporter", "Waiting on the reporter"],
+    ["withAdmin", "With an admin"],
+    ["fixSuggested", "Fix suggested", "With the admins"],
+    ["fixInProgress", "Fix in progress", "With the admins"],
+    ["fixProposed", "Fix proposed"],
+    ["closed", "Closed"],
+  ];
+
+  it("has a case here for every status", () => {
+    expect(NAMED.map(([status]) => status)).toEqual([...ISSUE_REPORT_STATUSES]);
+  });
+
+  it.each(NAMED)("names %s as %s, and what its reporter reads where that differs",
+      async (status, name, reporterReads) => {
+    const { queue } = workshop(lends);
+    const { session } = await openBinding(queue);
+    using _session = session;
+    await session.setIssueReportStatus!(REPORT_ID, status);
+
+    expect(queue.submitted[0]!.description).toMatchObject({
+      title: `Set issue report ${REPORT_ID} to ${name}`,
+      fields: [
+        { label: "Report", kind: "inline", value: REPORT_ID },
+        { label: "Status", kind: "inline", value: name },
+        ...(reporterReads === undefined
+            ? [] : [{ label: "Reporter reads", kind: "inline", value: reporterReads }]),
+      ],
+    });
+  });
 });
 
 describe("the verdicts", () => {

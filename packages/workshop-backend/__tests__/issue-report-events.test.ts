@@ -184,8 +184,10 @@ describe("telling the admin gatekeeper of a filed report", () => {
 });
 
 describe("telling the admin gatekeeper of the end of an investigation", () => {
-  it.each(["answered", "waitingOnReporter", "withAdmin", "closed"] as const)(
-      "sends one event when a report leaves \"investigating\" for %s", async status => {
+  it.each([
+    "answered", "waitingOnReporter", "withAdmin", "fixSuggested", "fixInProgress", "fixProposed",
+    "closed",
+  ] as const)("sends one event when a report leaves \"investigating\" for %s", async status => {
     let clock = fakeClock();
     let reports = store();
     let report = await reports.file();

@@ -324,6 +324,21 @@ describe('the list', () => {
     expect(text()).not.toContain('Its second line.')
   })
 
+  it('calls a proposed fix "Fix in review", and a report sent as with the admins "With the admins"', async () => {
+    await renderPage(fakeApi({ pages: [{ reports: [
+      report('r-1', { status: 'fixProposed' }),
+      // What the server sends for a report whose fix is suggested or in progress.
+      report('r-2', { status: 'withAdmin' }),
+      // What the server never sends a reporter: the names are the last guard if it did.
+      report('r-3', { status: 'fixSuggested' }),
+      report('r-4', { status: 'fixInProgress' }),
+    ] }] }))
+
+    expect(row('r-1').textContent).toContain('Fix in review')
+    for (const id of ['r-2', 'r-3', 'r-4']) expect(row(id).textContent).toContain('With the admins')
+    expect(text()).not.toMatch(/Fix (suggested|in progress|proposed)/)
+  })
+
   it('puts a dot on a report that holds a reply the reporter has not seen, and on no other', async () => {
     await renderPage(fakeApi({ pages: [{ reports: [
       report('r-1', { unseen: true }),
@@ -548,6 +563,33 @@ describe('an open report', () => {
     expect(statusLine.querySelector('p')).toBeNull()
     expect(statusLine.className).not.toContain('border')
   })
+
+  it('reads a proposed fix as "Fix in review", on the report and on the line that set it', async () => {
+    await renderPage(fakeApi({ opened: [opened({
+      status: 'fixProposed',
+      entries: [adminEntry('e-1', '', { status: 'fixProposed', at: new Date('2026-10-12T10:05:00Z') })],
+    })] }), '/issues?report=r-1')
+
+    expect(detail().textContent).toContain('Fix in review')
+    expect(thread()[0].textContent).toBe(
+      `Grace Admin set the status to Fix in review${formatFullTimestamp(new Date('2026-10-12T10:05:00Z'))}`)
+    expect(text()).not.toContain('Fix proposed')
+  })
+
+  it.each(['fixSuggested', 'fixInProgress'] as const)(
+    'reads "%s" as "With the admins", on the report and on a line that set it',
+    async (status) => {
+      await renderPage(fakeApi({ opened: [opened({
+        status,
+        entries: [adminEntry('e-1', '', { status, at: new Date('2026-10-12T10:05:00Z') })],
+      })] }), '/issues?report=r-1')
+
+      expect(detail().textContent).toContain('With the admins')
+      expect(thread()[0].textContent).toBe(
+        `Grace Admin set the status to With the admins${formatFullTimestamp(new Date('2026-10-12T10:05:00Z'))}`)
+      expect(text()).not.toMatch(/Fix (suggested|in progress)/)
+    },
+  )
 
   it('names an agent’s entry and its change of status as the agent’s, for the admin it wrote for', async () => {
     await renderPage(fakeApi({ opened: [opened({

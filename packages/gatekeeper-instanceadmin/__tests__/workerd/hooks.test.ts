@@ -659,7 +659,10 @@ describe("the declarations", () => {
     expect(HAND_WRITTEN_TYPES).toMatch(/^export interface IssueReportedHook \{$/m);
     expect(HAND_WRITTEN_TYPES).toMatch(/^export interface InvestigationCompleteHook \{$/m);
     expect(HAND_WRITTEN_TYPES).toContain('priority: "low" | "medium" | "high";');
-    expect(HAND_WRITTEN_TYPES).toContain('status: "answered" | "waitingOnReporter" | "withAdmin" | "closed";');
+    // Every status an investigation can end with, wrapped after a bar where the line is full.
+    expect(HAND_WRITTEN_TYPES.replace(/ \|\n +/g, " | ")).toContain(
+        'status: "answered" | "waitingOnReporter" | "withAdmin" | "fixSuggested" | ' +
+        '"fixInProgress" | "fixProposed" | "closed";');
   });
 
   it("give each callback's event its own id, and say to key the work by it since an event can repeat", () => {

@@ -45,8 +45,8 @@ export interface AdminBinding extends AdminApi {
 
   /**
    * Call `hook` each time an admin ends a report's investigation: its status leaves
-   * "investigating" for "answered", "waitingOnReporter", "withAdmin" or "closed". `hook` is a
-   * persistent stub, as for subscribeIssueReported().
+   * "investigating" for any status but "new". `hook` is a persistent stub, as for
+   * subscribeIssueReported().
    */
   subscribeInvestigationComplete(hook: InvestigationCompleteHook): Promise<void>;
 }
@@ -87,7 +87,8 @@ export interface InvestigationCompleteHook {
     /** Random and opaque: this event's own id. */
     eventId: string;
     reportId: string;
-    status: "answered" | "waitingOnReporter" | "withAdmin" | "closed";
+    status: "answered" | "waitingOnReporter" | "withAdmin" | "fixSuggested" | "fixInProgress" |
+        "fixProposed" | "closed";
     at: Date;
   }): void;
 }
@@ -149,8 +150,9 @@ export interface ScopedIssueReport {
   priority: "low" | "medium" | "high";
   /** Where the reporter was, as ids: each is absent when the report names none. */
   context: { workspaceId?: string; chatId?: number; gadgetId?: number; appVersion?: string };
-  /** Where it stands. */
-  status: "new" | "investigating" | "answered" | "waitingOnReporter" | "withAdmin" | "closed";
+  /** Where it stands. The admins' "fixSuggested" and "fixInProgress" read as "withAdmin" here. */
+  status: "new" | "investigating" | "answered" | "waitingOnReporter" | "withAdmin" | "fixProposed" |
+      "closed";
   /** Its images, in the order they were added. Read one with readImage(). */
   images: { id: string; type: "image/png" | "image/jpeg" | "image/webp"; byteLength: number }[];
   /** The grant the reporter gave with it, if any: whether it covers the report's workspace or
@@ -169,7 +171,9 @@ export interface ScopedIssueReport {
     via?: "api" | "cli" | "gatekeeper";
     /** Its text: "" for a bare change of status. */
     text: string;
-    /** The status this entry set, when it set one. */
-    status?: "new" | "investigating" | "answered" | "waitingOnReporter" | "withAdmin" | "closed";
+    /** The status this entry set, when it set one. The admins' "fixSuggested" and
+     * "fixInProgress" read as "withAdmin" here. */
+    status?: "new" | "investigating" | "answered" | "waitingOnReporter" | "withAdmin" |
+        "fixProposed" | "closed";
   }[];
 }

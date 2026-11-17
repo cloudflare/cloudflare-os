@@ -4,7 +4,7 @@ import {
   MAX_ISSUE_REPORT_IMAGES, MAX_ISSUE_REPORT_IMAGE_BYTES, MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER,
   MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER, MAX_ISSUE_REPORT_LINKS, MAX_ISSUE_REPORT_LINK_LENGTH,
   MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_TEXT_LENGTH,
-  MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError,
+  MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError, issueReportStatusForReporter,
   type AdminAccessGrant, type AdminAccessRecord, type AdminAgentOrigin, type AdminIssueReport,
   type AdminIssueReportPage,
   type AdminIssueReportQuery, type AdminVia, type AiChatAuthorInfo, type IssueReport,
@@ -70,13 +70,13 @@ const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter
 
 // The kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart, and within a kind the
 // entries made through the admin gatekeeper apart from people's (see #threadCount()). A bare
-// change of status (an admin's public entry with no text) is bounded only when it was made
-// through the gatekeeper (see setStatus()).
+// change of status (an admins' entry with no text that sets a status, public or for admins
+// alone) is bounded only when it was made through the gatekeeper (see setStatus()).
 const THREAD_KINDS = {
   replies: "visibility = 'public' AND via IS NULL",
   adminPublic: "visibility = 'public' AND via IS NOT NULL AND text <> ''",
-  adminOnly: "visibility = 'admins'",
-  status: "visibility = 'public' AND via IS NOT NULL AND text = ''",
+  adminOnly: "visibility = 'admins' AND text <> ''",
+  status: "via IS NOT NULL AND text = '' AND status IS NOT NULL",
 } as const;
 
 type ReportRow = {
@@ -231,8 +231,13 @@ function reportOf(row: ReportRow): IssueReport {
 
 // A report as its reporter reads it: built from reportOf() and nothing of the admins' form, so
 // neither the links nor when its thread last grew (which an admins-only entry moves) is in it.
+// Its status is the one a reporter reads (issueReportStatusForReporter()).
 function ownReportOf(row: ReportRow): OwnIssueReport {
-  return { ...reportOf(row), unseen: row.last_admin_public > row.seen };
+  let report = reportOf(row);
+  return {
+    ...report, status: issueReportStatusForReporter(report.status),
+    unseen: row.last_admin_public > row.seen,
+  };
 }
 
 function adminReportOf(row: ReportRow): AdminIssueReport {
@@ -246,7 +251,8 @@ function adminReportOf(row: ReportRow): AdminIssueReport {
 // An entry as `reader` reads it. The reporter reads an entry the admins wrote (its row has a
 // `via`) without its author's id: an admin's id is their account name. The rule is the row's
 // `via`, never a comparison of ids, so it holds for an admin who filed the report too. Where an
-// agent's entry came from (`agent`) is for admins alone: the reporter reads its `via`.
+// agent's entry came from (`agent`) is for admins alone: the reporter reads its `via`, and a
+// status as the reporter reads it.
 function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry {
   let author: IssueReportAuthor = reader === "reporter" && row.via !== null
       ? { name: row.author_name } : { id: row.author_id, name: row.author_name };
@@ -261,7 +267,10 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
   if (row.agent !== null && reader === "admins") {
     entry.agent = JSON.parse(row.agent) as AdminAgentOrigin;
   }
-  if (row.status !== null) entry.status = row.status as IssueReportStatus;
+  if (row.status !== null) {
+    let status = row.status as IssueReportStatus;
+    entry.status = reader === "reporter" ? issueReportStatusForReporter(status) : status;
+  }
   return entry;
 }
 
@@ -356,7 +365,7 @@ function fewerBytesThanDeclared(): TypeError {
  *     report_id TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
  * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own, and its
  * `agent` is the AdminAgentOrigin, as JSON, of one written through the admin gatekeeper; a bare
- * change of status is an admins' public entry whose text is ''. An image is 'pending' from its
+ * change of status is an admins' entry with a status and no text. An image is 'pending' from its
  * upload's reservation, when `started_at` and `n` (its place among its report's images) are set
  * and `byte_length` is the length its sender declared, until its object is in the bucket; only
  * a 'stored' image has a `type`, and only a 'stored' image is listed or read.
@@ -960,8 +969,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Sets a report's status, entered in its thread as a public line with no text that names
-   * `admin` and is labelled as `caller` (see addEntry()). A status the report already has changes
+   * Sets a report's status, entered in its thread as a line with no text that names `admin` and
+   * is labelled as `caller` (see addEntry()): public, or for admins alone when the reporter reads
+   * the old status and the new one as the same. A status the report already has changes
    * nothing. A person's call is never refused `threadFull`, so a full thread can still be closed;
    * a call made through the admin gatekeeper, which a rule can make with nobody deciding, is,
    * once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of this report's status were made through it. It
@@ -981,7 +991,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
         this.#threadCount(report.seq, "status", true) >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
-    let { at } = this.#addEntry(report.seq, author, "public", label, "", status);
+    // A move the reporter reads as no move is a line for the admins alone.
+    let reads = issueReportStatusForReporter;
+    let visibility: IssueReportEntry["visibility"] =
+        reads(report.status as IssueReportStatus) === reads(status) ? "admins" : "public";
+    let { at } = this.#addEntry(report.seq, author, visibility, label, "", status);
     if (report.status !== "investigating" || status === "new") return;
     this.#addEvent("investigationComplete", report.id, status, at);
     await this.#wakeForEvents();

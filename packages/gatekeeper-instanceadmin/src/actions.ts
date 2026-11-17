@@ -18,6 +18,7 @@ import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ARGS, ADMIN_WRITE_ERROR_CODES, type AdminWriteAction,
   type AdminWriteArgs, ISSUE_REPORT_ERROR_CODES, type IssueReportStatus, MAX_ADMIN_ACCESS_REASON_LENGTH,
   MAX_ISSUE_REPORT_TEXT_LENGTH, getAdminAccessErrorCode, getAdminWriteErrorCode, getIssueReportErrorCode,
+  issueReportStatusForReporter,
 } from "@gadgets/workshop-shared/api";
 
 /** An entry to add to a report's thread: a reply through the admin binding, or a note. */
@@ -171,6 +172,10 @@ async function callLent(
   }
 }
 
+/** What a reporter reads for a status, where the Workshop's page for reporters words it otherwise
+ * than STATUS_LABELS: "withAdmin" is what "fixSuggested" and "fixInProgress" are given to them as. */
+const REPORTER_READS: Partial<Record<IssueReportStatus, string>> = { withAdmin: "With the admins" };
+
 /** `iso`, an ISO timestamp, as a card shows it: the same text wherever it is read. */
 function utc(iso: string): string {
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
@@ -182,6 +187,9 @@ const STATUS_LABELS: Record<IssueReportStatus, string> = {
   answered: "Answered",
   waitingOnReporter: "Waiting on the reporter",
   withAdmin: "With an admin",
+  fixSuggested: "Fix suggested",
+  fixInProgress: "Fix in progress",
+  fixProposed: "Fix proposed",
   closed: "Closed",
 };
 
@@ -271,12 +279,16 @@ export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
     autoApprovable: ADMIN_AGENT_ACTIONS.issueReportStatus.autoApprovable,
     delivery: "await-decision",
     claimBeforeApply: true,
-    describe: ({ reportId, status }) => card(
-        `Set issue report ${reportId} to ${STATUS_LABELS[status]}`,
-        buildDescription("Changes the report's status. Its reporter sees the change in the " +
-            "thread.")
-            .inline("Report", reportId)
-            .inline("Status", STATUS_LABELS[status])),
+    describe: ({ reportId, status }) => {
+      const rendered = buildDescription("Changes the report's status. Its reporter sees the " +
+          "change in the thread, unless they read the old status and the new one as the same.")
+          .inline("Report", reportId)
+          .inline("Status", STATUS_LABELS[status]);
+      const reporterReads = issueReportStatusForReporter(status);
+      if (reporterReads !== status) rendered.inline("Reporter reads",
+          REPORTER_READS[reporterReads] ?? STATUS_LABELS[reporterReads]);
+      return card(`Set issue report ${reportId} to ${STATUS_LABELS[status]}`, rendered);
+    },
     apply: ({ reportId, status }, host, ctx) =>
       callLent(host, ctx, (admin) => admin.setIssueReportStatus(reportId, status)),
   },

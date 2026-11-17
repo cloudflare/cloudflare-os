@@ -705,6 +705,196 @@ describe("an issue report's thread", () => {
   });
 });
 
+describe("the fix statuses", () => {
+  const FIX_STATUSES = ["fixSuggested", "fixInProgress", "fixProposed"] as const;
+  // The two a reporter never reads.
+  const ADMINS_OWN = /fixSuggested|fixInProgress/;
+  const AGENT = { via: "gatekeeper", agent: { workspaceId: "w".repeat(64), chatId: 1 } } as const;
+
+  it("sets each of the three, by a person and through the admin gatekeeper", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    for (let caller of [{ via: "api" }, AGENT] as const) {
+      for (let status of FIX_STATUSES) {
+        await run(reports => reports.setStatus(GRACE, caller, report.id, status));
+        let read = await run(reports => reports.get(report.id));
+        expect(read.status).toBe(status);
+        expect(read.entries.at(-1)).toMatchObject({ via: caller.via, text: "", status });
+      }
+      await run(reports => reports.setStatus(GRACE, caller, report.id, "new"));
+    }
+    expect((await run(reports => reports.get(report.id))).entries).toHaveLength(8);
+  });
+
+  it.each(["fixSuggested", "fixInProgress"] as const)(
+      "gives the reporter withAdmin for a fix that is suggested or in progress (%s)",
+      async status => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, status));
+    let reply = await run(reports => reports.reply(ADA, report.id, "Any news?"));
+    let own = await run(reports => reports.getOwn("ada", report.id));
+    let page = await run(reports => reports.listOwn("ada"));
+
+    expect(own.status).toBe("withAdmin");
+    expect(page.reports.map(listed => listed.status)).toStrictEqual(["withAdmin"]);
+    expect(own.entries.map(entry => entry.status)).toStrictEqual(["withAdmin", undefined]);
+    expect(JSON.stringify([reply, own, page])).not.toMatch(ADMINS_OWN);
+
+    // The admins read and filter by the status it has.
+    let read = await run(reports => reports.get(report.id));
+    expect(read.status).toBe(status);
+    expect(read.entries[0].status).toBe(status);
+    let listed = (query: object) => run(reports => reports.list({ limit: 10, ...query }));
+    expect((await listed({})).reports.map(r => r.status)).toStrictEqual([status]);
+    expect((await listed({ status })).reports.map(r => r.id)).toStrictEqual([report.id]);
+    expect((await listed({ status: "withAdmin" })).reports).toStrictEqual([]);
+  });
+
+  // A move between two statuses, as setStatus() enters it: who reads the line, and what the
+  // reporter reads on the report and on the line (null where they are read none).
+  it.each([
+    ["withAdmin", "fixSuggested", "admins", "withAdmin", null],
+    ["fixSuggested", "fixInProgress", "admins", "withAdmin", null],
+    ["fixInProgress", "withAdmin", "admins", "withAdmin", null],
+    ["answered", "fixSuggested", "public", "withAdmin", "withAdmin"],
+    ["fixInProgress", "fixProposed", "public", "fixProposed", "fixProposed"],
+    ["fixProposed", "fixSuggested", "public", "withAdmin", "withAdmin"],
+    ["fixSuggested", "closed", "public", "closed", "closed"],
+    ["new", "fixSuggested", "public", "withAdmin", "withAdmin"],
+  ] as const)("enters a move from %s to %s as a line for %s",
+      async (old, set, visibility, reads, line) => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    if (old !== "new") {
+      await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, old));
+    }
+    let before = await run(reports => reports.getOwn("ada", report.id));
+    await run(reports => reports.setStatus(HEDY, { via: "cli" }, report.id, set));
+
+    let read = await run(reports => reports.get(report.id));
+    expect(read.status).toBe(set);
+    expect(read.entries.at(-1)).toStrictEqual({
+      id: expect.any(String), at: expect.any(Date),
+      author: { id: "hedy@example.test", name: "Hedy (admin)" },
+      visibility, via: "cli", text: "", status: set,
+    });
+
+    let own = await run(reports => reports.getOwn("ada", report.id));
+    expect(own.status).toBe(reads);
+    expect((await run(reports => reports.listOwn("ada"))).reports[0].status).toBe(reads);
+    expect(JSON.stringify(own)).not.toMatch(ADMINS_OWN);
+    if (line === null) {
+      expect(own).toStrictEqual(before);
+    } else {
+      expect(own.entries).toHaveLength(before.entries.length + 1);
+      expect(own.entries.at(-1)).toStrictEqual({
+        id: read.entries.at(-1)!.id, at: expect.any(Date), author: { name: "Hedy (admin)" },
+        visibility: "public", via: "cli", text: "", status: line,
+      });
+    }
+  });
+
+  it("reads fixProposed to the reporter as itself", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, "fixProposed"));
+    let own = await run(reports => reports.getOwn("ada", report.id));
+    expect(own.status).toBe("fixProposed");
+    expect(own.entries).toMatchObject([{ visibility: "public", text: "", status: "fixProposed" }]);
+    expect((await run(reports => reports.listOwn("ada"))).reports[0].status).toBe("fixProposed");
+  });
+
+  it("lets the reporter reply to each of the three without moving it", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    for (let status of FIX_STATUSES) {
+      await run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, status));
+      let reply = await run(reports => reports.reply(ADA, report.id, `After ${status}.`));
+      expect(reply).toStrictEqual({
+        id: expect.any(String), at: expect.any(Date), author: { id: "ada", name: "Ada" },
+        visibility: "public", text: `After ${status}.`,
+      });
+      expect((await run(reports => reports.get(report.id))).status).toBe(status);
+    }
+  });
+
+  it("does not make a report unseen with an admins-only status line", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let move = (status: "withAdmin" | "fixSuggested" | "fixInProgress") =>
+        run(reports => reports.setStatus(GRACE, { via: "api" }, report.id, status));
+    await move("withAdmin");
+    await move("fixSuggested");
+    expect((await run(reports => reports.getOwn("ada", report.id))).unseen).toBe(false);
+    expect(await run(reports => reports.unseenCount("ada"))).toBe(0);
+
+    // Nor does it make an unseen answer seen.
+    await run(reports => reports.addEntry(GRACE, { via: "api" }, report.id, "Found it.", "public"));
+    await move("fixInProgress");
+    expect(await run(reports => reports.unseenCount("ada"))).toBe(1);
+    await run(reports => reports.markSeen("ada", report.id));
+    await move("withAdmin");
+    expect((await run(reports => reports.getOwn("ada", report.id))).unseen).toBe(false);
+    expect(await run(reports => reports.unseenCount("ada"))).toBe(0);
+  });
+
+  it("counts an admins-only status line as a change of status, never as a note", async () => {
+    let { run } = store();
+    let full = ISSUE_REPORT_ERROR_CODES.threadFull;
+    let notes = (report: { id: string }, caller: { via: "api" } | typeof AGENT) =>
+        run(reports => {
+          for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
+            reports.addEntry(GRACE, caller, report.id, "A note.", "admins");
+          }
+        });
+    let adminsOnlyLines = async (report: { id: string }) =>
+        (await run(reports => reports.get(report.id))).entries
+            .filter(entry => entry.visibility === "admins" && entry.text === "").length;
+
+    // A person's: any number of their moves leaves room for all of their notes.
+    let persons = await run(reports => reports.submit(ADA, input(), false));
+    await run(async reports => {
+      await reports.setStatus(GRACE, { via: "api" }, persons.id, "withAdmin");
+      for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES + 1; i++) {
+        await reports.setStatus(
+            GRACE, { via: "api" }, persons.id, i % 2 === 0 ? "fixSuggested" : "fixInProgress");
+      }
+    });
+    expect(await adminsOnlyLines(persons)).toBe(MAX_ISSUE_REPORT_THREAD_ENTRIES + 1);
+    await notes(persons, { via: "api" });
+    expect(await refusal(() => run(reports => reports.addEntry(
+        GRACE, { via: "api" }, persons.id, "The 201st.", "admins")))).toBe(full);
+    await run(reports => reports.setStatus(GRACE, { via: "api" }, persons.id, "fixInProgress"));
+
+    // Through the gatekeeper: one bound for its changes of status, public or for admins alone.
+    let agents = await run(reports => reports.submit(ADA, input(), false));
+    let cycle = ["withAdmin", "fixSuggested", "fixInProgress", "fixProposed"] as const;
+    await run(async reports => {
+      for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
+        await reports.setStatus(GRACE, AGENT, agents.id, cycle[i % cycle.length]);
+      }
+    });
+    expect(await adminsOnlyLines(agents)).toBe(MAX_ISSUE_REPORT_THREAD_ENTRIES / 2);
+    for (let status of ["withAdmin", "closed"] as const) {
+      expect(await refusal(() => run(reports => reports.setStatus(
+          GRACE, AGENT, agents.id, status)))).toBe(full);
+    }
+    // So is a move only admins would read, which a person's two moves put the report before.
+    await run(async reports => {
+      await reports.setStatus(GRACE, { via: "api" }, agents.id, "fixSuggested");
+      await reports.setStatus(GRACE, { via: "api" }, agents.id, "fixInProgress");
+    });
+    expect(await refusal(() => run(reports => reports.setStatus(
+        GRACE, AGENT, agents.id, "fixSuggested")))).toBe(full);
+
+    // Its notes are counted apart from them.
+    await notes(agents, AGENT);
+    expect(await refusal(() => run(reports => reports.addEntry(
+        GRACE, AGENT, agents.id, "The 201st.", "admins")))).toBe(full);
+  });
+});
+
 describe("an entry written through the admin gatekeeper", () => {
   const AGENT = { workspaceId: "c".repeat(64), chatId: 4 };
 

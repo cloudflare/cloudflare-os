@@ -10,7 +10,7 @@ import type { AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper"
 import {
   type AdminIssueReport, type AdminWorkspaceDescription, ISSUE_REPORT_ERROR_CODES,
   ISSUE_REPORT_STATUSES, type IssueReport, type IssueReportEntry, type IssueReportStatus,
-  getIssueReportErrorCode,
+  getIssueReportErrorCode, issueReportStatusForReporter,
 } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { type BoundAdminActions, entryText } from "./actions.js";
@@ -28,8 +28,8 @@ const FIRST_LINE_LENGTH = 200;
 
 /**
  * An issue report as its reporter reads it: the report, and the public entries of its thread
- * with an author's id only on the reporter's own. No links, no admins-only entry, and nothing of
- * where an admin's entry came from.
+ * with an author's id only on the reporter's own, and each status as the reporter reads it. No
+ * links, no admins-only entry, and nothing of where an admin's entry came from.
  */
 export type ScopedIssueReport = IssueReport & { entries: Omit<IssueReportEntry, "agent">[] };
 
@@ -66,7 +66,7 @@ export function scopedReport(
       ...(context.gadgetId !== undefined && { gadgetId: context.gadgetId }),
       ...(context.appVersion !== undefined && { appVersion: context.appVersion }),
     },
-    status: knownStatus(report.status),
+    status: issueReportStatusForReporter(knownStatus(report.status)),
     images: report.images.map(({ id, type, byteLength }) => ({ id, type, byteLength })),
     ...(grant && {
       grant: {
@@ -84,7 +84,8 @@ export function scopedReport(
       visibility: entry.visibility,
       ...(entry.via !== undefined && { via: entry.via }),
       text: entry.text,
-      ...(entry.status !== undefined && { status: knownStatus(entry.status) }),
+      ...(entry.status !== undefined &&
+          { status: issueReportStatusForReporter(knownStatus(entry.status)) }),
     })),
   };
 }

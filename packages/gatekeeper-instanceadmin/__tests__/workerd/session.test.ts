@@ -9,7 +9,7 @@ import type { ApiShape } from "@gadgets/api-schema/schema";
 import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
 import {
   ADMIN_WRITE_ARGS, type AdminWriteAction, ISSUE_REPORT_IMAGE_TYPES, ISSUE_REPORT_PRIORITIES,
-  ISSUE_REPORT_STATUSES, MAX_ISSUE_REPORT_TEXT_LENGTH,
+  ISSUE_REPORT_STATUSES, MAX_ISSUE_REPORT_TEXT_LENGTH, issueReportStatusForReporter,
 } from "@gadgets/workshop-shared/api";
 import {
   type ActionDescription, matchesResourceUrlPattern, type ObservationDescription,
@@ -205,8 +205,16 @@ describe("the facet", () => {
       expect(HAND_WRITTEN_TYPES).toContain(`\n  ${signature}\n`);
     }
     expect(HAND_WRITTEN_TYPES).toContain(`priority: ${union(ISSUE_REPORT_PRIORITIES)};`);
-    expect(HAND_WRITTEN_TYPES).toContain(`status: ${union(ISSUE_REPORT_STATUSES)};`);
-    expect(HAND_WRITTEN_TYPES).toContain(`status?: ${union(ISSUE_REPORT_STATUSES)};`);
+    // The statuses a reporter reads, which are all a report session returns. A union that
+    // does not fit its line is wrapped after a bar.
+    const read = ISSUE_REPORT_STATUSES.filter(
+        (status) => issueReportStatusForReporter(status) === status);
+    expect(read).toEqual([
+      "new", "investigating", "answered", "waitingOnReporter", "withAdmin", "fixProposed", "closed",
+    ]);
+    const unwrapped = HAND_WRITTEN_TYPES.replace(/ \|\n +/g, " | ");
+    expect(unwrapped).toContain(`\n  status: ${union(read)};`);
+    expect(unwrapped).toContain(`\n    status?: ${union(read)};`);
     expect(HAND_WRITTEN_TYPES).toContain(`type: ${union(ISSUE_REPORT_IMAGE_TYPES)};`);
     expect(HAND_WRITTEN_TYPES).toContain(`at most ${MAX_ISSUE_REPORT_TEXT_LENGTH} characters`);
     // What a restricted reporter's workspace does to the workspace that reads it.
