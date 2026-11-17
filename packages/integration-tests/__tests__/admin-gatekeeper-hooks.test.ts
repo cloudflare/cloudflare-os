@@ -484,20 +484,20 @@ it("triages a report: a gadget hands a spawned agent a stub that reaches that on
     reply: { value: null },
   });
 
-  // The hook's event marked the workspace before the gadget had it, so what the gadget and the
-  // agent queued waits for a person, as every action there does: the status, the reply and the
-  // status that follows it. A person approves each, in order.
-  const held = await waitFor("the three actions", async () => {
+  // The hook's event marked the workspace before the gadget had it. The rule for statuses still
+  // applies there, the admin connection's reads alone having marked it, so the investigation
+  // started with no person; the reply waits for one, and the status that follows it waits
+  // behind it, in order. A person approves the reply alone.
+  const held = await waitFor("the reply and the status behind it", async () => {
     const pending = (await ws.listActions({ filter: "pending" })).entries.toReversed();
-    return pending.length >= 3 ? pending : null;
+    return pending.length >= 2 ? pending : null;
   });
   expect(held.map(entry => entry.type === "action" && entry.description.actionKind?.tag)).toEqual([
-    ADMIN_AGENT_ACTIONS.issueReportStatus.kind.tag,
     ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind.tag,
     ADMIN_AGENT_ACTIONS.issueReportStatus.kind.tag,
   ]);
   expect(await isRestricted(ws)).toBe(true);
-  for (const entry of held) await ws.approveAction(entry.id);
+  await ws.approveAction(held[0]!.id);
 
   // The reply reached the reporter, and ended the investigation once.
   const thread = await waitFor("the report to be answered", async () => {
