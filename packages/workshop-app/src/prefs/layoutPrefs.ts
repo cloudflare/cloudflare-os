@@ -7,18 +7,21 @@ export type LayoutPrefs = {
   asideShare?: number
   /** The aside was showing when last left, so a chat is opened with it showing. */
   asideOpen?: boolean
+  /** What a chat makes is shown beside it as it is made, rather than when asked for. It is, until switched off. */
+  opensNewOutputs?: boolean
 }
 
 const finite = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
 
 const parse = (value: unknown): LayoutPrefs | undefined => {
   if (!isRecord(value)) return undefined
-  const { sidebar, asideShare, asideOpen } = value
+  const { sidebar, asideShare, asideOpen, opensNewOutputs } = value
   const width = isRecord(sidebar) ? finite(sidebar.width) : undefined
   return {
     sidebar: isRecord(sidebar) && width !== undefined ? { collapsed: sidebar.collapsed === true, width } : undefined,
     asideShare: finite(asideShare),
     asideOpen: typeof asideOpen === 'boolean' ? asideOpen : undefined,
+    opensNewOutputs: typeof opensNewOutputs === 'boolean' ? opensNewOutputs : undefined,
   }
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useApi } from '@/rpc/ApiContext'
+import { defaultModelOf } from './defaultModel'
 
 export type DefaultModel =
   | { status: 'loading' }
@@ -19,7 +20,11 @@ export const describeModelProblem = (model: Exclude<DefaultModel, { status: 'rea
   }
 }
 
-/** The model the user's messages are answered by: the first of their models, which is the default. */
+/**
+ * The model the user's messages are answered by: the one they chose in the settings, or the first
+ * of their models (`defaultModelOf`). Read as the page is opened, so a choice made since holds
+ * from the next page on.
+ */
 export const useDefaultModel = (): DefaultModel => {
   const { api, reconnecting } = useApi()
   const [model, setModel] = useState<DefaultModel>({ status: 'loading' })
@@ -28,9 +33,11 @@ export const useDefaultModel = (): DefaultModel => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
     if (reconnecting) return
     let cancelled = false
-    api.listModels().then(
-      ([first]) => {
-        if (!cancelled) setModel(first ? { status: 'ready', id: first.id } : { status: 'none' })
+    // What was chosen is only a preference: where it cannot be read, the first model answers.
+    Promise.all([api.listModels(), api.getPreferredModel().catch(() => null)]).then(
+      ([models, preferred]) => {
+        const chosen = defaultModelOf(models, preferred)
+        if (!cancelled) setModel(chosen ? { status: 'ready', id: chosen.id } : { status: 'none' })
       },
       (error) => {
         if (!cancelled) setModel({ status: 'failed', message: error instanceof Error ? error.message : String(error) })

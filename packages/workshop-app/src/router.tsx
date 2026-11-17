@@ -31,5 +31,15 @@ declare module '@tanstack/react-router' {
      * from it on a narrow screen goes there rather than to the item's workspace.
      */
     fromLibrary?: boolean
+    /**
+     * This step opened the settings, from the user's own button in the sidebar, so the button
+     * leaves them by going back.
+     */
+    settingsOpenedHere?: boolean
+    /**
+     * This step went into a part of the settings from the list of them, on a narrow screen, so
+     * the way back to the list goes back.
+     */
+    settingsPartOpenedHere?: boolean
   }
 }

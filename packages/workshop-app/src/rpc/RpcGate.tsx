@@ -3,6 +3,7 @@ import type { RpcStub } from 'capnweb'
 import {
   AUTH_ERROR_CODES,
   getAuthErrorCode,
+  type AiChatAuthorInfo,
   type AuthenticatedApi,
   type PublicApi,
 } from '@gadgets/workshop-shared/api'
@@ -42,6 +43,12 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
   const [notice] = useState(() => new ConnectionNotice())
   // Bumped once a token is stored, to sign in with it.
   const [signIns, setSignIns] = useState(0)
+  // Stable, as the session it is part of is kept by whatever reads it.
+  const [userChanged] = useState(() => (user: AiChatAuthorInfo) =>
+    setState((current) =>
+      current?.session.phase === 'ready'
+        ? { ...current, session: { phase: 'ready', value: { ...current.session.value, user }, reconnecting: { ...current.session.reconnecting, user } } }
+        : current))
 
   useEffect(() => {
     if (!publicApi) return
@@ -61,7 +68,7 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
         if (!token) return finish({ phase: 'signedOut' })
         // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
         api = publicApi.authenticate(token)
-        const value: ApiSession = { api, user: await api.whoami(), reconnecting: false }
+        const value: ApiSession = { api, user: await api.whoami(), userChanged, reconnecting: false }
         finish({ phase: 'ready', value, reconnecting: { ...value, reconnecting: true } })
       } catch (error) {
         if (getAuthErrorCode(error) === AUTH_ERROR_CODES.invalidSessionToken) {
@@ -78,7 +85,7 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
       cancelled = true
       api?.[Symbol.dispose]()
     }
-  }, [publicApi, signIns])
+  }, [publicApi, signIns, userChanged])
 
   const signInWithPassword = async (username: string, password: string) => {
     if (!publicApi) return 'Not connected to the server.'

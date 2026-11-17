@@ -28,6 +28,12 @@ export type SidebarProps = {
   workspacesPage?: { current: boolean; onOpen: () => void }
   /** The page listing what is connected and what could be, and whether it is the one showing. */
   connectionsPage?: { current: boolean; onOpen: () => void }
+  /**
+   * The settings' page, which the user's own button goes to, and whether it is the one showing,
+   * when the button leaves it again. Where there is room for a sidebar beside the page,
+   * `SettingsSidebar` takes this one's place while the settings show.
+   */
+  settingsPage?: { current: boolean; onOpen: () => void }
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
   /**
@@ -39,7 +45,8 @@ export type SidebarProps = {
   layout?: 'icons' | 'rows'
 }
 
-const RailDivider = () => <span aria-hidden="true" className="my-4 h-px w-4 shrink-0 bg-kumo-line" />
+/** A short line between one stretch of a rail's buttons and the next. */
+export const RailDivider = () => <span aria-hidden="true" className="my-4 h-px w-4 shrink-0 bg-kumo-line" />
 
 // The keys a search would open by: Command on Apple's keyboards, Control on any other.
 const searchKeys = () => (/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘K' : 'Ctrl K')
@@ -82,19 +89,22 @@ const NavRow = ({ icon, label, current, onClick, ...props }: NavRowProps) => (
 
 const navUnderlay = 'pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded-2xl bg-kumo-fill'
 
-/** The rows under the list, with one highlight shared between the current row and the one pointed at, as the workspaces have. */
+/** `NavRow`s, with one highlight shared between the current row and the one pointed at, as the workspaces have. */
 const NavRows = ({ children }: { children: ReactNode }) => {
   const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay('[data-nav-row]')
   return (
-    <footer ref={listRef} className="relative isolate mt-0.5 -mb-1.5 flex flex-col gap-0">
+    <div ref={listRef} className="relative isolate flex shrink-0 flex-col gap-0">
       <div ref={underlayRef} aria-hidden="true" className={navUnderlay} />
       <div ref={hoverUnderlayRef} aria-hidden="true" className={navUnderlay} />
       {children}
-    </footer>
+    </div>
   )
 }
 
-/** The sidebar: the logo and the global buttons, the workspaces, and the user and connections. */
+/**
+ * The sidebar: the logo and the global buttons, the workspaces, and the user and connections. The
+ * user's own button is the way to the settings, and out of them again.
+ */
 export const Sidebar = ({
   user,
   workspaces,
@@ -106,6 +116,7 @@ export const Sidebar = ({
   library,
   workspacesPage,
   connectionsPage,
+  settingsPage,
   collapsed = false,
   layout = 'rows',
 }: SidebarProps) => {
@@ -131,7 +142,15 @@ export const Sidebar = ({
     />
   )
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" />
-  const account = <Button icon={<Avatar name={user.name} src={user.avatarUrl} />} aria-label="Account" />
+  const account = (
+    <Button
+      icon={<Avatar name={user.name} src={user.avatarUrl} />}
+      aria-label="Settings"
+      aria-current={settingsPage?.current ? 'page' : undefined}
+      onClick={settingsPage?.onOpen}
+      className="aria-[current=page]:bg-kumo-tint"
+    />
+  )
   const nav = (
     <WorkspaceNav
       key={collapsed ? 'rail' : 'list'}
@@ -184,12 +203,20 @@ export const Sidebar = ({
           )}
         </header>
         {nav}
-        <NavRows>
-          <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
-          <NavRow icon={<CirclesFourIcon />} label="Library" current={library?.current} onClick={library?.onOpen} />
-          <NavRow icon={<PuzzlePieceIcon />} label="Connections" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
-          <NavRow icon={<Avatar name={user.name} src={user.avatarUrl} />} label={user.name} aria-label={`Account, ${user.name}`} />
-        </NavRows>
+        <footer className="mt-0.5 -mb-1.5">
+          <NavRows>
+            <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
+            <NavRow icon={<CirclesFourIcon />} label="Library" current={library?.current} onClick={library?.onOpen} />
+            <NavRow icon={<PuzzlePieceIcon />} label="Connections" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
+            <NavRow
+              icon={<Avatar name={user.name} src={user.avatarUrl} />}
+              label={user.name}
+              aria-label={`Settings, ${user.name}`}
+              current={settingsPage?.current}
+              onClick={settingsPage?.onOpen}
+            />
+          </NavRows>
+        </footer>
       </div>
     )
   }

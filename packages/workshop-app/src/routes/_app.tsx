@@ -6,6 +6,7 @@ import { lastShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
+import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
@@ -16,6 +17,8 @@ import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/settingsSections'
+import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -50,6 +53,7 @@ const absolute = (href: string) => new URL(href, window.location.origin).href
  */
 const AppFrame = () => {
   const { user } = useApi()
+  const avatarUrl = useOwnAvatar()
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
@@ -70,6 +74,7 @@ const AppFrame = () => {
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
+  const settingsPage = useMatch({ from: '/_app/settings', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
@@ -190,9 +195,32 @@ const AppFrame = () => {
         ? 'No workspaces yet.'
         : undefined
 
+  // The user's own button opens the settings, and leaves them again: back to where they were
+  // opened from, or home when they were come to some other way.
+  const toggleSettings = () => {
+    leaveSidebar()
+    if (!settingsPage) return void navigate({ to: '/settings', state: { settingsOpenedHere: true } })
+    if (router.state.location.state.settingsOpenedHere) return router.history.back()
+    void navigate({ to: '/' })
+  }
+  // Beside the settings, their parts take the sidebar's place. Not on a narrow screen, where the
+  // sidebar is beneath the page and the parts are the page itself.
+  const settingsSidebar = (collapsed: boolean) => (
+    <SettingsSidebar
+      groups={settingsNavGroups((section) => router.buildLocation({ to: '/settings', search: { section } }).href)}
+      current={settingsPage?.search.section ?? FIRST_SECTION}
+      // In place, so that going back leaves the settings rather than going through their parts.
+      onSelect={(section) => {
+        // The ids are the parts' own, which the block knows only as strings.
+        if (isSettingsSection(section)) void navigate({ to: '/settings', search: { section }, replace: true, state: true })
+      }}
+      onClose={toggleSettings}
+      collapsed={collapsed}
+    />
+  )
   const sidebar = (collapsed: boolean) => (
     <Sidebar
-      user={{ name: user.name }}
+      user={{ name: user.name, avatarUrl }}
       workspaces={workspaces}
       selectedWorkspaceId={workspaceId}
       // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
@@ -227,6 +255,7 @@ const AppFrame = () => {
           void navigate({ to: '/connections' })
         },
       }}
+      settingsPage={{ current: settingsPage !== undefined, onOpen: toggleSettings }}
       collapsed={collapsed}
     />
   )
@@ -257,7 +286,8 @@ const AppFrame = () => {
           onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
           // On the pages the sidebar goes to. Those further in have their way up already, such as
           // a chat's workspace crumb, or an item's own back button.
-          button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage].some((match) => match !== undefined),
+          // The settings' list of parts is one of them; a part has its way back to the list.
+          button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage, settingsPage?.search.section === undefined ? settingsPage : undefined].some((match) => match !== undefined),
         }}
         status={status}
         aside={pageItem ? undefined : asideElement}
@@ -270,7 +300,7 @@ const AppFrame = () => {
 
   return (
     <AppShell
-      sidebar={sidebar}
+      sidebar={settingsPage ? settingsSidebar : sidebar}
       status={status}
       initialSidebar={prefs.sidebar}
       onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}

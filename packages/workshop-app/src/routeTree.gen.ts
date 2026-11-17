@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppConnectionsRouteImport } from './routes/_app/connections'
+import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppWorkspacesRouteImport } from './routes/_app/workspaces'
 import { Route as ConnectHandoffRouteImport } from './routes/connect.handoff'
 import { Route as MockIndexRouteImport } from './routes/mock.index'
@@ -42,6 +43,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
 const AppConnectionsRoute = AppConnectionsRouteImport.update({
   id: '/connections',
   path: '/connections',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
 const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
@@ -108,6 +114,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
   '/connections': typeof AppConnectionsRoute
+  '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
   '/mock/$scenario': typeof MockScenarioRoute
@@ -123,6 +130,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
   '/connections': typeof AppConnectionsRoute
+  '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
   '/mock/$scenario': typeof MockScenarioRoute
@@ -141,6 +149,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
   '/_app/connections': typeof AppConnectionsRoute
+  '/_app/settings': typeof AppSettingsRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
   '/mock/$scenario': typeof MockScenarioRoute
@@ -160,6 +169,7 @@ export interface FileRouteTypes {
     | '/'
     | '/gallery'
     | '/connections'
+    | '/settings'
     | '/workspaces'
     | '/connect/handoff'
     | '/mock/$scenario'
@@ -175,6 +185,7 @@ export interface FileRouteTypes {
   to:
     | '/gallery'
     | '/connections'
+    | '/settings'
     | '/workspaces'
     | '/connect/handoff'
     | '/mock/$scenario'
@@ -192,6 +203,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/gallery'
     | '/_app/connections'
+    | '/_app/settings'
     | '/_app/workspaces'
     | '/connect/handoff'
     | '/mock/$scenario'
@@ -242,6 +254,13 @@ declare module '@tanstack/react-router' {
       path: '/connections'
       fullPath: '/connections'
       preLoaderRoute: typeof AppConnectionsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/workspaces': {
@@ -326,6 +345,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppConnectionsRoute: typeof AppConnectionsRoute
+  AppSettingsRoute: typeof AppSettingsRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppIndexRoute: typeof AppIndexRoute
   AppAppItemIdRoute: typeof AppAppItemIdRoute
@@ -339,6 +359,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppConnectionsRoute: AppConnectionsRoute,
+  AppSettingsRoute: AppSettingsRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,
   AppIndexRoute: AppIndexRoute,
   AppAppItemIdRoute: AppAppItemIdRoute,

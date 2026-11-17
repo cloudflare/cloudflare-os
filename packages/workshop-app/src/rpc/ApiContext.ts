@@ -10,6 +10,11 @@ export type ApiSession = {
   api: RpcStub<AuthenticatedApi>
   user: AiChatAuthorInfo
   /**
+   * The user changed something of their own that `user` says, such as their name, which the
+   * server now has: `user` is this from here on, for everything that shows it.
+   */
+  userChanged: (user: AiChatAuthorInfo) => void
+  /**
    * The connection was lost and is being made again. Meanwhile `api` is the lost connection's,
    * whose calls fail, and everything is left as it is until it is replaced.
    */

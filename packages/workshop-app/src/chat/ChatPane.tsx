@@ -18,6 +18,7 @@ import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
+import { useOpenNewOutputs } from './useOpenNewOutputs'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -67,6 +68,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
+  useOpenNewOutputs(chat.status === 'ready' ? chat : undefined, onOpenOutput)
 
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)

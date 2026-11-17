@@ -23,6 +23,7 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
   const implemented: Record<string | symbol, unknown> = {
     openWorkspace: () => overseer.open(),
     listModels: async () => [AGENT],
+    getPreferredModel: async () => null,
     listWorkspaces: async () => [workspace],
     // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.
     listOutputs: async () => ({ outputs: [], catchingUp: false }),
@@ -38,5 +39,5 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
   })
   // The real API is an RPC stub whose every call is a pipelined promise; the fake answers with
   // plain objects, which is all the app awaits.
-  return { session: { api: api as unknown as ApiSession['api'], user: VIEWER, reconnecting: false }, overseer }
+  return { session: { api: api as unknown as ApiSession['api'], user: VIEWER, userChanged: () => {}, reconnecting: false }, overseer }
 }

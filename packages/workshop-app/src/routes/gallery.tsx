@@ -35,6 +35,7 @@ import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
+import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
@@ -215,7 +216,7 @@ const DropdownMenuPlayground = () => {
 
 function Gallery() {
   const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
-  const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces'>()
+  const [sidebarPage, setSidebarPage] = useState<'library' | 'workspaces' | 'connections' | 'settings'>()
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
@@ -339,6 +340,7 @@ function Gallery() {
       <ListViewPreview />
       <LibraryListPreview />
       <ConnectionsPreview />
+      <SettingsPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
@@ -356,6 +358,9 @@ function Gallery() {
                 connections={[0, 1].map((logo) => <span key={logo} className="size-5 rounded-full bg-kumo-fill" />)}
                 library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library') }}
                 workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
+                connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
+                // The user's own button opens the settings and leaves them again.
+                settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage((current) => (current === 'settings' ? undefined : 'settings')) }}
                 collapsed={collapsed}
                 layout={layout}
               />

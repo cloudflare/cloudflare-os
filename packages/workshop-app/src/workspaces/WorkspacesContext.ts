@@ -16,6 +16,11 @@ export type WorkspacesContextValue = {
   setPinned: (id: string, pinned: boolean) => Promise<void>
   /** Renames a workspace, shown at once and undone if the server refuses. */
   rename: (id: string, title: string) => Promise<void>
+  /**
+   * Mutes a workspace's notifications until it is unmuted, or unmutes it, shown at once and
+   * undone if the server refuses.
+   */
+  setMuted: (id: string, muted: boolean) => Promise<void>
   /** Who has access to each workspace, as far as the workspaces have been asked. */
   memberships: WorkspaceMemberships
   /** How each workspace's icon is drawn, which is this device's to say. */
@@ -41,6 +46,12 @@ export const useSetWorkspacePinned = (): WorkspacesContextValue['setPinned'] => 
 
 /** Renames a workspace (`setTitle`, to the server). Rejects with why, once it is undone. */
 export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWorkspacesContext().rename
+
+/**
+ * Mutes or unmutes a workspace's notifications (`setWorkspaceNotificationMute`, to the server):
+ * its finished tasks then notify no tab or device. Rejects with why, once it is undone.
+ */
+export const useSetWorkspaceMuted = (): WorkspacesContextValue['setMuted'] => useWorkspacesContext().setMuted
 
 /** What is known of who has access to each workspace, kept from one page to the next (see `useWorkspaceMemberships`). */
 export const useMembershipsStore = (): WorkspaceMemberships => useWorkspacesContext().memberships

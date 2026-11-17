@@ -66,6 +66,16 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
       overseer[Symbol.dispose]()
     }
   }
+  const setMuted = async (id: string, muted: boolean) => {
+    const before = state.status === 'ready' ? state.workspaces.find((workspace) => workspace.id === id)?.notificationMute : undefined
+    mark(id, { notificationMute: muted ? { indefinite: true } : undefined })
+    try {
+      await api.setWorkspaceNotificationMute(id, muted ? { indefinite: true } : null)
+    } catch (error) {
+      mark(id, { notificationMute: before })
+      throw error
+    }
+  }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, memberships, looks }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setMuted, memberships, looks }}>{children}</WorkspacesContext>
 }
