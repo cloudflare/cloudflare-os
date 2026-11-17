@@ -28,6 +28,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { LibraryListPreview } from '@/gallery/LibraryListPreview'
@@ -354,6 +355,7 @@ function Gallery() {
       <TemplateStorePreview />
       <ConnectionsPreview />
       <SetUpConnectionPreview />
+      <GadgetSettingsPreview />
       <SettingsPreview />
       <HeaderPreview />
       <ShellPreview />

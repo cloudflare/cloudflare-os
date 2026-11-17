@@ -6,7 +6,7 @@ import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { asideItemIcon } from './asideItemIcon'
-import type { AsideFile, AsideItem } from './asideItems'
+import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
@@ -23,6 +23,11 @@ export type AsidePaneProps = {
   onFullScreenChange: (on: boolean) => void
   /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
   narrow?: boolean
+  /**
+   * Goes to a gadget's settings, or its code (`tab`), with the title it has now. Left out where
+   * the viewer may not change it, which leaves them out of its menu.
+   */
+  onOpenSettings?: (output: AsideOutput, title: string, tab?: 'code') => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -51,7 +56,7 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange, narrow } = props
+  const { item, link, onFullScreenChange, narrow, onOpenSettings } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
@@ -78,12 +83,16 @@ export const AsidePane = (props: AsidePaneProps) => {
   ) : (
     <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
   )
+  // A gadget's, which a worktree, with no settings of its own, is not.
+  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+    onOpenSettings: gadget && onOpenSettings && (() => onOpenSettings(gadget, title)),
+    onViewCode: gadget && onOpenSettings && (() => onOpenSettings(gadget, title, 'code')),
     narrow,
   }
 
