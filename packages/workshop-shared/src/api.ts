@@ -26,7 +26,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { BytesRef, CodeChange } from "./code-change.js";
-import type { GitOid } from "./gatekeeper.js";
+import type { GitObjectType, GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -5622,9 +5622,127 @@ export const MAX_READ_FILES_PER_CALL = 64;
  * requested paths from its response (the client re-requests them). Keeps one response well
  * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
  * file is always returned whole, however large, so every call makes progress. A `blob` entry
- * carries no content, so it does not count toward this budget.
+ * carries no content, so it does not count toward this budget. Overseer.getPushReview() ends a
+ * page on the same budget, counting what each entry holds and what was read to describe it.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
+
+/** The most entries one Overseer.getPushReview() call returns. */
+export const PUSH_REVIEW_PAGE_SIZE = 100;
+
+/** A tree entry as a push review names it: what it is (see TreeNode), and its object. */
+export type PushReviewTreeEntry = {
+  /** The entry's git mode, in TreeNode's vocabulary; `executable` is a file with mode 100755. */
+  kind: "file" | "executable" | "dir" | "symlink" | "submodule";
+
+  /** The oid the entry names: a blob, a tree for `dir`, a foreign commit for `submodule`. */
+  oid: GitOid;
+};
+
+/**
+ * What one parent of a commit has at a path a push review lists: its entry; `none` when the
+ * parent has nothing there; `unknown` when the parent, or its tree there, is not in the
+ * workspace's git store, so the review cannot say.
+ */
+export type PushReviewParentEntry = PushReviewTreeEntry | { kind: "none" } | { kind: "unknown" };
+
+/**
+ * What a push review says of an object the push sends at a path.
+ *
+ * `text`: a blob of at most MAX_BUFFERED_BLOB_SIZE (see `@gadgets/workshop-shared/gatekeeper`)
+ * that is strict UTF-8 with no NUL. Overseer.readFilesAtCommit() returns it as `text` where
+ * the entry is a file; where the entry is a symbolic link the blob is the link's target, and
+ * that call returns `unreadable` with the target in its message.
+ * `binary`: a file within that size that is not text. `large`: a file over that size, which was
+ * not checked. `dir`: a directory in the form git writes, every name valid UTF-8, a single
+ * path segment and present once; the entries of it that the commit changes follow as rows of
+ * their own. `unlistable`: a directory that is not in that form, so its entries are not listed:
+ * a path into it would not name one entry. `mistyped`: the object is not what the entry says
+ * (a `dir` entry or a commit's tree that is not a tree, a file entry that is not a blob);
+ * `type` is what it is. `absent`: not in the workspace's git store yet, so neither its size
+ * nor what it refers to is known.
+ */
+export type PushReviewSent =
+  | { kind: "text" | "binary" | "large" | "dir" | "unlistable"; size: number }
+  | { kind: "mistyped"; type: GitObjectType; size: number }
+  | { kind: "absent" };
+
+/**
+ * One entry of a push review (see Overseer.getPushReview()).
+ *
+ * `commit`: a commit the push sends. `text` is the commit object's payload exactly as stored,
+ * strictly decoded: every header line as written (`tree`, each `parent`, `author` and
+ * `committer` with name, email, time and zone, a `gpgsig` with its continuation lines, any
+ * other header), a blank line, then the message. Nothing is normalized or dropped. `text` is
+ * absent when the payload is not strict UTF-8, holds a NUL or is over MAX_BUFFERED_BLOB_SIZE:
+ * the commit is unreadable, and `size` says how large it is. `size` is absent too when the
+ * store does not hold the commit, and `parents` is then empty.
+ *
+ * `path`: one path of the commit named by `commit` whose entry differs from the entry every
+ * parent has there: added, changed in content or in mode alone, or deleted (`entry` absent).
+ * The commit's root directory is the path `""`. `parents` has one element per parent of the
+ * commit, in the commit's own order, so a merge says what each side had. `sent` is present
+ * when the push sends the entry's object, and says what it is; absent, the remote already has
+ * the object (or there is none: a deletion, a submodule), and the push sends only the entry.
+ * A directory the push does not send is one row, whatever is under it.
+ *
+ * Every tree and blob the push sends is the `entry.oid` of a `path` row with `sent`, or else
+ * an `object` entry. Where every directory from the root down to a row is `dir`,
+ * readFilesAtCommit(commit, [path]) reads that row's entry and no other: for a file whose
+ * `sent` is `text` it returns the content sent, and for a symbolic link the target sent, in
+ * the message of an `unreadable` result. The same call on a parent gives the content to
+ * compare with.
+ *
+ * `object`: an object the push sends that no `commit` or `path` entry accounts for, so that
+ * nothing sent is missing from the review. `size` is absent when the store does not hold it.
+ */
+export type PushReviewEntry =
+  | { kind: "commit"; oid: GitOid; parents: GitOid[]; size?: number; text?: string }
+  | {
+      kind: "path";
+      commit: GitOid;
+      path: string;
+      entry?: PushReviewTreeEntry;
+      parents: PushReviewParentEntry[];
+      sent?: PushReviewSent;
+    }
+  | { kind: "object"; oid: GitOid; type: GitObjectType; size?: number };
+
+/** One page of a push review, as Overseer.getPushReview() returns it. */
+export type PushReview = {
+  /**
+   * The entries, in order: each commit reachable from the pushed heads, parents before
+   * children, followed by its paths, a directory before what is under it; then, on the last
+   * page, the objects no commit or path accounts for.
+   */
+  entries: PushReviewEntry[];
+
+  /**
+   * The `cursor` that returns the next page; absent on the last page. It counts entries from
+   * the start, so it holds only while the review lists the same entries. They change when the
+   * push sends other objects (`objectCount` differs from an earlier page's) and when an object
+   * the store lacked arrives, which can turn `object` entries into `path` entries and leave
+   * the count as it was. A reader that holds the last page therefore checks that no entry
+   * came twice and that its `commit` entries, its `path` entries with `sent` and its `object`
+   * entries name exactly `objectCount` distinct objects, and reads the review again from the
+   * start when they do not. The review of a push queued from a workspace that holds restricted
+   * data lists the same entries for as long as the push is pending.
+   */
+  next?: number;
+
+  /**
+   * How many objects the push sends in all: commits, trees and blobs. Zero when the remote
+   * already has the pushed commits: the push then only moves the branch.
+   */
+  objectCount: number;
+
+  /**
+   * Earlier pending actions of this workspace, on any connection, that send some of the same
+   * objects: this push is stacked on them. Rejecting one of them takes nothing out of this
+   * push, which still sends those objects.
+   */
+  stackedOn: number[];
+};
 
 /**
  * Specifies the state of an action in the action log:
@@ -6111,6 +6229,23 @@ export interface Overseer extends RpcTarget {
    * be approved in the future.
    */
   rejectAction(id: number): Promise<void>;
+
+  /**
+   * Read what a pending push will send: the action `actionId` must be pending and name pushed
+   * commits (ActionDescription.pushedCommits), else the call throws. The answer is built from
+   * the objects the workspace marked for the push when it was queued, which are exactly what the
+   * gatekeeper sends when the action is approved, not from a diff: see PushReviewEntry.
+   *
+   * At most PUSH_REVIEW_PAGE_SIZE entries per call, and fewer once what they hold and what
+   * was read to describe them passes READ_FILES_RESPONSE_BUDGET (the first entry of a page is
+   * always returned); pass the previous page's `next` as `cursor` for the following page. File
+   * content is not included: read it with readFilesAtCommit(), or readBlob() for an object
+   * listed by id. The read never pulls from a connection.
+   *
+   * This is how an approver reads a push before approving it. approveAction() does not check
+   * that it was read.
+   */
+  getPushReview(actionId: number, cursor?: number): Promise<PushReview>;
 
   /**
    * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.

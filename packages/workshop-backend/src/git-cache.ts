@@ -74,6 +74,7 @@
 // - `verifyPushAncestry()`/`markPushClosure()` implement `ActionDescription.pushedCommits`
 //   authorization at the `submitAction` chokepoint, and the mark lifecycle helpers convert or
 //   clear the marks when the action applies, is rejected, or its gatekeeper is deleted.
+//   `readPushReview()` reads the review of a queued push from the same marks.
 //
 // Trust model note (do not document the view as a confinement boundary): oids are capabilities
 // and gatekeepers are trusted with the objects whose oids they know. The scoped read view and
@@ -91,12 +92,17 @@ import {
   type GitPullHints,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
+  PUSH_REVIEW_PAGE_SIZE,
   READ_FILES_RESPONSE_BUDGET,
   type AdminFileContent,
   type AiChatAuthorInfo,
   type CommitIdentity,
   type CommitInfo,
   type FileAtCommit,
+  type PushReview,
+  type PushReviewEntry,
+  type PushReviewParentEntry,
+  type PushReviewSent,
   type TreeNode,
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
@@ -115,6 +121,7 @@ import {
   encodeGitTree,
   encodeLooseObject,
   gitObjectOid,
+  isCanonicalTree,
   isReservedTreeEntryName,
   parseGitCommit,
   parseGitCommitRefs,
@@ -126,6 +133,7 @@ import {
   validateGitOid,
   type GitCommitFields,
   type GitCommitHeader,
+  type GitCommitRefs,
   type GitTreeEntry,
   type PackEntrySource,
   type PackableObject,
@@ -154,6 +162,9 @@ const logger = createWorkshopLogger("workshop.git-cache");
  * this shape.
  */
 export const EAGER_BLOB_LIMIT = 64 * 1024;
+
+// Roughly what an oid and its field names cost in a push review's response.
+const PUSH_REVIEW_ENTRY_COST = 64;
 
 // =======================================================================================
 // Storage
@@ -1885,6 +1896,215 @@ export class WorkspaceGitCache {
     return buildPackStream(marks.length, objects());
   }
 
+  /**
+   * One page of what a queued push will send (the read behind `Overseer.getPushReview`; see
+   * PushReviewEntry for the contract), built from the action's pending-push marks and the
+   * objects this store holds: never pulls.
+   */
+  readPushReview(actionId: number, heads: GitOid[], cursor = 0): PushReview {
+    let marks = this.#recordsMarkedFor(actionId);
+    let earlier = marks.flatMap(mark => mark.pendingPush.map(push => push.actionId))
+        .filter(id => id < actionId);
+    let review: PushReview = {
+      entries: [],
+      objectCount: marks.length,
+      stackedOn: [...new Set(earlier)].toSorted((a, b) => a - b),
+    };
+    // Every call runs the walk again from its start, since nothing is kept between calls. For
+    // the entries it skips, that parses their commits and directories again and looks up each
+    // sent file's size, and decodes none of their text: only the page returned is settled. The
+    // marked set is what buildPackForAction lists whole, so a push that can be sent can be
+    // walked.
+    let index = 0, bytes = 0;
+    for (let entry of this.#pushReviewEntries(actionId, heads)) {
+      if (index++ < cursor) continue;
+      // Checked before each entry, so the first of a page is always returned.
+      if (review.entries.length === PUSH_REVIEW_PAGE_SIZE || bytes > READ_FILES_RESPONSE_BUDGET) {
+        review.next = cursor + review.entries.length;
+        break;
+      }
+      entry = this.#settlePushReviewEntry(entry);
+      // What the entry holds and what settling it read, so that neither the size of a page nor
+      // the work of a call is the pusher's to choose.
+      bytes += PUSH_REVIEW_ENTRY_COST;
+      if (entry.kind === "commit") {
+        bytes += PUSH_REVIEW_ENTRY_COST * entry.parents.length;
+        if (entry.size !== undefined && entry.size <= MAX_BUFFERED_BLOB_SIZE) bytes += entry.size;
+      } else if (entry.kind === "path") {
+        bytes += PUSH_REVIEW_ENTRY_COST * entry.parents.length +
+            new TextEncoder().encode(entry.path).byteLength;
+        if (entry.sent?.kind === "text" || entry.sent?.kind === "binary") bytes += entry.sent.size;
+      }
+      review.entries.push(entry);
+    }
+    return review;
+  }
+
+  // Every entry of the review, in order, lazily, without reading any file: a commit row has no
+  // `text` yet, a sent file within MAX_BUFFERED_BLOB_SIZE is provisionally `text`, and an
+  // `object` row has the recorded type and no size. Callers settle the entries they use.
+  //
+  // What the push sends is its marked objects, so the walk lists exactly those: the marked
+  // commits reachable from the heads through marked parents, under each the entries that
+  // differ from every parent's, and then whatever marked object those rows did not name. It
+  // keeps its own stacks, as the marking walk does, so that neither a long history nor a deep
+  // tree can overflow the call stack.
+  *#pushReviewEntries(actionId: number, heads: GitOid[]): Generator<PushReviewEntry> {
+    let marks = this.#recordsMarkedFor(actionId);
+    let marked = new Set(marks.map(mark => mark.oid));
+    let accounted = new Set<GitOid>();
+
+    // A held tree's entries, or undefined when the store does not hold the object, it is not
+    // a tree, or it does not parse (parseGitTree refuses a name that is not UTF-8).
+    let listing = (oid: GitOid, canonical: boolean): GitTreeEntry[] | undefined => {
+      let local = this.#readLocalShallow(oid);
+      if (local?.type !== "tree") return undefined;
+      try {
+        let entries = parseGitTree(local.payload, oid);
+        return !canonical || isCanonicalTree(entries, local.payload) ? entries : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    // A parent's directory by name: the first entry of each name, the one readFilesAtCommit
+    // resolves. Undefined when the parent's entries there are not known, null when it has no
+    // directory there. Parents that have the same directory share one listing, through `known`.
+    // A name that is not one path segment (see splitTreePath) is left out: no path reaches
+    // it, so it is the parent's entry at no path, and its row would carry another entry's path.
+    type Directory = Map<string, GitTreeEntry> | null | undefined;
+    let directory = (entry: GitTreeEntry | null | undefined, known: Map<GitOid, Directory>)
+        : Directory => {
+      if (entry === undefined) return undefined;
+      if (entry === null || entry.mode !== "40000") return null;
+      if (!known.has(entry.oid)) {
+        let entries = listing(entry.oid, false);
+        let byName = entries && new Map<string, GitTreeEntry>();
+        for (let child of entries ?? []) {
+          if (!byName!.has(child.name) && !/^\.{0,2}$|\//.test(child.name)) {
+            byName!.set(child.name, child);
+          }
+        }
+        known.set(entry.oid, byName);
+      }
+      return known.get(entry.oid);
+    };
+    let entryAt = (parent: Directory, name: string) =>
+        parent === undefined ? undefined : parent?.get(name) ?? null;
+
+    // Commits, depth first from the heads: a commit comes off the stack once to be read and
+    // once more, after its marked parents, to be listed.
+    let seen = new Set<GitOid>();
+    let commits: { oid: GitOid, read?: GitCommitRefs & { size: number } }[] =
+        heads.map(oid => ({ oid })).toReversed();
+    while (commits.length > 0) {
+      let { oid: commit, read } = commits.pop()!;
+      if (read === undefined) {
+        if (!marked.has(commit) || seen.has(commit)) continue;
+        seen.add(commit);
+        let local = this.#readLocalShallow(commit);
+        if (local === undefined) {
+          accounted.add(commit);
+          yield { kind: "commit", oid: commit, parents: [] };
+        } else if (local.type === "commit") {
+          let refs = parseGitCommitRefs(local.payload, commit);
+          commits.push({ oid: commit, read: { ...refs, size: local.payload.byteLength } });
+          for (let parent of refs.parents.toReversed()) commits.push({ oid: parent });
+        }
+        // A held object that is not a commit is left for the `object` rows.
+        continue;
+      }
+      accounted.add(commit);
+      yield { kind: "commit", oid: commit, parents: read.parents, size: read.size };
+
+      // The commit's paths. Each frame is a directory the push sends, part way through its
+      // entries, beside the same directory of each parent. The first holds the root alone.
+      let frames: { path: string, entries: GitTreeEntry[], next: number, parents: Directory[] }[] =
+          [{
+            path: "",
+            entries: [rootTreeEntry(read.tree)],
+            next: 0,
+            parents: read.parents.map(parent => {
+              let local = this.#readLocalShallow(parent);
+              return local?.type !== "commit" ? undefined : new Map(
+                  [["", rootTreeEntry(parseGitCommitRefs(local.payload, parent).tree)]]);
+            }),
+          }];
+      while (frames.length > 0) {
+        let frame = frames.at(-1)!;
+        if (frame.next === frame.entries.length) {
+          // What a parent has here and this directory has not, unless some parent has
+          // nothing there either: the path is then unchanged from that parent.
+          let kept = new Set(frame.entries.map(entry => entry.name));
+          let names = new Set(frame.parents.flatMap(parent => [...parent?.keys() ?? []]));
+          for (let name of [...names].toSorted()) {
+            if (kept.has(name)) continue;
+            let parents = frame.parents.map(parent => entryAt(parent, name));
+            if (parents.includes(null)) continue;
+            yield { kind: "path", commit, path: joinTreePath(frame.path, name),
+                    parents: parents.map(pushReviewParentEntry) };
+          }
+          frames.pop();
+          continue;
+        }
+        let entry = frame.entries[frame.next++];
+        let path = joinTreePath(frame.path, entry.name);
+        let parents = frame.parents.map(parent => entryAt(parent, entry.name));
+        // Unchanged from some parent, whatever it is: it is listed where it first differs
+        // from every parent, and an object sent under it that no such row names is an
+        // `object` row.
+        if (parents.some(parent => parent?.mode === entry.mode && parent.oid === entry.oid)) {
+          continue;
+        }
+        // Whether the push sends the entry's object, and what the store holds for it, which
+        // is not always what the entry's mode says. A submodule's commit is never sent.
+        let sent: PushReviewSent | undefined, entries: GitTreeEntry[] | undefined;
+        if (entry.mode !== "160000" && marked.has(entry.oid)) {
+          accounted.add(entry.oid);
+          let held = this.#statLocal(entry.oid);
+          if (held === undefined) {
+            sent = { kind: "absent" };
+          } else if (held.type !== treeEntryObjectType(entry.mode)) {
+            sent = { kind: "mistyped", ...held };
+          } else if (held.type === "tree") {
+            entries = listing(entry.oid, true);
+            sent = { kind: entries === undefined ? "unlistable" : "dir", size: held.size };
+          } else {
+            sent = { kind: held.size > MAX_BUFFERED_BLOB_SIZE ? "large" : "text", size: held.size };
+          }
+        }
+        yield { kind: "path", commit, path, entry: { kind: MODE_KINDS[entry.mode], oid: entry.oid },
+                parents: parents.map(pushReviewParentEntry), ...(sent && { sent }) };
+        // Only a directory the push sends, in the form where a path names one entry, is opened.
+        if (entries !== undefined) {
+          let known = new Map<GitOid, Directory>();
+          frames.push({
+            path, entries, next: 0, parents: parents.map(parent => directory(parent, known)),
+          });
+        }
+      }
+    }
+
+    for (let mark of marks.toSorted((a, b) => a.oid < b.oid ? -1 : 1)) {
+      if (!accounted.has(mark.oid)) yield { kind: "object", oid: mark.oid, type: mark.type };
+    }
+  }
+
+  // Reads what the walk left unread for one entry: a commit's text, whether a provisionally
+  // `text` file really is (else `binary`), an `object` row's held type and size.
+  #settlePushReviewEntry(entry: PushReviewEntry): PushReviewEntry {
+    if (entry.kind === "commit") {
+      if (entry.size === undefined || entry.size > MAX_BUFFERED_BLOB_SIZE) return entry;
+      let text = blobText(this.#heldPayload(entry.oid, "commit")!);
+      return text === undefined ? entry : { ...entry, text };
+    }
+    if (entry.kind === "path") {
+      if (entry.entry === undefined || entry.sent?.kind !== "text") return entry;
+      return blobText(this.#heldPayload(entry.entry.oid, "blob")!) === undefined
+          ? { ...entry, sent: { kind: "binary", size: entry.sent.size } } : entry;
+    }
+    return { ...entry, ...this.#statLocal(entry.oid) };
+  }
+
   // -------------------------------------------------------------------------------------
   // Metadata plumbing
 
@@ -2086,6 +2306,24 @@ function symlinkMessage(path: string, target: Uint8Array): string {
 
 function submoduleMessage(path: string, target: GitOid): string {
   return `${path} is a submodule (gitlink) pointing at commit ${target}`;
+}
+
+// The path of an entry `name` of the directory at `path`, the root being "".
+function joinTreePath(path: string, name: string): string {
+  return path === "" ? name : `${path}/${name}`;
+}
+
+// A commit's root directory as a tree entry, so that a push review compares and lists it like
+// any other.
+function rootTreeEntry(tree: GitOid): GitTreeEntry {
+  return { mode: "40000", name: "", oid: tree };
+}
+
+// What a parent has at a path, as a push review says it: its entry, null where it has none,
+// undefined where the store cannot tell.
+function pushReviewParentEntry(entry: GitTreeEntry | null | undefined): PushReviewParentEntry {
+  if (entry === undefined) return { kind: "unknown" };
+  return entry === null ? { kind: "none" } : { kind: MODE_KINDS[entry.mode], oid: entry.oid };
 }
 
 // A Git blob payload as strict text, or undefined if it is not text.
