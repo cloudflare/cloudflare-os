@@ -145,6 +145,44 @@ class UnreadUpdates extends RpcTarget implements UnreadStateSubscriber {
 }
 
 describe("one-way chat fanout enrollment", () => {
+  it.each([false, true].flatMap(queued => [0, 1].map(sequence => ({queued, sequence}))))(
+      "skips delayed pre-enrollment approvals while retaining accepted delivery intent (queued: $queued, sequence: $sequence)", async ({queued, sequence}) => {
+    const fixture = await setup(undefined, false, false);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockImplementation(async () => {
+      if (queued) throw new Error("Device offline");
+    });
+    const accepted = {...event(0), kind: "permissionRequested" as const};
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "First approval");
+      impl.storage.chatNotifications.put({...accepted, chatId: 1, userId: fixture.user.id.toString()});
+      await impl.deliverDirtyChats();
+    });
+    if (queued) await vi.waitFor(async () => expect(await outbox(fixture)).toMatchObject([{failedSubscriptions: []}]));
+    else await drained(fixture);
+    let delayed: ChatMessageProgress | undefined;
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptDelivery(impl, async (_user, ...args) => {
+        delayed = args[2] ?? undefined;
+        throw new Error("Handoff timed out");
+      });
+      try {
+        if (sequence) write(impl, sequence, "Delayed approval");
+        impl.storage.chatNotifications.put({...event(sequence), kind: "permissionRequested", chatId: 1, userId: fixture.user.id.toString()});
+        await expect(impl.deliverDirtyChats()).rejects.toThrow("Handoff timed out");
+      } finally { restore(); }
+      impl.enrollChatParticipant(1, fixture.profile.id);
+      await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: sequence, unreadCount: sequence + 1, fanoutEnrolled: true});
+    await evictDurableObject(fixture.user);
+    await fixture.user.messageArrived(fixture.workspaceId, 1, delayed!);
+    expect((await outbox(fixture)).map(event => event.id)).toEqual(queued ? [accepted.id] : []);
+    publish.mockResolvedValue();
+    if (queued) await runDurableObjectAlarm(fixture.user);
+    await drained(fixture);
+    expect(new Set(publish.mock.calls.map(([notification]) => notification.id))).toEqual(new Set([accepted.id]));
+  });
+
   it.each([false, true])("keeps approval-only cursors pending after bulk read until enrollment catches up (later messages: %s)", async laterMessages => {
     const fixture = await setup(undefined, false, false);
     using _publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();

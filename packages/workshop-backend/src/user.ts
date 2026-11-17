@@ -1109,8 +1109,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       cursor = {...cursor,
         readThroughSequence: (progress.firstMessageSequence ?? 0) - 1,
         readThroughVisibleSequence,
-        notifiedThroughSequence: Math.max(progress.notificationBaseline ?? -1,
-          this.#readCursors.has(key) ? cursor.notifiedThroughSequence : (progress.firstMessageSequence ?? 0) - 1)};
+        notifiedThroughSequence: this.#readCursors.has(key)
+          ? cursor.notifiedThroughSequence : (progress.firstMessageSequence ?? 0) - 1};
+    }
+    if (progress.notificationBaseline !== undefined && progress.notificationBaseline >= cursor.notifiedThroughSequence) {
+      cursor = {...cursor, notifiedThroughSequence: progress.notificationBaseline, notifiedEventIds: undefined};
     }
     let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
     // Consume only a single own message when already caught up. Gaps/coalesced arrivals keep
