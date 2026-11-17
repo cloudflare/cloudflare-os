@@ -98,6 +98,8 @@ import {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   MAX_PUSH_REVIEW_CURSOR,
+  MAX_PUSH_REVIEW_WALK_BYTES,
+  MAX_PUSH_REVIEW_WALK_OBJECTS,
   PUSH_REVIEW_PAGE_SIZE,
   READ_FILES_RESPONSE_BUDGET,
   type AdminFileContent,
@@ -171,6 +173,10 @@ export const EAGER_BLOB_LIMIT = 64 * 1024;
 
 // Roughly what an oid and its field names cost in a push review's response.
 const PUSH_REVIEW_ENTRY_COST = 64;
+
+// Thrown inside the walk of a push review that has read as much as one call may (see
+// MAX_PUSH_REVIEW_WALK_OBJECTS), and caught where the walk is started.
+class PushReviewWalkSpent extends Error {}
 
 // =======================================================================================
 // Storage
@@ -1924,8 +1930,8 @@ export class WorkspaceGitCache {
     if (cursor > MAX_PUSH_REVIEW_CURSOR) {
       throw new Error(`A push review cannot be read past ${MAX_PUSH_REVIEW_CURSOR} entries.`);
     }
-    let index = 0, bytes = 0;
-    for (let entry of this.#pushReviewEntries(actionId, heads)) {
+    let index = 0, bytes = 0, walk: { spent?: true } = {};
+    for (let entry of this.#pushReviewEntries(actionId, heads, walk)) {
       if (index++ < cursor) continue;
       // Checked before each entry, so the first of a page is always returned.
       if (review.entries.length === PUSH_REVIEW_PAGE_SIZE || bytes > READ_FILES_RESPONSE_BUDGET) {
@@ -1946,6 +1952,7 @@ export class WorkspaceGitCache {
       }
       review.entries.push(entry);
     }
+    if (walk.spent) review.truncated = true;
     return review;
   }
 
@@ -1968,8 +1975,8 @@ export class WorkspaceGitCache {
     // The review's own rows, judged one at a time: what the row says as the walk left it, then
     // the bounds, and only then its text, so that nothing is read for a push over a bound.
     let commits = 0, paths = 0, text = 0, files = new Set<GitOid>();
-    let commitParents: GitOid[] = [];
-    for (let row of this.#pushReviewEntries(actionId, heads)) {
+    let commitParents: GitOid[] = [], walk: { spent?: true } = {};
+    for (let row of this.#pushReviewEntries(actionId, heads, walk)) {
       let where = "", judged = false;
       if (row.kind === "object") {
         refusePush(
@@ -2045,6 +2052,24 @@ export class WorkspaceGitCache {
         refusePush(`${where} is not UTF-8 text`);
       }
     }
+    // What the walk did not reach was not judged, and no review of the push would list it.
+    if (walk.spent) {
+      refusePush(`listing it reads more than ${MAX_PUSH_REVIEW_WALK_OBJECTS} objects, or ` +
+          `more than ${MAX_PUSH_REVIEW_WALK_BYTES} bytes of them: its commits and directories ` +
+          "and those of their parents");
+    }
+  }
+
+  // The walk of a push review (see `#walkPushReview`) under one call's budget: it ends where
+  // the walk has read as much as a call may, and `walk.spent` then says the entries are not all.
+  *#pushReviewEntries(actionId: number, heads: GitOid[], walk: { spent?: true })
+      : Generator<PushReviewEntry> {
+    try {
+      yield* this.#walkPushReview(actionId, heads);
+    } catch (err) {
+      if (!(err instanceof PushReviewWalkSpent)) throw err;
+      walk.spent = true;
+    }
   }
 
   // Every entry of the review, in order, lazily, without reading any file: a commit row has no
@@ -2056,15 +2081,30 @@ export class WorkspaceGitCache {
   // differ from every parent's, and then whatever marked object those rows did not name. It
   // keeps its own stacks, as the marking walk does, so that neither a long history nor a deep
   // tree can overflow the call stack.
-  *#pushReviewEntries(actionId: number, heads: GitOid[]): Generator<PushReviewEntry> {
+  *#walkPushReview(actionId: number, heads: GitOid[]): Generator<PushReviewEntry> {
     let marks = this.#recordsMarkedFor(actionId);
     let marked = new Set(marks.map(mark => mark.oid));
     let accounted = new Set<GitOid>();
 
+    // Every read of the store the walk makes is charged to the call: one object before the
+    // read, and the bytes it inflated as it returns, since only the read says how large an
+    // object is. What is read past the budget is not parsed. A file over CHUNK_MAX_SIZE costs
+    // no bytes: it is stored in chunks (bar a row from before chunking), and only its index
+    // row is read for its size.
+    let objects = MAX_PUSH_REVIEW_WALK_OBJECTS, bytes = MAX_PUSH_REVIEW_WALK_BYTES;
+    let charged = <T>(read: () => T, size: (held: T) => number): T => {
+      if (objects-- === 0) throw new PushReviewWalkSpent();
+      let held = read();
+      if ((bytes -= size(held)) < 0) throw new PushReviewWalkSpent();
+      return held;
+    };
+    let readHeld = (oid: GitOid) =>
+        charged(() => this.#readLocalShallow(oid), local => local?.payload?.byteLength ?? 0);
+
     // A held tree's entries, or undefined when the store does not hold the object, it is not
     // a tree, or it does not parse (parseGitTree refuses a name that is not UTF-8).
     let listing = (oid: GitOid, canonical: boolean): GitTreeEntry[] | undefined => {
-      let local = this.#readLocalShallow(oid);
+      let local = readHeld(oid);
       if (local?.type !== "tree") return undefined;
       try {
         let entries = parseGitTree(local.payload, oid);
@@ -2098,11 +2138,13 @@ export class WorkspaceGitCache {
     let entryAt = (parent: Directory, name: string) =>
         parent === undefined ? undefined : parent?.get(name) ?? null;
     // The store is read once for an object, however many paths or parent lines name it.
-    let stat = oncePerOid(oid => this.#statLocal(oid));
+    let stat = oncePerOid(oid => charged(() => this.#statLocal(oid), held =>
+        held === undefined || (held.type === "blob" && held.size > CHUNK_MAX_SIZE)
+            ? 0 : held.size));
     // A parent commit's root, as the directory that holds it; undefined when the commit is not
     // held.
     let root = oncePerOid((parent): Directory => {
-      let local = this.#readLocalShallow(parent);
+      let local = readHeld(parent);
       return local?.type !== "commit" ? undefined : new Map(
           [["", rootTreeEntry(parseGitCommitRefs(local.payload, parent).tree)]]);
     });
@@ -2117,7 +2159,7 @@ export class WorkspaceGitCache {
       if (read === undefined) {
         if (!marked.has(commit) || seen.has(commit)) continue;
         seen.add(commit);
-        let local = this.#readLocalShallow(commit);
+        let local = readHeld(commit);
         if (local === undefined) {
           accounted.add(commit);
           yield { kind: "commit", oid: commit, parents: [] };

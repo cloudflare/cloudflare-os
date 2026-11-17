@@ -855,7 +855,11 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
      (50 files), `MAX_RESTRICTED_PUSH_PATHS` (500 paths at which its commits differ from their
      parents, a merge's path counting once for each parent it is compared with) and
      `MAX_RESTRICTED_PUSH_TEXT_SIZE` (2 MiB of text, in which a changed file, the listing of each
-     directory on the way to it and each changed path written in full, as UTF-8, count whole).
+     directory on the way to it and each changed path written in full, as UTF-8, count whole);
+   - one call can list its review whole: listing it reads no more than
+     `MAX_PUSH_REVIEW_WALK_OBJECTS` (50,000) objects and `MAX_PUSH_REVIEW_WALK_BYTES` (32 MiB)
+     of them. What the push sends is far within both, so only the directories of its parents,
+     which are read to compare with, can take it past them.
 
    What is judged is the set of objects the Overseer marked for the push when it was queued,
    which is exactly what the gatekeeper sends on approval, not a diff. An accepted push always
@@ -874,10 +878,16 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    approver loads it page by page and its files on request, and Approve is enabled once every
    page and every file the review shows as text has loaded. `getPushReview()` reads no further
    than `MAX_PUSH_REVIEW_CURSOR` entries, so the Workshop never enables Approve for a waiting
-   push that lists more. It refuses a push whose connection was removed from the workspace: that
-   push can never be applied. The review is the Workshop's surface, as the restricted notice
-   is: `approveAction()` called through the API approves a push whether or not anyone opened
-   its review.
+   push that lists more. Every call lists the push from its start, its commits oldest first, so
+   a call reads at most `MAX_PUSH_REVIEW_WALK_OBJECTS` objects and `MAX_PUSH_REVIEW_WALK_BYTES`
+   of them, an object counted before it is read and whether or not it yields an entry. A call
+   that runs out returns what it listed until then, marked `truncated`: the Workshop shows
+   that much, says the push is too large to review whole, and does not enable Approve in the
+   review. That is what a very large push from a workspace that is not restricted, which
+   accepts any, comes to. `getPushReview()` refuses a push whose connection was removed from
+   the workspace: that push can never be applied. The review is the Workshop's surface, as the
+   restricted notice is: `approveAction()` called through the API approves a push whether or
+   not anyone opened its review.
 
    Verification is held to what each collaborator opened, because `ensureObserver` can never
    verify beyond it: a `use` collaborator can't be covered for a gatekeeper their gadget doesn't

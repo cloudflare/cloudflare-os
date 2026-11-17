@@ -12,6 +12,8 @@ import {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   MAX_PUSH_REVIEW_CURSOR,
+  MAX_PUSH_REVIEW_WALK_BYTES,
+  MAX_PUSH_REVIEW_WALK_OBJECTS,
   PUSH_REVIEW_PAGE_SIZE,
   READ_FILES_RESPONSE_BUDGET,
   type PushReviewEntry,
@@ -1149,17 +1151,19 @@ async function setupReview(t = makeCache()) {
 
 const sizeOf = (t: TestCache, oid: GitOid) => t.cache.readLocalObject(oid)!.payload.byteLength;
 
-// The whole review of a queued push, page by page. Checks what every review must hold: the
-// commits, the paths that send an object and the objects listed by id name exactly the
-// action's marks, and reading them pulled nothing.
+// The whole review of a queued push, page by page. Checks what every review must hold: no
+// call stopped at the walk's budget, the commits, the paths that send an object and the
+// objects listed by id name exactly the action's marks, and reading them pulled nothing.
 function readReview(t: TestCache, heads: GitOid[], actionId = ACTION) {
   let pulls = t.pulls.length;
   let page = t.cache.readPushReview(actionId, heads);
   let entries = [...page.entries];
   while (page.next !== undefined) {
+    expect(page.truncated).toBeUndefined();
     page = t.cache.readPushReview(actionId, heads, page.next);
     entries.push(...page.entries);
   }
+  expect(page.truncated).toBeUndefined();
   let sent = entries.flatMap(entry =>
       entry.kind !== "path" ? [entry.oid] : entry.sent ? [entry.entry!.oid] : []);
   expect([...new Set(sent)].toSorted()).toStrictEqual(listMarks(t.storage, actionId).toSorted());
@@ -2209,6 +2213,81 @@ describe("push review", () => {
         .toStrictEqual(["dir", "text", undefined]);
   });
 
+  it("stops a call that has read as many objects as one may, and says so", async () => {
+    let t = await setupReview(makeCache(makeLargeStorage()));
+    // Each commit is read to order the chain, before the first is listed, and each one listed
+    // reads its parent for its root. So a first page reads the chain and a page of parents:
+    // here, exactly what a call may read. Beyond those it reads the text of its own commits.
+    let within = MAX_PUSH_REVIEW_WALK_OBJECTS - PUSH_REVIEW_PAGE_SIZE;
+    let head = t.base;
+    for (let i = 0; i < within; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    let reads = countReads(t);
+    let page = t.cache.readPushReview(ACTION, [head]);
+    expect(page.truncated).toBeUndefined();
+    expect(page.entries).toHaveLength(PUSH_REVIEW_PAGE_SIZE);
+    expect(page.next).toBe(PUSH_REVIEW_PAGE_SIZE);
+    expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS + PUSH_REVIEW_PAGE_SIZE);
+
+    // The same call from further on needs one parent more: it stops, with what it listed
+    // until then.
+    reads.length = 0;
+    page = t.cache.readPushReview(ACTION, [head], PUSH_REVIEW_PAGE_SIZE / 2);
+    expect(page.truncated).toBe(true);
+    expect(page.next).toBeUndefined();
+    expect(page.entries).toHaveLength(PUSH_REVIEW_PAGE_SIZE / 2 + 1);
+    expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS + page.entries.length);
+
+    // A chain longer than a call may read is never ordered: the call lists nothing, having
+    // read as many objects as it may and none after.
+    let longer = await localCommit(t, t.baseTree, [head], "one more");
+    for (let i = 0; i < PUSH_REVIEW_PAGE_SIZE; i++) {
+      longer = await localCommit(t, t.baseTree, [longer], `more ${i}`);
+    }
+    t.cache.markPushClosure(G1, OTHER_ACTION, [longer]);
+    reads.length = 0;
+    expect(t.cache.readPushReview(OTHER_ACTION, [longer])).toStrictEqual({
+      entries: [], objectCount: MAX_PUSH_REVIEW_WALK_OBJECTS + 1, stackedOn: [ACTION],
+      truncated: true,
+    });
+    expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS);
+  });
+
+  it("stops a call that has read as many bytes as one may, in wide directories that list " +
+      "little", async () => {
+    let t = makeCache(makeLargeStorage());
+    let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("same\n"));
+    // A directory of about a mebibyte that every commit changes by one entry: each commit
+    // lists three rows, and reads its own directory twice and its parent's once.
+    let wide = Array.from({ length: 4096 }, (_, i) => fileAt(`${i}`.padStart(230, "n"), blob));
+    let listingOf = (i: number) => encodeGitTree([...wide, fileAt(`changed-${i}`, blob)]);
+    let size = listingOf(0).byteLength;
+    expect(size).toBeGreaterThan(MAX_BUFFERED_BLOB_SIZE);
+    let head = (await remoteCommit(t, wide)).commit, commits: GitOid[] = [];
+    let count = Math.ceil(MAX_PUSH_REVIEW_WALK_BYTES / size);
+    for (let i = 0; i < count; i++) {
+      let tree = await storeLocal(t.storage, { type: "tree", payload: listingOf(i) });
+      commits.push(head = await localCommit(t, tree, [head], `${i}`));
+    }
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    let page = t.cache.readPushReview(ACTION, [head]);
+    expect(page.truncated).toBe(true);
+    expect(page.next).toBeUndefined();
+    // It lists the commits whose directories it could read, whole, and then stops: the next
+    // directory is the last object it reads.
+    let listedCommits = page.entries.filter(entry => entry.kind === "commit");
+    expect(listedCommits.map(entry => entry.oid))
+        .toStrictEqual(commits.slice(0, listedCommits.length));
+    expect(page.entries.length).toBeGreaterThanOrEqual(3 * (listedCommits.length - 1));
+    expect(listedCommits.length).toBeGreaterThan(count / 4);
+    expect(listedCommits.length).toBeLessThan(count / 2);
+    let inflated = reads.reduce((sum, oid) => sum + sizeOf(t, oid), 0);
+    expect(inflated).toBeGreaterThan(MAX_PUSH_REVIEW_WALK_BYTES);
+    expect(inflated).toBeLessThanOrEqual(MAX_PUSH_REVIEW_WALK_BYTES + size);
+  });
+
   it("lists other entries once a marked directory arrives between two pages", async () => {
     let t = await setupReview();
     let shared = await localBlob(t, "shared\n");
@@ -2858,6 +2937,81 @@ describe("assertPushReadable", () => {
     reads.length = 0;
     expect(readReview(t, [head]).entries).toHaveLength(1);
     expect(reads.filter(read => read === t.base)).toHaveLength(1);
+  });
+
+  it("accepts a push at every bound at once, and no call for its review stops short",
+     async () => {
+    let t = await setupReview();
+    // Each commit changes the root, a directory and every file in it, to one of two files of
+    // its own: with the commits before it, all the paths, and nearly all the text, a push may
+    // have.
+    let perCommit = MAX_RESTRICTED_PUSH_PATHS / MAX_RESTRICTED_PUSH_COMMITS - 2;
+    let fileSize = Math.floor(
+        (MAX_RESTRICTED_PUSH_TEXT_SIZE - 128 * 1024) / (2 * MAX_RESTRICTED_PUSH_COMMITS));
+    let head = t.base;
+    for (let i = 0; i < MAX_RESTRICTED_PUSH_COMMITS; i++) {
+      let pair = [
+        await localBlob(t, `${i}a`.padEnd(fileSize, "a")),
+        await localBlob(t, `${i}b`.padEnd(fileSize, "b")),
+      ];
+      let inner = await localTree(t, spread(perCommit, index => pair[index % 2]));
+      head = await snapshot(t, [fileAt("README.md", t.readme), dirAt("d", inner)], [head], `${i}`);
+    }
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBeUndefined();
+    // The pass read every row and the text of every file, in a small part of what a call may.
+    expect(reads.length).toBeLessThan(MAX_PUSH_REVIEW_WALK_OBJECTS / 10);
+    expect(reads.reduce((sum, oid) => sum + sizeOf(t, oid), 0))
+        .toBeLessThan(MAX_PUSH_REVIEW_WALK_BYTES / 4);
+
+    let review = readReview(t, [head]);
+    let paths = review.entries.filter(entry => entry.kind === "path");
+    expect(review.entries.length - paths.length).toBe(MAX_RESTRICTED_PUSH_COMMITS);
+    expect(paths).toHaveLength(MAX_RESTRICTED_PUSH_PATHS);
+    expect(reviewText(t, head)).toBeGreaterThan(MAX_RESTRICTED_PUSH_TEXT_SIZE - 256 * 1024);
+  });
+
+  it("refuses a push that no call could list whole, for what its parents' directories hold",
+     async () => {
+    // A merge whose every parent has its own version of one wide directory. The merge sends
+    // the root and its version of that directory, within every bound, and lists them and the
+    // one entry no parent has; finding that entry reads each parent's version.
+    let merge = async (parents: number) => {
+      let t = await setupReview(makeCache(makeLargeStorage()));
+      let wide = Array.from(
+          { length: 4096 }, (_, i) => fileAt(`${i}`.padStart(230, "n"), t.readme));
+      let version = (name: string) => localTree(t, [...wide, fileAt(name, t.readme)]);
+      let sides: GitOid[] = [];
+      for (let i = 0; i < parents; i++) {
+        let tree = await localTree(t, [dirAt("d", await version(`side-${i}`))]);
+        sides.push(await t.cache.putFromGatekeeper(
+            G1, "commit", commitPayload(tree, [], `side ${i}`)));
+      }
+      let head = await snapshot(t, [dirAt("d", await version("merged"))], sides, "merge");
+      return { t, head, size: sizeOf(t, await version("merged")) };
+    };
+
+    let within = await merge(Math.floor(MAX_PUSH_REVIEW_WALK_BYTES / (1024 * 1024)) - 4);
+    expect(judge(within.t, within.head)).toBeUndefined();
+    expect(listed(readReview(within.t, [within.head]).entries))
+        .toStrictEqual([" dir", "d dir", "d/merged file"]);
+
+    let over = await merge(Math.ceil(MAX_PUSH_REVIEW_WALK_BYTES / (1024 * 1024)));
+    expect(over.size).toBeGreaterThan(1024 * 1024);
+    over.t.cache.markPushClosure(G1, ACTION, [over.head]);
+    let reads = countReads(over.t);
+    expect(refusalOf(over.t, [over.head])).toBe(
+        `listing it reads more than ${MAX_PUSH_REVIEW_WALK_OBJECTS} objects, or more than ` +
+        `${MAX_PUSH_REVIEW_WALK_BYTES} bytes of them: its commits and directories and those ` +
+        "of their parents");
+    expect(reads.reduce((sum, oid) => sum + sizeOf(over.t, oid), 0))
+        .toBeLessThanOrEqual(MAX_PUSH_REVIEW_WALK_BYTES + over.size);
+    // Its review says the same of itself.
+    let page = over.t.cache.readPushReview(ACTION, [over.head]);
+    expect(page.truncated).toBe(true);
+    expect(listed(page.entries)).toStrictEqual([" dir", "d dir"]);
   });
 
   it("reads no file past the files bound", async () => {
