@@ -11,11 +11,13 @@ import { PushReviewCommitView } from './PushReviewCommitView'
 import { PushReviewFileView } from './PushReviewFileView'
 import { PushReviewList } from './PushReviewList'
 import {
-  groupPushReview, notShownAsText, reviewItems, reviewReadiness, reviewTooLarge, shortOid, tooLargeToReview,
-  type PathRow, type ReviewItem,
+  directoriesProgress, entryKey, groupPushReview, notShownAsText, reviewItems, reviewReadiness, reviewTooLarge,
+  sendsListedDirectory, sentDirectoryEntries, shortOid, tooLargeToReview,
+  type DirectoryState, type PathRow, type ReviewItem,
 } from './pushReviewModel'
 import { usePushReview } from './usePushReview'
 import { usePushReviewFiles } from './usePushReviewFiles'
+import { usePushReviewListings } from './usePushReviewListings'
 
 const statementClass = 'm-0 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle'
 const captionClass = 'm-0 text-[12px] leading-4 tracking-[-0.1px] text-kumo-subtle'
@@ -30,14 +32,16 @@ const requestList = (ids: readonly number[]) => {
 
 /**
  * Everything a pending push will send, for the person deciding on it: its commits, each with its
- * whole text, and the paths each changes, each file as a diff. It is built from what the push is
- * marked to send (Overseer.getPushReview()), so what it lists is what leaves.
+ * whole text, and the paths each changes, each file as a diff and each directory it sends as
+ * the entries it holds. It is built from what the push is marked to send
+ * (Overseer.getPushReview()), so what it lists is what leaves.
  *
- * Outside a workspace that holds restricted data it is an offer, and reads a page or a file when
- * asked. While `restricted` it is where the push is approved: it loads the whole review by
- * itself, and Approve is enabled once every page and every file listed as text has loaded as
- * listed, whatever the approver has opened. A push too large to load unasked is loaded by hand
- * and then approved by the same rule. Mount it while it should be open.
+ * Outside a workspace that holds restricted data it is an offer, and reads a page, a file or a
+ * directory when asked. While `restricted` it is where the push is approved: it loads the whole
+ * review by itself, and Approve is enabled once every page, every file listed as text and every
+ * directory sent has loaded as listed, whatever the approver has opened. A push too large to
+ * load unasked is loaded by hand and then approved by the same rule. Mount it while it should be
+ * open.
  */
 export const PushReviewDialog = ({ overseer, record, restricted, processing, onApprove, onReject, onClose }: {
   overseer: RpcStub<Overseer>
@@ -53,10 +57,11 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
   const { entries } = review
   const tooLarge = reviewTooLarge(entries, review.objectCount)
   // The list is rebuilt per page, not per keystroke that moves the selection.
-  const { items, pathRows, commitCount, pathCount, unshown } = useMemo(() => {
+  const { commits, items, pathRows, commitCount, pathCount, unshown } = useMemo(() => {
     const grouped = groupPushReview(entries)
     const list = reviewItems(grouped)
     return {
+      commits: grouped.commits,
       items: list,
       pathRows: entries.filter((entry): entry is PathRow => entry.kind === 'path'),
       commitCount: grouped.commits.length,
@@ -66,12 +71,38 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
   }, [entries])
   const files = usePushReviewFiles(overseer, pathRows, restricted && !tooLarge)
 
+  // The entries of each directory the push sends, from one listing per commit that sends one.
+  const listings = usePushReviewListings(
+    overseer,
+    useMemo(() => commits.filter(({ paths }) => paths.some(sendsListedDirectory)).map(({ commit }) => commit), [commits]),
+    restricted && !tooLarge)
+  const directories = useMemo(() => {
+    const states = new Map<string, DirectoryState>()
+    // A directory's rows follow it, so they are all in once the review is, or once an entry
+    // that is not beneath the directory has followed them.
+    const last = review.done ? undefined : entries.at(-1)
+    for (const reviewed of commits) {
+      for (const row of reviewed.paths.filter(sendsListedDirectory)) {
+        const listing = listings.states.get(row.commit) ?? 'idle'
+        const open = last?.kind === 'path' && last.commit === row.commit &&
+          (last === row || row.path === '' || last.path.startsWith(`${row.path}/`))
+        states.set(entryKey(row),
+          typeof listing !== 'object' || 'failed' in listing ? listing
+            : open ? 'waiting'
+              : sentDirectoryEntries(row, reviewed, listing))
+      }
+    }
+    return states
+  }, [commits, entries, listings.states, review.done])
+
   const [selectedKey, setSelectedKey] = useState<string>()
   const selected = items.find(item => item.key === selectedKey) ?? items.at(0)
   const select = (item: ReviewItem) => {
     setSelectedKey(item.key)
-    // A file listed as text is read when its row is opened; one of any size only on request.
+    // A file listed as text is read when its row is opened, and a directory is listed; a file
+    // of any size is read only on request.
     if (item.kind === 'path' && item.row.sent?.kind === 'text') files.request(item.row)
+    if (item.kind === 'path' && sendsListedDirectory(item.row)) listings.request(item.reviewed.commit)
   }
 
   // Focus starts in the list, on the first commit, once there is one.
@@ -100,12 +131,18 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
       entries: entries.length, done: review.done, truncated: review.truncated, loading: review.loading,
       failed: review.error !== undefined,
     },
-    { ...files, eager: !tooLarge })
+    { ...files, eager: !tooLarge },
+    directoriesProgress(directories.values()))
+  const retryReads = () => {
+    files.retry()
+    listings.retry()
+  }
   const help = readiness.ready ? undefined
     : readiness.retry === 'review' ? { label: 'Retry', run: review.retry }
-      : readiness.retry === 'files' ? { label: 'Retry', run: files.retry }
+      : readiness.retry === 'files' ? { label: 'Retry', run: retryReads }
         : readiness.load === 'review' ? { label: 'Load more', run: review.loadMore }
-          : readiness.load === 'files' ? { label: 'Load files', run: files.requestAll }
+          : readiness.load === 'files'
+            ? { label: 'Load files', run: () => { files.requestAll(); listings.requestAll() } }
             : undefined
 
   // Pages that remain are read on request wherever the dialog does not read them by itself.
@@ -235,7 +272,7 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
                     selectedKey={selected?.key}
                     onSelect={select}
                     problemOf={row => {
-                      const state = restricted ? files.stateOf(row) : 'idle'
+                      const state = !restricted ? 'idle' : directories.get(entryKey(row)) ?? files.stateOf(row)
                       return typeof state !== 'object' ? undefined
                         : 'failed' in state ? 'could not be read'
                           : 'mismatch' in state ? 'not as listed'
@@ -267,8 +304,12 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
                       row={selected.row}
                       beneath={beneath(selected.row, selected.reviewed.paths)}
                       state={files.stateOf(selected.row)}
+                      directory={directories.has(selected.key) ? {
+                        state: directories.get(selected.key)!,
+                        onRequest: () => listings.request(selected.reviewed.commit),
+                      } : undefined}
                       onRequest={() => files.request(selected.row)}
-                      onRetry={files.retry}
+                      onRetry={retryReads}
                     />
                   ) : selected && (
                     <div className="flex flex-col gap-2 p-4">

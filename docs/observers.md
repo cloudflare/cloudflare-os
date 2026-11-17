@@ -861,17 +861,27 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    waits for a person: no auto-approval rule applies in restricted mode. The Workshop shows the
    push through `Overseer.getPushReview()`: each commit's raw text, the paths each commit adds,
    changes or deletes against its parents, and any object no path accounts for; in a restricted
-   workspace Approve is offered only inside that review. There Approve is enabled once every
-   commit and every file the review shows as text has loaded; it does not track what the
-   approver opened. The review wraps every line, draws spaces, tabs and characters that are hard
-   to see, and lists every path the push names, an empty directory included. A push that was
+   workspace Approve is offered only inside that review. A commit lists a path only where it
+   differs from every parent, so that a merge does not list all that one side changed; what a
+   merge takes from one parent and what from another is then no row. It shows in the
+   directories instead: every directory the push sends is a row of its own, which opens to
+   the directory's entries as sent, each with its kind and mode and the parents that have the
+   same entry under that name. The Workshop reads them from the commit's tree (`listTree()`)
+   and, for a commit with several parents, from the paths at which it differs from each
+   (`listChangedPaths()`), where a directory counts as a parent's when no file beneath it
+   differs. Approve is enabled once every commit, every file the review shows as text and
+   the entries of every directory sent have loaded and agree with the review; it does not
+   track what the approver opened. The review wraps every line, draws spaces, tabs and
+   characters that are hard to see, and lists every path the push names, an empty directory
+   included. A push that was
    already waiting when the workspace first read restricted data is not judged again (what it
    sends was fixed before that read): its review says which of its files are not shown as text,
    and Approve does not wait for those. A later push stacked on it would send the same objects,
    so it is refused wherever they fail a rule, until the waiting push has been applied. A
    waiting push too large for the Workshop to load by itself is not loaded whole unasked: the
-   approver loads it page by page and its files on request, and Approve is enabled once every
-   page and every file the review shows as text has loaded. `getPushReview()` reads no further
+   approver loads it page by page and its files and directories on request, and Approve is
+   enabled once every page, every file the review shows as text and every directory sent has
+   loaded. `getPushReview()` reads no further
    than `MAX_PUSH_REVIEW_CURSOR` entries, so the Workshop never enables Approve for a waiting
    push that lists more. Every call lists the push from its start, its commits oldest first, so
    a call reads at most `MAX_PUSH_REVIEW_WALK_OBJECTS` objects and `MAX_PUSH_REVIEW_WALK_BYTES`

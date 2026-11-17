@@ -15,6 +15,7 @@ import type {
   FileAtCommit,
   Overseer,
   PushReview,
+  TreeNode,
 } from '@gadgets/workshop-shared/api'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -135,8 +136,8 @@ function parkedQueue() {
  * pending queries ({filter: 'pending'}) on their own queue drained by
  * resolvePendingQuery()/rejectPendingQuery(), every other filter on the history queue drained by
  * resolvePage()/rejectPage(). `ops` records the initiation order across all three surfaces.
- * getPushReview answers at once with `pushReviewOf(actionId)`, and readFilesAtCommit with
- * `PUSHED_FILE`'s text, so a push's review loads whole.
+ * getPushReview answers at once with `pushReviewOf(actionId)`, readFilesAtCommit with
+ * `PUSHED_FILE`'s text and listTree with that one file, so a push's review loads whole.
  */
 export function makeOverseer() {
   const ops: Array<'subscribe' | 'list' | 'listPending'> = []
@@ -169,6 +170,7 @@ export function makeOverseer() {
     },
     readFilesAtCommit: async (_commitId: string, paths: string[]) =>
       paths.map((path): [string, FileAtCommit] => [path, { kind: 'text', text: PUSHED_FILE.text }]),
+    listTree: async (): Promise<TreeNode[]> => [{ name: PUSHED_FILE.path, kind: 'file' }],
     listActions: (options?: ListOptions) => {
       if (options?.filter === 'pending') {
         ops.push('listPending')
