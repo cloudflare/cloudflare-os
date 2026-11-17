@@ -46,8 +46,9 @@ opened.document[Symbol.dispose]();
   (`limits.cpuMs`) and the most a Worker may have, where the default is 30 seconds. What uses
   it up is the drawing, not the number of pages: measured, the heaviest page that is still
   drawn within the limits below takes 3 to 5 seconds, so about a hundred such pages use it up,
-  where ten used up the default, as some 200 fax pages at 300 dpi did; a 26-page JPEG 2000
-  scan uses 12 seconds of it. The call
+  where ten used up the default; a fax page at 300 dpi takes 0.16 to 0.3 seconds, so a scan of
+  557 such pages (32 MiB) used 88 to 135 seconds, and the default ran out every 130 to 155
+  pages of it; a 26-page JPEG 2000 scan uses 12 seconds. The call
   that runs out fails in the caller with the runtime's own error, and nothing in this Worker
   runs to clear up after it. So the next thing asked of the renderer, by anyone, first puts the
   instance back and lets that document's room go (`cut-off` in the log): a caller that opens

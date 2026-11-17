@@ -13,6 +13,10 @@ export default defineGadgetsWorker({
   entrypoint: ".wrangler/validate/src/google.ts",
   compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
   observability: OBSERVABILITY,
+  // What a PDF's text asks of the model, of Google and of the renderer while it is read counts
+  // against the one invocation that returned it, and the default 10,000 is fewer than a long
+  // scan's bands: 2,000 closely written pages are 16,000 model calls before any is made again.
+  limits: { subrequests: 100_000 },
   env: {
     // Workers AI's `toMarkdown()`, which converts Drive PDFs to text. It always runs remotely, so
     // `pnpm dev-server` keeps it only with --use-workers-ai-binding.

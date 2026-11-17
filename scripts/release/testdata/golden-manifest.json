@@ -444,6 +444,9 @@
       ],
       "installable": true,
       "kind": "gatekeeper",
+      "limits": {
+        "subrequests": 100000
+      },
       "mainModule": "google.js",
       "migrations": [
         {
