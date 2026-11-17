@@ -1,7 +1,7 @@
 import { isRecord, stored } from '@/prefs/stored'
 import { validateAsideParam } from './asideItems'
 
-// Remembered for this many chats, the most recently shown last.
+// Remembered for this many pages, the most recently shown last.
 const LIMIT = 100
 
 const store = stored<Record<string, string>>(
@@ -10,13 +10,14 @@ const store = stored<Record<string, string>>(
   {},
 )
 
-const keyOf = (workspaceId: string, chatId: number) => `${workspaceId}/${chatId}`
+// A chat's page, or with no chat, its workspace's own.
+const keyOf = (workspaceId: string, chatId: number | undefined) => (chatId === undefined ? workspaceId : `${workspaceId}/${chatId}`)
 
-/** What was last shown beside a chat in this browser, as its `?open=` value, if anything. */
-export const lastShown = (workspaceId: string, chatId: number): string | undefined => store.read()[keyOf(workspaceId, chatId)]
+/** What was last shown beside a chat, or beside its workspace's page, in this browser, as its `?open=` value, if anything. */
+export const lastShown = (workspaceId: string, chatId: number | undefined): string | undefined => store.read()[keyOf(workspaceId, chatId)]
 
-/** Remembers what is shown beside a chat, for the next time it is opened or the aside is had back. */
-export const rememberShown = (workspaceId: string, chatId: number, open: string) => {
+/** Remembers what is shown beside a chat or a workspace's page, for the next time it is opened or the aside is had back. */
+export const rememberShown = (workspaceId: string, chatId: number | undefined, open: string) => {
   const key = keyOf(workspaceId, chatId)
   const entries = Object.entries(store.read()).filter(([candidate]) => candidate !== key)
   store.write(Object.fromEntries([...entries, [key, open]].slice(-LIMIT)))

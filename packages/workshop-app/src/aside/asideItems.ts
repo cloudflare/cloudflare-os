@@ -33,8 +33,8 @@ export type AsideFile = ChatAttachment & {
 
 /**
  * Something within a workspace that can be shown, as the URL names it: `12` for what was made
- * there (an app, a document), `file-<id>` for a file sent there. Beside a chat that is all of it
- * (`?open=`); on its own page the workspace goes in front (see `itemPageId`).
+ * there (an app, a document), `file-<id>` for a file sent there. Beside a chat or the workspace's
+ * page that is all of it (`?open=`); on its own page the workspace goes in front (see `itemPageId`).
  */
 export type AsideRef = { kind: 'output'; workpieceId: number } | { kind: 'file'; fileId: string }
 
@@ -56,6 +56,16 @@ export const parseAsideRef = (value: unknown): AsideRef | undefined => {
 export const validateAsideParam = (value: unknown): string | undefined => {
   const ref = parseAsideRef(value)
   return ref && formatAsideRef(ref)
+}
+
+/**
+ * What stays shown from one page of a workspace to another, its own page and its chats, as its
+ * `?open=` value: an output, which is the workspace's. A file is its chat's, which its bytes are
+ * fetched through, and is left there.
+ */
+export const carriedOpen = (open: unknown): string | undefined => {
+  const ref = parseAsideRef(open)
+  return ref?.kind === 'output' ? formatAsideRef(ref) : undefined
 }
 
 /**

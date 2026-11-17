@@ -472,7 +472,7 @@ below.
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
 in place in the history): its chats, what it has made (the library's, as beside a chat, opening
-as their own pages), and its members, the owner first. Each tab loads what it lists once chosen.
+beside the page), and its members, the owner first. Each tab loads what it lists once chosen.
 
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
 and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a
@@ -517,6 +517,14 @@ clicking the handle shows the pane, and so does pulling it out, which opens room
 pulled. Only reaching the edge does it, not being near, because the page's scrollbar is there.
 Beside a chat it shows what was last shown there, or what was made last. Until the library has
 been read, it opens empty, then shows the first thing found, or that there is nothing.
+
+A workspace's page (`/workspace/<id>`) has the aside as a chat does (`?open=`): what its Library
+tab lists opens beside it, as the workspace has it, with no chat's changes, and it is had back
+from the edge the same way (not on a narrow screen, where the strip tapped for it would be over
+the ends of the rows). What the workspace has made stays beside the page from one of its pages to
+another (`carryAside`): from its own page to a chat or a new one, and back by the workspace's
+crumb or the sidebar, so that the same output is in sight from one chat to the next. A file is its
+chat's, and is left there.
 
 What is listed beside a chat, and on its settings page, is everything its workspace has made
 (`useChatLibrary`): the library (`listOutputs()`), read again for each chat, and what the chat has

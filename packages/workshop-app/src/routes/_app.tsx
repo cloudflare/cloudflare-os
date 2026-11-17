@@ -3,7 +3,7 @@ import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams,
 import { asideItemFor, formatAsideRef, pageOf, parseAsideRef, parseItemPageId, type AsideItem } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown } from '@/aside/lastShown'
-import { useAsideNavigation } from '@/aside/useAsideNavigation'
+import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
@@ -44,8 +44,8 @@ const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 ro
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
 /**
- * The frame, laid out for the page the URL names (see `AppShell`): beside a chat, what it names
- * there (`?open=`); as an item's own page (an app's, or one in the library), the item alone. Both are the same card, so going from
+ * The frame, laid out for the page the URL names (see `AppShell`): beside a chat or a workspace's
+ * page, what it names there (`?open=`); as an item's own page (an app's, or one in the library), the item alone. Both are the same card, so going from
  * one to the other keeps what is in it running.
  *
  * On a narrow screen there is room for one thing at a time (see `NarrowShell`): the sidebar is
@@ -81,30 +81,33 @@ const AppFrame = () => {
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
-  // Beside a chat, or a chat that is still to be made: what it has to show, and which is named.
-  const besideOf = chatPage ?? newChatPage
+  // Beside a chat, a chat that is still to be made, or a workspace's own page: which is named.
+  const besideOf = chatPage ?? newChatPage ?? workspacePage
   const chatId = chatPage?.params.chatId
   const chatRef = chatPage && { workspaceId: chatPage.params.workspaceId, chatId: chatPage.params.chatId }
-  // The chat what is shown comes from: the one the page is, or the one an item's own page names,
+  // The page that has its workspace's library to show beside it: a chat, or the workspace's own,
+  // where what was made is shown as it stands, with no chat's changes.
+  const besideRef: BesideRef | undefined = chatRef ?? (workspacePage && { workspaceId: workspacePage.params.workspaceId })
+  // Where what is shown comes from: the page it is beside, or the chat an item's own page names,
   // which says what the item is (a file's name and type) and where its bytes are.
   const pageChatId = itemPage?.search.chat
-  const shownFrom = chatRef ?? (pageItem && pageChatId !== undefined ? { workspaceId: pageItem.workspaceId, chatId: pageChatId } : undefined)
+  const shownFrom = besideRef ?? (pageItem && pageChatId !== undefined ? { workspaceId: pageItem.workspaceId, chatId: pageChatId } : undefined)
   const named = besideOf && parseAsideRef(besideOf.search.open)
-  // The aside, had back beside a chat that has shown nothing of what it has: open with nothing in
-  // it while the library is read, until something turns up. Kept for that chat alone.
-  const chatKey = chatRef && `${chatRef.workspaceId}/${chatRef.chatId}`
+  // The aside, had back beside a page that has shown nothing of what it has: open with nothing in
+  // it while the library is read, until something turns up. Kept for that page alone.
+  const besideRefWorkspaceId = besideRef?.workspaceId
+  const besideKey = besideRefWorkspaceId === undefined ? undefined : chatId === undefined ? besideRefWorkspaceId : `${besideRefWorkspaceId}/${chatId}`
   const [openedEmptyAt, setOpenedEmptyAt] = useState<string>()
-  if (openedEmptyAt !== undefined && (named || openedEmptyAt !== chatKey)) setOpenedEmptyAt(undefined)
-  const openedEmpty = chatRef !== undefined && !named && openedEmptyAt === chatKey
+  if (openedEmptyAt !== undefined && (named || openedEmptyAt !== besideKey)) setOpenedEmptyAt(undefined)
+  const openedEmpty = besideKey !== undefined && !named && openedEmptyAt === besideKey
   const library = useChatLibrary(shownFrom)
   const { items, known } = library
 
   // What was made last, once the library has been read.
   const firstFound = openedEmpty ? items[0]?.key : undefined
-  const chatWorkspaceId = chatPage?.params.workspaceId
   useEffect(() => {
-    if (firstFound !== undefined && chatWorkspaceId !== undefined && chatId !== undefined) aside.show(firstFound, { workspaceId: chatWorkspaceId, chatId })
-  }, [firstFound, chatWorkspaceId, chatId, aside])
+    if (firstFound !== undefined && besideRefWorkspaceId !== undefined) aside.show(firstFound, { workspaceId: besideRefWorkspaceId, chatId })
+  }, [firstFound, besideRefWorkspaceId, chatId, aside])
   const hideEmpty = () => {
     writeLayoutPrefs({ asideOpen: false })
     setOpenedEmptyAt(undefined)
@@ -170,7 +173,7 @@ const AppFrame = () => {
         link={linkTo(besideWorkspaceId, item, chatId)}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
-        onSelect={(key) => aside.show(key, chatRef)}
+        onSelect={(key) => aside.show(key, besideRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
       />
@@ -231,7 +234,9 @@ const AppFrame = () => {
       // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
       onSelectWorkspace={(id) => {
         leaveSidebar()
-        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })
+        // What is shown beside one of the workspace's pages stays beside its own.
+        const open = besideOf?.params.workspaceId === id ? carryAside(besideOf.search.open, { workspaceId: id }) : undefined
+        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
       }}
       onGoHome={() => {
         leaveSidebar()
@@ -270,14 +275,14 @@ const AppFrame = () => {
       onDismiss={connection.dismiss}
     />
   )
-  // Had back from the edge: what was last shown beside the chat, or what was made last. Before
+  // Had back from the edge: what was last shown beside the page, or what was made last. Before
   // the library has been read, the pane opens empty until it has.
-  const openAside = chatRef && chatKey && !named && !openedEmpty
+  const openAside = besideRef && besideKey && !named && !openedEmpty
     ? () => {
-        const open = lastShown(chatRef.workspaceId, chatRef.chatId) ?? items[0]?.key
-        if (open !== undefined) return aside.show(open, chatRef)
+        const open = lastShown(besideRef.workspaceId, besideRef.chatId) ?? items[0]?.key
+        if (open !== undefined) return aside.show(open, besideRef)
         writeLayoutPrefs({ asideOpen: true })
-        setOpenedEmptyAt(chatKey)
+        setOpenedEmptyAt(besideKey)
       }
     : undefined
   const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
@@ -296,7 +301,9 @@ const AppFrame = () => {
         }}
         status={status}
         aside={pageItem ? undefined : asideElement}
-        onOpenAside={openAside}
+        // Beside a chat only: over a workspace's page, the strip tapped at the edge would be over
+        // the ends of its rows, which open what they list.
+        onOpenAside={chatRef ? openAside : undefined}
       >
         {pageItem ? asideElement : <Outlet />}
       </NarrowShell>

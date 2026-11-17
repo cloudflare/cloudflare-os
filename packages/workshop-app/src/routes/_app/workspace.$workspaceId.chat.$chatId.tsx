@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, isApp, itemPage, validateAsideParam } from '@/aside/asideItems'
-import { useAsideNavigation } from '@/aside/useAsideNavigation'
+import { carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
 import type { ChatAttachment, OutputItem } from '@/chat/chatItems'
 import { ChatPane } from '@/chat/ChatPane'
 
@@ -49,7 +49,11 @@ function WorkspaceChat() {
       workspaceId={workspaceId}
       chatId={chatId}
       initialTitle={initialTitle}
-      onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
+      // What the workspace has made that is shown beside the chat stays beside the workspace. Read
+      // when asked for, so that showing something does not render the chat again.
+      onOpenWorkspace={() =>
+        navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(router.state.location.search.open, { workspaceId }) } })
+      }
       onOpenSettings={() => navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, state: { fromChat: true } })}
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}

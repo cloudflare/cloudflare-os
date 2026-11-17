@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { validateAsideParam } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
+import { carryAside } from '@/aside/useAsideNavigation'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { greeting } from '@/chat/greeting'
 import { NewChatPane } from '@/chat/NewChatPane'
@@ -41,7 +42,8 @@ function NewChat() {
             title,
             label: workspaceLabel(title),
             look,
-            onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } }),
+            // What is shown beside the chat to be stays beside the workspace.
+            onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(open, { workspaceId }) } }),
           }}
           title="New chat"
         />

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatItem, OutputItem, UserItem } from '@/chat/chatItems'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { asideItemFor, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
+import { asideItemFor, carriedOpen, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
 
 const output = (id: number, workpieceId: number, title: string): OutputItem => ({
   kind: 'output', id, key: `output:${id}`, workpieceId, title, type: 'gadget', draft: false,
@@ -29,6 +29,14 @@ describe('aside refs', () => {
     for (const value of [undefined, 1.5, -1, '', 'output', 'output:12', '-1', '1.5', 'abc', 'file-', 'chat-1']) {
       expect(validateAsideParam(value)).toBeUndefined()
     }
+  })
+
+  it('carries an output from one page of a workspace to another, and leaves a file with its chat', () => {
+    expect(carriedOpen('12')).toBe('12')
+    expect(carriedOpen(12)).toBe('12')
+    expect(carriedOpen('file-a-b')).toBeUndefined()
+    expect(carriedOpen(undefined)).toBeUndefined()
+    expect(carriedOpen('abc')).toBeUndefined()
   })
 
   it('puts the workspace in front on an item’s own page, and reads it back', () => {

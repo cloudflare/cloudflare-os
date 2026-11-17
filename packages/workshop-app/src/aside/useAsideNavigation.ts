@@ -2,11 +2,14 @@ import { useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { isNarrowScreen } from '@/hooks/useNarrowScreen'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
-import { parseAsideRef } from './asideItems'
+import { carriedOpen, parseAsideRef } from './asideItems'
 import { lastShown, rememberShown } from './lastShown'
 
 /** A chat, by where it is. */
 export type ChatRef = { workspaceId: string; chatId: number }
+
+/** A page that things are shown beside, by where it is: a chat, or with no chat, its workspace's own page. */
+export type BesideRef = { workspaceId: string; chatId?: number }
 
 /**
  * What to show beside a chat that is being gone to with nothing named: what was last shown beside
@@ -17,20 +20,31 @@ export const asideFor = ({ workspaceId, chatId }: ChatRef): string | undefined =
   readLayoutPrefs().asideOpen && !isNarrowScreen() ? lastShown(workspaceId, chatId) : undefined
 
 /**
- * The ways to show something beside a chat page and to put the aside away, which are history: the
- * URL names what is shown (`?open=`). Showing something with the aside away is a step of its own,
- * so Back puts it away again; showing another in its place, or putting it away, is not. Each
- * function is stable.
+ * What to show beside `to`, a page of a workspace being gone to from another of its pages, where
+ * `open` is shown: the same, when it is the workspace's to show (`carriedOpen`), so that it stays
+ * in sight from one chat to the next. It is then what was last shown beside `to`.
+ */
+export const carryAside = (open: unknown, to: BesideRef): string | undefined => {
+  const carried = carriedOpen(open)
+  if (carried !== undefined) rememberShown(to.workspaceId, to.chatId, carried)
+  return carried
+}
+
+/**
+ * The ways to show something beside a page, a chat's or a workspace's, and to put the aside away,
+ * which are history: the URL names what is shown (`?open=`). Showing something with the aside away
+ * is a step of its own, so Back puts it away again; showing another in its place, or putting it
+ * away, is not. Each function is stable.
  */
 export const useAsideNavigation = () => {
   const router = useRouter()
   const [actions] = useState(() => ({
-    /** Shows `open` (an `AsideRef`, written out) beside the chat page this is on, the chat if it has been made. */
-    show: (open: string, chat?: ChatRef) => {
+    /** Shows `open` (an `AsideRef`, written out) beside the page this is on: `beside`, unless it is a chat still to be made. */
+    show: (open: string, beside?: BesideRef) => {
       const { location } = router.state
       // Read as the URL has it: an output's ref comes back a number.
       const showing = parseAsideRef(location.search.open) !== undefined
-      if (chat) rememberShown(chat.workspaceId, chat.chatId, open)
+      if (beside) rememberShown(beside.workspaceId, beside.chatId, open)
       writeLayoutPrefs({ asideOpen: true })
       void router.navigate({
         to: '.',

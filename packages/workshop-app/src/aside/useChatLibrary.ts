@@ -2,14 +2,14 @@ import { useMemo } from 'react'
 import { useChatBeside } from '@/chat/useChatSession'
 import { useLibrary } from '@/library/useLibrary'
 import { chatAsideItems, workspaceAsideItems, type AsideItem } from './asideItems'
-import type { ChatRef } from './useAsideNavigation'
+import type { BesideRef } from './useAsideNavigation'
 
 export type ChatLibrary = {
-  /** What the chat's workspace has made, most recent first (see `workspaceAsideItems`). */
+  /** What the page's workspace has made, most recent first (see `workspaceAsideItems`). */
   items: AsideItem[]
   /**
-   * What is known of anything that can be shown from the chat, to describe the one shown: the
-   * items, and the files sent in what has been loaded of the chat, which are not listed.
+   * What is known of anything that can be shown from the page, to describe the one shown: the
+   * items, and the files sent in what has been loaded of a chat, which are not listed.
    */
   known: AsideItem[]
   /** The library is being read. */
@@ -21,15 +21,15 @@ export type ChatLibrary = {
 }
 
 /**
- * What can be shown beside a chat: what its workspace has made, from the library, which is read
- * again for each chat. What the chat has made that the library does not have yet is taken from
- * what has been loaded of the conversation.
+ * What can be shown beside a chat, or beside its workspace's own page: what the workspace has
+ * made, from the library, which is read again for each page. What a chat has made that the library
+ * does not have yet is taken from what has been loaded of the conversation.
  */
-export const useChatLibrary = (chat: ChatRef | undefined): ChatLibrary => {
-  const { chat: snapshot } = useChatBeside(chat)
-  const workspaceId = chat?.workspaceId
-  const chatId = chat?.chatId
-  const library = useLibrary(chat ? `${chat.workspaceId}/${chat.chatId}` : null)
+export const useChatLibrary = (beside: BesideRef | undefined): ChatLibrary => {
+  const workspaceId = beside?.workspaceId
+  const chatId = beside?.chatId
+  const { chat: snapshot } = useChatBeside(workspaceId === undefined || chatId === undefined ? undefined : { workspaceId, chatId })
+  const library = useLibrary(workspaceId === undefined ? null : chatId === undefined ? workspaceId : `${workspaceId}/${chatId}`)
   const outputs = library.status === 'ready' ? library.outputs : undefined
   const fromChat = useMemo(
     () => (workspaceId === undefined || chatId === undefined ? [] : chatAsideItems(workspaceId, chatId, snapshot)),
@@ -43,7 +43,7 @@ export const useChatLibrary = (chat: ChatRef | undefined): ChatLibrary => {
   return {
     items,
     known,
-    reading: chat !== undefined && library.status === 'loading',
+    reading: beside !== undefined && library.status === 'loading',
     problem: library.status === 'failed' ? library.message : undefined,
     retry: library.status === 'failed' ? library.retry : undefined,
   }
