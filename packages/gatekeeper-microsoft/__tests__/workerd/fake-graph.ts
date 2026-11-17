@@ -257,8 +257,6 @@ export class FakeGraph {
     if (path === "/sites/root") {
       return { status: 200, body: { id: ROOT_SITE_ID, displayName: "Communication site", webUrl: ORIGIN, root: {} } };
     }
-    // One geography: the user's OneDrive is beside the root site.
-    if (path === "/me/drive") return { status: 200, body: { webUrl: "https://contoso-my.sharepoint.com/personal/user/Documents" } };
     if (path === `/sites/${SITE_ID}`) {
       return { status: 200, body: { id: SITE_ID, name: "Engineering", displayName: "Engineering", webUrl: `${ORIGIN}/sites/Engineering` } };
     }

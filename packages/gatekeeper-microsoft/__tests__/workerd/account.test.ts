@@ -103,41 +103,6 @@ describe("first connect", () => {
       .toMatch(/no SharePoint or OneDrive/);
   });
 
-  it("learns a multi-geo tenant's SharePoint name in the user's geography, and resolves a link on its host", async () => {
-    const graph = new FakeGraph().install();
-    const oneDrive = "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/Documents";
-    graph.on("GET", /^\/v1\.0\/me\/drive\?/, () => json({ webUrl: oneDrive }));
-    const { id } = await firstConnect(graph);
-    expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ sharePointTenant: "contoso", sharePointGeoTenant: "contosoeur" });
-
-    // A folder of the user's own OneDrive, which is on their geography's host, not the root site's.
-    const siteCollection = "d0d0d0d0-0000-0000-0000-000000000001";
-    const web = "f0f0f0f0-0000-0000-0000-000000000001";
-    graph.on("GET", /^\/v1\.0\/shares\/[^/]+\/driveItem/, () => json({
-      id: "01ATTACHMENTS", name: "Attachments", folder: { childCount: 2 }, webUrl: `${oneDrive}/Attachments`,
-      parentReference: { driveId: "b!OneDrive", id: "01ONEDRIVEROOT" }, sharepointIds: { siteId: siteCollection, webId: web },
-    }));
-    expect(unwrap(await hooks().resolve(id, `${oneDrive}/Attachments`))).toMatchObject({
-      scope: { kind: "folder", siteId: `contosoeur-my.sharepoint.com,${siteCollection},${web}`, driveId: "b!OneDrive", itemId: "01ATTACHMENTS" },
-      name: "Attachments",
-    });
-    // Another organization's host is still refused, before Graph is asked.
-    const asked = graph.count("GET", /\/shares\//);
-    expect(failure(await hooks().resolve(id, "https://fabrikameur-my.sharepoint.com/personal/mallory/Documents/a.txt")))
-      .toMatch(/another organization's SharePoint \(fabrikameur-my\.sharepoint\.com\)/);
-    expect(graph.count("GET", /\/shares\//)).toBe(asked);
-  });
-
-  it("connects without the user's geography when their OneDrive can't be read", async () => {
-    const graph = new FakeGraph().install();
-    graph.on("GET", /^\/v1\.0\/me\/drive\?/, () => json({ error: { code: "invalidRequest", message: "Not ready." } }, { status: 400 }));
-    const { id, result } = await firstConnect(graph);
-    expect(result).toHaveProperty("ok.handoff");
-    const identity = unwrap<Record<string, unknown>>(await hooks().account(id, "getIdentity"));
-    expect(identity).toMatchObject({ sharePointTenant: "contoso" });
-    expect(identity.sharePointGeoTenant).toBeUndefined();
-  });
-
   it("refuses an account from a tenant the deployment doesn't accept, storing nothing", async () => {
     const graph = new FakeGraph().install();
     const { id, result } = await firstConnect(graph, MALLORY);
@@ -379,6 +344,56 @@ describe("credentials", () => {
   });
 });
 
+describe("a link on a host other than the root site's, as a multi-geo tenant's other geographies have", () => {
+  const oneDrive = "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/Documents";
+  const siteCollection = "d0d0d0d0-0000-0000-0000-000000000001";
+  const web = "f0f0f0f0-0000-0000-0000-000000000001";
+  /** Answers the link as a OneDrive folder that Graph places in `tenantId`, or in no tenant at all. */
+  function folderIn(graph: FakeGraph, tenantId?: string): void {
+    graph.on("GET", /^\/v1\.0\/shares\/[^/]+\/driveItem/, () => json({
+      id: "01ATTACHMENTS", name: "Attachments", folder: { childCount: 2 }, webUrl: `${oneDrive}/Attachments`,
+      parentReference: { driveId: "b!OneDrive", id: "01ONEDRIVEROOT" },
+      sharepointIds: { siteId: siteCollection, webId: web, ...(tenantId ? { tenantId } : {}) },
+    }));
+  }
+
+  it("resolves when Graph places what it names in the connected tenant", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    folderIn(graph, TENANT.toUpperCase());
+    expect(unwrap(await hooks().resolve(id, `${oneDrive}/Attachments`))).toMatchObject({
+      scope: { kind: "folder", siteId: `contosoeur-my.sharepoint.com,${siteCollection},${web}`, driveId: "b!OneDrive", itemId: "01ATTACHMENTS" },
+      name: "Attachments",
+    });
+  });
+
+  it("is refused as another organization's when Graph places it in another tenant, or in none", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    folderIn(graph, OTHER_TENANT);
+    expect(failure(await hooks().resolve(id, `${oneDrive}/Attachments`)))
+      .toMatch(/another organization's SharePoint \(contosoeur-my\.sharepoint\.com\)/);
+    folderIn(graph);
+    expect(failure(await hooks().resolve(id, `${oneDrive}/Attachments`))).toMatch(/another organization's SharePoint/);
+  });
+
+  it("is refused like any link that leads nowhere when Graph resolves nothing", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    graph.on("GET", /^\/v1\.0\/(shares|sites)\//, () => json({ error: { code: "accessDenied", message: "Access denied." } }, { status: 403 }));
+    expect(failure(await hooks().resolve(id, "https://fabrikam.sharepoint.com/sites/Finance/Shared%20Documents/plan.docx")))
+      .toMatch(/doesn't lead to anything/);
+  });
+
+  it("is refused without asking Graph when it names everything", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    expect(failure(await hooks().resolve(id, "https://contosoeur.sharepoint.com/_layouts/15/sharepoint.aspx")))
+      .toMatch(/another organization's SharePoint/);
+    expect(graph.requests).toEqual([]);
+  });
+});
+
 describe("identity", () => {
   it("is served for a day without asking Graph, then read again, never letting the pin move", async () => {
     const graph = new FakeGraph().install();
@@ -388,29 +403,18 @@ describe("identity", () => {
 
     const stale = await seedAccount(graph, PHILLIP, { identity: { fetchedAt: 0, name: "Old name" } });
     expect(unwrap(await hooks().account(stale, "getIdentity"))).toMatchObject({ name: "Phillip" });
-    expect(graph.count("GET", /^\/v1\.0\/me\?/)).toBe(1);
+    expect(graph.count("GET", /^\/v1\.0\/me/)).toBe(1);
 
     const moved = await seedAccount(graph, PHILLIP, { identity: { fetchedAt: 0 } });
     graph.on("GET", /^\/v1\.0\/me/, () => json({ id: SARAH.oid, displayName: "Sarah", userPrincipalName: SARAH.upn }));
     expect(unwrap(await hooks().account(moved, "getIdentity"))).toMatchObject({ objectId: PHILLIP.oid, name: "Phillip" });
   });
 
-  it("keeps the SharePoint host, and the user's geography's, when a re-read no longer finds them", async () => {
+  it("keeps the SharePoint host when a re-read no longer finds one", async () => {
     const graph = new FakeGraph().install();
-    const id = await seedAccount(graph, PHILLIP, { identity: { fetchedAt: 0, sharePointGeoTenant: "contosoeur" } });
+    const id = await seedAccount(graph, PHILLIP, { identity: { fetchedAt: 0 } });
     graph.on("GET", /^\/v1\.0\/sites\/root/, () => json({ error: { code: "accessDenied", message: "No license." } }, { status: 403 }));
-    expect(unwrap(await hooks().account(id, "getIdentity")))
-      .toMatchObject({ sharePointTenant: "contoso", sharePointGeoTenant: "contosoeur" });
-  });
-
-  it("doesn't read the OneDrive, which would create one, under a grant that can't reach it", async () => {
-    const graph = new FakeGraph().install();
-    const id = await seedAccount(graph, PHILLIP, {
-      scopes: ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/Mail.Read", "openid"], identity: { fetchedAt: 0 },
-    });
-    expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ name: "Phillip", sharePointTenant: "contoso" });
-    expect(graph.count("GET", /^\/v1\.0\/me\?/)).toBe(1);
-    expect(graph.count("GET", /^\/v1\.0\/me\/drive/)).toBe(0);
+    expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ sharePointTenant: "contoso" });
   });
 
   it("reports no resources for a grant without SharePoint", async () => {

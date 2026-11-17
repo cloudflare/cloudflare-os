@@ -40,8 +40,27 @@ export class SiteNotGrantedError extends UnresolvableUrlError {
   }
 }
 
+/** The tenant a connection is pinned to: its SharePoint name (`contoso` for contoso.sharepoint.com) and its Entra ID. */
+export type ConnectedTenant = { name: string; id: string };
+
+/**
+ * Passes a Graph answer on only if it may be trusted to be the connected tenant's.
+ * @throws UnresolvableUrlError for one that is another organization's.
+ */
+type Owned = <T>(body: T) => T;
+
 /** Statuses that mean "not this facet, or not visible": try the next. */
 const MISS = [400, 403, 404];
+
+/** A site's or a list's fields with the IDs that name its tenant, which items and list items always carry. */
+const OWNED_SITE_SELECT = `${SITE_SELECT},sharepointIds`;
+const OWNED_LIST_SELECT = `${LIST_SELECT},sharepointIds`;
+
+/** The Entra tenant Graph says an object is in, lower-cased, or undefined when it doesn't say. */
+function tenantIdOf(body: unknown): string | undefined {
+  const ids = (body as { sharepointIds?: { tenantId?: unknown } } | null)?.sharepointIds;
+  return typeof ids?.tenantId === "string" ? ids.tenantId.toLowerCase() : undefined;
+}
 
 /** Asks Graph for one facet of a URL, or null when that facet does not apply. */
 async function facet<T>(api: GraphApi, shareId: string, path: string, select: string, parse: (body: unknown) => T): Promise<T | null> {
@@ -84,12 +103,13 @@ async function fromList(api: GraphApi, list: GraphList): Promise<ResolvedUrl> {
 }
 
 /** A page's list item, as `/shares/…/listItem` returns it. */
-async function fromPageItem(api: GraphApi, shareId: string): Promise<ResolvedUrl | null> {
+async function fromPageItem(api: GraphApi, shareId: string, owned: Owned): Promise<ResolvedUrl | null> {
   const body = await api.request<Record<string, unknown>>("GET", `/shares/${shareId}/listItem`, {
     query: { $select: "id,webUrl,sharepointIds,parentReference" },
     allow: MISS,
   });
   if (body === null) return null;
+  owned(body);
   const ids = body.sharepointIds as Record<string, unknown> | undefined;
   const parent = body.parentReference as Record<string, unknown> | undefined;
   const siteId = typeof parent?.siteId === "string" ? canonicalSiteId(parent.siteId) : null;
@@ -113,25 +133,26 @@ async function fromPageItem(api: GraphApi, shareId: string): Promise<ResolvedUrl
  * the facets couldn't resolve (removed, renamed, or never visible) is refused rather than widened
  * to its web: this also runs when a configurator's selection is bound, and a binding only narrows.
  */
-async function fromSitePath(api: GraphApi, url: URL): Promise<ResolvedUrl | null> {
+async function fromSitePath(api: GraphApi, url: URL, owned: Owned): Promise<ResolvedUrl | null> {
   const path = sitePathNamed(url);
   if (path === null) return null;
-  const body = await api.request<unknown>("GET", `/sites/${url.hostname}:${path}`, { query: { $select: SITE_SELECT }, allow: MISS });
-  return body === null ? null : fromSite(parseSite(body));
+  const body = await api.request<unknown>("GET", `/sites/${url.hostname}:${path}`, { query: { $select: OWNED_SITE_SELECT }, allow: MISS });
+  return body === null ? null : fromSite(parseSite(owned(body)));
 }
+
 
 /**
  * Resolves a URL to the scope it names.
- * @param tenants The connected tenant's SharePoint names (`contoso` for contoso.sharepoint.com, and
- * a multi-geo tenant's other name in the user's geography), its root site's first; a URL on any
- * other tenant's host is refused before Graph is asked.
+ * @param tenant The connected tenant. A URL on its own SharePoint host is its own. A multi-geo
+ * tenant has a host per geography, which no user's token can list, so on any other host what Graph
+ * resolves must say it is in this tenant, and whatever doesn't is refused as another organization's.
  * @param options.selected Whether the grant reaches only the sites granted to the app. Graph then
  * still answers any site's metadata, so a site is checked by opening its library.
  * @throws UnresolvableUrlError for anything that is not a reachable SharePoint object, and its
  * SiteNotGrantedError for a site the app wasn't granted.
  */
-export async function resolveSharePointUrl(api: GraphApi, raw: string, tenants: readonly string[], options: { selected?: boolean } = {}): Promise<ResolvedUrl> {
-  const resolved = await resolveUrl(api, raw, tenants);
+export async function resolveSharePointUrl(api: GraphApi, raw: string, tenant: ConnectedTenant, options: { selected?: boolean } = {}): Promise<ResolvedUrl> {
+  const resolved = await resolveUrl(api, raw, tenant);
   if (options.selected && resolved.scope.kind === "site") {
     const drive = await api.request<unknown>("GET", `/sites/${resolved.scope.siteId}/drive`, { query: { $select: "id" }, allow: MISS });
     if (drive === null) throw new SiteNotGrantedError();
@@ -140,41 +161,46 @@ export async function resolveSharePointUrl(api: GraphApi, raw: string, tenants: 
 }
 
 /**
- * The URL as this tenant's SharePoint, or a refusal that says what is wrong with it. Nothing past
- * this step asks Graph, so a caller may pass these refusals on where it must keep Graph's quiet.
- * @throws UnresolvableUrlError for a URL that is not SharePoint's, or is another tenant's.
+ * The URL as SharePoint's, or a refusal that says what is wrong with it. Graph isn't asked, so a
+ * caller may pass this refusal on where it must keep Graph's quiet.
+ * @throws UnresolvableUrlError for a URL that is not SharePoint's.
  */
-export function checkSharePointUrl(raw: string, tenants: readonly string[]): URL {
+export function checkSharePointUrl(raw: string): URL {
   const url = parseSharePointUrl(raw);
   if (url === null) throw new UnresolvableUrlError("That isn't a SharePoint or OneDrive link.");
-  if (!tenants.includes(parseSharePointHost(url.hostname)!.tenant)) {
-    throw new UnresolvableUrlError(`That link is to another organization's SharePoint (${url.hostname}), ` +
-      "which this connection can't open.");
-  }
   return url;
 }
 
-async function resolveUrl(api: GraphApi, raw: string, tenants: readonly string[]): Promise<ResolvedUrl> {
-  const url = checkSharePointUrl(raw, tenants);
+async function resolveUrl(api: GraphApi, raw: string, tenant: ConnectedTenant): Promise<ResolvedUrl> {
+  const url = checkSharePointUrl(raw);
+  const otherOrganization = () => new UnresolvableUrlError(
+    `That link is to another organization's SharePoint (${url.hostname}), which this connection can't open.`);
+  // Off the tenant's own host, only Microsoft's word for where an object is makes it this tenant's.
+  const known = parseSharePointHost(url.hostname)!.tenant === tenant.name;
+  const owned: Owned = body => {
+    if (!known && tenantIdOf(body) !== tenant.id.toLowerCase()) throw otherOrganization();
+    return body;
+  };
   if (isAllUrl(url)) {
-    return { scope: { kind: "all" }, name: "SharePoint & OneDrive", webUrl: allUrl(tenants[0]) };
+    if (!known) throw otherOrganization();
+    return { scope: { kind: "all" }, name: "SharePoint & OneDrive", webUrl: allUrl(tenant.name) };
   }
 
   const shareId = shareIdFor(normalizeForShares(url));
   try {
     if (isSiteRootPath(url)) {
-      const site = await facet(api, shareId, "site", SITE_SELECT, parseSite);
+      const site = await facet(api, shareId, "site", OWNED_SITE_SELECT, body => parseSite(owned(body)));
       if (site !== null) return fromSite(site);
     }
     if (isSitePagesUrl(url)) {
-      const page = await fromPageItem(api, shareId);
+      const page = await fromPageItem(api, shareId, owned);
       if (page !== null) return page;
     }
-    const item = await facet(api, shareId, "driveItem", ITEM_SELECT, parseDriveItem);
+    const item = await facet(api, shareId, "driveItem", ITEM_SELECT, body => parseDriveItem(owned(body)));
     if (item !== null) return fromItem(url.hostname, item);
-    const list = await facet(api, shareId, "list", LIST_SELECT, parseList);
+    const list = await facet(api, shareId, "list", OWNED_LIST_SELECT, body => parseList(owned(body)));
     if (list !== null) return await fromList(api, list);
-    const site = await fromSitePath(api, url);
+    const site = await fromSitePath(api, url, owned);
     if (site !== null) return site;
   } catch (error) {
     if (error instanceof GraphApiError && MISS.includes(error.status)) throw new UnresolvableUrlError();
