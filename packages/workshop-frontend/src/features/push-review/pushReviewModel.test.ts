@@ -430,7 +430,7 @@ describe('notShownAsText', () => {
 })
 
 describe('reviewReadiness', () => {
-  const WHOLE: ReviewProgress = { entries: 12, done: true, loading: false, failed: false }
+  const WHOLE: ReviewProgress = { entries: 12, done: true, truncated: false, loading: false, failed: false }
   const READ: FilesProgress = { total: 3, loaded: 3, pending: 0, failed: 0, mismatched: 0, eager: true }
   // Every later reason is true as well, so each case shows that the one before it wins.
   const EVERYTHING_WRONG: FilesProgress = { total: 3, loaded: 0, pending: 1, failed: 1, mismatched: 1, eager: true }
@@ -443,6 +443,17 @@ describe('reviewReadiness', () => {
   it('reports a failed page, to be retried', () => {
     expect(reviewReadiness({ ...WHOLE, done: false, failed: true }, EVERYTHING_WRONG))
       .toEqual({ ready: false, reason: 'The review could not be loaded.', retry: 'review' })
+  })
+
+  it('never offers a push the kernel could not list whole, nor a way to load the rest', () => {
+    expect(reviewReadiness({ ...WHOLE, entries: 340, done: false, truncated: true }, READ)).toEqual({
+      ready: false,
+      reason: 'This push is too large to review whole: only its first 340 entries could be listed. It cannot be approved here.',
+    })
+    expect(reviewReadiness({ ...WHOLE, entries: 0, done: false, truncated: true }, { ...READ, total: 0, loaded: 0 })).toEqual({
+      ready: false,
+      reason: 'This push is too large to review whole: none of it could be listed. It cannot be approved here.',
+    })
   })
 
   it('asks for the pages that are still to be loaded before looking at any file', () => {

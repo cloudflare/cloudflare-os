@@ -1027,6 +1027,41 @@ describe('PushReviewDialog with a review too large to load by itself', () => {
     expect(row('f649.txt').textContent).toContain('not as listed')
   })
 
+  it('shows what a review cut short lists, says the push is too large to review whole, and reads no further', async () => {
+    const entries = [commit('a'), root('a'), added('a', 'one.txt'), added('a', 'two.txt')]
+    // The kernel listed three entries of a push that sends far more, and stopped.
+    const cutShort = (): PushReview =>
+      ({ entries: entries.slice(0, 3), objectCount: 90_000, stackedOn: [], truncated: true })
+    const overseer = await open({ page: cutShort, files: textOfPath }, { restricted: true })
+
+    expect(overseer.getPushReview).toHaveBeenCalledTimes(1)
+    expect(row('Subject of a')).toBeDefined()
+    expect(row('one.txt')).toBeDefined()
+    expect(list().textContent).not.toContain('two.txt')
+    expect(readiness()).toBe(
+      'This push is too large to review whole: only its first 3 entries could be listed. It cannot be approved here.')
+    expect(shown()).toContain('90000 objects sent in all.')
+    // What it lists is shown as any review's is, and nothing enables Approve.
+    await press(row('one.txt'))
+    expect(editor()).toMatchObject({ text: 'one.txt\n' })
+    expect(approve().disabled).toBe(true)
+    expect(buttons('Load more')).toHaveLength(0)
+    expect(buttons('Retry')).toHaveLength(0)
+    await press(button('Deny'))
+    expect(onReject).toHaveBeenCalledTimes(1)
+  })
+
+  it('says so when a review cut short lists nothing, and offers nothing to load outside the mark', async () => {
+    const overseer = await open({
+      page: () => ({ entries: [], objectCount: 90_000, stackedOn: [], truncated: true }),
+    })
+    expect(overseer.getPushReview).toHaveBeenCalledTimes(1)
+    expect(shown()).toContain('This push is too large to review whole: none of it could be listed.')
+    expect(shown()).toContain('Listing this push takes more than one read of it may')
+    expect(dialog().querySelector('[aria-label="Loading the review"]')).toBeNull()
+    expect(buttons('Load more')).toHaveLength(0)
+  })
+
   it('retries the files of a batch that failed, then approves', async () => {
     const entries = tooManyObjects()
     let failing = true
