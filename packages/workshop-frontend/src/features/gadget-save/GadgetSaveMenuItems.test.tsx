@@ -134,8 +134,11 @@ describe('GadgetSaveMenuItems', () => {
 
 describe('useSaveVendors', () => {
   const seen: (GatekeeperVendorInfo[] | null)[] = []
+  let retry: (() => void) | undefined
   const Probe = ({ enabled }: { enabled: boolean }) => {
-    seen.push(useSaveVendors(enabled))
+    const listed = useSaveVendors(enabled)
+    seen.push(listed.vendors)
+    retry = listed.retry
     return null
   }
   afterEach(() => { seen.length = 0 })
@@ -143,6 +146,20 @@ describe('useSaveVendors', () => {
   it('is null until the services are listed', async () => {
     await act(async () => root.render(<Probe enabled />))
     expect([seen[0], seen.at(-1)]).toEqual([null, [vendor]])
+    expect(retry).toBeUndefined()
+  })
+
+  it('lists the services again on a retry, which only a failure offers', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const listGatekeeperVendors = vi.fn<() => Promise<GatekeeperVendorInfo[]>>()
+      .mockRejectedValueOnce(new Error('offline')).mockResolvedValue([vendor])
+    testState.authenticatedApi = { listGatekeeperVendors }
+    await act(async () => root.render(<Probe enabled />))
+    expect(seen.at(-1)).toEqual([])
+
+    await act(async () => retry!())
+    expect(seen.slice(-2)).toEqual([null, [vendor]])
+    expect(retry).toBeUndefined()
   })
 
   it('is empty when the services cannot be listed, or are not wanted', async () => {

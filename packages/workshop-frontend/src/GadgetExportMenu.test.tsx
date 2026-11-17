@@ -24,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   ) => Promise<void>>(),
   toast: vi.fn<(toast: unknown) => void>(),
   saveVendors: [] as object[] | null,
+  retrySaveVendors: undefined as (() => void) | undefined,
+  closeSave: undefined as (() => void) | undefined,
 }))
 
 vi.mock('@cloudflare/kumo', () => {
@@ -72,15 +74,17 @@ vi.mock('./fileTransfers', () => ({
 
 // A save item that asks for a save, and a dialog that says which Gadget it would save.
 vi.mock('./features/gadget-save/GadgetSaveMenuItems', () => ({
-  useSaveVendors: (enabled: boolean) => enabled ? mocks.saveVendors : [],
+  useSaveVendors: (enabled: boolean) =>
+    ({ vendors: enabled ? mocks.saveVendors : [], retry: mocks.retrySaveVendors }),
   GadgetSaveMenuItems: ({ onSelect }: { onSelect: (request: object) => void }) => (
     <button type="button" onClick={() => onSelect({})}>save item</button>
   ),
 }))
 vi.mock('./features/gadget-save/GadgetSaveDialog', () => ({
-  GadgetSaveDialog: ({ gadgetTitle, onClose }: { gadgetTitle: string; onClose: () => void }) => (
-    <section data-save-dialog>saving {gadgetTitle}<button type="button" onClick={onClose}>close save</button></section>
-  ),
+  GadgetSaveDialog: ({ gadgetTitle, onClose }: { gadgetTitle: string; onClose: () => void }) => {
+    mocks.closeSave = onClose
+    return <section data-save-dialog>saving {gadgetTitle}<button type="button" onClick={onClose}>close save</button></section>
+  },
 }))
 
 import GadgetExportMenu from './GadgetExportMenu'
@@ -283,19 +287,42 @@ describe('GadgetExportMenu', () => {
     }
   })
 
-  it('offers saves only with a save scope, and drops a pending save when its Gadget or preview changes', async () => {
-    const formats: GadgetExportFormat[] =
-      [{ id: 'csv', label: 'CSV', mode: 'server', contentType: 'text/csv', fileExtension: '.csv' }]
-    const client = () => gadget({ getExportFormats: async () => formats })
-    const scope = { workspaceId: 'ws', workpieceId: 3 }
-    const dialog = () => container.querySelector('[data-save-dialog]')?.textContent
-    const show = (props: Partial<ComponentProps<typeof GadgetExportMenu>>) => act(async () => root.render(
-      <GadgetExportMenu gadget={null} gadgetTitle="Report" saveScope={scope} {...props} />))
-    const askToSave = async () => {
-      await act(async () => button('open export menu')!.click())
-      await act(async () => button('save item')!.click())
-    }
+  const formats: GadgetExportFormat[] =
+    [{ id: 'csv', label: 'CSV', mode: 'server', contentType: 'text/csv', fileExtension: '.csv' }]
+  const client = () => gadget({ getExportFormats: async () => formats })
+  const scope = { workspaceId: 'ws', workpieceId: 3 }
+  const dialog = () => container.querySelector('[data-save-dialog]')?.textContent
+  const show = (props: Partial<ComponentProps<typeof GadgetExportMenu>>) => act(async () => root.render(
+    <GadgetExportMenu gadget={null} gadgetTitle="Report" saveScope={scope} {...props} />))
+  const askToSave = async () => {
+    await act(async () => button('open export menu')!.click())
+    await act(async () => button('save item')!.click())
+  }
 
+  it('leaves a newer save open when one from before the Gadget changed finishes', async () => {
+    await show({ gadget: client() })
+    await askToSave()
+    const finishReport = mocks.closeSave!
+    await show({ gadget: client(), gadgetTitle: 'Budget' })
+    await askToSave()
+
+    await act(async () => finishReport())
+    expect(dialog()).toContain('saving Budget')
+  })
+
+  it('lists the services to save to again on opening, after they could not be listed', async () => {
+    mocks.retrySaveVendors = vi.fn<() => void>()
+    try {
+      await show({ gadget: client() })
+      expect(mocks.retrySaveVendors).not.toHaveBeenCalled()
+      await act(async () => button('open export menu')!.click())
+      expect(mocks.retrySaveVendors).toHaveBeenCalledOnce()
+    } finally {
+      mocks.retrySaveVendors = undefined
+    }
+  })
+
+  it('offers saves only with a save scope, and drops a pending save when its Gadget or preview changes', async () => {
     const report = client()
     // Until the services to save to are known the menu is still loading, so nothing pops in late.
     mocks.saveVendors = null

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useReducer, useState } from 'react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { ArrowsClockwise, CloudArrowUp } from '@phosphor-icons/react'
 import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
@@ -13,26 +13,29 @@ export type SaveRequest = { target: SaveTarget; storageKey: string | null; saved
 const ITEM = '!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint'
 
 /**
- * The services a gadget might be saved to, or null until they are known: listed ahead of the menu
- * opening, so its save items arrive with the rest instead of after. Empty when `enabled` is false.
+ * `vendors` are the services a gadget might be saved to, or null until they are known: listed
+ * ahead of the menu opening, so its save items arrive with the rest instead of after. Empty when
+ * `enabled` is false, and when they could not be listed, which `retry` is then there to try again.
  */
-export const useSaveVendors = (enabled: boolean): GatekeeperVendorInfo[] | null => {
+export const useSaveVendors = (enabled: boolean) => {
   const authenticatedApi = useOptionalAuthenticatedApi()?.authenticatedApi
-  const [vendors, setVendors] = useState<GatekeeperVendorInfo[] | null>(null)
+  const [listed, setListed] = useState<{ vendors: GatekeeperVendorInfo[] | null; failed?: boolean }>({ vendors: null })
+  const [attempt, retry] = useReducer((attempts: number) => attempts + 1, 0)
 
   useEffect(() => {
     if (!enabled || !authenticatedApi) return
     let cancelled = false
+    setListed({ vendors: null })
     authenticatedApi.listGatekeeperVendors().then(
-      listed => { if (!cancelled) setVendors(listed) },
+      vendors => { if (!cancelled) setListed({ vendors }) },
       err => {
         console.error('Failed to list the services to save to:', err)
-        if (!cancelled) setVendors([])
+        if (!cancelled) setListed({ vendors: [], failed: true })
       })
     return () => { cancelled = true }
-  }, [authenticatedApi, enabled])
+  }, [authenticatedApi, enabled, attempt])
 
-  return enabled && authenticatedApi ? vendors : []
+  return { vendors: enabled && authenticatedApi ? listed.vendors : [], retry: listed.failed ? retry : undefined }
 }
 
 /**

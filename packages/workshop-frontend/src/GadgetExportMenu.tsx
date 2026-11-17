@@ -27,7 +27,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
   // editor follows the agent to another Gadget, its dialog is gone rather than saving the new one.
   const [saving, setSaving] = useState<{ request: SaveRequest; gadget: object; chatId?: number } | null>(null)
   const formatRequest = useRef(0)
-  const saveVendors = useSaveVendors(!!saveScope)
+  const { vendors: saveVendors, retry: retrySaveVendors } = useSaveVendors(!!saveScope)
   const toasts = useKumoToastManager()
 
   useEffect(() => {
@@ -58,6 +58,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
   const handleOpenChange = (open: boolean) => {
     if (open) {
       loadFormats()
+      retrySaveVendors?.()
     } else {
       ++formatRequest.current
       setFormats(null)
@@ -158,7 +159,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
             gadgetTitle={gadgetTitle}
             chatId={chatId}
             request={saving.request}
-            onClose={() => setSaving(null)}
+            onClose={() => setSaving(current => current === saving ? null : current)}
           />
         )}
         {exportingId !== null && (
