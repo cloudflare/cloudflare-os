@@ -304,7 +304,8 @@ Everything specific to one vendor is in this section and in `packages/gatekeeper
 On `GoogleDocSession` (`docs-types.d.ts`, what an agent sees; implemented in `docs.ts`). A
 preview's reads are declared there although they add about a third to what every agent
 given a Doc is sent: a forked preview is edited by an agent, which learns the session from
-these types alone. Sheets and Slides do the same. Each
+these types alone. Sheets and Slides declare their pending changes there too, and the reads
+that only render apart (see "Shared by the three previews"). Each
 reads one tab and takes a required `tabId`: `getContent()` lets it be omitted for a one-tab
 document only because callers older than tabs exist, and these reads are new.
 
@@ -560,6 +561,142 @@ a document's colors are chosen against its paper.
 - **The Docs rendering version moved from 6 to 7.** Snapshots cached and edits queued under 6
   are discarded or marked stale once, as for any rendering change.
 
+## Next previews: Google Sheets and Google Slides
+
+Both use the framework as it stands: session reads and a client each, no kernel or Workshop
+change. One pull request, stacked on the Google Docs one.
+
+### Shared by the three previews
+
+- **One folder per preview**, each with its own `client.js`: `previews/docs/`, `previews/sheets/`,
+  `previews/slides/`. The gatekeeper returns each preview's files with the modules it shares.
+- **Shared modules** (`previews/shared/`), taken out of the Docs client before the other two are
+  written: the theme tokens, the outline sheet, the change navigator, the stale banner, the
+  loading, updating and error states, `make()` and `lineIcon()`, and the refresh handling. The
+  three previews then look and behave as one product.
+- **What each keeps to itself:** how it reads and draws its resource.
+- **A picture read after its listing is not authorized again**, as for Docs images: a slide's
+  pictures are read under the observation of the drawing that named them, to keep the activity
+  log to one entry per read of slides rather than one per picture. Open for review with the Docs
+  one. Content is never read that way: each window of a sheet is authorized and logged, since
+  skipping it would also skip a Drive folder connection's proof that the file is still in the
+  folder.
+- **Bytes travel whole**, as `Uint8Array`: a stream from the backend session does not reach the
+  UI frame (capnweb 0.12.0).
+- **Reads that only render are declared apart.** A spreadsheet's `readDrawing()` and a
+  presentation's drawings, pictures and fonts serve nothing but rendering, and their shapes were
+  most of what a preview added to the types every agent given the connection is sent. They are
+  declared in `sheets-rendering-types.d.ts` and `slides-rendering-types.d.ts`, which no agent is
+  sent. The session's `getRenderingTypes()`, which is in the agent's types, returns them to one
+  that asks, as an agent editing a forked preview would; it reads nothing of the resource and
+  reports no read. The pending-changes reads and a Doc's image reads serve more than rendering
+  and stay where they were. Whether agents call it when they should is unmeasured.
+
+### Google Sheets
+
+Scope of the first version, which is what can be drawn as Google draws it from what the Sheets
+API returns:
+
+- **Drawn:** each cell's displayed value, its effective format (conditional formatting included),
+  font, number format, alignment, wrap and borders; merges; row heights and column widths; hidden
+  and frozen rows and columns; hidden gridlines; the sheet tabs, with added, renamed, moved and
+  deleted sheets marked.
+- **Changes:** a cell a queued change enters a value in or formats is marked and names its
+  change; its saved value is kept beside it for a before and after. Inserted rows and columns are
+  drawn as bands, deleted ones where they stood. A queued formula shows its text with a pending
+  look, since only Google can work out its result.
+- **Not in the first version, wanted later:** charts, images, dropdowns and checkboxes, filters,
+  banding and table styles, rich text within a cell, notes. Each is left a placeholder where it
+  has a place on the grid, so adding one later is a new read and a new drawing, not a redesign.
+  To check before promising any: charts come from the API as specifications with no rendered
+  image, and images placed over the grid may not come from it at all.
+
+Session reads, on `GoogleSpreadsheetSession`:
+
+```ts
+getPendingChanges(sheet: string): Promise<SpreadsheetPendingChanges>;  // { changes, areas, sheets }
+readDrawing(range: string): Promise<SpreadsheetDrawing>;               // one window of one sheet
+```
+
+- A sheet is too large to return whole, so `getPendingChanges()` returns, beside `changes`, the
+  areas the changes touch and the sheet list as saved and as it will be; the cells come from
+  `readDrawing()`. This is the convention of section 2 with the two copies read by window.
+- `readDrawing()` returns a window's cells as they will be, each with its saved value when a
+  change touches it, plus the sizes, merges, frozen and hidden lines the window needs. A sheet's
+  frozen rows and columns come with every window and count toward its cells. A merge that starts
+  outside the window comes with its first cell, up to 20 a window.
+- An area a change touches names its change and what it does; rows and columns a change deletes
+  are a seam with their count where they stood, not their saved contents.
+- A read that fails once a sheet is drawn leaves the drawing in place and offers to try again;
+  a window Google or the session finds too large is asked for again, smaller.
+- **Limits:** 10,000 cells drawn at once (what one format read may fetch). A sheet of up to 200
+  rows by 26 columns is drawn whole from A1; a larger one opens on the areas its changes touch,
+  with a few rows and columns around each, and reads further windows as the person scrolls.
+
+### Google Slides
+
+Slides are drawn from the presentation's own model, not from Google's thumbnails: a thumbnail
+shows only what is saved, and a pending change has to be drawn.
+
+- **Outlines the model lacks come from Google's PowerPoint export.** The Slides API gives a
+  freeform shape no outline and a preset shape none of its dragged handles (how far a corner is
+  rounded, where an arc ends). The export has both. The gatekeeper fetches it through the Drive
+  API inside the read of the slides, at most once a minute and only for a presentation that has
+  such a shape, keeps the outlines and not the file, and matches its shapes to the model's by
+  slide order, document order, kind and placement. A shape it cannot match for certain, and
+  every such shape of an account with no Drive read access, is drawn as a hatched box; a preset
+  is drawn at its defaults. The export is the saved presentation's content, so it adds no
+  observation. A slide whose outlines are still on their way says so, and the client reads it
+  again, three times at most.
+
+- **Resolved as Google resolves it for display.** A placeholder takes its place, fill, outline
+  and text styles from its layout's placeholder, and that from its master's; a slide shows its
+  master's and layout's other elements behind its own; theme colours become the master's.
+- **Drawn:** shapes with their geometry, fill, outline and shadow; text with each paragraph's and
+  run's full style, bullets and autofit scale as Google last reported it; pictures with crop and
+  transparency; tables; lines and arrows; groups; backgrounds.
+- **Not drawn as Google draws them:** how Google re-fits text a pending change lengthens, bent
+  and curved connectors (drawn straight or with a default bend), gradients, a picture's
+  recolouring or mask, video, charts beyond their last picture, and the handles of some presets
+  (braces, curved and bent arrows, ribbons, waves).
+- **Changes:** the slide is shown as it will be, with each changed element outlined and naming
+  its change. A toggle shows the slide as saved. A filmstrip lists the slides with added, changed,
+  moved, skipped and deleted ones marked. Speaker notes are diffed as text.
+- **Checked against Google's own rendering.** `getSlideThumbnail()` is the reference for a saved
+  slide: a slide drawn as saved is compared with its thumbnail.
+
+Session reads, on `GooglePresentationSession`:
+
+```ts
+getPendingChanges(): Promise<PresentationPendingChanges>;        // { changes, slides: saved and pending order }
+readSlideDrawings(slideIds: string[]): Promise<SlideDrawing[]>;  // resolved, pending and saved
+readPicture(pictureId: string, slideId: string): Promise<SlidePictureBytes>;
+listFonts(): Promise<SlideFont[]>;                               // the families and weights the deck uses
+readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
+```
+
+- The scope of `getPendingChanges()` is the presentation, since a change can move, add or delete
+  slides; each change names the slides it touches.
+- **Fonts come through the session.** The frame has no network, so the gatekeeper fetches each
+  font the saved deck uses from Google Fonts and returns its bytes, and the client registers them with
+  `FontFace`. A family Google Fonts does not serve falls back to a system font of the same kind.
+  The frame's content policy has no `font-src`, and `FontFace` takes bytes under it all the same
+  (checked in Chromium). A font only a pending change names is not fetched until the change is
+  saved, and is drawn in the fallback till then: the fetch is not reported as a read, so it is
+  kept to names that are the presentation's and not their author's choice.
+- **Limits:** 50 slides drawn, read 10 at a time, those the changes touch first, then their neighbours, then the
+  rest in order; any other is listed by its title alone. 75 pictures, each fetched only as large
+  as it is drawn. A slide's pictures come named in its drawing, so there is no listing of them.
+
+### Test files and verification
+
+- A spreadsheet and a presentation with real complexity, connected in the test workspace with
+  edit access: both sessions refuse to queue a change to a file their account cannot edit, so a
+  public file is used through a copy the test account owns. Edits are queued through the API and
+  denied, never approved.
+- Each preview: a worker suite for its reads, the client in a same-origin frame in real
+  Chromium, and a live pass against the real file. Slides adds the thumbnail comparison.
+
 ## Pull requests
 
 1. **The framework's kernel half.** `Let a gatekeeper supply code that draws its resource`:
@@ -570,9 +707,8 @@ a document's colors are chosen against its paper.
 
 ## Punted / future work
 
-- **More previews.** Sheets and Slides are wanted next and not designed. Each brings its own
-  session reads and client; neither should need a kernel or Workshop change. If one does, the
-  framework is wrong, not the preview.
+- **More previews.** Each brings its own session reads and client, and should need no kernel or
+  Workshop change. If one does, the framework is wrong, not the preview.
 - **Cancel from the preview.** Sketch: `cancelPendingChange(id)` on the session, and
   `ApprovalQueue.withdrawAction(action)` so the kernel runs its existing reject path (which calls
   the gatekeeper's `rejectAction()`), keeping one reject path. Open: who may withdraw (any holder
