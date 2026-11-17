@@ -1144,10 +1144,20 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Get the UI in which the approver of a creation of the type `resourceTypeId` configures it
    * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
-   * frame's collectResourceUrl() gives CreationApproval.configuration.
+   * frame's collectResourceUrl() gives CreationApproval.configuration, or with `purpose` "save"
+   * (omitted means "create") the `destination` of saveFile().
    */
-  startCreationConfigurator(accountId: number, resourceTypeId: string)
+  startCreationConfigurator(accountId: number, resourceTypeId: string, purpose?: "create" | "save")
       : Promise<GatekeeperUiFrame>;
+
+  /**
+   * Save `file` as a resource of the type `resourceTypeId` in the user's connected account
+   * `accountId` (see GatekeeperUser.saveFile(), which defines the other parameters). Pass the
+   * promise GadgetClient.export() returns as `file`, so the export goes straight to the
+   * gatekeeper instead of through the client.
+   */
+  saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>): Promise<{ url: string }>;
 
   /**
    * Remove a shared workspace from the user's home page listing. Does NOT revoke the user's

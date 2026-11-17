@@ -188,6 +188,7 @@ type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
 type ResourceCreatorStub = Required<Pick<GatekeeperVendor, "createResource">>;
 type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
 type CreationConfiguratorStub = Required<Pick<GatekeeperUser, "startCreationConfigurator">>;
+type FileSaverStub = Required<Pick<GatekeeperUser, "saveFile">>;
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
@@ -2677,12 +2678,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return record.account.startResourceConfigurator(resourceTypeId);
   }
 
-  async startCreationConfigurator(accountId: number, resourceTypeId: string)
+  async startCreationConfigurator(
+      accountId: number, resourceTypeId: string, purpose?: "create" | "save")
       : Promise<GatekeeperUiFrame> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
     return (record.account as unknown as CreationConfiguratorStub)
-        .startCreationConfigurator(resourceTypeId);
+        .startCreationConfigurator(resourceTypeId, purpose);
+  }
+
+  async saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>): Promise<{url: string}> {
+    try {
+      let record = this.storage.connectedAccounts.get(accountId);
+      if (!record) throw new Error("No such account.");
+      let resource = findResourceType(await record.account.getSupportedResources(), resourceTypeId);
+      if (!resource?.savableFrom?.includes(contentType)) {
+        throw new Error("This account cannot save that kind of file as that resource type.");
+      }
+      await this.#assertResourceEnabled(record.vendorId, resource);
+      return await (record.account as unknown as FileSaverStub)
+          .saveFile(resourceTypeId, destination, name, contentType, file);
+    } catch (err) {
+      // A refusal leaves the file unread: tell its producer now, not at its own deadline.
+      void file.cancel(err).catch(() => {});
+      throw err;
+    }
   }
 
   /**
