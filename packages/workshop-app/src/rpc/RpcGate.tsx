@@ -24,6 +24,10 @@ type Session =
 
 const CONNECTING: Session = { phase: 'connecting' }
 
+// A deployment behind Cloudflare Access (as the internal one is) signs in with the user's Access
+// session and refuses passwords, so the app never shows its sign-in form there. Inlined at build.
+const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
+
 const Notice = ({ children }: { children: ReactNode }) => (
   <div className="grid h-full place-items-center p-6 text-base text-kumo-subtle">{children}</div>
 )
@@ -60,14 +64,20 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
 
     const signIn = async () => {
       try {
-        // Written out where it is used, so that a build, where it is `false`, drops the import and
-        // everything behind it, the dev account's password included.
-        const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
-          ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
-          : null)
-        if (!token) return finish({ phase: 'signedOut' })
-        // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
-        api = publicApi.authenticate(token)
+        if (CF_ACCESS_MODE) {
+          // The browser's Access session rides on the WebSocket's upgrade request, so there is no
+          // token to keep. Pipelined as below: whoami() doubles as the check.
+          api = publicApi.authenticateFromCfAccess()
+        } else {
+          // Written out where it is used, so that a build, where it is `false`, drops the import and
+          // everything behind it, the dev account's password included.
+          const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
+            ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
+            : null)
+          if (!token) return finish({ phase: 'signedOut' })
+          // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
+          api = publicApi.authenticate(token)
+        }
         const value: ApiSession = { api, user: await api.whoami(), userChanged, reconnecting: false }
         finish({ phase: 'ready', value, reconnecting: { ...value, reconnecting: true } })
       } catch (error) {
