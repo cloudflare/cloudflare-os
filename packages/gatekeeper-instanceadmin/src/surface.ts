@@ -25,6 +25,7 @@ const NAMED_SERVICES = [ROOT, "AdminWorkspaceView"];
 const RESERVED_NAMES = new Set([
   "constructor", "then", "dup", "onRpcBroken", ...Object.getOwnPropertyNames(Object.prototype),
   "openIssueReport", "subscribeIssueReported", "subscribeInvestigationComplete",
+  "subscribeIssueReportChanged",
 ]);
 
 /**
@@ -256,10 +257,17 @@ the user who owns this workspace, a deployment admin.
 - subscribeIssueReported() binds a hook that is called once for each issue report filed, with its
   id, its priority and the time it was filed; subscribeInvestigationComplete() binds one that is
   called each time an admin ends a report's investigation, with its id, its new status and the
-  time. Both carry ids and labels only: the callback reads the report through this binding.
-- A callback can be called more than once for the same event: it keys its work by the report's
-  id, and for an investigation by the event's time too, since a report's investigation can end
-  twice with the same status.
+  time; subscribeIssueReportChanged() binds one that is called for every write to a report after
+  it was filed (a status, an assignment, a thread entry, its links), with its id, what the write
+  was and the time. All carry ids and labels only: the callback reads the report through this
+  binding.
+- subscribeIssueReportChanged() fires for writes this workspace's own code made too. That is how
+  code learns that an action it queued was applied; a callback that writes to a report must not
+  answer its own change. No event comes for an action that changed nothing (a claim of a report
+  its owner already holds, a status the report already has), was denied, or was refused where it
+  lands: code reads the report, and never waits on the event alone.
+- A callback can be called more than once for the same event: it keys its work by the event's
+  id (eventId), which is the same each time one event is delivered and never another event's.
 - A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work and returns without waiting for it.
   One that takes longer counts as failed and is called again later.
 - A hook wakes a gadget's stored callback or this chat, never a new chat.

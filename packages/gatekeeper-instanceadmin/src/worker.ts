@@ -124,6 +124,11 @@ class BindingSession extends forwarderFor(ADMIN_SCHEMA.entry) {
     await this.#bind("subscribeInvestigationComplete", "investigationComplete", hook);
   }
 
+  /** As subscribeIssueReported(), for each write to a report after it was filed. */
+  async subscribeIssueReportChanged(hook: RpcStub<IssueReportHookTarget>): Promise<void> {
+    await this.#bind("subscribeIssueReportChanged", "changed", hook);
+  }
+
   async #bind(
     method: string, kind: IssueReportHookKind, hook: RpcStub<IssueReportHookTarget>,
   ): Promise<void> {

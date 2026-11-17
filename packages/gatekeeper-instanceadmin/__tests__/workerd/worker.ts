@@ -54,7 +54,7 @@ export function hookState(hook: string): HookState {
   return state;
 }
 
-/** A gadget's stored callback, for either hook: records each call, or fails as its state says. */
+/** A gadget's stored callback, for any hook: records each call, or fails as its state says. */
 class RecordingHook extends RpcTarget {
   readonly #state: HookState;
 
@@ -69,6 +69,10 @@ class RecordingHook extends RpcTarget {
 
   async investigationComplete(event: unknown): Promise<void> {
     await this.#receive("investigationComplete", event);
+  }
+
+  async issueReportChanged(event: unknown): Promise<void> {
+    await this.#receive("issueReportChanged", event);
   }
 
   async #receive(method: string, event: unknown): Promise<void> {

@@ -179,11 +179,16 @@ describe("the declarations", () => {
         "subscribeIssueReported() binds a hook that is called once for each issue report filed, " +
         "with its id, its priority and the time it was filed; subscribeInvestigationComplete() " +
         "binds one that is called each time an admin ends a report's investigation, with its id, " +
-        "its new status and the time. Both carry ids and labels only");
+        "its new status and the time; subscribeIssueReportChanged() binds one that is called for " +
+        "every write to a report after it was filed (a status, an assignment, a thread entry, " +
+        "its links), with its id, what the write was and the time. All carry ids and labels " +
+        "only: the callback reads the report through this binding.");
     expect(preamble).toContain(
         "A callback can be called more than once for the same event: it keys its work by the " +
-        "report's id, and for an investigation by the event's time too, since a report's " +
-        "investigation can end twice with the same status.");
+        "event's id (eventId), which is the same each time one event is delivered and never " +
+        "another event's.");
+    // The declarations and the design record key by the event's id, and so does this.
+    expect(preamble).not.toContain("by the report's id");
     expect(preamble).toContain(
         `A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work ` +
         "and returns without waiting for it. One that takes longer counts as failed and is " +
@@ -194,6 +199,19 @@ describe("the declarations", () => {
         "attached its images or given the grant that may come with it (both are later calls), so " +
         "a subscriber that reads at once may find no image and be refused content, and reads " +
         "again later rather than concluding there is none.");
+  });
+
+  it("say that the changed hook fires for a workspace's own writes, and what sends no event", () => {
+    const preamble = PREAMBLE.replace(/\s+/g, " ");
+    expect(preamble).toContain(
+        "subscribeIssueReportChanged() fires for writes this workspace's own code made too. That " +
+        "is how code learns that an action it queued was applied; a callback that writes to a " +
+        "report must not answer its own change.");
+    // Code told to learn of an applied action from the event is told when none comes.
+    expect(preamble).toContain(
+        "No event comes for an action that changed nothing (a claim of a report its owner " +
+        "already holds, a status the report already has), was denied, or was refused where it " +
+        "lands: code reads the report, and never waits on the event alone.");
   });
 
   it("are followed by hand-written ones that name, to find a filed request, only what they declare", () => {
@@ -384,7 +402,10 @@ describe("assertAdminSchema() refuses", () => {
       refuses((schema) => { schema.services[VIEW]!.methods.push(methodNamed(name)); },
           new RegExp(`AdminWorkspaceView\\.${name} has a reserved name`));
     }
-    for (const name of ["openIssueReport", "subscribeIssueReported", "subscribeInvestigationComplete"]) {
+    for (const name of [
+      "openIssueReport", "subscribeIssueReported", "subscribeInvestigationComplete",
+      "subscribeIssueReportChanged",
+    ]) {
       refuses((schema) => { schema.services[ROOT]!.methods.push(methodNamed(name)); },
           new RegExp(`AdminApi\\.${name} has a reserved name`));
     }

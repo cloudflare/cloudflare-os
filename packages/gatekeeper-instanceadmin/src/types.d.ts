@@ -49,6 +49,23 @@ export interface AdminBinding extends AdminApi {
    * subscribeIssueReported().
    */
   subscribeInvestigationComplete(hook: InvestigationCompleteHook): Promise<void>;
+
+  /**
+   * Call `hook` each time an issue report is written to after it was filed: its status set,
+   * a claim, a take-over or a release, an entry added to its thread (its reporter's reply, an
+   * admin's reply or note, an agent's), or its links replaced. It fires for every such write,
+   * whoever made it: an admin, the reporter, another admin's agents and gadgets, and YOUR OWN
+   * agents and gadgets too. That is how code learns that an action it queued was applied: the
+   * event arrives once the action is approved and has run. So a subscriber that writes to a
+   * report on each event must not answer its own change: it reads the report, acts only where
+   * something it is for has changed, and never writes merely because it was called. No event
+   * comes for an action that changed nothing when it ran (a claim of a report this workspace's
+   * owner already holds, a status the report already has), for one that was denied, or for
+   * one refused where it lands (`assigned`, `threadFull`): code that waits to learn what
+   * became of an action reads the report as well, and never waits on the event alone. `hook`
+   * is a persistent stub, as for subscribeIssueReported().
+   */
+  subscribeIssueReportChanged(hook: IssueReportChangedHook): Promise<void>;
 }
 
 /**
@@ -94,12 +111,40 @@ export interface InvestigationCompleteHook {
 }
 
 /**
+ * The callback of subscribeIssueReportChanged(). An event carries ids and labels only: never
+ * the text of an entry, a name or who made the write. Read the report through this binding.
+ * It is called for a write this workspace's own agents and gadgets made too. A report that
+ * leaves "investigating" calls this and InvestigationCompleteHook, with an event id each. A
+ * callback can be called more than once for the same event: key the work by `eventId`, which
+ * is the same each time one event is delivered and differs between two writes. It answers
+ * within 30 seconds, as IssueReportedHook's does.
+ */
+export interface IssueReportChangedHook {
+  /** Called when the report was written to, at `at`. */
+  issueReportChanged(event: {
+    /** Random and opaque: this event's own id. */
+    eventId: string;
+    reportId: string;
+    /** What the write was: the status set ("status"), a claim, a take-over or a release
+     * ("assignment"), a public entry by the reporter or an admin ("reply"), an entry for
+     * admins alone ("note"), or the links replaced ("links"). */
+    change: "status" | "assignment" | "reply" | "note" | "links";
+    /** The status the write set, as admins read it, when it set one: on every "status", and
+     * on the reporter's "reply" that reopened the report. */
+    status?: "new" | "investigating" | "answered" | "waitingOnReporter" | "withAdmin" |
+        "fixSuggested" | "fixInProgress" | "fixProposed" | "closed";
+    at: Date;
+  }): void;
+}
+
+/**
  * What a gadget's callback implements, as the RpcTarget its [restore]() returns: the method of
- * each hook it is subscribed to, as IssueReportedHook and InvestigationCompleteHook declare it.
- * One callback can serve both hooks.
+ * each hook it is subscribed to, as IssueReportedHook, InvestigationCompleteHook and
+ * IssueReportChangedHook declare it. One callback can serve all three hooks.
  */
 export interface IssueReportHook
-  extends Partial<IssueReportedHook>, Partial<InvestigationCompleteHook> {}
+  extends Partial<IssueReportedHook>, Partial<InvestigationCompleteHook>,
+    Partial<IssueReportChangedHook> {}
 
 /**
  * One issue report and nothing else: the report as its reporter reads it, its images, a reply in

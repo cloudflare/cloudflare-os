@@ -1,8 +1,8 @@
-// The admin gatekeeper's two hooks: one called for each issue report filed, one for each
-// investigation that ends. The Workshop's issue report store tells the vendor of both
-// (GatekeeperVendor.issueReportEvents()), as ids and labels; the deployment's one
-// IssueReportHookDriver queues each event for the hooks enabled for its kind and delivers it from
-// its alarm, retrying a delivery that failed.
+// The admin gatekeeper's three hooks: one called for each issue report filed, one for each
+// investigation that ends, and one for each write to a report after it was filed. The Workshop's
+// issue report store tells the vendor of all three (GatekeeperVendor.issueReportEvents()), as ids
+// and labels; the deployment's one IssueReportHookDriver queues each event for the hooks enabled
+// for its kind and delivers it from its alarm, retrying a delivery that failed.
 //
 // A session's subscribe method runs in the connection's facet, which mints a persistent stub to
 // itself for delivery and binds an IssueReportHookController carrying that stub in its props. The
@@ -22,14 +22,16 @@ import {
 } from "@gadgets/gatekeeper-kit/hook-registry";
 import { createLogger } from "@gadgets/observability/logger";
 import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
-import type { IssueReportEvent } from "@gadgets/workshop-shared/admin-gatekeeper";
+import {
+  ISSUE_REPORT_CHANGES, type IssueReportEvent,
+} from "@gadgets/workshop-shared/admin-gatekeeper";
 import { ISSUE_REPORT_PRIORITIES, ISSUE_REPORT_STATUSES } from "@gadgets/workshop-shared/api";
 import type {
   ApprovalQueue, HookController, HookDescription, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ADMIN_SUBRESOURCE } from "./forward.js";
 import { HOOK_CALLBACK_TIMEOUT_MS } from "./surface.js";
-import type { InvestigationCompleteHook, IssueReportedHook } from "./types";
+import type { InvestigationCompleteHook, IssueReportChangedHook, IssueReportedHook } from "./types";
 
 // Event names and counts only: an event's report id stays in the workspace's activity.
 const logger = createLogger<{ vendorId: string; size: number }>({
@@ -37,7 +39,7 @@ const logger = createLogger<{ vendorId: string; size: number }>({
 });
 
 /** The kinds of event this Worker has a hook for. An event of any other kind is dropped. */
-const KINDS = ["reported", "investigationComplete"] as const satisfies
+const KINDS = ["reported", "investigationComplete", "changed"] as const satisfies
     readonly IssueReportEvent["kind"][];
 
 /** Which hook: the kind of the events it is called with. */
@@ -54,10 +56,12 @@ export type IssueReportHookEvent = Extract<IssueReportEvent, { kind: IssueReport
  */
 export type SentIssueReportEvent = {
   kind: string; id: string; reportId: string; at: Date; priority?: string; status?: string;
+  change?: string;
 };
 
-/** A gadget's stored callback for either hook, as types.d.ts declares the two. */
-export type IssueReportHookTarget = RpcTarget & (IssueReportedHook | InvestigationCompleteHook);
+/** A gadget's stored callback for any of the hooks, as types.d.ts declares the three. */
+export type IssueReportHookTarget = RpcTarget &
+    (IssueReportedHook | InvestigationCompleteHook | IssueReportChangedHook);
 
 /** What a hook delivers, sealed into its delivery stub by the facet's `ctx.restore()`. */
 export type IssueReportHookParams = { kind: IssueReportHookKind };
@@ -85,6 +89,25 @@ const HOOK_DESCRIPTIONS: Record<IssueReportHookKind, HookDescription> = {
       "\"investigating\", with the report's id, its new status and the time of the change. It " +
       "carries ids and labels only: nothing of the report's text, its thread or who filed it.",
   },
+  changed: {
+    title: "Watch for changes to issue reports",
+    description: "Call this hook each time an issue report is written to after it was " +
+      "filed: its status set, a claim or a release, an entry added to its thread, or its " +
+      "links replaced. It carries the report's id, what the write was, the status it set " +
+      "if it set one, and the time: nothing of the report's text, its thread or who wrote. " +
+      "It fires for changes this workspace's own agents and gadgets made too, which is how " +
+      "code learns that an action it queued was applied, so a subscriber that writes to a " +
+      "report on each event must not answer its own change.",
+  },
+};
+
+/** What a firing's queue is asked to observe before a hook is called with an event of each kind. */
+const OBSERVED: Record<IssueReportHookKind, string> = {
+  reported: "Receive the id, the priority and the filing time of a new issue report.",
+  investigationComplete:
+    "Receive the id, the new status and the time of an issue report whose investigation ended.",
+  changed: "Receive the id of an issue report that was written to, what the write was, the " +
+      "status it set if it set one, and the time.",
 };
 
 // ── Facet side ──────────────────────────────────────────────────────
@@ -125,8 +148,8 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
 
   /**
    * Observes the event on the firing's queue, then calls the hook with it. The observation
-   * carries the whole binding's subresource and no restricted-data flag: an event is an id and a
-   * label, so a workspace that only receives events keeps its rules. A refused observation calls
+   * carries the whole binding's subresource and no restricted-data flag: an event is an id and
+   * labels, so a workspace that only receives events keeps its rules. A refused observation calls
    * no hook, and a throw from either is retried by the driver, as is a callback that has not
    * answered within HOOK_CALLBACK_TIMEOUT_MS: it is not waited for, and whatever it comes to
    * later is not looked at.
@@ -137,9 +160,7 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
   ): Promise<void> {
     // The driver queues an event only for the hooks of its kind.
     if (event.kind !== this.#kind) return;
-    const rendered = buildDescription(event.kind === "reported"
-        ? "Receive the id, the priority and the filing time of a new issue report."
-        : "Receive the id, the new status and the time of an issue report whose investigation ended.");
+    const rendered = buildDescription(OBSERVED[event.kind]);
     rendered.inline("Event", event.kind).inline("Report", event.reportId);
     const { description, fields } = rendered.finish();
     await approvalQueue.authorizeObservation({
@@ -163,14 +184,28 @@ export class IssueReportHookDeliveryImpl extends RpcTarget implements IssueRepor
   }
 
   async #call(callback: RpcStub<IssueReportHookTarget>, event: IssueReportHookEvent): Promise<void> {
-    if (event.kind === "reported") {
-      const { id: eventId, reportId, priority, at: filedAt } = event;
-      await (callback as RpcStub<RpcTarget & IssueReportedHook>)
-          .issueReported({ eventId, reportId, priority, filedAt });
-    } else {
-      const { id: eventId, reportId, status, at } = event;
-      await (callback as RpcStub<RpcTarget & InvestigationCompleteHook>)
-          .investigationComplete({ eventId, reportId, status, at });
+    switch (event.kind) {
+      case "reported": {
+        const { id: eventId, reportId, priority, at: filedAt } = event;
+        await (callback as RpcStub<RpcTarget & IssueReportedHook>)
+            .issueReported({ eventId, reportId, priority, filedAt });
+        break;
+      }
+      case "investigationComplete": {
+        const { id: eventId, reportId, status, at } = event;
+        await (callback as RpcStub<RpcTarget & InvestigationCompleteHook>)
+            .investigationComplete({ eventId, reportId, status, at });
+        break;
+      }
+      case "changed": {
+        const { id: eventId, reportId, change, status, at } = event;
+        await (callback as RpcStub<RpcTarget & IssueReportChangedHook>)
+            .issueReportChanged({ eventId, reportId, change, ...(status && { status }), at });
+        break;
+      }
+      default:
+        // A kind added to KINDS does not compile until it has a branch here.
+        event satisfies never;
     }
   }
 }
@@ -229,7 +264,7 @@ const knows = <Label extends string>(
  * build's labels whatever its sender added.
  */
 function declaredFields(event: SentIssueReportEvent): IssueReportHookEvent | undefined {
-  const { kind, id, reportId, at, priority, status } = event;
+  const { kind, id, reportId, at, priority, status, change } = event;
   if (kind === "reported") {
     return knows(ISSUE_REPORT_PRIORITIES, priority) ? { kind, id, reportId, priority, at } : undefined;
   }
@@ -238,6 +273,12 @@ function declaredFields(event: SentIssueReportEvent): IssueReportHookEvent | und
     return knows(ISSUE_REPORT_STATUSES, status) && status !== "new" && status !== "investigating"
         ? { kind, id, reportId, status, at }
         : undefined;
+  }
+  if (kind === "changed") {
+    if (!knows(ISSUE_REPORT_CHANGES, change)) return undefined;
+    // Not every write sets a status: one that names a status must name one this build knows.
+    if (status === undefined) return { kind, id, reportId, change, at };
+    return knows(ISSUE_REPORT_STATUSES, status) ? { kind, id, reportId, change, status, at } : undefined;
   }
   return undefined;
 }
