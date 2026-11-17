@@ -15,7 +15,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { concatBytes, encodeLooseObject, gitObjectOid } from "../src/git-codec";
+import { buildPackStream, concatBytes, encodeLooseObject, gitObjectOid } from "../src/git-codec";
 import { decodePack } from "./git-cache-fixtures";
 
 declare module "cloudflare:workers" {
@@ -103,6 +103,47 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> 
 }
 
 describe("push authorization through the Overseer chokepoints", () => {
+  it.each(["connected", "removed", "restricted"])(
+      "rechecks authorization after proving a cached base (%s)", async state => {
+    await inOverseer(`push-reprove-${state}`, async impl => {
+      let tree = await storeLocal(impl, "tree", new Uint8Array(0));
+      let payload = commitPayload(tree, [], "cached base from an earlier connection");
+      let base = impl.gitCache.putFromGatekeeper(GATEKEEPER + 1, "commit", payload);
+      let head = await storeLocal(impl, "commit", commitPayload(tree, [base], "local work"));
+      impl.gitCache.advertiseCommit(GATEKEEPER, base);
+      impl.getGatekeeperFacet = () => ({
+        async gitPull(oids: string[]) {
+          expect(oids).toStrictEqual([base]);
+          if (state === "removed") impl.removeGatekeeper(GATEKEEPER);
+          if (state === "restricted") impl.storage.containsRestrictedData.put(true);
+          return {
+            [Symbol.dispose]() {},
+            async stream() {
+              return buildPackStream(1, (async function* () {
+                yield { type: "commit" as const, payload };
+              })());
+            },
+            async status() { return { state: "complete" }; },
+          };
+        },
+      });
+
+      let submitted = impl.submitAction(GATEKEEPER, 1, pushDescription([head]), { from: "user" });
+      if (state === "connected") {
+        await submitted;
+        let actions = Array.from(impl.storage.actions.list()) as { id: number }[];
+        expect(actions).toHaveLength(1);
+        expect(marksOf(impl, actions[0].id)).toStrictEqual([head]);
+      } else {
+        await expect(submitted).rejects.toThrow(
+            state === "removed" ? /removed from this workspace/ : /git push cannot be reviewed/);
+        expect(Array.from(impl.storage.actions.list())).toStrictEqual([]);
+        expect(Array.from(impl.storage.gitObjectMetadata.byPendingPushAction.list()))
+            .toStrictEqual([]);
+      }
+    });
+  });
+
   it("verifies, marks, applies with an action-scoped cache, and converts marks", async () => {
     await inOverseer("push-apply", async impl => {
       let { base, head } = await seedPushableHistory(impl);

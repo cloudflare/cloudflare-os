@@ -6716,8 +6716,14 @@ class OverseerImpl implements AgentHooks {
 
   async submitAction(gatekeeperId: number, action: number | "create",
                      description: ActionDescription, caller: GatekeeperCaller)
-      : Promise<void> {
-    // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
+       : Promise<void> {
+    // Verify before queuing anything. A cached ancestor advertised by this destination may need
+    // a proof-grade pull, so recheck connection existence and restricted mode after the await.
+    if (description.pushedCommits?.length && !this.storage.containsRestrictedData.get()) {
+      await this.gitCache.verifyPushAncestry(gatekeeperId, description.pushedCommits);
+    }
+
+    // An ancestry pull or in-flight facet RPC can outlive removeGatekeeper, and an action on a removed
     // connection could never be approved or rejected (both dereference the facet).
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
     if (!gatekeeper) {
@@ -6736,15 +6742,6 @@ class OverseerImpl implements AgentHooks {
           "This workspace has observed sensitive data. To prevent leaks, an action is only accepted " +
           "when the approver can review everything it will send, and a git push cannot be " +
           "reviewed as of yet.");
-    }
-
-    // Push authorization (see ActionDescription.pushedCommits): before anything is queued,
-    // verify that every declared head's ancestry reaches a commit proven on this gatekeeper's
-    // remote. This is the chokepoint that makes an accidental push to an unrelated remote fail
-    // closed at queue time, with the error propagating to the submitting gatekeeper (and on to
-    // the agent). Read-only; the marking walk below runs only if this passes.
-    if (description.pushedCommits !== undefined && description.pushedCommits.length > 0) {
-      this.gitCache.verifyPushAncestry(gatekeeperId, description.pushedCommits);
     }
 
     let actionId = this.storage.nextActionId.get();

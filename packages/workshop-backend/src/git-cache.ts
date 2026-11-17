@@ -69,8 +69,8 @@
 //   the other being that reading a `gitObjects` row means reading the whole object content.
 // - `ensureGitObjects()` is the pull driver: it routes a fault to the recorded sources and calls
 //   `Gatekeeper.gitPull()` through the overseer-provided delegate. It is reachable only from
-//   overseer-initiated paths (lazy reads and the pending-push pull-through), so a gatekeeper can
-//   never direct a pull of anything outside a verified queued push.
+//   overseer-initiated paths (lazy reads and the pending-push pull-through). Push verification
+//   also pulls advertised ancestors directly from the destination to establish provenance.
 // - `verifyPushAncestry()`/`markPushClosure()` implement `ActionDescription.pushedCommits`
 //   authorization at the `submitAction` chokepoint, and the mark lifecycle helpers convert or
 //   clear the marks when the action applies, is rejected, or its gatekeeper is deleted.
@@ -1587,13 +1587,14 @@ export class WorkspaceGitCache {
 
   /**
    * Verifies that every parent chain from each declared head reaches a commit *proven* on the
-   * gatekeeper's remote (`onRemote` -- an advertisement never qualifies), walking cached commit
-   * objects only. Throws an agent-visible error for an absent ancestor and for a parentless
+   * gatekeeper's remote (`onRemote` -- an advertisement never qualifies). Advertised ancestors
+   * are pulled from that destination even when cached through another connection: only the
+   * hash-verified response establishes proof. Throws for an absent ancestor and for a parentless
    * root that isn't itself proven (no vacuous pass for roots): this is the safeguard that makes
-   * an accidental push to an unrelated remote fail closed at queue time. Read-only; call before
-   * `markPushClosure()`.
+   * an accidental push to an unrelated remote fail closed at queue time. Does not grant pending
+   * push access; call before `markPushClosure()`.
    */
-  verifyPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): void {
+  async verifyPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): Promise<void> {
     let visited = new Set<GitOid>();
     let stack = heads.map(validateGitOid);
     while (stack.length > 0) {
@@ -1601,6 +1602,13 @@ export class WorkspaceGitCache {
       if (visited.has(oid)) continue;
       visited.add(oid);
       let meta = this.storage.gitObjectMetadata.get(oid);
+      if (!meta?.onRemote.includes(gatekeeperId) && meta?.pullableFrom.includes(gatekeeperId)) {
+        await this.puller.pull(gatekeeperId, [oid], this.#exactObjectHints("commit"));
+        meta = this.storage.gitObjectMetadata.get(oid);
+        if (!meta?.onRemote.includes(gatekeeperId)) {
+          throw new Error(`Cannot verify push: the destination did not provide commit ${oid}.`);
+        }
+      }
       if (meta?.onRemote.includes(gatekeeperId)) {
         // Prefer the decoded local type over the recorded one: an onRemote row's type is
         // usually measured, but marks converted after an applied push carry the walk's
