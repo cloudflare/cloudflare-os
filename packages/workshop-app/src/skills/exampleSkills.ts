@@ -94,7 +94,7 @@ const EXAMPLES: Example[] = [
   },
 ]
 
-/** What the skills will read like, to start with, until they can be read for real. */
+/** What the skills read like, for what has no Context Library to read them from (`exampleSkillsBackend`). */
 export const exampleSkills = (): Skill[] =>
   EXAMPLES.map(({ days, instructions, files = [], ...skill }) => ({
     ...skill,

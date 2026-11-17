@@ -264,7 +264,7 @@ export const SettingsPreview = () => {
           <MutedWorkspaces title="With none" muted={[]} others={WORKSPACES} problem="Couldn’t mute the workspace." onMute={(id) => say(`muted ${id}`)} onUnmute={() => {}} />
         </div>
       </Section>
-      <Section title="SkillRow, in a ScrollArea, which is as tall as three of them and draws its scrollbar over their ends: a skill as a list has it, which opens it: the viewer’s own with a tag, somebody else’s, the organization’s, one with nobody’s picture, tag or time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and a tag, offered from those there are">
+      <Section title="SkillRow, in a ScrollArea, which is as tall as three of them and draws its scrollbar over their ends: a skill as a list has it, which opens it: the viewer’s own with a tag, somebody else’s, the organization’s, one with nobody’s picture, tag or time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and a tag, offered from those there are; held while it is added, and open under why where it could not be (one called Weekly report)">
         <div className="flex w-full max-w-3xl flex-col gap-3">
           <ScrollArea className="max-h-48 rounded-3xl bg-kumo-tint">
             <div className="flex flex-col p-1.5">
@@ -282,7 +282,10 @@ export const SettingsPreview = () => {
             open={addingSkill}
             onOpenChange={setAddingSkill}
             tags={['Engineering', 'Meetings', 'Reports']}
-            onAdd={(skill) => {
+            onAdd={async (skill) => {
+              // As long as keeping it takes, and refused as one there is already would be.
+              await new Promise((resolve) => setTimeout(resolve, 600))
+              if (skill.name.toLowerCase() === 'weekly report') throw new Error('A skill is already there.')
               say(`added “${skill.name}”${skill.tag ? `, tagged ${skill.tag}` : ''}`)
               setAddingSkill(false)
             }}

@@ -1,5 +1,6 @@
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { ApiSession } from '@/rpc/ApiContext'
+import { exampleSkillsBackend } from '@/skills/MemorySkillsBackend'
 import { MockOverseer } from './MockOverseer'
 import { AGENT, VIEWER, type Scenario } from './scenario'
 
@@ -27,6 +28,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     listWorkspaces: async () => [workspace],
     // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.
     listOutputs: async () => ({ outputs: [], catchingUp: false }),
+    // The example skills, kept as the Context Library would keep them, for a new chat's composer.
+    ...exampleSkillsBackend().asApi(),
   }
   const api = new Proxy(implemented, {
     get: (target, name) => {

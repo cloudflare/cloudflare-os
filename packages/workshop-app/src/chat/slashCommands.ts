@@ -1,6 +1,7 @@
 import type { SlashCommandChoice, SlashCommandId, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
-import { humanizeSkillName } from '@/skills/skillName'
+import { humanizeSkillName, skillNameFromTitle } from '@/skills/skillName'
+import type { Skill } from '@/skills/SkillStore'
 
 /**
  * What a command is known by in the composer, the same before a workspace has one as in it: a
@@ -21,6 +22,19 @@ export const composerCommandOf = ({ selection, name, description, providerLabel 
   ...(selection.builtin
     ? { kind: 'builtin', ...(BUILTINS[selection.commandId] ?? { title: humanizeSkillName(name), description }) }
     : { kind: 'skill', title: humanizeSkillName(name), description, source: providerLabel }),
+})
+
+/**
+ * One of the user's skills as the composer offers it before any workspace has listed it, as a new
+ * chat's does: by the same key the workspace the first message makes will know it by, its id.
+ */
+export const skillCommandOf = ({ id, name, description, tag }: Pick<Skill, 'id' | 'name' | 'description' | 'tag'>): ComposerCommand => ({
+  key: keyOf({ gatekeeperId: 0, commandId: id }),
+  name: skillNameFromTitle(name),
+  title: name,
+  description,
+  kind: 'skill',
+  source: tag,
 })
 
 /**

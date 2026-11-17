@@ -1,6 +1,7 @@
 import { useRef, useState, type ChangeEvent } from 'react'
 import { FolderSimpleIcon, PencilSimpleIcon, UploadSimpleIcon } from '@phosphor-icons/react'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
+import { Banner } from '@/components/Banner'
 import { ListToolbar } from '@/blocks/ListToolbar'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
 import { SkillRow } from '@/blocks/SkillRow'
@@ -10,11 +11,14 @@ import { ENOUGH } from '@/components/listView'
 import { ScrollArea } from '@/components/ScrollArea'
 import { useListView } from '@/hooks/useListView'
 import { useApi } from '@/rpc/ApiContext'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { readUploadFiles } from './skillFiles'
 import { skillList, skillOwner, skillTags } from './skillList'
 import { prepareSkillUploads } from './skillUpload'
-import { skillStore, useSkills } from './useSkills'
+import { skillStore, useSkillsState } from './useSkills'
+
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 export type SkillLibraryProps = {
   onOpenSkill: (id: string) => void
@@ -33,12 +37,15 @@ export type SkillLibraryProps = {
  * with a `SKILL.md` is one with everything in it (`prepareSkillUploads`). One added alone is
  * opened, to be gone on with.
  *
- * They are kept for the visit only yet (see `SkillStore`). The controls are over the list on a
- * narrow screen too, as it is one group among the page's others, not the page.
+ * They are the user's Context Library's (see `SkillStore`), which a user who has none is offered
+ * where the deployment does. The controls are over the list on a narrow screen too, as it is one
+ * group among the page's others, not the page.
  */
 export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
-  const skills = useSkills()
+  const state = useSkillsState()
+  const skills = state.status === 'ready' ? state.skills : skillStore.skills
   const { user } = useApi()
+  const connection = useConnectionNotice()
   const [writing, setWriting] = useState(false)
   // Why what was chosen made no skills.
   const [problem, setProblem] = useState<string>()
@@ -68,18 +75,30 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
     ))
   const { search, order, filter } = list.controls
 
+  const turnOn = () => {
+    if (connection?.blocked()) return
+    setProblem(undefined)
+    skillStore.turnOn().catch((error: unknown) => setProblem(`Couldn’t turn on skills: ${messageOf(error)}`))
+  }
+
   const upload = async ({ target }: ChangeEvent<HTMLInputElement>) => {
     const chosen = [...(target.files ?? [])]
     // So that choosing the same again is a change.
     target.value = ''
-    if (chosen.length === 0) return
+    if (chosen.length === 0 || connection?.blocked()) return
     setProblem(undefined)
+    let candidates
     try {
-      const ids = skillStore.addUploads(prepareSkillUploads(await readUploadFiles(chosen)))
-      if (ids.length === 0) setProblem('No skills in what was chosen. A skill is a Markdown file, or a folder with a SKILL.md in it.')
+      candidates = prepareSkillUploads(await readUploadFiles(chosen))
+    } catch (error) {
+      return setProblem(`Couldn’t read what was chosen: ${messageOf(error)}`)
+    }
+    if (candidates.length === 0) return setProblem('No skills in what was chosen. A skill is a Markdown file, or a folder with a SKILL.md in it.')
+    try {
+      const ids = await skillStore.addUploads(candidates)
       if (ids.length === 1) onOpenSkill(ids[0])
     } catch (error) {
-      setProblem(`Couldn’t read what was chosen: ${error instanceof Error ? error.message : String(error)}`)
+      setProblem(`Couldn’t add what was chosen: ${messageOf(error)}`)
     }
   }
 
@@ -105,7 +124,24 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
       {/* A folder is chosen whole, which no standard attribute asks for. */}
       <input ref={folderRef} type="file" multiple hidden onChange={(event) => void upload(event)} {...{ webkitdirectory: '' }} />
       {problem && <p role="alert" className="px-5 text-base text-kumo-danger">{problem}</p>}
-      {skills.length === 0 && <p className="px-5 text-center text-base text-kumo-subtle">No skills yet.</p>}
+      {state.status === 'loading' && skills.length === 0 && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading skills…</p>}
+      {state.status === 'failed' && (
+        <p className="flex items-center gap-3 px-5 text-base text-kumo-subtle">
+          Couldn’t load skills: {state.message}
+          <Button variant="ghost" onClick={() => void skillStore.reload()}>Try again</Button>
+        </p>
+      )}
+      {state.status === 'off' && (
+        // They are kept in the Context Library, which a user has an account in once they turn it on.
+        <div className="px-5">
+          <Banner
+            title="Skills aren’t turned on for you"
+            description={state.canTurnOn ? 'They’re kept in your Context Library, which you can turn on here.' : 'They’re kept in the Context Library, which this deployment doesn’t offer you.'}
+            action={state.canTurnOn ? { label: 'Turn on', onSelect: turnOn } : undefined}
+          />
+        </div>
+      )}
+      {state.status === 'ready' && skills.length === 0 && <p className="px-5 text-center text-base text-kumo-subtle">No skills yet.</p>}
       {skills.length > 0 && shown.length === 0 && (
         <p className="flex items-center justify-center gap-3 px-5 text-base text-kumo-subtle">
           Nothing matches.
@@ -126,9 +162,11 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
         open={writing}
         onOpenChange={setWriting}
         tags={skillTags(skills)}
-        onAdd={(skill) => {
+        onAdd={async (skill) => {
+          if (connection?.blocked()) return
+          const id = await skillStore.add(skill)
           setWriting(false)
-          onOpenSkill(skillStore.add(skill))
+          onOpenSkill(id)
         }}
       />
     </SettingsGroup>
