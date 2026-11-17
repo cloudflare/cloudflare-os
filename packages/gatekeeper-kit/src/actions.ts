@@ -759,7 +759,8 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             implementsRevert,
             // Spread, so an action with no fields, no git, no awaited decision, or no claim of
             // completeness puts no key on the wire at all. A push is never complete, whatever the
-            // hook claims: the approver sees commit ids, not the bytes they carry.
+            // hook claims: its description names commit ids, and what those commits carry is read
+            // in the push's review (`Overseer.getPushReview()`), not in this text.
             ...(fields?.length ? { fields } : {}),
             ...(pushedCommits ? { pushedCommits } : {}),
             ...(descriptionIsComplete === true && !pushedCommits?.length

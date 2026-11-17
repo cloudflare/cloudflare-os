@@ -976,9 +976,9 @@ without the connection, because its chats hold what was read.
 data**, in this version: a read through the whole binding, a report session's read (the report,
 its images, its view of the reporter's workspace) and every hook's event. Each sets the
 platform's restricted-data latch and keeps the workspace admins-only for good. From then on web
-fetches reach only the hosts the deployment trusts, a push is refused, and every action waits
-for a person, a reply to a reporter included, but for the three kinds a rule still applies there
-(below). A report's text and images are whatever its author put there, and anyone can file one,
+fetches reach only the hosts the deployment trusts, a push is refused unless a person can read
+all it sends, and every action waits for a person, a reply to a reporter included, but for the
+three kinds a rule still applies there (below). A report's text and images are whatever its author put there, and anyone can file one,
 so what a report session reads is not safe to send anywhere just because its reporter could see
 it.
 
@@ -1013,7 +1013,7 @@ Everything else waits for a person there:
   another count.
 - **Every action of any other connection.** No rule applies one in a marked workspace.
 
-Web fetches are held and a push is refused as in any marked workspace. The exception is the
+Web fetches are held, and a push waits for a person or is refused, as in any marked workspace. The exception is the
 kernel's: nothing in a gatekeeper's declarations asks for it, and no other vendor can have it.
 The Workshop reads the answer for each kind from the workspace
 (`PreApprovableAction.ruleApplies`), and is told through the workspace's metadata when

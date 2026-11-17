@@ -41,6 +41,11 @@ not let history be rewritten. Excluded actions are still approved by hand as bef
 advertises through `getAutoApprovableActions()` only the eligible kinds its session can submit (an
 issue binding, for example, never lists pushes).
 
+The approval of a push offers **Review commits**, which lists the commits the push will send and
+each file they add, change or delete. In a workspace that has read restricted data a push is queued
+only when all of it reads as text (see [docs/observers.md](../../docs/observers.md) §6, item 4),
+and is approved from that review.
+
 ## CI status (read-only)
 
 Gadgets can read CI with the `repo` scope connections already have; nothing CI-related is queued
