@@ -117,13 +117,23 @@ RPC session the child needs. See `observer-exclusion.test.ts`'s `reopenAfterRest
 
 `await harness.server.getWorker(name).getDurableObjectStorage(className, { id } | { name })` returns
 a handle on one Durable Object's SQLite storage, whose `exec()` resolves to the result rows.
-`{ name: "" }` addresses the object a Worker reaches with `getByName("")`. The admin suites use it to
-fault a store: to show that a call fails when its audit record cannot be written, the suite installs
-a trigger on `admin_audit`, the deployment-wide audit log's table
-(`CREATE TRIGGER ... BEFORE INSERT ON admin_audit BEGIN SELECT RAISE(ABORT, ...); END`), and drops it
-afterwards. The insert then fails exactly as a real storage failure would, inside the real Worker,
-and production code carries no test hook, which would be a switch that disables the audit shipped
-in every deployment.
+`{ name: "" }` addresses the object a Worker reaches with `getByName("")`. Two uses shape the admin
+suites:
+
+- **Faulting a store.** To show that a call fails when its audit record cannot be written, the suite
+  installs a trigger on `admin_audit`, the deployment-wide audit log's table
+  (`CREATE TRIGGER ... BEFORE INSERT ON admin_audit BEGIN SELECT RAISE(ABORT, ...); END`), and drops
+  it afterwards. The insert then fails exactly as a real storage failure would, inside the real
+  Worker, and production code carries no test hook, which would be a switch that disables the audit
+  shipped in every deployment.
+- **Proving an object was never written.** `listDurableObjectIds()` cannot tell: it lists every
+  object with a storage file, and any visit creates one (miniflare records the object's name in it)
+  that a deletion leaves behind. What can tell is `sqlite_master` with miniflare's own `__miniflare*`
+  tables left out. The Overseer keeps its records in typed storage over the KV API, whose `_cf_KV`
+  table the first write creates and `deleteAll()` drops, so whether that table exists says whether
+  anything has been written. `_cf_KV` itself is unreadable (`SQLITE_AUTH`), hence `sqlite_master`. A
+  test client cannot mint an unused workspace id (creating a workspace opens it), so the suite uses
+  a deleted one.
 
 ### A redeploy keeps storage, so an upgrade can be tested
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS } from "@gadgets/workshop-shared/api";
+import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS } from "@gadgets/workshop-shared/api";
 import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "../src/storage-schema/admin-settings-storage.js";
 
@@ -611,23 +611,47 @@ describe("ADMIN_CONFIG_SEED", () => {
   });
 });
 
-describe("admin config audit retention", () => {
-  it("defaults the audit retention", () => {
+describe("admin config admin access", () => {
+  it("defaults the access level and the audit retention", () => {
     let config = parseAdminConfig(null);
+    expect(config.adminWorkspaceAccess).toBe(DEFAULT_ADMIN_WORKSPACE_ACCESS);
     expect(config.adminAuditRetentionDays).toBe(DEFAULT_ADMIN_AUDIT_RETENTION_DAYS);
+    expect(DEFAULT_ADMIN_CONFIG.adminWorkspaceAccess).toBe("metadata");
     expect(DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays).toBe(90);
   });
 
-  // The environment's bound is applied where the choice is enforced, never here, so a stored
-  // choice outside today's bound is kept for when it changes.
-  it("keeps a stored choice whatever the environment's bound", () => {
+  // The environment's bounds are applied where the choice is enforced, never here, so a stored
+  // choice outside today's bounds is kept for when they change.
+  it("keeps a stored choice whatever the environment's bounds", () => {
+    for (let level of ["off", "metadata"] as const) {
+      expect(normalizeAdminConfig({ adminWorkspaceAccess: level }).adminWorkspaceAccess).toBe(level);
+    }
     for (let days of [1, 7, 365, MAX_ADMIN_AUDIT_RETENTION_DAYS]) {
       expect(normalizeAdminConfig({ adminAuditRetentionDays: days }).adminAuditRetentionDays)
           .toBe(days);
     }
   });
 
-  it("reads a malformed stored choice as the default", () => {
+  // A level is a security setting: a stored value that names none must never grant the default.
+  it("fails a stored access level that is not one closed to off", () => {
+    for (let stored of ["full", "FULL", "none", "", null, 1]) {
+      expect(normalizeAdminConfig({ adminWorkspaceAccess: stored as never })
+          .adminWorkspaceAccess, String(stored)).toBe("off");
+    }
+    // The mirror's path: readAdminConfig() parses what the KV key holds.
+    expect(parseAdminConfig(JSON.stringify({ adminWorkspaceAccess: "full" })).adminWorkspaceAccess)
+        .toBe("off");
+  });
+
+  it("defaults an access level that was never stored", () => {
+    expect(normalizeAdminConfig({}).adminWorkspaceAccess).toBe(DEFAULT_ADMIN_WORKSPACE_ACCESS);
+    expect(normalizeAdminConfig({ adminWorkspaceAccess: undefined }).adminWorkspaceAccess)
+        .toBe(DEFAULT_ADMIN_WORKSPACE_ACCESS);
+    expect(parseAdminConfig(JSON.stringify({ signupsEnabled: true })).adminWorkspaceAccess)
+        .toBe(DEFAULT_ADMIN_WORKSPACE_ACCESS);
+  });
+
+  it("reads a malformed stored retention as the default", () => {
     for (let stored of [0, -1, 1.5, MAX_ADMIN_AUDIT_RETENTION_DAYS + 1, NaN, "30", null]) {
       expect(normalizeAdminConfig({ adminAuditRetentionDays: stored as number })
           .adminAuditRetentionDays, String(stored)).toBe(90);
