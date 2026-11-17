@@ -369,8 +369,11 @@ A part is a file in `settings/` (`ProfileSettings`, `ModelSettings`, …) made o
   the group. `SettingField` and `SettingPresets` are rows that are a line of text, kept on Enter or
   on leaving the field (`useEditedField`).
 - What is not there yet is marked `soon` ("Coming soon"), on the group where all of it is, or else
-  on the row. Its controls still work, to show what it will be like, and keep nothing
-  (`settings/SoonControls.tsx`): replace one with the real control once its setting is there.
+  on the row. It is drawn fainter, and what it is set by is shown as it will be and is out of use
+  (`inert`): `SettingRow` sees to its own, and to those of a `soon` group it is in
+  (`SoonContext`); what a group holds that is not a row sees to itself, as `SettingsCard`'s field
+  and `ApprovalRules` do. `settings/SoonControls.tsx` has controls to show; replace one with the
+  real control once its setting is there.
 - A `ghost` button does not show being pointed at on a `SettingsCard`, which is the colour it
   turns: give a text one `ON_SETTINGS_CARD` and an icon alone `LIST_ACTION`. A row's buttons that
   show only while it is pointed at are in `CardAction`, which keeps their room, so that nothing
@@ -386,8 +389,7 @@ workspace has settings of its own.
 A skill is instructions the assistant loads when a task calls for them, with the files they refer
 to. The Workshop's API has none of the user's to read or write yet (they are the Context
 Library's, `gatekeeper-context`, which has its own app), so `skills/SkillStore.ts` (plain, tested)
-keeps them in memory for the visit, starting from examples (`exampleSkills.ts`), and the list says
-"Coming soon". Its methods are the operations a backend would have: put it over one once there is
+keeps them in memory for the visit, starting from examples (`exampleSkills.ts`). Its methods are the operations a backend would have: put it over one once there is
 one, and take the examples out.
 
 A skill's name and what it is for are kept twice: on the skill, as they are read, and in the

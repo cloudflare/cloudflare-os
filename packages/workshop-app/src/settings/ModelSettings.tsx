@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { COMPACTION_TRIGGER_RATIO, type ReasoningLevel } from '@gadgets/workshop-shared/api'
 import { ModelListItem } from '@/blocks/ModelListItem'
 import { SettingPresets } from '@/blocks/SettingPresets'
@@ -89,11 +88,8 @@ const OwnContextWindow = ({ modelId, known }: { modelId: string; known: number |
   return <ContextWindow known={known} tokens={state.config.contextWindow} onChange={setContextWindow} />
 }
 
-/** The context window of one of the deployment's models, which is not the user's to set yet: tried, and not kept. */
-const SoonContextWindow = ({ known }: { known: number }) => {
-  const [tokens, setTokens] = useState<number>()
-  return <ContextWindow known={known} tokens={tokens} soon onChange={async (next) => setTokens(next)} />
-}
+/** The context window of one of the deployment's models, which is not the user's to set yet: shown at the model's own, and out of use. */
+const SoonContextWindow = ({ known }: { known: number }) => <ContextWindow known={known} tokens={undefined} soon onChange={async () => {}} />
 
 /**
  * What there is to set of the model that answers, which depends on the model (`modelOptionsOf`):
@@ -122,24 +118,21 @@ const DefaultModelOptions = ({ modelId, own }: { modelId: string; own: boolean }
   )
 }
 
-/** What every model is told beyond what it comes with. Not there yet, so nothing is kept: it is there to be tried. */
-const CustomInstructions = () => {
-  const [instructions, setInstructions] = useState('')
-  return (
-    <SettingsGroup title="Custom instructions" soon plain>
-      <SettingsCard field>
-        <TextField
-          aria-label="Custom instructions"
-          rows={4}
-          value={instructions}
-          placeholder="What the assistant should always know or do, such as “Answer in British English.”"
-          onValueChange={setInstructions}
-          className="rounded-2xl"
-        />
-      </SettingsCard>
-    </SettingsGroup>
-  )
-}
+/** What every model is told beyond what it comes with. Not there yet, so it is shown and cannot be written. */
+const CustomInstructions = () => (
+  <SettingsGroup title="Custom instructions" soon plain>
+    <SettingsCard field>
+      <TextField
+        aria-label="Custom instructions"
+        rows={4}
+        value=""
+        placeholder="What the assistant should always know or do, such as “Answer in British English.”"
+        onValueChange={() => {}}
+        className="rounded-2xl"
+      />
+    </SettingsCard>
+  </SettingsGroup>
+)
 
 /** Which model answers, how it goes about it and what it is always told, and the models there are. */
 export const ModelSettings = () => {

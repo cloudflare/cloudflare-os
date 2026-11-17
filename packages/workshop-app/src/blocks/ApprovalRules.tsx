@@ -5,6 +5,7 @@ import { Button } from '@/components/Button'
 import { Switch } from '@/components/Switch'
 import { TextField } from '@/components/TextField'
 import { CardAction } from './CardAction'
+import { SOON } from './SettingRow'
 import { ON_SETTINGS_CARD, SettingsGroup } from './SettingsGroup'
 import { LIST_ACTION } from './StarButton'
 
@@ -56,14 +57,14 @@ export const ApprovalRules = ({ title, description, soon, rules, placeholder, on
       soon={soon}
       action={<Button icon={PlusIcon} disabled={draft !== undefined} onClick={() => setDraft('')}>Add rule</Button>}
     >
-      {rules.length === 0 && draft === undefined && <p className="py-4 text-kumo-subtle">No rules yet.</p>}
+      {rules.length === 0 && draft === undefined && <p className={cn('py-4 text-kumo-subtle', soon && SOON)}>No rules yet.</p>}
       {rules.length > 0 && (
         <ul aria-label={title} className="flex flex-col">
           {rules.map(({ id, text, enabled }) => (
             // A button tall, with what it says a line down from its top, so that the two are level however long the rule is.
             <li key={id} className="group flex items-start gap-3 border-t border-kumo-line py-2 first:border-t-0">
-              <p className={cn('min-w-0 flex-1 py-2 leading-snug wrap-anywhere text-kumo-default', !enabled && 'opacity-60')}>{text}</p>
-              <span className="flex h-(--control-size) shrink-0 items-center gap-2">
+              <p className={cn('min-w-0 flex-1 py-2 leading-snug wrap-anywhere text-kumo-default', soon ? SOON : !enabled && 'opacity-60')}>{text}</p>
+              <span inert={soon} className={cn('flex h-(--control-size) shrink-0 items-center gap-2', soon && SOON)}>
                 {/* Seen while the rule is pointed at or has the focus, and always to a finger. Its room is kept, before the switch, so that neither the switch nor what the rule says moves as it shows. */}
                 <CardAction>
                   <Button variant="ghost" icon={TrashIcon} aria-label={`Remove rule: ${text}`} title="Remove" onClick={() => onRemove(id)} className={LIST_ACTION} />

@@ -31,8 +31,8 @@ export type SkillLibraryProps = {
  * with a `SKILL.md` is one with everything in it (`prepareSkillUploads`). One added alone is
  * opened, to be gone on with.
  *
- * None of it is there yet (see `SkillStore`), so it is marked as coming soon. The controls are
- * over the list on a narrow screen too, as it is one group among the page's others, not the page.
+ * They are kept for the visit only yet (see `SkillStore`). The controls are over the list on a
+ * narrow screen too, as it is one group among the page's others, not the page.
  */
 export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
   const skills = useSkills()
@@ -80,7 +80,7 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
   }
 
   return (
-    <SettingsGroup title="Skill library" description="Reusable instructions the assistant loads when a task calls for them." soon plain>
+    <SettingsGroup title="Skill library" description="Reusable instructions the assistant loads when a task calls for them." plain>
       {/* In from the edge as far as the group's title is, and as what is done to a group across from its title is. */}
       <div className="px-5">
         <ListToolbar

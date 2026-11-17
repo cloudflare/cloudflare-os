@@ -1,6 +1,6 @@
-import { useId, type ReactNode } from 'react'
+import { useContext, useId, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { SoonBadge } from './SettingRow'
+import { SOON, SoonBadge, SoonContext } from './SettingRow'
 
 export type SettingsCardProps = {
   /**
@@ -24,14 +24,22 @@ export const ON_SETTINGS_CARD = 'not-data-disabled:hover:bg-kumo-contrast/5'
  * the next that stops short of its sides. A `SettingsGroup` has one by itself; give it several
  * (`plain`) where its settings fall into more than one lot.
  */
-export const SettingsCard = ({ field = false, children }: SettingsCardProps) => (
-  <div className={cn('flex flex-col rounded-3xl bg-kumo-tint text-base', field ? 'p-2' : 'px-5 py-1')}>{children}</div>
-)
+export const SettingsCard = ({ field = false, children }: SettingsCardProps) => {
+  // A field of a group that is not there yet cannot be typed in. Rows see to themselves.
+  const off = useContext(SoonContext) && field
+  return (
+    <div inert={off} className={cn('flex flex-col rounded-3xl bg-kumo-tint text-base', field ? 'p-2' : 'px-5 py-1', off && '*:opacity-50')}>{children}</div>
+  )
+}
 
 export type SettingsGroupProps = {
   /** What its settings have in common: "Defaults". */
   title: string
-  /** None of it is there yet, which is said once, beside the title, rather than on every row. */
+  /**
+   * None of it is there yet, which is said once, beside the title, rather than on every row. What
+   * its rows are set by, and what is done to it as a whole, are shown and cannot be used. What it
+   * holds that is not a row sees to that itself (`SoonContext`).
+   */
   soon?: boolean
   /**
    * What the title alone does not say, in a line under it. Most groups have none: what a setting
@@ -66,9 +74,11 @@ export const SettingsGroup = ({ title, soon = false, description, action, plain 
           </h2>
           {description && <p className="text-sm text-kumo-subtle">{description}</p>}
         </div>
-        {action && <div className="-my-1.5 flex shrink-0">{action}</div>}
+        {action && <div inert={soon} className={cn('-my-1.5 flex shrink-0', soon && SOON)}>{action}</div>}
       </div>
-      {plain ? <div className="flex flex-col gap-3">{children}</div> : <SettingsCard>{children}</SettingsCard>}
+      <SoonContext value={soon}>
+        {plain ? <div className="flex flex-col gap-3">{children}</div> : <SettingsCard>{children}</SettingsCard>}
+      </SoonContext>
     </section>
   )
 }

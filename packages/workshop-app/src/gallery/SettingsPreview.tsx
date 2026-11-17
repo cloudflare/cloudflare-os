@@ -104,7 +104,7 @@ export const SettingsPreview = () => {
             <SettingRow title="A button">
               <Button onClick={() => say('pressed the button')}>Do it</Button>
             </SettingRow>
-            <SettingRow title="Not there yet" description="Said beside its title. What it is set by works, and keeps nothing." soon>
+            <SettingRow title="Not there yet" description="Said beside its title. It is drawn fainter, and what it is set by is out of use." soon>
               <Switch aria-label="Not there yet" checked={soon} onCheckedChange={setSoon} />
             </SettingRow>
             <SettingRow title="Stacked" description="What it is set by is under what is said of it." stacked>
