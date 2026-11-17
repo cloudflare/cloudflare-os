@@ -129,6 +129,20 @@ export const groupedKinds = (resources: readonly SupportedResource[], urlPattern
 export const newAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, before: ReadonlySet<number>) =>
   accounts.find((account) => account.vendorId === vendorId && !before.has(account.id))
 
+/**
+ * The account to create a resource of `typeUrlPattern` in without asking: the user's only one on
+ * `vendorId` that can, signed in and with access to the kind. Undefined when there is a choice to
+ * make, or none to make it with, which the creation dialog then asks.
+ */
+export const creationAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, typeUrlPattern: string) => {
+  const usable = accounts.filter((account) => {
+    if (account.vendorId !== vendorId || !account.credentialsValid) return false
+    const kind = account.supportedResources.find(({ urlPattern }) => urlPattern === typeUrlPattern)
+    return kind?.grantable !== true || isGranted(account.description.grantedResourceUrlPatterns, typeUrlPattern)
+  })
+  return usable.length === 1 ? usable[0].id : undefined
+}
+
 const collator = new Intl.Collator('en', { sensitivity: 'base', numeric: true })
 
 // By service, A to Z, and a service's accounts by whose they are.

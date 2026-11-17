@@ -373,10 +373,8 @@ export class ChatSession {
   retry = (modelId: string) => this.#ask((overseer) => overseer.retryAgent(this.chatId, modelId))
 
   /**
-   * Approves a pending action.
-   *
-   * TODO: approving a creation (`ActionLogEntry.creation`) also needs the account to create it in.
-   * The server refuses one until this app can ask; the refusal shows as `actionError`.
+   * Approves a pending action. Not one that creates something (`ActionLogEntry.creation`), which
+   * needs the account to create it in: `useApproveCreation` asks for it.
    */
   approveAction = (actionId: number) => this.#ask((overseer) => overseer.approveAction(actionId))
 

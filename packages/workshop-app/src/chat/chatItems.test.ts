@@ -378,6 +378,12 @@ describe('toChatFeed', () => {
       expect(rules).toEqual({ Label: { gatekeeperId: 7, actionKind: LABEL }, 'Create issue': undefined, Relabel: undefined })
     })
 
+    it('marks a pending action that creates something, to ask where, and not once it is decided', () => {
+      const result = feed(action({ title: 'Create Document', creation: true }), action({ title: 'Made', creation: true, state: 'approved' }), action({ title: 'Post' }))
+      const creations = Object.fromEntries(only(result, 'action').map(({ title, creation }) => [title, creation]))
+      expect(creations).toEqual({ 'Create Document': { gatekeeperId: 7 }, Made: undefined, Post: undefined })
+    })
+
     it('warns when a pending action’s description leaves out part of what it sends', () => {
       const result = feed(action({ title: 'Post', incomplete: true }), action({ title: 'Create issue' }))
       expect(only(result, 'action').map(({ incomplete }) => incomplete)).toEqual([true, false])

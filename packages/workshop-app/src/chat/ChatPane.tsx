@@ -9,11 +9,12 @@ import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { messageOf } from '@/settings/useAttempt'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED } from './chatItems'
+import { continuesRun, EMPTY_FEED, type ActionItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
@@ -39,12 +40,17 @@ export type ChatPaneProps = {
   outputHref?: ChatItemHandlers['outputHref']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
+  /**
+   * Approves an action that creates something (`ActionItem.creation`), asking where. Left out,
+   * it is approved as any other, which the workspace refuses. Rejects with why it was not made.
+   */
+  onApproveCreation?: (action: ActionItem & { creation: { gatekeeperId: number } }) => Promise<void>
 }
 
 const LIVE_WORK = 'live:work'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -84,7 +90,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
       onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
       outputHref,
-      onApprove: actions.approveAction,
+      onApprove: (action) => {
+        const { creation } = action
+        if (!creation || !onApproveCreation) return actions.approveAction(action.actionId)
+        return onApproveCreation({ ...action, creation }).catch((error: unknown) => setNotice(messageOf(error)))
+      },
       onDeny: actions.rejectAction,
       // TODO: confirm, then `Overseer.setAutoApprovedActionKind`, with the auto-approval settings.
       onAlwaysApprove: onAlwaysApprove ?? unavailable('Standing approvals'),
@@ -95,7 +105,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove])
+  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation])
 
 
   const messages = useMemo(() => {

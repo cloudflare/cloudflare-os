@@ -2,8 +2,9 @@ import { useCallback, useState } from 'react'
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, isApp, itemPage, validateAsideParam } from '@/aside/asideItems'
 import { carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
-import type { ChatAttachment, ConnectionItem, OutputItem } from '@/chat/chatItems'
+import type { ActionItem, ChatAttachment, ConnectionItem, OutputItem } from '@/chat/chatItems'
 import { ChatPane } from '@/chat/ChatPane'
+import { useApproveCreation } from '@/connections/ApproveCreation'
 import { SetUpConnection, type ConnectionRequest } from '@/connections/SetUpConnection'
 
 /**
@@ -48,6 +49,11 @@ function WorkspaceChat() {
   const at = `${workspaceId}/${chatId}`
   const [setUp, setSetUp] = useState<{ at: string; request: ConnectionRequest; open: boolean }>()
   const setUpConnection = useCallback((request: ConnectionItem) => setSetUp({ at, request, open: true }), [at])
+  const { approveCreation, dialog: creationDialog } = useApproveCreation(workspaceId)
+  const approveAsCreation = useCallback(
+    ({ actionId, title, creation }: ActionItem & { creation: { gatekeeperId: number } }) => approveCreation({ actionId, title, gatekeeperId: creation.gatekeeperId }),
+    [approveCreation],
+  )
   return (
     <>
     <ChatPane
@@ -66,7 +72,9 @@ function WorkspaceChat() {
       onOpenOutput={openOutput}
       outputHref={outputHref}
       onSetUpConnection={setUpConnection}
+      onApproveCreation={approveAsCreation}
     />
+    {creationDialog}
     {setUp?.at === at && (
       <SetUpConnection
         key={setUp.request.requestId}

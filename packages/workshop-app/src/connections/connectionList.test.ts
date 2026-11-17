@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { narrowList } from '@/components/listView'
-import { accessChoices, accountLabel, connectionList, connectionsOf, groupedKinds, isGranted, missingAccess, newAccountOf, unreachableServices, type ConnectedAccount, type Connection } from './connectionList'
+import { accessChoices, accountLabel, connectionList, connectionsOf, creationAccountOf, groupedKinds, isGranted, missingAccess, newAccountOf, unreachableServices, type ConnectedAccount, type Connection } from './connectionList'
 
 const resource = (title: string, grantable = false): SupportedResource => ({ urlPattern: `https://${title.toLowerCase()}.example/*`, title, description: '', grantable })
 const vendor = (id: string, displayName: string, rest: Partial<GatekeeperVendorInfo['description']> = {}, supportedResources: SupportedResource[] = []): GatekeeperVendorInfo => ({
@@ -153,5 +153,15 @@ describe('setting up a connection', () => {
   it('finds the account a connect flow made, not one signed in to again', () => {
     expect(newAccountOf([accountNumbered(1), accountNumbered(2), accountNumbered(3, 'google')], 'github', new Set([1]))?.id).toBe(2)
     expect(newAccountOf([accountNumbered(1)], 'github', new Set([1]))).toBeUndefined()
+  })
+
+  it('creates in the only account that can without asking, and asks when there is a choice or none', () => {
+    const doc = kind('docs', { grantable: true })
+    const able = (id: number, more: Partial<ConnectedAccount> = {}) =>
+      ({ id, vendorId: 'google', credentialsValid: true, supportedResources: [doc], description: { grantedResourceUrlPatterns: ['docs'] }, ...more }) as ConnectedAccount
+    const ungranted = able(2, { description: { grantedResourceUrlPatterns: [] } as unknown as ConnectedAccount['description'] })
+    expect(creationAccountOf([able(1), ungranted, able(3, { credentialsValid: false }), able(4, { vendorId: 'github' })], 'google', 'docs')).toBe(1)
+    expect(creationAccountOf([able(1), able(5)], 'google', 'docs')).toBeUndefined()
+    expect(creationAccountOf([], 'google', 'docs')).toBeUndefined()
   })
 })
