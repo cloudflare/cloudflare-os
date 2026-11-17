@@ -20,6 +20,12 @@ export type ListToolbarProps = ListControls & {
    * open the same way.
    */
   at?: 'top' | 'bottom'
+  /**
+   * The search is a button beside the others, rather than at the bar's start, and opens out from
+   * there into the room before them: for a bar that shares its line with something at its start,
+   * such as tabs (`Tabs`' `end`), which it fills the rest of.
+   */
+  inline?: boolean
 }
 
 // Under the list the controls float over it as it scrolls by, so each is lifted off it by a shadow,
@@ -88,12 +94,21 @@ const FilterMenu = ({ value, options, facetMenus = {}, onChange, side, className
  * drawn only if given, so a list has the ones it has a use for. Over the list they are at its two
  * ends; under it (`at`), on a narrow screen, they are together in the middle.
  */
-export const ListToolbar = ({ noun, search, searchExpanded = false, view, order, filter, action, at = 'top' }: ListToolbarProps) => {
+export const ListToolbar = ({ noun, search, searchExpanded = false, view, order, filter, action, at = 'top', inline = false }: ListToolbarProps) => {
   const lifted = at === 'bottom' ? LIFTED : undefined
   return (
-    <div className={cn('flex items-center gap-2', at === 'bottom' && 'justify-center')}>
-      {search && <SearchField value={search.value} onValueChange={search.onChange} label={`Search ${noun}`} expanded={searchExpanded} className={lifted} />}
-      <div className={cn('flex shrink-0 items-center gap-2', at === 'top' && 'ms-auto')}>
+    <div className={cn('flex items-center gap-2', at === 'bottom' && 'justify-center', inline && 'flex-1')}>
+      {search && (
+        <SearchField
+          value={search.value}
+          onValueChange={search.onChange}
+          label={`Search ${noun}`}
+          expanded={searchExpanded}
+          // Inline, it is at the end until it opens, and then wide enough to type in, which the tabs make room for.
+          className={cn(lifted, inline && 'ms-auto data-open:min-w-48')}
+        />
+      )}
+      <div className={cn('flex shrink-0 items-center gap-2', at === 'top' && !inline && 'ms-auto')}>
         {view && (
           // It shows the view it goes to, as the button of a thing to do.
           view.value === 'list'

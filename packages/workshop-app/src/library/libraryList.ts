@@ -17,7 +17,7 @@ export type LibraryOrder = ListOrder<OutputSummary> & {
 }
 
 /** What an output made as no format is: an app. */
-const APP: BlueprintOutput = { id: 'app', noun: 'App', plural: 'Apps', icon: 'appWindow' }
+export const APP: BlueprintOutput = { id: 'app', noun: 'App', plural: 'Apps', icon: 'appWindow' }
 
 /** What an output is called where it is listed. */
 export const outputTitle = ({ title }: { title: string }) => title || 'Untitled'
@@ -28,8 +28,22 @@ export const outputKey = ({ workspaceId, workpieceId }: OutputSummary) => `${wor
 /** What an output is: the format it was made as, or an app. */
 const outputType = ({ output }: OutputSummary): BlueprintOutput => output ?? APP
 
+/**
+ * What the user could publish as a template: the apps of their own, which a blueprint is made
+ * from, and not those shared with them or made as a format. By title.
+ */
+export const ownApps = (outputs: OutputSummary[]) =>
+  outputs.filter(({ output, owner }) => !output && !owner).toSorted((a, b) => outputTitle(a).localeCompare(outputTitle(b)))
+
 /** The workspace an output is in, as a workspace is called where it is listed. */
 const outputWorkspaceTitle = ({ workspaceTitle: title }: OutputSummary) => workspaceTitle({ title })
+
+/** The workspace an output is in, as it is drawn (`looks`) and called where workspaces are listed. */
+export const outputWorkspace = (output: OutputSummary, looks: WorkspaceLooksById = {}) => ({
+  title: outputWorkspaceTitle(output),
+  label: workspaceLabel(output.workspaceTitle),
+  ...looks[output.workspaceId],
+})
 
 /**
  * What there is to say of an output under its title, on one line: what it is, the workspace it is

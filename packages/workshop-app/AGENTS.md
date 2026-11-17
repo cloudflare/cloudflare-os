@@ -249,11 +249,56 @@ padding meets share one rounded run, so groups never notch where they meet.
 
 `/library` (the sidebar's Library button) lists everything the user's workspaces, and those shared
 with them, have made (`useLibrary`), the way the Workspaces page lists workspaces: the starred
-first, then the rest in the order chosen, as rows (`LibraryRow`) or cards (`LibraryCard`, which
-has no room to say which workspace an output is in). `library/libraryList.ts` (plain, tested) says
+first, then the rest in the order chosen, as rows (`LibraryRow`) or cards (`LibraryCard`, laid
+out as a template's `TemplateCard`: a sketch of what it is with the icon of its workspace in the
+corner, which goes to the workspace, and its type's beside that, its title, and at the end whose it
+is as their picture, the user's own included, with when it was; `CardGrid`'s `large`). `library/libraryList.ts` (plain, tested) says
 how it can be ordered (last active, which is its workspace's; date created; name; type, each type
 a group of its own however few it has), narrowed (starred, whose it is, and its type and its
 workspace, each a menu of its own) and searched.
+
+It has a tab each (`?tab=`, kept in place in the history, at the start of the line, with the
+list's controls at its end (`Tabs`' `end`, `ListToolbar`'s `inline`, whose search is a button
+until it is opened into the room between), and scrolled along it where it is too short for both;
+on a narrow screen the controls are under the list): Starred, All, and one for each
+type something has been made as, once there is more than one. It starts at Starred for whoever has
+anything starred, and at All otherwise. Every tab is the same list under the same controls, of what
+the tab has, so the starred and the types are tabs rather than filters, and the filter menu has
+the rest, with Hide starred, which leaves the starred to their own tab rather than first in every
+other. They are reordered on their tab and on All. `LibraryPane` reads what the page shows and
+`LibraryView` draws it from plain props, which is what the gallery renders over fake outputs.
+
+The header ends in Explore templates (Explore, on a narrow screen) and New, whose menu ends in the templates too. The templates
+(`/library/templates`, `TemplateStoreView`) are what the backend calls blueprints, the way a store
+lists apps, with Publish at the header's end (`PublishMenu`: the user's own apps, `ownApps`,
+under a field to find one by; choosing one does nothing yet, as a blueprint is made from its app,
+`GadgetClient.createBlueprint()`, with a step this app lacks), and a banner of the organization's
+own over everything else (`PromoCarousel`, in the workspace colours, moving on by itself while it
+is not pointed at or focused, and not with reduced motion): a tab each (`?tab=`) for its front (Discover: the most used on one line that is
+scrolled along (`ScrollRow`), the latest published two to a line, then some of each kind they
+make, each a `Shelf` with the way to the rest), for all of them, and for each kind, then a search
+and the filters (`library/templateList.ts`, plain and tested: starred, needing nothing connected,
+and the services they work with). A search or a filter lists what it leaves in place of the front.
+The front's large cards are `TemplateCard`s and the rest are `TemplateListing`s, which have no
+button of their own: a template is used from its page. Both end in who it is by (their picture,
+or the organization's mark) and the services it needs connected as a stack of their logos
+(`TemplateByline`, `ServiceStack`).
+
+A template's own page (`/library/templates/<id>`, `TemplatePageView`) is laid out as a store's
+page for an app: what it makes on a tile beside its title, Use template and its star, what there
+is to know at a glance (`FactStrip`), a picture of what it makes (`TemplatePreview`, sketched by
+kind from Kumo's tokens until its publisher gives a screenshot), what it is for, the services it
+needs connected in place of an app's privacy (`ConnectionNeeds`), the facts at length, and others
+of its kind. A section's title is a group of settings' (`text-lg`).
+
+None of the templates is read yet: they are examples (`exampleTemplates.ts`) of the backend's
+`BlueprintPublicInfo` with how much each is used and whether it is the organization's own, which
+it does not say. Their stars last for the visit (`useTemplates`), Use template is out of use until
+there is a way to start something from one (which, for one that needs connections, is
+`newWorkspaceFromBlueprint()` with a setup step this app lacks), and which of its services the
+user has connected is not asked. Read `listFeaturedBlueprints()` and the user's saved ones in their
+place, keep `/blueprint/<id>` public for share links, and do not call starring one "Add to
+library", which lists outputs.
 
 The types are what the old Outputs page had: apps (an output made as no format), then the formats
 the deployment offers (`listOutputFormats()`, `useOutputFormats`), in its order and whether or not

@@ -31,6 +31,8 @@ import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { LibraryListPreview } from '@/gallery/LibraryListPreview'
+import { LibraryPagePreview } from '@/gallery/LibraryPagePreview'
+import { TemplateStorePreview } from '@/gallery/TemplateStorePreview'
 import { ListViewPreview } from '@/gallery/ListViewPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
@@ -346,6 +348,8 @@ function Gallery() {
       <TabsPreview />
       <ListViewPreview />
       <LibraryListPreview />
+      <LibraryPagePreview />
+      <TemplateStorePreview />
       <ConnectionsPreview />
       <SettingsPreview />
       <HeaderPreview />

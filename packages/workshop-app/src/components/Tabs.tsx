@@ -25,6 +25,21 @@ export type TabsProps<Value extends string> = {
   'aria-label': string
   /** The panels (`Tabs.Panel`), of which only the chosen one is rendered. */
   children: ReactNode
+  /**
+   * Those there is no room for on the line are scrolled to along it, rather than put on another:
+   * for tabs that are as many as there are kinds of something.
+   */
+  scrolls?: boolean
+  /**
+   * Where on the line they are: in the middle, over a page they switch between, or at its start,
+   * in line with a list they narrow, whose titles and controls start there.
+   */
+  align?: 'center' | 'start'
+  /**
+   * What shares their line, after them: a list's controls, which open out into the room the tabs
+   * leave, and over which the tabs are scrolled along where it is too short for both.
+   */
+  end?: ReactNode
   className?: string
 }
 
@@ -34,9 +49,23 @@ const TAB = 'h-(--control-size) rounded-full px-(--control-pad) text-(length:--c
  * A row of tabs, centred over what they choose between: plain text, with the chosen one on a pill.
  * One that was opened (`onClose`) has the way to put it away inside its pill, after its label.
  */
-const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-label': label, children, className }: TabsProps<Value>) => (
-  <BaseTabs.Root value={value} onValueChange={(next: Value) => onValueChange(next)} className={cn('flex flex-col', className)}>
-    <BaseTabs.List aria-label={label} className="flex flex-wrap justify-center gap-1">
+const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-label': label, children, scrolls = false, align = 'center', end, className }: TabsProps<Value>) => {
+  const list = (
+    // Scrolled, it is placed by its own width, so that one too wide for the line starts at the line's
+    // start, where its first tab can be reached. Beside what shares its line, it gives way to it. It
+    // is what its tabs are placed in, which Base UI measures the chosen one's place in to scroll it
+    // into view: measured in something further out, it is out of view at the start and is scrolled
+    // to the end.
+    <BaseTabs.List
+      aria-label={label}
+      className={cn(
+        'flex gap-1',
+        scrolls ? 'relative max-w-full overflow-x-auto [scrollbar-width:none] *:shrink-0' : 'flex-wrap',
+        end !== undefined
+          ? 'min-w-0'
+          : scrolls ? (align === 'start' ? 'self-start' : 'self-center') : align === 'start' ? 'justify-start' : 'justify-center',
+      )}
+    >
       {tabs.map((tab) =>
         tab.onClose === undefined && !tab.unsaved
           ? <BaseTabs.Tab key={tab.value} value={tab.value} title={tab.title} className={cn(TAB, 'data-active:bg-kumo-contrast/5')}>{tab.label}</BaseTabs.Tab>
@@ -61,9 +90,14 @@ const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-labe
             ),
       )}
     </BaseTabs.List>
-    {children}
-  </BaseTabs.Root>
-)
+  )
+  return (
+    <BaseTabs.Root value={value} onValueChange={(next: Value) => onValueChange(next)} className={cn('flex flex-col', className)}>
+      {end === undefined ? list : <div className="flex items-center gap-3">{list}{end}</div>}
+      {children}
+    </BaseTabs.Root>
+  )
+}
 
 type TabsPanelProps = {
   value: string

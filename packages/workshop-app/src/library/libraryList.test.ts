@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
 import { narrowList } from '@/components/listView'
-import { libraryList, outputKey } from './libraryList'
+import { libraryList, outputKey, ownApps } from './libraryList'
 
 const NOW = new Date(2026, 10, 12, 15)
 const hoursAgo = (hours: number) => new Date(NOW.getTime() - hours * 60 * 60 * 1000)
@@ -81,5 +81,19 @@ describe('libraryList', () => {
       ['Documents', ['Retro', 'Review']],
       ['Workflows', ['Cutover']],
     ])
+  })
+})
+
+describe('ownApps', () => {
+  it('has the user’s own apps by title, and not those shared with them or made as a format', () => {
+    const outputs = [
+      output('Zebra counter', 'Launch'),
+      output('Budget', 'Budget', { output: SPREADSHEET }),
+      output('Atlas board', 'Atlas', { owner: { type: 'user', id: 'grace', name: 'Grace Hopper' } }),
+      output('', 'Scratch'),
+      output('Jira dashboard', 'Jira'),
+    ]
+    // The untitled one by what it is called where it is listed.
+    expect(ownApps(outputs).map(({ title }) => title)).toEqual(['Jira dashboard', '', 'Zebra counter'])
   })
 })

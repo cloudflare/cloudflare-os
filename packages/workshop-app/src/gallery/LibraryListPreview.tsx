@@ -10,7 +10,8 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 import { FormatIcon } from '@/components/FormatIcon'
 import { GroupedList } from '@/components/GroupedList'
 import { useListView } from '@/hooks/useListView'
-import { libraryList, outputDetail, outputKey, outputTitle } from '@/library/libraryList'
+import { APP, libraryList, outputDetail, outputKey, outputTitle, outputWorkspace } from '@/library/libraryList'
+import type { WorkspaceLooksById } from '@/workspaces/WorkspaceLooks'
 import { withStar, withStarOrder } from '@/library/libraryStars'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { Switch } from '@/components/Switch'
@@ -26,8 +27,8 @@ const PRESENTATION: BlueprintOutput = { id: 'presentation', noun: 'Presentation'
 const NOTEBOOK: BlueprintOutput = { id: 'notebook', noun: 'Notebook', plural: 'Notebooks', icon: 'notebook' }
 const WORKFLOW: BlueprintOutput = { id: 'workflow', noun: 'Workflow', plural: 'Workflows', icon: 'flowArrow' }
 
-// What the deployment offers: nothing has been made as a notebook, and workflows are no longer offered.
-const FORMATS = [DOCUMENT, SPREADSHEET, PRESENTATION, NOTEBOOK]
+/** What the deployment offers: nothing has been made as a notebook, and workflows are no longer offered. */
+export const FORMATS = [DOCUMENT, SPREADSHEET, PRESENTATION, NOTEBOOK]
 
 // Hours before now that each one's workspace was last active and it was made, across today, the
 // past week and older months, of every type, with some in somebody else's workspace and one untitled.
@@ -46,12 +47,19 @@ const OUTPUTS: Array<{ id: number; title: string; workspace: string; active: num
   { id: 12, title: 'Zebra crossing counter', workspace: 'Launch', active: 1500, created: 4000 },
 ]
 
-/** A whole list as the Library page has one, over fake outputs. */
-export const LibraryListPreview = () => {
-  const { say } = useReport()
-  const [now] = useState(() => Date.now())
-  const [under, setUnder] = useState(false)
-  const all: OutputSummary[] = OUTPUTS.map(({ id, title, workspace, active, created, output, owner }) => ({
+/** How some of the fake outputs' workspaces are drawn; the rest are folders in the default colour. */
+export const PREVIEW_LOOKS: WorkspaceLooksById = {
+  'engineering-notes': { shape: 'notepad', color: 'blue' },
+  'jira-dashboard': { shape: 'window', color: 'teal' },
+  'paris-slides': { shape: 'house', color: 'pink' },
+  'budget-2026': { shape: 'briefcase', color: 'green' },
+  'atlas-migration': { shape: 'rocket', color: 'orange' },
+  'model-evals': { shape: 'robot', color: 'purple' },
+}
+
+/** The fake outputs, as the backend would list them at `now`. */
+export const previewOutputs = (now: number): OutputSummary[] =>
+  OUTPUTS.map(({ id, title, workspace, active, created, output, owner }) => ({
     workspaceId: workspace.toLowerCase().replaceAll(' ', '-') || 'untitled',
     workpieceId: id,
     title,
@@ -61,6 +69,13 @@ export const LibraryListPreview = () => {
     lastActive: new Date(now - active * HOUR),
     created: new Date(now - created * HOUR),
   }))
+
+/** A whole list as the Library page has one, over fake outputs. */
+export const LibraryListPreview = () => {
+  const { say } = useReport()
+  const [now] = useState(() => Date.now())
+  const [under, setUnder] = useState(false)
+  const all = previewOutputs(now)
   const [stars, setStars] = useState(() => [all[4], all[0]].map(outputKey))
   const starredKeys = new Set(stars)
   const list = useListView('gallery-library', libraryList(all, FORMATS, starredKeys))
@@ -87,7 +102,7 @@ export const LibraryListPreview = () => {
   })
 
   return (
-    <Section title="LibraryRow, LibraryCard (the Library page’s list, with the controls a list has: the order, which is also how it is grouped, by when its workspace was last active or it was made, by name under letters, or by type, each type a group of its own however few it has; the filters: Starred; Mine and Shared with me; and Type and Workspace, each a menu of its own with a field that finds one, the types being apps, then what the deployment offers, Notebooks included though none has been made, then Workflows, which it no longer offers. The search also finds an output by its type, its workspace, and who shared it. New is a menu of what the deployment offers to start one as. The starred stay first in every order, and are dragged, or moved with Alt and an arrow key, into another order while nothing narrows them. A card does not say which workspace it is in)">
+    <Section title="LibraryRow, LibraryCard (the Library page’s list, with the controls a list has: the order, which is also how it is grouped, by when its workspace was last active or it was made, by name under letters, or by type, each type a group of its own however few it has; the filters: Starred; Mine and Shared with me; and Type and Workspace, each a menu of its own with a field that finds one, the types being apps, then what the deployment offers, Notebooks included though none has been made, then Workflows, which it no longer offers. The search also finds an output by its type, its workspace, and who shared it. New is a menu of what the deployment offers to start one as. The starred stay first in every order, and are dragged, or moved with Alt and an arrow key, into another order while nothing narrows them. A card opens with a sketch of what it is, as a template’s does, and says whose it is with their picture)">
       <Switch label="Controls under the list, as on a narrow screen" checked={under} onCheckedChange={setUnder} />
       <div className={cn('flex w-full gap-4', under ? 'flex-col-reverse' : 'flex-col')}>
         <ListToolbar
@@ -126,10 +141,11 @@ export const LibraryListPreview = () => {
                 )
               : (
                   <CardGrid
+                    large
                     groups={groups.map(({ key, label, entries }) => ({
                       key,
                       label,
-                      cards: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryCard {...propsOf(value)} detail={outputDetail(value, { workspace: false })} time={time} /> })),
+                      cards: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryCard {...propsOf(value)} kind={(value.output ?? APP).noun} workspace={{ ...outputWorkspace(value, PREVIEW_LOOKS), href: `#${value.workspaceId}`, onSelect: () => say(`open the workspace ${value.workspaceTitle || 'Untitled'}`) }} owner={value.owner ?? { name: 'Ada Lovelace', you: true }} time={time} /> })),
                       onReorder: key === 'starred' ? reorderStarred : undefined,
                     }))}
                   />

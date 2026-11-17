@@ -72,6 +72,9 @@ const AppFrame = () => {
   const appPage = useMatch({ from: '/_app/app/$itemId', shouldThrow: false })
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
+  // The templates are come to from the library, and are part of it.
+  const templatesPage = useMatch({ from: '/_app/library/templates/', shouldThrow: false })
+  const templatePage = useMatch({ from: '/_app/library/templates/$templateId', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const settingsPage = useMatch({ from: '/_app/settings', shouldThrow: false })
@@ -245,7 +248,7 @@ const AppFrame = () => {
       notice={notice}
       connections={placeholderLogos}
       library={{
-        current: libraryPage !== undefined || libraryItemPage !== undefined,
+        current: [libraryPage, libraryItemPage, templatesPage, templatePage].some((match) => match !== undefined),
         onOpen: () => {
           leaveSidebar()
           void navigate({ to: '/library' })
