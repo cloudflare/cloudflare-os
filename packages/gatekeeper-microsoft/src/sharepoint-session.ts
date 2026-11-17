@@ -508,10 +508,9 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     } catch (error) {
       if (!(error instanceof UnresolvableUrlError)) throw error;
       // "all" covers whatever the owner can open in the tenant, so there the reason gives nothing
-      // away, unless it is that the link resolved outside it: that reads as one leading nowhere.
-      if (scope.kind === "all") {
-        throw new Error((error instanceof OtherOrganizationError ? new UnresolvableUrlError() : error).message, { cause: error });
-      }
+      // away, unless it is that the link resolved outside it: that reads as one leading nowhere,
+      // down to the error having no cause to tell them apart by.
+      if (scope.kind === "all") throw new Error((error instanceof OtherOrganizationError ? new UnresolvableUrlError() : error).message);
       throw new OutsideScopeError();
     }
     const target = resolved.scope;
