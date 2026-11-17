@@ -10617,6 +10617,27 @@ class OverseerImpl implements AgentHooks {
     return lines.join("\n");
   }
 
+  async describeSimulatedCreations(): Promise<string> {
+    let lines: string[] = [];
+    try {
+      for (let vendor of await this.#listGatekeeperVendorsCached()) {
+        for (let r of vendor.supportedResources) {
+          if (!r.creatable || !r.simulatedOnly) continue;
+          lines.push(`* ${r.title} — vendorId: ${vendor.id}; resourceTypeId: ${getResourceTypeId(r)}` +
+              `\n  ${r.description}`);
+        }
+      }
+    } catch (err) {
+      this.logger.warn("failed to list simulated creations", {
+        event: "simulated.creations.list.failed", error: err,
+      });
+      return "";
+    }
+    if (lines.length === 0) return "";
+    return `You can create these resources with createExternalResource. Each exists only in this ` +
+        `workspace and needs no approval:\n${lines.join("\n")}`;
+  }
+
   // Records a pending connection request. `requested` is true only when a request was actually
   // created (and an accept/deny card will appear); when false, the request was rejected for the
   // reason in `message` and the agent should fix it and retry — the turn must NOT end (see the
@@ -10739,6 +10760,11 @@ class OverseerImpl implements AgentHooks {
     let createdBy = this.storage.activeAgents.get(chatId)?.initiator;
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
         input.vendorId, input.resourceTypeId, input.title, input.resourceUrlPattern, input.configuration);
+    // No user is present in a spawned chat to approve a creation.
+    if (minted.action && this.getChatAgentContext(chatId).spawnerConfig) {
+      throw new Error("You can only create resources that need no approval, as listed in your " +
+          "system prompt.");
+    }
     let id = this.allocateWorkpieceId();
     this.storage.gatekeepers.put({
       id,

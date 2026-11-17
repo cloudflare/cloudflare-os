@@ -250,6 +250,19 @@ describe("agent resource discovery", () => {
     });
   });
 
+  it("lists only the creations that need no approval for a spawned agent", async () => {
+    const simulated = { ...CREATION, id: "sandbox", creationConfigurator: false, simulatedOnly: true };
+    await withDiscovery([EXISTING, CREATION, simulated], async impl => {
+      const text = await impl.describeSimulatedCreations();
+      expect(text).toContain("vendorId: example; resourceTypeId: sandbox");
+      expect(text).not.toContain(CREATION.urlPattern);
+      expect(text).not.toContain(EXISTING.urlPattern);
+    });
+    await withDiscovery([CREATION], async impl => {
+      expect(await impl.describeSimulatedCreations()).toBe("");
+    });
+  });
+
   it.each([
     { resource: CREATION, url: undefined },
     { resource: CREATION, url: "example://environment/test" },
