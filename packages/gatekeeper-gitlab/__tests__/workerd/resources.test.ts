@@ -16,14 +16,16 @@ afterEach(() => {
 const PROJECT = "https://gitlab.example.com/group/sub/project";
 
 describe("supported resources", () => {
-  it("lists merge request, issue, then project, all on the configured instance", async () => {
+  it("lists merge request, issue, contributor, then project, all on the configured instance", async () => {
     new FakeGitLab().install();
     const id = await seedAccount();
     const resources = await unwrap(await hooks().supportedResources(id));
-    expect(resources.map(r => r.title)).toEqual(["GitLab Merge Request", "GitLab Issue", "GitLab Project"]);
+    expect(resources.map(r => r.title)).toEqual(
+      ["GitLab Merge Request", "GitLab Issue", "GitLab Project (merge requests only)", "GitLab Project"]);
     expect(resources.map(r => r.urlPattern)).toEqual([
       "https://gitlab.example.com/:project+/-/merge_requests/:iid{/*}?",
       "https://gitlab.example.com/:project+/-/issues/:iid{/*}?",
+      "https://gitlab.example.com/:project+\\?branchPrefix=*",
       "https://gitlab.example.com/:project+",
     ]);
   });
@@ -34,12 +36,22 @@ describe("supported resources", () => {
     const resources = await unwrap(await hooks().supportedResources(id));
     const mrUrl = `${PROJECT}/-/merge_requests/7`;
     // The project pattern matches too -- ordering is what keeps first-match right.
-    expect(matchesResourceUrlPattern(resources[2].urlPattern, mrUrl)).toBe(true);
+    expect(matchesResourceUrlPattern(resources[3].urlPattern, mrUrl)).toBe(true);
     const resolved = resolveRequestedResource(resources, mrUrl);
     expect(resolved).toEqual({ ok: true, resource: resources[0] });
     expect(resolveRequestedResource(resources, `${PROJECT}/-/issues/42`)).toEqual({ ok: true, resource: resources[1] });
-    expect(resolveRequestedResource(resources, PROJECT)).toEqual({ ok: true, resource: resources[2] });
-    expect(resolveRequestedResource(resources, `${PROJECT}/`)).toEqual({ ok: true, resource: resources[2] });
+    expect(resolveRequestedResource(resources, PROJECT)).toEqual({ ok: true, resource: resources[3] });
+    expect(resolveRequestedResource(resources, `${PROJECT}/`)).toEqual({ ok: true, resource: resources[3] });
+  });
+
+  it("resolves a project URL with a branchPrefix query to the contributor resource, which the project pattern also matches", async () => {
+    new FakeGitLab().install();
+    const id = await seedAccount();
+    const resources = await unwrap(await hooks().supportedResources(id));
+    const url = `${PROJECT}?branchPrefix=cloudflare-os%2F&allowPublic=true`;
+    expect(matchesResourceUrlPattern(resources[3].urlPattern, url)).toBe(true);
+    expect(resolveRequestedResource(resources, url)).toEqual({ ok: true, resource: resources[2] });
+    expect(resolveRequestedResource(resources, `${PROJECT}?other=1`)).toEqual({ ok: true, resource: resources[3] });
   });
 
   it("keeps a merge request or issue URL with GitLab's tab suffix on its own resource, not the project's", async () => {
@@ -52,7 +64,7 @@ describe("supported resources", () => {
     }
     expect(resolveRequestedResource(resources, `${PROJECT}/-/issues/42/designs`)).toEqual({ ok: true, resource: resources[1] });
     // ...while a tree or blob URL under the project is still the project.
-    expect(resolveRequestedResource(resources, `${PROJECT}/-/tree/main/src`)).toEqual({ ok: true, resource: resources[2] });
+    expect(resolveRequestedResource(resources, `${PROJECT}/-/tree/main/src`)).toEqual({ ok: true, resource: resources[3] });
   });
 });
 

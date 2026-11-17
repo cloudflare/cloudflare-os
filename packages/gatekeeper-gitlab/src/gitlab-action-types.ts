@@ -269,6 +269,8 @@ const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
   project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push", "forcePush"],
   issue: ISSUE_ACTIONS,
   mergeRequest: MERGE_REQUEST_ACTIONS,
+  // Its session can queue nothing else, and never a force push.
+  contributor: ["push", "createMergeRequest"],
 };
 
 /** The kinds a binding of `resourceKind` may submit auto-approvable actions of. */

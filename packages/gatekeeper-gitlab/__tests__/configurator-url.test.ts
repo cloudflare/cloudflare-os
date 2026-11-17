@@ -36,6 +36,25 @@ describe("configurator resource URLs round-trip through the server-side parser",
     expect(parseResourceUrl(INSTANCE, url as string)).toEqual({ projectPath: "group/sub/project", kind: "project" });
   });
 
+  it("project, merge requests only", async () => {
+    const url = await projectConfigurator.resourceUrl!({ values: { projectPath: "group/project", access: "contributor" }, ui });
+    expect(url).toBe(`${INSTANCE}/group/project?branchPrefix=cloudflare-os%2F`);
+    expect(new URLPattern(PATTERNS.contributor.urlPattern).test(url as string)).toBe(true);
+    expect(parseResourceUrl(INSTANCE, url as string)).toEqual({
+      projectPath: "group/project", kind: "contributor", scope: { branchPrefix: "cloudflare-os/", allowPublic: false },
+    });
+    const values = { projectPath: "group/project", access: "contributor", branchPrefix: "bots/", allowPublic: "true" } as const;
+    const allow = await projectConfigurator.resourceUrl!({ values, ui });
+    expect(parseResourceUrl(INSTANCE, allow as string)).toEqual({
+      projectPath: "group/project", kind: "contributor", scope: { branchPrefix: "bots/", allowPublic: true },
+    });
+    expect(projectConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl: allow as string, resourceUrlPattern: PATTERNS.contributor.urlPattern, ui: noUi,
+    })).toEqual(values);
+    // An ordinary project URL is not a contributor one.
+    expect(new URLPattern(PATTERNS.contributor.urlPattern).test(`${INSTANCE}/group/project`)).toBe(false);
+  });
+
   it("issue", async () => {
     const url = await issueConfigurator.resourceUrl!({ values: { projectPath: "group/project", issueIid: "42" }, ui });
     expect(parseResourceUrl(INSTANCE, url as string)).toEqual({ projectPath: "group/project", kind: "issue", iid: 42 });

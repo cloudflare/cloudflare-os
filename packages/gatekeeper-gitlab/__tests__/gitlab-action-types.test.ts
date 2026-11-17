@@ -3,6 +3,7 @@
 // so that no such line runs. Also: which actions a user may let apply without a person.
 
 import { describe, expect, it } from "vitest";
+import type { ResourceKind } from "../src/gitlab-env";
 import {
   autoApprovableKinds, autoApprovalOf, escapeQuickActions, protectedBranchMatches, type GitLabAction,
 } from "../src/gitlab-action-types";
@@ -24,7 +25,7 @@ describe("escapeQuickActions", () => {
   });
 });
 
-const tags = (kind: "project" | "issue" | "mergeRequest") => autoApprovableKinds(kind).map(k => k.tag);
+const tags = (kind: ResourceKind) => autoApprovableKinds(kind).map(k => k.tag);
 
 describe("auto-approval", () => {
   const base = { approvalId: 1, submittedAt: 0, projectPath: "group/project" };
@@ -118,6 +119,8 @@ describe("auto-approval", () => {
     expect(tags("mergeRequest")).toEqual(mergeRequest);
     expect(tags("project")).toEqual(
       ["gitlab.createIssue", "gitlab.createMergeRequest", ...mergeRequest, "gitlab.push", "gitlab.forcePush"]);
+    // A contributor binding can push (never force) and open merge requests, nothing else.
+    expect(tags("contributor")).toEqual(["gitlab.push", "gitlab.createMergeRequest"]);
   });
 });
 

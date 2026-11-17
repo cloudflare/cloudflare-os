@@ -175,6 +175,120 @@ export interface GitLabProject {
 }
 
 /**
+ * A GitLab project, through a connection limited to proposing changes: it can read the code and
+ * history, push commits to branches whose names start with one prefix (see
+ * `getMetadata().branchPrefix`), and open merge requests from those branches into the default
+ * branch. It cannot merge, approve, comment, push anywhere else, or force-push; a person reviews
+ * and merges the merge request on GitLab.
+ *
+ * To propose a fix: mount the default branch's head as a worktree (`resolveRef()`, then the
+ * `createWorktree` tool), commit your change there, `push()` the commit to a new branch under
+ * the prefix, then `createMergeRequest()` from that branch -- the two calls may be made back to
+ * back. Before retrying after a failure, `listMergeRequests({sourceBranch})` to see whether the
+ * merge request already exists.
+ */
+export interface GitLabProjectContributor {
+  /** Returns basic metadata about the project and what this connection may write. */
+  getMetadata(): Promise<GitLabContributorMetadata>;
+
+  /**
+   * Lists branches in this project.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listBranches(options?: GitLabBranchFilter): Promise<Cursor<GitLabBranchSummary>>;
+
+  /**
+   * Resolves a ref (a full or unambiguously truncated commit id, a branch, or a tag; the default
+   * branch when omitted) to a full commit id.
+   */
+  resolveRef(ref?: string): Promise<string>;
+
+  /** Looks up a single commit by ref; the default branch's head when omitted. */
+  getCommit(ref?: string): Promise<GitLabCommitDetails>;
+
+  /**
+   * Lists commit history, newest first, starting from `options.ref` (the default branch when
+   * omitted).
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listCommits(options?: GitLabCommitFilter): Promise<Cursor<GitLabCommitSummary>>;
+
+  /**
+   * Pushes a commit to a branch under the prefix, creating the branch if it does not exist.
+   *
+   * `commitId` must be a full 40-character commit id (e.g. a worktree `commit()` result). The
+   * push must be a fast-forward of the branch's current head, or create the branch; it is
+   * refused for a branch outside the prefix, the default branch, a protected branch, and -- unless
+   * this connection allows it -- a public project. Pushing may wait for a person's approval;
+   * later reads already reflect it.
+   */
+  push(branch: string, commitId: string): Promise<void>;
+
+  /**
+   * Opens a merge request from `sourceBranch` (which must lie under the prefix, and exist or have
+   * just been pushed) into the project's default branch.
+   *
+   * Creation may wait for a person's approval: until then the result has a provisional `id`
+   * (e.g. `"~1"`) and a null `url`. `listMergeRequests({sourceBranch})` reports the real number
+   * and URL once it exists. GitLab allows one open merge request per source branch and target.
+   */
+  createMergeRequest(options: GitLabContributorMergeRequestOptions): Promise<GitLabContributorMergeRequest>;
+
+  /**
+   * Lists the merge requests from one branch under the prefix, newest first, including one whose
+   * creation is still pending.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listMergeRequests(options: GitLabContributorMergeRequestFilter): Promise<Cursor<GitLabContributorMergeRequest>>;
+}
+
+/** Project metadata as a contributor connection sees it. */
+export type GitLabContributorMetadata = GitLabProjectMetadata & {
+  /** The prefix every branch this connection writes must start with, e.g. `"cloudflare-os/"`. */
+  branchPrefix: string;
+  /** Whether this connection may write to the project while it is public. */
+  allowPublic: boolean;
+}
+
+/** Options for `GitLabProjectContributor.createMergeRequest()`. */
+export type GitLabContributorMergeRequestOptions = {
+  title: string;
+  /** The branch containing your changes; must start with the connection's branch prefix. */
+  sourceBranch: string;
+  bodyMarkdown?: string;
+  /** Mark the merge request as a draft (GitLab shows this as a `Draft:` title prefix). */
+  draft?: boolean;
+}
+
+/** Filter for `GitLabProjectContributor.listMergeRequests()`. */
+export type GitLabContributorMergeRequestFilter = GitLabPageOptions & {
+  /** The source branch; must start with the connection's branch prefix. */
+  sourceBranch: string;
+  state?: GitLabMergeRequestState | "all";
+}
+
+/** A merge request as a contributor connection sees it: data only, nothing to act on. */
+export type GitLabContributorMergeRequest = {
+  /** The merge request number (`"42"` for `!42`), or a provisional id like `"~1"` while creation is pending. */
+  id: string;
+  /** The merge request's web page; null while creation is pending. */
+  url: string | null;
+  title: string;
+  state: GitLabMergeRequestState;
+  draft: boolean;
+  sourceBranch: string;
+  targetBranch: string;
+  /** Commit id of the source branch's head, when known. */
+  headCommit: string | null;
+}
+
+/**
  * Operations shared by issues and merge requests: GitLab calls both "issuables", and they carry
  * the same title, description, labels, state, and discussion thread.
  *

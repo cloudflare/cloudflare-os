@@ -606,6 +606,40 @@ export class PageHookCursor<T> extends RpcTarget implements Cursor<T>, Disposabl
 }
 
 /**
+ * Wraps a cursor so the caller sees each row transformed, e.g. narrowed to what a more limited
+ * binding may return. Takes ownership of `inner`, disposing it with the wrapper.
+ */
+export class MappedCursor<T, U> extends RpcTarget implements Cursor<U>, Disposable {
+  readonly #inner: Cursor<T>;
+  readonly #map: (item: T) => U;
+  #disposed = false;
+
+  /**
+   * Creates the wrapper.
+   * @param inner The cursor whose rows to transform; owned by the wrapper from now on.
+   * @param map The transformation applied to every row.
+   */
+  constructor(inner: Cursor<T>, map: (item: T) => U) {
+    super();
+    this.#inner = inner;
+    this.#map = map;
+  }
+
+  /** @returns The next page, transformed, or `null` after exhaustion. */
+  async next(): Promise<U[] | null> {
+    const page = await this.#inner.next();
+    return page === null ? null : page.map(this.#map);
+  }
+
+  /** Disposes the inner cursor. Idempotent, since the runtime may dispose a target twice. */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    (this.#inner as Partial<Disposable>)[Symbol.dispose]?.();
+  }
+}
+
+/**
  * Lazily obtains and owns a git session's `GitCache` stub (fetched at most once, via its
  * `ApprovalQueue`), through which the session advertises the commit ids its reads return --
  * directly, or per page of a listing by wrapping its cursor in a `PageHookCursor` over

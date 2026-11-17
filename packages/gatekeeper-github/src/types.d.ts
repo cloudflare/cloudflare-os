@@ -236,6 +236,122 @@ export interface GitHubRepo {
   subscribe(hook: RpcStub<GitHubEventHook>, options?: GitHubSubscribeOptions): Promise<void>;
 }
 
+/**
+ * A GitHub repository, through a connection limited to proposing changes: it can read the code
+ * and history, push commits to branches whose names start with one prefix (see
+ * `getMetadata().branchPrefix`), and open pull requests from those branches into the default
+ * branch. It cannot merge, approve, comment, push anywhere else, or force-push; a person reviews
+ * and merges the pull request on GitHub.
+ *
+ * To propose a fix: mount the default branch's head as a worktree (`resolveRef()`, then the
+ * `createWorktree` tool), commit your change there, `push()` the commit to a new branch under
+ * the prefix, then `createPullRequest()` from that branch -- the two calls may be made back to
+ * back. Before retrying after a failure, `listPullRequests({head})` to see whether the pull
+ * request already exists.
+ */
+export interface GitHubRepoContributor {
+  /** Returns basic metadata about the repository and what this connection may write. */
+  getMetadata(): Promise<GitHubContributorMetadata>;
+
+  /**
+   * Lists branches in this repository.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listBranches(options?: GitHubBranchFilter): Promise<Cursor<GitHubBranchSummary>>;
+
+  /**
+   * Resolves a ref (a full or unambiguously truncated commit id, a branch, or a tag; the default
+   * branch when omitted) to a full commit id.
+   */
+  resolveRef(ref?: string): Promise<string>;
+
+  /** Looks up a single commit by ref; the default branch's head when omitted. */
+  getCommit(ref?: string): Promise<GitHubCommitDetails>;
+
+  /**
+   * Lists commit history, newest first, starting from `options.ref` (the default branch when
+   * omitted).
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listCommits(options?: GitHubCommitFilter): Promise<Cursor<GitHubCommitSummary>>;
+
+  /**
+   * Pushes a commit to a branch under the prefix, creating the branch if it does not exist.
+   *
+   * `commitId` must be a full 40-character commit id (e.g. a worktree `commit()` result). The
+   * push must be a fast-forward of the branch's current head, or create the branch; it is
+   * refused for a branch outside the prefix, the default branch, a protected branch, and -- unless
+   * this connection allows it -- a public repository. Pushing may wait for a person's approval;
+   * later reads already reflect it.
+   */
+  push(branch: string, commitId: string): Promise<void>;
+
+  /**
+   * Opens a pull request from `head` (which must lie under the prefix, and exist or have just
+   * been pushed) into the repository's default branch.
+   *
+   * Creation may wait for a person's approval: until then the result has a provisional `id`
+   * (e.g. `"~1"`) and a null `url`. `listPullRequests({head})` reports the real number and URL
+   * once it exists.
+   */
+  createPullRequest(options: GitHubContributorPullRequestOptions): Promise<GitHubContributorPullRequest>;
+
+  /**
+   * Lists the pull requests from one branch under the prefix, including one whose creation is
+   * still pending.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listPullRequests(options: GitHubContributorPullRequestFilter): Promise<Cursor<GitHubContributorPullRequest>>;
+}
+
+/** Repository metadata as a contributor connection sees it. */
+export type GitHubContributorMetadata = GitHubRepoMetadata & {
+  /** The prefix every branch this connection writes must start with, e.g. `"cloudflare-os/"`. */
+  branchPrefix: string;
+  /** Whether this connection may write to the repository while it is public. */
+  allowPublic: boolean;
+}
+
+/** Options for `GitHubRepoContributor.createPullRequest()`. */
+export type GitHubContributorPullRequestOptions = {
+  title: string;
+  /** The branch containing your changes; must start with the connection's branch prefix. */
+  head: string;
+  bodyMarkdown?: string;
+  draft?: boolean;
+}
+
+/** Filter for `GitHubRepoContributor.listPullRequests()`. */
+export type GitHubContributorPullRequestFilter = GitHubPageOptions & {
+  /** The head branch in this repository; must start with the connection's branch prefix. */
+  head: string;
+  state?: GitHubIssueState | "all";
+}
+
+/** A pull request as a contributor connection sees it: data only, nothing to act on. */
+export type GitHubContributorPullRequest = {
+  /** The pull request number (`"42"`), or a provisional id like `"~1"` while creation is pending. */
+  id: string;
+  /** The pull request's web page; null while creation is pending. */
+  url: string | null;
+  title: string;
+  state: GitHubIssueState;
+  merged: boolean;
+  draft: boolean;
+  /** The branch containing the changes. */
+  head: string;
+  /** The branch the changes would merge into. */
+  base: string;
+  /** Commit id of the head branch, when known. */
+  headCommit: string | null;
+}
+
 /** A single GitHub issue. */
 export interface GitHubIssue {
   /** Returns the current issue metadata and body. */

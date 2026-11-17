@@ -114,7 +114,14 @@ import {
   AppliedPushLog, CiLogCache, CiLogTooLargeError, EMPTY_CI_LOG, pageCiLog, readCiLog,
   validateCiLogOptions, withinCiStartWindow,
 } from "@gadgets/gatekeeper-kit/ci";
-import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
+import { MappedCursor, SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
+import {
+  assertContributionBranch,
+  assertContributionVisibility,
+  contributionScopeQuery,
+  parseContributionScope,
+  type ContributionScope,
+} from "@gadgets/gatekeeper-kit/contribution-scope";
 import {
   advertisePages,
   bufferedGitObject,
@@ -191,6 +198,11 @@ import type {
   GitHubPullRequestSearch,
   GitHubPullRequestSummary,
   GitHubRepo as GitHubRepoSession,
+  GitHubContributorMetadata,
+  GitHubContributorPullRequest,
+  GitHubContributorPullRequestFilter,
+  GitHubContributorPullRequestOptions,
+  GitHubRepoContributor,
   GitHubRepoMetadata,
   GitHubRepoRef,
   GitHubReviewDecision,
@@ -234,7 +246,7 @@ type StoredNonce = {
   reconnect?: true;
 };
 
-type ResourceKind = "repo" | "issue" | "pull";
+type ResourceKind = "repo" | "issue" | "pull" | "contributor";
 type EntityKind = "issue" | "pull";
 
 type GitHubGatekeeperImplProps = {
@@ -243,6 +255,10 @@ type GitHubGatekeeperImplProps = {
   owner: string;
   repo: string;
   issueNumber?: number;
+  /** The contributor binding's branch namespace, e.g. `cloudflare-os/` (ends with `/`). */
+  branchPrefix?: string;
+  /** Whether the contributor binding may push to a public repository. */
+  allowPublic?: boolean;
 };
 
 type Cached<T> = {
@@ -608,6 +624,8 @@ const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
   repo: ["createIssue", "createPullRequest", ...PULL_ACTIONS, "push", "forcePush"],
   issue: ISSUE_ACTIONS,
   pull: PULL_ACTIONS,
+  // Its session can queue nothing else, and never a force push.
+  contributor: ["push", "createPullRequest"],
 };
 
 /**
@@ -703,6 +721,19 @@ const REPO_RESOURCE: SupportedResource = {
   description: "Read and manage issues, pull requests, reviews, and discussions in a GitHub repository.",
 };
 
+// A narrower capability over the same repository, configured by the URL's query (see
+// `parseContributionScope`). The repository pattern also matches these URLs, so this type is
+// listed first.
+const CONTRIBUTOR_RESOURCE: SupportedResource = {
+  id: "repository-contributor",
+  urlPattern: "https://github.com/:owner/:repo\\?branchPrefix=*",
+  title: "GitHub Repository (pull requests only)",
+  description:
+    "Read a GitHub repository's code and history, push commits to branches under one prefix, and " +
+    "open pull requests from them into the default branch. Cannot merge, approve, or push elsewhere.",
+  groupedWith: REPO_RESOURCE.id,
+};
+
 const ISSUE_RESOURCE: SupportedResource = {
   id: "issue",
   urlPattern: "https://github.com/:owner/:repo/issues/:number",
@@ -718,6 +749,7 @@ const PULL_REQUEST_RESOURCE: SupportedResource = {
 };
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [
+  CONTRIBUTOR_RESOURCE,
   REPO_RESOURCE,
   ISSUE_RESOURCE,
   PULL_REQUEST_RESOURCE,
@@ -1804,7 +1836,15 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     };
 
     let resource = REPO_RESOURCE;
-    if (kind === "issues" || kind === "pull") {
+    // A contributor scope in the query (`?branchPrefix=…`) names the narrower binding; a malformed
+    // one throws rather than being read as the whole repository, which it did not ask for.
+    if (parsed.searchParams.has("branchPrefix") || parsed.searchParams.has("allowPublic")) {
+      if (segments.length !== 2) {
+        throw new Error("A contributor repository URL must name the repository itself.");
+      }
+      Object.assign(props, { resourceKind: "contributor" }, parseContributionScope(parsed.searchParams));
+      resource = CONTRIBUTOR_RESOURCE;
+    } else if (kind === "issues" || kind === "pull") {
       // Never widen a malformed issue or PR URL (`/issues/new`, `/pull/12abc`) to the whole repo.
       if (!/^\d+$/.test(number ?? "")) {
         throw new Error(`Unsupported GitHub URL: ${url}`);
@@ -1826,7 +1866,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const read = accountReader(this.ctx.exports, this.ctx.props.userObjectId);
 
-    if (resourceUrlPattern === REPO_RESOURCE.urlPattern) {
+    if (resourceUrlPattern === REPO_RESOURCE.urlPattern || resourceUrlPattern === CONTRIBUTOR_RESOURCE.urlPattern) {
       return {
         iframeHtml: GITHUB_REPO_CONFIGURATOR_HTML,
         ui: new RpcStub(new GitHubRepoConfiguratorUI(read)),
@@ -2030,7 +2070,7 @@ function assertSearchScope(
 
 @validateRpc()
 export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImplProps>
-  implements Gatekeeper<GitHubRepoSession | GitHubIssue | GitHubPullRequest> {
+  implements Gatekeeper<GitHubRepoSession | GitHubRepoContributor | GitHubIssue | GitHubPullRequest> {
 
   #pendingActionsCache?: GitHubAction[];
 
@@ -4044,6 +4084,18 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           hookTsType: "GitHubEventHook",
         };
       }
+      case "contributor": {
+        const repo = await this.#getRepoMetadata();
+        const prefix = this.ctx.props.branchPrefix;
+        return {
+          url: repo.url + contributionScopeQuery(this.#contributionScope()!),
+          title: `${repo.fullName} (pull requests from ${prefix}*)`,
+          snippet: `Push to ${prefix}* branches and open pull requests into ${repo.defaultBranch} ` +
+            `in GitHub repository ${repo.fullName}.`,
+          suggestedBindingName: "GITHUB_REPO_CONTRIBUTOR",
+          tsType: "GitHubRepoContributor",
+        };
+      }
       case "issue": {
         const issue = await this.#getIssueDetails(String(this.ctx.props.issueNumber));
         return {
@@ -4104,11 +4156,17 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     this.#markActionPending(this.#getLiveActionRecord(action.approvalId));
   }
 
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GitHubRepoSession | GitHubIssue | GitHubPullRequest> {
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>):
+      Promise<GitHubRepoSession | GitHubRepoContributor | GitHubIssue | GitHubPullRequest> {
     const queue = approvalQueue.dup();
     switch (this.ctx.props.resourceKind) {
       case "repo":
         return new GitHubRepoSessionImpl(this, queue);
+      case "contributor":
+        if (typeof this.ctx.props.branchPrefix !== "string") {
+          throw new Error("This GitHub connection is missing its branch prefix. Please remove it and connect the repository again.");
+        }
+        return new GitHubRepoContributorImpl(this, queue);
       case "issue":
         return new GitHubIssueImpl(this, queue, String(this.ctx.props.issueNumber), "issue");
       case "pull":
@@ -4130,6 +4188,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     approvalQueue: RpcStub<ApprovalQueue>, target: { kind: EntityKind; id: string } | undefined,
     hook: RpcStub<GitHubEventHookTarget>, options: GitHubSubscribeOptions | undefined,
   ): Promise<void> {
+    if (this.ctx.props.resourceKind === "contributor") {
+      throw new Error("A contributor connection cannot subscribe to repository events.");
+    }
     if (webhookOrigin(this.env) === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
     const { owner, repo, userObjectId } = this.ctx.props;
     const watchable: GitHubEventKind[] = target === undefined
@@ -4189,6 +4250,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     approvalQueue: RpcStub<ApprovalQueue>, stored: GitHubWebhookEvent,
   ): Promise<void> {
     const { resourceKind, issueNumber } = this.ctx.props;
+    if (resourceKind === "contributor") return;  // it cannot bind hooks; nothing is delivered to it
     const pin = await this.#pinnedRepo();
     if (stored.repoId !== pin.id) return;
     // An issue or pull request binding's hooks watch only that one, whatever their parameters say.
@@ -4381,6 +4443,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     // An apply proves the overseer holds the action, even if its submit's reply is yet to arrive
     // or is lost: pending, it is kept for a retry should this apply fail.
     this.#markActionPending(record);
+    await this.#reassertContribution(action);
     switch (action.type) {
       case "createIssue": {
         const response = await this.#withApi(api => api.createIssue(action.owner, action.repo, {
@@ -6207,6 +6270,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async prepareCreatePullRequest(options: GitHubCreatePullRequestOptions): Promise<CreatePullRequestAction> {
+    const scope = this.#contributionScope();
+    if (scope) await this.#assertContribution(scope, { type: "createPullRequest", head: options.head, base: options.base });
     // Queue-time validation: both branches must exist -- on the remote, or as the not-yet-applied
     // outcome of queued pushes (`#simulateBranchHead` overlays those). Failing here surfaces a
     // typo'd or forgotten-to-push branch to the caller immediately, instead of queuing an action
@@ -6429,6 +6494,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    */
   async preparePush(branch: string, commitId: string, force: boolean,
                     gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
+    const scope = this.#contributionScope();
+    if (scope) await this.#assertContribution(scope, { type: "push", branch, force });
     const { owner, repo } = this.ctx.props;
     const [realHead, gatedBranch] = await Promise.all([
       this.#withApi(api => api.getBranchHead(owner, repo, branch)),
@@ -6456,6 +6523,67 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       force,
       gatedBranch,
     };
+  }
+
+  /** The contributor binding's scope, or null for a binding with the repository's full surface. */
+  #contributionScope(): ContributionScope | null {
+    const props = this.ctx.props;
+    if (props.resourceKind !== "contributor") return null;
+    if (typeof props.branchPrefix !== "string") {
+      throw new Error("This GitHub connection is missing its branch prefix. Please remove it and connect the repository again.");
+    }
+    return { branchPrefix: props.branchPrefix, allowPublic: props.allowPublic === true };
+  }
+
+  /** The contributor binding's scope, for the session's own up-front checks. */
+  contributionScope(): ContributionScope | null {
+    return this.#contributionScope();
+  }
+
+  /**
+   * The contributor policy for one write, checked when it is queued and again when it is
+   * applied, against the repository's visibility and default branch read fresh (a repository
+   * made public a minute ago must already refuse writes) -- and, for a push, the branch's current
+   * protection. "internal" (an enterprise's members) is not public.
+   */
+  async #assertContribution(scope: ContributionScope, write:
+      | { type: "push"; branch: string; force: boolean }
+      | { type: "createPullRequest"; head: string; base: string }): Promise<void> {
+    const { owner, repo } = this.ctx.props;
+    const response = await this.#withApi(api => api.getRepo(owner, repo));
+    const visibility = response.visibility ?? (response.private === false ? "public" : "private");
+    const target = { isPublic: visibility === "public", defaultBranch: response.default_branch };
+    assertContributionVisibility(scope, target);
+    if (write.type === "push") {
+      if (write.force) throw new Error("This connection cannot force-push; push a fast-forward or a new branch.");
+      assertContributionBranch(scope, target, write.branch);
+      if (await this.#withApi(api => api.isBranchProtected(owner, repo, write.branch))) {
+        throw new Error(`This connection cannot push to the protected branch "${write.branch}".`);
+      }
+    } else {
+      assertContributionBranch(scope, target, write.head);
+      if (write.base !== target.defaultBranch) {
+        throw new Error(`This connection can only open pull requests into the default branch "${target.defaultBranch}".`);
+      }
+    }
+  }
+
+  /**
+   * The contributor policy again at apply time: the repository may have been made public, the
+   * branch protected, or the default branch renamed since the action was queued. Any action
+   * other than a push or a pull request creation is refused outright -- the contributor session
+   * cannot queue one, so its presence means something is wrong.
+   */
+  async #reassertContribution(action: GitHubAction): Promise<void> {
+    const scope = this.#contributionScope();
+    if (!scope) return;
+    if (action.type === "push") {
+      await this.#assertContribution(scope, { type: "push", branch: action.branch, force: action.force });
+    } else if (action.type === "createPullRequest") {
+      await this.#assertContribution(scope, { type: "createPullRequest", head: action.options.head, base: action.options.base });
+    } else {
+      throw new Error(`This GitHub connection cannot apply a ${action.type} action.`);
+    }
   }
 
   /**
@@ -6909,6 +7037,105 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
 }
 
 @validateRpc()
+/**
+ * The contributor binding's session: the repository session's code and history reads, a push
+ * that is never forced, and pull request creation and listing confined to the binding's branch
+ * prefix and the default branch. It holds no issue or pull request capability and no hook
+ * subscription, so nothing it returns can merge, approve, or comment. The gatekeeper re-checks
+ * the branch and visibility policy itself when it prepares and applies each write, so this class
+ * is not the only line of defense.
+ */
+@validateRpc()
+export class GitHubRepoContributorImpl extends RpcTarget implements GitHubRepoContributor {
+  #gatekeeper: GitHubGatekeeperImpl;
+  #approvalQueue: RpcStub<ApprovalQueue>;
+  #repo: GitHubRepoSessionImpl;
+
+  constructor(gatekeeper: GitHubGatekeeperImpl, approvalQueue: RpcStub<ApprovalQueue>) {
+    super();
+    this.#gatekeeper = gatekeeper;
+    this.#approvalQueue = approvalQueue;
+    this.#repo = new GitHubRepoSessionImpl(gatekeeper, approvalQueue.dup());
+  }
+
+  [Symbol.dispose](): void {
+    this.#repo[Symbol.dispose]();
+    (this.#approvalQueue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
+  }
+
+  #scope(): ContributionScope {
+    const scope = this.#gatekeeper.contributionScope();
+    if (!scope) throw new Error("This GitHub connection is not a contributor connection.");
+    return scope;
+  }
+
+  #requireBranch(branch: string): void {
+    const { branchPrefix } = this.#scope();
+    validateBranchName(branch);
+    if (!branch.startsWith(branchPrefix) || branch.length === branchPrefix.length) {
+      throw new Error(`This connection can only use branches whose names start with "${branchPrefix}"; ` +
+        `${JSON.stringify(branch.slice(0, 120))} does not.`);
+    }
+  }
+
+  async getMetadata(): Promise<GitHubContributorMetadata> {
+    return { ...await this.#repo.getMetadata(), ...this.#scope() };
+  }
+
+  async listBranches(options?: GitHubBranchFilter): Promise<Cursor<GitHubBranchSummary>> {
+    return await this.#repo.listBranches(options);
+  }
+
+  async resolveRef(ref?: string): Promise<string> {
+    return await this.#repo.resolveRef(ref);
+  }
+
+  async getCommit(ref?: string): Promise<GitHubCommitDetails> {
+    return await this.#repo.getCommit(ref);
+  }
+
+  async listCommits(options?: GitHubCommitFilter): Promise<Cursor<GitHubCommitSummary>> {
+    return await this.#repo.listCommits(options);
+  }
+
+  async push(branch: string, commitId: string): Promise<void> {
+    this.#requireBranch(branch);
+    await this.#repo.push(branch, commitId, { force: false });
+  }
+
+  async createPullRequest(options: GitHubContributorPullRequestOptions): Promise<GitHubContributorPullRequest> {
+    this.#requireBranch(options.head);
+    const { defaultBranch } = await this.#gatekeeper.repoMetadata();
+    const action = await this.#gatekeeper.prepareCreatePullRequest({
+      title: options.title, head: options.head, base: defaultBranch,
+      bodyMarkdown: options.bodyMarkdown, draft: options.draft,
+    });
+    await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
+      title: `Create pull request ${options.title}`,
+      implementsRevert: false,
+    });
+    return {
+      id: action.provisionalId, url: null, title: options.title, state: "open", merged: false,
+      draft: options.draft ?? false, head: options.head, base: defaultBranch, headCommit: null,
+    };
+  }
+
+  async listPullRequests(options: GitHubContributorPullRequestFilter): Promise<Cursor<GitHubContributorPullRequest>> {
+    this.#requireBranch(options.head);
+    const cursor = await this.#repo.listPullRequests({
+      head: options.head, state: options.state, resultsPerPage: options.resultsPerPage,
+    });
+    return new MappedCursor(cursor, contributorPullRequest);
+  }
+}
+
+function contributorPullRequest(pull: GitHubPullRequestSummary): GitHubContributorPullRequest {
+  return {
+    id: pull.id, url: pull.id.startsWith("~") ? null : pull.url, title: pull.title, state: pull.state,
+    merged: pull.merged, draft: pull.draft, head: pull.head.ref, base: pull.base.ref, headCommit: pull.head.sha || null,
+  };
+}
+
 class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
   protected gatekeeper: GitHubGatekeeperImpl;
   protected approvalQueue: RpcStub<ApprovalQueue>;

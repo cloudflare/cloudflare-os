@@ -64,6 +64,24 @@ describe("parseResourceUrl", () => {
       .toEqual({ projectPath: "group/project", kind: "project" });
   });
 
+  it("reads a contributor scope from a bare project URL's query, and refuses a malformed one", () => {
+    expect(parseResourceUrl(INSTANCE, `${INSTANCE}/group/sub/project?branchPrefix=cloudflare-os%2F`)).toEqual({
+      projectPath: "group/sub/project", kind: "contributor", scope: { branchPrefix: "cloudflare-os/", allowPublic: false },
+    });
+    expect(parseResourceUrl(INSTANCE, `${INSTANCE}/group/project?branchPrefix=x/&allowPublic=true`)).toEqual({
+      projectPath: "group/project", kind: "contributor", scope: { branchPrefix: "x/", allowPublic: true },
+    });
+    // Reading any of these as the whole project would grant more than the URL asked for.
+    for (const url of [
+      `${INSTANCE}/group/project?branchPrefix=main`,
+      `${INSTANCE}/group/project?allowPublic=true`,
+      `${INSTANCE}/group/project?branchPrefix=x/&force=true`,
+      `${INSTANCE}/group/project/-/merge_requests/7?branchPrefix=x/`,
+    ]) {
+      expect(() => parseResourceUrl(INSTANCE, url), url).toThrow();
+    }
+  });
+
   it("round-trips with projectRef", () => {
     const ref = projectRef(INSTANCE, "group/sub/project");
     expect(ref).toEqual({ path: "group/sub/project", name: "project", namespace: "group/sub", url: `${INSTANCE}/group/sub/project` });

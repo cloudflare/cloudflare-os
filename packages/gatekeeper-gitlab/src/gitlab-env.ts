@@ -244,10 +244,28 @@ function effectiveAccessLevel(
 export function supportedResources(env: Env): {
   mergeRequest: SupportedResource;
   issue: SupportedResource;
+  contributor: SupportedResource;
   project: SupportedResource;
   all: SupportedResource[];
 } {
   const origin = instanceUrl(env);
+  const project: SupportedResource = {
+    id: "project",
+    urlPattern: `${origin}/:project+`,
+    title: "GitLab Project",
+    description: "Read and manage issues, merge requests, reviews, and code in a GitLab project.",
+  };
+  // A narrower capability over the same project, configured by the URL's query (see
+  // `parseResourceUrl`). `:project+` also matches these URLs, so this type is listed first.
+  const contributor: SupportedResource = {
+    id: "project-contributor",
+    urlPattern: `${origin}/:project+\\?branchPrefix=*`,
+    title: "GitLab Project (merge requests only)",
+    description:
+      "Read a GitLab project's code and history, push commits to branches under one prefix, and " +
+      "open merge requests from them into the default branch. Cannot merge, approve, or push elsewhere.",
+    groupedWith: project.id,
+  };
   const mergeRequest: SupportedResource = {
     id: "merge-request",
     urlPattern: `${origin}/:project+/-/merge_requests/:iid{/*}?`,
@@ -260,16 +278,13 @@ export function supportedResources(env: Env): {
     title: "GitLab Issue",
     description: "Read and manage a specific GitLab issue.",
   };
-  const project: SupportedResource = {
-    id: "project",
-    urlPattern: `${origin}/:project+`,
-    title: "GitLab Project",
-    description: "Read and manage issues, merge requests, reviews, and code in a GitLab project.",
+  return {
+    mergeRequest, issue, contributor, project,
+    all: [mergeRequest, issue, contributor, project],
   };
-  return { mergeRequest, issue, project, all: [mergeRequest, issue, project] };
 }
 
-export type ResourceKind = "project" | "issue" | "mergeRequest";
+export type ResourceKind = "project" | "issue" | "mergeRequest" | "contributor";
 
 /** What a bound gatekeeper DO is told about itself (`ctx.props`). */
 export type GitLabGatekeeperImplProps = {
@@ -284,4 +299,8 @@ export type GitLabGatekeeperImplProps = {
    * have no legacy reads for addObserver to check (see GitLabGatekeeperImpl.addObserver).
    */
   reportsSubresources?: true;
+  /** The contributor binding's branch namespace, e.g. `cloudflare-os/` (ends with `/`). */
+  branchPrefix?: string;
+  /** Whether the contributor binding may push to a public project. */
+  allowPublic?: boolean;
 };

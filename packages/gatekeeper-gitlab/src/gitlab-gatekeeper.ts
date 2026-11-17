@@ -48,6 +48,13 @@ import {
 } from "@gadgets/gatekeeper-kit/git-objects";
 import { observerAccessVerifier, trackedCollectionObservers, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import {
+  assertContributionBranch,
+  assertContributionVisibility,
+  contributionScopeQuery,
+  type ContributionScope,
+  type ContributionTarget,
+} from "@gadgets/gatekeeper-kit/contribution-scope";
+import {
   GitRefUpdateRejectedError,
   ZERO_OID,
   emptyPackBytes,
@@ -170,7 +177,7 @@ import {
 } from "./gitlab-normalize";
 import { StreamingCursor, mapPage } from "./gitlab-cursors";
 import type { GitLabVerifierApi } from "./gitlab";
-import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
+import { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectContributorImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
 import { parseProjectSubresource, projectSubresourceId } from "./project-subresources";
 import type {
   GitLabActor,
@@ -210,6 +217,7 @@ import type {
   GitLabPipelineFilter,
   GitLabPipelineSummary,
   GitLabProject,
+  GitLabProjectContributor,
   GitLabProjectMetadata,
   GitLabProjectRef,
   GitLabTagSummary,
@@ -338,7 +346,7 @@ function reviewedHeadMoved(realId: string, reviewedSha: string, liveSha?: string
 
 @validateRpc()
 export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImplProps>
-  implements Gatekeeper<GitLabProject | GitLabIssue | GitLabMergeRequest> {
+  implements Gatekeeper<GitLabProject | GitLabProjectContributor | GitLabIssue | GitLabMergeRequest> {
 
   #pendingActionsCache?: GitLabAction[];
 
@@ -381,7 +389,53 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     if (!props || typeof props.projectPath !== "string" || !props.resourceKind) {
       throw new Error("This GitLab connection was created by an earlier version. Please remove it and connect the project again.");
     }
+    if (props.resourceKind === "contributor" && typeof props.branchPrefix !== "string") {
+      throw new Error("This GitLab connection is missing its branch prefix. Please remove it and connect the project again.");
+    }
     return props;
+  }
+
+  /** The contributor binding's scope, or null for a binding with the project's full surface. */
+  #contributionScope(): ContributionScope | null {
+    const props = this.#props();
+    if (props.resourceKind !== "contributor") return null;
+    return { branchPrefix: props.branchPrefix!, allowPublic: props.allowPublic === true };
+  }
+
+  /**
+   * The project's visibility and default branch, read fresh: the contributor checks must not act
+   * on a cached answer, since a project made public a minute ago must already refuse writes.
+   */
+  async #contributionTarget(): Promise<ContributionTarget> {
+    const project = await this.#withApi(api => api.getProject(this.#projectPath()));
+    if (!project.default_branch) {
+      throw new Error(`The GitLab project ${this.#projectPath()} has no default branch to open merge requests into.`);
+    }
+    // "internal" (any signed-in user of the instance) is not public: it is how a self-managed
+    // instance shares within the organization, and anonymous readers cannot see it.
+    return { isPublic: project.visibility === "public", defaultBranch: project.default_branch };
+  }
+
+  /**
+   * The contributor policy for one write, checked when it is queued and again when it is
+   * applied: the project's visibility, the branch's namespace, and -- for a push -- no force and
+   * no protected branch. `protectedBranch` is the branch's current protection, read fresh.
+   */
+  async #assertContribution(scope: ContributionScope, write:
+      | { type: "push"; branch: string; force: boolean; protectedBranch: boolean }
+      | { type: "createMergeRequest"; sourceBranch: string; targetBranch: string }): Promise<void> {
+    const target = await this.#contributionTarget();
+    assertContributionVisibility(scope, target);
+    if (write.type === "push") {
+      if (write.force) throw new Error("This connection cannot force-push; push a fast-forward or a new branch.");
+      assertContributionBranch(scope, target, write.branch);
+      if (write.protectedBranch) throw new Error(`This connection cannot push to the protected branch "${write.branch}".`);
+    } else {
+      assertContributionBranch(scope, target, write.sourceBranch);
+      if (write.targetBranch !== target.defaultBranch) {
+        throw new Error(`This connection can only open merge requests into the default branch "${target.defaultBranch}".`);
+      }
+    }
   }
 
   #projectPath(): string {
@@ -1938,6 +1992,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           tsType: "GitLabProject",
         };
       }
+      case "contributor": {
+        const project = await this.#getProjectMetadata();
+        return {
+          url: project.url + contributionScopeQuery(this.#contributionScope()!),
+          title: `${project.path} (merge requests from ${props.branchPrefix}*)`,
+          snippet: `Push to ${props.branchPrefix}* branches and open merge requests into ` +
+            `${project.defaultBranch} in GitLab project ${project.path}.`,
+          suggestedBindingName: "GITLAB_PROJECT_CONTRIBUTOR",
+          tsType: "GitLabProjectContributor",
+        };
+      }
       case "issue": {
         const issue = await this.#getIssueDetails(String(props.iid));
         return {
@@ -1969,12 +2034,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return autoApprovableKinds(this.#props().resourceKind);
   }
 
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GitLabProject | GitLabIssue | GitLabMergeRequest> {
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>):
+      Promise<GitLabProject | GitLabProjectContributor | GitLabIssue | GitLabMergeRequest> {
     const props = this.#props();
     const queue = approvalQueue.dup();
     switch (props.resourceKind) {
       case "project":
         return new GitLabProjectSessionImpl(this, queue);
+      case "contributor":
+        return new GitLabProjectContributorImpl(this, queue);
       case "issue":
         return new GitLabIssueImpl(this, queue, String(props.iid));
       case "mergeRequest":
@@ -2073,6 +2141,34 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   ): Promise<{ allowedObserverIds: string[] }> {
     for (const subresource of subresources) parseProjectSubresource(subresource);
     return await verifyProjectAccess(observers, subresources);
+  }
+
+  /**
+   * The contributor policy again at apply time: the project may have been made public, the
+   * branch protected, or the default branch renamed since the action was queued. Any action
+   * other than a push or a merge request creation is refused outright -- the contributor session
+   * cannot queue one, so its presence means something is wrong.
+   */
+  async #reassertContribution(action: GitLabAction): Promise<void> {
+    const scope = this.#contributionScope();
+    if (!scope) return;
+    if (action.type === "push") {
+      const remote = await this.#withApi(api => api.getBranch(this.#projectPath(), action.branch));
+      await this.#assertContribution(scope, {
+        type: "push", branch: action.branch, force: action.force, protectedBranch: remote?.protected ?? false,
+      });
+    } else if (action.type === "createMergeRequest") {
+      await this.#assertContribution(scope, {
+        type: "createMergeRequest", sourceBranch: action.options.sourceBranch, targetBranch: action.options.targetBranch,
+      });
+    } else {
+      throw new Error(`This GitLab connection cannot apply a ${action.type} action.`);
+    }
+  }
+
+  /** The contributor binding's branch prefix, for the session's own up-front checks. */
+  contributionScope(): ContributionScope | null {
+    return this.#contributionScope();
   }
 
   // -- session-facing reads (in-process; sessions hold this object directly) --------------
@@ -2713,6 +2809,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async prepareCreateMergeRequest(options: GitLabCreateMergeRequestOptions): Promise<CreateMergeRequestAction> {
+    const scope = this.#contributionScope();
+    if (scope) {
+      await this.#assertContribution(scope, {
+        type: "createMergeRequest", sourceBranch: options.sourceBranch, targetBranch: options.targetBranch,
+      });
+    }
     // Queue-time validation: both branches must exist -- on the remote, or as the not-yet-applied
     // outcome of queued pushes. Failing here surfaces a typo'd or forgotten-to-push branch to the
     // caller immediately, instead of queuing an action GitLab will later refuse.
@@ -2865,6 +2967,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     // An apply proves the overseer holds the action, even if its submit's reply is yet to arrive
     // or is lost: pending, it is kept for a retry should this apply fail.
     this.#markActionPending(record);
+    await this.#reassertContribution(action);
 
     switch (action.type) {
       case "createIssue": {
@@ -3554,6 +3657,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    */
   async preparePush(branch: string, commitId: GitOid, force: boolean, gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
     const remote = await this.#withApi(api => api.getBranch(this.#projectPath(), branch));
+    const scope = this.#contributionScope();
+    if (scope) await this.#assertContribution(scope, { type: "push", branch, force, protectedBranch: remote?.protected ?? false });
     const realHead = remote?.commit.id ?? null;
     const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
     if (expectedOldSha === commitId) return null;

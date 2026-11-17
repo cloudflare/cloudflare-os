@@ -11,7 +11,7 @@
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { ApprovalQueue, Cursor, GitOid, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
+import { MappedCursor, SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import { advertisePages, commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-objects";
 import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
@@ -24,6 +24,10 @@ import type {
   GitLabCommitDetails,
   GitLabCommitFilter,
   GitLabCommitSummary,
+  GitLabContributorMergeRequest,
+  GitLabContributorMergeRequestFilter,
+  GitLabContributorMergeRequestOptions,
+  GitLabContributorMetadata,
   GitLabCreateIssueOptions,
   GitLabCreateMergeRequestOptions,
   GitLabDiffThread,
@@ -54,6 +58,7 @@ import type {
   GitLabPipelineFilter,
   GitLabPipelineSummary,
   GitLabProject,
+  GitLabProjectContributor,
   GitLabProjectMetadata,
   GitLabTagSummary,
   GitLabTestCase,
@@ -293,6 +298,110 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
     const jobId = await this.#gatekeeper.openProjectJob(id);
     return new GitLabJobImpl(this.#gatekeeper, this.#approvalQueue.dup(), jobId);
   }
+}
+
+/**
+ * The contributor binding's session: the project session's repository reads, a push that is
+ * never forced, and merge request creation and listing confined to the binding's branch prefix
+ * and the default branch. It holds no merge request or issue capability, so nothing it returns
+ * can merge, approve, or comment. Delegating to a project session keeps one implementation of
+ * each read; the gatekeeper re-checks the branch and visibility policy itself when it prepares
+ * and applies each write, so this class is not the only line of defense.
+ */
+@validateRpc()
+export class GitLabProjectContributorImpl extends RpcTarget implements GitLabProjectContributor {
+  #gatekeeper: GitLabGatekeeperImpl;
+  #approvalQueue: RpcStub<ApprovalQueue>;
+  #project: GitLabProjectSessionImpl;
+
+  constructor(gatekeeper: GitLabGatekeeperImpl, approvalQueue: RpcStub<ApprovalQueue>) {
+    super();
+    this.#gatekeeper = gatekeeper;
+    this.#approvalQueue = approvalQueue;
+    this.#project = new GitLabProjectSessionImpl(gatekeeper, approvalQueue.dup());
+  }
+
+  [Symbol.dispose](): void {
+    this.#project[Symbol.dispose]();
+    (this.#approvalQueue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
+  }
+
+  #scope() {
+    const scope = this.#gatekeeper.contributionScope();
+    if (!scope) throw new Error("This GitLab connection is not a contributor connection.");
+    return scope;
+  }
+
+  #requireBranch(branch: string): void {
+    const { branchPrefix } = this.#scope();
+    validateBranchName(branch);
+    if (!branch.startsWith(branchPrefix) || branch.length === branchPrefix.length) {
+      throw new Error(`This connection can only use branches whose names start with "${branchPrefix}"; ` +
+        `${JSON.stringify(branch.slice(0, 120))} does not.`);
+    }
+  }
+
+  async getMetadata(): Promise<GitLabContributorMetadata> {
+    const metadata = await this.#project.getMetadata();
+    return { ...metadata, ...this.#scope() };
+  }
+
+  async listBranches(options?: GitLabBranchFilter): Promise<Cursor<GitLabBranchSummary>> {
+    return await this.#project.listBranches(options);
+  }
+
+  async resolveRef(ref?: string): Promise<string> {
+    return await this.#project.resolveRef(ref);
+  }
+
+  async getCommit(ref?: string): Promise<GitLabCommitDetails> {
+    return await this.#project.getCommit(ref);
+  }
+
+  async listCommits(options?: GitLabCommitFilter): Promise<Cursor<GitLabCommitSummary>> {
+    return await this.#project.listCommits(options);
+  }
+
+  async push(branch: string, commitId: string): Promise<void> {
+    this.#requireBranch(branch);
+    await this.#project.push(branch, commitId, { force: false });
+  }
+
+  async createMergeRequest(options: GitLabContributorMergeRequestOptions): Promise<GitLabContributorMergeRequest> {
+    this.#requireBranch(options.sourceBranch);
+    const { defaultBranch } = await this.#gatekeeper.projectMetadata();
+    const action = await this.#gatekeeper.prepareCreateMergeRequest({
+      title: options.title,
+      sourceBranch: options.sourceBranch,
+      targetBranch: defaultBranch,
+      bodyMarkdown: options.bodyMarkdown,
+      draft: options.draft,
+    });
+    await this.#gatekeeper.submitActionForApproval(this.#approvalQueue, action, {
+      title: `Create merge request ${options.title}`,
+      implementsRevert: false,
+    });
+    return {
+      id: action.provisionalId, url: null, title: options.title, state: "opened", draft: options.draft ?? false,
+      sourceBranch: options.sourceBranch, targetBranch: defaultBranch, headCommit: null,
+    };
+  }
+
+  async listMergeRequests(options: GitLabContributorMergeRequestFilter): Promise<Cursor<GitLabContributorMergeRequest>> {
+    this.#requireBranch(options.sourceBranch);
+    const cursor = await this.#project.listMergeRequests({
+      sourceBranch: options.sourceBranch, state: options.state, resultsPerPage: options.resultsPerPage,
+    });
+    return new MappedCursor(cursor, contributorMergeRequest);
+  }
+}
+
+function contributorMergeRequest(mr: GitLabMergeRequestSummary): GitLabContributorMergeRequest {
+  const pending = mr.id.startsWith("~");
+  return {
+    id: mr.id, url: pending ? null : mr.url, title: mr.title, state: mr.state, draft: mr.draft,
+    sourceBranch: mr.source.branch, targetBranch: mr.target.branch, headCommit: mr.source.sha,
+  };
 }
 
 /**

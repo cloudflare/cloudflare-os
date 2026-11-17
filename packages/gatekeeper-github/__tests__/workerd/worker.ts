@@ -11,7 +11,7 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
   AccountDescription, ActionKind, ConnectHandoff, GatekeeperUser, GitCache, HookController,
-  HookDescription, GitPullHints, GitPullTransfer,
+  HookDescription, GitPullHints, GitPullTransfer, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionPresentation } from "@gadgets/gatekeeper-kit/actions";
 import { GitHubGatekeeperImpl, GitHubHookDriver as GitHubHookDriverImpl, type GitHubVerifierApi } from "../../src/github.js";
@@ -95,10 +95,12 @@ export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name
 /** Mirrors github.ts's (unexported) `GitHubGatekeeperImplProps`. */
 export type GatekeeperProps = {
   userObjectId: string;
-  resourceKind: "repo" | "issue" | "pull";
+  resourceKind: "repo" | "issue" | "pull" | "contributor";
   owner: string;
   repo: string;
   issueNumber?: number;
+  branchPrefix?: string;
+  allowPublic?: boolean;
 };
 
 /** Mirrors github.ts's (unexported) `PushAction` record, as the tests read it back. */
@@ -170,7 +172,7 @@ type SeedFacet = { seed(entries: Record<string, unknown>): Promise<void> };
 // The facet methods TestHooks forwards to, spelled structurally: workers-types' `Fetcher<T>`
 // return-type inference collapses several of these returns to `never` (its `Serializable`
 // heuristic gives up on them), while the runtime objects are exactly the production ones.
-type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
+type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull" | "describe"> & {
   addObserver(id: string, verifier: Fetcher<GitHubVerifierApi>): Promise<void>;
   verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GitHubVerifierApi> }[], subresources: string[],
@@ -244,6 +246,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return this.ctx.facets.get<GitHubGatekeeperImpl>(facetName, () => ({
       class: (this.ctx.exports as unknown as TestExports).GitHubGatekeeperImpl({ props }),
     })) as unknown as GatekeeperFacet;
+  }
+
+  /** `Gatekeeper.describe()` for the binding `props` describes. */
+  async describeResource(facetName: string, props: GatekeeperProps): Promise<Outcome<ResourceDescription>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).describe());
   }
 
   /** `GatekeeperUser.describe()` for the account with id `userObjectId`. */

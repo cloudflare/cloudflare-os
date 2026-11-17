@@ -32,7 +32,7 @@ function gatekeeper(resourceKind: GatekeeperProps["resourceKind"] = "repo") {
   const scenario = `auto-approval-${nextScenario++}`;
   const props: GatekeeperProps = {
     userObjectId: env.USER_ACCOUNT.newUniqueId().toString(), resourceKind, owner: OWNER, repo: REPO,
-    ...(resourceKind === "repo" ? {} : { issueNumber: 7 }),
+    ...(resourceKind === "repo" ? {} : resourceKind === "contributor" ? { branchPrefix: "cloudflare-os/" } : { issueNumber: 7 }),
   };
   const hooks = env.TEST_HOOKS.getByName(scenario);
   return {
@@ -143,5 +143,7 @@ describe("auto-approval", () => {
     expect(await gatekeeper("pull").advertised()).toEqual(pull);
     expect(await gatekeeper("repo").advertised()).toEqual(
       ["github.createIssue", "github.createPullRequest", ...pull, "github.push", "github.forcePush"]);
+    // A contributor binding can push (never force) and open pull requests, nothing else.
+    expect(await gatekeeper("contributor").advertised()).toEqual(["github.push", "github.createPullRequest"]);
   });
 });

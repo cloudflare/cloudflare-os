@@ -14,6 +14,7 @@
     "./connect-handshake": "./src/connect-handshake.ts",
     "./connect-nonce": "./src/connect-nonce.ts",
     "./connect-pages": "./src/connect-pages.ts",
+    "./contribution-scope": "./src/contribution-scope.ts",
     "./credential-expiry": "./src/credential-expiry.ts",
     "./credential-stage": "./src/credential-stage.ts",
     "./credentials": "./src/credentials.ts",

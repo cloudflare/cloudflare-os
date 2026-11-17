@@ -648,7 +648,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       projectPath: parsed.projectPath,
       resourceKind: parsed.kind,
       reportsSubresources: true,
-      ...(parsed.kind === "project" ? {} : { iid: parsed.iid }),
+      ...(parsed.kind === "issue" || parsed.kind === "mergeRequest" ? { iid: parsed.iid } : {}),
+      ...(parsed.kind === "contributor" ? parsed.scope : {}),
     };
     return {
       class: this.ctx.exports.GitLabGatekeeperImpl({ props }),
@@ -664,7 +665,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     };
     const resources = supportedResources(this.env);
 
-    if (resourceUrlPattern === resources.project.urlPattern) {
+    if (resourceUrlPattern === resources.project.urlPattern || resourceUrlPattern === resources.contributor.urlPattern) {
       return {
         iframeHtml: GITLAB_PROJECT_CONFIGURATOR_HTML,
         ui: new RpcStub(new GitLabProjectConfiguratorUI(context)),

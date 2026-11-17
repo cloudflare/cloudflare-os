@@ -4,6 +4,7 @@
 // Node vitest project.
 
 import { applyCarriageReturns, stripAnsi } from "@gadgets/gatekeeper-kit/ci";
+import { parseContributionScope, type ContributionScope } from "@gadgets/gatekeeper-kit/contribution-scope";
 import { parseUnifiedPatch } from "@gadgets/gatekeeper-kit/git-diff";
 import { stripTrailingSlashes, type GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type {
@@ -115,9 +116,15 @@ export function projectRef(instanceUrl: string, projectPath: string, name?: stri
  * it names. GitLab separates the project path from everything else with `/-/`, which is what
  * makes nested namespaces unambiguous. Returns null for URLs on another origin or with too few
  * path segments to name a project.
+ *
+ * A bare project URL whose query carries a contributor scope (`?branchPrefix=…`, see
+ * `parseContributionScope`) names the narrower contributor binding over that project.
+ * @throws If the URL carries a contributor parameter but the scope is malformed: refusing is
+ *   safer than reading it as the whole project, which would grant more than the URL asked for.
  */
 export function parseResourceUrl(instanceUrl: string, url: string):
     | { projectPath: string; kind: "project" }
+    | { projectPath: string; kind: "contributor"; scope: ContributionScope }
     | { projectPath: string; kind: "issue" | "mergeRequest"; iid: number }
     | null {
   let parsed: URL;
@@ -132,6 +139,11 @@ export function parseResourceUrl(instanceUrl: string, url: string):
   const segments = projectPath.split("/").filter(Boolean);
   if (segments.length < 2 || segments.some(s => s === "-")) return null;
   const project = segments.join("/").replace(/\.git$/, "");
+  const wantsScope = parsed.searchParams.has("branchPrefix") || parsed.searchParams.has("allowPublic");
+  if (wantsScope) {
+    if (rest !== undefined) throw new Error("A contributor repository URL must name the project itself.");
+    return { projectPath: project, kind: "contributor", scope: parseContributionScope(parsed.searchParams)! };
+  }
   if (rest === undefined) return { projectPath: project, kind: "project" };
   // The issues and merge requests list pages (`/-/issues`, `/-/merge_requests?state=opened`) are
   // the project, like every other `/-/` route (tree, commits, pipelines, ...). A route that names

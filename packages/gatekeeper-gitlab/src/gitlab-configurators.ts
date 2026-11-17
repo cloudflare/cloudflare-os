@@ -44,7 +44,11 @@ function projectToOption(project: GitLabProjectResponse): ConfiguratorOption {
 function exactProjectPath(instanceUrl: string, input: string): string | null {
   const trimmed = input.trim();
   if (/^https?:\/\//i.test(trimmed)) {
-    return parseResourceUrl(instanceUrl, trimmed)?.projectPath ?? null;
+    try {
+      return parseResourceUrl(instanceUrl, trimmed)?.projectPath ?? null;
+    } catch {
+      return null;  // a malformed contributor query: not a project this search can name
+    }
   }
   const path = stripTrailingSlashes(trimmed.replace(/^\/+/, "")).replace(/\.git$/i, "");
   return PROJECT_PATH_PATTERN.test(path) ? path : null;
