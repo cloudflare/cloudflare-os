@@ -69,6 +69,18 @@ vi.mock('./fileTransfers', () => ({
   saveStreamToFile: mocks.saveStreamToFile,
 }))
 
+// A save item that asks for a save, and a dialog that says which Gadget it would save.
+vi.mock('./features/gadget-save/GadgetSaveMenuItems', () => ({
+  GadgetSaveMenuItems: ({ onSelect }: { onSelect: (request: object) => void }) => (
+    <button type="button" onClick={() => onSelect({})}>save item</button>
+  ),
+}))
+vi.mock('./features/gadget-save/GadgetSaveDialog', () => ({
+  GadgetSaveDialog: ({ gadgetTitle, onClose }: { gadgetTitle: string; onClose: () => void }) => (
+    <section data-save-dialog>saving {gadgetTitle}<button type="button" onClick={onClose}>close save</button></section>
+  ),
+}))
+
 import GadgetExportMenu from './GadgetExportMenu'
 
 let container: HTMLDivElement
@@ -267,5 +279,42 @@ describe('GadgetExportMenu', () => {
     } finally {
       consoleError.mockRestore()
     }
+  })
+
+  it('offers saves only with a save scope, and drops a pending save when its Gadget or preview changes', async () => {
+    const formats: GadgetExportFormat[] =
+      [{ id: 'csv', label: 'CSV', mode: 'server', contentType: 'text/csv', fileExtension: '.csv' }]
+    const client = () => gadget({ getExportFormats: async () => formats })
+    const scope = { workspaceId: 'ws', workpieceId: 3 }
+    const dialog = () => container.querySelector('[data-save-dialog]')?.textContent
+    const show = (props: Partial<ComponentProps<typeof GadgetExportMenu>>) => act(async () => root.render(
+      <GadgetExportMenu gadget={null} gadgetTitle="Report" saveScope={scope} {...props} />))
+    const askToSave = async () => {
+      await act(async () => button('open export menu')!.click())
+      await act(async () => button('save item')!.click())
+    }
+
+    const report = client()
+    await show({ gadget: report, saveScope: undefined })
+    await act(async () => button('open export menu')!.click())
+    expect(button('save item')).toBeUndefined()
+
+    await show({ gadget: report })
+    await askToSave()
+    expect(dialog()).toContain('saving Report')
+    await act(async () => button('close save')!.click())
+    expect(dialog()).toBeUndefined()
+
+    // The editor follows the agent to another Gadget, through none: the save does not follow.
+    await askToSave()
+    await show({})
+    await show({ gadget: client(), gadgetTitle: 'Budget' })
+    expect(dialog()).toBeUndefined()
+
+    await askToSave()
+    expect(dialog()).toContain('saving Budget')
+    await act(async () => root.render(
+      <GadgetExportMenu gadget={report} gadgetTitle="Report" saveScope={scope} chatId={4} />))
+    expect(dialog()).toBeUndefined()
   })
 })

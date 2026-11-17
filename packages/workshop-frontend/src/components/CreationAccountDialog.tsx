@@ -206,8 +206,10 @@ export const CreationAccountDialog = ({
                     await authenticatedApi.provisionAmbientAccount(target.vendor.id)
                     return null
                   }
+                  // A save connects with no resource types, where none given would ask for them all:
+                  // its configurator asks for what it needs.
                   return authenticatedApi.connectAccount(
-                    target.vendor.id, required.length > 0 ? required : undefined)
+                    target.vendor.id, required.length > 0 || purpose === 'save' ? required : undefined)
                 })}
                 onReconnect={accountId => void startFlow({ kind: 'reconnect', accountId }, () =>
                   authenticatedApi.reconnectAccount(accountId))}

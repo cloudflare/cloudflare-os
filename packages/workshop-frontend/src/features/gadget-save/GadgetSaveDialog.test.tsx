@@ -126,6 +126,17 @@ afterEach(() => {
 })
 
 describe('GadgetSaveDialog saving a new file', () => {
+  it('connects another account asking for no resource types, leaving that to the configurator', async () => {
+    const connectAccount = vi.fn<(vendorId: string, typeIds?: string[]) => Promise<never>>(
+      () => new Promise(() => {}))
+    testState.authenticatedApi.connectAccount = connectAccount
+    await render({ target, storageKey: KEY })
+
+    await act(async () => button('Use another Office account').click())
+
+    expect(connectAccount).toHaveBeenCalledExactlyOnceWith('office', [])
+  })
+
   it('saves the export, unawaited, where the configurator chose under the trimmed name', async () => {
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     await render({ target, storageKey: KEY })

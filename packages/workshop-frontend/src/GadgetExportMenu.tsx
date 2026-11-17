@@ -23,7 +23,9 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [exportingId, setExportingId] = useState<string | null>(null)
-  const [saveRequest, setSaveRequest] = useState<SaveRequest | null>(null)
+  // A save belongs to the Gadget and preview it was asked of: once either changes, as when the
+  // editor follows the agent to another Gadget, its dialog is gone rather than saving the new one.
+  const [saving, setSaving] = useState<{ request: SaveRequest; gadget: object; chatId?: number } | null>(null)
   const formatRequest = useRef(0)
   const toasts = useKumoToastManager()
 
@@ -140,17 +142,21 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScop
               </DropdownMenu.Item>
             ))}
             {saveScope && formats && (
-              <GadgetSaveMenuItems formats={formats} scope={saveScope} onSelect={setSaveRequest} />
+              <GadgetSaveMenuItems
+                formats={formats}
+                scope={saveScope}
+                onSelect={request => setSaving({ request, gadget, chatId })}
+              />
             )}
           </DropdownMenu.Content>
         </DropdownMenu>
-        {saveRequest && (
+        {saving?.gadget === gadget && saving.chatId === chatId && (
           <GadgetSaveDialog
             gadget={gadget}
             gadgetTitle={gadgetTitle}
             chatId={chatId}
-            request={saveRequest}
-            onClose={() => setSaveRequest(null)}
+            request={saving.request}
+            onClose={() => setSaving(null)}
           />
         )}
         {exportingId !== null && (
