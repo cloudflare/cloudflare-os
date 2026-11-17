@@ -232,6 +232,7 @@ function told(capacity = ROOM) {
   let count = { refused: 0, answered: 0 };
   let slots: PageSlots = {
     run: inner.run,
+    rest: inner.rest,
     refused() {
       count.refused++;
       inner.refused();

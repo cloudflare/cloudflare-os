@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { callSlots, pixelRoom, pixelsHeld, READ_AHEAD, type PixelHold } from "../src/pdf-read-ahead";
 
 /** A signal that never aborts. */
@@ -187,6 +187,80 @@ describe("callSlots", () => {
     expect(await Promise.all(running)).toEqual(["a", "b", "c", "d", "e"]);
     expect(slots.inFlight).toBe(0);
   });
+
+  it("says when fewer calls wait for a slot than are asked about, and at once when that is so", async () => {
+    let slots = callSlots(1);
+    let { call, end } = calls();
+    let running = ["a", "b", "c", "d"].map(name => slots.of(0).run(NEVER, call(name)));
+    await tick();
+    // One runs and three wait.
+    let told: string[] = [];
+    void slots.wanting(4, NEVER).then(() => told.push("under 4"));
+    void slots.wanting(3, NEVER).then(() => told.push("under 3"));
+    void slots.wanting(1, NEVER).then(() => told.push("under 1"));
+    await tick();
+    expect(told).toEqual(["under 4"]);
+    end("a");
+    await tick();
+    expect(told).toEqual(["under 4", "under 3"]);
+    end("b");
+    await tick();
+    expect(told).toEqual(["under 4", "under 3"]);
+    end("c");
+    await tick();
+    expect(told).toEqual(["under 4", "under 3", "under 1"]);
+    end("d");
+    await Promise.all(running);
+  });
+
+  it("counts a call that rests after a refusal as one that waits, until its rest is over", async () => {
+    let slots = callSlots(2);
+    let page = slots.of(0);
+    let rests = [0, 1].map(() => {
+      let over!: () => void;
+      let pause = new Promise<void>(resolve => { over = resolve; });
+      return { over, rested: page.rest(pause) };
+    });
+    let told = false;
+    void slots.wanting(2, NEVER).then(() => { told = true; });
+    await tick();
+    // Nothing waits for a slot, and two calls will: none is to be made on top of them.
+    expect(told).toBe(false);
+    rests[0]!.over();
+    await tick();
+    expect(told).toBe(true);
+    // A rest that fails is over too.
+    let failed = page.rest(Promise.reject(new Error("The page was given up.")));
+    await expect(failed).rejects.toThrow("The page was given up.");
+    await slots.wanting(2, NEVER);
+    rests[1]!.over();
+    await Promise.all(rests.map(({ rested }) => rested));
+  });
+
+  it("counts a wait that its signal ends as one fewer, and ends a wait to be told with its signal's reason", async () => {
+    let slots = callSlots(1);
+    let { call, end } = calls();
+    let first = slots.of(0).run(NEVER, call("a"));
+    let request = new AbortController();
+    let given = slots.of(0).run(request.signal, call("b")).catch((error: unknown) => error);
+    await tick();
+    let told = false;
+    void slots.wanting(1, NEVER).then(() => { told = true; });
+    let asking = new AbortController();
+    let ended = slots.wanting(1, asking.signal).catch((error: unknown) => error);
+    let reason = new Error("The text was cancelled.");
+    asking.abort(reason);
+    expect(await ended).toBe(reason);
+    expect(told).toBe(false);
+
+    request.abort(reason);
+    expect(await given).toBe(reason);
+    await tick();
+    expect(told).toBe(true);
+    await expect(slots.wanting(1, AbortSignal.abort(reason))).rejects.toBe(reason);
+    end("a");
+    await first;
+  });
 });
 
 describe("pixelRoom", () => {
@@ -197,7 +271,7 @@ describe("pixelRoom", () => {
   let ending = new AbortController();
 
   beforeEach(() => {
-    Object.assign(READ_AHEAD, { textBytes: 100, isolateBytes: 150 });
+    READ_AHEAD.isolateBytes = 150;
     holds = [];
     ending = new AbortController();
   });
@@ -207,17 +281,18 @@ describe("pixelRoom", () => {
     for (let hold of holds) hold.release();
     Object.assign(READ_AHEAD, limits);
     expect(pixelsHeld()).toBe(0);
+    vi.useRealTimers();
   });
 
   /**
-   * A hold asked of `room`, and whether it has been given: `given` is the hold once it has. A
-   * wait still outstanding at the test's end is ended there.
+   * A hold asked of `room`, whether it has been given, and how often it was told that it waits
+   * for the isolate's room: `given` is the hold once it has. A wait still outstanding at the
+   * test's end is ended there.
    */
-  function asked(
-    room: ReturnType<typeof pixelRoom>, bytes: number, waitedFor = () => false, signal = ending.signal,
-  ) {
-    let ask: { given?: PixelHold; failed?: unknown; done: Promise<void> } = {
-      done: room.reserve(bytes, signal, waitedFor).then(hold => {
+  function asked(room: ReturnType<typeof pixelRoom>, bytes: number, signal = ending.signal) {
+    let ask: { given?: PixelHold; failed?: unknown; queued: number; done: Promise<void> } = {
+      queued: 0,
+      done: room.reserve(bytes, signal, () => { ask.queued++; }).then(hold => {
         holds.push(hold);
         ask.given = hold;
       }, error => { ask.failed = error; }),
@@ -225,29 +300,12 @@ describe("pixelRoom", () => {
     return ask;
   }
 
-  it("holds a text to its budget, and gives a hold that waits once there is room", async () => {
-    let room = pixelRoom();
-    let first = asked(room, 60);
-    // As many bytes as are left.
-    let second = asked(room, 40);
-    let third = asked(room, 1);
-    await tick();
-    expect(first.given && second.given).toBeTruthy();
-    expect(third.given).toBeUndefined();
-    expect(pixelsHeld()).toBe(100);
-
-    first.given!.release();
-    await tick();
-    expect(third.given).toBeDefined();
-    expect(pixelsHeld()).toBe(41);
-  });
-
-  it("holds every text in the isolate to one budget between them", async () => {
+  it("holds every text in the isolate to one budget between them, which none passes", async () => {
     let one = pixelRoom();
     let other = pixelRoom();
     let first = asked(one, 90);
     let second = asked(other, 60);
-    // The other text has room for it, and the isolate has not.
+    // The isolate has no room for it, whichever text asks.
     let third = asked(other, 1);
     await tick();
     expect(first.given && second.given).toBeTruthy();
@@ -261,9 +319,25 @@ describe("pixelRoom", () => {
     expect(pixelsHeld()).toBe(61);
   });
 
+  it("gives no text more than the isolate has, however many texts ask, and each its turn", async () => {
+    let rooms = Array.from({ length: 8 }, () => pixelRoom());
+    let asks = rooms.map(room => asked(room, 40));
+    await tick();
+    // Three of them fit, and the rest wait.
+    expect(asks.map(ask => ask.given !== undefined)).toEqual([true, true, true, false, false, false, false, false]);
+    expect(pixelsHeld()).toBe(120);
+    // Each gets its turn as room is let go, and the isolate never holds more.
+    for (let next = 3; next < asks.length; next++) {
+      asks[next - 3]!.given!.release();
+      await tick();
+      expect(asks[next]!.given).toBeDefined();
+      expect(pixelsHeld()).toBe(120);
+    }
+  });
+
   it("counts a hold as the bytes it was last resized to", async () => {
     let room = pixelRoom();
-    let first = asked(room, 90);
+    let first = asked(room, 120);
     let second = asked(room, 50);
     await tick();
     expect(second.given).toBeUndefined();
@@ -275,34 +349,6 @@ describe("pixelRoom", () => {
     expect(pixelsHeld()).toBe(120);
     first.given!.release();
     expect(pixelsHeld()).toBe(50);
-  });
-
-  it("gives a hold its reader waits for at once, over the text's budget and the isolate's", async () => {
-    let room = pixelRoom();
-    let other = pixelRoom();
-    asked(room, 100);
-    asked(other, 50);
-    let waitedFor = asked(room, 80, () => true);
-    let ahead = asked(room, 80);
-    await tick();
-    expect(waitedFor.given).toBeDefined();
-    expect(ahead.given).toBeUndefined();
-    expect(pixelsHeld()).toBe(230);
-  });
-
-  it("looks at who waits again when told to, and not before", async () => {
-    let room = pixelRoom();
-    asked(room, 100);
-    let reached = false;
-    let ahead = asked(room, 80, () => reached);
-    await tick();
-    reached = true;
-    await tick();
-    expect(ahead.given).toBeUndefined();
-    room.recheck();
-    await tick();
-    expect(ahead.given).toBeDefined();
-    expect(pixelsHeld()).toBe(180);
   });
 
   it("lets a hold go once, however often it is released, and does not resize it after", async () => {
@@ -321,9 +367,9 @@ describe("pixelRoom", () => {
 
   it("rejects a wait that its signal ends with the signal's reason, and holds nothing for it", async () => {
     let room = pixelRoom();
-    let first = asked(room, 100);
+    let first = asked(room, 150);
     let request = new AbortController();
-    let second = asked(room, 50, () => false, request.signal);
+    let second = asked(room, 50, request.signal);
     await tick();
     let reason = new Error("The text was cancelled.");
     request.abort(reason);
@@ -337,29 +383,164 @@ describe("pixelRoom", () => {
     expect(pixelsHeld()).toBe(0);
 
     // Nor is anything held for a signal that had aborted before it asked, though there is room.
-    let late = asked(room, 10, () => true, AbortSignal.abort(reason));
+    let late = asked(room, 10, AbortSignal.abort(reason));
     await late.done;
     expect(late.failed).toBe(reason);
     expect(pixelsHeld()).toBe(0);
   });
 
-  it("gives those waiting in the order they asked, and passes over one that does not fit for a later one that does", async () => {
-    let room = pixelRoom();
-    let first = asked(room, 60);
-    let large = asked(room, 50);
-    // Asked after one that waits, and given before it: there is room for this one.
-    let small = asked(room, 30);
+  it("gives the isolate's room in the order it was asked for: a later hold that would fit waits behind one that does not", async () => {
+    let [one, two, three] = [pixelRoom(), pixelRoom(), pixelRoom()];
+    let first = asked(one, 100);
+    let large = asked(two, 80);
+    // There is room in the isolate for this one, and it was asked for after one that waits.
+    let small = asked(three, 30);
     await tick();
-    expect(large.given).toBeUndefined();
-    expect(small.given).toBeDefined();
+    expect([large.given, small.given]).toEqual([undefined, undefined]);
 
-    // Of two that wait for the same room, the first to ask is given it.
-    let later = asked(room, 50);
-    await tick();
     first.given!.release();
     await tick();
-    expect(large.given).toBeDefined();
-    expect(later.given).toBeUndefined();
+    expect(large.given && small.given).toBeTruthy();
+    expect(pixelsHeld()).toBe(110);
+  });
+
+  it("gives the next in line the isolate's room when the wait before it ends", async () => {
+    let [one, two, three] = [pixelRoom(), pixelRoom(), pixelRoom()];
+    asked(one, 100);
+    let request = new AbortController();
+    let large = asked(two, 80, request.signal);
+    let small = asked(three, 30);
+    await tick();
+    expect(small.given).toBeUndefined();
+    request.abort(new Error("The text was cancelled."));
+    await large.done;
+    await tick();
+    expect(small.given).toBeDefined();
+    expect(pixelsHeld()).toBe(130);
+  });
+
+  it("tells a hold that waits for other texts alone that it does, every so often, and no other", async () => {
+    vi.useFakeTimers();
+    let settle = () => vi.advanceTimersByTimeAsync(0);
+    let [one, two, three] = [pixelRoom(), pixelRoom(), pixelRoom()];
+    let first = asked(one, 90);
+    let second = asked(two, 40);
+    await settle();
+    // The isolate has no room for these. The first is of a text that holds pixels, which are what
+    // moves that text or does not; the other two are of a text that holds none, one behind the other.
+    let holding = asked(two, 30);
+    let ahead = asked(three, 60);
+    let behind = asked(three, 30);
+    await settle();
+    let waits = [holding, ahead, behind];
+    expect(waits.map(wait => wait.given)).toEqual([undefined, undefined, undefined]);
+    // Each wait has a timer of its own, which runs for as long as what waits does.
+    expect(vi.getTimerCount()).toBe(3);
+
+    await vi.advanceTimersByTimeAsync(READ_AHEAD.queuedMs - 1);
+    expect(waits.map(wait => wait.queued)).toEqual([0, 0, 0]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(waits.map(wait => wait.queued)).toEqual([0, 1, 1]);
+    await vi.advanceTimersByTimeAsync(READ_AHEAD.queuedMs);
+    expect(waits.map(wait => wait.queued)).toEqual([0, 2, 2]);
+
+    // Given its room, a hold is told nothing more, and with nothing waiting there is no timer.
+    first.given!.release();
+    second.given!.release();
+    await settle();
+    expect(waits.every(wait => wait.given)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2 * READ_AHEAD.queuedMs);
+    expect(waits.map(wait => wait.queued)).toEqual([0, 2, 2]);
+  });
+
+  it("takes back what a text that shows no life holds, so that the room is not lost for good", async () => {
+    vi.useFakeTimers();
+    let settle = () => vi.advanceTimersByTimeAsync(0);
+    let abandoned: number[] = [];
+    let gone = pixelRoom(bytes => abandoned.push(bytes));
+    let living = pixelRoom();
+    let waits = pixelRoom();
+    // A text whose Durable Object was reset: nothing of it runs again to let its pixels go.
+    let lost = asked(gone, 90);
+    let kept = asked(living, 50);
+    await settle();
+    let ask = asked(waits, 40);
+    await settle();
+    expect(ask.given).toBeUndefined();
+
+    // A text that lives says so: a page of its moves, or its reader asks for one.
+    let steps = READ_AHEAD.abandonedMs / READ_AHEAD.queuedMs;
+    for (let step = 0; step < steps; step++) {
+      await vi.advanceTimersByTimeAsync(READ_AHEAD.queuedMs);
+      living.moved();
+      expect(ask.given).toBeUndefined();
+    }
+    await vi.advanceTimersByTimeAsync(READ_AHEAD.queuedMs);
+    expect(abandoned).toEqual([90]);
+    expect(ask.given).toBeDefined();
+    expect(pixelsHeld()).toBe(90);
+
+    // What was taken back is not counted again when its hold is let go after all.
+    lost.given!.resize(10);
+    lost.given!.release();
+    expect(pixelsHeld()).toBe(90);
+    kept.given!.release();
+    expect(pixelsHeld()).toBe(40);
+  });
+
+  it("refuses a hold of more than the isolate may hold, which could never be given", async () => {
+    let ask = asked(pixelRoom(), 151);
+    await ask.done;
+    expect(ask.failed).toBeInstanceOf(RangeError);
+    expect(pixelsHeld()).toBe(0);
+  });
+
+  it("puts a wait that was taken for gone back in the line at its next tick", async () => {
+    vi.useFakeTimers();
+    let settle = () => vi.advanceTimersByTimeAsync(0);
+    let [one, two] = [pixelRoom(), pixelRoom()];
+    let first = asked(one, 100);
+    await settle();
+    let late = asked(two, 80);
+    await settle();
+    // Its timer is behind by more than three ticks when another's gives pixels, and then runs.
+    vi.setSystemTime(Date.now() + 4 * READ_AHEAD.queuedMs);
+    first.given!.resize(90);
+    expect(late.given).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(READ_AHEAD.queuedMs);
+    first.given!.release();
+    await settle();
+    expect(late.given).toBeDefined();
     expect(pixelsHeld()).toBe(80);
+  });
+
+  it("takes a wait out of the line once its own timer has stopped running", async () => {
+    vi.useFakeTimers();
+    let settle = () => vi.advanceTimersByTimeAsync(0);
+    let [one, two, three] = [pixelRoom(), pixelRoom(), pixelRoom()];
+    let first = asked(one, 100);
+    await settle();
+    // A wait of a Durable Object that is then reset: its timer is gone, and it is never ended.
+    let timers = vi.getTimerCount();
+    let dead = asked(two, 80);
+    await settle();
+    expect(vi.getTimerCount()).toBe(timers + 1);
+    vi.clearAllTimers();
+    // Behind it, a wait that fits the isolate as the dead one does not.
+    let behind = asked(three, 30);
+    await settle();
+    expect(behind.given).toBeUndefined();
+
+    for (let ticks = 0; ticks < 4; ticks++) {
+      one.moved();
+      await vi.advanceTimersByTimeAsync(READ_AHEAD.queuedMs);
+    }
+    expect(behind.given).toBeDefined();
+    expect(dead.given).toBeUndefined();
+    first.given!.release();
+    await settle();
+    expect(dead.given).toBeUndefined();
+    expect(pixelsHeld()).toBe(30);
   });
 });

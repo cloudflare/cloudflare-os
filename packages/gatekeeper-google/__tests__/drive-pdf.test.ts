@@ -2325,7 +2325,41 @@ describe("a rendered PDF's pages, read ahead of its reader", () => {
     expect(await readOn(reader)).toBe("\n\n### Page 3\nband 31\n\n### Page 4\nband 41");
   });
 
-  it("draws the page its reader waits for whatever pixels are held, and a page ahead of it only once there is room", async () => {
+  it("draws no page while a page's worth of its calls wait for a slot: a drawn page is of use only once the model is asked for it", async () => {
+    // One call at a time, and pages of one band: four bands are a page's worth.
+    READ_AHEAD.calls = 1;
+    let shades = [11, 21, 31, 41, 51, 61, 71, 81];
+    let { renderer, state } = fakeRenderer(shades.map(shade => drawn([shade])));
+    let answers = shades.map(() => deferred<void>());
+    let { ai, bands } = bandAi(async ({ shade }) => {
+      await answers[(shade - 11) / 10]!.promise;
+      return eventResponse(tokenEvents([`band ${shade}`]));
+    });
+    let { result } = await rendering(imagePdf(shades.map((_, i) => scanPage(i + 1, { filter: "/CCITTFaxDecode" }))), renderer, ai);
+    let text = readOn(result.text.getReader());
+    let renders = () => state.events.filter(event => event.startsWith("render")).length;
+
+    // All eight may be begun, and five are drawn: the first is before the model, and the four
+    // after it wait for its slot. A sixth would be drawn only to wait behind them.
+    await vi.waitFor(() => expect(bands).toHaveLength(1));
+    await settled();
+    expect(renders()).toBe(5);
+    expect(pixelsHeld()).toBe(5 * BAND_WIDTH * BAND_ROWS);
+
+    // Each call that ends gives the next band its slot, and one more page is drawn for it.
+    for (let read = 1; read <= 3; read++) {
+      answers[read - 1]!.resolve();
+      await vi.waitFor(() => expect(renders()).toBe(read + 5));
+      await settled();
+      expect(renders()).toBe(read + 5);
+      expect(pixelsHeld()).toBe(5 * BAND_WIDTH * BAND_ROWS);
+    }
+    for (let answer of answers) answer.resolve();
+    expect(await text).toBe(shades.map((shade, i) => `### Page ${i + 1}\nband ${shade}`).join("\n\n"));
+    expect(pixelsHeld()).toBe(0);
+  });
+
+  it("draws no page that the isolate has no room for, though its reader waits for it, and draws it once another text lets pixels go", async () => {
     // Room in the isolate for a page being drawn beside the one band of a page that was.
     READ_AHEAD.isolateBytes = RENDER_LIMITS.pagePixels + BAND_WIDTH * BAND_ROWS;
     let other = fakeRenderer([drawn([11]), drawn([21])]);
@@ -2339,19 +2373,21 @@ describe("a rendered PDF's pages, read ahead of its reader", () => {
     await vi.waitFor(() => expect(held.bands).toHaveLength(2));
     expect(pixelsHeld()).toBe(2 * BAND_WIDTH * BAND_ROWS);
 
+    // This one's reader waits for its first page, and nothing of it is read or drawn.
     let { renderer, state } = fakeRenderer([drawn([11]), drawn([21])]);
-    let { result } = await rendering(FAX_SCAN, renderer);
+    let { result, asked } = await rendering(FAX_SCAN, renderer);
     let reader = result.text.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toBe("### Page 1\nband 11");
+    let page = reader.read();
     await settled();
-    expect(state.events).toEqual(["open", "render 1"]);
+    expect([asked, state.events]).toEqual([[], []]);
     expect(pixelsHeld()).toBe(2 * BAND_WIDTH * BAND_ROWS);
 
-    // The other text's bands end, and their pixels are let go: the second page is drawn unasked.
+    // The other text's bands end, and their pixels are let go: its turn has come.
     answer.resolve();
     expect(await first).toBe("### Page 1\nband 11\n\n### Page 2\nband 21");
-    await vi.waitFor(() => expect(state.events).toEqual(["open", "render 1", "render 2", "disposed"]));
+    expect(new TextDecoder().decode((await page).value)).toBe("### Page 1\nband 11");
     expect(await readOn(reader)).toBe("\n\n### Page 2\nband 21");
+    expect(state.events).toEqual(["open", "render 1", "render 2", "disposed"]);
     expect(pixelsHeld()).toBe(0);
   });
 
@@ -2610,6 +2646,68 @@ describe("a rendered PDF's idle minute", () => {
     await tickedUntil(() => pixelsHeld() === 0 && vi.getTimerCount() === 0);
     expect(state.events.filter(event => event === "band given up")).toHaveLength(1);
     expect([state.documents.map(({ disposed }) => disposed), pixelsHeld(), vi.getTimerCount()]).toEqual([[1], 0, 0]);
+  });
+
+  it("does not take for idle a text whose page waits its turn for the isolate's room, while the text that holds it reads on", async () => {
+    // Room in the isolate for one page being drawn, and none beside a page that was.
+    READ_AHEAD.isolateBytes = RENDER_LIMITS.pagePixels;
+    // Another text's one band is answered a piece at a time, over longer than pixels may be
+    // held by a text that shows no life: each piece is this one's.
+    let events = tokenEvents(["a", "b", "c", "d", "e", "f", "g"]).split(/(?<=\n\n)/);
+    let holder = bandAi(() => {
+      let sent = 0;
+      return new Response(new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (sent === events.length) return controller.close();
+          // A wait before each piece after the first, and none before what follows the last.
+          if (sent >= 2 && sent <= 7) await wait();
+          controller.enqueue(new TextEncoder().encode(events[sent++]));
+        },
+      }, { highWaterMark: 0 }));
+    });
+    let other = fakeRenderer([drawn([11])]);
+    let first = read((await rendering(FAX_SCAN, other.renderer, holder.ai)).result);
+    await tickedUntil(() => holder.bands.length === 1);
+    expect(pixelsHeld()).toBe(BAND_WIDTH * BAND_ROWS);
+
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let { result, asked } = await rendering(FAX_SCAN, renderer);
+    let waiting = read(result);
+    let began = Date.now();
+    expect(await pumped(first, PACE)).toBe("### Page 1\nabcdefg");
+    expect(Date.now() - began).toBeGreaterThan(READ_AHEAD.abandonedMs);
+    expect(await pumped(waiting, PACE)).toBe("### Page 1\nband 11");
+    // The page was drawn only once the other text had let its pixels go.
+    expect(asked).toEqual([whole(FAX_SCAN)]);
+    expect(state.events).toEqual(["open", "render 1", "disposed"]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect([pixelsHeld(), vi.getTimerCount()]).toEqual([0, 0]);
+  });
+
+  it("gives a page that waits for the isolate's room its turn when the text that holds it is ended for sitting idle", async () => {
+    READ_AHEAD.isolateBytes = RENDER_LIMITS.pagePixels;
+    // Another text's band is never answered: its own minute ends it, and lets its pixels go.
+    let other = fakeRenderer([drawn([11])]);
+    let holder = bandAi(band => unanswered(other.state.events)(band));
+    let stuck = read((await rendering(FAX_SCAN, other.renderer, holder.ai)).result);
+    stuck.catch(() => undefined);
+    await tickedUntil(() => holder.bands.length === 1);
+
+    // This one is read up to the page that waits, and no further by anyone.
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let { result } = await rendering(FAX_SCAN, renderer);
+    let reader = result.text.getReader();
+    let page = reader.read();
+    page.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS / 2);
+    expect(state.events).toEqual([]);
+
+    // The holder sat idle, so its pixels are let go and the page that waited is drawn and read.
+    await expect(pumped(stuck, PACE)).rejects.toThrow(IDLE);
+    expect(other.state.events).toContain("band given up");
+    expect(new TextDecoder().decode((await pumped(page, PACE)).value)).toBe("### Page 1\nband 11");
+    await reader.cancel();
+    await tickedUntil(() => pixelsHeld() === 0 && vi.getTimerCount() === 0);
   });
 
   it("ends a text left unread between two pages for a minute, letting its document go", async () => {

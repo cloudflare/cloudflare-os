@@ -68,6 +68,8 @@ type RenderLogFields = {
   steps: number;
   /** How many strips a page was painted in. */
   strips: number;
+  /** Bytes of drawn pixels. */
+  pixelBytes: number;
 };
 
 /** What a PDF's lines are logged by. */
@@ -886,7 +888,8 @@ type RenderedPdf = {
    * Says that page `index`, from 0, is wanted, ahead of the text being read up to it. Pages are
    * asked for in ascending order, each once, and no more of them than are to be held: the PDF
    * is opened for the first. `signal` is the text's, and `moved` is called whenever something
-   * of the page's moves.
+   * of the page's moves, and again and again while the page waits its turn for room in the
+   * isolate and its text holds no pixels.
    */
   ahead(index: number, signal: AbortSignal, moved: () => void): void;
   /**
@@ -925,8 +928,15 @@ type RenderedPdf = {
  * rendered is left to finish.
  *
  * Pages asked for ahead of the reader are drawn one at a time, in the order they are asked for,
- * each once the text's {@link pixelRoom} has room for a page's pixels, or the reader waits for
- * it. A page that is drawn has its bands read at once, while the next is drawn; its pixels are
+ * each once its bands would soon have a call and the isolate has room for its pixels. A page is
+ * of use drawn only while its bands are asked of the model, so none is drawn while a page's
+ * worth of the text's calls, {@link BANDS}, still wait for a slot or rest after a refusal:
+ * what is drawn and waits is a page's worth of bands, which is one page cut in four and four
+ * pages that are one band each. The room for pixels ({@link pixelRoom}) is the isolate's, which
+ * every text in it shares and none may pass: a page that finds it taken waits its turn, which
+ * the text is not ended as idle for. The room is told whenever something of a page moves or the reader asks for one, since
+ * pixels whose text shows no life for three idle minutes are taken to be held by a Durable
+ * Object that is gone, and are taken back. A page that is drawn has its bands read at once, while the next is drawn; its pixels are
  * let go when its bands have been read, have failed or are given up, and what is kept until it
  * is taken is what came of it. When a page fails (the PDF is not opened or is rendered no
  * further, a read of the file fails, or a band cannot be read), no page after it is begun, and
@@ -951,15 +961,17 @@ function renderedPdf(
   let turn: Promise<void> = Promise.resolve();
   let options = { bands: BANDS, denseLines: DENSE_LINES };
   /** The text's budget of drawn pixels, for the pages asked for ahead. */
-  let room = pixelRoom();
+  let room = pixelRoom(bytes => {
+    log(source).warn("pixels held for a Drive PDF's text were taken back as abandoned", {
+      event: "google.drive.pdf.pixels_abandoned", pixelBytes: bytes,
+    });
+  });
   /** The pages asked for ahead and not yet taken: what comes of each, and what gives it up. */
   let asked = new Map<number, { outcome: Promise<PageOutcome | undefined>; abort: AbortController }>();
   /** The draw of the page last asked for ahead, settled either way. */
   let draws: Promise<void> = Promise.resolve();
   /** The first page asked for ahead that failed. */
   let failedAt = Infinity;
-  /** The page asked for ahead that the reader is waiting for, while it is. */
-  let waited: number | undefined;
   let dispose = () => {
     document?.[Symbol.dispose]();
     document = undefined;
@@ -1129,16 +1141,25 @@ function renderedPdf(
       signal.addEventListener("abort", ended, { once: true });
       if (signal.aborted) ended();
       let fail = () => failed(index);
+      /** Something of the page's has moved: the text lives, and its reader is told. */
+      let stirred = () => {
+        room.moved();
+        moved();
+      };
       let hold: PixelHold | undefined;
       let drawn = draws.then(async () => {
         abort.signal.throwIfAborted();
-        hold = await room.reserve(RENDER_LIMITS.pagePixels, abort.signal, () => waited === index);
+        // No room is waited for, or taken, for a page the PDF is known not to have.
+        if (count !== undefined && index >= count) return undefined;
+        // A page is drawn for calls that can soon be made, not to wait behind those that wait.
+        await slots.wanting(BANDS, abort.signal);
+        hold = await room.reserve(RENDER_LIMITS.pagePixels, abort.signal, moved);
         if (count === undefined) {
-          let unopened = await open(abort.signal, moved);
+          let unopened = await open(abort.signal, stirred);
           if (unopened) return { unrendered: unopened };
         }
         if (index >= count!) return undefined;
-        let page = await pdf.render(index, abort.signal, moved);
+        let page = await pdf.render(index, abort.signal, stirred);
         return "reason" in page ? { unrendered: page } : page;
       });
       // A page that failed is noted before the next is begun.
@@ -1150,7 +1171,7 @@ function renderedPdf(
         // From here on the page's pixels are those of its bands.
         hold!.resize(page.bands.reduce((bytes, band) => bytes + (band.pixels?.byteLength ?? 0), 0));
         try {
-          let { text, cutOff } = await pdf.read(page, index, abort.signal, moved);
+          let { text, cutOff } = await pdf.read(page, index, abort.signal, stirred);
           return { text, cutOff, reduced: page.reduced };
         } catch (error) {
           fail();
@@ -1164,12 +1185,11 @@ function renderedPdf(
       turn = Promise.allSettled([turn, outcome]).then(() => undefined);
     },
     async take(index) {
-      waited = index;
-      room.recheck();
+      // A reader that asks is a text that lives, whatever its pages are doing.
+      room.moved();
       try {
         return await asked.get(index)!.outcome;
       } finally {
-        waited = undefined;
         asked.delete(index);
       }
     },

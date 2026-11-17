@@ -248,7 +248,7 @@ export async function readBands(
       moved();
       read.refused = (read.refused ?? 0) + 1;
       if (refusals === REFUSED_PAUSE.ms.length) return { failure: called.refused, transient: false };
-      await refusedPause(refusals, abort.signal);
+      await slots.rest(refusedPause(refusals, abort.signal));
     }
   };
   /**
