@@ -8,7 +8,7 @@ import type {
   AdminVia,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
-import { accessLevelName, refusalName } from './accessNames'
+import { ACCESS_LEVEL_NAMES, REFUSAL_NAMES } from './accessNames'
 import type { AuditFilter } from './auditFilter'
 import { AuditValue } from './AuditValue'
 import { KindBadge } from './KindBadge'
@@ -113,8 +113,8 @@ const AccessDetails = ({ record, onFilterBy }: {
       </Detail>
       <Detail term="Reason">{record.reason}</Detail>
       <Detail term="Access">
-        {accessLevelName(record.access)}
-        {record.refused && <> · refused: {refusalName(record.refused)}</>}
+        {ACCESS_LEVEL_NAMES[record.access]}
+        {record.refused && <> · refused: {REFUSAL_NAMES[record.refused]}</>}
       </Detail>
       {args.length > 0 && (
         <Detail term="Arguments">
@@ -183,7 +183,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
           <span className="flex flex-wrap items-center gap-1.5">
             <KindBadge kind={record.kind} />
             {record.kind === 'workspace' && record.refused && (
-              <span title={refusalName(record.refused)}><Badge variant="warning">Refused</Badge></span>
+              <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
           </span>
         </Table.Cell>

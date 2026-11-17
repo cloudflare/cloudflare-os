@@ -535,7 +535,7 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
 - `admin-audit.test.ts`: the deployment-wide log's listing, filters, cursors, schema (the CHECKs
   tying the workspace columns to access records, and `exposed` stored as `metadata` for every
   access record and null for a setting record), retention, stats (per day, the top admins, by
-  kind), the method and owner indexes, multi-MiB titles, and each record returned as it is stored.
+  kind), the method and owner indexes, and multi-MiB titles.
 - `admin-api-impl.test.ts`: `AdminApiImpl`'s inspection path, opens refused while access is off (by
   the setting or by a cap), the setter's validator refusing a value that is not a level with a
   `TypeError`, listings and forwarding.

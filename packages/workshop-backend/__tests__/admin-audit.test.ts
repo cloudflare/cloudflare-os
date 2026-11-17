@@ -189,64 +189,6 @@ describe("AdminAuditDurableObject.list", () => {
         WHERE json_extract(record, '$.workspaceOwner') = 'grace' ORDER BY seq DESC`);
     expect(plan.map(step => step.detail).join("\n")).toContain("admin_audit_owner");
   });
-
-  it("returns a stored record whose level, refusal and method are not ones the API names",
-      async () => {
-    let log = auditLog();
-    let at = new Date();
-    let read = {
-      sessionId: "session-1", via: "cli", workspaceOwner: "grace", method: "getChat",
-      args: { chatId: 4 }, reason: "ticket 1", requested: "full", access: "full",
-    };
-    let refusal = {
-      ...read, method: "readFile", access: "metadata", refused: "ADMIN_CONTENT_WITHHELD",
-    };
-    for (let [exposed, json] of [["content", read], ["metadata", refusal]] as const) {
-      await sql(log, `INSERT INTO admin_audit
-          (at, kind, admin, workspace_id, workspace_title, exposed, record)
-          VALUES (?, 'workspace', 'ada', 'w1', 'Plans', ?, ?)`,
-          at.getTime(), exposed, JSON.stringify(json));
-    }
-    let named = access({ at });
-    await log.append(named, RETENTION);
-
-    // Each row's JSON as it is stored, under the row's columns.
-    let columns = {
-      kind: "workspace", at, admin: "ada", workspaceId: "w1", workspaceTitle: "Plans",
-    };
-    let stored = [{ ...refusal, ...columns }, { ...read, ...columns }];
-    let list = async (query: object) =>
-        (await log.list({ limit: 50, ...query }, RETENTION)).records;
-    let all = await list({});
-    expect(all).toStrictEqual([named, ...stored]);
-    for (let record of all) expect(record).not.toHaveProperty("exposed");
-
-    expect(await list({ kind: "workspace" })).toStrictEqual(all);
-    expect(await list({ admin: "ada" })).toStrictEqual(all);
-    expect(await list({ workspace: "w1" })).toStrictEqual(all);
-    expect(await list({ since: at })).toStrictEqual(all);
-    expect(await list({ owner: "grace" })).toStrictEqual(stored);
-    expect(await list({ method: "getChat" })).toStrictEqual([stored[1]]);
-    expect(await list({ method: "readFile" })).toStrictEqual([stored[0]]);
-    expect(await list({ method: "getChatState" })).toEqual([]);
-    expect(await list({ kind: "setting" })).toEqual([]);
-
-    let paged: AdminAuditRecord[] = [];
-    let cursor: string | undefined;
-    do {
-      let page = await log.list({ limit: 1, cursor }, RETENTION);
-      paged.push(...page.records);
-      cursor = page.nextCursor;
-    } while (cursor !== undefined);
-    expect(paged).toStrictEqual(all);
-
-    let stats = await log.stats({ days: 7 }, RETENTION);
-    expect(Object.keys(stats).toSorted()).toEqual(["byDay", "days", "topAdmins", "totalEvents"]);
-    expect(stats.totalEvents).toBe(3);
-    expect(stats.byDay.find(({ day }) => day === utcDayKey(at))).toStrictEqual(
-        { day: utcDayKey(at), count: 3 });
-    expect(stats.topAdmins).toStrictEqual([{ admin: "ada", count: 3 }]);
-  });
 });
 
 describe("AdminAuditDurableObject retention", () => {

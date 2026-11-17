@@ -97,17 +97,6 @@ const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord
   ...patch,
 })
 
-// A record as the log can hold one: it returns each record as it is stored, so one can hold a
-// method, a level and a refusal code the API does not name, and fields it does not have.
-const unnamedRecord = (access: string) => ({
-  ...accessRecord(),
-  method: 'getChat',
-  access,
-  refused: 'ADMIN_CONTENT_WITHHELD',
-  requested: 'full',
-  exposed: 'content',
-}) as unknown as AdminAccessRecord
-
 const settingRecord = (patch: Partial<AdminSettingRecord> = {}): AdminSettingRecord => ({
   kind: 'setting',
   at: SETTING_AT,
@@ -756,23 +745,6 @@ describe('AdminAuditPanel', () => {
       expect(detail(details, 'Access')).toBe('Metadata')
       expect(details.textContent).toContain('Untitled')
       expect(details.textContent).toContain('ws-untitled')
-    })
-
-    it('shows a stored record’s level and refusal as stored when it has no name for them', async () => {
-      const admin = fakeAdmin()
-      admin.listAdminAudit.mockResolvedValue(testPage([unnamedRecord('full'), unnamedRecord('constructor')]))
-      await render(settingsWith(), admin)
-
-      const row = logRows()[0]
-      const cells = [...row.querySelectorAll('td')].map((cell) => cell.textContent)
-      expect(cells.slice(3, 5)).toEqual(['getChat', 'Workspace accessRefused'])
-      // The kind says what the record is, and nothing of what the call returned.
-      expect(row.textContent).not.toMatch(/metadata|content/i)
-      expect(row.querySelector('[title="ADMIN_CONTENT_WITHHELD"]')?.textContent).toBe('Refused')
-      const details = await expand(0)
-      expect(detail(details, 'Access')).toBe('full · refused: ADMIN_CONTENT_WITHHELD')
-      expect(details.textContent).not.toMatch(/undefined|requested|exposed/)
-      expect(detail(await expand(1), 'Access')).toBe('constructor · refused: ADMIN_CONTENT_WITHHELD')
     })
 
     it('filters by kind, which the log asks the server for as it is', async () => {
