@@ -194,7 +194,17 @@ describe("Slides edits through a read and write Drive binding", () => {
       createSlide: ["layout-title"],
       setSlidesSkipped: [["s2"], true],
     };
-    // Every write method has its call here, so a new one cannot be left out.
+    // What a preview reads is offered by the session that writes, and refused as a read is.
+    let reads: Record<string, unknown[]> = {
+      getPendingChanges: [],
+      readSlideDrawings: [["s2"]],
+      readPicture: ["picture-1", "s2"],
+      listFonts: [],
+      readFont: ["Roboto", 400, false],
+    };
+    // Declarations, the same for every presentation: answered whatever has become of this one.
+    Object.assign(args, reads, { getRenderingTypes: [] });
+    // Every method of the writing session has its call here, so a new one cannot be left out.
     expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
 
     for (let method of writes) {
@@ -203,7 +213,9 @@ describe("Slides edits through a read and write Drive binding", () => {
         folder.facet, FOLDER, "openGoogleSlides", "deck-1", method, args[method], [],
         async () => { drive.files.get("deck-1")!.parents = ["elsewhere"]; });
       drive.files.get("deck-1")!.parents = [ROOT];
-      expect(refused.error, method).toBe(OUT_OF_SCOPE);
+      expect(refused.error, method)
+        .toBe(method === "getRenderingTypes" ? undefined
+          : method in reads ? "The requested file is outside this Drive binding." : OUT_OF_SCOPE);
       expect(refused.actionId, method).toBeUndefined();
       expect(slidesRequests.requests, method).toEqual([]);
     }

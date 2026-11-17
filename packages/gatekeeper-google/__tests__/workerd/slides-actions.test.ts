@@ -1,4 +1,5 @@
 import { env } from "cloudflare:test";
+import { buildDeck, drawnShape, transform } from "@gadgets/office-content/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ActionDescription, ActionField, ActionKind,
@@ -7,7 +8,8 @@ import type {
   RestPageBackgroundFill, RestPresentation, RestThemeColorPair,
 } from "../../src/slides-api";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
-import type { SlideTextEdit } from "../../src/slides-types";
+import type { SlideDrawing, SlideDrawings } from "../../src/slides-rendering-types";
+import type { PresentationPendingChanges, SlideTextEdit } from "../../src/slides-types";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 import { PICTURE_COPY, SlidesProvider, table } from "../slides-provider";
@@ -1405,5 +1407,254 @@ describe("Google Slides stored layout", () => {
     await hooks().restartFacet(slides.facet);
 
     expect((await slides.edit([EDIT])).actionId).toBe(12);
+  });
+});
+
+// What the preview of a presentation reads: the changes waiting on it, and its slides as drawn.
+describe("Google Slides preview", () => {
+  /** `layoutDeck()` with its second slide's shapes placed, and its title taking after the layout's. */
+  function placedDeck() {
+    let placed = layoutDeck();
+    let [title, body] = placed.slides![1].pageElements!;
+    Object.assign(title.shape!.placeholder!, { parentObjectId: "ltb-title" });
+    Object.assign(body, BOX);
+    return placed;
+  }
+  const EDIT = { slideId: "s2", elementId: "b2", find: "Revenue: $10M", replace: "Revenue: $12M" };
+  let pendingOf = async (slides: Slides) => {
+    let { value, observations } = await slides.call("getPendingChanges");
+    return { pending: value as unknown as PresentationPendingChanges, observations };
+  };
+  /** The drawings of `ids`, each with what lies behind it put back among its elements, and as read. */
+  let drawn = async (slides: Slides, ...ids: string[]) => {
+    let { value, error, observations } = await slides.call("readSlideDrawings", ids);
+    let read = value as unknown as SlideDrawings | undefined;
+    let whole = <T extends SlideDrawing["drawing"]>(slide: T): T => slide && {
+      ...slide, elements: [...(slide.behind ?? []).flatMap(at => read!.shared[at]), ...slide.elements],
+    };
+    let drawings = (read?.slides ?? []).map(({ drawing, saved, ...rest }): SlideDrawing =>
+      ({ ...rest, drawing: whole(drawing), ...(saved === undefined ? {} : { saved: whole(saved) }) }));
+    return { drawings, read, error, observations };
+  };
+  let wordsOf = (slide: SlideDrawing["drawing"], id: string) => {
+    let element = slide!.elements.find(found => found.id === id);
+    return element?.kind === "shape" ? element.text?.map(({ runs }) => runs.map(run => run.text).join("")) : undefined;
+  };
+
+  // What the code does is checked where it runs: the Workshop's browser test of the client.
+  it("declares the reads its types leave out, reading nothing", async () => {
+    new SlidesProvider(deck()).install();
+
+    let { value, observations } = await gatekeeper().call("getRenderingTypes");
+
+    expect(value).toContain("readSlideDrawings(slideIds: string[]): Promise<SlideDrawings>;");
+    expect(value).not.toContain("import ");
+    expect(observations).toEqual([]);
+  });
+
+  it("offers a preview", async () => {
+    new SlidesProvider(deck()).install();
+
+    let { description, files } = await hooks().slidesPreview(`slides-${++facetCount}`);
+
+    expect(description).toMatchObject({ hasPreview: true });
+    expect(files.map(({ path }) => path)).toEqual(["client.js", "slide.js", "shapes.js", "ui/chrome.js"]);
+    expect(files[0].code).toContain("gadget.readSlideDrawings(");
+    expect(files[0].code).toContain("from './ui/chrome.js'");
+    expect(files[1].code).toContain("from './shapes.js'");
+  });
+
+  it("lists the pending changes oldest first, the slides each touches, and the deck before and after, as one read", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let edit = await slides.edit([EDIT]);
+    let removed = await slides.queued("deleteSlide", "s3");
+
+    let { pending, observations } = await pendingOf(slides);
+
+    expect(pending.changes).toEqual([
+      { id: edit.actionId, type: "updateSlides", slideIds: ["s2"], changes: [{ op: "editText", ...EDIT }] },
+      { id: removed.actionId, type: "deleteSlide", slideIds: ["s3"], slideId: "s3" },
+    ]);
+    expect(pending.savedPresentation.slides.map(({ id }) => id)).toEqual(["s1", "s2", "s3"]);
+    expect(pending.presentation.slides.map(({ id }) => id)).toEqual(["s1", "s2"]);
+    expect(observations.slice(STANDALONE.opened.length)).toEqual([
+      'Read the outline of "Quarterly review" as saved and with its pending changes, and those changes.',
+    ]);
+  });
+
+  it("marks a change the presentation no longer fits as stale, and those after it, and shows neither", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let first = await slides.edit([{ slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }]);
+    let removed = await slides.queued("deleteSlide", "s3");
+    let later = await slides.edit([EDIT]);
+    provider.edit(d => { d.slides!.pop(); });
+
+    let { pending } = await pendingOf(slides);
+
+    expect(pending.changes.map(({ id, stale }) => [id, stale]))
+      .toEqual([[first.actionId, undefined], [removed.actionId, true], [later.actionId, true]]);
+    expect(pending.presentation.slides.map(({ id, title }) => [id, title])).toEqual([["s1", "Q4 review"], ["s2", "Revenue"]]);
+    let { drawings } = await drawn(slides, "s2");
+    expect(drawings[0]).not.toHaveProperty("saved");
+  });
+
+  it("leaves a change the listing calls stale out of the drawing of a slide the first stale one is not on", async () => {
+    let provider = new SlidesProvider(placedDeck()).install();
+    let slides = gatekeeper();
+    let first = await slides.edit([{ slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }]);
+    let later = await slides.edit([EDIT]);
+    provider.edit(d => { d.slides![0].pageElements![0].shape!.text = text(["Annual review"]); });
+
+    let { pending } = await pendingOf(slides);
+    let { drawings } = await drawn(slides, "s2");
+
+    expect(pending.changes.map(({ id, stale }) => [id, stale])).toEqual([[first.actionId, true], [later.actionId, true]]);
+    expect(wordsOf(drawings[0].drawing, "b2")).toContain("Revenue: $10M");
+    expect(drawings[0]).not.toHaveProperty("saved");
+  });
+
+  it("draws a slide as saved and as its pending changes leave it, marking what they touch, as one read", async () => {
+    new SlidesProvider(placedDeck()).install();
+    let slides = gatekeeper();
+    let edit = await slides.edit([EDIT]);
+
+    let { drawings, observations } = await drawn(slides, "s2", "s1");
+
+    let [s2, s1] = drawings;
+    expect(drawings.map(({ slideId }) => slideId)).toEqual(["s2", "s1"]);
+    expect(wordsOf(s2.drawing, "b2")).toEqual(["Revenue: $12M", "Margin: 20%"]);
+    expect(wordsOf(s2.saved!, "b2")).toEqual(["Revenue: $10M", "Margin: 20%"]);
+    expect(s2.drawing!.elements.find(({ id }) => id === "b2")!.changes).toEqual([{ id: edit.actionId, op: "editText" }]);
+    expect(s2.saved!.elements.every(element => element.changes === undefined)).toBe(true);
+    // The layout's rule is behind the slide's own shapes, and its title placeholder gives the title its place.
+    expect(s2.drawing!.elements.map(({ id, from }) => [id, from])).toEqual([["ltb-rule", "layout"], ["t2", undefined], ["b2", undefined]]);
+    expect(s2.drawing!.elements[1].bounds).toEqual({ x: 30, y: 20, width: 500, height: 50 });
+    expect(s2.drawing!.speakerNotes).toBe("Mention the outlook");
+    // A slide no change touches is drawn once.
+    expect(s1).not.toHaveProperty("saved");
+    expect(observations.slice(STANDALONE.opened.length)).toEqual([
+      'Read how 2 slide(s) in "Quarterly review" are drawn, with their layouts and masters.',
+    ]);
+  });
+
+  it("returns what a layout puts behind its slides once, however many slides and copies show it", async () => {
+    let placed = placedDeck();
+    placed.slides![0].slideProperties!.layoutObjectId = "layout-title";
+    new SlidesProvider(placed).install();
+    let slides = gatekeeper();
+    await slides.edit([EDIT]);
+
+    let { read } = await drawn(slides, "s2", "s3", "s1");
+
+    expect(read!.shared.map(elements => elements.map(({ id, from }) => [id, from]))).toEqual([[["ltb-rule", "layout"]]]);
+    let [s2, s3, s1] = read!.slides;
+    expect([s2.drawing!.behind, s2.saved!.behind, s3.drawing!.behind]).toEqual([[0], [0], [0]]);
+    expect(s2.drawing!.elements.map(({ id }) => id)).toEqual(["t2", "b2"]);
+    // The first slide's layout puts nothing but its placeholders on it.
+    expect(s1.drawing).not.toHaveProperty("behind");
+  });
+
+  it("draws a slide a change deletes from the saved copy, and one a change adds from the pending copy", async () => {
+    new SlidesProvider(placedDeck()).install();
+    let slides = gatekeeper();
+    await slides.queued("deleteSlide", "s3");
+    let copy = (await slides.queued("duplicateSlide", "s2")).value as string;
+
+    let { drawings } = await drawn(slides, "s3", copy);
+
+    expect(drawings[0]).toMatchObject({ slideId: "s3", drawing: null, saved: { elements: expect.any(Array) } });
+    expect(drawings[1]).toMatchObject({ slideId: copy, saved: null });
+    expect(drawings[1].drawing!.elements.filter(({ from }) => !from)).toHaveLength(2);
+  });
+
+  // A freeform's outline and a preset's handles come from Drive's export of the saved deck, by
+  // the element's ID: so a shape keeps them through a move, and a copy of a slide takes its
+  // source's, while a shape that is not saved yet has none.
+  it("draws a moved or restyled shape, and a copied slide's, with the outline of the saved shape", async () => {
+    let placed = placedDeck();
+    let at = (x: number) => ({ ...BOX, transform: { ...BOX.transform, translateX: x * 12_700 } });
+    placed.slides![1].pageElements!.push(
+      { objectId: "free", ...at(30), shape: { shapeType: "CUSTOM" } }, { objectId: "arc", ...at(40), shape: { shapeType: "BLOCK_ARC" } });
+    let exported = (x: number, geometry: string) =>
+      drawnShape({ properties: transform(x * 12_700, 254_000, 6_350_000, 635_000) + geometry });
+    let pptx = buildDeck({ slides: [{ shapes: "" }, { shapes:
+      exported(30, '<a:custGeom><a:pathLst><a:path w="10" h="10"><a:moveTo><a:pt x="0" y="0"/></a:moveTo>' +
+        '<a:lnTo><a:pt x="10" y="10"/></a:lnTo></a:path></a:pathLst></a:custGeom>') +
+      exported(40, '<a:prstGeom prst="blockArc"><a:avLst><a:gd name="adj1" fmla="val 1"/><a:gd name="adj2" fmla="val 2"/>' +
+        '<a:gd name="adj3" fmla="val 3"/></a:avLst></a:prstGeom>'),
+    }, { shapes: "" }] });
+    let exports = 0;
+    new SlidesProvider(placed).install({ handle: async request => {
+      if (!request.url.startsWith("https://www.googleapis.com/drive/v3/files/deck-1/export?")) return undefined;
+      exports++;
+      return new Response(await pptx);
+    } });
+    let slides = gatekeeper();
+    let copy = (await slides.queued("duplicateSlide", "s2")).value as string;
+    await slides.queued("updateSlides", [
+      { op: "setBounds", slideId: "s2", elementId: "free", bounds: { x: 200 }, rotation: 30 },
+      { op: "updateShape", slideId: "s2", elementId: "arc", fill: "ACCENT1" },
+      { op: "createShape", slideId: "s2", ref: "new", shapeType: "BLOCK_ARC", bounds: { x: 0, y: 0, width: 50, height: 50 } },
+    ]);
+
+    let { drawings: [s2, copied] } = await drawn(slides, "s2", copy);
+
+    let paths = [{ width: 10, height: 10, ops: "ML", points: [0, 0, 10, 10] }];
+    let shapes = (slide: SlideDrawing["drawing"]) => slide!.elements.filter(({ from, kind }) => !from && kind === "shape").slice(2);
+    expect(shapes(s2.saved!)).toMatchObject([{ id: "free", paths, bounds: { x: 30 } }, { id: "arc", adjust: [1, 2, 3] }]);
+    let [free, arc, created] = shapes(s2.drawing);
+    expect(free).toMatchObject({ id: "free", paths, bounds: { x: 200 }, rotation: 30 });
+    expect(arc).toMatchObject({ id: "arc", adjust: [1, 2, 3] });
+    expect(created).toMatchObject({ shapeType: "BLOCK_ARC" });
+    expect(created).not.toHaveProperty("adjust");
+    expect(shapes(copied.drawing)).toMatchObject([{ shapeType: "CUSTOM", paths, bounds: { x: 30 } }, { shapeType: "BLOCK_ARC", adjust: [1, 2, 3] }]);
+    expect(shapes(copied.drawing).map(({ id }) => id)).not.toContain("free");
+    expect(exports).toBe(1);
+  });
+
+  // The new slide is in no export, but its layout is: under every saved slide laid over it.
+  it("draws what a layout puts behind a slide that is not saved yet with the outline the saved layout has", async () => {
+    let placed = placedDeck();
+    placed.layouts[1].pageElements[0].shape.shapeType = "ROUND_2_SAME_RECTANGLE";
+    let pptx = buildDeck({
+      slides: [{ shapes: "" }, { shapes: "" }, { shapes: "" }],
+      layoutShapes: drawnShape({ properties: transform(381_000, 254_000, 6_350_000, 635_000) +
+        '<a:prstGeom prst="round2SameRect"><a:avLst><a:gd name="adj1" fmla="val 50000"/><a:gd name="adj2" fmla="val 0"/></a:avLst></a:prstGeom>' }),
+    });
+    new SlidesProvider(placed).install({ handle: async request =>
+      request.url.startsWith("https://www.googleapis.com/drive/v3/files/deck-1/export?") ? new Response(await pptx) : undefined });
+    let slides = gatekeeper();
+    let created = (await slides.queued("createSlide", "layout-title-body", "s1")).value as string;
+
+    let { drawings: [added] } = await drawn(slides, created);
+
+    expect(added.saved).toBeNull();
+    expect(added.drawing!.elements.find(({ id }) => id === "ltb-rule")).toMatchObject({ from: "layout", adjust: [50_000, 0] });
+  });
+
+  it.each([[[]], [Array.from({ length: 11 }, (_, n) => `s${n}`)]])(
+    "refuses %# out-of-bounds counts of slides to draw, reporting no read",
+    async ids => {
+      new SlidesProvider(deck()).install();
+      let slides = gatekeeper();
+
+      let { error, observations } = await drawn(slides, ...ids);
+
+      expect(error).toContain("between 1 and 10 slides");
+      expect(observations.slice(STANDALONE.opened.length)).toEqual([]);
+    },
+  );
+
+  // The error says which IDs are not slides, which is itself something read from the deck.
+  it("authorizes the read before reporting a slide that is in neither copy", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+
+    let { error, observations } = await drawn(slides, "s1", "missing");
+
+    expect(error).toContain('No slide with ID "missing"');
+    expect(observations.slice(STANDALONE.opened.length)).toHaveLength(1);
   });
 });

@@ -575,12 +575,10 @@ change. One pull request, stacked on the Google Docs one.
   loading, updating and error states, `make()` and `lineIcon()`, and the refresh handling. The
   three previews then look and behave as one product.
 - **What each keeps to itself:** how it reads and draws its resource.
-- **A picture read after its listing is not authorized again**, as for Docs images: a slide's
-  pictures are read under the observation of the drawing that named them, to keep the activity
-  log to one entry per read of slides rather than one per picture. Open for review with the Docs
-  one. Content is never read that way: each window of a sheet is authorized and logged, since
-  skipping it would also skip a Drive folder connection's proof that the file is still in the
-  folder.
+- **Every read is authorized**, a picture's as for Docs images and each window of a sheet: a
+  listing or drawing tells of a picture, not its bytes, and skipping the check would also skip a
+  Drive folder connection's proof that the file is still in the folder. A picture of a slide
+  already drawn asks Google for nothing but the picture.
 - **Bytes travel whole**, as `Uint8Array`: a stream from the backend session does not reach the
   UI frame (capnweb 0.12.0).
 - **Reads that only render are declared apart.** A spreadsheet's `readDrawing()` and a

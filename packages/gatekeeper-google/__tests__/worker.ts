@@ -572,6 +572,12 @@ export class TestHooks extends DurableObject<Env> {
     }));
   }
 
+  /** The Slides gatekeeper's description of its resource, and the preview it offers of it. */
+  async slidesPreview(facetName: string): Promise<{ description: ResourceDescription; files: UiFile[] }> {
+    let gatekeeper = this.#slides(facetName);
+    return { description: await gatekeeper.describe(), files: await gatekeeper.getPreviewUi() };
+  }
+
   /**
    * Calls one method of a fresh Slides session, reporting what it queued and observed. `entered`
    * is called once the method has run up to its first wait, before it settles.
