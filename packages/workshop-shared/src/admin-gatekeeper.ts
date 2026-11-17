@@ -80,6 +80,11 @@ export interface AdminGatekeeper<Session> extends Gatekeeper<Session> {
    * never reaches it. The tests read the tag the gatekeeper declared on the action and what
    * the Workshop recorded of each connection's restricted observations: they bind the agents
    * and gadgets that use the gatekeeper, not the gatekeeper.
+   *
+   * The second of those is asked again as `admin` makes the action's call, since another
+   * connection's restricted data can be read after this method was called. The call is then
+   * refused `needsPerson` (ADMIN_ACCESS_ERROR_CODES) with nothing done, and the gatekeeper
+   * rejects this method leaving the action as it was, to be applied once a person approves it.
    */
   applyAdminAction(action: number, admin: RpcStub<AdminAgentApi>): Promise<void>;
 }

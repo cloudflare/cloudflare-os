@@ -713,6 +713,50 @@ describe("restricted data", () => {
     expect(await entriesOf(ws, reportId)).toHaveLength(1);
   }));
 
+  // The two waits between a rule's lend and the write it was lent for: the gatekeeper on its
+  // way to the call, and the lend asking, as the call arrives, whether the gatekeeper is off.
+  it.each(["before the gatekeeper makes its call", "while the lent call is checked"] as const)(
+      "holds an action a rule was lent for when another vendor's read lands %s",
+      gap => adminWorkspace(async ws => {
+    let reportId = await fileReport(ws, REPORTER);
+    let otherId = await otherConnection(ws);
+    enableRule(ws, "issueReportNote");
+    await latch(ws);
+
+    let lendAdminApi = ws.impl.lendAdminApi.bind(ws.impl);
+    let lent = false;
+    ws.impl.lendAdminApi = async (...args: unknown[]) => {
+      let lend = await lendAdminApi(...args);
+      lent = true;
+      if (gap === "before the gatekeeper makes its call") await latchThrough(ws, otherId);
+      return lend;
+    };
+    // The first read of the admin config after the lend is the lent call's.
+    let kv = ws.env.BLUEPRINTS as { get(key: string): Promise<string | null> };
+    let readConfig = kv.get;
+    kv.get = async key => {
+      if (lent && gap === "while the lent call is checked") {
+        lent = false;
+        await latchThrough(ws, otherId);
+      }
+      return readConfig(key);
+    };
+
+    // Queuing it schedules the drain that applies it.
+    let note = await queueAction(ws, 1, "issueReportNote", NOTE(reportId));
+    await ws.impl.drainAutoApprovals(ws.gatekeeperId);
+    expect(lent).toBe(gap === "before the gatekeeper makes its call");
+    expect(await ws.facet.outcomes(1)).toEqual([{ error: WAITS }]);
+    expect(stateOf(ws, note)).toBe("pending");
+    expect(await entriesOf(ws, reportId)).toEqual([]);
+
+    // Nothing was done, so a person still approves it.
+    expect(await approve(ws, note)).toBeUndefined();
+    expect(ws.impl.storage.actions.get(note)).toMatchObject(
+        { state: "approved", autoApproved: false });
+    expect(await entriesOf(ws, reportId)).toHaveLength(1);
+  }));
+
   it("holds a note under the mark of a workspace latched before the singleton existed",
       () => adminWorkspace(async ws => {
     let reportId = await fileReport(ws, REPORTER);

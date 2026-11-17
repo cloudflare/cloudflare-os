@@ -644,6 +644,9 @@ export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
  * and passkey methods refuse with its `notAdmin` and `workspaceNotFound` too (see
  * ADMIN_WRITE_ERROR_CODES). `contentOff` is also what the grant methods and a
  * "grantContentAccess" request are refused with while the level in force is below "content".
+ * `needsPerson` is no refusal of AdminApi's: it is what the call of an action a rule approved is
+ * refused with, before it reaches AdminApi, once the workspace that lent it holds restricted data
+ * under which a rule no longer applies the action (see AdminGatekeeper.applyAdminAction()).
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -654,6 +657,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   contentOff: "ADMIN_WORKSPACE_CONTENT_OFF",
   contentNotRequested: "ADMIN_CONTENT_NOT_REQUESTED",
   grantRequired: "ADMIN_GRANT_REQUIRED",
+  needsPerson: "ADMIN_ACTION_NEEDS_PERSON",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -676,6 +680,8 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
   [ADMIN_ACCESS_ERROR_CODES.grantRequired]:
       "No grant lets admins read this workspace's content. Its owner can give one, or a second " +
           "admin can approve a request for one.",
+  [ADMIN_ACCESS_ERROR_CODES.needsPerson]:
+      "This workspace holds restricted data: this action waits for a person.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */

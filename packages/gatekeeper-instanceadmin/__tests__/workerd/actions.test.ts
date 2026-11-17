@@ -571,6 +571,18 @@ describe("an action that fails to apply", () => {
       await gatekeeper.applyAdminAction(id, working as never);
       expect(working.calls).toEqual([call]);
     });
+
+    it(`${kind}: a rule that no longer applies it leaves it pending, for a person`, async () => {
+      const { gatekeeper, id } = await queued(candidate);
+      const needsPerson = createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.needsPerson);
+      const refusing = failing(needsPerson);
+      const working = lent();
+
+      expect((await rejection(gatekeeper.applyAdminAction(id, refusing as never))).message)
+          .toBe(needsPerson.message);
+      await gatekeeper.applyAdminAction(id, working as never);
+      expect(working.calls).toEqual([call]);
+    });
   }
 
   const UNKNOWN: [string, unknown][] = [

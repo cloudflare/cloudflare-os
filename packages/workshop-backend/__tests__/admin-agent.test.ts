@@ -259,15 +259,20 @@ function fakeCapability(names: string[], reached: string[],
   return target;
 }
 
-// A lend over a fake API whose clock, admin list and off switch the test moves.
+// A lend over a fake API whose clock, admin list, off switch and approval the test moves.
+// `whenOffAsked` runs as the lend asks the switch, before the answer.
 function lendOver(use: AdminAgentUse, answers: Record<string, (...args: any[]) => unknown> = {}) {
   let fake = fakeApi(answers);
-  let state = { now: T0, off: false, offAsked: 0 };
+  let state = {
+    now: T0, off: false, offAsked: 0, unapproved: undefined as string | undefined,
+    whenOffAsked: () => {},
+  };
   let env = { ADMINS: [ADMIN] } as unknown as Cloudflare.Env;
   let lend = restrictAdminApi(fake.api, env, ADMIN, use, async () => {
     state.offAsked++;
+    state.whenOffAsked();
     return state.off;
-  }, () => state.now);
+  }, () => { if (state.unapproved) throw new Error(state.unapproved); }, () => state.now);
   return { ...fake, lend, api: lend.api as any, state, env: env as unknown as { ADMINS: string[] } };
 }
 
@@ -311,7 +316,7 @@ describe("restrictAdminApi", () => {
 
   it("lends nothing to a session whose time has already passed", () => {
     expect(() => restrictAdminApi(fakeApi().api, { ADMINS: [ADMIN] } as unknown as Cloudflare.Env,
-        ADMIN, SESSION, async () => false, () => T0 + 60_000))
+        ADMIN, SESSION, async () => false, () => {}, () => T0 + 60_000))
         .toThrow("This Admin API session has ended. Open a new one.");
   });
 
@@ -368,6 +373,23 @@ describe("restrictAdminApi", () => {
     let off = lendOver(SESSION);
     off.state.off = true;
     expect((await rejection(off.api.setSiteName("x"))).message).toBe("Gatekeeper is disabled.");
+  });
+
+  it("asks last, after it asked whether the gatekeeper is off, whether an action is still " +
+      "approved", async () => {
+    let { api, calls, state } = lendOver(action("issueReportNote", true));
+    // What approved the action stops doing so while the lend waits for the switch's answer.
+    state.whenOffAsked = () => { state.unapproved = "This action waits for a person."; };
+    expect((await rejection(api.addIssueReportEntry("report", "a note", "admins"))).message)
+        .toBe("This action waits for a person.");
+    expect(state.offAsked).toBe(1);
+    expect(calls).toEqual([]);
+
+    // Every refusal above comes first.
+    let off = lendOver(action("issueReportNote", true));
+    off.state.unapproved = "This action waits for a person.";
+    expect((await rejection(off.api.addIssueReportEntry("report", "a reply", "public"))).message)
+        .toBe(`This action may only write a "admins" entry.`);
   });
 
   it("lends nothing to an auto-approval of a kind that always waits for a person", () => {

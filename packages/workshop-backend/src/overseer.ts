@@ -7631,7 +7631,8 @@ class OverseerImpl implements AgentHooks {
    * gatekeeper could end, so removing it ends its connections here, where the power is lent), a
    * session a member opened directly from the connection was opened by the owner and, for an
    * approved action, whoever approved it is an admin too; and for an auto-approved
-   * action, unless ruleApplies() allows its kind in the workspace as it is now. The origin
+   * action, unless ruleApplies() allows its kind in the workspace as it is now, which the lend
+   * asks again as it makes the action's call (refused `needsPerson`). The origin
    * recorded with every call is this workspace and the chat `caller` is tied to, if any. A lend
    * that files a request for content access also says who was here (see AdminAgentInsiders).
    * THE one place an AdminApiImpl is made with via "gatekeeper": it hands that AdminApiImpl to
@@ -7674,16 +7675,21 @@ class OverseerImpl implements AgentHooks {
     if (use.for === "session" && use.opener !== undefined && use.opener !== admin) {
       throw new Error(ADMIN_CONNECTION_OWNER_ONLY);
     }
+    // What autoApprovalRule() asked, asked once more where the power is handed over, and by the
+    // lend as it makes the action's call: another connection's restricted read can land while
+    // the gatekeeper is on its way to that call.
+    let approved = () => {
+      if (use.for === "action" && use.autoApproved &&
+          !ruleApplies(this.storage, gatekeeperId, ADMIN_AGENT_ACTIONS[use.kind].kind.tag)) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.needsPerson);
+      }
+    };
     if (use.for === "action") {
       // A member who was demoted cannot decide, and a rule such a member enabled applies nothing.
       if (!isDeploymentAdmin(this.env, use.decidedBy)) {
         throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
       }
-      // What autoApprovalRule() asked, asked once more where the power is handed over.
-      if (use.autoApproved &&
-          !ruleApplies(this.storage, gatekeeperId, ADMIN_AGENT_ACTIONS[use.kind].kind.tag)) {
-        throw new Error("This workspace holds restricted data: this action waits for a person.");
-      }
+      approved();
     }
 
     // The connection may have been removed across the awaits. Nothing is awaited from here on.
@@ -7699,7 +7705,7 @@ class OverseerImpl implements AgentHooks {
     return restrictAdminApi(
         new AdminApiImpl(this.ctx, this.env, admin,
                          {via: "gatekeeper", agent, ...(insiders && {insiders})}),
-        this.env, admin, use, off);
+        this.env, admin, use, off, approved);
   }
 
   // WorktreeSessionHost: ReplicableWorktree.getReplicator(). The stub is persistent, so a

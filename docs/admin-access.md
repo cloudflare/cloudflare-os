@@ -1864,6 +1864,7 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 | `ADMIN_WORKSPACE_CONTENT_OFF` | The level in force is below `"content"`: an open asking for content, a content read on a view opened for it, an owner's grant or renewal, the account-wide grant, and a `"grantContentAccess"` request or its applying. |
 | `ADMIN_CONTENT_NOT_REQUESTED` | A content read on a view opened for metadata. Inspect again, asking for content. |
 | `ADMIN_GRANT_REQUIRED` | A content read with no live grant for the workspace: its owner can give one, or a second admin can approve a request for one. |
+| `ADMIN_ACTION_NEEDS_PERSON` | Not a refusal of the Admin API: the call of an action of the admin gatekeeper that a rule approved, refused before it reaches the API because its workspace holds restricted data under which a rule no longer applies it (see [Through an agent](#through-an-agent)). Nothing was done, and the action waits for a person. |
 
 The grant methods refuse with a code from `ADMIN_GRANT_ERROR_CODES` (read with
 `getAdminGrantErrorCode()`):
@@ -2073,8 +2074,9 @@ The admin gatekeeper adds these, in the same directory (its own suites are liste
   account included; an approved action's one call; restricted data, marked by a read, after
   which a rule applies a note, a status and a claim and holds a scoped reply and a write
   request; the lend's own check, which lends to an auto-approval only for those three kinds;
-  another vendor's restricted read before the admin connection's and after it, and one that
-  lands between an action's submission and the drain; a workspace marked before it kept track
+  another vendor's restricted read before the admin connection's and after it, one that
+  lands between an action's submission and the drain, and one that lands between the lend and
+  the write, which leaves the action pending and unapplied; a workspace marked before it kept track
   of whose reads marked it; another vendor's action tagged as a note; a rule-applied note that
   can only add an admins-only entry; the catalog listing the admin connection no gadget binds,
   with whether a rule applies each kind; who is lent nothing (the vendor off, an owner who is

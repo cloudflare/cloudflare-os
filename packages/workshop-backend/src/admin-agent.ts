@@ -171,12 +171,15 @@ type Method = (...args: unknown[]) => unknown;
  * method names and, before each call, checks in this order that the lend has not ended or run
  * out (a session's `until`; an action's one call already made), that `admin` is still a
  * deployment admin (refused `notAdmin`), that a session is still live, that the deployment has
- * not turned the gatekeeper off (`off()` resolves to whether it has), and that
- * adminAgentRefusal() allows the call; then makes the call on `api`, whose own validation and
- * checks run as for any caller. A capability the call returns (a view) is returned behind the
- * same checks and the table ADMIN_AGENT_VIEWS keeps for the METHOD THAT RETURNED IT: it
- * answers the names that entry allows and no other, so nothing of the stub underneath (`dup`
- * least of all) can be reached and the view ends with the lend. A capability returned by a
+ * not turned the gatekeeper off (`off()` resolves to whether it has), that
+ * adminAgentRefusal() allows the call, and that `approved()` does not throw (the workspace
+ * says whether what approved an action still does); then makes the call on `api`, whose own
+ * validation and checks run as for any caller. `approved()` is asked last, with nothing
+ * awaited between it and the call: what it reads can change across every await since the
+ * lend was made, the one above included. A capability the call returns (a view) is returned
+ * behind the same checks and the table ADMIN_AGENT_VIEWS keeps for the METHOD THAT RETURNED
+ * IT: it answers the names that entry allows and no other, so nothing of the stub underneath
+ * (`dup` least of all) can be reached and the view ends with the lend. A capability returned by a
  * method that has no entry, or by a view call, answers no name at all. A session's call of a
  * method that has an entry is given at most the time the lend has left as the view's life
  * (the entry's `cap`), so the view itself does not outlive the lend either.
@@ -186,8 +189,8 @@ type Method = (...args: unknown[]) => unknown;
  * releases. It logs the lend, never a call.
  */
 export function restrictAdminApi(api: AdminApi, env: Cloudflare.Env, admin: string,
-    use: AdminAgentUse, off: () => Promise<boolean>, now: () => number = () => Date.now())
-    : AdminAgentLend {
+    use: AdminAgentUse, off: () => Promise<boolean>, approved: () => void,
+    now: () => number = () => Date.now()): AdminAgentLend {
   if (use.for === "action" && use.autoApproved && !ADMIN_AGENT_ACTIONS[use.kind].autoApprovable) {
     throw new Error("This kind of action is never auto-approved.");
   }
@@ -244,6 +247,8 @@ export function restrictAdminApi(api: AdminApi, env: Cloudflare.Env, admin: stri
     let view = Object.hasOwn(ADMIN_AGENT_VIEWS, name)
         ? ADMIN_AGENT_VIEWS[name as AdminAgentViewMethod] : undefined;
     if (view && use.for === "session") args = view.cap(args, use.until - now());
+    // Nothing is awaited between this and the call.
+    approved();
     let result = await Reflect.apply(api[name as AdminAgentMethod], api, args);
     return handOver(result, view?.answers ?? NO_METHOD);
   });
