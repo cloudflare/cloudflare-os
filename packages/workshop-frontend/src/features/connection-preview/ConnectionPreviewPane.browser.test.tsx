@@ -267,5 +267,5 @@ it('opens anew on the document a creation made, whose approval ends the session 
   expect(created).toEqual([])
 
   emit(action(2, { creation: true, state: 'approved', resourceTitle: 'Made', resourceUrl: url }))
-  expect(created).toEqual([{ gatekeeperId: DOC_ID, title: 'Made', url }])
+  expect(created).toEqual([{ gatekeeperId: DOC_ID, title: 'Made', url, iconUrl: undefined }])
 })

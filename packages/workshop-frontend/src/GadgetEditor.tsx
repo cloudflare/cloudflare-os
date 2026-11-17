@@ -225,12 +225,15 @@ const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
 // props go to its element, so that a gadget's label can open the gadget's menu.
 function PaneLabel({
   icon: LabelIcon,
+  iconUrl,
   workpiece,
   title,
   badge,
   ...props
 }: Omit<ComponentProps<'div'>, 'title'> & {
   icon?: Icon
+  /** An image shown in place of `icon`. */
+  iconUrl?: string
   workpiece?: WorkpieceSummary
   title: string
   badge?: string
@@ -241,7 +244,9 @@ function PaneLabel({
       title={title}
       className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
     >
-      {LabelIcon
+      {iconUrl
+        ? <img src={iconUrl} alt="" className="size-3.5 flex-shrink-0" />
+        : LabelIcon
         ? <LabelIcon size={14} weight="bold" className="flex-shrink-0" />
         : workpiece && <WorkpieceGlyph summary={workpiece} className="flex-shrink-0" />}
       <span className="truncate">{title}</span>
@@ -1078,7 +1083,8 @@ export default function GadgetEditor() {
   }, [openActivity, activityView])
 
   // One asking for each stay in a workspace, where a connection's number means one connection.
-  const offersPreview = useMemo(() => previewOffers(), [id])
+  const offersPreview = useMemo(
+    () => previewOffers(() => authenticatedApi.listGatekeeperVendors()), [authenticatedApi, id])
   const dismissConnectionPreview = useAutoOpenConnectionPreview(overseerStub, id, preview => {
     // With one pane, opening the preview would take the chat away from someone typing in it.
     if (!isSinglePaneLayout()) openConnectionPreview(preview)
@@ -1986,7 +1992,9 @@ export default function GadgetEditor() {
               title={`Preview ${preview.title}`}
               aria-label={`Preview ${preview.title}`}
             >
-              <FileText size={15} />
+              {preview.iconUrl
+                ? <img src={preview.iconUrl} alt="" className="size-[15px]" />
+                : <FileText size={15} />}
             </WorkshopIconButton>
           ))}
 
@@ -2330,7 +2338,7 @@ export default function GadgetEditor() {
           >
             <div className="flex min-w-0 flex-1 items-center overflow-hidden">
               {panePreview ? (
-                <PaneLabel icon={FileText} title={panePreview.title} />
+                <PaneLabel icon={FileText} iconUrl={panePreview.iconUrl} title={panePreview.title} />
               ) : paneShowsActivity ? (
                 <PaneLabel icon={Pulse} title="Activity" />
               ) : visibleWorkpieces.length > 1 ? (

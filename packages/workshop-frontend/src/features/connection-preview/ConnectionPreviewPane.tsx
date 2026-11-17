@@ -53,7 +53,7 @@ export const ConnectionPreviewPane = ({ overseer, preview, restricted, onCreated
     if (entry.type !== 'action' || entry.gatekeeperId !== gatekeeperId) return
     // Creating the resource restarts its connection on the real one, which ends this pane's
     // session: the pane is opened anew on what was created.
-    if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry))
+    if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
     window.clearTimeout(refreshTimer.current)
     refreshTimer.current = window.setTimeout(() => setRefreshSignal(n => n + 1), REFRESH_DEBOUNCE_MS)
   })

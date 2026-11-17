@@ -39,7 +39,7 @@ export const useAutoOpenConnectionPreview = (
 
     void offersPreview(overseer, gatekeeperId).then(offered => {
       if (offered && here === seen.current && !dismissed.has(gatekeeperId)) {
-        onOpenRef.current(previewOf(gatekeeperId, entry))
+        onOpenRef.current(previewOf(gatekeeperId, entry, offered))
       }
       // Not an answer: the connection's next read asks again.
     }, () => started.delete(gatekeeperId))
