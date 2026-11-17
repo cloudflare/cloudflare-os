@@ -3,7 +3,10 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import { ADMIN_AGENT_ACTIONS } from '@gadgets/workshop-shared/admin-agent'
+import type {
+  ActionLogEntry, ConnectedAccountsSubscriber, Overseer, PreApprovableAction,
+} from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
@@ -13,9 +16,16 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const toasts = { add: addToast }
   return { ...actual, useKumoToastManager: () => toasts }
 })
-vi.mock('./useAlwaysApproveTag', () => ({
-  useAlwaysApproveTag: () => ({ alwaysApproveTag: vi.fn<() => Promise<void>>(), isTagAutoApproved: () => false }),
-}))
+// Stubbed, but for the tests that turn a rule on and set `real`.
+const alwaysApprove = vi.hoisted(() => ({ real: false }))
+vi.mock('./useAlwaysApproveTag', async (importOriginal) => {
+  const actual = await importOriginal() as typeof import('./useAlwaysApproveTag')
+  return {
+    useAlwaysApproveTag: (...args: Parameters<typeof actual.useAlwaysApproveTag>) => alwaysApprove.real
+      ? actual.useAlwaysApproveTag(...args)
+      : { alwaysApproveTag: vi.fn<() => Promise<void>>(), isTagAutoApproved: () => false },
+  }
+})
 const auth = vi.hoisted(() => ({ authenticatedApi: {} as Record<string, unknown> }))
 vi.mock('./AuthContext', () => ({ useAuthenticatedApi: () => auth }))
 
@@ -29,6 +39,7 @@ const view = makeTestRoot()
 afterEach(() => {
   view.cleanup()
   vi.restoreAllMocks()
+  alwaysApprove.real = false
 })
 
 const fields = [
@@ -92,6 +103,177 @@ describe('Activity review request fields', () => {
     expect(document.body.textContent).toContain('2 fields')
     expect(document.body.textContent).not.toContain('Full body text')
     expect(document.querySelector('[aria-expanded="false"]')).not.toBeNull()
+  })
+})
+
+describe('Activity rule offers in a restricted workspace', () => {
+  const STATUS = ADMIN_AGENT_ACTIONS.issueReportStatus.kind
+  const REPLY = ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind
+  const request = (id: number, title: string, actionKind: { tag: string, label: string },
+      gatekeeperId = 7) => entry(id, {
+    gatekeeperId,
+    description: {
+      title, description: '', implementsRevert: false, autoApprovable: true, actionKind,
+    },
+  })
+
+  /**
+   * Renders a restricted workspace's pane with `pending` waiting. The catalog lists the admin
+   * connection as the kernel does, saying a rule applies a status and not a reply.
+   */
+  async function renderRestricted(pending: ActionLogEntry[], shown: 'review' | 'history' = 'review') {
+    const server = makeOverseer()
+    const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () =>
+      [STATUS, REPLY].map(actionKind => ({
+        gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+        actionKind, alreadyEnabled: false, ruleApplies: actionKind === STATUS,
+      })))
+    const setAutoApprovedActionKind = vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {})
+    Object.assign(server.overseer, { listPreApprovableActions, setAutoApprovedActionKind })
+    await view.render(
+      <Activity overseer={server.overseer} restricted view={shown} onViewChange={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: pending })
+    flushFrames()
+    // The catalog's answer, where one was asked for.
+    await act(async () => {})
+    return { listPreApprovableActions, setAutoApprovedActionKind }
+  }
+
+  const alwaysApproveButtons = () =>
+    [...document.querySelectorAll('button')].filter(b => b.textContent === 'Always approve')
+
+  it('offers a rule for a request whose kind the kernel applies, and for no other', async () => {
+    alwaysApprove.real = true
+    const server = await renderRestricted([
+      request(1, 'Close report 12', STATUS),
+      request(2, 'Tell the reporter it is fixed', REPLY),
+    ])
+
+    expect(server.listPreApprovableActions).toHaveBeenCalledTimes(1)
+    expect(alwaysApproveButtons()).toHaveLength(1)
+
+    await act(async () => alwaysApproveButtons()[0].click())
+    // The rule is for every action of the kind, so the kind is what the approver is asked about.
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain(`Always approve “${STATUS.label}”?`)
+    expect(dialog.textContent).not.toContain('Close report 12')
+
+    await act(async () =>
+      [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Always approve')!.click())
+    expect(server.setAutoApprovedActionKind).toHaveBeenCalledExactlyOnceWith(7, STATUS)
+  })
+
+  it('does not read the catalog for requests no rule could apply under the latch', async () => {
+    // The catalog starts every gatekeeper it lists: another vendor's restricted workspace must
+    // not pay for that to be told no.
+    const server = await renderRestricted([
+      request(1, 'Append a slide', { tag: 'append', label: 'Append a slide' }, 1),
+      request(2, 'Tell the reporter it is fixed', REPLY),
+    ])
+
+    expect(server.listPreApprovableActions).not.toHaveBeenCalled()
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('does not read the catalog while Needs review is not the view on show', async () => {
+    const server = await renderRestricted([request(1, 'Close report 12', STATUS)], 'history')
+
+    expect(server.listPreApprovableActions).not.toHaveBeenCalled()
+  })
+
+  it('asks the kernel again once a request is decided by hand', async () => {
+    // A request still waiting with its rule on may be one the kernel stopped applying, after a
+    // read of another connection's restricted data. Nothing else tells this client.
+    const server = makeOverseer()
+    const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () => [{
+      gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+      actionKind: STATUS, alreadyEnabled: false, ruleApplies: true,
+    }])
+    Object.assign(server.overseer, { listPreApprovableActions })
+    const changed = vi.fn<() => void>()
+    const render = (reloadTrigger: number) => view.render(
+      <Activity overseer={server.overseer} restricted view="review" onViewChange={() => {}}
+        autoApproval={{ reloadTrigger, changed }} />,
+    )
+    await render(0)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [
+      request(1, 'Close report 12', STATUS), request(2, 'Close report 13', STATUS),
+    ] })
+    flushFrames()
+    await act(async () => {})
+    expect(alwaysApproveButtons()).toHaveLength(2)
+
+    listPreApprovableActions.mockResolvedValue([])
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+    await server.settleDecision()
+    expect(changed).toHaveBeenCalledTimes(1)
+
+    // The channel's owner bumps the trigger, as it does for a rule that was changed.
+    await render(1)
+    await act(async () => {})
+
+    expect(listPreApprovableActions).toHaveBeenCalledTimes(2)
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  const confirmation = () => document.querySelector('[role="dialog"]')
+
+  it('closes an open confirmation once the kernel stops applying its kind', async () => {
+    // Confirming could only store a rule that does nothing.
+    const server = makeOverseer()
+    const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () => [{
+      gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+      actionKind: STATUS, alreadyEnabled: false, ruleApplies: true,
+    }])
+    Object.assign(server.overseer, { listPreApprovableActions })
+    const render = (reloadTrigger: number) => view.render(
+      <Activity overseer={server.overseer} restricted view="review" onViewChange={() => {}}
+        autoApproval={{ reloadTrigger, changed: () => {} }} />,
+    )
+    await render(0)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [request(1, 'Close report 12', STATUS)] })
+    flushFrames()
+    await act(async () => {})
+    await act(async () => alwaysApproveButtons()[0].click())
+    expect(confirmation()).not.toBeNull()
+
+    // Another connection's restricted data was read meanwhile, and the answer is read again.
+    listPreApprovableActions.mockResolvedValue([])
+    await render(1)
+    await act(async () => {})
+
+    expect(listPreApprovableActions).toHaveBeenCalledTimes(2)
+    expect(confirmation()).toBeNull()
+  })
+
+  it('closes a confirmation the latch overtook, without reading the catalog for it', async () => {
+    const server = makeOverseer()
+    const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () => [])
+    Object.assign(server.overseer, { listPreApprovableActions })
+    const render = (restricted: boolean) => view.render(
+      <Activity overseer={server.overseer} restricted={restricted} view="review"
+        onViewChange={() => {}} />,
+    )
+    await render(false)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [request(1, 'Tell the reporter it is fixed', REPLY)] })
+    flushFrames()
+    await act(async () => {})
+    // Unrestricted, a rule applies every kind: a reply included.
+    await act(async () => alwaysApproveButtons()[0].click())
+    expect(confirmation()).not.toBeNull()
+
+    await render(true)
+    await act(async () => {})
+
+    expect(confirmation()).toBeNull()
+    expect(alwaysApproveButtons()).toHaveLength(0)
+    expect(listPreApprovableActions).not.toHaveBeenCalled()
   })
 })
 

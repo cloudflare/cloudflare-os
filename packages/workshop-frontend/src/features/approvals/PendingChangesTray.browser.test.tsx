@@ -1,8 +1,21 @@
 /* eslint-disable react/react-in-jsx-scope */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
+import { Toasty, TooltipProvider } from '@cloudflare/kumo'
+import type { RpcStub } from 'capnweb'
+import { ADMIN_AGENT_ACTIONS } from '@gadgets/workshop-shared/admin-agent'
+import type { Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api'
+import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+
+// For the Auto-approval tab, whose rule list is the other place a rule is offered.
+vi.mock('../../AuthContext', () => {
+  const context = { authenticatedApi: { listGatekeeperVendors: async () => [] }, currentUser: null }
+  return { useAuthenticatedApi: () => context, useOptionalAuthenticatedApi: () => context }
+})
+
+import Activity from '../../Activity'
 import { PendingChangesTray } from './PendingChangesTray'
 import type { BulkFailure } from './useBulkResolve'
 import type { PendingChange, PendingChangeGroup } from './pendingChangeGroups'
@@ -90,7 +103,7 @@ async function render({
   await act(async () => root!.render(
     <PendingChangesTray
       groups={groups}
-      rules={{ isEnabled: () => autoApproved, restricted }}
+      rules={{ isEnabled: () => autoApproved, applies: () => !restricted, restricted }}
       ready={true}
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}
@@ -311,4 +324,87 @@ it('shows a restricted request in full, with no way to resolve the group at once
   // whole field is laid out and the tray scrolls to it rather than clipping it.
   const json = [...host!.querySelectorAll('pre')].find(pre => pre.textContent === BIG_JSON)!
   expect(json.scrollHeight).toBeLessThanOrEqual(json.clientHeight + 1)
+})
+
+it('keeps the rule list in rows, and its switches in keyboard order, under the latch', async () => {
+  // Under the latch a kind a rule still applies sits beside kinds it does not, whose sentence is
+  // several times as long. A narrow pane makes that sentence wrap.
+  const { issueReportNote, issueReportScopedReply, issueReportReply, issueReportStatus } =
+    ADMIN_AGENT_ACTIONS
+  const applying: ActionKind[] = [issueReportNote.kind, issueReportStatus.kind]
+  // In the order the list sorts them. The scoped reply's rule is on, so it stays revocable.
+  const kinds = [issueReportNote, issueReportScopedReply, issueReportReply, issueReportStatus]
+    .map(action => action.kind)
+  const overseer = {
+    subscribeToActions: async () => ({ [Symbol.dispose]: () => {} }),
+    listActions: async () => ({ entries: [], cursor: undefined }),
+    listPreApprovableActions: async (): Promise<PreApprovableAction[]> => kinds.map(actionKind => ({
+      gatekeeperId: 7,
+      resourceTitle: 'This deployment',
+      vendorId: 'admin',
+      actionKind,
+      alreadyEnabled: actionKind === issueReportScopedReply.kind,
+      ruleApplies: applying.includes(actionKind),
+    })),
+    listAutoApprovedActionKinds: async () =>
+      [{ gatekeeperId: 7, actionKind: issueReportScopedReply.kind }],
+    [Symbol.dispose]: () => {},
+  } as unknown as RpcStub<Overseer>
+
+  host = document.body.appendChild(document.createElement('div'))
+  host.style.cssText = 'display: flex; flex-direction: column; width: 320px; height: 560px'
+  root = createRoot(host)
+  await act(async () => root!.render(
+    <TooltipProvider><Toasty>
+      <Activity overseer={overseer} restricted view="auto" onViewChange={() => {}} />
+    </Toasty></TooltipProvider>,
+  ))
+
+  const ruleSwitch = (label: string) => page.getByRole('switch', { name: new RegExp(`for ${label}$`) })
+  await expect.element(ruleSwitch(issueReportNote.kind.label)).toBeVisible()
+
+  const switches = kinds.map(kind => ruleSwitch(kind.label).element() as HTMLElement)
+  const rows = switches.map(element => element.parentElement!)
+  const boxes = rows.map(row => row.getBoundingClientRect())
+  const [note, scopedReply, reply, status] = boxes
+
+  // The long sentence is laid out in full, and its row grows for it rather than into the next.
+  for (const row of [rows[1], rows[2]]) {
+    const sentence = [...row.querySelectorAll('span')]
+      .find(span => span.children.length === 0 && span.textContent?.startsWith("Won't apply"))!
+    expect(sentence.scrollWidth).toBeLessThanOrEqual(sentence.clientWidth)
+    expect(sentence.scrollHeight).toBeLessThanOrEqual(sentence.clientHeight)
+  }
+  expect(scopedReply.height).toBeGreaterThan(note.height)
+  for (let index = 1; index < boxes.length; index++) {
+    expect(boxes[index].top).toBeGreaterThanOrEqual(boxes[index - 1].bottom - 0.5)
+  }
+  // A row whose sentence is short is as tall beside the long ones as it is without them.
+  expect(status.height).toBe(note.height)
+  expect(reply.height).toBe(scopedReply.height)
+
+  // Every switch keeps its size and its place at the end of its own row.
+  const pane = host.getBoundingClientRect()
+  const first = switches[0].getBoundingClientRect()
+  switches.forEach((element, index) => {
+    const box = element.getBoundingClientRect()
+    expect(box.width).toBe(first.width)
+    expect(box.height).toBe(first.height)
+    expect(box.left).toBe(first.left)
+    expect(box.right).toBeLessThanOrEqual(pane.right)
+    expect(box.top).toBeGreaterThanOrEqual(boxes[index].top)
+    expect(box.bottom).toBeLessThanOrEqual(boxes[index].bottom)
+  })
+
+  // By keyboard, top to bottom: the rule that applies nothing can be turned off, and the one
+  // that could only be turned on to no effect is passed over.
+  for (let presses = 0; presses < 10 && document.activeElement !== switches[0]; presses++) {
+    await input(() => userEvent.tab())
+  }
+  await expect.element(ruleSwitch(issueReportNote.kind.label)).toHaveFocus()
+  await input(() => userEvent.tab())
+  await expect.element(ruleSwitch(issueReportScopedReply.kind.label)).toHaveFocus()
+  await input(() => userEvent.tab())
+  await expect.element(ruleSwitch(issueReportStatus.kind.label)).toHaveFocus()
+  await expect.element(ruleSwitch(issueReportReply.kind.label)).toBeDisabled()
 })

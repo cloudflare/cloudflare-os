@@ -122,7 +122,7 @@ import {
   chatRequestIds, pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import {
-  canOfferAlwaysApprove, type AutoApprovalRules,
+  canOfferAlwaysApprove, mayApplyWhileRestricted, type AutoApprovalRules,
 } from "./features/approvals/autoApprovalRules";
 import { useBulkResolve } from "./features/approvals/useBulkResolve";
 import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
@@ -2400,7 +2400,8 @@ interface ChatInterfaceProps {
   // Whether the current user owns the workspace (see GatekeeperModalProps.ownsWorkspace).
   ownsWorkspace?: boolean;
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
-  // Latched actions are never auto-approved, so the always-approve affordance is hidden.
+  // A rule applies under it only what the kernel says (`AutoApprovalRules.applies`), so "Always
+  // approve" is offered for those kinds alone.
   restricted?: boolean;
   selectedChatId: number | null;
   // The chat whose code the host's code view shows, when that isn't the selected chat: the
@@ -4592,8 +4593,7 @@ function ChatInterface({
 
   // Pending "always approve this type" confirmation, opened from a pending action card.
   const [autoApproveConfirm, setAutoApproveConfirm] = useState<
-    { actionId: number; gatekeeperId: number; resourceTitle: string;
-      actionKind: ActionKind; actionLabel: string } | null
+    { actionId: number; gatekeeperId: number; resourceTitle: string; actionKind: ActionKind } | null
   >(null);
 
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
@@ -4605,6 +4605,9 @@ function ChatInterface({
   const { resolveAction, creationAccountModal } =
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
+      // Under the latch a request decided by hand may be one whose rule the kernel stopped
+      // applying, and nothing else says so: have every surface read its answer again.
+      if (restricted) autoApproval?.changed();
     });
 
   // Everything the workspace is waiting on, grouped by the resource it touches, for the tray
@@ -4634,10 +4637,18 @@ function ChatInterface({
   const {
     enabledRuleKeys,
     vendorIdByGatekeeper,
+    ruleApplies,
     isLoading: autoApprovalLoading,
     loadError: autoApprovalLoadError,
     refresh: refreshAutoApproval,
-  } = useStandingRules(overseer, trayGroups.length > 0);
+  } = useStandingRules(overseer, {
+    vendors: trayGroups.length > 0,
+    restricted: restricted === true,
+    // Not the latch alone: this component is always mounted, and the catalog starts every
+    // gatekeeper it lists. While the queue has not loaded nothing is asked, and nothing offered.
+    applies: restricted === true &&
+      trayGroups.some(group => group.entries.some(mayApplyWhileRestricted)),
+  });
   const autoApproveReload = autoApproval?.reloadTrigger;
   // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
   // including about a rule someone has just turned off, so the optimistic overlay has nothing left
@@ -4658,8 +4669,9 @@ function ChatInterface({
     // disappears on the click rather than a round trip later.
     isEnabled: (gatekeeperId, tag) =>
       enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
+    applies: ruleApplies,
     restricted: restricted === true,
-  }), [enabledRuleKeys, isTagAutoApproved, restricted]);
+  }), [enabledRuleKeys, isTagAutoApproved, ruleApplies, restricted]);
 
   // The pending snapshot pages in, and a run that trusted a partial one could apply a later
   // request while earlier ones on the same connection were still out of sight.
@@ -4699,7 +4711,6 @@ function ChatInterface({
         gatekeeperId: entry.gatekeeperId,
         resourceTitle: entry.resourceTitle,
         actionKind: entry.description.actionKind,
-        actionLabel: entry.description.title,
       });
     },
     onManageRules: () => onViewActivity?.("auto"),
@@ -5416,7 +5427,6 @@ function ChatInterface({
             gatekeeperId: log.gatekeeperId,
             resourceTitle: log.resourceTitle,
             actionKind: log.description.actionKind,
-            actionLabel: log.description.title,
           }
         : undefined;
 
@@ -7095,11 +7105,13 @@ function ChatInterface({
         onConfirm={handleDeleteConfirm}
       />
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && autoApproveConfirm && (
+      {/* The kind stopped applying: the affordance is gone and confirming could only store a
+          rule that does nothing. */}
+      {autoApproveConfirm &&
+          autoApprovalRules.applies(autoApproveConfirm.gatekeeperId, autoApproveConfirm.actionKind.tag) && (
         <AutoApproveConfirmDialog
           open
-          actionLabel={autoApproveConfirm.actionLabel}
+          actionLabel={autoApproveConfirm.actionKind.label}
           resourceTitle={autoApproveConfirm.resourceTitle}
           isProcessing={processingActions.has(autoApproveConfirm.actionId)}
           onOpenChange={(open) => {

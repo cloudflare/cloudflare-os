@@ -3,7 +3,8 @@
 import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Overseer } from '@gadgets/workshop-shared/api'
+import { ADMIN_AGENT_ACTIONS } from '@gadgets/workshop-shared/admin-agent'
+import type { Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import type { RpcStub } from 'capnweb'
 
@@ -46,6 +47,7 @@ async function mount() {
         vendorId: 'slides',
         actionKind: APPEND,
         alreadyEnabled: enabled.has('append'),
+        ruleApplies: true,
       }]
     },
     listAutoApprovedActionKinds: async () => [],
@@ -129,5 +131,145 @@ describe('Activity auto-approval rules', () => {
     // single local completion -- is what the counter is for, and is reachable in a browser under
     // automatic batching but not under jsdom. This pins the interleaving; that case is uncovered.
     expect(panel.ruleReads).toBe(atMount + 2)
+  })
+})
+
+const NOTE: ActionKind = ADMIN_AGENT_ACTIONS.issueReportNote.kind
+const REPLY: ActionKind = ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind
+const WONT_APPLY = "Won't apply: this workspace has read sensitive data, so this kind of action " +
+  'always requires manual approval.'
+
+/**
+ * Renders the rule list of a workspace, restricted unless told otherwise. The catalog lists the
+ * admin connection, which no gadget binds, as the kernel does: a rule applies every kind until
+ * the workspace is restricted, and then its note and not its reply.
+ * `stored` are the tags with a rule on; `listed` the kinds the connection still offers.
+ */
+async function mountAdminRules(
+  stored: string[], listed: ActionKind[] = [NOTE, REPLY], restricted = true,
+) {
+  const enabled = new Set(stored)
+  let latched = restricted
+  let catalogReads = 0
+  const kinds = new Map([NOTE, REPLY].map(kind => [kind.tag, kind]))
+  const overseer = {
+    subscribeToActions: async () => ({ [Symbol.dispose]: () => {} }),
+    listActions: async () => ({ entries: [], cursor: undefined }),
+    listPreApprovableActions: async (): Promise<PreApprovableAction[]> => {
+      catalogReads++
+      return listed.map(actionKind => ({
+        gatekeeperId: 7,
+        resourceTitle: 'This deployment',
+        vendorId: 'admin',
+        actionKind,
+        alreadyEnabled: enabled.has(actionKind.tag),
+        ruleApplies: !latched || actionKind === NOTE,
+      }))
+    },
+    listAutoApprovedActionKinds: async () =>
+      [...enabled].map(tag => ({ gatekeeperId: 7, actionKind: kinds.get(tag)! })),
+    setAutoApprovedActionKind: async (_gatekeeperId: number, kind: ActionKind) => {
+      enabled.add(kind.tag)
+    },
+    removeAutoApprovedActionKind: async (_gatekeeperId: number, tag: string) => {
+      enabled.delete(tag)
+    },
+    [Symbol.dispose]: () => {},
+  } as unknown as RpcStub<Overseer>
+
+  const container = document.createElement('div')
+  document.body.append(container)
+  root = createRoot(container)
+  /** Renders the tab, with the kernel answering for the workspace as `restricted` says it is. */
+  const render = (nextRestricted: boolean) => {
+    latched = nextRestricted
+    return act(async () => root!.render(
+      <Activity overseer={overseer} restricted={nextRestricted} view="auto" onViewChange={() => {}} />,
+    ))
+  }
+  await render(restricted)
+
+  /** The row of a kind: its sentence, and its switch through the checkbox it forwards clicks to. */
+  const row = (kind: ActionKind) => {
+    const toggle = [...document.querySelectorAll('[role="switch"]')]
+      .find(element => element.getAttribute('aria-label')?.endsWith(`for ${kind.label}`))
+    const checkbox = toggle?.nextElementSibling
+    if (!toggle || !(checkbox instanceof HTMLInputElement)) throw new Error(`No row for ${kind.tag}`)
+    return {
+      text: toggle.parentElement?.textContent ?? '',
+      on: toggle.getAttribute('aria-checked') === 'true',
+      disabled: checkbox.disabled,
+      toggle: () => act(async () => checkbox.click()),
+    }
+  }
+  return { row, enabled, render, get catalogReads() { return catalogReads } }
+}
+
+describe('Activity auto-approval rules in a restricted workspace', () => {
+  it('lets a rule be turned on for a kind the kernel applies, and not for one it holds', async () => {
+    const panel = await mountAdminRules([])
+
+    expect(panel.row(NOTE).text).toContain('Waits for your approval')
+    expect(panel.row(NOTE).disabled).toBe(false)
+    expect(panel.row(REPLY).text).toContain(WONT_APPLY)
+    expect(panel.row(REPLY).disabled).toBe(true)
+
+    await panel.row(NOTE).toggle()
+
+    expect([...panel.enabled]).toEqual([NOTE.tag])
+    expect(panel.row(NOTE).on).toBe(true)
+    expect(panel.row(NOTE).text).toContain('Applied without asking')
+    expect(panel.row(NOTE).text).not.toContain("Won't apply")
+  })
+
+  it('keeps a rule that applies nothing revocable', async () => {
+    const panel = await mountAdminRules([REPLY.tag])
+
+    expect(panel.row(REPLY).on).toBe(true)
+    expect(panel.row(REPLY).text).toContain(WONT_APPLY)
+    expect(panel.row(REPLY).disabled).toBe(false)
+
+    await panel.row(REPLY).toggle()
+
+    expect([...panel.enabled]).toEqual([])
+    expect(panel.row(REPLY).on).toBe(false)
+    expect(panel.row(REPLY).disabled).toBe(true)
+  })
+
+  it('does not say what the kernel never said of a rule its connection no longer offers', async () => {
+    // The catalog is where the kernel answers, and it no longer lists this kind.
+    const panel = await mountAdminRules([NOTE.tag], [REPLY])
+
+    expect(panel.row(NOTE).text).toContain('This connection no longer offers this action.')
+    expect(panel.row(NOTE).text).not.toContain('the rule still applies')
+    expect(panel.row(NOTE).text).not.toContain("Won't apply")
+    expect(panel.row(NOTE).disabled).toBe(false)
+
+    await panel.row(NOTE).toggle()
+
+    expect([...panel.enabled]).toEqual([])
+  })
+
+  it('says a rule its connection no longer offers still applies where no latch is set', async () => {
+    const panel = await mountAdminRules([NOTE.tag], [REPLY], false)
+
+    expect(panel.row(NOTE).text)
+      .toContain('This connection no longer offers this action; the rule still applies.')
+  })
+
+  it('reads what a rule applies again when the latch sets while the tab is open', async () => {
+    // What the catalog said before the latch was said of another workspace: every kind applied.
+    const panel = await mountAdminRules([], [NOTE, REPLY], false)
+    expect(panel.catalogReads).toBe(1)
+    expect(panel.row(REPLY).text).not.toContain("Won't apply")
+    expect(panel.row(REPLY).disabled).toBe(false)
+
+    await panel.render(true)
+
+    expect(panel.catalogReads).toBe(2)
+    expect(panel.row(REPLY).text).toContain(WONT_APPLY)
+    expect(panel.row(REPLY).disabled).toBe(true)
+    expect(panel.row(NOTE).text).toContain('Waits for your approval')
+    expect(panel.row(NOTE).disabled).toBe(false)
   })
 })

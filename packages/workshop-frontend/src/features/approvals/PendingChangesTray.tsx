@@ -108,8 +108,8 @@ export const PendingChangesTray = ({
   const bulkable = groups.filter(group => !group.hasCreation)
   const bulkableEntries = pendingChangeEntries(bulkable)
   // While restricted, RESTRICTED_APPROVAL_COPY asks the approver to read every request in full.
-  // Bulk apply would be the first path around that, and around the latch that already disables
-  // every auto-approval rule.
+  // Bulk apply would be the first path around that, and around the latch, under which a rule
+  // applies only the few kinds the kernel lets it.
   const canBulk = ready && !rules.restricted && bulkableEntries.length > 1
   const busy = bulk.progress !== null
   const oldest = all[0]
@@ -173,7 +173,7 @@ export const PendingChangesTray = ({
       <div className="min-h-0 shrink overflow-y-auto">
       {rules.restricted && (
         <p className="m-0 border-t border-kumo-line/70 px-3.5 py-1.5 text-[11.5px] leading-4 text-kumo-inactive">
-          This workspace has read sensitive data, so every request is reviewed on its own.
+          This workspace has read sensitive data, so requests are approved one at a time.
         </p>
       )}
 

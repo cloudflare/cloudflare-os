@@ -1,12 +1,19 @@
+import { ADMIN_AGENT_ACTIONS, adminAgentAction } from '@gadgets/workshop-shared/admin-agent'
 import type { PendingChange } from './pendingChangeGroups'
 
-/** Which auto-approval rules the workspace holds, and whether any of them can apply at all. */
+/** Which auto-approval rules the workspace holds, and which kinds a rule can apply at all. */
 export interface AutoApprovalRules {
   /** Whether a rule covers `tag` on `gatekeeperId`. From `listPreApprovableActions`, not inferred. */
   isEnabled: (gatekeeperId: number, tag: string) => boolean
   /**
-   * The workspace's restricted-data latch. While set, the kernel refuses every rule, so no
-   * surface may claim that anything will apply on its own.
+   * Whether the kernel lets a rule apply this kind as the workspace is now
+   * (`PreApprovableAction.ruleApplies`). Every kind while the workspace is not restricted;
+   * in a restricted one only what the kernel said, and no kind while its answer is unread.
+   */
+  applies: (gatekeeperId: number, tag: string) => boolean
+  /**
+   * The workspace's restricted-data latch. While set an approver vouches for what they read,
+   * so every approve surface shows the notice and nothing is approved in bulk.
    */
   restricted: boolean
 }
@@ -16,14 +23,16 @@ type Candidate = Pick<PendingChange, 'gatekeeperId' | 'description'>
 
 /**
  * Whether a rule could cover this request at all: the gatekeeper marked it auto-approvable, it
- * carries a kind to key a rule on, and the workspace is not latched into restricted mode.
+ * carries a kind to key a rule on, and the kernel lets a rule apply that kind in the workspace
+ * as it is now.
  *
  * Whether one actually does takes the rule list. This is what can still be said when that list
  * is missing — a list nobody could read is not a list that says no.
  */
 export function couldBeAutoApproved(entry: Candidate, rules: AutoApprovalRules): boolean {
-  return !rules.restricted && entry.description.autoApprovable === true &&
-    entry.description.actionKind !== undefined
+  const kind = entry.description.actionKind
+  return entry.description.autoApprovable === true && kind !== undefined &&
+    rules.applies(entry.gatekeeperId, kind.tag)
 }
 
 /**
@@ -32,8 +41,9 @@ export function couldBeAutoApproved(entry: Candidate, rules: AutoApprovalRules):
  * A client-side mirror of the kernel's `autoApprovalRule()`, which is *the* authority; this copy
  * exists only to explain why a request is still waiting, and never decides anything. Keep its
  * four conditions in step with that function: the gatekeeper's own `autoApprovable` verdict, an
- * action kind to key a rule on, a rule enabled for that kind on that connection, and no
- * restricted-data latch — which disables every rule at once.
+ * action kind to key a rule on, a rule enabled for that kind on that connection, and the
+ * kernel's `ruleApplies()`, which under the restricted-data latch lets a rule apply only a few
+ * kinds.
  */
 export function isAutoApproved(entry: Candidate, rules: AutoApprovalRules): boolean {
   return couldBeAutoApproved(entry, rules) &&
@@ -51,8 +61,18 @@ export function isAutoApproved(entry: Candidate, rules: AutoApprovalRules): bool
  */
 export function canOfferAlwaysApprove(entry: Candidate, rules: AutoApprovalRules): boolean {
   const kind = entry.description.actionKind
-  return !rules.restricted && entry.description.autoApprovable === true && kind !== undefined &&
-    !rules.isEnabled(entry.gatekeeperId, kind.tag)
+  return entry.description.autoApprovable === true && kind !== undefined &&
+    rules.applies(entry.gatekeeperId, kind.tag) && !rules.isEnabled(entry.gatekeeperId, kind.tag)
+}
+
+/**
+ * Whether a rule might still apply this request under the restricted-data latch: its kind
+ * is one the kernel's table lets a rule apply there. A reason to ask the kernel, never the
+ * answer, which also depends on the connection and on what the workspace has read.
+ */
+export function mayApplyWhileRestricted(entry: Pick<Candidate, 'description'>): boolean {
+  const kind = adminAgentAction(entry.description.actionKind?.tag)
+  return kind !== undefined && ADMIN_AGENT_ACTIONS[kind].autoApprovableWhileRestricted
 }
 
 /**

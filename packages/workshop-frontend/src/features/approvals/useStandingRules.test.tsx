@@ -3,9 +3,10 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Overseer } from '@gadgets/workshop-shared/api'
+import type { Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import type { RpcStub } from 'capnweb'
+import type { RuleCatalogWants } from './useRuleCatalog'
 import { useStandingRules } from './useStandingRules'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -18,6 +19,10 @@ afterEach(() => {
 })
 
 const APPEND: ActionKind = { tag: 'append', label: 'Append a slide' }
+const NOTE: ActionKind = { tag: 'issue-report-note', label: 'Add an admins-only note to an issue report' }
+const REPLY: ActionKind = {
+  tag: 'issue-report-scoped-reply', label: 'Reply to a reporter from a session limited to their report',
+}
 type Rule = { gatekeeperId: number, actionKind: ActionKind }
 
 interface Deferred<T> {
@@ -33,24 +38,32 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject }
 }
 
+// No tray and no latch, so no catalog: only the rule reads a test parks.
+const NOTHING: RuleCatalogWants = { vendors: false, restricted: false, applies: false }
+
 /**
  * Mounts the hook over an overseer whose rule reads are parked, so a test can land them out of
- * order — which is the whole question `refresh` answers for its caller.
+ * order — which is the whole question `refresh` answers for its caller. The catalog answers at
+ * once with `catalog`, and `catalogReads` counts how often it was asked.
  */
-async function mount() {
+async function mount(want: RuleCatalogWants = NOTHING, catalog: PreApprovableAction[] = []) {
   const ruleReads: Array<Deferred<Rule[]>> = []
+  let catalogReads = 0
   const overseer = {
     listAutoApprovedActionKinds: () => {
       const next = deferred<Rule[]>()
       ruleReads.push(next)
       return next.promise
     },
+    listPreApprovableActions: () => {
+      catalogReads += 1
+      return Promise.resolve(catalog)
+    },
   } as unknown as RpcStub<Overseer>
 
   let hook: ReturnType<typeof useStandingRules> | undefined
   const Probe = () => {
-    // No tray, so no vendor catalog: only the rule reads this test parks.
-    hook = useStandingRules(overseer, false)
+    hook = useStandingRules(overseer, want)
     return null
   }
   const container = document.createElement('div')
@@ -60,6 +73,7 @@ async function mount() {
 
   return {
     get current() { return hook! },
+    get catalogReads() { return catalogReads },
     /** Lands the nth rule read, oldest first, with the rules it found. */
     async land(index: number, rules: Rule[]) {
       await act(async () => { ruleReads[index].resolve(rules) })
@@ -115,5 +129,47 @@ describe('useStandingRules', () => {
 
     await expect(refresh).resolves.toBe(false)
     expect(harness.current.loadError).toBe(true)
+  })
+
+  it('serves the logos and what a rule applies from one read of the catalog', async () => {
+    // The catalog starts every gatekeeper it lists, so the chat reads it once for both.
+    const harness = await mount({ vendors: true, restricted: true, applies: true }, [{
+      gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+      actionKind: NOTE, alreadyEnabled: false, ruleApplies: true,
+    }, {
+      gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+      actionKind: REPLY, alreadyEnabled: false, ruleApplies: false,
+    }])
+    await harness.land(0, [])
+
+    expect(harness.catalogReads).toBe(1)
+    expect(harness.current.vendorIdByGatekeeper.get(7)).toBe('admin')
+    expect(harness.current.ruleApplies(7, NOTE.tag)).toBe(true)
+    expect(harness.current.ruleApplies(7, REPLY.tag)).toBe(false)
+  })
+
+  it('reads the catalog again with the rule list under the latch', async () => {
+    // A later read of another connection's restricted data ends what a rule applies, and only
+    // a re-read says so.
+    const harness = await mount({ vendors: true, restricted: true, applies: true })
+    await harness.land(0, [])
+    expect(harness.catalogReads).toBe(1)
+
+    const refresh = harness.current.refresh()
+    await harness.land(1, [])
+
+    await expect(refresh).resolves.toBe(true)
+    expect(harness.catalogReads).toBe(2)
+  })
+
+  it('leaves the catalog alone on a refresh where no latch is set', async () => {
+    const harness = await mount({ vendors: true, restricted: false, applies: false })
+    await harness.land(0, [])
+
+    const refresh = harness.current.refresh()
+    await harness.land(1, [])
+    await refresh
+
+    expect(harness.catalogReads).toBe(1)
   })
 })

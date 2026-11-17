@@ -4,8 +4,10 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
+import { ADMIN_AGENT_ACTIONS } from '@gadgets/workshop-shared/admin-agent'
 import type {
   ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, Overseer,
+  PreApprovableAction,
 } from '@gadgets/workshop-shared/api'
 
 vi.stubGlobal('ResizeObserver', class {
@@ -45,6 +47,16 @@ vi.mock('./AuthContext', () => {
     useOptionalAuthenticatedApi: () => null,
   }
 })
+// The Kumo dialog parts are stubbed out above, so the confirmation is stood in for by what the
+// chat hands it: the label it asks about, and its confirm.
+vi.mock('./components/AutoApproveConfirmDialog', () => ({
+  default: (props: { actionLabel: string, onConfirm: () => void }) => (
+    <div data-testid="rule-confirmation">
+      <span>{props.actionLabel}</span>
+      <button onClick={props.onConfirm}>Confirm the rule</button>
+    </div>
+  ),
+}))
 vi.mock('./ThemeContext', async (importOriginal) => ({
   ...await importOriginal() as typeof import('./ThemeContext'),
   useTheme: () => ({ resolvedThemeMode: 'light' }),
@@ -55,6 +67,7 @@ import {
 } from './action-test-harness'
 import ChatInterface from './ChatInterface'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
+import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
 
@@ -100,13 +113,14 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
+  props: { restricted?: boolean, selectedChatId?: number, autoApproval?: AutoApprovalChannel } = {},
 ) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
+      autoApproval={props.autoApproval}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
@@ -493,6 +507,201 @@ describe('restricted approval', () => {
     // Clamped rather than scrolled: the tray shows a preview and opens the request for the rest.
     expect(document.querySelector('[class*="line-clamp-2"]')).not.toBeNull()
     expect(approveDescribedBy()).toBeNull()
+  })
+})
+
+describe('rule offers in a restricted workspace', () => {
+  const NOTE = ADMIN_AGENT_ACTIONS.issueReportNote.kind
+  const STATUS = ADMIN_AGENT_ACTIONS.issueReportStatus.kind
+  const REPLY = ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind
+  const request = (id: number, title: string, actionKind: { tag: string, label: string },
+      gatekeeperId = 7) => entry(id, {
+    gatekeeperId,
+    resourceTitle: gatekeeperId === 7 ? 'This deployment' : 'Road trip 2026',
+    description: {
+      title, description: '', implementsRevert: false, autoApprovable: true,
+      descriptionIsComplete: true, actionKind,
+    },
+  })
+
+  /**
+   * A workspace whose catalog lists the admin connection, which no gadget binds, as the kernel
+   * does: a rule applies its note and its status, and not its reply.
+   */
+  function adminWorkspace() {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () =>
+      [NOTE, STATUS, REPLY].map(actionKind => ({
+        gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+        actionKind, alreadyEnabled: false, ruleApplies: actionKind !== REPLY,
+      })))
+    const setAutoApprovedActionKind = vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {})
+    Object.assign(server.overseer as object, { listPreApprovableActions, setAutoApprovedActionKind })
+    return { server, listPreApprovableActions, setAutoApprovedActionKind }
+  }
+
+  async function renderTray(
+    workspace: ReturnType<typeof adminWorkspace>, pending: ActionLogEntry[], restricted = true,
+  ) {
+    await renderChat(workspace.server.overseer, { restricted, selectedChatId: 1 })
+    await workspace.server.resolveSubscription()
+    await workspace.server.resolvePendingQuery({ entries: pending })
+    // The catalog's answer.
+    await act(async () => {})
+  }
+
+  const alwaysApproveButtons = () =>
+    [...document.querySelectorAll('button')].filter(b => b.textContent === 'Always approve')
+  const confirmation = () => document.querySelector('[data-testid="rule-confirmation"]')
+
+  it('offers a rule for a note of the admin connection and none for its reply', async () => {
+    const workspace = adminWorkspace()
+    await renderTray(workspace, [
+      request(1, 'Note the cause on report 12', NOTE),
+      request(2, 'Tell the reporter it is fixed', REPLY),
+    ])
+    await openDisclosure('2 requests')
+
+    // One read serves the logos and the kernel's answer.
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(1)
+    expect(alwaysApproveButtons()).toHaveLength(1)
+    // A person who approves by hand still vouches for what they read, and one at a time.
+    expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
+    expect(document.body.textContent)
+      .toContain('This workspace has read sensitive data, so requests are approved one at a time.')
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent ?? '')
+    expect(labels.some(label => label.startsWith('Apply all'))).toBe(false)
+
+    await act(async () => alwaysApproveButtons()[0].click())
+    await act(async () => confirmation()!.querySelector('button')!.click())
+
+    expect(workspace.setAutoApprovedActionKind).toHaveBeenCalledExactlyOnceWith(7, NOTE)
+    expect(document.body.textContent).toContain('Standing rule enabled.')
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('asks about the kind the rule covers, not the one request it was offered on', async () => {
+    const workspace = adminWorkspace()
+    await renderTray(workspace, [request(1, 'Close report 12', STATUS)])
+    await openTray()
+
+    await act(async () => alwaysApproveButtons()[0].click())
+
+    expect(confirmation()?.textContent).toContain("Set an issue report's status")
+    expect(confirmation()?.textContent).not.toContain('Close report 12')
+  })
+
+  it('closes an open confirmation once its kind stops applying', async () => {
+    // Confirming could only store a rule that does nothing.
+    const workspace = adminWorkspace()
+    await renderTray(workspace, [request(1, 'Tell the reporter it is fixed', REPLY)], false)
+    await openTray()
+    // Unrestricted, a rule applies every kind: a reply included.
+    await act(async () => alwaysApproveButtons()[0].click())
+    expect(confirmation()).not.toBeNull()
+
+    await renderChat(workspace.server.overseer, { restricted: true, selectedChatId: 1 })
+    await act(async () => {})
+
+    expect(confirmation()).toBeNull()
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('does not read the catalog again under the latch for another vendor\'s requests', async () => {
+    // The catalog starts every gatekeeper it lists. Read once for the logos before the latch,
+    // it is not read again to say no to requests no rule could apply.
+    const workspace = adminWorkspace()
+    const pending = [
+      request(1, 'Append a slide', { tag: 'append', label: 'Append a slide' }, 1),
+      request(2, 'Tell the reporter it is fixed', REPLY),
+    ]
+    await renderTray(workspace, pending, false)
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(1)
+
+    await renderChat(workspace.server.overseer, { restricted: true, selectedChatId: 1 })
+    await act(async () => {})
+    await openDisclosure('Road trip 2026')
+
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(1)
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('reads the catalog again once the latch is set over a request a rule might apply', async () => {
+    // What it said before the latch was said of another workspace: every kind applied.
+    const workspace = adminWorkspace()
+    const pending = [request(1, 'Tell the reporter it is fixed', REPLY)]
+    await renderTray(workspace, pending, false)
+    await openTray()
+    expect(alwaysApproveButtons()).toHaveLength(1)
+
+    await renderChat(workspace.server.overseer, { restricted: true, selectedChatId: 1 })
+    await act(async () => {})
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(1)
+    expect(alwaysApproveButtons()).toHaveLength(0)
+
+    await workspace.server.emit(request(2, 'Note the cause on report 12', NOTE))
+    flushFrames()
+    await act(async () => {})
+
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(2)
+    expect(alwaysApproveButtons()).toHaveLength(1)
+  })
+
+  it('asks the kernel again once a request a rule covered is decided by hand', async () => {
+    // Another connection's restricted data was read since the catalog answered: the kernel holds
+    // what its rule applied, and nothing tells this client. The request stays decidable, and
+    // deciding it is the cue to every surface to read the answer again.
+    const workspace = adminWorkspace()
+    Object.assign(workspace.server.overseer as object, {
+      listAutoApprovedActionKinds: async () => [{ gatekeeperId: 7, actionKind: NOTE }],
+    })
+    const changed = vi.fn<() => void>()
+    const render = (reloadTrigger: number) => renderChat(workspace.server.overseer, {
+      restricted: true, selectedChatId: 1, autoApproval: { reloadTrigger, changed },
+    })
+    await render(0)
+    await workspace.server.resolveSubscription()
+    await workspace.server.resolvePendingQuery({ entries: [
+      request(1, 'Note the cause on report 12', NOTE),
+      request(2, 'Note the fix on report 12', NOTE),
+    ] })
+    await act(async () => {})
+    await openDisclosure('2 requests')
+    expect(document.body.textContent).toContain('Standing rule enabled.')
+
+    workspace.listPreApprovableActions.mockResolvedValue([])
+    const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!
+    await act(async () => approve.click())
+    await workspace.server.settleDecision()
+    expect(changed).toHaveBeenCalledTimes(1)
+
+    // The channel's owner bumps the trigger, as it does for a rule that was changed.
+    await render(1)
+    await act(async () => {})
+
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(2)
+    expect(document.body.textContent).not.toContain('Standing rule enabled.')
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('reports no decision made by hand where no latch is set', async () => {
+    const workspace = adminWorkspace()
+    const changed = vi.fn<() => void>()
+    await renderChat(workspace.server.overseer, {
+      selectedChatId: 1, autoApproval: { reloadTrigger: 0, changed },
+    })
+    await workspace.server.resolveSubscription()
+    await workspace.server.resolvePendingQuery({ entries: [request(1, 'Note the cause', NOTE)] })
+    await openTray()
+
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+    await workspace.server.settleDecision()
+
+    expect(changed).not.toHaveBeenCalled()
   })
 })
 
