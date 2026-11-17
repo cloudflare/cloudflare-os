@@ -3040,14 +3040,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Mint a gatekeeper class simulating a new resource of a creatable type (see
    * GatekeeperVendor.createResource()). It belongs to no account; the returned `action` is the
-   * creation to queue. A suggested `configuration` must be a URL, for a type that describes one
-   * (see SupportedResource.creationConfigurationDescription).
+   * creation to queue, absent exactly for a `simulatedOnly` type, which needs none. A suggested
+   * `configuration` must be a URL, for a type that describes one (see
+   * SupportedResource.creationConfigurationDescription).
    */
   async createResourceGatekeeper(
       vendorId: string, resourceTypeId: string | undefined, title: string,
       legacyUrlPattern?: string, configuration?: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, typeUrlPattern: string,
-                  resourceTypeId?: string, action: ActionDescription}> {
+                  resourceTypeId?: string, action?: ActionDescription}> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
     let advertised = findResourceType(
@@ -3069,6 +3070,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         .createResource(getResourceTypeId(advertised), title);
     if (getResourceTypeId(resource) !== getResourceTypeId(advertised)) {
       throw new Error("Created resource type does not match the requested type.");
+    }
+    // The advertised type, not the vendor's reply, decides whether the creation skips approval.
+    if (!action !== !!advertised.simulatedOnly) {
+      throw new Error(advertised.simulatedOnly
+          ? "A simulated-only resource type must not need a creation action."
+          : "The vendor returned no creation action for this resource type.");
     }
     return {class: cls, typeUrlPattern: resource.urlPattern,
       resourceTypeId: resource.id, action};

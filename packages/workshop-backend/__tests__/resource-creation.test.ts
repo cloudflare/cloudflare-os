@@ -101,6 +101,33 @@ describe("independent creation and connection discovery", () => {
     expect(createResource).toHaveBeenCalledOnce();
   });
 
+  // A simulated-only type is created with no approval, so it must come with no creation action,
+  // and any other type with one: the advertised type decides, not the vendor's reply.
+  it("mints a simulated-only creation with no action", async () => {
+    const simulated = { ...CREATION, creationConfigurator: false, simulatedOnly: true };
+    const { inUser, createResource } = fixture([simulated]);
+    createResource.mockResolvedValue({
+      class: {} as DurableObjectClass<Gatekeeper<unknown>>, resource: simulated,
+    } as Awaited<ReturnType<typeof createResource>>);
+    const minted = await inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build"));
+    expect(minted.action).toBeUndefined();
+  });
+
+  it.each([
+    { name: "a simulated-only type that returns a creation action", simulatedOnly: true,
+      action: { title: "Create environment", description: "Create" }, error: "must not need" },
+    { name: "an ordinary type that returns none", simulatedOnly: false, action: undefined,
+      error: "no creation action" },
+  ])("refuses $name", async ({ simulatedOnly, action, error }) => {
+    const resource = { ...CREATION, creationConfigurator: false, simulatedOnly };
+    const { inUser, createResource } = fixture([resource]);
+    createResource.mockResolvedValue({
+      class: {} as DurableObjectClass<Gatekeeper<unknown>>, resource, action,
+    } as Awaited<ReturnType<typeof createResource>>);
+    await expect(inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build")))
+      .rejects.toThrow(error);
+  });
+
   // Only a type that says what its configuration is takes a suggested one, so nothing else is let
   // pretend to.
   it.each([
@@ -211,6 +238,28 @@ describe("agent resource discovery", () => {
       expect(creation).toContain(
         `${CREATION.urlPattern} (configuration: ${CREATION.creationConfigurationDescription})`);
       expect(creation).not.toContain(`${EXISTING.urlPattern} (configuration:`);
+    });
+  });
+
+  it("tells the agent which creations need no approval", async () => {
+    const simulated = { ...CREATION, id: "sandbox", creationConfigurator: false, simulatedOnly: true };
+    await withDiscovery([CREATION, simulated], async impl => {
+      const creation = (await impl.listConnectableResources("example")).split("New resources")[1];
+      expect(creation).toContain("resourceTypeId: sandbox (needs no approval)");
+      expect(creation.split("(needs no approval)")).toHaveLength(2);
+    });
+  });
+
+  it("lists only the creations that need no approval for a spawned agent", async () => {
+    const simulated = { ...CREATION, id: "sandbox", creationConfigurator: false, simulatedOnly: true };
+    await withDiscovery([EXISTING, CREATION, simulated], async impl => {
+      const text = await impl.describeSimulatedCreations();
+      expect(text).toContain("vendorId: example; resourceTypeId: sandbox");
+      expect(text).not.toContain(CREATION.urlPattern);
+      expect(text).not.toContain(EXISTING.urlPattern);
+    });
+    await withDiscovery([CREATION], async impl => {
+      expect(await impl.describeSimulatedCreations()).toBe("");
     });
   });
 
