@@ -183,13 +183,18 @@ export type PdfEnv = {
   CF_AI_GATEWAY?: string;
   /** The Worker that renders the pages of a PDF, which a deployment may be without. */
   PDF_RENDERER?: unknown;
-  /** `false` (trimmed, in any case) to have no page read by a vision model; anything else, or unset, reads them. */
-  PDF_OCR?: string;
   /**
-   * How many model calls one text may have in flight: a decimal integer of at least 1 (trimmed);
-   * anything else, or unset, is `READ_AHEAD.calls`.
+   * `false` (trimmed, in any case) to have no page read by a vision model; anything else, or
+   * unset, reads them. A deployment's config may give a variable as a JSON value, so it may be
+   * the boolean.
    */
-  PDF_OCR_CALLS?: string;
+  PDF_OCR?: string | boolean;
+  /**
+   * How many model calls one text may have in flight: a decimal integer of at least 1 (trimmed),
+   * or that number as a config gives a JSON value; anything else, or unset, is
+   * `READ_AHEAD.calls`.
+   */
+  PDF_OCR_CALLS?: string | number;
 };
 
 /**
@@ -204,8 +209,8 @@ export function pdfConverter(env: PdfEnv, source: PdfSource = DRIVE_PDF): PdfCon
   // stream. The generated type of a service binding names no method of the entrypoint behind it.
   let ai = env.AI as AiFetcher | undefined;
   let renderer = env.PDF_RENDERER as PdfRendering | undefined;
-  let transcribes = env.PDF_OCR?.trim().toLowerCase() !== "false";
-  let named = env.PDF_OCR_CALLS?.trim() ?? "";
+  let transcribes = String(env.PDF_OCR ?? "").trim().toLowerCase() !== "false";
+  let named = String(env.PDF_OCR_CALLS ?? "").trim();
   let calls = /^\d+$/.test(named) && Number(named) >= 1 ? Number(named) : undefined;
   return ai && ((pdf, readRange) =>
     pdfToText(ai, env.CF_AI_GATEWAY, pdf, transcribes ? readRange : undefined, renderer, source, calls));

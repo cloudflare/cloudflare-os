@@ -3764,7 +3764,7 @@ describe("pdfConverter", () => {
     expect(pdfConverter({ PDF_OCR: "true" })).toBeUndefined();
   });
 
-  it.each([[undefined], [""], ["true"], ["off"], ["0"]])("transcribes a scan, through the gateway named, with PDF_OCR %j", async value => {
+  it.each([[undefined], [""], ["true"], ["off"], ["0"], [true]])("transcribes a scan, through the gateway named, with PDF_OCR %j", async value => {
     let { ai, sent, images } = ocrAi();
     let { asked, readRange } = ranges(SCAN);
     let convert = pdfConverter({ AI: ai, CF_AI_GATEWAY: "team-gateway", ...(value === undefined ? {} : { PDF_OCR: value }) })!;
@@ -3777,7 +3777,7 @@ describe("pdfConverter", () => {
     expect(sent.every(({ json }) => (json.options as { gateway?: { id: string } }).gateway?.id === "team-gateway")).toBe(true);
   });
 
-  it.each([["false"], [" False "], ["FALSE"]])("reads nothing again and calls no model with PDF_OCR %j: a scan comes back empty", async value => {
+  it.each([["false"], [" False "], ["FALSE"], [false]])("reads nothing again and calls no model with PDF_OCR %j: a scan comes back empty", async value => {
     let { ai, images } = ocrAi();
     let { asked, readRange } = ranges(SCAN);
     let { renderer, state } = fakeRenderer([drawn([11])]);
@@ -3801,8 +3801,10 @@ describe("pdfConverter", () => {
     expect([asked, images(), state.events]).toEqual([[], [], []]);
   });
 
-  it.each<[string | undefined, number]>([
+  // A config may give a variable as a JSON value: a number, where a string was meant.
+  it.each<[string | number | undefined, number]>([
     ["2", 2], [" 3 ", 3], ["64", 6], [undefined, 4], ["", 4], ["0", 4], ["-2", 4], ["2.5", 4], ["1e1", 4], ["two", 4],
+    [2, 2], [0, 4], [2.5, 4],
   ])("has as many calls in flight for one text as PDF_OCR_CALLS %j names, or as many as it has otherwise", async (value, calls) => {
     // Six bands over two pages, none of them answered.
     let { renderer, state } = fakeRenderer([drawn([11, 12, 13]), drawn([21, 22, 23])]);
