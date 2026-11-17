@@ -756,9 +756,11 @@ export function simulatedRange(
 
 const NEW_LINE = /^n(\d+)\./;
 
-// Whether the line with `identity` is one a queued insert of rows or columns made, rather than one
-// of a sheet a queued change added.
-function insertedLine(grid: Grid, identity: string): boolean {
+/**
+ * Whether the line with `identity` is one a queued insert of rows or columns made, rather than one
+ * of a sheet a queued change added.
+ */
+export function insertedLine(grid: Grid, identity: string): boolean {
   let match = identity.match(NEW_LINE);
   return match !== null && grid.log[Number(match[1])]?.kind === "insert";
 }
