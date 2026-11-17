@@ -6167,7 +6167,7 @@ class OverseerImpl implements AgentHooks {
         let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
 
         // Only an observation whose subresources were verified keeps them, which makes it an
-        // observer requirement (see ActionRecord); a pending creation's simulated read must not.
+        // observer requirement (see ActionRecord); a simulated resource's read must not.
         let {subresources: _, ...untracked} = description;
         this.storage.actions.put({
           id: actionId,
@@ -7530,7 +7530,9 @@ class OverseerImpl implements AgentHooks {
         // A reachable legacy record (no creationSpec) counts even though it has no vendor to
         // verify against: nobody CAN be verified against it, so it becoming reachable must
         // restart and quarantine -- fresh gadget opens then fail closed via observerVendorId().
-        return gk && (!gk.creationSpec || gatekeeperVendorId(gk));
+        // A simulated resource is in no verification scope (#inScopeGatekeepers); a pending
+        // creation restarts when it becomes real (applyPendingAction).
+        return gk && (!gk.creationSpec || gatekeeperVendorId(gk)) && !this.isSimulated(id);
       });
       if (newGadgets.size === 0 && newConnections.length === 0) continue;
       gadgets.add(gadgetId);
@@ -10610,7 +10612,8 @@ class OverseerImpl implements AgentHooks {
       for (let r of creations) {
         let takes = r.creationConfigurator && r.creationConfigurationDescription;
         lines.push(`* ${r.title} — resourceTypeId: ${getResourceTypeId(r)}` +
-            `${takes ? ` (configuration: ${takes})` : ""}\n  ${r.description}`);
+            `${takes ? ` (configuration: ${takes})` : ""}` +
+            `${r.simulatedOnly ? " (needs no approval)" : ""}\n  ${r.description}`);
       }
     }
     return lines.join("\n");
@@ -10723,10 +10726,11 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  // Mint a gatekeeper simulating a new resource, tied to no account, and queue its creation.
+  // Mint a gatekeeper simulating a new resource, tied to no account, and queue its creation --
+  // unless its type is simulatedOnly, which has none to queue and so stays simulated for good.
   // Unlike addGatekeeper(), this publishes without restarting collaborator sessions: a restart now
-  // would abort this turn before its tool call is recorded, and until the creation applies there
-  // is no real resource to verify anyone against -- the simulated one holds only what was written
+  // would abort this turn before its tool call is recorded, and while the resource is simulated
+  // there is no real one to verify anyone against -- the simulated one holds only what was written
   // through this workspace, which no current collaborator is excluded from
   // (#enforceExcludeObservers). applyPendingAction restarts once the resource is real.
   async createExternalResource(
@@ -10745,18 +10749,28 @@ class OverseerImpl implements AgentHooks {
       creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
                      typeUrlPattern: minted.typeUrlPattern, resourceTypeId: minted.resourceTypeId,
                      ...(input.configuration !== undefined
-                         ? {configuration: input.configuration} : {})},
+                         ? {configuration: input.configuration} : {}),
+                     ...(minted.action ? {} : {simulatedOnly: true})},
       ...(createdBy !== undefined ? {createdBy} : {}),
     });
-    await this.submitAction(id, "create", minted.action, {from: "agent", chatId})
-        .catch(error => { this.removeGatekeeper(id); throw error; });
+    if (minted.action) {
+      await this.submitAction(id, "create", minted.action, {from: "agent", chatId})
+          .catch(error => { this.removeGatekeeper(id); throw error; });
+    }
     return {gatekeeperId: id};
   }
 
-  // Whether the gatekeeper's resource is still simulated: its creation is pending.
+  // Whether the gatekeeper's creation is pending.
   creationPending(id: WorkpieceId): boolean {
     return [...this.storage.actions.pendingByGatekeeper.get(id)]
         .some(queued => queued.type === "action" && queued.action === "create");
+  }
+
+  // Whether the gatekeeper's resource is simulated: its type is simulatedOnly, or its creation is
+  // pending. Either way it has no account behind it.
+  isSimulated(id: WorkpieceId): boolean {
+    let spec = this.storage.gatekeepers.get(id)?.creationSpec;
+    return (spec?.type === "gatekeeper" && spec.simulatedOnly === true) || this.creationPending(id);
   }
 
   // --- Blueprint hooks for the agent ---
@@ -11095,10 +11109,10 @@ class OverseerImpl implements AgentHooks {
       if (!observerVendorId(gk)) continue;
       result.push(gk);
     }
-    // A simulated resource has no account behind it to verify anyone against. Approving its
+    // A simulated resource has no account behind it to verify anyone against. Approving a pending
     // creation restarts every session (see applyPendingAction), so verification happens then.
     // (Filtered after the listing: reading another index mid-listing would end it.)
-    return result.filter(gk => !this.creationPending(gk.id));
+    return result.filter(gk => !this.isSimulated(gk.id));
   }
 
   listObserverRequirements(grant: CollaboratorGrant): ObserverBindingNeed[] {

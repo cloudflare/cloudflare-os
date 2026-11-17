@@ -1447,7 +1447,7 @@ For a Gadget that needs AI agents of its own, rather than calling back into this
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
-Create a new external resource (e.g. a new document), from the New resources section of listConnectableResources; requestConnection is only for the separately listed Existing resources. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation.
+Create a new external resource (e.g. a new document), from the New resources section of listConnectableResources; requestConnection is only for the separately listed Existing resources. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation. A type listed as needing no approval exists only in the workspace and is created at once.
 `.trim();
 
 // =======================================================================================
