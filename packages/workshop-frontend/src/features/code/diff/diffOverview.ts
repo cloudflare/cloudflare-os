@@ -4,7 +4,8 @@ import type { Extension } from '@codemirror/state'
 
 // The diff view's overview strip: a narrow column beside the vertical scrollbar marking where
 // the changes are in the whole document, scaled to the strip's height, so changes in a long file
-// can be found at a glance; pressing the strip scrolls to the spot pressed.
+// can be found at a glance. Pressing a mark scrolls to its change; pressing the strip between
+// marks scrolls to the spot pressed.
 //
 // Marks are placed from the editor's own height map rather than line numbers, so block widgets
 // (deletion zones, split-layout blank zones) take the space they take on screen.
@@ -37,6 +38,8 @@ export function diffOverview(
 
 class DiffOverview implements PluginValue {
   private readonly dom: HTMLElement
+  /** Each mark's change, in scroll-space px. */
+  private readonly markSpans = new WeakMap<Element, { top: number; bottom: number }>()
 
   constructor(
     private readonly view: EditorView,
@@ -92,12 +95,15 @@ class DiffOverview implements PluginValue {
     this.dom.style.bottom = `${m.scrollbarHeight}px`
     // Percentages scale with the strip's height without measuring it; the stylesheet's
     // min-height keeps a single line visible in a long file.
-    const percent = (y: number) => `${((m.docOffset + y) / m.scrollHeight) * 100}%`
+    const percent = (y: number) => `${(y / m.scrollHeight) * 100}%`
     this.dom.replaceChildren(...mergeSegments(m.segments).map(segment => {
+      const top = m.docOffset + segment.top
+      const bottom = m.docOffset + segment.bottom
       const mark = document.createElement('div')
       mark.className = `gadgets-diff-overview-mark gadgets-diff-overview-${segment.kind}`
-      mark.style.top = percent(segment.top)
-      mark.style.height = `${((segment.bottom - segment.top) / m.scrollHeight) * 100}%`
+      mark.style.top = percent(top)
+      mark.style.height = percent(bottom - top)
+      this.markSpans.set(mark, { top, bottom })
       return mark
     }))
   }
@@ -106,9 +112,18 @@ class DiffOverview implements PluginValue {
     if (event.button !== 0) return
     // Keep the editor's focus and selection where they are.
     event.preventDefault()
+    const scroller = this.view.scrollDOM
+    // A mark can be drawn taller than its change (the min-height), so the press point within it
+    // doesn't map back onto the change. Go to the change itself: centered when it fits, else
+    // its first line at the top.
+    const span = event.target instanceof Element ? this.markSpans.get(event.target) : undefined
+    if (span) {
+      scroller.scrollTop =
+        span.top - Math.max(0, (scroller.clientHeight - (span.bottom - span.top)) / 2)
+      return
+    }
     const rect = this.dom.getBoundingClientRect()
     if (rect.height === 0) return
-    const scroller = this.view.scrollDOM
     const fraction = (event.clientY - rect.top) / rect.height
     scroller.scrollTop = fraction * scroller.scrollHeight - scroller.clientHeight / 2
   }

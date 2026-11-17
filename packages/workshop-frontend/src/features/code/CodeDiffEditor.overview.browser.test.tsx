@@ -98,6 +98,34 @@ describe.each(['stacked', 'split'] as const)('the overview strip (%s)', layout =
     await vi.waitFor(() =>
       expect(inView(chatScroller().querySelector(deletionZone))).toBe(true))
   })
+
+  it('scrolls to a one-line change in a long file, where its mark is drawn taller', async () => {
+    // At 10,000 lines one line is a small fraction of a pixel of strip, so the mark's
+    // min-height covers dozens of lines; pressing it must still land on the change.
+    const original = lines(10_000)
+    const modified = original.with(3455, 'const line3456 = 3456 + changed')
+    mount(layout, original.join('\n'), modified.join('\n'))
+    await vi.waitFor(() => expect(marks('modified')).toHaveLength(1))
+
+    await userEvent.click(marks('modified')[0])
+    await vi.waitFor(() =>
+      expect(inView(changedLine('const line3456 = 3456 + changed'))).toBe(true))
+  })
+
+  it('marks no part of a replacement red when it has fewer new lines than old', async () => {
+    // Lines 101-105 become three edited lines: split view pads the chat side with a blank zone.
+    const original = lines(400)
+    const modified = [
+      ...original.slice(0, 100),
+      ...original.slice(100, 103).map(line => `${line} + changed`),
+      ...original.slice(105),
+    ]
+    mount(layout, original.join('\n'), modified.join('\n'))
+    // Which new lines pair with old ones (yellow) or stand alone (green) is the word diff's
+    // call, as in the gutter; the point is that no part of a replacement reads as a deletion.
+    await vi.waitFor(() => expect(marks('modified').length).toBeGreaterThan(0))
+    expect(marks('delete')).toHaveLength(0)
+  })
 })
 
 it('hides the strip when the whole file fits', async () => {

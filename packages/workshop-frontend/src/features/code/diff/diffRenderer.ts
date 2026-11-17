@@ -117,14 +117,14 @@ function buildRenderState(side: Side, input: DiffRenderInput, doc: Text): DiffRe
         }
       } else if (run.originalCount > run.modifiedCount) {
         pushZoneAfter(deco, doc, run.modifiedStart + run.modifiedCount - 1,
-          new BlankZoneWidget(run.originalCount - run.modifiedCount))
+          new BlankZoneWidget(run.originalCount - run.modifiedCount, run.modifiedCount > 0))
       }
     } else {
       pushLineDecorations({ deco, gutterMarks, doc, run, side })
       pushInlineMarks(deco, doc, run, side)
       if (run.modifiedCount > run.originalCount) {
         pushZoneAfter(deco, doc, run.originalStart + run.originalCount - 1,
-          new BlankZoneWidget(run.modifiedCount - run.originalCount))
+          new BlankZoneWidget(run.modifiedCount - run.originalCount, run.originalCount > 0))
       }
     }
   }
@@ -168,11 +168,12 @@ function subBlocks(block: BlockInfo): readonly BlockInfo[] {
 }
 
 function zoneOverviewKind(widget: WidgetType | null): OverviewKind | null {
-  // A replacement's deleted lines match the yellow of the lines replacing them.
+  // A replacement's deleted lines match the yellow of the lines replacing them, in both layouts.
   if (widget instanceof DeletionZoneWidget) {
     return widget.run.modifiedCount > 0 ? 'modified' : 'delete'
   }
-  return widget instanceof BlankZoneWidget ? 'delete' : null
+  if (widget instanceof BlankZoneWidget) return widget.replacement ? 'modified' : 'delete'
+  return null
 }
 
 // ---- line + inline decorations -------------------------------------------------------------
@@ -275,11 +276,15 @@ function widgetGutterMarker(widget: WidgetType, kind: 'bar' | 'num'): GutterMark
 
 /** Hatched filler aligning this side with the other side's extra lines (split layout). */
 class BlankZoneWidget extends WidgetType {
-  constructor(readonly lines: number) {
+  constructor(
+    readonly lines: number,
+    /** The zone pads out a replacement (both sides have lines), not a pure add or delete. */
+    readonly replacement: boolean,
+  ) {
     super()
   }
   override eq(other: BlankZoneWidget): boolean {
-    return other.lines === this.lines
+    return other.lines === this.lines && other.replacement === this.replacement
   }
   override get estimatedHeight(): number {
     return Math.max(1, this.lines) * LINE_HEIGHT_PX
