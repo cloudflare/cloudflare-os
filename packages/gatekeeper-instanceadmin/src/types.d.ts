@@ -189,8 +189,9 @@ export interface IssueReportSession {
    * given before the reason is refused. Throws when the report names no workspace or one its
    * reporter does not own. When that workspace holds restricted data, every answer of the view
    * marks THIS workspace as holding restricted data too: from the first one on, nothing here is
-   * applied without a person (a reply through this session included) and web fetches reach only
-   * trusted hosts. The report itself, its images and its thread never mark.
+   * applied without a person (a reply through this session included; a rule may still apply an
+   * admins-only note, a change of status and a claim or release of the whole binding) and web
+   * fetches reach only trusted hosts. The report itself, its images and its thread never mark.
    */
   inspectWorkspace(reason: string): Promise<AdminWorkspaceView>;
 }

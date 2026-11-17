@@ -228,8 +228,11 @@ the user who owns this workspace, a deployment admin.
   or of a user's account, and each call on one are also recorded in the deployment's audit log, as
   made through an agent; a listing, a setting, the audit log itself and an issue report leave no
   record there.
-- The first read marks this workspace as holding restricted data. From then on nothing in it is
-  applied without a person, and web fetches reach only the hosts the deployment trusts.
+- The first read marks this workspace as holding restricted data. From then on web fetches reach
+  only the hosts the deployment trusts, and nothing in it is applied without a person, with one
+  exception: a rule may still apply an admins-only note, a change of status and a claim or
+  release of this binding, and only while no other connection's restricted data has been read
+  here.
 - A method whose doc starts "Through the admin gatekeeper this call does not run" does nothing when
   you call it: it queues an action and resolves to undefined, and reads do not show what it will do
   until the action is approved.

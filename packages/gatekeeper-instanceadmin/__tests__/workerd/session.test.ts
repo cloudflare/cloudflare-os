@@ -218,10 +218,14 @@ describe("the facet", () => {
     expect(unwrapped).toContain(`\n    status?: ${union(read)};`);
     expect(HAND_WRITTEN_TYPES).toContain(`type: ${union(ISSUE_REPORT_IMAGE_TYPES)};`);
     expect(HAND_WRITTEN_TYPES).toContain(`at most ${MAX_ISSUE_REPORT_TEXT_LENGTH} characters`);
-    // What a restricted reporter's workspace does to the workspace that reads it.
+    // What a restricted reporter's workspace does to the workspace that reads it, and what a
+    // rule still applies there: never this session's reply.
     expect(HAND_WRITTEN_TYPES.replace(/\n +\* /g, " ")).toContain(
         "When that workspace holds restricted data, every answer of the view marks THIS " +
-        "workspace as holding restricted data too");
+        "workspace as holding restricted data too: from the first one on, nothing here is " +
+        "applied without a person (a reply through this session included; a rule may still " +
+        "apply an admins-only note, a change of status and a claim or release of the whole " +
+        "binding) and web fetches reach only trusted hosts.");
     // How a session is handed to a spawned agent: never from the report id.
     expect(HAND_WRITTEN_TYPES).toContain("never from the report id");
     expect(HAND_WRITTEN_TYPES).toContain("crypto.randomUUID()");
