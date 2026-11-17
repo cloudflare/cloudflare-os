@@ -2,10 +2,11 @@
 //   node scripts/automerge/verdict/verdict.ts prepare    (no secrets) review copy, inputs, round
 //   node scripts/automerge/verdict/verdict.ts review     (AI Gateway secrets) runs opencode
 //   node scripts/automerge/verdict/verdict.ts finalize   (no secrets) parses, writes the artifact
-// backtest.ts runs the same three functions over past pull requests.
+// This runner posts nothing on the pull request. REVIEW.md's "after round 3, post only the findings
+// still open" is for reviewers that post: from round ROUND_LIMIT on, this runner runs no model and
+// writes an `ok` verdict with no findings whose `needs_person` sends the pull request to a person.
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -13,9 +14,6 @@ import { field, list, parseJson, type Json } from "./json.ts";
 import { parseReview, REPORT_FORMAT, type Finding } from "./parse-review.ts";
 import { buildReviewCopy } from "./review-copy.ts";
 import { fetchReviewedHeads, githubJson, planRound, ROUND_LIMIT, roundLimitReasons, type RoundPlan } from "./rounds.ts";
-
-/** The two verdicts' producers: this runner, and Bonk's job in bonk-pr.yml (bonk.ts). */
-export type ReviewerName = "opus" | "bonk";
 
 const MODEL = "cloudflare-ai-gateway/anthropic/claude-opus-5.5";
 
@@ -49,9 +47,9 @@ function openCodeConfig(inputsDir: string): string {
 
 /**
  * Head config, plugins and instruction discovery stay off even though the review copy already
- * holds base versions; models come from the version's bundled catalog plus the declaration above,
- * so the fingerprint's opencode version pins them; autocompaction stays off so a review that
- * outgrows the context fails rather than continuing on a summary of the diff.
+ * holds base versions; models come only from the installed version's bundled catalog plus the
+ * declaration above; autocompaction stays off so a review that outgrows the context fails rather
+ * than continuing on a summary of the diff.
  */
 const OPENCODE_FLAGS = {
   OPENCODE_DISABLE_PROJECT_CONFIG: "1",
@@ -96,18 +94,6 @@ Reply with the review only, in exactly this shape:
 
 ${REPORT_FORMAT}`;
 
-/**
- * The runner's own code: the prompt, opencode config, review copy and parser all live in this
- * directory, so any change to how a review is asked for or read changes the fingerprint.
- */
-export const PROMPT_HASH = (() => {
-  const hash = createHash("sha256");
-  for (const file of readdirSync(import.meta.dirname).filter(name => name.endsWith(".ts") && !name.endsWith(".test.ts")).toSorted()) {
-    hash.update(`${file}\0`).update(readFileSync(join(import.meta.dirname, file)));
-  }
-  return hash.digest("hex");
-})();
-
 function fill(template: string, values: Record<string, string>): string {
   return template.replaceAll(/\{\{(\w+)\}\}/g, (match, key: string) => values[key] ?? match);
 }
@@ -116,26 +102,24 @@ export function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 1024 * 1024 * 1024 });
 }
 
-/** What prepare records for review and finalize. */
+/** What prepare records for finalize. */
 interface Meta {
   head_sha: string;
   base_sha: string;
   round: number;
   review_from_sha: string | null;
-  review_md: string;
-  prompt: string;
   head_instruction_paths: string[];
   skipped_paths: string[];
   binary_files: BinaryFile[];
 }
 
 /** A changed file git judged binary by its content; the patch shows no content for it. */
-export interface BinaryFile {
+interface BinaryFile {
   path: string;
   bytes: number;
 }
 
-export interface PullRequest {
+interface PullRequest {
   headSha: string;
   baseSha: string;
   title: string;
@@ -153,18 +137,16 @@ function paths(workDir: string) {
     meta: join(workDir, "meta.json"),
     events: join(workDir, "events.jsonl"),
     stderr: join(workDir, "opencode-stderr.log"),
-    opencodeVersion: join(workDir, "opencode-version"),
     home: join(workDir, "home"),
   };
 }
 
 /**
  * Writes everything one review reads into `workDir`. REVIEW.md and the other instruction files come
- * from `policySha`: the pull request's base in the workflow, and today's rules in a backtest, whose
- * historical bases may predate REVIEW.md. From round {@link ROUND_LIMIT} on there is no review to
+ * from the pull request's base commit. From round {@link ROUND_LIMIT} on there is no review to
  * run, and only the metadata is written. Returns whether a model review should run.
  */
-export function prepareInputs(repo: string, workDir: string, pr: PullRequest, plan: RoundPlan, policySha: string): boolean {
+export function prepareInputs(repo: string, workDir: string, pr: PullRequest, plan: RoundPlan): boolean {
   const files = paths(workDir);
   mkdirSync(files.inputs, { recursive: true });
   mkdirSync(files.review, { recursive: true });
@@ -173,8 +155,6 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
     base_sha: pr.baseSha,
     round: plan.round,
     review_from_sha: plan.reviewFromSha,
-    review_md: git(repo, ["rev-parse", `${policySha}:REVIEW.md`]).trim(),
-    prompt: PROMPT_HASH,
     head_instruction_paths: [],
     skipped_paths: [],
     binary_files: [],
@@ -202,9 +182,9 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
       round: String(plan.round),
       inputs: files.inputs,
       scope: plan.reviewFromSha === null ? SCOPE_FULL : fill(SCOPE_SINCE, { from: plan.reviewFromSha }),
-      review_md: git(repo, ["show", `${policySha}:REVIEW.md`]),
+      review_md: git(repo, ["show", `${pr.baseSha}:REVIEW.md`]),
     }));
-    const copy = buildReviewCopy(repo, pr.headSha, policySha, files.review);
+    const copy = buildReviewCopy(repo, pr.headSha, pr.baseSha, files.review);
     meta.head_instruction_paths = copy.headInstructionPaths;
     meta.skipped_paths = copy.skipped;
   }
@@ -213,7 +193,7 @@ export function prepareInputs(repo: string, workDir: string, pr: PullRequest, pl
 }
 
 /** The AI Gateway values opencode's `cloudflare-ai-gateway` provider reads. */
-export interface GatewayEnv {
+interface GatewayEnv {
   CLOUDFLARE_ACCOUNT_ID: string;
   CLOUDFLARE_GATEWAY_ID: string;
   CLOUDFLARE_API_TOKEN: string;
@@ -224,7 +204,7 @@ export interface GatewayEnv {
  * values and a home, config and data directory of its own, so no user or runner config reaches it.
  * Returns opencode's exit status.
  */
-export function runReview(workDir: string, opencodeBin: string, gateway: GatewayEnv): number {
+function runReview(workDir: string, opencodeBin: string, gateway: GatewayEnv): number {
   const files = paths(workDir);
   mkdirSync(files.home, { recursive: true });
   const openCodeEnv = {
@@ -238,8 +218,6 @@ export function runReview(workDir: string, opencodeBin: string, gateway: Gateway
     OPENCODE_CONFIG_CONTENT: openCodeConfig(files.inputs),
     ...gateway,
   };
-  writeFileSync(files.opencodeVersion, execFileSync(opencodeBin, ["--version"],
-    { encoding: "utf8", env: openCodeEnv, stdio: ["ignore", "pipe", "ignore"] }).trim());
   const events = openSync(files.events, "w");
   const stderr = openSync(files.stderr, "w");
   try {
@@ -314,21 +292,11 @@ export function readEvents(stream: string): { text: string; tokens: Tokens } | {
   return { text, tokens };
 }
 
-/** What a verdict was produced with; a band closes for a pull request when any value differs. */
-export interface Fingerprint {
-  model: string;
-  opencode: string | null;
-  review_md: string | null;
-  prompt: string | null;
-  /** The pinned action that ran the reviewer, or null when no action did (this runner). */
-  action: string | null;
-}
-
 /** The producer artifact, per the contract in the auto-merge build plan. */
 export interface Verdict {
   schema: 1;
   kind: "verdict";
-  name: ReviewerName;
+  name: "opus" | "bonk";
   head_sha: string;
   base_sha: string;
   status: "ok" | "error";
@@ -346,7 +314,8 @@ export interface Verdict {
   merge_confidence: number | null;
   round: number | null;
   review_from_sha: string | null;
-  fingerprint: Fingerprint;
+  /** The model id the reviewer runs with; empty only when the producer could not name one. */
+  model: string;
 }
 
 function readMeta(file: string): Meta | null {
@@ -356,12 +325,9 @@ function readMeta(file: string): Meta | null {
   const base = field(value, "base_sha");
   const round = field(value, "round");
   const from = field(value, "review_from_sha");
-  const reviewMd = field(value, "review_md");
-  const prompt = field(value, "prompt");
   const strings = (key: string) => list(field(value, key)).filter(item => typeof item === "string");
   if (typeof head !== "string" || typeof base !== "string" ||
-    typeof round !== "number" || (from !== null && typeof from !== "string") || typeof reviewMd !== "string" ||
-    typeof prompt !== "string") {
+    typeof round !== "number" || (from !== null && typeof from !== "string")) {
     throw new Error(`${file} is malformed`);
   }
   const binaryFiles = list(field(value, "binary_files")).flatMap(item => {
@@ -369,7 +335,7 @@ function readMeta(file: string): Meta | null {
     const bytes = field(item, "bytes");
     return typeof path === "string" && typeof bytes === "number" ? [{ path, bytes }] : [];
   });
-  return { head_sha: head, base_sha: base, round, review_from_sha: from, review_md: reviewMd, prompt,
+  return { head_sha: head, base_sha: base, round, review_from_sha: from,
     head_instruction_paths: strings("head_instruction_paths"), skipped_paths: strings("skipped_paths"),
     binary_files: binaryFiles };
 }
@@ -384,7 +350,7 @@ export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | 
     schema: 1, kind: "verdict", name: "opus", head_sha: pr.headSha, base_sha: pr.baseSha, status: "error", holds: null,
     details: { review_text: null, reason: null, tokens: null, head_instruction_paths: [], skipped_paths: [], binary_files: [] },
     findings: [], needs_person: [], merge_confidence: null, round: null, review_from_sha: null,
-    fingerprint: { model: MODEL, opencode: null, review_md: null, prompt: PROMPT_HASH, action: null },
+    model: MODEL,
   };
   const fail = (reason: string): Verdict => ({ ...verdict, details: { ...verdict.details, reason } });
 
@@ -396,24 +362,21 @@ export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | 
     return fail(error instanceof Error ? error.message : String(error));
   }
   if (meta === null) return fail("the prepare step left no metadata");
-  if (meta.head_sha !== pr.headSha || meta.base_sha !== pr.baseSha || meta.prompt !== PROMPT_HASH) {
-    return fail("the prepare step's metadata is for another commit or prompt");
+  if (meta.head_sha !== pr.headSha || meta.base_sha !== pr.baseSha) {
+    return fail("the prepare step's metadata is for another commit");
   }
   verdict.round = meta.round;
   verdict.review_from_sha = meta.review_from_sha;
-  verdict.fingerprint.review_md = meta.review_md;
   verdict.details.head_instruction_paths = meta.head_instruction_paths;
   verdict.details.skipped_paths = meta.skipped_paths;
   verdict.details.binary_files = meta.binary_files;
   if (meta.round >= ROUND_LIMIT) return { ...verdict, status: "ok", needs_person: roundLimitReasons(meta.round) };
 
-  if (existsSync(files.opencodeVersion)) verdict.fingerprint.opencode = readFileSync(files.opencodeVersion, "utf8").trim();
   if (!existsSync(files.events)) return fail("the review step left no opencode output");
   const events = readEvents(readFileSync(files.events, "utf8"));
   if ("error" in events) return fail(events.error);
   verdict.details.review_text = events.text;
   verdict.details.tokens = events.tokens;
-  if (verdict.fingerprint.opencode === null) return fail("the review step did not record the opencode version");
   const parsed = parseReview(events.text);
   if (!parsed.ok) return fail(parsed.error);
   // A diff-only round never saw the code earlier rounds flagged, and their findings are not
@@ -431,7 +394,6 @@ export function buildVerdict(workDir: string, pr: Pick<PullRequest, "headSha" | 
     merge_confidence: parsed.review.mergeConfidence,
   };
 }
-
 
 /**
  * Whether round 3 may review only `previousSha..head`. The previous head must still be in the
@@ -486,7 +448,7 @@ async function main(command: string | undefined): Promise<void> {
       stepName: null,
     }, path => githubJson(path, token));
     const plan = planRound(pr.headSha, reviewed, sha => canReviewSince(repo, sha, pr));
-    const review = prepareInputs(repo, workDir, pr, plan, pr.baseSha);
+    const review = prepareInputs(repo, workDir, pr, plan);
     appendFileSync(env("GITHUB_OUTPUT"), `review=${review}\n`);
     return;
   }

@@ -69,7 +69,7 @@ function assertSafePath(path: string): void {
   }
 }
 
-export interface ReviewCopy {
+interface ReviewCopy {
   /** Head paths the copy replaced or removed because they are instruction paths. */
   headInstructionPaths: string[];
   /** Symlinks and submodules, which the copy leaves out. */
