@@ -16,9 +16,9 @@
 // edit to an existing helper, fixture or setup file (editedSupportFiles).
 //
 // The whole proof runs within a wall-clock budget, AUTOMERGE_MUTATION_BUDGET_MINUTES (default
-// DEFAULT_BUDGET_MINUTES). A heavy suite makes thousands of mutants (#943's base run had not
-// finished after 50 minutes), so a run still going at the deadline is killed and the result is
-// status `error`: a person reviews the pull request.
+// DEFAULT_BUDGET_MINUTES). A heavy suite makes thousands of mutants and can run for most of an
+// hour, so a run still going at the deadline is killed and the result is status `error`: a person
+// reviews the pull request.
 //
 // Stryker is installed from ./stryker, its own pnpm workspace, rather than from the root lockfile
 // (see ./stryker/pnpm-workspace.yaml).
@@ -30,7 +30,6 @@
 
 import { spawn } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { decide, errored, notApplicable, runProducer, type Outcome } from "./artifact.ts";
@@ -39,7 +38,7 @@ import { fileAt, git, mergeBase, pullRequestDiff } from "./git.ts";
 import { asArray, asObject, asString, isObject, parseJson, type Json, type JsonObject } from "./json.ts";
 
 /** Paths that hold tests, fixtures, helpers or setup rather than shipped code. */
-export const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
+const TEST_PATH = /(^|\/)(__tests__|test|tests|fixtures|testdata)\/|\.(test|spec)\.[cm]?[jt]sx?$/;
 /** Test files vitest runs, as opposed to the helpers and fixtures beside them. */
 const RUNNABLE_TEST = /\.(test|spec)\.[cm]?[jt]sx?$/;
 const PACKAGE = /^packages\/([^/]+)\//;
@@ -67,7 +66,7 @@ export function killedMutants(report: JsonObject): Set<string> {
 }
 
 /** Counts every mutant in a report. */
-export function mutantCount(report: JsonObject): number {
+function mutantCount(report: JsonObject): number {
   return Object.entries(asObject(report.files, "report files"))
     .reduce((sum, [file, entry]) => sum + asArray(asObject(entry, file).mutants, file).length, 0);
 }
@@ -86,7 +85,7 @@ export function evaluateKills(base: JsonObject, head: JsonObject, scope: JsonObj
 }
 
 /** What the proof runs: one package, the changed test files, and the source they import. */
-export interface TestsPlan {
+interface TestsPlan {
   packageDir: string;
   /** Changed test files as each side has them (repo-relative). */
   baseTests: string[];
@@ -96,7 +95,7 @@ export interface TestsPlan {
 }
 
 /** Why the proof does not apply, or the package and the changed test files it covers. */
-export type TestsScope = { outOfScope: string } | { packageDir: string; tests: string[] };
+type TestsScope = { outOfScope: string } | { packageDir: string; tests: string[] };
 
 /** Applies the scope rules to a diff. */
 export function planScope(files: FileDiff[]): TestsScope {
@@ -200,7 +199,7 @@ function skipSpaces(text: string, at: number): number {
 }
 
 /** The source a set of tests reaches, and the imports that could not be followed. */
-export interface SourceGraph {
+interface SourceGraph {
   /** Source files to mutate (repo-relative), sorted. */
   sources: string[];
   problems: string[];
@@ -411,26 +410,29 @@ export function runBounded(
 }
 
 /** Where the Stryker workspace is installed, inside the package under test. */
-export const RUNNER_DIR = ".automerge-stryker";
+const RUNNER_DIR = ".automerge-stryker";
 
-export interface Runner {
+interface Runner {
   stryker: string;
   plugin: string;
 }
 
 /**
  * Installs ./stryker inside `packageDir`, so that the vitest runner's `vitest` import resolves
- * upward to the package's own vitest.
+ * upward to the package's own vitest. The plugin's entry file is read from its package.json: this
+ * script asks Node to resolve or load nothing from an installed package.
  */
-export async function installRunner(packageDir: string, deadline: number): Promise<Runner> {
+async function installRunner(packageDir: string, deadline: number): Promise<Runner> {
   const dir = join(packageDir, RUNNER_DIR);
   rmSync(dir, { recursive: true, force: true });
   cpSync(join(dirname(fileURLToPath(import.meta.url)), "stryker"), dir, { recursive: true });
   await runBounded("pnpm", ["install", "--frozen-lockfile"], dir, deadline);
-  return {
-    stryker: join(process.cwd(), dir, "node_modules", ".bin", "stryker"),
-    plugin: createRequire(join(process.cwd(), dir, "package.json")).resolve("@stryker-mutator/vitest-runner"),
-  };
+  const modules = join(process.cwd(), dir, "node_modules");
+  const pluginDir = join(modules, "@stryker-mutator", "vitest-runner");
+  const manifest = asObject(parseJson(readFileSync(join(pluginDir, "package.json"), "utf8")), "the vitest runner's package.json");
+  const plugin = selfImportPath(pluginDir, manifest, asString(manifest.name, "the vitest runner's name"));
+  if (plugin === undefined) throw new Error("the vitest runner's package.json names no entry file");
+  return { stryker: join(modules, ".bin", "stryker"), plugin };
 }
 
 /** The supported vitest config in `packageDir` that lists every one of `tests`, if exactly one does. */
