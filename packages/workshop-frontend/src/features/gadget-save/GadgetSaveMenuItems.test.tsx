@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 
 const testState = vi.hoisted(() => ({
+  confirmed: true,
   authenticatedApi: {} as Record<string, unknown>,
 }))
 
@@ -20,7 +21,8 @@ vi.mock('@cloudflare/kumo', () => ({
 }))
 
 vi.mock('../../AuthContext', () => ({
-  useAuthenticatedApi: () => ({ currentUser: { id: 'ada@example.com' } }),
+  useAuthenticatedApi: () =>
+    ({ currentUser: { id: 'ada@example.com' }, isCurrentUserConfirmed: testState.confirmed }),
   useOptionalAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }),
 }))
 
@@ -108,6 +110,19 @@ describe('GadgetSaveMenuItems', () => {
     expect(onSelect).toHaveBeenCalledExactlyOnceWith({ target, storageKey: key, saved })
   })
 
+  it('remembers nothing for a user this connection has yet to confirm', async () => {
+    localStorage.setItem(key, JSON.stringify(saved))
+    testState.confirmed = false
+    try {
+      await render()
+      expect(labels()).toEqual(['Save to Office Docs…'])
+      await act(async () => container.querySelector('button')!.click())
+      expect(onSelect).toHaveBeenCalledExactlyOnceWith({ target, storageKey: null })
+    } finally {
+      testState.confirmed = true
+    }
+  })
+
   it('keeps a save to itself: another gadget, workspace or type has nothing to update', async () => {
     localStorage.setItem(savedFileKey('ada@example.com', { ...scope, workspaceId: 'other' }, target),
       JSON.stringify(saved))
@@ -164,6 +179,21 @@ describe('useSaveVendors', () => {
       await act(async () => refresh())
       expect([seen[0], seen.at(-1)]).toEqual([before, known])
     }
+  })
+
+  it('lets a listing under way serve a refresh', async () => {
+    let listed!: (vendors: GatekeeperVendorInfo[]) => void
+    const listGatekeeperVendors = vi.fn<() => Promise<GatekeeperVendorInfo[]>>(
+      () => new Promise(resolve => { listed = resolve }))
+    testState.authenticatedApi = { listGatekeeperVendors }
+    await act(async () => root.render(<Probe enabled />))
+    await act(async () => refresh())
+    await act(async () => listed([vendor]))
+    expect(seen.at(-1)).toEqual([vendor])
+    expect(listGatekeeperVendors).toHaveBeenCalledOnce()
+
+    await act(async () => refresh())
+    expect(listGatekeeperVendors).toHaveBeenCalledTimes(2)
   })
 
   it('is empty, asking nothing, when the services are not wanted', async () => {

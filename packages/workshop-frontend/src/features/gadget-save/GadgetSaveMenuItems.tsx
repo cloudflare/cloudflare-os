@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { ArrowsClockwise, CloudArrowUp } from '@phosphor-icons/react'
 import type { GadgetExportFormat, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
@@ -15,26 +15,30 @@ const ITEM = '!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-
 /**
  * `vendors` are the services a gadget might be saved to, or null until they are first known:
  * listed ahead of the menu opening, so its save items arrive with the rest instead of after, and
- * again in the background on `refresh`, since one that could not be reached may be back. Empty
- * when `enabled` is false.
+ * again in the background on `refresh`, since one that could not be reached may be back; a
+ * listing under way already serves. Empty when `enabled` is false.
  */
 export const useSaveVendors = (enabled: boolean) => {
   const authenticatedApi = useOptionalAuthenticatedApi()?.authenticatedApi
   const [vendors, setVendors] = useState<GatekeeperVendorInfo[] | null>(null)
-  const [listing, refresh] = useReducer((listings: number) => listings + 1, 0)
+  const [listing, list] = useReducer((listings: number) => listings + 1, 0)
+  const pending = useRef(false)
 
   useEffect(() => {
     if (!enabled || !authenticatedApi) return
     let cancelled = false
-    authenticatedApi.listGatekeeperVendors().then(
-      listed => { if (!cancelled) setVendors(listed) },
-      err => {
-        console.error('Failed to list the services to save to:', err)
-        if (!cancelled) setVendors(known => known ?? [])
-      })
+    pending.current = true
+    authenticatedApi.listGatekeeperVendors().then(undefined, err => {
+      console.error('Failed to list the services to save to:', err)
+    }).then(listed => {
+      if (cancelled) return
+      pending.current = false
+      setVendors(known => listed ?? known ?? [])
+    })
     return () => { cancelled = true }
   }, [authenticatedApi, enabled, listing])
 
+  const refresh = () => { if (!pending.current) list() }
   return { vendors: enabled && authenticatedApi ? vendors : [], refresh }
 }
 
@@ -49,7 +53,7 @@ export const GadgetSaveMenuItems = ({ vendors, formats, scope, onSelect }: {
   scope: SaveScope
   onSelect: (request: SaveRequest) => void
 }) => {
-  const { currentUser } = useAuthenticatedApi()
+  const { currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const targets = findSaveTargets(vendors, formats)
   if (targets.length === 0) return null
 
@@ -57,7 +61,8 @@ export const GadgetSaveMenuItems = ({ vendors, formats, scope, onSelect }: {
     <>
       <DropdownMenu.Separator />
       {targets.map(target => {
-        const storageKey = currentUser && savedFileKey(currentUser.id, scope, target)
+        // Only a user this connection has confirmed: one kept from before a reconnect may not be it.
+        const storageKey = isCurrentUserConfirmed && currentUser ? savedFileKey(currentUser.id, scope, target) : null
         const saved = readSavedFile(storageKey)
         const key = `${target.vendor.id}:${getResourceTypeId(target.resource)}`
         // What the gatekeeper draws its type with, or failing that the service.
