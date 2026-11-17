@@ -9,9 +9,10 @@ import CodeDiffEditor from '../code/CodeDiffEditor'
 import type { CommitFile } from '../code/commitFileStore'
 import { useFilesAtCommit } from '../code/useCommitContent'
 import { rpcFailureDescription } from '../../rpcErrors'
+import { PushReviewDirectoryView } from './PushReviewDirectoryView'
 import {
   ROOT_LABEL, comparableParent, pathChange, pathNotes, shortOid,
-  type CommitRow, type PathNotesContext, type PathRow,
+  type CommitRow, type DirectoryState, type PathNotesContext, type PathRow,
 } from './pushReviewModel'
 import type { PushFileState } from './usePushReviewFiles'
 
@@ -58,16 +59,19 @@ const notShown = (file: Exclude<CommitFile, { kind: 'text' }>): ReactNode =>
 /**
  * One path of a commit: what it is, in plain statements, and its content when that is text. A
  * file the push sends shows as a diff against a parent's version, or whole when there is none; a
- * deleted file shows what is removed, and so does a directory where a parent has a file. What
- * the push sends is the review's own read (`state`); the parent's side, and a file the push does
- * not send, are read here when shown.
+ * deleted file shows what is removed, and so does a directory where a parent has a file. A
+ * directory the push sends shows its own entries (`directory`). What the push sends is the
+ * review's own read (`state`); the parent's side, and a file the push does not send, are read
+ * here when shown.
  */
-export const PushReviewFileView = ({ overseer, commit, row, beneath, state, onRequest, onRetry }: {
+export const PushReviewFileView = ({ overseer, commit, row, beneath, state, directory, onRequest, onRetry }: {
   overseer: RpcStub<Overseer>
   commit: CommitRow
   row: PathRow
   beneath: PathNotesContext['beneath']
   state: PushFileState
+  /** Present for a directory the push sends that has entries: how far they have been listed. */
+  directory?: { state: DirectoryState, onRequest: () => void }
   onRequest: () => void
   onRetry: () => void
 }) => {
@@ -199,6 +203,15 @@ export const PushReviewFileView = ({ overseer, commit, row, beneath, state, onRe
       )}
 
       {content}
+
+      {directory && (
+        <PushReviewDirectoryView
+          state={directory.state}
+          parents={commit.parents}
+          onRequest={directory.onRequest}
+          onRetry={onRetry}
+        />
+      )}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import {
   PUSH_REVIEW_PAGE_SIZE, READ_FILES_RESPONSE_BUDGET,
-  type PushReviewEntry, type PushReviewParentEntry, type PushReviewTreeEntry,
+  type PushReviewEntry, type PushReviewParentEntry, type PushReviewTreeEntry, type TreeNode,
 } from '@gadgets/workshop-shared/api'
 import type { GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { formatSize } from '../../components/ActionFields'
@@ -123,13 +123,17 @@ export type ReviewItem =
   | { kind: 'path', key: string, reviewed: ReviewedCommit, row: PathRow }
   | { kind: 'object', key: string, row: ObjectRow }
 
-/** The review's list, in order: each commit, the paths it lists, then the objects without a path. */
+/**
+ * The review's list, in order: each commit, its paths, then the objects without a path. Every
+ * path is listed, a directory before what is beneath it: a directory the push sends is an object
+ * of its own, and its row is where its entries show.
+ */
 export const reviewItems = (
   { commits, objects }: { commits: readonly ReviewedCommit[], objects: readonly ObjectRow[] },
 ): ReviewItem[] => [
   ...commits.flatMap((reviewed): ReviewItem[] => [
     { kind: 'commit', key: entryKey(reviewed.commit), reviewed },
-    ...listedPaths(reviewed).map((row): ReviewItem => ({ kind: 'path', key: entryKey(row), reviewed, row })),
+    ...reviewed.paths.map((row): ReviewItem => ({ kind: 'path', key: entryKey(row), reviewed, row })),
   ]),
   ...objects.map((row): ReviewItem => ({ kind: 'object', key: entryKey(row), row })),
 ]
@@ -176,46 +180,109 @@ export const comparableParent = (row: PathRow): number | undefined => {
   return index === -1 ? undefined : index
 }
 
-// A directory the review opens: its changed entries are rows of their own. One that replaces a
-// file is not: its row is where the removed file shows.
-const opensDirectory = (row: PathRow) =>
-  row.sent?.kind === 'dir' &&
-  row.parents.every(parent => parent.kind === 'dir' || parent.kind === 'none' || parent.kind === 'unknown')
-
-/**
- * The commit's rows that the review lists: all of them but each directory the review opens that
- * has a listed row beneath it, whose name is then in that row's path. A directory with nothing
- * listed beneath it stays, because its row is the only place its name shows. Over the rows
- * loaded so far, a directory whose rows are on a page to come shows until they arrive.
- */
-export const listedPaths = ({ paths }: ReviewedCommit): PathRow[] => {
-  // The paths with a listed row beneath them. Rows come directory first, so the walk runs
-  // backwards, and a listed row adds every directory above it.
-  const above = new Set<string>()
-  const folded = new Set<PathRow>()
-  for (let index = paths.length - 1; index >= 0; index--) {
-    const row = paths[index]
-    if (opensDirectory(row) && above.has(row.path)) {
-      folded.add(row)
-      continue
-    }
-    let path = row.path
-    while (path !== '') {
-      path = parentPath(path)
-      // A path in the set has every directory above it there too.
-      if (above.has(path)) break
-      above.add(path)
-    }
-  }
-  return paths.filter(row => !folded.has(row))
-}
-
 const parentPath = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/')))
 
-const KIND_WORDS = {
+/** What the review calls each kind of tree entry. */
+export const KIND_WORDS = {
   file: 'file', executable: 'executable', dir: 'directory', symlink: 'symbolic link',
   submodule: 'submodule entry',
 } as const
+
+/** The mode git writes for each kind of tree entry. */
+export const KIND_MODES = {
+  file: '100644', executable: '100755', dir: '40000', symlink: '120000', submodule: '160000',
+} as const
+
+// ---- the entries of a directory the push sends --------------------------------------------------------
+
+/** Whether the push sends this row's directory and it has entries to show: an empty one has none. */
+export const sendsListedDirectory = (row: PathRow): boolean => row.sent?.kind === 'dir' && row.sent.size > 0
+
+/**
+ * What was read to list a commit's directories: its whole tree (Overseer.listTree()), and for a
+ * commit with several parents the paths at which it differs from each (listChangedPaths()), in the
+ * commit's own parent order. A commit with one parent needs no such list: the review's rows say
+ * which entries differ from it.
+ */
+export type CommitListing = { tree: readonly TreeNode[], changed: readonly (readonly string[])[] }
+
+/**
+ * One entry of a directory the push sends, as the directory holds it. `sameAs` names, by index,
+ * the commit's parents that have the same entry under that name: none for an entry the review
+ * lists as a row of its own (`listed`), which differs from every parent, and at least one for
+ * every other. A directory counts as a parent's when no file beneath it differs from that parent.
+ */
+export type SentDirectoryEntry = { name: string, kind: TreeNode['kind'], sameAs: number[], listed: boolean }
+
+/**
+ * The entries of the directory at `row`, from the listing of its commit and the commit's rows,
+ * which must all have loaded. The review lists every entry that differs from every parent, so an
+ * entry with no row is some parent's: the one parent's, or for a merge each parent's that the
+ * listing shows no difference from. `mismatch` says the listing and the review disagree: no
+ * directory at the path, an entry of another kind than its row says, a row with no entry, or an
+ * entry with no row that differs from every parent.
+ */
+export const sentDirectoryEntries = (
+  row: PathRow, { commit, paths }: ReviewedCommit, { tree, changed }: CommitListing,
+): { entries: SentDirectoryEntry[] } | { mismatch: string } => {
+  const shown = row.path === '' ? ROOT_LABEL : row.path
+  let nodes: readonly TreeNode[] | undefined = tree
+  for (const segment of row.path === '' ? [] : row.path.split('/')) {
+    const node: TreeNode | undefined = nodes?.find(child => child.name === segment)
+    nodes = node?.kind === 'dir' ? node.children : undefined
+  }
+  if (!nodes) return { mismatch: `The review lists ${shown} as a directory, but listing its commit shows none there.` }
+
+  const own = new Map(paths
+    .filter(other => other.entry && other.path !== '' && parentPath(other.path) === row.path)
+    .map(other => [other.path, other]))
+  // Every path a parent differs at, and every directory above one.
+  const differs = changed.map(list => {
+    const touched = new Set<string>()
+    for (let path of list) {
+      for (; path !== '' && !touched.has(path); path = parentPath(path)) touched.add(path)
+    }
+    return touched
+  })
+  const entries: SentDirectoryEntry[] = []
+  for (const node of nodes) {
+    const path = row.path === '' ? node.name : `${row.path}/${node.name}`
+    const listed = own.get(path)
+    if (listed) {
+      if (listed.entry!.kind !== node.kind) {
+        return { mismatch: `The review lists ${path} as a ${KIND_WORDS[listed.entry!.kind]}, but listing its commit shows a ${KIND_WORDS[node.kind]}.` }
+      }
+      own.delete(path)
+      entries.push({ name: node.name, kind: node.kind, sameAs: [], listed: true })
+      continue
+    }
+    const sameAs = commit.parents.length === 1 ? [0]
+      : commit.parents.flatMap((_, index) => differs[index]?.has(path) === false ? [index] : [])
+    if (sameAs.length === 0) {
+      return { mismatch: `The review lists no change at ${path}, but listing its commit shows it differs from every parent.` }
+    }
+    entries.push({ name: node.name, kind: node.kind, sameAs, listed: false })
+  }
+  const [missing] = own.keys()
+  if (missing !== undefined) {
+    return { mismatch: `The review lists ${missing}, but listing its commit shows no such entry.` }
+  }
+  return { entries }
+}
+
+/**
+ * How far the entries of one sent directory have been read: `idle` and `loading` are its
+ * commit's listing, `waiting` is a listing that is in while rows beneath the directory may still
+ * be on a page to come, `failed` a listing that threw and can be tried again, and `mismatch` a
+ * listing that disagrees with the review, which no retry settles.
+ */
+export type DirectoryState =
+  | 'idle'
+  | 'loading'
+  | 'waiting'
+  | { entries: SentDirectoryEntry[] }
+  | { failed: string }
+  | { mismatch: string }
 
 /**
  * What the file view knows beyond the row: the commit's parents, to name the one a statement is
@@ -385,20 +452,45 @@ export type FilesProgress = {
   eager: boolean
 }
 
+/**
+ * How far the directories the push sends have been listed, counted as `FilesProgress` counts
+ * files: `total` is the sent directories that have entries, `loaded` those whose entries are
+ * shown, and the rest those whose listing is in flight, threw, or disagrees with the review.
+ */
+export type DirectoriesProgress = { total: number, loaded: number, pending: number, failed: number, mismatched: number }
+
+/** `DirectoriesProgress` over the state of each sent directory that has entries. */
+export const directoriesProgress = (states: Iterable<DirectoryState>): DirectoriesProgress => {
+  const progress = { total: 0, loaded: 0, pending: 0, failed: 0, mismatched: 0 }
+  for (const state of states) {
+    progress.total++
+    if (state === 'loading') progress.pending++
+    else if (typeof state !== 'object') continue
+    else if ('entries' in state) progress.loaded++
+    else if ('failed' in state) progress.failed++
+    else progress.mismatched++
+  }
+  return progress
+}
+
 /** Whether a push can be approved from the review, and otherwise why not and what would help. */
 export type ReviewReadiness =
   | { ready: true }
   | { ready: false, reason: string, retry?: 'review' | 'files', load?: 'review' | 'files' }
 
 /**
- * Whether the whole review has loaded: every page, and every file it lists as text read and
- * come back as text, with no read in flight, failed or returning something other than the
- * review lists. That is all Approve waits for, however the review was loaded: by itself, or a
- * page and a batch of files at a time by an approver whose push is too large to load unasked.
+ * Whether the whole review has loaded: every page, every file it lists as text read and come
+ * back as text, and every directory the push sends listed as the review says, with no read in
+ * flight, failed or returning something other than the review lists. That is all Approve waits
+ * for, however the review was loaded: by itself, or a page and a batch of files and directories
+ * at a time by an approver whose push is too large to load unasked. `retry` and `load` name what
+ * to read: `files` stands for the files and the directories alike.
  * What the approver opened or selected plays no part. A push the kernel could not list whole is
  * never ready: no loading shows the rest of it.
  */
-export const reviewReadiness = (review: ReviewProgress, files: FilesProgress): ReviewReadiness => {
+export const reviewReadiness = (
+  review: ReviewProgress, files: FilesProgress, directories: DirectoriesProgress,
+): ReviewReadiness => {
   if (review.loading) return { ready: false, reason: 'Loading the review.' }
   if (review.failed) return { ready: false, reason: 'The review could not be loaded.', retry: 'review' }
   if (review.truncated) return { ready: false, reason: `${tooLargeToReview(review.entries)} It cannot be approved here.` }
@@ -435,6 +527,30 @@ export const reviewReadiness = (review: ReviewProgress, files: FilesProgress): R
       reason: `${files.loaded} of ${plural(files.total, 'file')} loaded. Load the rest to approve this push.`,
       load: 'files',
     }
+  }
+  if (directories.mismatched > 0) {
+    return {
+      ready: false,
+      reason: `${plural(directories.mismatched, 'directory', 'directories')} did not list as the review says, ` +
+        'so this push cannot be approved here.',
+    }
+  }
+  if (directories.failed > 0) {
+    return {
+      ready: false,
+      reason: `${plural(directories.failed, 'directory', 'directories')} could not be listed.`,
+      retry: 'files',
+    }
+  }
+  if (directories.loaded < directories.total) {
+    return directories.pending > 0 || files.eager
+      ? { ready: false, reason: `Listing directories: ${directories.loaded} of ${directories.total}.` }
+      : {
+          ready: false,
+          reason: `${directories.loaded} of ${plural(directories.total, 'directory', 'directories')} listed. ` +
+            'Load the rest to approve this push.',
+          load: 'files',
+        }
   }
   return { ready: true }
 }

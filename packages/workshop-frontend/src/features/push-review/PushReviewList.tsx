@@ -39,6 +39,7 @@ const PathLabel = ({ row, problem }: { row: PathRow, problem: string | undefined
       : <ExactText text={row.path} singleLine className="font-mono text-[12px]" />}
     <span className={`flex items-center gap-1 ${captionClass}`}>
       {CHANGE_WORDS[pathChange(row)]}
+      {row.entry?.kind === 'dir' && ' · directory'}
       {row.entry && !row.sent && ' · not sent'}
       {problem && (
         <span className="flex items-center gap-0.5 text-kumo-danger">
@@ -51,8 +52,8 @@ const PathLabel = ({ row, problem }: { row: PathRow, problem: string | undefined
 )
 
 /**
- * The left pane of the push review: every commit in order with the paths it lists beneath it,
- * then the objects the push sends at no path. One item is selected, and the list is one tab stop:
+ * The left pane of the push review: every commit in order with its paths beneath it, a
+ * directory before what is under it, then the objects the push sends at no path. One item is selected, and the list is one tab stop:
  * the arrow keys, Home and End move the selection and the focus together.
  */
 export const PushReviewList = ({ items, selectedKey, onSelect, problemOf, more }: {

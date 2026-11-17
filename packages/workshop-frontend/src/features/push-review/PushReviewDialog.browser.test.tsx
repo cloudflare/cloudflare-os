@@ -11,7 +11,7 @@ import { afterEach, expect, it } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import type { RpcStub } from 'capnweb'
 import type {
-  ActionLogEntry, FileAtCommit, Overseer, PushReview, PushReviewEntry,
+  ActionLogEntry, FileAtCommit, Overseer, PushReview, PushReviewEntry, TreeNode,
 } from '@gadgets/workshop-shared/api'
 import { ThemeProvider } from '../../ThemeContext'
 import { PushReviewDialog } from './PushReviewDialog'
@@ -37,6 +37,11 @@ const ENTRIES: PushReviewEntry[] = [
   { kind: 'commit', oid: A, parents: [], size: FIRST.length, text: FIRST },
   { kind: 'path', commit: A, path: '', entry: { kind: 'dir', oid: oid('d1') }, parents: [], sent: { kind: 'dir', size: 90 } },
   { kind: 'path', commit: A, path: 'README.md', entry: { kind: 'file', oid: oid('e1') }, parents: [], sent: { kind: 'text', size: 12 } },
+  // Each directory on the way to the long path is sent, and is a row before what is under it.
+  ...LONG_PATH.split('/').slice(0, -1).map((_, depth, names): PushReviewEntry => ({
+    kind: 'path', commit: A, path: names.slice(0, depth + 1).join('/'), entry: { kind: 'dir', oid: oid(`t${depth}-`) },
+    parents: [], sent: { kind: 'dir', size: 40 },
+  })),
   { kind: 'path', commit: A, path: LONG_PATH, entry: { kind: 'file', oid: oid('e2') }, parents: [], sent: { kind: 'text', size: 3 } },
   { kind: 'path', commit: A, path: 'wide.txt', entry: { kind: 'file', oid: oid('e3') }, parents: [], sent: { kind: 'text', size: WIDE_TEXT.length } },
   { kind: 'commit', oid: B, parents: [A], size: SECOND.length, text: SECOND },
@@ -58,12 +63,26 @@ const FILES: Record<string, string> = {
 }
 
 const overseer = {
-  getPushReview: async (): Promise<PushReview> => ({ entries: ENTRIES, objectCount: 8, stackedOn: [] }),
+  getPushReview: async (): Promise<PushReview> => ({ entries: ENTRIES, objectCount: 38, stackedOn: [] }),
   readFilesAtCommit: async (commitId: string, paths: string[]) =>
     paths.map((at): [string, FileAtCommit] => {
       const text = FILES[`${commitId}:${at}`]
       return [at, text === undefined ? { kind: 'absent' } : { kind: 'text', text }]
     }),
+  // What the commit's rows say it holds: each path with an entry, under its directories.
+  listTree: async (commitId: string): Promise<TreeNode[]> => {
+    const tree: TreeNode[] = []
+    for (const row of ENTRIES) {
+      if (row.kind !== 'path' || row.commit !== commitId || !row.entry || row.path === '') continue
+      let nodes = tree
+      for (const name of row.path.split('/')) {
+        let node = nodes.find(child => child.name === name)
+        if (!node) nodes.push(node = row.entry.kind === 'dir' ? { name, kind: 'dir', children: [] } : { name, kind: 'file' })
+        if (node.kind === 'dir') nodes = node.children
+      }
+    }
+    return tree
+  },
 } as unknown as RpcStub<Overseer>
 
 const RECORD = {
@@ -152,14 +171,17 @@ it('puts focus in the list on open, and moves the selection with the keyboard', 
   expect(selected()).toBe(1)
   expect(document.activeElement).toBe(rows()[1])
   await settle()
-  expect(pane().textContent).toContain('README.md')
+  expect(pane().textContent).toContain('(root directory)')
 
   await input(() => userEvent.keyboard('{End}'))
   expect(selected()).toBe(rows().length - 1)
   expect(document.activeElement).toBe(rows().at(-1))
   await input(() => userEvent.keyboard('{ArrowUp}'))
   expect(selected()).toBe(rows().length - 2)
-  expect(pane().textContent).toContain('Tune the widget')
+  // The row above the last commit's one file is that commit's root directory.
+  await settle()
+  expect(pane().textContent).toContain('Entries of this directory, as sent')
+  expect(pane().querySelectorAll('tbody tr')).toHaveLength(1)
   await input(() => userEvent.keyboard('{Home}'))
   expect(selected()).toBe(0)
   expect(document.activeElement).toBe(rows()[0])

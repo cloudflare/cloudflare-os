@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   PUSH_REVIEW_PAGE_SIZE, READ_FILES_RESPONSE_BUDGET,
-  type PushReviewEntry, type PushReviewParentEntry, type PushReviewSent, type PushReviewTreeEntry,
+  type PushReviewEntry, type PushReviewParentEntry, type PushReviewSent, type PushReviewTreeEntry, type TreeNode,
 } from '@gadgets/workshop-shared/api'
 import {
   MAX_RESTRICTED_PUSH_COMMITS, MAX_RESTRICTED_PUSH_FILES, MAX_RESTRICTED_PUSH_PATHS,
   MAX_RESTRICTED_PUSH_TEXT_SIZE,
 } from '@gadgets/workshop-shared/gatekeeper'
 import {
-  MAX_WHOLE_REVIEW_ENTRIES, ROOT_LABEL, commitSubject, comparableParent, entryKey, expectsText, formatCommitText,
-  groupPushReview, listedPaths, notShownAsText, parseCommitText, pathChange, pathNotes,
-  reviewItems, reviewReadiness, reviewTooLarge, sentObjectCount,
-  type CommitRow, type FilesProgress, type PathRow, type ReviewProgress,
+  MAX_WHOLE_REVIEW_ENTRIES, ROOT_LABEL, commitSubject, comparableParent, directoriesProgress, entryKey, expectsText,
+  formatCommitText, groupPushReview, notShownAsText, parseCommitText, pathChange, pathNotes,
+  reviewItems, reviewReadiness, reviewTooLarge, sendsListedDirectory, sentDirectoryEntries, sentObjectCount,
+  type CommitRow, type DirectoriesProgress, type FilesProgress, type PathRow, type ReviewProgress,
 } from './pushReviewModel'
 
 const oid = (name: string) => name.padEnd(40, '0')
@@ -36,7 +36,8 @@ const added = (id: string, at: string): PathRow =>
 const emptyDir = (id: string, at: string): PathRow =>
   path(id, at, { entry: entry('dir', 'empty-tree'), sent: dir(0) })
 
-const listed = (rows: PathRow[]) => listedPaths({ commit: commit(rows[0].commit), paths: rows }).map(row => row.path)
+const file = (name: string): TreeNode => ({ name, kind: 'file' })
+const folder = (name: string, ...children: TreeNode[]): TreeNode => ({ name, kind: 'dir', children })
 
 describe('parseCommitText', () => {
   it('reads the headers in order and the message', () => {
@@ -133,73 +134,121 @@ describe('groupPushReview', () => {
   })
 })
 
-describe('listedPaths', () => {
-  it('folds an opened directory that has a listed row beneath it', () => {
-    expect(listed([opened(C1, ''), opened(C1, 'src'), added(C1, 'src/a.ts'), added(C1, 'b.ts')]))
-      .toEqual(['src/a.ts', 'b.ts'])
-  })
-
-  it('keeps a directory that replaces a file: the removed file shows there', () => {
-    expect(listed([
-      opened(C1, ''), opened(C1, 'lib', [entry('file', 'old-lib')]), added(C1, 'lib/a.ts'),
-    ])).toEqual(['lib', 'lib/a.ts'])
-  })
-
-  it('keeps an added empty directory beside a changed file', () => {
-    expect(listed([opened(C1, ''), added(C1, 'a.txt'), emptyDir(C1, 'empty')])).toEqual(['a.txt', 'empty'])
-  })
-
-  it('keeps four hundred empty directories by name, and folds the root above them', () => {
-    const names = Array.from({ length: 400 }, (_, index) => `d${index}`)
-    expect(listed([opened(C1, '', [NONE]), ...names.map(name => emptyDir(C1, name))])).toEqual(names)
-  })
-
-  it('keeps only the innermost of a chain of directories ending in an empty one', () => {
-    expect(listed([
-      opened(C1, ''), opened(C1, 'a', [NONE]), opened(C1, 'a/b', [NONE]), emptyDir(C1, 'a/b/c'),
-    ])).toEqual(['a/b/c'])
-  })
-
-  it('keeps a sent directory whose parent is unknown and that has no row beneath it', () => {
-    expect(listed([opened(C1, '', [UNKNOWN]), opened(C1, 'vendor', [UNKNOWN])])).toEqual(['vendor'])
-  })
-
-  it('keeps a directory of a merge whose every entry comes from one side or the other', () => {
-    expect(listed([
-      opened(C1, '', [entry('dir', 'ours'), entry('dir', 'theirs')]),
-      opened(C1, 'mixed', [entry('dir', 'ours-mixed'), entry('dir', 'theirs-mixed')]),
-    ])).toEqual(['mixed'])
-  })
-
-  it('keeps the root of a root commit whose tree is empty', () => {
-    expect(listed([path(C1, '', { entry: entry('dir', 'empty-tree'), parents: [], sent: dir(0) })])).toEqual([''])
-    expect(ROOT_LABEL).toBe('(root directory)')
-  })
-
-  it('judges the same directory name per commit', () => {
-    const { commits } = groupPushReview([
-      commit(C1), opened(C1, ''), opened(C1, 'docs'), added(C1, 'docs/a.md'),
-      commit(C2, { parents: [C1] }), opened(C2, ''), opened(C2, 'docs'),
-    ])
-    expect(commits.map(reviewed => listedPaths(reviewed).map(row => row.path))).toEqual([['docs/a.md'], ['docs']])
-  })
-
-  it('shows a directory until the rows beneath it arrive', () => {
-    expect(listed([opened(C1, ''), opened(C1, 'src')])).toEqual(['src'])
-    expect(listed([opened(C1, ''), opened(C1, 'src'), added(C1, 'src/a.ts')])).toEqual(['src/a.ts'])
-  })
-})
-
 describe('reviewItems', () => {
-  it('lists each commit, the paths it keeps, then the objects without a path', () => {
+  it('lists each commit, every path of it with a directory before what is beneath it, then the objects', () => {
     const items = reviewItems(groupPushReview([
-      commit(C1), opened(C1, ''), added(C1, 'a.txt'),
+      commit(C1), opened(C1, ''), opened(C1, 'src'), added(C1, 'src/a.ts'), emptyDir(C1, 'empty'),
       commit(C2, { parents: [C1] }), opened(C2, ''), added(C2, 'a.txt'),
       { kind: 'object', oid: oid('f'), type: 'blob' },
     ]))
     expect(items.map(item => item.key)).toEqual([
-      `commit:${C1}`, `path:${C1}:a.txt`, `commit:${C2}`, `path:${C2}:a.txt`, `object:${oid('f')}`,
+      `commit:${C1}`, `path:${C1}:`, `path:${C1}:src`, `path:${C1}:src/a.ts`, `path:${C1}:empty`,
+      `commit:${C2}`, `path:${C2}:`, `path:${C2}:a.txt`, `object:${oid('f')}`,
     ])
+    expect(ROOT_LABEL).toBe('(root directory)')
+  })
+})
+
+describe('sentDirectoryEntries', () => {
+  const P1 = oid('p1')
+  const P2 = oid('p2')
+  const entriesOf = (
+    row: PathRow, rows: PathRow[], parents: string[], tree: TreeNode[], changed: string[][] = [],
+  ) => sentDirectoryEntries(row, { commit: commit(row.commit, { parents }), paths: rows }, { tree, changed })
+
+  it('shows every entry a directory holds, and takes one with no row to be the one parent\'s', () => {
+    const root = opened(C1, '')
+    const src = opened(C1, 'src')
+    const rows = [root, src, added(C1, 'src/new.ts'), added(C1, 'b.ts')]
+    const tree = [file('README.md'), file('b.ts'), folder('src', file('new.ts'), file('old.ts')), folder('vendor', file('x'))]
+    expect(entriesOf(root, rows, [P1], tree)).toEqual({
+      entries: [
+        { name: 'README.md', kind: 'file', sameAs: [0], listed: false },
+        { name: 'b.ts', kind: 'file', sameAs: [], listed: true },
+        { name: 'src', kind: 'dir', sameAs: [], listed: true },
+        { name: 'vendor', kind: 'dir', sameAs: [0], listed: false },
+      ],
+    })
+    expect(entriesOf(src, rows, [P1], tree)).toEqual({
+      entries: [
+        { name: 'new.ts', kind: 'file', sameAs: [], listed: true },
+        { name: 'old.ts', kind: 'file', sameAs: [0], listed: false },
+      ],
+    })
+  })
+
+  it('says which parent of a merge each entry is taken from, where the merge changes no path', () => {
+    // The merge takes left.txt from its first parent and right.txt from its second, and its
+    // directory `d` holds one file of each: no entry differs from every parent, so the review
+    // lists only the two directories.
+    const both = [entry('dir', 'ours'), entry('dir', 'theirs')]
+    const root = opened(C1, '', both)
+    const d = opened(C1, 'd', both)
+    const tree = [folder('d', file('left.txt'), file('right.txt')), file('left.txt'), file('right.txt'), file('same.txt')]
+    const changed = [['d/right.txt', 'right.txt'], ['d/left.txt', 'left.txt']]
+    expect(entriesOf(root, [root, d], [P1, P2], tree, changed)).toEqual({
+      entries: [
+        { name: 'd', kind: 'dir', sameAs: [], listed: true },
+        { name: 'left.txt', kind: 'file', sameAs: [0], listed: false },
+        { name: 'right.txt', kind: 'file', sameAs: [1], listed: false },
+        { name: 'same.txt', kind: 'file', sameAs: [0, 1], listed: false },
+      ],
+    })
+    expect(entriesOf(d, [root, d], [P1, P2], tree, changed)).toEqual({
+      entries: [
+        { name: 'left.txt', kind: 'file', sameAs: [0], listed: false },
+        { name: 'right.txt', kind: 'file', sameAs: [1], listed: false },
+      ],
+    })
+  })
+
+  it('takes a directory of a merge to be a parent\'s when no file beneath it differs from that parent', () => {
+    const root = opened(C1, '', [entry('dir', 'ours'), entry('dir', 'theirs')])
+    const tree = [folder('docs', folder('deep', file('a.md'))), folder('lib', file('x.ts')), file('lib.ts')]
+    // The first parent differs deep under docs, and has a file where the merge has `lib`.
+    expect(entriesOf(root, [root], [P1, P2], tree, [['docs/deep/a.md', 'lib', 'lib/x.ts'], ['lib.ts']])).toEqual({
+      entries: [
+        { name: 'docs', kind: 'dir', sameAs: [1], listed: false },
+        { name: 'lib', kind: 'dir', sameAs: [1], listed: false },
+        { name: 'lib.ts', kind: 'file', sameAs: [0], listed: false },
+      ],
+    })
+  })
+
+  it('lists every entry of a commit with no parent as its own row', () => {
+    const root = opened(C1, '', [])
+    expect(entriesOf(root, [root, path(C1, 'a.txt', { entry: entry('file', 'a'), parents: [], sent: text() })], [], [file('a.txt')]))
+      .toEqual({ entries: [{ name: 'a.txt', kind: 'file', sameAs: [], listed: true }] })
+  })
+
+  it('reports a listing that disagrees with the review, which no parent settles', () => {
+    const root = opened(C1, '')
+    const src = opened(C1, 'src')
+    expect(entriesOf(src, [root, src], [P1], [file('src')])).toEqual({
+      mismatch: 'The review lists src as a directory, but listing its commit shows none there.',
+    })
+    expect(entriesOf(root, [root, added(C1, 'a.txt')], [P1], [folder('a.txt')])).toEqual({
+      mismatch: 'The review lists a.txt as a file, but listing its commit shows a directory.',
+    })
+    expect(entriesOf(root, [root, added(C1, 'a.txt')], [P1], [file('b.txt')])).toEqual({
+      mismatch: 'The review lists a.txt, but listing its commit shows no such entry.',
+    })
+    // An entry with no row is some parent's: here it differs from both, and a commit with no
+    // parent has none to take it from.
+    expect(entriesOf(root, [root], [P1, P2], [file('a.txt')], [['a.txt'], ['a.txt']])).toEqual({
+      mismatch: 'The review lists no change at a.txt, but listing its commit shows it differs from every parent.',
+    })
+    expect(entriesOf(root, [root], [], [file('a.txt')])).toEqual({
+      mismatch: 'The review lists no change at a.txt, but listing its commit shows it differs from every parent.',
+    })
+  })
+
+  it('has nothing to list for an empty directory, a directory not sent, or one that cannot be listed', () => {
+    expect(sendsListedDirectory(opened(C1, 'src'))).toBe(true)
+    expect(sendsListedDirectory(emptyDir(C1, 'empty'))).toBe(false)
+    expect(sendsListedDirectory(path(C1, 'kept', { entry: entry('dir', 'kept') }))).toBe(false)
+    expect(sendsListedDirectory(path(C1, 'odd', { entry: entry('dir', 'odd'), sent: { kind: 'unlistable', size: 40 } })))
+      .toBe(false)
   })
 })
 
@@ -431,33 +480,36 @@ describe('notShownAsText', () => {
 
 describe('reviewReadiness', () => {
   const WHOLE: ReviewProgress = { entries: 12, done: true, truncated: false, loading: false, failed: false }
+  const LISTED: DirectoriesProgress = { total: 4, loaded: 4, pending: 0, failed: 0, mismatched: 0 }
+  const readinessOf = (review: ReviewProgress, files: FilesProgress, directories = LISTED) =>
+    reviewReadiness(review, files, directories)
   const READ: FilesProgress = { total: 3, loaded: 3, pending: 0, failed: 0, mismatched: 0, eager: true }
   // Every later reason is true as well, so each case shows that the one before it wins.
   const EVERYTHING_WRONG: FilesProgress = { total: 3, loaded: 0, pending: 1, failed: 1, mismatched: 1, eager: true }
 
   it('waits for a loading page before anything else', () => {
-    expect(reviewReadiness({ ...WHOLE, done: false, loading: true, failed: true }, EVERYTHING_WRONG))
+    expect(readinessOf({ ...WHOLE, done: false, loading: true, failed: true }, EVERYTHING_WRONG))
       .toEqual({ ready: false, reason: 'Loading the review.' })
   })
 
   it('reports a failed page, to be retried', () => {
-    expect(reviewReadiness({ ...WHOLE, done: false, failed: true }, EVERYTHING_WRONG))
+    expect(readinessOf({ ...WHOLE, done: false, failed: true }, EVERYTHING_WRONG))
       .toEqual({ ready: false, reason: 'The review could not be loaded.', retry: 'review' })
   })
 
   it('never offers a push the kernel could not list whole, nor a way to load the rest', () => {
-    expect(reviewReadiness({ ...WHOLE, entries: 340, done: false, truncated: true }, READ)).toEqual({
+    expect(readinessOf({ ...WHOLE, entries: 340, done: false, truncated: true }, READ)).toEqual({
       ready: false,
       reason: 'This push is too large to review whole: only its first 340 entries could be listed. It cannot be approved here.',
     })
-    expect(reviewReadiness({ ...WHOLE, entries: 0, done: false, truncated: true }, { ...READ, total: 0, loaded: 0 })).toEqual({
+    expect(readinessOf({ ...WHOLE, entries: 0, done: false, truncated: true }, { ...READ, total: 0, loaded: 0 })).toEqual({
       ready: false,
       reason: 'This push is too large to review whole: none of it could be listed. It cannot be approved here.',
     })
   })
 
   it('asks for the pages that are still to be loaded before looking at any file', () => {
-    expect(reviewReadiness({ ...WHOLE, entries: 601, done: false }, EVERYTHING_WRONG)).toEqual({
+    expect(readinessOf({ ...WHOLE, entries: 601, done: false }, EVERYTHING_WRONG)).toEqual({
       ready: false,
       reason: 'This push is too large to load by itself: 601 entries loaded so far. Load the rest of it to approve it.',
       load: 'review',
@@ -465,57 +517,84 @@ describe('reviewReadiness', () => {
   })
 
   it('reports a file that did not come back as listed before one that failed', () => {
-    expect(reviewReadiness(WHOLE, EVERYTHING_WRONG)).toEqual({
+    expect(readinessOf(WHOLE, EVERYTHING_WRONG)).toEqual({
       ready: false,
       reason: '1 file did not come back as the review lists it, so this push cannot be approved here.',
     })
-    expect(reviewReadiness(WHOLE, { ...READ, mismatched: 2 })).toEqual({
+    expect(readinessOf(WHOLE, { ...READ, mismatched: 2 })).toEqual({
       ready: false,
       reason: '2 files did not come back as the review lists them, so this push cannot be approved here.',
     })
   })
 
   it('reports files that could not be read, to be retried', () => {
-    expect(reviewReadiness(WHOLE, { ...EVERYTHING_WRONG, mismatched: 0 }))
+    expect(readinessOf(WHOLE, { ...EVERYTHING_WRONG, mismatched: 0 }))
       .toEqual({ ready: false, reason: '1 file could not be read.', retry: 'files' })
   })
 
   it('counts the files while they load', () => {
-    expect(reviewReadiness(WHOLE, { ...READ, loaded: 1, pending: 2 }))
+    expect(readinessOf(WHOLE, { ...READ, loaded: 1, pending: 2 }))
       .toEqual({ ready: false, reason: 'Loading files: 1 of 3.' })
     // Read by the dialog itself, and not started yet.
-    expect(reviewReadiness(WHOLE, { ...READ, loaded: 0 }))
+    expect(readinessOf(WHOLE, { ...READ, loaded: 0 }))
       .toEqual({ ready: false, reason: 'Loading files: 0 of 3.' })
     // Asked for by hand, and in flight.
-    expect(reviewReadiness(WHOLE, { ...READ, loaded: 1, pending: 2, eager: false }))
+    expect(readinessOf(WHOLE, { ...READ, loaded: 1, pending: 2, eager: false }))
       .toEqual({ ready: false, reason: 'Loading files: 1 of 3.' })
   })
 
   it('waits for a read in flight when every file listed as text is in', () => {
     // A symbolic link, or a file too large to have been checked that the approver asked to see.
-    expect(reviewReadiness(WHOLE, { ...READ, pending: 1 })).toEqual({ ready: false, reason: 'Loading 1 file.' })
-    expect(reviewReadiness(WHOLE, { ...READ, total: 0, loaded: 0, pending: 2, eager: false }))
+    expect(readinessOf(WHOLE, { ...READ, pending: 1 })).toEqual({ ready: false, reason: 'Loading 1 file.' })
+    expect(readinessOf(WHOLE, { ...READ, total: 0, loaded: 0, pending: 2, eager: false }))
       .toEqual({ ready: false, reason: 'Loading 2 files.' })
   })
 
   it('reports a failed read when every file listed as text is in', () => {
-    expect(reviewReadiness(WHOLE, { ...READ, total: 0, loaded: 0, failed: 1 }))
+    expect(readinessOf(WHOLE, { ...READ, total: 0, loaded: 0, failed: 1 }))
       .toEqual({ ready: false, reason: '1 file could not be read.', retry: 'files' })
   })
 
   it('asks for the files a review too large to read by itself still lacks', () => {
-    expect(reviewReadiness(WHOLE, { ...READ, loaded: 1, eager: false })).toEqual({
+    expect(readinessOf(WHOLE, { ...READ, loaded: 1, eager: false })).toEqual({
       ready: false,
       reason: '1 of 3 files loaded. Load the rest to approve this push.',
       load: 'files',
     })
   })
 
+  it('waits for the directories the push sends once its files are in, by the same rule', () => {
+    const none = { total: 4, loaded: 0, pending: 0, failed: 0, mismatched: 0 }
+    expect(readinessOf(WHOLE, { ...READ, loaded: 1, eager: false }, { ...none, mismatched: 1 }))
+      .toMatchObject({ reason: '1 of 3 files loaded. Load the rest to approve this push.' })
+    expect(readinessOf(WHOLE, READ, { ...none, loaded: 1, pending: 1, failed: 1, mismatched: 1 })).toEqual({
+      ready: false,
+      reason: '1 directory did not list as the review says, so this push cannot be approved here.',
+    })
+    expect(readinessOf(WHOLE, READ, { ...none, loaded: 1, pending: 1, failed: 2 }))
+      .toEqual({ ready: false, reason: '2 directories could not be listed.', retry: 'files' })
+    expect(readinessOf(WHOLE, READ, { ...none, loaded: 1, pending: 3 }))
+      .toEqual({ ready: false, reason: 'Listing directories: 1 of 4.' })
+    // Read by the dialog itself, and not started yet.
+    expect(readinessOf(WHOLE, READ, none)).toEqual({ ready: false, reason: 'Listing directories: 0 of 4.' })
+    expect(readinessOf(WHOLE, { ...READ, eager: false }, { ...none, loaded: 3 })).toEqual({
+      ready: false,
+      reason: '3 of 4 directories listed. Load the rest to approve this push.',
+      load: 'files',
+    })
+  })
+
+  it('counts each sent directory by how far its entries have been listed', () => {
+    expect(directoriesProgress([
+      'idle', 'loading', 'waiting', { entries: [] }, { entries: [] }, { failed: 'busy' }, { mismatch: 'other' },
+    ])).toEqual({ total: 7, loaded: 2, pending: 1, failed: 1, mismatched: 1 })
+  })
+
   it('is ready once every page is in and every file is read, however large the review', () => {
-    expect(reviewReadiness(WHOLE, READ)).toEqual({ ready: true })
-    expect(reviewReadiness({ ...WHOLE, entries: 5000 }, { ...READ, total: 900, loaded: 900, eager: false }))
+    expect(readinessOf(WHOLE, READ)).toEqual({ ready: true })
+    expect(readinessOf({ ...WHOLE, entries: 5000 }, { ...READ, total: 900, loaded: 900, eager: false }))
       .toEqual({ ready: true })
     // A push that sends no file at all.
-    expect(reviewReadiness({ ...WHOLE, entries: 0 }, { ...READ, total: 0, loaded: 0 })).toEqual({ ready: true })
+    expect(readinessOf({ ...WHOLE, entries: 0 }, { ...READ, total: 0, loaded: 0 })).toEqual({ ready: true })
   })
 })

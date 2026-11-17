@@ -1279,6 +1279,25 @@ describe("push review", () => {
           pathRow(merge, "d", aDir(sub), [aDir(left.sub), aDir(right.sub)],
               { kind: "dir", size: sizeOf(t, sub) }),
         ]);
+
+    // No row names left.txt, right.txt or what `d` holds: each is as one parent has it. An
+    // approver sees them as the entries of the two directories the merge sends, which the
+    // Workshop reads from the commit's tree, and learns which parent each is taken from by
+    // the paths at which the merge differs from that parent.
+    expect(await t.cache.readCommitTree(merge)).toStrictEqual([
+      { name: "README.md", kind: "file" }, { name: "both.txt", kind: "file" },
+      { name: "d", kind: "dir", children: [
+        { name: "left.txt", kind: "file" }, { name: "right.txt", kind: "file" },
+      ] },
+      { name: "left.txt", kind: "file" }, { name: "right.txt", kind: "file" },
+    ]);
+    let differsFrom = async (parent: GitOid) =>
+        [...await t.cache.changedFilePathsBetween(parent, merge)].toSorted();
+    expect(await differsFrom(left.commit))
+        .toStrictEqual(["both.txt", "d/right.txt", "right.txt"]);
+    expect(await differsFrom(right.commit))
+        .toStrictEqual(["both.txt", "d/left.txt", "left.txt"]);
+    expect(t.pulls).toStrictEqual([]);
   });
 
   it("lists what a merge lacks only where every parent has it, in name order", async () => {

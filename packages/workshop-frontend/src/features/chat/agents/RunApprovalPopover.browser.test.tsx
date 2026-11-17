@@ -6,7 +6,7 @@ import { page, userEvent } from "vitest/browser";
 import { Toasty } from "@cloudflare/kumo";
 import type { RpcStub } from "capnweb";
 import type {
-  ActionLogEntry, AiChatMetadata, FileAtCommit, Overseer, PushReview,
+  ActionLogEntry, AiChatMetadata, FileAtCommit, Overseer, PushReview, TreeNode,
 } from "@gadgets/workshop-shared/api";
 import { AgentListRow } from "./AgentListRow";
 import { deriveAgents } from "./agentList";
@@ -93,6 +93,7 @@ async function renderList(
     getPushReview: async () => pushReview,
     readFilesAtCommit: async (_commitId: string, paths: string[]) =>
       paths.map((path): [string, FileAtCommit] => [path, {kind: "text", text: "one line\n"}]),
+    listTree: async (): Promise<TreeNode[]> => [{name: "notes.txt", kind: "file"}],
   } as unknown as RpcStub<Overseer>;
 
   host = document.body.appendChild(document.createElement("div"));

@@ -8,7 +8,7 @@ import type { RpcStub } from 'capnweb'
 import {
   PUSH_REVIEW_PAGE_SIZE,
   type ActionLogEntry, type FileAtCommit, type Overseer, type PushReview, type PushReviewEntry,
-  type PushReviewParentEntry, type PushReviewSent, type PushReviewTreeEntry,
+  type PushReviewParentEntry, type PushReviewSent, type PushReviewTreeEntry, type TreeNode,
 } from '@gadgets/workshop-shared/api'
 import { MAX_BUFFERED_BLOB_SIZE } from '@gadgets/workshop-shared/gatekeeper'
 import { RESTRICTED_APPROVAL_COPY } from '../../components/RestrictedApprovalNotice'
@@ -111,13 +111,56 @@ type Reads = {
    */
   files?: Record<string, FileAnswer | (() => FileAnswer)> | ((commitId: string, at: string) => FileAnswer)
   blobs?: Record<string, Uint8Array>
+  /**
+   * What listing a commit returns. A commit with no answer lists what the review's rows say it
+   * holds: every path of it that has an entry.
+   */
+  trees?: (commitId: string) => TreeNode[] | Promise<TreeNode[]> | undefined
+  /** The paths at which a commit differs from a parent; none unless given. */
+  changed?: (parent: string, commitId: string) => string[]
+}
+
+// Adds the paths of `entries` that have an entry to the tree of each row's commit. The fake
+// learns a commit's tree from the pages as it serves them, so a tree it has handed out grows in
+// place: what a real commit holds is all there from the first listing.
+const growTrees = (trees: Map<string, TreeNode[]>, entries: readonly PushReviewEntry[]) => {
+  for (const row of entries) {
+    if (row.kind !== 'path' || !row.entry || row.path === '') continue
+    let nodes = trees.get(row.commit)
+    if (!nodes) trees.set(row.commit, nodes = [])
+    const segments = row.path.split('/')
+    for (const [index, name] of segments.entries()) {
+      let node: TreeNode | undefined = nodes.find(child => child.name === name)
+      if (!node) {
+        node = index === segments.length - 1 && row.entry.kind !== 'dir'
+          ? { name, kind: row.entry.kind }
+          : { name, kind: 'dir', children: [] }
+        nodes.push(node)
+      }
+      if (node.kind !== 'dir') break
+      nodes = node.children
+    }
+  }
 }
 
 const fileKey = (name: string, at: string) => `${oid(name)}:${at}`
 
 const fakeOverseer = (reads: Reads) => {
   let calls = 0
-  const getPushReview = vi.fn<Overseer['getPushReview']>(async (_actionId, cursor) => reads.page(cursor, calls++))
+  const trees = new Map<string, TreeNode[]>()
+  const getPushReview = vi.fn<Overseer['getPushReview']>(async (_actionId, cursor) => {
+    const page = await reads.page(cursor, calls++)
+    growTrees(trees, page.entries)
+    return page
+  })
+  const listTree = vi.fn<Overseer['listTree']>(async commitId => {
+    const given = await reads.trees?.(commitId)
+    if (given) return given
+    if (!trees.has(commitId)) trees.set(commitId, [])
+    return trees.get(commitId)!
+  })
+  const listChangedPaths = vi.fn<Overseer['listChangedPaths']>(async (parent, commitId) =>
+    reads.changed?.(parent, commitId) ?? [])
   const answer = (commitId: string, at: string): FileAnswer => {
     if (typeof reads.files === 'function') return reads.files(commitId, at)
     const given = reads.files?.[`${commitId}:${at}`]
@@ -136,8 +179,8 @@ const fakeOverseer = (reads: Reads) => {
     })
   })
   return {
-    getPushReview, readFilesAtCommit, readBlob,
-    stub: { getPushReview, readFilesAtCommit, readBlob } as unknown as RpcStub<Overseer>,
+    getPushReview, readFilesAtCommit, readBlob, listTree, listChangedPaths,
+    stub: { getPushReview, readFilesAtCommit, readBlob, listTree, listChangedPaths } as unknown as RpcStub<Overseer>,
   }
 }
 
@@ -245,6 +288,32 @@ const readiness = () => dialog().querySelector('[role="status"]')?.textContent
 const readPaths = (overseer: ReturnType<typeof fakeOverseer>) =>
   overseer.readFilesAtCommit.mock.calls.flatMap(([commitId, paths]) => paths.map(at => `${commitId}:${at}`))
 
+// A merge that takes left.txt from its first parent and right.txt from its second, and whose
+// directory `d` holds one file of each: only both.txt differs from every parent.
+const mergeOfTwoSides = () => {
+  const sides = [entry('dir', 'left-root'), entry('dir', 'right-root')]
+  const file = (name: string): TreeNode => ({ name, kind: 'file' })
+  return {
+    entries: [
+      commit('m', { parents: [oid('left'), oid('right')] }), root('m', sides),
+      path('m', 'both.txt', {
+        entry: entry('file', 'merged'), parents: [entry('file', 'ours'), entry('file', 'theirs')], sent: text(),
+      }),
+      path('m', 'd', { entry: entry('dir', 'd-merged'), parents: [entry('dir', 'd-left'), entry('dir', 'd-right')], sent: dir() }),
+    ],
+    trees: (): TreeNode[] => [
+      file('README.md'), file('both.txt'), { name: 'd', kind: 'dir', children: [file('left.txt'), file('right.txt')] },
+      file('left.txt'), file('right.txt'),
+    ],
+    changed: (parent: string) => parent === oid('left')
+      ? ['both.txt', 'd/right.txt', 'right.txt']
+      : ['both.txt', 'd/left.txt', 'left.txt'],
+  }
+}
+/** The table of a directory's entries in the right pane: one line per entry, cells joined by ` | `. */
+const entriesShown = () => [...pane().querySelectorAll('tbody tr')]
+  .map(line => [...line.querySelectorAll('td')].map(cell => cell.textContent).join(' | '))
+
 // ---- what the review shows -----------------------------------------------------------------------
 
 describe('PushReviewDialog content', () => {
@@ -308,32 +377,32 @@ describe('PushReviewDialog content', () => {
         [fileKey('a', 'old.txt')]: { kind: 'text', text: 'bye\n' },
       },
     })
-    // The opened directories fold into the paths beneath them.
+    // Each commit's root directory is a row of its own, before the paths beneath it.
     expect(rows().map(item => item.textContent)).toEqual([
-      expect.stringContaining('Subject of a'), expect.stringContaining('notes.txt'),
-      expect.stringContaining('Subject of b'), expect.stringContaining('notes.txt'), expect.stringContaining('old.txt'),
+      expect.stringContaining('Subject of a'), '(root directory)Added · directory', 'notes.txtAdded',
+      expect.stringContaining('Subject of b'), '(root directory)Modified · directory', 'notes.txtModified',
+      'old.txtDeleted',
     ])
     // Outside the mark nothing is read until a row is opened.
     expect(overseer.readFilesAtCommit).not.toHaveBeenCalled()
+    expect(overseer.listTree).not.toHaveBeenCalled()
 
-    await press(rows()[1])
+    await press(rows()[2])
     const whole = editor()!
     expect(whole).toMatchObject({
       filename: 'notes.txt', original: null, text: 'first\n', readOnly: true, showInvisibles: true, wrapLines: true,
     })
-    expect(rows()[1].textContent).toContain('Added')
 
     // The same path under the next commit is another editor, not the first one given new text.
-    await press(rows()[3])
+    await press(rows()[5])
     const changed = editor()!
     expect(changed).toMatchObject({
       original: 'first\n', text: 'second\n', readOnly: true, showInvisibles: true, wrapLines: true,
     })
     expect(changed.mount).not.toBe(whole.mount)
     expect(pane().textContent).toContain("Removed lines are the earlier version's, not sent; long ones are cut at the edge.")
-    expect(rows()[3].textContent).toContain('Modified')
 
-    await press(rows()[4])
+    await press(rows()[6])
     expect(editor()).toMatchObject({
       filename: 'old.txt', original: 'bye\n', text: '', readOnly: true, showInvisibles: true, wrapLines: true,
     })
@@ -503,7 +572,7 @@ describe('PushReviewDialog content', () => {
     expect(overseer.readFilesAtCommit).toHaveBeenCalledTimes(1)
   })
 
-  it('lists a directory by name when nothing is listed beneath it', async () => {
+  it('lists every directory the push sends by name, an empty one included', async () => {
     await open({
       page: serve([
         commit('a', { parents: [oid('p')] }), root('a', [UNKNOWN]),
@@ -514,10 +583,12 @@ describe('PushReviewDialog content', () => {
         path('a', 'vendor', { entry: entry('dir', 'vendor'), parents: [UNKNOWN], sent: dir() }),
       ]),
     })
-    // The root and the chain's outer directories fold; the names nothing else shows stay.
-    expect(rows()).toHaveLength(4)
+    // The commit, then the root and each directory under it, the outer ones of the chain too.
+    expect(rows().slice(1).map(item => item.textContent?.replace(/(Added|Modified).*/, ''))).toEqual([
+      '(root directory)', 'evilU+202Ecod', 'x', 'x/y', 'x/y/z', 'vendor',
+    ])
     expect(tokens(row('evil'))).toEqual(['U+202E'])
-    expect(shown()).toContain('1 commit, 3 paths, 6 objects sent in all.')
+    expect(shown()).toContain('1 commit, 6 paths, 6 objects sent in all.')
 
     await press(row('evil'))
     expect(tokens(pane())).toEqual(['U+202E'])
@@ -529,18 +600,85 @@ describe('PushReviewDialog content', () => {
     expect(pane().textContent).toContain(`Parent ${oid('p').slice(0, 12)} is not in this workspace, so there is nothing to compare with.`)
   })
 
-  it('counts four hundred empty directories as four hundred paths', async () => {
+  it('shows what each directory a merge sends holds, and which parent each entry is taken from', async () => {
+    const merge = mergeOfTwoSides()
+    const overseer = await open({ page: serve(merge.entries), trees: merge.trees, changed: merge.changed })
+    const [left, right] = [oid('left').slice(0, 12), oid('right').slice(0, 12)]
+
+    // The merge changes one path, and sends two directories: each is a row that opens.
+    expect(rows().slice(1).map(item => item.textContent)).toEqual([
+      '(root directory)Modified · directory', 'both.txtModified', 'dModified · directory',
+    ])
+    expect(overseer.listTree).not.toHaveBeenCalled()
+
+    await press(row('(root directory)'))
+    expect(pane().textContent).toContain('Entries of this directory, as sent')
+    expect(entriesShown()).toEqual([
+      `README.md | file | 100644 | As in parents 1 ${left} and 2 ${right}.`,
+      'both.txt | file | 100644 | Differs from every parent: listed as a row of its own.',
+      'd | directory | 40000 | Differs from every parent: listed as a row of its own.',
+      `left.txt | file | 100644 | As in parent 1 ${left}.`,
+      `right.txt | file | 100644 | As in parent 2 ${right}.`,
+    ])
+
+    await press(row('dModified'))
+    expect(entriesShown()).toEqual([
+      `left.txt | file | 100644 | As in parent 1 ${left}.`,
+      `right.txt | file | 100644 | As in parent 2 ${right}.`,
+    ])
+    // One listing of the commit and one comparison with each parent serve both directories.
+    expect(overseer.listTree.mock.calls).toEqual([[oid('m')]])
+    expect(overseer.listChangedPaths.mock.calls).toEqual([[oid('left'), oid('m')], [oid('right'), oid('m')]])
+  })
+
+  it('shows the entries of a directory with one parent without comparing, and its kinds and modes', async () => {
+    const overseer = await open({
+      page: serve([
+        commit('a', { parents: [oid('p')] }), root('a', [entry('dir', 'root-p')]),
+        path('a', 'run.sh', { entry: entry('executable', 'run'), parents: [entry('file', 'run')] }),
+      ]),
+      trees: () => [
+        { name: 'docs', kind: 'dir', children: [] }, { name: 'link', kind: 'symlink' },
+        { name: 'run.sh', kind: 'executable' }, { name: 'vendored', kind: 'submodule' },
+      ],
+    })
+    await press(row('(root directory)'))
+    const parent = oid('p').slice(0, 12)
+    expect(entriesShown()).toEqual([
+      `docs | directory | 40000 | As in parent 1 ${parent}.`,
+      `link | symbolic link | 120000 | As in parent 1 ${parent}.`,
+      'run.sh | executable | 100755 | Differs from every parent: listed as a row of its own.',
+      `vendored | submodule entry | 160000 | As in parent 1 ${parent}.`,
+    ])
+    expect(overseer.listChangedPaths).not.toHaveBeenCalled()
+  })
+
+  it('shows a directory\'s entries only once the rows beneath it have loaded', async () => {
+    const entries = [commit('a'), root('a'), added('a', 'one.txt'), added('a', 'two.txt'), commit('b'), root('b')]
+    await open({ page: serve(entries, 3) })
+    await press(row('(root directory)'))
+    // The page ends beneath the root: an entry whose row is still to come would read as a parent's.
+    expect(pane().textContent).toContain('Shown once the rows beneath this directory have loaded.')
+    expect(entriesShown()).toEqual([])
+    await press(button('Load more'))
+    expect(entriesShown()).toEqual([
+      'one.txt | file | 100644 | New: listed as a row of its own.',
+      'two.txt | file | 100644 | New: listed as a row of its own.',
+    ])
+  })
+
+  it('counts four hundred empty directories and the root above them as paths', async () => {
     const names = Array.from({ length: 400 }, (_, index) => `d${index}`)
     const entries = [commit('a'), root('a'), ...names.map(name => path('a', name, { entry: entry('dir', 'empty'), sent: dir(0) }))]
     const overseer = await open({ page: serve(entries) })
     // Outside the mark each page is asked for.
     for (let page = 1; page < 5; page++) await press(button('Load more'))
     expect(overseer.getPushReview).toHaveBeenCalledTimes(5)
-    expect(rows()).toHaveLength(401)
-    expect(shown()).toContain('1 commit, 400 paths, 3 objects sent in all.')
+    expect(rows()).toHaveLength(402)
+    expect(shown()).toContain('1 commit, 401 paths, 3 objects sent in all.')
   })
 
-  it('names the root directory when its row stays listed', async () => {
+  it('names the root directory', async () => {
     await open({ page: serve([commit('a'), path('a', '', { entry: entry('dir', 'empty'), parents: [], sent: dir(0) })]) })
     expect(rows()[1].textContent).toContain('(root directory)')
     await press(rows()[1])
@@ -573,8 +711,8 @@ describe('PushReviewDialog content', () => {
     })
     expect(tokens(rows()[0])).toEqual(['U+202E'])
     expect(tokens(pane())).toEqual(['U+200B', 'U+202E'])
-    expect(tokens(rows()[1])).toEqual(['U+000A'])
-    await press(rows()[1])
+    expect(tokens(rows()[2])).toEqual(['U+000A'])
+    await press(rows()[2])
     expect(tokens(pane())).toEqual(['U+000A'])
   })
 
@@ -591,8 +729,8 @@ describe('PushReviewDialog content', () => {
     // (its first space separates the name from the value).
     expect(spaceMarks(rows()[0])).toBe(3)
     expect(spaceMarks(pane())).toBe(5)
-    expect(spaceMarks(rows()[1])).toBe(1)
-    await press(rows()[1])
+    expect(spaceMarks(rows()[2])).toBe(1)
+    await press(rows()[2])
     expect(spaceMarks(pane())).toBe(1)
   })
 
@@ -644,7 +782,7 @@ describe('PushReviewDialog under the mark', () => {
     expect(shown()).toContain(RESTRICTED_APPROVAL_COPY)
     expect(readiness()).toBe('Loading the review.')
     expect(approve().disabled).toBe(true)
-    expect(shown()).toContain('1 commit, 1 path, 7 objects sent in all so far.')
+    expect(shown()).toContain('1 commit, 2 paths, 7 objects sent in all so far.')
 
     // The rest of the review arrives by itself, and its files are read without being opened.
     await act(async () => secondPage.resolve({ entries: entries.slice(3), objectCount: 7, stackedOn: [] }))
@@ -656,7 +794,7 @@ describe('PushReviewDialog under the mark', () => {
     await act(async () => late.resolve({ kind: 'text', text: 'late\n' }))
     await settle()
     expect(readiness()).toBe('The whole review has loaded: 2 commits and 3 files.')
-    expect(shown()).toContain('2 commits, 3 paths, 7 objects sent in all.')
+    expect(shown()).toContain('2 commits, 5 paths, 7 objects sent in all.')
     // Still on the first commit: nothing was selected on the way.
     expect(rows()[0].getAttribute('aria-current')).toBe('true')
     expect(approve().disabled).toBe(false)
@@ -665,6 +803,54 @@ describe('PushReviewDialog under the mark', () => {
     expect(onApprove).toHaveBeenCalledTimes(1)
     await press(button('Deny'))
     expect(onReject).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for every directory the push sends to be listed as the review says', async () => {
+    const merge = mergeOfTwoSides()
+    const listing = deferred<TreeNode[]>()
+    let listings = 0
+    const overseer = await open({
+      page: serve(merge.entries),
+      files: textOfPath,
+      // The first listing fails, and the second waits.
+      trees: () => listings++ === 0 ? Promise.reject(new Error('The workspace is busy.')) : listing.promise,
+      changed: merge.changed,
+    }, { restricted: true })
+
+    expect(readiness()).toBe('2 directories could not be listed.')
+    expect(approve().disabled).toBe(true)
+    expect(row('(root directory)').textContent).toContain('could not be read')
+    await press(row('dModified'))
+    expect(pane().textContent).toContain('The workspace is busy.')
+
+    await press(button('Retry'))
+    expect(readiness()).toBe('Listing directories: 0 of 2.')
+    expect(approve().disabled).toBe(true)
+
+    await act(async () => listing.resolve(merge.trees()))
+    await settle()
+    expect(overseer.listTree).toHaveBeenCalledTimes(2)
+    expect(readiness()).toBe('The whole review has loaded: 1 commit and 1 file.')
+    expect(entriesShown()).toHaveLength(2)
+    expect(approve().disabled).toBe(false)
+  })
+
+  it('never approves a push whose directory lists otherwise than the review says', async () => {
+    const merge = mergeOfTwoSides()
+    await open({
+      page: serve(merge.entries),
+      files: textOfPath,
+      trees: merge.trees,
+      // right.txt differs from both parents, and the review has no row for it.
+      changed: parent => [...merge.changed(parent), 'right.txt'],
+    }, { restricted: true })
+    expect(readiness()).toBe('1 directory did not list as the review says, so this push cannot be approved here.')
+    expect(approve().disabled).toBe(true)
+    expect(buttons('Retry')).toHaveLength(0)
+    expect(row('(root directory)').textContent).toContain('not as listed')
+    await press(row('(root directory)'))
+    expect(pane().textContent).toContain(
+      'The review lists no change at right.txt, but listing its commit shows it differs from every parent.')
   })
 
   it('lets Deny through while the review is still loading', async () => {
@@ -885,7 +1071,8 @@ describe('PushReviewDialog outside the mark, when a read fails', () => {
     expect(shown()).not.toContain('The workspace is busy.')
     expect(buttons('Retry')).toHaveLength(0)
     expect(rows().map(item => item.textContent)).toEqual([
-      expect.stringContaining('Subject of a'), expect.stringContaining('one.txt'),
+      expect.stringContaining('Subject of a'), expect.stringContaining('(root directory)'),
+      expect.stringContaining('one.txt'),
     ])
   })
 
@@ -904,9 +1091,10 @@ describe('PushReviewDialog outside the mark, when a read fails', () => {
     expect(shown()).not.toContain('The workspace is busy.')
     expect(buttons('Retry')).toHaveLength(0)
     expect(rows().map(item => item.textContent)).toEqual([
-      expect.stringContaining('Subject of a'), expect.stringContaining('one.txt'), expect.stringContaining('two.txt'),
+      expect.stringContaining('Subject of a'), expect.stringContaining('(root directory)'),
+      expect.stringContaining('one.txt'), expect.stringContaining('two.txt'),
     ])
-    expect(shown()).toContain('1 commit, 2 paths, 4 objects sent in all.')
+    expect(shown()).toContain('1 commit, 3 paths, 4 objects sent in all.')
   })
 
   it('offers one Retry for a file read that failed, and reads the file again', async () => {
@@ -1101,11 +1289,11 @@ describe('PushReviewDialog when the push changes while it is read', () => {
     while (buttons('Load more').length > 0) await press(button('Load more'))
     expect(overseer.getPushReview.mock.calls.map(([, cursor]) => cursor)).toEqual([undefined, 2, undefined, 2, 4, 6])
     expect(rows().map(item => item.textContent)).toEqual([
-      expect.stringContaining('Subject of a'), expect.stringContaining('one.txt'),
-      expect.stringContaining('two.txt'), expect.stringContaining('three.txt'),
+      expect.stringContaining('Subject of a'), expect.stringContaining('(root directory)'),
+      expect.stringContaining('one.txt'), expect.stringContaining('two.txt'), expect.stringContaining('three.txt'),
       expect.stringContaining('four.txt'), expect.stringContaining('five.txt'),
     ])
-    expect(shown()).toContain('1 commit, 5 paths, 7 objects sent in all.')
+    expect(shown()).toContain('1 commit, 6 paths, 7 objects sent in all.')
   })
 
   it('starts over when a page repeats an entry already held', async () => {
@@ -1123,7 +1311,7 @@ describe('PushReviewDialog when the push changes while it is read', () => {
     // the read over, before the page after it is asked for.
     expect(overseer.getPushReview.mock.calls.map(([, cursor]) => cursor)).toEqual([undefined, 3, undefined, 3, 6])
     expect(shown()).toContain('This push changed while it was being read, so it was read again from the start.')
-    expect(rows()).toHaveLength(6)
+    expect(rows()).toHaveLength(7)
     expect(approve().disabled).toBe(false)
   })
 
@@ -1157,10 +1345,10 @@ describe('PushReviewDialog when the push changes while it is read', () => {
     await settle()
     expect(shown()).toContain('This push changed while it was being read, so it was read again from the start.')
     expect(rows().map(item => item.textContent)).toEqual([
-      expect.stringContaining('Subject of a'), expect.stringContaining('late.txt'),
-      expect.stringContaining('x.txt'), expect.stringContaining('blob'),
+      expect.stringContaining('Subject of a'), expect.stringContaining('(root directory)'),
+      expect.stringContaining('late.txt'), expect.stringContaining('x.txt'), expect.stringContaining('blob'),
     ])
-    expect(shown()).toContain('1 commit, 2 paths, 5 objects sent in all.')
+    expect(shown()).toContain('1 commit, 3 paths, 5 objects sent in all.')
     expect(approve().disabled).toBe(false)
   })
 
