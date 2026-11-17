@@ -518,7 +518,21 @@ below.
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
 in place in the history): its chats, what it has made (the library's, as beside a chat, opening
-beside the page), and its members, the owner first. Each tab loads what it lists once chosen.
+beside the page), and its members, the owner first. The chats and the library load what they
+list once chosen; who has access is read with the page, for its header.
+
+A workspace is shared whole: the backend gives nothing on its own, so a gadget's Share… (in its
+pane's more menu) opens the workspace's dialog, which says so and starts on Can use
+(`ShareWorkspaceDialog`). Its page's header has who has access, which goes to the members, and
+Share, for whoever may (`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever
+can edit until its data says only the owner may let anyone in (`ownerInvitesOnly`). Someone who
+can only use it is not told who else can. `SharingSession` (plain, tested, like `ChatSession`)
+holds the workspace while the dialog is open: people are invited one at a time to edit or only
+use it, a name that would change nothing says why without asking, and access is taken away from
+a person's row, the server first saying what that does to whom (`RemovalDialog`). Its link (any
+of the workspace's, made here or elsewhere, together) lets anyone in the deployment join from
+the page it was copied on, its key in the fragment, which `ShareLinkGate` redeems before anything
+is shown.
 
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
 and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a

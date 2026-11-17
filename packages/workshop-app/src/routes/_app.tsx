@@ -19,6 +19,7 @@ import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
 import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/settingsSections'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
+import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -29,11 +30,14 @@ import { workspaceLabel } from '@/workspaces/workspaceLabel'
 export const Route = createFileRoute('/_app')({
   component: () => (
     <RpcGate connection={sharedConnection()}>
-      <WorkspacesProvider>
-        <ChatSessionsProvider>
-          <AppFrame />
-        </ChatSessionsProvider>
-      </WorkspacesProvider>
+      {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
+      <ShareLinkGate>
+        <WorkspacesProvider>
+          <ChatSessionsProvider>
+            <AppFrame />
+          </ChatSessionsProvider>
+        </WorkspacesProvider>
+      </ShareLinkGate>
     </RpcGate>
   ),
 })

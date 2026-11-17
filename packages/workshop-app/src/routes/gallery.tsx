@@ -40,6 +40,7 @@ import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
 import { SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
+import { SharingPreview } from '@/gallery/SharingPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
@@ -354,6 +355,7 @@ function Gallery() {
       <TemplateStorePreview />
       <ConnectionsPreview />
       <SetUpConnectionPreview />
+      <SharingPreview />
       <SettingsPreview />
       <HeaderPreview />
       <ShellPreview />

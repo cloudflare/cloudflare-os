@@ -118,14 +118,15 @@ const DropdownMenuRoot = ({
           anchor={inPlace ? triggerRef : anchorRef ?? triggerRef}
           side={side}
           align={align}
-          sideOffset={({ side, anchor }) => {
+          // The side it was placed on, which may not be the one asked for where there is no room.
+          sideOffset={({ side: placed, anchor }) => {
             // In place, overlap the trigger entirely so the popup's near edge sits on the trigger's.
-            if (inPlace) return side === 'top' || side === 'bottom' ? -anchor.height : -anchor.width
+            if (inPlace) return placed === 'top' || placed === 'bottom' ? -anchor.height : -anchor.width
             // Open, a wide trigger is just the × circle at one end. Beside it, sit next to the
             // circle rather than past the rest of the button.
             const pastClose = anchorRef || keepsTrigger ? 0 : anchor.width - anchor.height
             const closeAtEnd = align === 'end'
-            return (side === 'right' && !closeAtEnd) || (side === 'left' && closeAtEnd) ? 8 - pastClose : 8
+            return (placed === 'right' && !closeAtEnd) || (placed === 'left' && closeAtEnd) ? 8 - pastClose : 8
           }}
           collisionPadding={12}
           className="z-50"
@@ -183,10 +184,12 @@ type DropdownMenuItemProps = {
   disabled?: boolean
   /** Text for typeahead when the children are not plain text. */
   label?: string
+  /** It takes something away, such as someone's access, which its colour says. */
+  danger?: boolean
 }
 
-const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label }: DropdownMenuItemProps) => (
-  <Menu.Item onClick={onSelect} disabled={disabled} label={label} className={ITEM_CLASS}>
+const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger }: DropdownMenuItemProps) => (
+  <Menu.Item onClick={onSelect} disabled={disabled} label={label} className={cn(ITEM_CLASS, danger && 'text-kumo-danger')}>
     {Icon && <Icon aria-hidden="true" className="shrink-0" />}
     {children}
   </Menu.Item>
