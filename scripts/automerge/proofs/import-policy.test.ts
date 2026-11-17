@@ -12,7 +12,9 @@ const AUTOMERGE = resolve(PROOFS, "..");
 const SPECIFIER = /(?:^|[\s;])(?:import|export)\s(?:[^'";]*?\sfrom\s*)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 describe("automerge judge imports", () => {
-  const files = readdirSync(PROOFS).filter((name) => name.endsWith(".ts")).map((name) => join(PROOFS, name));
+  const files = readdirSync(PROOFS, { recursive: true, encoding: "utf8" })
+    .filter((path) => path.endsWith(".ts") && !path.startsWith("testdata"))
+    .map((path) => join(PROOFS, path));
 
   it("finds the proof scripts", () => {
     assert.ok(files.some((file) => file.endsWith("deps.ts")));
