@@ -32,7 +32,17 @@ Account consent, grant management, and observer verification still include creat
 `creationConfigurator`, when needed, belongs on the resource type alongside `creatable`.
 Discovery leaves its account UI, approval, simulation, and `applyCreation()` behavior as they
 were, apart from opening on a suggested configuration (below). Creating something still needs
-approval and a chosen account; advertising creation creates or connects nothing.
+approval and a chosen account, except for a `simulatedOnly` type (below); advertising creation
+creates or connects nothing.
+
+A type with no account or provider behind it, such as a sandboxed execution environment, sets
+`simulatedOnly: true`: its simulation is the resource. Creating one reaches nothing outside the
+workspace, so it needs no approval. `createResource()` returns no creation action for it, the
+connection is usable for good without `applyCreation()`, and `listConnectableResources` marks it as
+needing no approval. Because no user need be present, spawned agents may create these types, and
+only these; their system prompt lists them. The connection's own actions still need approval, and,
+as with a pending creation, its reads record no observer requirements and collaborators are not
+verified against it.
 
 A type whose configurator takes a suggestion also sets `creationConfigurationDescription`, saying
 what its configuration is (Google: "the URL of the Google Drive folder to create it in"), and
