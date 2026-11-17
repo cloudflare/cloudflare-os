@@ -174,6 +174,7 @@ async function seed(ws: Workspace): Promise<void> {
   };
   impl.users = {
     idFromString: (id: string) => id,
+    idFromName: (name: string) => name,
     get: () => ({
       whoami: async () => OWNER, getGadget: async () => null,
       // What the workspace tells its owner's account of members' activity, taken and dropped.
