@@ -30,8 +30,19 @@ export type StoredIdentity = {
    * Absent for a user with no SharePoint license.
    */
   sharePointTenant?: string;
+  /**
+   * The tenant's SharePoint name in the user's own geography (`contosoeur`), read from their
+   * OneDrive. Present only where a multi-geo tenant gives that geography another name.
+   */
+  sharePointGeoTenant?: string;
   fetchedAt: number;
 };
+
+/** The SharePoint names the identity's tenant is known by, its root site's first; none with no SharePoint. */
+export function sharePointNames(identity: StoredIdentity): string[] {
+  if (identity.sharePointTenant === undefined) return [];
+  return [identity.sharePointTenant, ...(identity.sharePointGeoTenant ? [identity.sharePointGeoTenant] : [])];
+}
 
 /**
  * A collaborator as their own connection proves them: their tenant and user, and their mailbox's

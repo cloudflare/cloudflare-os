@@ -17,7 +17,7 @@ import {
   DRIVE_SELECT, GUID, SITE_SELECT, parseDrive, parseSite, type GraphDrive, type GraphDriveItem, type GraphList,
   type GraphSite, type GraphSitePage,
 } from "./graph-parse";
-import { accountSource, type StoredIdentity } from "./microsoft-credentials";
+import { accountSource, sharePointNames, type StoredIdentity } from "./microsoft-credentials";
 import { SHAREPOINT_RESOURCE, grantedResourcePatterns, grantedSharePoint, type SharePointAccess, type SharePointGrant } from "./microsoft-env";
 import { extensionOf } from "./sharepoint-content";
 import { itemSiteId, pageWebUrl } from "./sharepoint-overlay";
@@ -602,10 +602,10 @@ export class SharePointConfiguratorUI extends RpcTarget implements SharePointCon
   /** Where a URL sits in the picker: its row, its tab, and the places above it. Null for "all". */
   async #locate(url: string): Promise<{ row: SharePointBrowserItem; tab: string; path: SharePointBrowserCrumb[] } | null> {
     const { identity, grant } = await this.#state();
-    const tenant = identity.sharePointTenant;
-    if (tenant === undefined) throw new UnresolvableUrlError("This Microsoft 365 account has no SharePoint.");
+    const tenants = sharePointNames(identity);
+    if (tenants.length === 0) throw new UnresolvableUrlError("This Microsoft 365 account has no SharePoint.");
     return await this.#read(async api => {
-      const resolved = await resolveSharePointUrl(api, url, tenant, { selected: grant?.sites === "selected" });
+      const resolved = await resolveSharePointUrl(api, url, tenants, { selected: grant?.sites === "selected" });
       const scope = resolved.scope;
       const siteCrumb = async (siteId: string) => {
         const site = await reads.getSite(api, siteId);

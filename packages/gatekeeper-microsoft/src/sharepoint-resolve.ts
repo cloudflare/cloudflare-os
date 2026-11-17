@@ -122,15 +122,16 @@ async function fromSitePath(api: GraphApi, url: URL): Promise<ResolvedUrl | null
 
 /**
  * Resolves a URL to the scope it names.
- * @param tenant The connected tenant's SharePoint name (`contoso` for contoso.sharepoint.com); a
- * URL on any other tenant's host is refused before Graph is asked.
+ * @param tenants The connected tenant's SharePoint names (`contoso` for contoso.sharepoint.com, and
+ * a multi-geo tenant's other name in the user's geography), its root site's first; a URL on any
+ * other tenant's host is refused before Graph is asked.
  * @param options.selected Whether the grant reaches only the sites granted to the app. Graph then
  * still answers any site's metadata, so a site is checked by opening its library.
  * @throws UnresolvableUrlError for anything that is not a reachable SharePoint object, and its
  * SiteNotGrantedError for a site the app wasn't granted.
  */
-export async function resolveSharePointUrl(api: GraphApi, raw: string, tenant: string, options: { selected?: boolean } = {}): Promise<ResolvedUrl> {
-  const resolved = await resolveUrl(api, raw, tenant);
+export async function resolveSharePointUrl(api: GraphApi, raw: string, tenants: readonly string[], options: { selected?: boolean } = {}): Promise<ResolvedUrl> {
+  const resolved = await resolveUrl(api, raw, tenants);
   if (options.selected && resolved.scope.kind === "site") {
     const drive = await api.request<unknown>("GET", `/sites/${resolved.scope.siteId}/drive`, { query: { $select: "id" }, allow: MISS });
     if (drive === null) throw new SiteNotGrantedError();
@@ -143,20 +144,20 @@ export async function resolveSharePointUrl(api: GraphApi, raw: string, tenant: s
  * this step asks Graph, so a caller may pass these refusals on where it must keep Graph's quiet.
  * @throws UnresolvableUrlError for a URL that is not SharePoint's, or is another tenant's.
  */
-export function checkSharePointUrl(raw: string, tenant: string): URL {
+export function checkSharePointUrl(raw: string, tenants: readonly string[]): URL {
   const url = parseSharePointUrl(raw);
   if (url === null) throw new UnresolvableUrlError("That isn't a SharePoint or OneDrive link.");
-  if (parseSharePointHost(url.hostname)!.tenant !== tenant) {
+  if (!tenants.includes(parseSharePointHost(url.hostname)!.tenant)) {
     throw new UnresolvableUrlError(`That link is to another organization's SharePoint (${url.hostname}), ` +
       "which this connection can't open.");
   }
   return url;
 }
 
-async function resolveUrl(api: GraphApi, raw: string, tenant: string): Promise<ResolvedUrl> {
-  const url = checkSharePointUrl(raw, tenant);
+async function resolveUrl(api: GraphApi, raw: string, tenants: readonly string[]): Promise<ResolvedUrl> {
+  const url = checkSharePointUrl(raw, tenants);
   if (isAllUrl(url)) {
-    return { scope: { kind: "all" }, name: "SharePoint & OneDrive", webUrl: allUrl(tenant) };
+    return { scope: { kind: "all" }, name: "SharePoint & OneDrive", webUrl: allUrl(tenants[0]) };
   }
 
   const shareId = shareIdFor(normalizeForShares(url));

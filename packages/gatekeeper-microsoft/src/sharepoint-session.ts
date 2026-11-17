@@ -19,6 +19,7 @@ import { authorizeRead, isProvisional, type ReadAuthority } from "./binding";
 import { convertToText } from "@gadgets/office-content";
 import { GraphApiError, type GraphApi } from "./graph-api";
 import { parseCanvas, splitSiteId, type GraphColumn, type GraphDrive, type GraphDriveItem, type GraphList, type GraphListItem, type GraphSite, type GraphSitePage } from "./graph-parse";
+import { sharePointNames } from "./microsoft-credentials";
 import type { SharePointAccess, SharePointSites } from "./microsoft-env";
 import { editDocx } from "./content/docx-edit";
 import { editPptx } from "./content/pptx-edit";
@@ -487,12 +488,12 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
 
   async resolveUrl(url: string): Promise<ResolvedLink> {
     const owner = await this.ctx.host.owner();
-    const tenant = owner.sharePointTenant;
-    if (tenant === undefined) throw new Error("This Microsoft 365 account has no SharePoint.");
+    const tenants = sharePointNames(owner);
+    if (tenants.length === 0) throw new Error("This Microsoft 365 account has no SharePoint.");
     const scope = this.ctx.host.scope;
     let parsed: URL;
     try {
-      parsed = checkSharePointUrl(url, tenant);
+      parsed = checkSharePointUrl(url, tenants);
     } catch (error) {
       if (error instanceof UnresolvableUrlError) throw new Error(error.message, { cause: error });
       throw error;
@@ -504,7 +505,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
     if ("siteId" in scope && splitSiteId(scope.siteId)?.host !== parsed.hostname) throw new OutsideScopeError();
     let resolved;
     try {
-      resolved = await this.ctx.host.read(api => resolveSharePointUrl(api, url, tenant, { selected: this.ctx.host.sites === "selected" }));
+      resolved = await this.ctx.host.read(api => resolveSharePointUrl(api, url, tenants, { selected: this.ctx.host.sites === "selected" }));
     } catch (error) {
       if (!(error instanceof UnresolvableUrlError)) throw error;
       // "all" covers whatever the owner can open, so there the reason gives nothing away.

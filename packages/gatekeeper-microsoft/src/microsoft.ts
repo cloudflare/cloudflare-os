@@ -53,7 +53,8 @@ import { findUserByMail, organizationDomains } from "./directory";
 import { GraphApi, MAX_BATCH_REQUESTS, isGraphAuthError } from "./graph-api";
 import { SITE_SELECT, parseMe, parseSite } from "./graph-parse";
 import {
-  RECONNECT_MESSAGE, accountSource, type MicrosoftVerifierApi, type PublicGrant, type StoredIdentity, type VerifiedIdentity,
+  RECONNECT_MESSAGE, accountSource, sharePointNames,
+  type MicrosoftVerifierApi, type PublicGrant, type StoredIdentity, type VerifiedIdentity,
 } from "./microsoft-credentials";
 import {
   ALL_RESOURCES,
@@ -226,15 +227,21 @@ function idClaims(idToken: string | undefined, clientId: string): IdClaims {
 /**
  * Reads the signed-in user and their tenant's SharePoint host. The host comes from the root site;
  * a user with no SharePoint license gets a 403 or 404 there and connects without one, to be told
- * so when they try to bind something.
+ * so when they try to bind something. A multi-geo tenant has a host per geography, and the root
+ * site is in its first, so the user's own OneDrive is read for their geography's. Connecting
+ * doesn't need it, so a failure there only leaves that host unlearned. The other geographies' hosts
+ * stay unknown: Graph lists them for an application, not for a user.
  */
 async function fetchIdentity(accessToken: string, tenantId: string): Promise<StoredIdentity> {
   const api = new GraphApi(accessToken);
-  const [me, root] = await Promise.all([
+  const [me, root, drive] = await Promise.all([
     api.get<unknown>("/me", { query: { $select: "id,displayName,userPrincipalName,mail" } }).then(parseMe),
     api.find<unknown>("/sites/root", { query: { $select: SITE_SELECT } }),
+    api.find<{ webUrl?: unknown }>("/me/drive", { query: { $select: "webUrl" } }).catch(() => null),
   ]);
   const host = root === null ? null : parseSharePointHost(new URL(parseSite(root).webUrl).hostname);
+  const oneDrive = typeof drive?.webUrl === "string" && URL.canParse(drive.webUrl)
+    ? parseSharePointHost(new URL(drive.webUrl).hostname) : null;
   return {
     tenantId,
     objectId: me.id,
@@ -242,6 +249,7 @@ async function fetchIdentity(accessToken: string, tenantId: string): Promise<Sto
     ...(me.userPrincipalName ? { username: me.userPrincipalName } : {}),
     ...(me.mail ? { email: me.mail } : {}),
     ...(host ? { sharePointTenant: host.tenant } : {}),
+    ...(host && oneDrive && oneDrive.tenant !== host.tenant ? { sharePointGeoTenant: oneDrive.tenant } : {}),
     fetchedAt: Date.now(),
   };
 }
@@ -741,7 +749,10 @@ export class UserAccount extends DurableObject<Env> {
       }
       // A license removed since connecting leaves the old host: it still names the right tenant.
       const sharePointTenant = fresh.sharePointTenant ?? stored.sharePointTenant;
-      const updated = { ...fresh, ...(sharePointTenant ? { sharePointTenant } : {}) };
+      const sharePointGeoTenant = fresh.sharePointGeoTenant ?? stored.sharePointGeoTenant;
+      const updated = {
+        ...fresh, ...(sharePointTenant ? { sharePointTenant } : {}), ...(sharePointGeoTenant ? { sharePointGeoTenant } : {}),
+      };
       this.ctx.storage.kv.put<StoredIdentity>("identity", updated);
       return updated;
     } catch (error) {
@@ -941,7 +952,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let resolved;
     try {
       resolved = await source.run(creds => resolveSharePointUrl(new GraphApi(creds.accessToken), url,
-        identity.sharePointTenant!, { selected }), { replayable: true });
+        sharePointNames(identity), { selected }), { replayable: true });
     } catch (error) {
       if (error instanceof UnresolvableUrlError) throw new Error(error.message, { cause: error });
       throw error;

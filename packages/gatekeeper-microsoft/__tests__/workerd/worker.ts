@@ -13,7 +13,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarGatekeeperProps, OutlookGatekeeperProps, SharePointAccess, SharePointGatekeeperProps } from "../../src/microsoft-env.js";
 import { GraphApi } from "../../src/graph-api.js";
-import { accountSource } from "../../src/microsoft-credentials.js";
+import { accountSource, sharePointNames } from "../../src/microsoft-credentials.js";
 import { SharePointConfiguratorUI } from "../../src/sharepoint-configurator.js";
 import { resolveSharePointUrl } from "../../src/sharepoint-resolve.js";
 import { resolveOutlookUrl } from "../../src/outlook-resolve.js";
@@ -383,10 +383,10 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async resolve(userObjectId: string, url: string): Promise<Outcome<unknown>> {
     return await outcome(async () => {
       const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
-      const tenant = (await account.getIdentity()).sharePointTenant;
-      if (tenant === undefined) throw new Error("no SharePoint");
+      const tenants = sharePointNames(await account.getIdentity());
+      if (tenants.length === 0) throw new Error("no SharePoint");
       return await accountSource(this.ctx.exports, userObjectId)
-        .run(creds => resolveSharePointUrl(new GraphApi(creds.accessToken), url, tenant), { replayable: true });
+        .run(creds => resolveSharePointUrl(new GraphApi(creds.accessToken), url, tenants), { replayable: true });
     });
   }
 
