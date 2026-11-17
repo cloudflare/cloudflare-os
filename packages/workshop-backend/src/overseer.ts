@@ -1,4 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
+import { KeyedConcurrencyLimiter } from "./concurrency-limiter.js";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, AgentScheduleInfo, AgentWorkspaceInfo, AgentWorkspaceOutputs, HookRunInfo, ScheduleChangeKind, ScheduleManualRunResult, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind, WorkspaceTemplate, WorkspaceTemplateBinding, WorkspaceCopyReport } from '@gadgets/workshop-shared/api'
 import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, workspaceUrl, writeWorkspacePlacement } from "./workspace-placements.js";
@@ -12286,7 +12287,7 @@ const SESSION_PROMISE_METHODS = new Set(["then", "catch", "finally", "constructo
  * with "Worker exceeded memory limit." at once. Stubs the call itself returns are separate
  * references and outlive the session's disposal.
  */
-export function releasingSessionProxy(session: Promise<any>): any {
+export function releasingSessionProxy(session: Promise<any>, onRelease?: () => void): any {
   // A failure to open the session reaches the caller through the call made on it; observing it
   // here as well keeps it from also surfacing as an unhandled rejection.
   let opened = session.then(s => s, () => undefined);
@@ -12294,7 +12295,7 @@ export function releasingSessionProxy(session: Promise<any>): any {
   let release = () => {
     if (released) return;
     released = true;
-    void opened.then(s => s?.[Symbol.dispose]?.());
+    void opened.then(s => s?.[Symbol.dispose]?.()).finally(onRelease);
   };
 
   return new Proxy(session, {
@@ -12324,6 +12325,57 @@ export function releasingSessionProxy(session: Promise<any>): any {
 }
 
 /**
+ * The most binding calls one workspace (overseer) can have open at once in a loopback isolate.
+ *
+ * A scheduled gadget that fans out with Promise.all can issue hundreds of binding calls in the
+ * same instant. They all land in one stateless loopback isolate, each holding an invocation, an
+ * overseer session and its response payload, and on 2026-11-16 about 900 of them pushed the
+ * isolate past its memory limit, failing every open call together. Calls past the cap wait for
+ * a slot before opening their session, so a fan-out runs in waves instead.
+ */
+export const LOOPBACK_CALLS_PER_WORKSPACE = 32;
+
+const loopbackLimiter = new KeyedConcurrencyLimiter(LOOPBACK_CALLS_PER_WORKSPACE);
+
+/**
+ * The loopback's session wrapper with a concurrency cap: takes a slot on `limiter` under `key`
+ * before opening the session with `open`, and frees it once the call settles and the session is
+ * disposed. With a slot free it opens the session straight away (keeping promise pipelining);
+ * otherwise each method call waits for a slot, then opens the session and makes the call.
+ */
+export function limitedSessionProxy(
+    limiter: KeyedConcurrencyLimiter, key: string, open: () => Promise<any>): any {
+  let release = limiter.tryAcquire(key);
+  if (release) return openReleasing(open, release);
+
+  // The slot is requested only when a method is called, so a wrapper that is never called
+  // cannot hold one.
+  return new Proxy(Promise.resolve(), {
+    get(target, prop) {
+      let value = Reflect.get(target, prop, target);
+      if (typeof prop !== "string" || SESSION_PROMISE_METHODS.has(prop)) return value;
+      return (...args: unknown[]) => limiter.acquire(key).then(release => {
+        let session = openReleasing(open, release);
+        return session[prop](...args);
+      });
+    },
+    getPrototypeOf() {
+      return WorkerEntrypoint.prototype;
+    },
+  });
+}
+
+function openReleasing(open: () => Promise<any>, release: () => void): any {
+  let session: Promise<any>;
+  try {
+    session = open();
+  } catch (err) {
+    session = Promise.reject(err);
+  }
+  return releasingSessionProxy(session, release);
+}
+
+/**
  * Horrible hack: At present the `env` of a dynamic isolate can contain ServiceStubs but cannot
  * contain RpcStubs. But if we ask the gatekeeper to open a session, we get an RpcStub. So we
  * actually initialize each binding to be a `ServiceStub` pointing at a `GatekeeperLoopback` whose
@@ -12341,11 +12393,9 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
     let stub: DurableObjectStub<OverseerDurableObject> =
         ns.get(ns.idFromString(ctx.props.overseerId));
 
-    // @ts-ignore: LSP-only RPC types bug, "type instantiation is excessively deep"
-    let session = stub.startGatekeeperSession(
-        this.ctx.props.target, this.ctx.props.caller);
-
-    return releasingSessionProxy(session);
+    return limitedSessionProxy(loopbackLimiter, ctx.props.overseerId, () =>
+        // @ts-ignore: LSP-only RPC types bug, "type instantiation is excessively deep"
+        stub.startGatekeeperSession(this.ctx.props.target, this.ctx.props.caller));
   }
 
   /**

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RpcTarget, env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { releasingSessionProxy, type OverseerDurableObject } from "../src/overseer.js";
+import { limitedSessionProxy, releasingSessionProxy, type OverseerDurableObject } from "../src/overseer.js";
+import { KeyedConcurrencyLimiter } from "../src/concurrency-limiter.js";
 import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage";
 
 declare module "cloudflare:workers" {
@@ -92,5 +93,36 @@ describe("GatekeeperLoopback session", () => {
     expect(loopback.then).toBe(Reflect.get(session, "then", session));
     expect(Object.getPrototypeOf(loopback)).not.toBe(Object.getPrototypeOf(session));
     await loopback.ping(1);
+  });
+});
+
+describe("GatekeeperLoopback concurrency cap", () => {
+  it("runs a fan-out past the cap in waves and releases every slot", async () => {
+    let open = 0, peak = 0, disposed = 0;
+    let overseer = await overseerWith(async () => {
+      open++;
+      peak = Math.max(peak, open);
+      return new FakeSession(() => { open--; disposed++; });
+    });
+    let limiter = new KeyedConcurrencyLimiter(4);
+    let calls = Array.from({ length: 20 }, (_, i) =>
+        limitedSessionProxy(limiter, "ws", () => overseer.startGatekeeperSession(TARGET, CALLER))
+            .ping(i));
+    let results = await Promise.all(calls);
+    expect(results.map((r: any) => r.pong)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+    await vi.waitFor(() => expect(limiter.stats("ws")).toEqual({ active: 0, waiting: 0 }));
+    // Remote disposal lands asynchronously, so allow it to catch up before counting.
+    await vi.waitFor(() => expect(disposed).toBe(20));
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it("frees the slot when opening the session fails", async () => {
+    let overseer = await overseerWith(async () => { throw new Error("restarting"); });
+    let limiter = new KeyedConcurrencyLimiter(1);
+    let make = () =>
+        limitedSessionProxy(limiter, "ws", () => overseer.startGatekeeperSession(TARGET, CALLER));
+    await expect(make().ping(1)).rejects.toThrow(/restarting/);
+    await expect(make().ping(2)).rejects.toThrow(/restarting/);
+    await vi.waitFor(() => expect(limiter.stats("ws")).toEqual({ active: 0, waiting: 0 }));
   });
 });
