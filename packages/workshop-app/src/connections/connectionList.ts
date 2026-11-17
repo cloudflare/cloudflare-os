@@ -103,6 +103,32 @@ export const missingAccess = (connection: Connection & { kind: 'account' }): Con
   return granted === undefined ? [] : accessChoices(connection).filter(({ id }) => !granted.includes(id))
 }
 
+/** Whether an account may reach a kind of resource, by what it was given; one that does not say has everything. */
+export const isGranted = (granted: readonly string[] | undefined, urlPattern: string) =>
+  granted === undefined || granted.includes(urlPattern)
+
+// The kind a kind of resource is shown with: itself, unless it is shown with another.
+const leadOf = (resource: SupportedResource) => resource.groupedWith ?? resource.urlPattern
+
+/**
+ * The kinds of resource a service shows as one with `urlPattern` (`SupportedResource.groupedWith`),
+ * as Google Drive shows a folder, a file and a Doc: one form chooses among them all, and giving
+ * access to one asks for all of them. Just `urlPattern` for a kind shown on its own.
+ */
+export const groupedKinds = (resources: readonly SupportedResource[], urlPattern: string) => {
+  const resource = resources.find((candidate) => candidate.urlPattern === urlPattern)
+  if (!resource) return [urlPattern]
+  const lead = leadOf(resource)
+  return resources.filter((candidate) => leadOf(candidate) === lead).map((candidate) => candidate.urlPattern)
+}
+
+/**
+ * The account of `vendorId` that was not among `before`, the ids of those there were when another
+ * was asked for: the one a connect flow made. One signed in to again keeps its id, so is not it.
+ */
+export const newAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, before: ReadonlySet<number>) =>
+  accounts.find((account) => account.vendorId === vendorId && !before.has(account.id))
+
 const collator = new Intl.Collator('en', { sensitivity: 'base', numeric: true })
 
 // By service, A to Z, and a service's accounts by whose they are.

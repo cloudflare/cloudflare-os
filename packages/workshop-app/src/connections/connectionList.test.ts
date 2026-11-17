@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { narrowList } from '@/components/listView'
-import { accessChoices, accountLabel, connectionList, connectionsOf, missingAccess, unreachableServices, type ConnectedAccount, type Connection } from './connectionList'
+import { accessChoices, accountLabel, connectionList, connectionsOf, groupedKinds, isGranted, missingAccess, newAccountOf, unreachableServices, type ConnectedAccount, type Connection } from './connectionList'
 
 const resource = (title: string, grantable = false): SupportedResource => ({ urlPattern: `https://${title.toLowerCase()}.example/*`, title, description: '', grantable })
 const vendor = (id: string, displayName: string, rest: Partial<GatekeeperVendorInfo['description']> = {}, supportedResources: SupportedResource[] = []): GatekeeperVendorInfo => ({
@@ -131,5 +131,27 @@ describe('connectionList', () => {
     expect(left('issue')).toEqual(['Jira (ada)', 'Jira'])
     expect(left('lovelace')).toEqual(['Google (Ada Lovelace · ada@work.example)'])
     expect(left('home.example')).toEqual(['Google (ada@home.example)'])
+  })
+})
+
+const kind = (urlPattern: string, more: Partial<SupportedResource> = {}) => ({ urlPattern, title: urlPattern, ...more }) as SupportedResource
+const accountNumbered = (id: number, vendorId = 'github') => ({ id, vendorId }) as ConnectedAccount
+
+describe('setting up a connection', () => {
+  it('offers the kinds shown with the one asked for, not those shown apart', () => {
+    const resources = [kind('drive'), kind('drive/file', { groupedWith: 'drive' }), kind('drive/doc', { groupedWith: 'drive' }), kind('calendar')]
+    expect(groupedKinds(resources, 'drive/doc')).toEqual(['drive', 'drive/file', 'drive/doc'])
+    expect(groupedKinds(resources, 'calendar')).toEqual(['calendar'])
+    expect(groupedKinds(resources, 'unknown')).toEqual(['unknown'])
+  })
+
+  it('takes an account that says nothing of what it may reach to reach everything', () => {
+    expect(isGranted(undefined, 'mail')).toBe(true)
+    expect(isGranted(['calendar'], 'mail')).toBe(false)
+  })
+
+  it('finds the account a connect flow made, not one signed in to again', () => {
+    expect(newAccountOf([accountNumbered(1), accountNumbered(2), accountNumbered(3, 'google')], 'github', new Set([1]))?.id).toBe(2)
+    expect(newAccountOf([accountNumbered(1)], 'github', new Set([1]))).toBeUndefined()
   })
 })

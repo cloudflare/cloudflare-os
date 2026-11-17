@@ -89,7 +89,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       // TODO: confirm, then `Overseer.setAutoApprovedActionKind`, with the auto-approval settings.
       onAlwaysApprove: onAlwaysApprove ?? unavailable('Standing approvals'),
       onHookEnabledChange: actions.setHookEnabled,
-      // TODO: the connect flow, which ends in `Overseer.acceptConnectionRequest`.
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
       onDenyConnection: actions.denyConnection,
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),

@@ -123,10 +123,15 @@ export type HookItem = Row & {
 export type ConnectionItem = Row & {
   kind: 'connection'
   requestId: string
+  vendorId: string
   vendorName: string
   logoUrl?: string
   /** What is being asked for: the kind of resource, or its address. */
   scope?: string
+  /** The kind of resource asked for (`SupportedResource.urlPattern`); absent for an agent. */
+  resourceUrlPattern?: string
+  /** Which one, as far as the agent could tell. */
+  resourceUrl?: string
   reason: string
   state: 'pending' | 'connected' | 'denied'
 }
@@ -645,9 +650,12 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           kind: 'connection',
           id,
           requestId: message.requestId,
+          vendorId: message.vendorId,
           vendorName: message.vendorName,
           logoUrl: message.vendorLogoUrl,
           scope: message.resourceTitle ?? message.resourceUrl,
+          resourceUrlPattern: message.resourceUrlPattern,
+          resourceUrl: message.resourceUrl,
           reason: message.reason,
           state: message.state === 'accepted' ? 'connected' : message.state,
         }))

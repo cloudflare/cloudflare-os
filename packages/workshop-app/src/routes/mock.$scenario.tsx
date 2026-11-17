@@ -60,7 +60,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
       ...mock,
       notice: new ConnectionNotice(),
       // What the real connect flow ends with, and what confirming a standing approval does.
-      onSetUpConnection: (requestId: string) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
+      onSetUpConnection: ({ requestId }: { requestId: string }) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
       onAlwaysApprove: ({ gatekeeperId, actionKind }: Parameters<NonNullable<ChatPaneProps['onAlwaysApprove']>>[0]) =>
         mock.overseer.setAutoApprovedActionKind(gatekeeperId, actionKind),
     }

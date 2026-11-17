@@ -1,9 +1,10 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, isApp, itemPage, validateAsideParam } from '@/aside/asideItems'
 import { carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
-import type { ChatAttachment, OutputItem } from '@/chat/chatItems'
+import type { ChatAttachment, ConnectionItem, OutputItem } from '@/chat/chatItems'
 import { ChatPane } from '@/chat/ChatPane'
+import { SetUpConnection, type ConnectionRequest } from '@/connections/SetUpConnection'
 
 /**
  * One chat in a workspace, and what is shown beside it (`?open=`, see `asideItems`), which the
@@ -42,7 +43,13 @@ function WorkspaceChat() {
       router.buildLocation({ ...itemPage(workspaceId, { kind: 'output', workpieceId: output.workpieceId }, isApp(output)), search: { chat: chatId } }).href,
     [router, workspaceId, chatId],
   )
+  // The connection request being set up, kept as the dialog closes so that it does not change as
+  // it goes, and left behind with its chat.
+  const at = `${workspaceId}/${chatId}`
+  const [setUp, setSetUp] = useState<{ at: string; request: ConnectionRequest; open: boolean }>()
+  const setUpConnection = useCallback((request: ConnectionItem) => setSetUp({ at, request, open: true }), [at])
   return (
+    <>
     <ChatPane
       // Keyed, so each chat gets its own session rather than reusing the previous one's.
       key={`${workspaceId}/${chatId}`}
@@ -58,6 +65,17 @@ function WorkspaceChat() {
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}
       outputHref={outputHref}
+      onSetUpConnection={setUpConnection}
     />
+    {setUp?.at === at && (
+      <SetUpConnection
+        key={setUp.request.requestId}
+        workspaceId={workspaceId}
+        request={setUp.request}
+        open={setUp.open}
+        onOpenChange={(open) => setSetUp((current) => current && { ...current, open })}
+      />
+    )}
+    </>
   )
 }
