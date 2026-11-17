@@ -39,7 +39,7 @@ export interface BulkFailure {
  *
  * The latch is set by an observation the agent makes (`overseer.ts`), so it can land mid-run, and
  * it means every remaining request is to be read on its own. The kernel still honours an explicit
- * approval — the latch only disables the automatic ones — so nothing refuses these for us. The
+ * approval — the latch only limits the automatic ones — so nothing refuses these for us. The
  * user authorised a batch over a workspace that had not yet read sensitive data, and that is no
  * longer the workspace they authorised it over.
  */

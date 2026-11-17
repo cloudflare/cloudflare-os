@@ -6,7 +6,9 @@ import { useCallback, useState } from 'react'
  * Each surface reads the rule list for itself, so a change made in one is invisible to the
  * others until they read again. The Activity pane is the one place a standing rule is turned
  * off, and the tray labels its requests from the same rules, so a list left stale in either
- * misstates what the kernel will apply.
+ * misstates what the kernel will apply. Under the restricted-data latch a request decided by hand
+ * is reported as well: it may be one whose rule the kernel stopped applying, which only reading
+ * again shows.
  */
 export interface AutoApprovalChannel {
   /** Bumped each time a change settles, so the other surfaces re-read the rule list. */

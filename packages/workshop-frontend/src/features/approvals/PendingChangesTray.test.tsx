@@ -3,6 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ADMIN_AGENT_ACTIONS } from '@gadgets/workshop-shared/admin-agent'
 import { PendingChangesTray } from './PendingChangesTray'
 import type { PendingChangeActions } from './PendingChangeGroupRow'
 import type {
@@ -13,6 +14,8 @@ import type { BulkResolve } from './useBulkResolve'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const APPEND = { tag: 'append', label: 'Append a slide' }
+const NOTE = ADMIN_AGENT_ACTIONS.issueReportNote.kind
+const REPLY = ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind
 
 let root: Root | undefined
 afterEach(() => {
@@ -69,6 +72,8 @@ async function render(options: {
   groups: PendingChangeGroup[]
   enabledTags?: string[]
   restricted?: boolean
+  /** The tags the kernel lets a rule apply under the latch. Unrestricted, it is every tag. */
+  appliesWhileRestricted?: string[]
   ready?: boolean
   bulk?: BulkResolve
   actions?: Partial<PendingChangeActions>
@@ -90,6 +95,8 @@ async function render(options: {
       groups={options.groups}
       rules={{
         isEnabled: (_gatekeeperId, tag) => (options.enabledTags ?? []).includes(tag),
+        applies: (_gatekeeperId, tag) => options.restricted !== true ||
+          (options.appliesWhileRestricted ?? []).includes(tag),
         restricted: options.restricted === true,
       }}
       ready={options.ready ?? true}
@@ -123,11 +130,53 @@ describe('PendingChangesTray', () => {
   it('offers no bulk resolve while the workspace is restricted', async () => {
     await render({ groups: [group([request(1), request(2)])], restricted: true })
 
-    // RESTRICTED_APPROVAL_COPY asks the approver to read every request in full, and the latch
-    // already refuses every auto-approval rule; bulk apply would be the first path around both.
+    // RESTRICTED_APPROVAL_COPY asks the approver to read every request in full, and under the
+    // latch a rule applies only the few kinds the kernel lets it; bulk apply would be the first
+    // path around both.
     expect(button('Apply all 2')).toBeUndefined()
     expect(button('Discard all')).toBeUndefined()
-    expect(document.body.textContent).toContain('every request is reviewed on its own')
+    expect(document.body.textContent).toContain(
+      'This workspace has read sensitive data, so requests are approved one at a time.')
+  })
+
+  it('offers a rule while restricted only for a kind the kernel says one applies', async () => {
+    const { calls } = await render({
+      groups: [group([
+        request(1, { autoApprovable: true, actionKind: REPLY, title: 'Reply to the reporter' }),
+        request(2, { autoApprovable: true, actionKind: NOTE, title: 'Note the cause' }),
+      ])],
+      restricted: true,
+      appliesWhileRestricted: [NOTE.tag],
+    })
+    await openGroup()
+
+    const always = buttons().filter(b => b.textContent === 'Always approve')
+    expect(always).toHaveLength(1)
+    await click(always[0])
+    expect(calls).toEqual(['always:2'])
+    expect(document.body.textContent).not.toContain('Standing rule enabled')
+  })
+
+  it('says a rule covers a request while restricted where the kernel applies its kind', async () => {
+    const { calls } = await render({
+      groups: [group([
+        request(1, { autoApprovable: true, actionKind: REPLY, title: 'Reply to the reporter' }),
+        request(2, { autoApprovable: true, actionKind: NOTE, title: 'Note the cause' }),
+      ])],
+      enabledTags: [NOTE.tag, REPLY.tag],
+      restricted: true,
+      appliesWhileRestricted: [NOTE.tag],
+    })
+    await openGroup()
+
+    // The reply's rule is on too, and applies nothing: it is the manual gate the note waits on.
+    expect(document.body.textContent)
+      .toContain('Standing rule enabled, waiting on "Reply to the reporter" above it.')
+    expect(button('Always approve')).toBeUndefined()
+    // Nothing is approved together, even with a rule on.
+    expect(button('Apply all 2')).toBeUndefined()
+    await click(buttons().filter(b => b.textContent === 'Approve')[1])
+    expect(calls).toEqual(['approve:2'])
   })
 
   it('leaves a connection with a pending creation out of bulk resolve', async () => {
