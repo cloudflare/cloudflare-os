@@ -354,12 +354,19 @@ export const reviewTooLarge = (entries: readonly PushReviewEntry[], objectCount:
   return size > READ_FILES_RESPONSE_BUDGET
 }
 
+/** What the review says of a push the kernel could not list whole, of which it holds `entries`. */
+export const tooLargeToReview = (entries: number): string =>
+  `This push is too large to review whole: ${entries === 0 ? 'none of it' : `only its first ${plural(entries, 'entry', 'entries')}`} ` +
+  'could be listed.'
+
 /** How far the review's pages have loaded. */
 export type ReviewProgress = {
   /** Entries loaded so far. */
   entries: number
   /** Every page is in and the listing is consistent. */
   done: boolean
+  /** The kernel could list no further than the entries loaded (PushReview.truncated). */
+  truncated: boolean
   loading: boolean
   failed: boolean
 }
@@ -388,11 +395,13 @@ export type ReviewReadiness =
  * come back as text, with no read in flight, failed or returning something other than the
  * review lists. That is all Approve waits for, however the review was loaded: by itself, or a
  * page and a batch of files at a time by an approver whose push is too large to load unasked.
- * What the approver opened or selected plays no part.
+ * What the approver opened or selected plays no part. A push the kernel could not list whole is
+ * never ready: no loading shows the rest of it.
  */
 export const reviewReadiness = (review: ReviewProgress, files: FilesProgress): ReviewReadiness => {
   if (review.loading) return { ready: false, reason: 'Loading the review.' }
   if (review.failed) return { ready: false, reason: 'The review could not be loaded.', retry: 'review' }
+  if (review.truncated) return { ready: false, reason: `${tooLargeToReview(review.entries)} It cannot be approved here.` }
   if (!review.done) {
     return {
       ready: false,

@@ -20,6 +20,8 @@ type ReviewState = {
   next: number | undefined
   pages: number
   done: boolean
+  /** A page came back cut short (PushReview.truncated): no call reads further. */
+  truncated: boolean
   loading: boolean
   error: string | undefined
   restarts: number
@@ -28,7 +30,7 @@ type ReviewState = {
 
 const unread = (actionId: number): ReviewState => ({
   actionId, entries: [], objectCount: 0, stackedOn: [], next: undefined, pages: 0, done: false,
-  loading: true, error: undefined, restarts: 0, restarted: false,
+  truncated: false, loading: true, error: undefined, restarts: 0, restarted: false,
 })
 
 // The cursor counts entries from the start, so pages line up only while the kernel lists the
@@ -38,7 +40,9 @@ const unread = (actionId: number): ReviewState => ({
 // object the store lacked arrived, and turned entries after the cursor into entries before it).
 // Each drops what was read. What this proves is that every object the push sends is in the
 // review once; an entry that sends no object could still go missing, which the kernel rules out
-// for a push queued from a workspace that holds restricted data.
+// for a push queued from a workspace that holds restricted data. A page that came back cut
+// short ends the reading with what it holds: the listing is not whole, so nothing is checked of
+// it as a whole, and it is never `done`.
 const withPage = (state: ReviewState, page: PushReview): ReviewState => {
   const keys = new Set(state.entries.map(entryKey))
   const repeats = page.entries.some(entry => {
@@ -48,14 +52,15 @@ const withPage = (state: ReviewState, page: PushReview): ReviewState => {
     return false
   })
   const entries = [...state.entries, ...page.entries]
-  const last = page.next === undefined
+  const truncated = page.truncated === true
+  const last = page.next === undefined && !truncated
   const changed = repeats ||
     (state.pages > 0 && page.objectCount !== state.objectCount) ||
-    (last ? sentObjectCount(entries) !== page.objectCount : page.entries.length === 0)
+    (last ? sentObjectCount(entries) !== page.objectCount : !truncated && page.entries.length === 0)
   if (!changed) {
     return {
       ...state, entries, objectCount: page.objectCount, stackedOn: page.stackedOn, next: page.next,
-      pages: state.pages + 1, done: last,
+      pages: state.pages + 1, done: last, truncated,
     }
   }
   const again = { ...unread(state.actionId), restarted: true }
@@ -69,8 +74,9 @@ const withPage = (state: ReviewState, page: PushReview): ReviewState => {
  * is read at once. With `loadAll` the rest follow by themselves for as long as the review is one
  * the dialog loads whole (`reviewTooLarge`); otherwise, and from then on, a page is read on
  * `loadMore()`. `done` is true only when every page is in and they form one consistent listing;
- * `restarted` says the read had to start over to get one. `error` holds a page that failed, which
- * `retry()` reads again.
+ * `restarted` says the read had to start over to get one. `truncated` says the kernel could list
+ * no further than the entries held: the push is too large to review whole, and nothing more is
+ * read. `error` holds a page that failed, which `retry()` reads again.
  */
 export const usePushReview = (overseer: RpcStub<Overseer>, actionId: number, loadAll: boolean) => {
   const [stored, setStored] = useState(() => unread(actionId))
@@ -91,7 +97,7 @@ export const usePushReview = (overseer: RpcStub<Overseer>, actionId: number, loa
     let state = latest.current.actionId === actionId ? latest.current : unread(actionId)
     if (!state.loading) {
       // Idle: there is something to read only when `loadAll` came to hold with pages left.
-      if (state.done || state.error !== undefined || !reads(state)) return
+      if (state.done || state.truncated || state.error !== undefined || !reads(state)) return
       state = { ...state, loading: true }
     }
     if (state !== latest.current) commit(state)
@@ -109,7 +115,7 @@ export const usePushReview = (overseer: RpcStub<Overseer>, actionId: number, loa
         }
         if (cancelled) return
         state = withPage(state, page)
-        if (state.done || state.error !== undefined || !reads(state)) {
+        if (state.done || state.truncated || state.error !== undefined || !reads(state)) {
           commit({ ...state, loading: false })
           return
         }
@@ -131,11 +137,14 @@ export const usePushReview = (overseer: RpcStub<Overseer>, actionId: number, loa
     objectCount: state.objectCount,
     stackedOn: state.stackedOn,
     done: state.done,
+    truncated: state.truncated,
     loading: state.loading,
     error: state.error,
     restarted: state.restarted,
     /** Reads the next page, when there is one and none is being read. */
-    loadMore: () => { if (!state.loading && !state.done && state.error === undefined) read() },
+    loadMore: () => {
+      if (!state.loading && !state.done && !state.truncated && state.error === undefined) read()
+    },
     /** Reads the failed page again, or the whole review when it kept changing. */
     retry: () => { if (state.error !== undefined) read() },
   }

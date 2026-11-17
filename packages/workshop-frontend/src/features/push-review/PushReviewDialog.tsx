@@ -11,7 +11,7 @@ import { PushReviewCommitView } from './PushReviewCommitView'
 import { PushReviewFileView } from './PushReviewFileView'
 import { PushReviewList } from './PushReviewList'
 import {
-  groupPushReview, notShownAsText, reviewItems, reviewReadiness, reviewTooLarge, shortOid,
+  groupPushReview, notShownAsText, reviewItems, reviewReadiness, reviewTooLarge, shortOid, tooLargeToReview,
   type PathRow, type ReviewItem,
 } from './pushReviewModel'
 import { usePushReview } from './usePushReview'
@@ -96,7 +96,10 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
   ].join(' ')
 
   const readiness = reviewReadiness(
-    { entries: entries.length, done: review.done, loading: review.loading, failed: review.error !== undefined },
+    {
+      entries: entries.length, done: review.done, truncated: review.truncated, loading: review.loading,
+      failed: review.error !== undefined,
+    },
     { ...files, eager: !tooLarge })
   const help = readiness.ready ? undefined
     : readiness.retry === 'review' ? { label: 'Retry', run: review.retry }
@@ -154,8 +157,9 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
               {restricted && <RestrictedApprovalNotice id={noticeId} />}
               <p className={captionClass}>
                 {plural(commitCount, 'commit')}, {plural(pathCount, 'path')},{' '}
-                {plural(review.objectCount, 'object')} sent in all{review.done ? '' : ' so far'}.
+                {plural(review.objectCount, 'object')} sent in all{review.done || review.truncated ? '' : ' so far'}.
               </p>
+              {review.truncated && <p className={statementClass}>{tooLargeToReview(entries.length)}</p>}
               {review.restarted && (
                 <p className={captionClass}>
                   This push changed while it was being read, so it was read again from the start.
@@ -209,6 +213,10 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
                     <p className="m-0 text-[13px] leading-[18px] text-kumo-danger">{review.error}</p>
                     {!restricted && <WorkshopButton onClick={review.retry}>Retry</WorkshopButton>}
                   </div>
+                ) : review.truncated ? (
+                  <p className={`max-w-xl ${statementClass}`}>
+                    Listing this push takes more than one read of it may: what it sends cannot be shown here.
+                  </p>
                 ) : !review.done ? (
                   <Loader aria-label="Loading the review" />
                 ) : (
@@ -233,7 +241,7 @@ export const PushReviewDialog = ({ overseer, record, restricted, processing, onA
                           : 'mismatch' in state ? 'not as listed'
                             : undefined
                     }}
-                    more={byHand && !review.done && review.error === undefined
+                    more={byHand && !review.done && !review.truncated && review.error === undefined
                       ? { shown: entries.length, loading: review.loading, onLoadMore: review.loadMore }
                       : undefined}
                   />
