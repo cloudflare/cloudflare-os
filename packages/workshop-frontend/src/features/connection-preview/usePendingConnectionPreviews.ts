@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import type { Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { useActions } from '../../useActions'
-import { previewOf, type ConnectionPreview, type OffersPreview } from './connectionPreview'
+import {
+  previewOf, type ConnectionPreview, type OffersPreview, type PreviewOffer,
+} from './connectionPreview'
 
 /** The previews of the connections that have changes waiting, oldest change first. */
 export const usePendingConnectionPreviews = (
@@ -18,8 +20,8 @@ export const usePendingConnectionPreviews = (
   }
 
   // Kept with what gave them: another workspace numbers its connections from one again.
-  const [offered, setOffered] = useState<{ by?: OffersPreview, ids: ReadonlySet<WorkpieceId> }>(
-    { ids: new Set() })
+  const [offered, setOffered] = useState<{ by?: OffersPreview, offers: ReadonlyMap<WorkpieceId, PreviewOffer> }>(
+    { offers: new Map() })
   const [attempt, setAttempt] = useState(0)
   const ids = [...waiting.keys()].join()
   useEffect(() => {
@@ -31,9 +33,9 @@ export const usePendingConnectionPreviews = (
       if (stale) return
       setOffered({
         by: offersPreview,
-        ids: new Set(asked.filter((_, index) => {
+        offers: new Map(asked.flatMap((id, index) => {
           const answer = answers[index]
-          return answer.status === 'fulfilled' && answer.value
+          return answer.status === 'fulfilled' && answer.value ? [[id, answer.value]] : []
         })),
       })
       // A connection that could not be asked still has changes waiting, so it is asked again,
@@ -48,6 +50,9 @@ export const usePendingConnectionPreviews = (
     }
   }, [overseer, ids, offersPreview, attempt])
 
-  return [...waiting.values()]
-    .filter(preview => offered.by === offersPreview && offered.ids.has(preview.gatekeeperId))
+  const offers = offered.by === offersPreview ? offered.offers : undefined
+  return [...waiting.values()].flatMap(preview => {
+    const offer = offers?.get(preview.gatekeeperId)
+    return offer ? [{ ...preview, ...offer }] : []
+  })
 }
