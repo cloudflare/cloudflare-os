@@ -35,7 +35,7 @@ const CREATE_NOTES_CALL = {
   name: "createExternalResource",
   arguments: {
     vendorId: TEST_VENDOR_ID,
-    resourceUrlPattern: "https://gadgets-test.example/things/*",
+    resourceTypeId: "thing",
     title: "Notes",
     bindingName: "NOTES",
   },

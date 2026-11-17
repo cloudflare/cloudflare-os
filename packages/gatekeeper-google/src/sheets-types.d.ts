@@ -174,15 +174,20 @@ export type SheetChange =
     };
 
 /**
- * Read/write access to one directly bound Google spreadsheet.
+ * Read/write access to one Google spreadsheet: one bound directly, or one a Google Drive binding
+ * with read and write access opened.
  *
  * Changes are queued for the user's approval, and reads show them as entered until they are
  * decided. A queued change that no longer applies, because the spreadsheet was edited elsewhere,
- * fails when approved, and reads report it in `queuedChangeConflict`. The spreadsheet's comments
- * are not part of this binding: a Google Drive binding that reaches the same file reads them, and
- * writes them when it has read and write access. For this file alone, request the resource URL
- * `https://drive.google.com/file/d/<id>/view`, where `<id>` is the `id` that `getSpreadsheet()`
- * returns: as it is to read the comments, or with `?access=write` added to write them too.
+ * fails when approved, and reads report it in `queuedChangeConflict`. Opened from a Drive binding,
+ * the spreadsheet is checked to be still in the binding's reach, and editable by its account, both
+ * when a change is queued and when it is approved.
+ *
+ * The comments of a spreadsheet bound directly are not part of its binding: a Google Drive binding
+ * that reaches the same file reads them, and writes them when it has read and write access. For
+ * this file alone, request the resource URL `https://drive.google.com/file/d/<id>/view`, where
+ * `<id>` is the `id` that `getSpreadsheet()` returns: as it is to read the comments, or with
+ * `?access=write` added to write them too.
  */
 export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
   /**

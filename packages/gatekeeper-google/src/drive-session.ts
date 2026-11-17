@@ -523,16 +523,25 @@ abstract class DriveCoreBase {
   abstract openFile(fileId: string, description: string): Promise<DriveFile>;
 
   /** {@link openFile} for a native file of one type, before a nested content session is created. */
+  async openNative(
+    fileId: string,
+    expectedMimeType: string,
+    description: string,
+  ): Promise<DriveFile> {
+    let file = await this.openFile(fileId, description);
+    if (file.mimeType !== expectedMimeType) {
+      throw new Error(`The requested Drive file is not a ${description}.`);
+    }
+    return file;
+  }
+
+  /** {@link openNative}, answering only the file's ID. */
   async openNativeFile(
     fileId: string,
     expectedMimeType: string,
     description: string,
   ): Promise<string> {
-    let file = await this.openFile(fileId, description);
-    if (file.mimeType !== expectedMimeType) {
-      throw new Error(`The requested Drive file is not a ${description}.`);
-    }
-    return file.id;
+    return (await this.openNative(fileId, expectedMimeType, description)).id;
   }
 
   /**

@@ -150,7 +150,7 @@ const adminConfigKv = (config: Partial<AdminConfig>) => ({
 describe("GatewayModels", () => {
   const USER = { type: "user" as const, id: "user-1", name: "User" };
   const DISABLED_MESSAGE =
-      'The "Claude Fable 5.1" model is disabled on this deployment by an administrator.';
+      'The "Claude Fable 5.2" model is disabled on this deployment by an administrator.';
   const ADDED: GatewayModel[] = [
     { provider: "anthropic", id: "claude-test", name: "Claude Test", contextWindow: 500000 },
     {
@@ -214,32 +214,32 @@ describe("GatewayModels", () => {
   });
 
   it("hides an enabled model: unlisted, still resolved", () => {
-    const models = gatewayModels({ modelModes: { "claude-fable-5-1": "hidden" } });
-    expect(models.get("claude-fable-5-1")).toMatchObject({ mode: "hidden", defaultMode: "enabled" });
-    expect(ids(models.list("language"))).not.toContain("claude-fable-5-1");
-    expect(models.resolve("claude-fable-5-1")?.profile.name).toBe("Claude Fable 5.1");
-    expect(() => models.refuseDisabled("claude-fable-5-1")).not.toThrow();
+    const models = gatewayModels({ modelModes: { "claude-fable-5-2": "hidden" } });
+    expect(models.get("claude-fable-5-2")).toMatchObject({ mode: "hidden", defaultMode: "enabled" });
+    expect(ids(models.list("language"))).not.toContain("claude-fable-5-2");
+    expect(models.resolve("claude-fable-5-2")?.profile.name).toBe("Claude Fable 5.2");
+    expect(() => models.refuseDisabled("claude-fable-5-2")).not.toThrow();
   });
 
   it("disables an enabled model: unlisted and unresolved, with its ID still reserved", () => {
-    const models = gatewayModels({ modelModes: { "claude-fable-5-1": "disabled" } });
-    expect(models.get("claude-fable-5-1")).toMatchObject(
-        { name: "Claude Fable 5.1", mode: "disabled", defaultMode: "enabled" });
-    expect(ids(models.all)).toContain("claude-fable-5-1");
-    expect(ids(models.list("language"))).not.toContain("claude-fable-5-1");
-    expect(models.resolve("claude-fable-5-1")).toBeUndefined();
-    expect(() => models.refuseDisabled("claude-fable-5-1")).toThrow(new Error(DISABLED_MESSAGE));
+    const models = gatewayModels({ modelModes: { "claude-fable-5-2": "disabled" } });
+    expect(models.get("claude-fable-5-2")).toMatchObject(
+        { name: "Claude Fable 5.2", mode: "disabled", defaultMode: "enabled" });
+    expect(ids(models.all)).toContain("claude-fable-5-2");
+    expect(ids(models.list("language"))).not.toContain("claude-fable-5-2");
+    expect(models.resolve("claude-fable-5-2")).toBeUndefined();
+    expect(() => models.refuseDisabled("claude-fable-5-2")).toThrow(new Error(DISABLED_MESSAGE));
   });
 
   it("enables a model the catalog hides, in its catalog position", () => {
     const models = gatewayModels({ modelModes: { "claude-opus-5": "enabled" } });
     expect(models.get("claude-opus-5")).toMatchObject({ mode: "enabled", defaultMode: "hidden" });
     const listed = ids(models.list("language"));
-    expect(listed.indexOf("claude-opus-5")).toBe(listed.indexOf("claude-fable-5-1") + 1);
+    expect(listed.indexOf("claude-opus-5")).toBe(listed.indexOf("claude-fable-5-2") + 1);
   });
 
   it("refuses only a disabled gateway model", () => {
-    const models = gatewayModels({ modelModes: { "claude-fable-5-1": "disabled" } });
+    const models = gatewayModels({ modelModes: { "claude-fable-5-2": "disabled" } });
     expect(() => models.refuseDisabled("claude-opus-5-5")).not.toThrow();
     expect(() => models.refuseDisabled("gpt-6-sol")).not.toThrow();
     expect(() => models.refuseDisabled("not-a-gateway-model")).not.toThrow();
@@ -275,8 +275,8 @@ describe("GatewayModels", () => {
       mode: "enabled", defaultMode: "enabled", added: true,
     });
     const listed = ids(models.list("language"));
-    // Haiku 4.5 is hidden, so the last Anthropic catalog model the pickers list is Fable 5.1.
-    expect(listed.indexOf("claude-test")).toBe(listed.indexOf("claude-fable-5-1") + 1);
+    // Haiku 4.5 is hidden, so the last Anthropic catalog model the pickers list is Fable 5.2.
+    expect(listed.indexOf("claude-test")).toBe(listed.indexOf("claude-fable-5-2") + 1);
     expect(listed.indexOf("claude-test-2")).toBe(listed.indexOf("claude-test") + 1);
   });
 
@@ -396,7 +396,7 @@ describe("GatewayModels", () => {
 
   describe("settings", () => {
     const OPUS = { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" };
-    const FABLE = { provider: "anthropic", model: "claude-fable-5-1", apiToken: "" };
+    const FABLE = { provider: "anthropic", model: "claude-fable-5-2", apiToken: "" };
 
     it("gives the Auto Router model the enabled providers to pick from, or the models listed",
         () => {
@@ -438,8 +438,8 @@ describe("GatewayModels", () => {
       expect(models.resolve("claude-opus-5-5")?.config)
           .toStrictEqual({ ...OPUS, reasoning: "low" });
 
-      expect(models.get("claude-fable-5-1")).not.toHaveProperty("settings");
-      expect(models.resolve("claude-fable-5-1")?.config).toStrictEqual(FABLE);
+      expect(models.get("claude-fable-5-2")).not.toHaveProperty("settings");
+      expect(models.resolve("claude-fable-5-2")?.config).toStrictEqual(FABLE);
     });
 
     it("gives a model the compaction budget set for it", () => {
@@ -460,7 +460,7 @@ describe("GatewayModels", () => {
           "claude-haiku-4-5": { compactionInputBudget: 100000 },
         },
       });
-      expect(models.resolve("claude-fable-5-1")?.config)
+      expect(models.resolve("claude-fable-5-2")?.config)
           .toStrictEqual({ ...FABLE, reasoning: "high" });
       expect(models.resolve("claude-test")?.config).toStrictEqual({
         provider: "anthropic", model: "claude-test", apiToken: "", contextWindow: 500000,
@@ -475,7 +475,7 @@ describe("GatewayModels", () => {
         compactionInputBudget: 100000,
       });
       // The default is no setting of the model's.
-      expect(models.get("claude-fable-5-1")).not.toHaveProperty("settings");
+      expect(models.get("claude-fable-5-2")).not.toHaveProperty("settings");
     });
 
     it("looks a model's settings up as an own property", () => {
@@ -530,10 +530,10 @@ describe("GatewayModels", () => {
       const models = gatewayModels({
         addedModels: [{ ...ADDED[0]!, behavesLike: "claude-opus-5-5" }],
         defaultReasoning: "high",
-        modelModes: { "claude-test": "hidden", "claude-fable-5-1": "disabled" },
+        modelModes: { "claude-test": "hidden", "claude-fable-5-2": "disabled" },
         modelSettings: {
           "claude-opus-5-5": { reasoning: "low", compactionInputBudget: 300000 },
-          "claude-fable-5-1": { reasoning: "max" },
+          "claude-fable-5-2": { reasoning: "max" },
         },
       });
       // An enabled model and a hidden one run with what resolve() gives them.
@@ -547,8 +547,8 @@ describe("GatewayModels", () => {
         expect(models.resolve(id)!.config, id).toStrictEqual(models.runConfig(id));
       }
       // A disabled one has a config too, which nothing resolves.
-      expect(models.resolve("claude-fable-5-1")).toBeUndefined();
-      expect(models.runConfig("claude-fable-5-1")).toStrictEqual({ ...FABLE, reasoning: "max" });
+      expect(models.resolve("claude-fable-5-2")).toBeUndefined();
+      expect(models.runConfig("claude-fable-5-2")).toStrictEqual({ ...FABLE, reasoning: "max" });
       // The second is a suggested model of a provider this gateway does not enable.
       for (let id of ["claude-fable-9", "gemini-3.6-flash", "constructor"]) {
         expect(models.runConfig(id), id).toBeUndefined();
@@ -801,7 +801,7 @@ describe("GatewayModels", () => {
 describe("getGatewayModels", () => {
   it("applies the admin config's modes and added models", async () => {
     const BLUEPRINTS = adminConfigKv({
-      modelModes: { "claude-fable-5-1": "disabled" },
+      modelModes: { "claude-fable-5-2": "disabled" },
       addedModels: [
         { provider: "anthropic", id: "claude-test", name: "Claude Test", contextWindow: 500000 },
       ],
@@ -813,7 +813,7 @@ describe("getGatewayModels", () => {
     }));
     expect(BLUEPRINTS.get).toHaveBeenCalledWith(".adminConfig");
     expect(models!.gateway.gateway).toBe("platform-gateway");
-    expect(models!.resolve("claude-fable-5-1")).toBeUndefined();
+    expect(models!.resolve("claude-fable-5-2")).toBeUndefined();
     expect(ids(models!.list("language"))).toContain("claude-test");
     expect(models!.userModels).toBe(true);
   });

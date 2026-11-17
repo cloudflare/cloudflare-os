@@ -286,6 +286,7 @@ function gatekeeperApi(
   initialGrants: string[] | null,
   secondAccountGrants?: string[],
   resource = CALENDAR_RESOURCE,
+  grantedResourceTypeIds?: string[],
 ) {
   let subscriber: ConnectedAccountsSubscriber | null = null
   const startResourceConfigurator = vi.fn<
@@ -313,7 +314,8 @@ function gatekeeperApi(
     subscribeConnectedAccounts: (nextSubscriber: ConnectedAccountsSubscriber) => {
       subscriber = nextSubscriber
       if (initialGrants) {
-        subscriber.add(7, googleAccount(7, initialGrants), GOOGLE_VENDOR, [resource], true, 'google')
+        subscriber.add(7, { ...googleAccount(7, initialGrants), grantedResourceTypeIds },
+          GOOGLE_VENDOR, [resource], true, 'google')
       }
       if (secondAccountGrants) {
         subscriber.add(8, googleAccount(8, secondAccountGrants), GOOGLE_VENDOR, [resource], true, 'google')
@@ -387,6 +389,31 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     await act(async () => findButton('Save connection')!.click())
     await vi.waitFor(() => expect(findButton('Create Gadget')).toBeDefined())
   }
+
+  it.each([
+    { grantedIds: ['calendar'], canConfigure: true },
+    { grantedIds: [], canConfigure: false },
+  ])('uses the saved type and authoritative ID grants after a pattern change: $grantedIds',
+    async ({ grantedIds, canConfigure }) => {
+      const harness = gatekeeperApi([CALENDAR_PATTERN], undefined, {
+        ...CALENDAR_RESOURCE, id: 'calendar',
+        urlPattern: 'https://calendar.google.com/calendar/:id/*',
+      }, grantedIds)
+      await render(harness, {
+        ...CALENDAR_BLUEPRINT,
+        metadata: {
+          ...CALENDAR_BLUEPRINT.metadata,
+          bindings: { CALENDAR: {
+            ...CALENDAR_BLUEPRINT.metadata.bindings.CALENDAR, resourceTypeId: 'calendar',
+          } },
+        },
+      })
+
+      await act(async () => findButton('Configure')!.click())
+      await vi.waitFor(() => expect(findButton('Save connection')!.disabled).toBe(!canConfigure))
+      expect(harness.startResourceConfigurator.mock.calls).toEqual(canConfigure ? [[7, 'calendar']] : [])
+      expect(Boolean(findButton('Grant access'))).toBe(!canConfigure)
+    })
 
   it.each([{ grants: null }, { grants: [CALENDAR_PATTERN] }])(
     'explains an unsupported creation-only blueprint binding with account grants $grants',

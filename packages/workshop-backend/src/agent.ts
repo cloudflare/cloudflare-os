@@ -773,7 +773,7 @@ Spending on food rose 18% in October, mostly eating out.
 
 Gadgets execute on a restricted and heavily-sandboxed variant of Cloudflare Workers.
 
-A Gadget is defined by two main files, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
+A Gadget is defined by two entry points, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
 
 server.js defines the Gadget's server-side logic, in the form of a Cloudflare Durable Object class. The class must be exported under the name \`Gadget\`. Unlike with normal Durable Objects on Cloudflare, there is no need to export a separate fetch handler; the Gadgets platform automatically takes care of routing requests to the Gadget. The Gadget has access to private storage via the regular Durable Objects KV and SQLite storage APIs. A simple server.js might look like:
 
@@ -787,11 +787,27 @@ export class Gadget extends DurableObject {
 }
 \`\`\`
 
-client.js is JavaScript that runs inside the browser to render a client-side user interface. This script runs inside a sandboxed iframe. It can display UI by manipulating the DOM. The client context is initialized with a special global variable called \`gadget\`, which is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
+client.js is JavaScript that runs inside the browser to render a client-side user interface. It runs as an ES module inside a sandboxed iframe, and can display UI by manipulating the DOM. client.js must have a default export with a \`main(gadget)\` method, which the Workshop calls once client.js has loaded. Its \`gadget\` argument is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
 
 \`\`\`
-let greeting = await gadget.greet("World");
-document.body.appendChild(document.createTextNode(greeting));
+export default {
+  async main(gadget) {
+    let greeting = await gadget.greet("World");
+    document.body.appendChild(document.createTextNode(greeting));
+  },
+};
+\`\`\`
+
+\`gadget\` is not a global variable: pass it to whatever code needs to call the server.
+
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`, an RPC stub for whatever is running the UI:
+
+\`\`\`ts
+interface GadgetHost {
+  // Shows the user the chat of an agent spawned with an agent spawner's spawnAgent().
+  // chatToken comes from SpawnedAgent.getChatToken().
+  openAgentChat(chatToken: string): Promise<void>;
+}
 \`\`\`
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
@@ -804,11 +820,23 @@ Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
+## Splitting code into multiple files
+
+client.js and server.js may import other .js files in the Gadget. Each file has a size limit, so split a large UI into several files.
+
+* A relative import names the exact file, extension included (\`./ui/list.js\`, not \`./ui/list\`), resolves against the importing file, and cannot reach outside the Gadget. Only .js files can be imported.
+* Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm) other than "capnweb", or URLs other than \`data:\` URLs.
+* Client code cannot use \`import()\`; import modules statically. Do not build URLs from \`import.meta.url\`.
+* Everything client.js reaches through imports is sent to anyone who can use the Gadget, including people who can use it but not edit it. Keep secrets and server-only logic in modules that only server.js imports.
+* Import problems in the UI are reported in the Gadget console.
+
 ## Server -> Client callbacks and subscriptions
 
 Note that Cap'n Web is a bidirectional object capability protocol, meaning, among other things, you can pass a function over RPC, in the params or results of another function. This actually passes the function "by reference": the receiving end actually receives an RPC stub, which can be used to call back over RPC to the original function. This, of course, causes the function to become async, even if the original was synchronous.
 
-Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes (perhaps due to activity of a different client). This technique should be used when implementing multiplayer collaboration.
+Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes.
+
+Use subscriptions for views of mutable server data, including single-user Gadgets: you may update that data with \`executeCode\` while the user is viewing it. A one-time read only displays the initial state. Subscribe with an initial snapshot, and notify subscribers after saving each mutation, so the view updates without a page reload. Closing and reopening a Gadget pane preserves its iframe and does not rerun client.js.
 
 When implementing such a subscription, it is important to call \`.dup()\` on the callback stub, in order to obtain a long-lived stub. Otherwise, the stub received as a parameter is implicitly disposed at the end of the function. You should also use \`onRpcBroken\` to monitor for client disconnects, like:
 
@@ -825,25 +853,42 @@ async subscribe(callback) {
 And on the client:
 
 \`\`\`
+import { RpcTarget } from "capnweb";
+
 class Callback extends RpcTarget {
+  constructor(gadget) {
+    super();
+    this.gadget = gadget;
+  }
+
   update(state) {
     // update the UI
   }
 
   [Symbol.dispose]() {
     // Connection lost. Resubscribe using new connection.
-    gadget.subscribe(this);
+    this.gadget.subscribe(this);
   }
 }
 
-gadget.subscribe(new Callback());
+export default {
+  main(gadget) {
+    gadget.subscribe(new Callback(gadget));
+  },
+};
 \`\`\`
 
-The top-level \`gadget\` stub survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
+The \`gadget\` stub passed to \`main()\` survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
 
-DO NOT import \`RpcTarget\` in client.js. It is already imported.
+In client code, import \`RpcTarget\` and \`RpcStub\` from "capnweb".
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
+
+## Legacy client.js
+
+Older Gadgets may have a legacy client.js: one with no default export, whose top-level code builds the UI directly. The Workshop still runs these, as a single module with \`gadget\`, \`RpcTarget\` and \`RpcStub\` as global variables, and a browser-mode export waits for its top-level \`await\`. A legacy client.js cannot import anything, including another file of the Gadget or "capnweb": imports require the default export with \`main()\`.
+
+A small change to a legacy client.js can keep its style. To split one into files, or when rewriting much of it, convert it: move its top-level code into \`export default { async main(gadget) { ... } }\`, import \`RpcTarget\` and \`RpcStub\` from "capnweb", and pass \`gadget\` to the code that needs it. Do not add a default export without converting the rest, because the globals no longer exist once client.js has one. Write every new client.js with \`main()\`.
 
 ## Design Tips
 
@@ -856,15 +901,19 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 
 Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
 
-During a browser-mode export, client.js is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
+During a browser-mode export, the Workshop defines a global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client code.
 
-The Workshop waits for client.js, including any top-level \`await\`, to finish before capturing a browser-mode export. Use top-level \`await\` when the initial UI must load data or otherwise complete asynchronous rendering before capture. For example:
+The Workshop waits for \`main()\` to finish, including the promise it returns, before capturing a browser-mode export. Make \`main()\` async and await what the initial UI needs when it must load data or otherwise complete asynchronous rendering before capture. For example:
 
 \`\`\`
-let report = await gadget.getReport();
-let exportFormat = globalThis.gadgetExportFormatId;
-document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
-document.body.append(renderReport(report));
+export default {
+  async main(gadget) {
+    let report = await gadget.getReport();
+    let exportFormat = globalThis.gadgetExportFormatId;
+    document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
+    document.body.append(renderReport(report));
+  },
+};
 \`\`\`
 
 To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Each format may also contain an optional \`fileName\`, including its extension, such as \`"my-report.pdf"\`. When omitted, the downloaded file name defaults to the Gadget title plus \`fileExtension\`. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
@@ -1043,6 +1092,7 @@ export function formatMissingBlueprintBindings(
     switch (binding.type) {
       case "gatekeeper":
         details = `external resource via the "${binding.gatekeeperName}" gatekeeper; ` +
+            (binding.resourceTypeId ? `resource type ID ${JSON.stringify(binding.resourceTypeId)}; ` : ``) +
             `resource URL pattern ${JSON.stringify(binding.typeUrlPattern)}` +
             (binding.resourceUrl
                 ? `; the blueprint author suggests ${JSON.stringify(binding.resourceUrl)}`
@@ -1387,11 +1437,11 @@ ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
 let LIST_CONNECTABLE_RESOURCES_TOOL_DESCRIPTION = `
-List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's URL pattern with requestConnection to connect something already present; use a New resource's resourceUrlPattern with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
+List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's resourceTypeId with requestConnection to connect something already present; use a New resource's resourceTypeId with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
 `.trim();
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
-Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: pass vendorId and the resourceTypeId from listConnectableResources, plus resourceUrl when you can infer it to prefill the picker. The stable ID selects the type even if its URL pattern changes. When resourceTypeId is omitted, selection falls back to the supplied URL, a whole-instance option, or a sole type; an ambiguous request is rejected with guidance and no card is shown. Fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
 
 For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
@@ -3323,7 +3373,7 @@ async function runAgentPass(
     let standardFormats = await hooks.describeStandardFormats();
 
     // Build connectable-vendors section. We only list vendor names here; the agent fetches a
-    // vendor's resource URL patterns on demand via listConnectableResources.
+    // vendor's resource types on demand via listConnectableResources.
     let connectableVendors = await hooks.listConnectableVendors();
     let systemPromptConnections: string;
     if (connectableVendors.length == 0) {
@@ -3332,7 +3382,7 @@ async function runAgentPass(
       systemPromptConnections =
           `\n\nIf you need access to an external resource that isn't already a binding, you can ask ` +
           `the user to connect one with the requestConnection tool (pre-configure it as much as you ` +
-          `can; use listConnectableResources to learn a vendor's resource URL patterns first). The ` +
+          `can; use listConnectableResources to learn a vendor's resource type IDs first). The ` +
           `user accepts or denies in the chat. If they accept, you'll be resumed and the resource ` +
           `becomes available as a binding in your env; if they deny, your turn ends and you wait ` +
           `for the user's next message.\n` +
@@ -4076,6 +4126,9 @@ async function runAgentPass(
           description: "Vendor id, as listed in the system prompt (e.g. 'github'), or " +
               `'${AGENT_SPAWNER_CONNECTION_ID}' for an agent spawner.`,
         }),
+        resourceTypeId: Type.Optional(Type.String({
+          description: "Stable type ID from listConnectableResources; selects the type independently of its URL pattern.",
+        })),
         resourceUrl: Type.Optional(Type.String({
           description:
               "The specific resource URL, if known (matching a pattern from " +
@@ -4137,8 +4190,8 @@ async function runAgentPass(
         vendorId: Type.String({
           description: "Vendor id, as listed in the system prompt (e.g. 'google').",
         }),
-        resourceUrlPattern: Type.String({
-          description: "urlPattern of a creatable resource type, from listConnectableResources.",
+        resourceTypeId: Type.String({
+          description: "Stable ID of a creatable resource type, from listConnectableResources.",
         }),
         title: Type.String({
           description: "Title of the new resource, e.g. the document's title.",

@@ -26,7 +26,7 @@ import type {
   SupportedResource,
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
+import { workerVersionTag, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 import {
   PAGE_STYLE, connectHandoffPageHtml, errorPageHtml, escapeHtml, htmlResponse, INVALID_LINK_HTML,
 } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -494,7 +494,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     const userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     const initiationNonce = generateNonce();
     await this.ctx.exports.UserAccount.get(userObjectId)
-      .setCallback(callback, initiationNonce, scopesFor(this.env, options?.resourceUrlPatterns));
+      .setCallback(callback, initiationNonce, scopesFor(this.env, requestedResourceUrlPatterns(options, ALL_RESOURCES)));
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
   }
 
@@ -901,12 +901,14 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async describe(): Promise<AccountDescription> {
     const account = this.#account();
     const identity = await account.getIdentity();
+    const grantedResourceUrlPatterns = grantedResourcePatterns(await account.getGrantedScopes());
     return {
       displayName: identity.name,
       ...(identity.username ? { uniqueName: identity.username } : {}),
       // Graph serves profile photos only as bytes behind the token; the initials avatar is the Workshop's.
       avatar: { url: "" },
-      grantedResourceUrlPatterns: grantedResourcePatterns(await account.getGrantedScopes()),
+      grantedResourceUrlPatterns,
+      grantedResourceTypeIds: getGrantedResourceTypeIds({ grantedResourceUrlPatterns }, ALL_RESOURCES),
     };
   }
 
@@ -1003,6 +1005,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     if (resourceUrlPattern === OUTLOOK_RESOURCE.urlPattern) {
       // The deployment's limit, not the effective access: the configurator combines it with the
       // connection's scopes itself so it can say which of the two is what limits the user.
@@ -1044,6 +1047,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {
+    resourceUrlPatterns = resourceUrlPatterns.map(value => resourceTypeUrlPattern(ALL_RESOURCES, value));
     const granted = grantedResourcePatterns(await this.#account().getGrantedScopes());
     if (resourceUrlPatterns.every(pattern => granted.includes(pattern))) return {};
     return await this.#beginReconnect([...new Set([...granted, ...resourceUrlPatterns])]);

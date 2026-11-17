@@ -1,10 +1,10 @@
 // Turns what SharePoint stores into text an agent can read. Graph has no document-to-text
-// conversion, so it happens here: Word and PowerPoint are parsed in the Worker (content/), Excel is
+// conversion, so it happens here: Word and PowerPoint are parsed in the Worker (@gadgets/office-content), Excel is
 // read through Graph's workbook API (which computes formulas), PDFs and legacy Office formats go
 // through Workers AI's `toMarkdown` when the deployment binds it (legacy formats first converted to
 // PDF by Graph), and HTML and pages through a small HTML-to-Markdown converter.
 
-import { DocumentConversionError, convertToText, cutText, documentKind } from "./content/index";
+import { DocumentConversionError, convertToText, cutText, documentKind } from "@gadgets/office-content";
 import { DownloadTooLargeError, type GraphApi } from "./graph-api";
 import type { GraphDriveItem, PageWebPart } from "./graph-parse";
 import { htmlToMarkdown } from "./html-markdown";

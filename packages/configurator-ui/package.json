@@ -18,16 +18,16 @@
     "test:run": "vitest run && vitest run -c vitest.browser.config.ts"
   },
   "dependencies": {
-    "@cloudflare/kumo": "^2.16.0",
+    "@cloudflare/kumo": "^2.17.0",
     "@gadgets/error-reporting": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
-    "@tailwindcss/node": "^4.3.3",
-    "@tailwindcss/oxide": "^4.3.3",
+    "@tailwindcss/node": "^4.3.5",
+    "@tailwindcss/oxide": "^4.3.5",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
     "esbuild": "^0.28.2",
-    "preact": "^11.1.0",
-    "tailwindcss": "^4.3.3",
+    "preact": "^11.2.0",
+    "tailwindcss": "^4.3.5",
     "typescript6": "catalog:"
   },
   "devDependencies": {

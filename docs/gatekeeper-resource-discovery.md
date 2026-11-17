@@ -9,7 +9,9 @@ Gatekeepers advertise one list of resource **types** through
   Defaults to **false** when omitted.
 
 These are resource-type advertisements, not inventories of individual instances or grants of
-access. Admin policy is keyed by the type's stable `urlPattern` and applies to both flows.
+access. Admin policy is keyed by the type's vendor-scoped `id`, with exact URL patterns retained
+for legacy types and restrictions, and applies to both flows. See
+[resource type identity](gatekeeper-resource-types.md) for compatibility rules.
 
 A document service can mark the same type `creatable: true` and leave `connectable` at its default.
 A per-chat execution environment uses `connectable: false, creatable: true` to offer creation

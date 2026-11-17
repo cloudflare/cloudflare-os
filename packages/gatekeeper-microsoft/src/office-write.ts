@@ -5,7 +5,7 @@
 // approver sees a byte upload only by its name. No Graph here: the session resolves a template and
 // hands over its bytes.
 
-import { isCompoundFile } from "./content/index";
+import { isCompoundFile } from "@gadgets/office-content";
 import { checkOfficePackage } from "./content/package-check";
 import { csvCells, parseCsv, rowsToXlsx, xlsxFeatures, type CellValue } from "./content/xlsx-write";
 import { docxFeatures, markdownToDocx } from "./content/docx-write";

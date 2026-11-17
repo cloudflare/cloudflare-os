@@ -23,6 +23,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
+import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 import { formatSheet } from "../sheets-fixture";
 import { presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 
@@ -316,6 +317,7 @@ function newSession(
       scope,
       queueStub,
       NO_COMMENTS,
+      undefined,
     )),
   };
 }
@@ -1211,6 +1213,7 @@ describe("folder-scoped native sessions", () => {
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
         NO_COMMENTS,
+        undefined,
       )),
     };
   }
@@ -1991,8 +1994,9 @@ describe("Drive comment actions", () => {
 
   const posts = () => provider.requests.filter(request => request.startsWith("POST /drive/v3/files/"));
 
-  it("declares one auto-approvable kind for every comment write", async () => {
-    expect(await binding().autoApprovable()).toEqual([{ tag: "driveComments", label: "Drive comments" }]);
+  it("declares one auto-approvable kind for every comment write, beside the edits' kinds", async () => {
+    expect(await binding().autoApprovable())
+      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
   });
 
   describe("access level", () => {
@@ -2096,8 +2100,8 @@ describe("Drive comment actions", () => {
           title: "Google Drive Account (read and write)",
           snippet: "Read and write: find files anywhere this Google account can read in Drive, " +
             "read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any " +
-            "other file's bytes with readFile(), read and queue comments, change who files are " +
-            "shared with, and move files",
+            "other file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files, " +
+            "read and queue comments, change who files are shared with, and move files",
           suggestedBindingName: "GOOGLE_DRIVE",
           tsType: "GoogleDriveSession",
         },
@@ -2116,9 +2120,9 @@ describe("Drive comment actions", () => {
           title: "folder-root (read and write)",
           snippet: "Read and write: list and search direct children, navigate child folders, read " +
             "native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other " +
-            "file's bytes with readFile(), read and queue comments on direct children, change who " +
-            "they and the folder are shared with, and move them within Drive folder " +
-            "\"folder-root\"",
+            "file's bytes with readFile(), queue edits to Google Docs, Sheets and Slides files among " +
+            "direct children, read and queue comments on direct children, change who they and the " +
+            "folder are shared with, and move them within Drive folder \"folder-root\"",
           suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
           tsType: "GoogleDriveFolderSession",
         },
@@ -2136,8 +2140,8 @@ describe("Drive comment actions", () => {
           title: "doc-1 (read and write)",
           snippet: "Read and write: read metadata and, when native, Google Doc, Sheet or Slides " +
             "content, with readPdf() a PDF's text, or with readFile() the bytes of any other " +
-            "file, from Drive file \"doc-1\", read and queue comments on it, and change who it " +
-            "is shared with",
+            "file, from Drive file \"doc-1\", queue edits to it when it is a Google Docs, Sheets or " +
+            "Slides file, read and queue comments on it, and change who it is shared with",
           suggestedBindingName: "GOOGLE_DRIVE_FILE",
           tsType: "GoogleDriveFileSession",
         },

@@ -16,7 +16,7 @@ import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../.
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
-  OFFICE_IMPORT_GRANT,
+  OFFICE_IMPORT_GRANT, SUPPORTED_RESOURCES,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
 
@@ -164,9 +164,9 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
     });
 
-    // The creation picker's My Drive tab is Drive's `root` alias, so a pasted folder's path must
-    // start there, or at the Shared drives tab, for the picker to open it where it lives.
-    it("places a pasted folder link for a creation under its tab", async () => {
+    // The creation picker's My Drive tab is Drive's `root` alias, so a folder's path, pasted or
+    // looked up, must start there or at the Shared drives tab for the picker to open it in place.
+    it("finds a creation's folder with its path under its tab", async () => {
       const folder = (id: string, name: string, parents?: string[], driveId?: string) => ({
         id, name, mimeType: FOLDER, trashed: false, ...parents && { parents }, ...driveId && { driveId },
         capabilities: { canListChildren: true, canAddChildren: true },
@@ -177,6 +177,8 @@ describe("Google resource configurators", () => {
         "/files/plans": folder("plans", "Plans", ["0AMyRoot"]),
         "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
         "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
+        "/files/notes": { id: "notes", name: "Notes", mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false },
+        "/files/archive": { ...folder("archive", "Archive", ["0AMyRoot"]), capabilities: { canListChildren: true, canAddChildren: false } },
       });
       const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
       const pasted = async (id: string) =>
@@ -191,6 +193,26 @@ describe("Google resource configurators", () => {
       await expect(pasted("specs")).resolves.toMatchObject([{
         id: "folder:specs", path: [{ id: "shared-drives" }, { id: "folder:0ADrive", title: "Engineering" }],
       }]);
+      // A looked-up folder is the node a pasted link to it lists.
+      for (let id of ["plans", "0AMyRoot", "specs"]) {
+        await expect(creating.getFolder(`folder:${id}`), id).resolves.toEqual((await pasted(id))[0]);
+      }
+      await expect(creating.getFolder("folder:notes")).resolves.toBeNull();
+      await expect(creating.getFolder("folder:gone")).resolves.toBeNull();
+
+      // A suggested place to create something is a link, as a browser shows it or the picker mints
+      // it, to a folder this account can add files to.
+      for (let [url, id] of [
+        ["https://drive.google.com/drive/u/1/folders/plans", "folder:plans"],
+        ["https://drive.google.com/drive/folders/0AMyRoot", "folder:root"],
+        ["https://drive.google.com/drive/folders/root", "folder:root"],
+        ["https://drive.google.com/drive/my-drive", "folder:root"],
+        ["https://drive.google.com/drive/folders/archive", null],
+        ["https://drive.google.com/drive/folders/notes", null],
+        ["https://drive.google.com/drive/folders/%E0%A4%A", null],
+        ["https://docs.google.com/document/d/notes/edit", null],
+        ["not a url", null],
+      ] as const) await expect(creating.folderForUrl(url), url).resolves.toBe(id);
     });
 
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing
@@ -816,8 +838,11 @@ describe.each(OFFICE_KIND_CASES)("the $title type's Office files", testCase => {
   it("are chosen in the Drive picker, which the type shares a card with", async () => {
     let { frame, user } = await startOfficeConfigurator(testCase);
     let drive = await user.startResourceConfigurator(GOOGLE_DRIVE_RESOURCE.urlPattern);
+    let resource = SUPPORTED_RESOURCES.find(resource => resource.urlPattern === testCase.pattern)!;
+    let byId = await user.startResourceConfigurator(resource.id!);
 
     expect(frame.iframeHtml).toBe(drive.iframeHtml);
+    expect(byId.iframeHtml).toBe(drive.iframeHtml);
   });
 
   it("tells native, Office and unsupported files apart, with whether the owner allows copying", async () => {
@@ -1034,6 +1059,19 @@ async function storedAccount(
   return { account, user: new GatekeeperUserImpl(ctx as never, {} as never) };
 }
 
+it.each(SUPPORTED_RESOURCES.filter(resource => resource.creatable))(
+  "opens $title's creation configurator by stable ID or legacy pattern", async resource => {
+    let { user } = await storedAccount([]);
+    let byPattern = await user.startCreationConfigurator(resource.urlPattern);
+    try {
+      let byId = await user.startCreationConfigurator(resource.id!);
+      try {
+        expect(byId.iframeHtml).toBe(byPattern.iframeHtml);
+      } finally { byId.ui[Symbol.dispose](); }
+    } finally { byPattern.ui[Symbol.dispose](); }
+  },
+);
+
 describe("the Office import grant on a stored account", () => {
   it("is kept by the account, so asking for it again needs no consent, but is never described", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
@@ -1074,7 +1112,7 @@ describe("the Drive writes grant on a stored account", () => {
   const SHEETS = GOOGLE_SHEETS_RESOURCE.urlPattern;
 
   it("is asked for again by every later consent once it was asked for, granted or not", async () => {
-    // What a completed Allow changes consent leaves when Drive's line was left unchecked.
+    // What a completed consent leaves when Drive's line was left unchecked.
     let declined = await storedAccount([FILE, DRIVE_WRITES_GRANT], resourceUrlPatternsToOAuthScopes([FILE]));
     expect(await declined.account.getGrantedResourceUrlPatterns()).toEqual([FILE]);
 
@@ -1092,14 +1130,24 @@ describe("the Drive writes grant on a stored account", () => {
     expect(await requested(granted.account)).toContain(DRIVE_WRITES_GRANT);
   });
 
-  it("is asked for by no consent of an account that never asked for it", async () => {
+  it("is asked for by the next consent of a Drive account that never asked for it", async () => {
     let { account, user } = await storedAccount([FILE]);
 
     await user.ensureResources([SHEETS]);
+    expect((await requested(account))?.toSorted()).toEqual([FILE, SHEETS, DRIVE_WRITES_GRANT].toSorted());
+
+    await user.reconnect();
+    expect(await requested(account)).toEqual([FILE, DRIVE_WRITES_GRANT]);
+  });
+
+  it("is asked for by no consent of an account without a Drive resource", async () => {
+    let { account, user } = await storedAccount([SHEETS]);
+
+    await user.ensureResources([OFFICE_IMPORT_GRANT]);
     expect(await requested(account)).not.toContain(DRIVE_WRITES_GRANT);
 
     await user.reconnect();
-    expect(await requested(account)).toEqual([FILE]);
+    expect(await requested(account)).toEqual([SHEETS]);
   });
 
   it("is asked for by no consent where the deployment keeps Drive read-only, and stays recorded", async () => {

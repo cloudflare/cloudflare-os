@@ -6,8 +6,9 @@ import {
   BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl,
   GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
   type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps,
-  type GoogleDocGatekeeperImplProps, type GoogleDriveGatekeeperImplProps, type HookDriverRef,
+  type GoogleDriveGatekeeperImplProps, type HookDriverRef,
 } from "../../src/google";
+import type { GoogleDocGatekeeperImplProps } from "../../src/docs";
 import type { BigQuerySession } from "../../src/bigquery-types";
 import type { GoogleDocSession } from "../../src/docs-types";
 import type { GoogleDriveSession } from "../../src/drive-types";
@@ -837,8 +838,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       facetName: string, id: string, props: GoogleDriveGatekeeperImplProps, queueId: string,
   ): Promise<GoogleDriveSession> {
     using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    // The class serves every access level; a read and write binding's agent type is this one.
     return await this.#googleFile<GoogleDriveGatekeeperImpl>("GoogleDriveGatekeeperImpl", facetName, id, props)
-      .startSession(queueStub);
+      .startSession(queueStub) as unknown as GoogleDriveSession;
   }
 
   /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */

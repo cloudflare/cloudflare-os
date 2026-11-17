@@ -1,3 +1,4 @@
+import { getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useState,
   useEffect,
@@ -781,7 +782,7 @@ export const ChatComposer = ({
               <CapsuleOverlay
                 url={activeUrl.text}
                 onSelectAccount={(accountId, vendorId, resource) => {
-                  void createCapsule({ accountId, vendorId, resourceUrlPattern: resource.urlPattern });
+                  void createCapsule({ accountId, vendorId, resourceUrlPattern: resource.urlPattern, resourceTypeId: getResourceTypeId(resource) });
                 }}
                 onRefine={refineUrl}
                 onDismiss={dismissUrl}
@@ -1065,6 +1066,7 @@ export const ChatComposer = ({
         onCreated={attachCreated}
         initialVendorId={attachModalPrefill?.resolution.vendorId}
         initialResourceUrl={attachModalPrefill?.url}
+        initialResourceTypeId={attachModalPrefill?.resolution.resourceTypeId}
         initialResourceUrlPattern={attachModalPrefill?.resolution.resourceUrlPattern}
         initialAccountId={attachModalPrefill?.resolution.accountId}
       />

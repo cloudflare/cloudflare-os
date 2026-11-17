@@ -26,31 +26,20 @@ export type DocSuggestEditOptions = {
 };
 
 /**
- * Read/write access to one directly bound native Google Doc, and to its comments.
+ * Read/write access to one native Google Doc: one bound directly, or one a Google Drive binding
+ * with read and write access opened.
  *
  * Metadata covers the whole document; reads and edits each target exactly one tab, so call
  * `listTabs()` first and pass the ID of the tab to act on.
  *
- * When to use which:
- * - `replaceText()` and `appendText()` change the Doc's text once the user approves them.
- * - `addTab()` adds a new, empty tab, which the edits above can fill at once.
- * - `suggestEdit()` leaves a suggestion in the Doc, as one made in Suggesting mode, which someone
- *   who can edit the Doc accepts or rejects there; the text does not change until then.
- * - `comment()` is a remark on a passage of the Doc, attached to the text it quotes.
- * - `reply()` and `resolve()` answer the comments `listComments()` returns.
- * - A comment attached to no text, or an answer to one, takes a Google Drive connection to the
- *   file with read and write access: request the resource URL
- *   `https://drive.google.com/file/d/<id>/view?access=write`, where `<id>` is `getMetadata().id`.
- *
- * Every comment write is queued for the user's approval. A comment, reply or resolve returns the
- * pending item, which `listComments()` shows until it is decided; `suggestEdit()` returns a
- * `DocSuggestion`, which no listing shows, queued or made. A write needs the connected account to
- * be able to comment on the Doc, and a new comment makes Google email the Doc's owner. An email
- * address written after `@` or `+` in the text mentions that person: Google emails them the text,
- * whether or not they can open the Doc. A comment, reply or note holds at most 2048 bytes of UTF-8.
- * A Doc not created yet has no comments, and takes no comment writes until it is.
+ * Every edit is queued for the user's approval and shows in reads as if made. Opened from a Drive
+ * binding, the Doc is checked to be still in the binding's reach, and editable by its account, both
+ * when an edit is queued and when it is approved, and one edit, with what its approval card shows,
+ * must fit in 100 KiB, about 50,000 characters: split a larger one into several calls. A Doc
+ * opened from a Drive binding has no comment method, since the binding's own comment writes reach
+ * it, and does not add tabs.
  */
-export interface GoogleDocSession extends GoogleDocReadSession {
+export interface GoogleDocEditSession extends GoogleDocReadSession {
 
   /**
    * Find `oldMarkdown` in tab `tabId` and replace it with `newMarkdown`.
@@ -94,7 +83,34 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * final table or other structural element before appending.
    */
   appendText(markdown: string, tabId?: string): Promise<void>;
+}
 
+/**
+ * Read/write access to one directly bound native Google Doc, and to its comments.
+ *
+ * Metadata covers the whole document; reads and edits each target exactly one tab, so call
+ * `listTabs()` first and pass the ID of the tab to act on.
+ *
+ * When to use which:
+ * - `replaceText()` and `appendText()` change the Doc's text once the user approves them.
+ * - `addTab()` adds a new, empty tab, which the edits above can fill at once.
+ * - `suggestEdit()` leaves a suggestion in the Doc, as one made in Suggesting mode, which someone
+ *   who can edit the Doc accepts or rejects there; the text does not change until then.
+ * - `comment()` is a remark on a passage of the Doc, attached to the text it quotes.
+ * - `reply()` and `resolve()` answer the comments `listComments()` returns.
+ * - A comment attached to no text, or an answer to one, takes a Google Drive connection to the
+ *   file with read and write access: request the resource URL
+ *   `https://drive.google.com/file/d/<id>/view?access=write`, where `<id>` is `getMetadata().id`.
+ *
+ * Every comment write is queued for the user's approval. A comment, reply or resolve returns the
+ * pending item, which `listComments()` shows until it is decided; `suggestEdit()` returns a
+ * `DocSuggestion`, which no listing shows, queued or made. A write needs the connected account to
+ * be able to comment on the Doc, and a new comment makes Google email the Doc's owner. An email
+ * address written after `@` or `+` in the text mentions that person: Google emails them the text,
+ * whether or not they can open the Doc. A comment, reply or note holds at most 2048 bytes of UTF-8.
+ * A Doc not created yet has no comments, and takes no comment writes until it is.
+ */
+export interface GoogleDocSession extends GoogleDocEditSession {
   /**
    * Add a new, empty tab titled `title` (one line, at most 50 characters): nested under the tab
    * `parentTabId` names, or top-level without one, and placed at `index` among the tabs beside it,

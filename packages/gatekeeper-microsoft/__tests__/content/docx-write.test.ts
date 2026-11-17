@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { docxToMarkdown } from "../../src/content/docx";
+import { docxToMarkdown } from "@gadgets/office-content/docx";
 import { docxFeatures, markdownToDocx } from "../../src/content/docx-write";
-import { DocumentConversionError } from "../../src/content/errors";
-import { parsePart } from "../../src/content/ooxml";
-import { attribute, childElements, descendants, firstChild, type XmlElement } from "../../src/content/xml";
-import { openZip } from "../../src/content/zip";
+import { DocumentConversionError } from "@gadgets/office-content/errors";
+import { parsePart } from "@gadgets/office-content/ooxml";
+import { attribute, childElements, descendants, firstChild, type XmlElement } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 import { writeZip } from "../../src/content/zip-write";
 import { validateDocx } from "./docx-validate";
 

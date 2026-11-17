@@ -5,14 +5,18 @@ import { act, useEffect, type ComponentProps, type ReactElement, type ReactNode 
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
+  AiChatMetadata,
   WorkspaceMetadata,
   GadgetSummary,
   WorkpieceId,
+  WorkpieceSummary,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
-// chat into view (the one a blueprint update was proposed in, or the one a notification opens),
+// chat into view (the one a blueprint update was proposed in, the one a notification opens, or
+// the one a gadget's UI names), how a spawned agent's chat is shown over the chat the gadget pane
+// follows,
 // which gadget stub a use-only collaborator's view is given while gadgets are admitted, and which
 // workspace a gadget's deletion is confirmed in.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
@@ -24,6 +28,14 @@ afterAll(() => {
   if (previousActEnvironment === undefined) delete testGlobal.IS_REACT_ACT_ENVIRONMENT
   else testGlobal.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment
 })
+
+// The pane's tab strip watches its width once it holds more than one workpiece; jsdom has no
+// ResizeObserver.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
 
 const PROPOSAL_CHAT_ID = 7
 
@@ -38,6 +50,23 @@ const mocks = vi.hoisted(() => {
     }) => void>(),
     search: {} as Record<string, unknown>,
     workspaceId: 'workspace',
+    // The editor's handler for its gadget UI's host.openAgentChat(), as last rendered.
+    onOpenAgentChat: null as null | ((chatToken: string, signal: AbortSignal) => Promise<void>),
+    // Reports the workspace's chats to the editor, as the chat pane does when its list changes.
+    reportChats: null as null | ((chats: readonly AiChatMetadata[]) => void),
+    // The workpieces the workspace's subscription delivers.
+    workpieces: [] as WorkpieceSummary[],
+    // What the chat pane, the code view, Connections and the gadget's UI were last rendered with.
+    chatPane: null as null | {
+      selectedChatId: number | null
+      codeChatId?: number | null
+      returnChatId?: number | null
+      pendingConsoleLogCount: number
+      onNavigateToChat: (chatId: number | null) => void
+    },
+    codeView: null as null | { selectedChatId?: number | null },
+    connections: null as null | { chatId?: number },
+    gadgetUi: null as null | { onConsoleLog?: (log: unknown) => void },
     // The props the use-only view was last rendered with.
     useView: null as null | {
       gadget: unknown
@@ -49,6 +78,7 @@ const mocks = vi.hoisted(() => {
         stub: {
           subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
             await subscriber.entry(GADGET)
+            for (const workpiece of mocks.workpieces) await subscriber.entry(workpiece)
             await subscriber.ready()
             return disposable
           },
@@ -113,14 +143,23 @@ vi.mock('./features/blueprint-updates/useBlueprintUpdateAvailable', () => ({
 
 // The two children whose reports decide when the editor's layout is ready.
 vi.mock('./ChatInterface', () => ({
-  default: ({ onChatCountChange }: { onChatCountChange: (count: number, hasChatZero: boolean) => void }) => {
+  default: ({ onChatCountChange, onChatListChange, ...props }: NonNullable<typeof mocks.chatPane> & {
+    onChatCountChange: (count: number, hasChatZero: boolean) => void
+    onChatListChange: (chats: readonly AiChatMetadata[]) => void
+  }) => {
     useEffect(() => { onChatCountChange(0, false) }, [onChatCountChange])
+    mocks.reportChats = onChatListChange
+    mocks.chatPane = props
     return <div>chat pane</div>
   },
 }))
 vi.mock('./features/code/WorkpieceCodeInterface', () => ({
-  default: ({ onHasCodeChange }: { onHasCodeChange: (hasCode: boolean) => void }) => {
+  default: ({ onHasCodeChange, selectedChatId }: {
+    onHasCodeChange: (hasCode: boolean) => void
+    selectedChatId?: number | null
+  }) => {
     useEffect(() => { onHasCodeChange(true) }, [onHasCodeChange])
+    mocks.codeView = { selectedChatId }
     return null
   },
 }))
@@ -151,9 +190,23 @@ vi.mock('./components/GadgetPresence', () => ({ GadgetPresence: () => null }))
 vi.mock('./Activity', () => ({ default: () => null }))
 vi.mock('./ActivityNotifications', () => ({ default: () => null }))
 vi.mock('./BlueprintModal', () => ({ default: () => null }))
-vi.mock('./Connections', () => ({ default: () => null }))
+vi.mock('./Connections', () => ({
+  default: ({ chatId }: { chatId?: number }) => {
+    mocks.connections = { chatId }
+    return null
+  },
+}))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
-vi.mock('./GadgetUI', () => ({ default: () => null }))
+vi.mock('./GadgetUI', () => ({
+  default: ({ onOpenAgentChat, onConsoleLog }: {
+    onOpenAgentChat?: typeof mocks.onOpenAgentChat
+    onConsoleLog?: (log: unknown) => void
+  }) => {
+    mocks.onOpenAgentChat = onOpenAgentChat ?? null
+    mocks.gadgetUi = { onConsoleLog }
+    return null
+  },
+}))
 vi.mock('./GadgetUseView', () => ({
   default: (props: NonNullable<typeof mocks.useView>) => {
     mocks.useView = props
@@ -225,6 +278,13 @@ async function proposeUpdate() {
 }
 
 beforeEach(() => {
+  mocks.onOpenAgentChat = null
+  mocks.reportChats = null
+  mocks.workpieces = []
+  mocks.chatPane = null
+  mocks.codeView = null
+  mocks.connections = null
+  mocks.gadgetUi = null
   mocks.navigate.mockReset()
   mocks.search = {}
   mocks.workspaceId = 'workspace'
@@ -374,6 +434,239 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     mocks.search = { chat: 3 }
     await openEditor('desktop')
     expect(isChatVisible('workspace', 3)).toBe(true)
+  })
+})
+
+/** A chat's metadata, as the chat pane lists it. */
+function chatMeta(id: number, extra: Partial<AiChatMetadata> = {}): AiChatMetadata {
+  return { id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(0), ...extra }
+}
+
+/** A spawned agent's chat, which a gadget names by its token. */
+const spawnedChat = (id: number, chatToken = `tok-${id}`) =>
+  chatMeta(id, { spawnerName: 'Researcher', spawnerId: 4, chatToken })
+
+async function reportChats(...chats: AiChatMetadata[]) {
+  await act(async () => { mocks.reportChats!(chats) })
+}
+
+// A gadget's UI names a chat it spawned by its token (GadgetHost.openAgentChat).
+describe('GadgetEditor, opening a chat a gadget names', () => {
+  const navigatedChats = () => mocks.navigate.mock.calls
+    .map(([{ search }]) => (search({}) as { agent?: number }).agent)
+    .filter(chat => chat !== undefined)
+
+  async function openAgentChat(chatToken: string, signal = new AbortController().signal) {
+    if (!mocks.onOpenAgentChat) throw new Error('The gadget UI has no openAgentChat handler')
+    await act(async () => { await mocks.onOpenAgentChat!(chatToken, signal) })
+  }
+
+  async function reportChatTokens(chatIdsByToken: Record<string, number>) {
+    await reportChats(...Object.entries(chatIdsByToken).map(([token, id]) => spawnedChat(id, token)))
+  }
+
+  it.each([
+    { screen: 'phone', view: 'Chat' },
+    { screen: 'desktop', view: 'Preview' },
+  ] as const)('selects the chat and shows it on a $screen', async ({ screen, view }) => {
+    await openEditor(screen)
+    await reportChatTokens({ 'tok-a': 5 })
+
+    await openAgentChat('tok-a')
+
+    expect(navigatedChats()).toEqual([5])
+    expect(currentView()).toEqual([view])
+  })
+
+  it('waits for a chat whose metadata arrives after the request', async () => {
+    await openEditor('desktop')
+    await reportChatTokens({})
+    let opened = false
+    const request = mocks.onOpenAgentChat!('tok-a', new AbortController().signal)
+      .then(() => { opened = true })
+    await act(async () => {})
+    expect(opened).toBe(false)
+
+    await reportChatTokens({ 'tok-a': 5 })
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([5])
+  })
+
+  it('does nothing while the gadget is hidden behind Activity', async () => {
+    await openEditor('phone')
+    await reportChatTokens({ 'tok-a': 5 })
+    await click('Activity')
+
+    await openAgentChat('tok-a')
+
+    expect(navigatedChats()).toEqual([])
+    expect(currentView()).toEqual(['Activity'])
+  })
+
+  it('drops a request whose gadget is hidden before its chat arrives', async () => {
+    await openEditor('phone')
+    await reportChatTokens({})
+    const request = mocks.onOpenAgentChat!('tok-a', new AbortController().signal)
+    await click('Activity')
+
+    await reportChatTokens({ 'tok-a': 5 })
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([])
+    expect(currentView()).toEqual(['Activity'])
+  })
+
+  it("drops a request whose frame's session ends just as its chat is found", async () => {
+    await openEditor('desktop')
+    await reportChatTokens({ 'tok-a': 5 })
+    const abort = new AbortController()
+    const request = mocks.onOpenAgentChat!('tok-a', abort.signal)
+    abort.abort()
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([])
+  })
+
+  it("drops a request whose frame's session ends before its chat arrives", async () => {
+    await openEditor('desktop')
+    await reportChatTokens({})
+    const abort = new AbortController()
+    const request = mocks.onOpenAgentChat!('tok-a', abort.signal)
+    abort.abort()
+
+    await reportChatTokens({ 'tok-a': 5 })
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([])
+  })
+})
+
+// A spawned agent's chat opens over the chat the user works in, whose gadget pane stays as it was:
+// a draft under test stays in it, and nothing done there is filed under the agent.
+describe("GadgetEditor, showing a spawned agent's chat over the working chat", () => {
+  const WORKING_CHAT = 2
+  const AGENT_CHAT = 5
+  const DRAFT: GadgetSummary = { id: 3, type: 'gadget', title: 'Draft', chatId: WORKING_CHAT }
+  const AGENT_WORKTREE: WorkpieceSummary = {
+    id: 6, type: 'worktree', title: 'Notes', chatId: AGENT_CHAT,
+    pinBase: 'c', headCommit: 'c', baseCommit: 'c',
+  }
+
+  async function openWith(search: Record<string, unknown>, ...workpieces: WorkpieceSummary[]) {
+    mocks.search = search
+    mocks.workpieces = workpieces
+    await openEditor('desktop')
+    await reportChats(chatMeta(WORKING_CHAT), chatMeta(8), spawnedChat(AGENT_CHAT))
+  }
+
+  /** Where the editor's last navigation goes from the current URL. */
+  const lastNavigation = () => mocks.navigate.mock.calls.at(-1)![0].search(mocks.search)
+
+  it.each([
+    {
+      from: 'the gadget',
+      open: async () => {
+        await act(async () => {
+          await mocks.onOpenAgentChat!(`tok-${AGENT_CHAT}`, new AbortController().signal)
+        })
+      },
+    },
+    {
+      from: 'the chat pane',
+      open: async () => { await act(async () => { mocks.chatPane!.onNavigateToChat(AGENT_CHAT) }) },
+    },
+  ])('opens from $from over the working chat, keeping its draft selected', async ({ open }) => {
+    await openWith({ chat: WORKING_CHAT, w: DRAFT.id }, DRAFT)
+
+    await open()
+
+    expect(lastNavigation()).toEqual({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: DRAFT.id })
+  })
+
+  it('shows the agent in the chat pane while the gadget pane follows the working chat',
+      async () => {
+    await openWith({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: DRAFT.id }, DRAFT)
+
+    expect(mocks.chatPane).toMatchObject({
+      selectedChatId: AGENT_CHAT, codeChatId: WORKING_CHAT, returnChatId: WORKING_CHAT,
+    })
+    expect(mocks.codeView).toEqual({ selectedChatId: WORKING_CHAT })
+    expect(mocks.connections).toEqual({ chatId: WORKING_CHAT })
+    expect(mocks.navigate.mock.calls
+      .map(([{ search }]) => search(mocks.search) as { chat?: number; agent?: number })
+      .filter(next => next.chat !== WORKING_CHAT || next.agent !== AGENT_CHAT)).toEqual([])
+  })
+
+  // A worktree is the one workpiece a spawned agent's chat can own, and it is that chat's.
+  it("works in the agent's chat while one of its worktrees is selected", async () => {
+    await openWith({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: AGENT_WORKTREE.id }, AGENT_WORKTREE)
+
+    expect(mocks.chatPane).toMatchObject({ selectedChatId: AGENT_CHAT, codeChatId: AGENT_CHAT })
+    expect(mocks.codeView).toEqual({ selectedChatId: AGENT_CHAT })
+  })
+
+  it('returns to the working chat on Back, leaving behind only what was the agent\'s',
+      async () => {
+    await openWith({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: DRAFT.id }, DRAFT)
+    await act(async () => { mocks.chatPane!.onNavigateToChat(null) })
+    expect(lastNavigation()).toEqual({ chat: WORKING_CHAT, agent: undefined, w: DRAFT.id })
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    await openWith(
+      { chat: WORKING_CHAT, agent: AGENT_CHAT, w: AGENT_WORKTREE.id }, DRAFT, AGENT_WORKTREE)
+    await act(async () => { mocks.chatPane!.onNavigateToChat(null) })
+    expect(lastNavigation()).toEqual({ chat: WORKING_CHAT, agent: undefined, w: undefined })
+  })
+
+  it("keeps the agent's chat over the working chat when its worktree is picked", async () => {
+    await openWith({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: DRAFT.id }, DRAFT, AGENT_WORKTREE)
+
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[title="Notes"]')!.click() })
+
+    expect(lastNavigation()).toEqual({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: AGENT_WORKTREE.id })
+  })
+
+  it('closes the agent\'s chat when another conversation opens', async () => {
+    await openWith({ chat: WORKING_CHAT, agent: AGENT_CHAT })
+
+    await act(async () => { mocks.chatPane!.onNavigateToChat(8) })
+
+    expect(lastNavigation()).toEqual({ chat: 8, agent: undefined, w: undefined })
+  })
+
+  it.each([
+    { name: "a spawned agent's chat named as the working chat", search: { chat: AGENT_CHAT },
+      fixed: { chat: undefined, agent: AGENT_CHAT } },
+    { name: 'another chat named as the agent', search: { chat: WORKING_CHAT, agent: 8 },
+      fixed: { chat: 8, agent: undefined } },
+    { name: 'an agent naming no chat', search: { chat: WORKING_CHAT, agent: 9 },
+      fixed: { chat: WORKING_CHAT, agent: undefined } },
+    { name: 'a working chat deleted under the agent', search: { chat: 9, agent: AGENT_CHAT },
+      fixed: { chat: undefined, agent: AGENT_CHAT } },
+  ])('corrects the URL for $name', async ({ search, fixed }) => {
+    await openWith(search)
+
+    const [{ search: next, replace }] = mocks.navigate.mock.calls.at(-1)!
+    expect(replace).toBe(true)
+    expect(next(search)).toEqual(fixed)
+  })
+
+  it("holds the gadget's console logs back from the agent's chat", async () => {
+    await openWith({ chat: WORKING_CHAT })
+    await act(async () => {
+      mocks.gadgetUi!.onConsoleLog!({ timestamp: new Date(0), level: 'log', message: ['hi'] })
+    })
+    expect(mocks.chatPane!.pendingConsoleLogCount).toBe(1)
+
+    mocks.search = { chat: WORKING_CHAT, agent: AGENT_CHAT }
+    await openEditor('desktop')
+    expect(mocks.chatPane!.pendingConsoleLogCount).toBe(0)
+
+    mocks.search = { chat: WORKING_CHAT }
+    await openEditor('desktop')
+    expect(mocks.chatPane!.pendingConsoleLogCount).toBe(1)
   })
 })
 

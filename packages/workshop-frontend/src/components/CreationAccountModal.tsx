@@ -1,3 +1,4 @@
+import { findResourceType, getResourceTypeId, getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Dialog, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
@@ -15,7 +16,7 @@ import ResourceConfiguratorHost from '../ResourceConfiguratorHost'
 import { disposeConfiguratorFrame } from '../disposeConfiguratorFrame'
 import { WorkshopButton } from './WorkshopControls'
 
-type CreationTarget = { vendor: GatekeeperVendorInfo; typeUrlPattern: string; configuration?: string }
+type CreationTarget = { vendor: GatekeeperVendorInfo; typeUrlPattern: string; resourceTypeId?: string; configuration?: string }
 
 // The popup flow whose start request is in flight.
 type StartingFlow = { kind: 'connect' } | { kind: 'reconnect' | 'grant'; accountId: number }
@@ -61,7 +62,10 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
           [gatekeeper.getCreationSpec(), authenticatedApi.listGatekeeperVendors()])
         const vendor = spec.type === 'gatekeeper' && vendors.find(v => v.id === spec.vendorId)
         if (!vendor || spec.type !== 'gatekeeper') throw new Error('This service is unavailable.')
-        if (!cancelled) setTarget({ vendor, typeUrlPattern: spec.typeUrlPattern, configuration: spec.configuration })
+        if (!findResourceType(vendor.supportedResources, spec.resourceTypeId, spec.typeUrlPattern)?.creatable) {
+          throw new Error('This resource type is no longer available for creation.')
+        }
+        if (!cancelled) setTarget({ vendor, typeUrlPattern: spec.typeUrlPattern, resourceTypeId: spec.resourceTypeId, configuration: spec.configuration })
       } finally {
         gatekeeper[Symbol.dispose]()
       }
@@ -121,22 +125,23 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   }
 
   const matching = target ? accounts.filter(a => a.vendorId === target.vendor.id) : []
-  const resource = target?.vendor.supportedResources
-    .find(r => r.urlPattern === target.typeUrlPattern)
+  const resource = target
+    ? findResourceType(target.vendor.supportedResources, target.resourceTypeId, target.typeUrlPattern)
+    : undefined
   // A separately grantable type needs its grant on the account the resource is created in.
-  const required = resource?.grantable ? [resource.urlPattern] : []
+  const required = resource?.grantable ? [getResourceTypeId(resource)] : []
   const usable = (account: AccountEvent) => account.credentialsValid &&
-    required.every(p => account.description.grantedResourceUrlPatterns?.includes(p) ?? true)
+    required.every(p => getGrantedResourceTypeIds(account.description, account.supportedResources)?.includes(p) ?? true)
   const selected = matching.find(a => a.id === chosen) ?? matching.find(usable)
-  const configuratorPattern = resource?.creationConfigurator ? resource.urlPattern : null
+  const configuratorTypeId = resource?.creationConfigurator ? getResourceTypeId(resource) : null
   const configuratorAccountId =
-    configuratorPattern !== null && selected && usable(selected) ? selected.id : null
+    configuratorTypeId !== null && selected && usable(selected) ? selected.id : null
 
   useEffect(() => {
-    if (configuratorAccountId === null || configuratorPattern === null) return
+    if (configuratorAccountId === null || configuratorTypeId === null) return
     let cancelled = false
     let started: GatekeeperUiFrame | undefined
-    authenticatedApi.startCreationConfigurator(configuratorAccountId, configuratorPattern)
+    authenticatedApi.startCreationConfigurator(configuratorAccountId, configuratorTypeId)
       .then(frame => {
         if (cancelled) return disposeConfiguratorFrame(frame)
         started = frame
@@ -155,7 +160,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
       setConfigurator(null)
       setCollecting(false)
     }
-  }, [authenticatedApi, configuratorAccountId, configuratorPattern])
+  }, [authenticatedApi, configuratorAccountId, configuratorTypeId])
 
   // SandboxedResourceConfigurator re-registers its collector whenever this changes identity, so a
   // fresh callback per render would loop: unregister, re-register, re-render.
@@ -165,10 +170,10 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
   const current = configurator?.accountId === configuratorAccountId ? configurator : null
   const frame = current && 'frame' in current ? current.frame : null
   const configured =
-    configuratorPattern === null || (frame && configuratorReady === true && collector)
+    configuratorTypeId === null || (frame && configuratorReady === true && collector)
 
   const approve = async (accountId: number) => {
-    if (configuratorPattern === null) return onChoose({ accountId })
+    if (configuratorTypeId === null) return onChoose({ accountId })
     const attempt = {}
     collectAttempt.current = attempt
     setCollecting(true)
@@ -189,7 +194,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
     <Dialog.Root open onOpenChange={open => { if (!open) onCancel() }}>
       <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0 sm:w-[480px]" size="base">
         <Dialog.Title className="shrink-0 px-6 pt-6 text-lg font-semibold">
-          {configuratorPattern === null
+          {configuratorTypeId === null
             ? 'Choose an account to create it in'
             : 'Choose where to create it'}
         </Dialog.Title>
@@ -205,7 +210,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                 vendorName={target.vendor.description.displayName}
                 connecting={starting?.kind === 'connect'}
                 reconnectingAccountId={starting?.kind === 'reconnect' ? starting.accountId : null}
-                requiredResourceUrlPatterns={required}
+                requiredResourceTypeIds={required}
                 grantingAccountId={starting?.kind === 'grant' ? starting.accountId : null}
                 onSelect={setChosen}
                 onConnect={() => void startFlow({ kind: 'connect' }, async () => {
@@ -235,8 +240,8 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                       authenticatedApi, toasts, configuratorAccountId, patterns)
                     : undefined}
                   initialResourceUrl={target.configuration}
-                  resourceUrlPattern={target.typeUrlPattern}
-                  acceptedResourceUrlPatterns={[target.typeUrlPattern]}
+                  resourceUrlPattern={resource?.urlPattern}
+                  acceptedResourceUrlPatterns={resource ? [resource.urlPattern] : []}
                 />
               )}
             </div>

@@ -245,14 +245,19 @@ export type SlideChange =
   | { op: "setThemeColors"; masterId: string; colors: Partial<Record<ThemeColorName, string>> };
 
 /**
- * Read/write access to one directly bound Google Slides presentation.
+ * Read/write access to one Google Slides presentation: one bound directly, or one a Google Drive
+ * binding with read and write access opened.
  *
  * Changes are queued for the user's approval. `getPresentation()` and `getSlides()` show them as
  * if already applied; `getSlideThumbnail()` renders the presentation as saved. A queued change
  * that no longer applies, because the presentation was edited elsewhere, fails when approved, and
- * reads of what it changes report it in `queuedChangeConflict`. The presentation's comments are
- * not part of this binding: a Google Drive binding that reaches the same file reads them, and
- * writes them when it has read and write access. For this file alone, request the resource URL
+ * reads of what it changes report it in `queuedChangeConflict`. Opened from a Drive binding, the
+ * presentation is checked to be still in the binding's reach, and editable by its account, both
+ * when a change is queued and when it is approved.
+ *
+ * The comments of a presentation bound directly are not part of its binding: a Google Drive
+ * binding that reaches the same file reads them, and writes them when it has read and write
+ * access. For this file alone, request the resource URL
  * `https://drive.google.com/file/d/<id>/view`, where `<id>` is the `id` that `getPresentation()`
  * returns: as it is to read the comments, or with `?access=write` added to write them too.
  */

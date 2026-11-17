@@ -688,7 +688,8 @@ describe("bulk access verification", () => {
 
 /** The one mask a scope proof and an observer check read a file through. */
 const SCOPE_MASK = "id,mimeType,parents,driveId,trashed," +
-  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive)";
+  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
+  "canEdit)";
 
 describe("folder scope nodes", () => {
   const node = (id: string, extra: Record<string, unknown> = {}) =>

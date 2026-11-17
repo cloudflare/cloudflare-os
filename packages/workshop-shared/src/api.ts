@@ -509,6 +509,8 @@ export type ObserverBindingNeed = {
   resourceTitle: string;
   /** Canonical resource URL, if known, for display. */
   resourceUrl?: string;
+  /** Stable vendor-scoped type ID from the binding; authoritative over URL-based scope selection. */
+  resourceTypeId?: string;
   /**
    * Set only when this binding was already configured but its chosen account failed verification on
    * this attempt (expired credentials, a revoked grant, an upstream outage, or a genuine denial).
@@ -1013,14 +1015,14 @@ export interface AuthenticatedApi extends RpcTarget {
    * sees the ticket (see docs/connect-handoff.md). A vendor that provisions its own account
    * (`description.autoProvisionsAccount`) needs no flow: see provisionAmbientAccount().
    *
-   * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
+   * `resourceTypeIds`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
    * authorization for all of the vendor's resource types is requested. An empty array is meaningful
    * and distinct from omitting it: it requests no resource authorization at all, which is how a
    * caller connects an account for a non-resource purpose (e.g. billing) without asking the user to
    * grant data access it will never use.
    */
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart>;
+  connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart>;
 
   /**
    * Redeem a finished connect flow's handoff. Called by the Workshop's own /connect/handoff page
@@ -1037,7 +1039,7 @@ export interface AuthenticatedApi extends RpcTarget {
   completeConnectHandoff(ticket: string, nonce: string): Promise<void>;
 
   /**
-   * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
+   * Ensure the authorization for the listed grantable resource types (by stable vendor-scoped ID) is granted
    * on a connected account, expanding if needed. Returns a flow to open as a disowned popup, which
    * only the Workshop client that started it can complete (as for connectAccount()), to authorize
    * them, or null if nothing was needed. Completion is redeemed via completeConnectHandoff(); the
@@ -1045,7 +1047,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * Returning null also re-reads the account's description, so a list of granted resource types
    * that was out of date is corrected and observable the same way.
    */
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
+  ensureAccountResources(accountId: number, resourceTypeIds: string[]): Promise<ConnectFlowStart | null>;
 
   /**
    * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
@@ -1087,24 +1089,24 @@ export interface AuthenticatedApi extends RpcTarget {
    * Get the UI used to choose a specific resource from a connected account.
    *
    * `accountId` is the user's connected account that provides this resource.
-   * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   * `resourceTypeId` is the stable vendor-scoped ID of the supported resource.
    *
    * Once the user has chosen in the frame, the Workshop asks its iframe for the resource URL
    * (ResourceConfiguratorIframe.collectResourceUrl()) and passes it to Overseer.newGatekeeper().
-   * A caller without the iframe makes that URL itself, in the form of `resourceUrlPattern`, the
+   * A caller without the iframe makes that URL itself, matching the type's current `urlPattern`, the
    * frame's `ui` helping only to look up what fills it.
    */
   startResourceConfigurator(
     accountId: number,
-    resourceUrlPattern: string,
+    resourceTypeId: string,
   ): Promise<ResourceConfiguratorFrame>;
 
   /**
-   * Get the UI in which the approver of a creation of the type `resourceUrlPattern` configures it
+   * Get the UI in which the approver of a creation of the type `resourceTypeId` configures it
    * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
    * frame's collectResourceUrl() gives CreationApproval.configuration.
    */
-  startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+  startCreationConfigurator(accountId: number, resourceTypeId: string)
       : Promise<GatekeeperUiFrame>;
 
   /**
@@ -1318,7 +1320,9 @@ export function isHexColor(value: unknown): value is string {
 
 /** A single gatekeeper resource type in the admin resource-config UI. */
 export type AdminResource = {
-  /** The resource's urlPattern, used as its stable identifier. */
+  /** Stable vendor-scoped type ID; older responses and unresolved legacy restrictions omit it. */
+  resourceTypeId?: string;
+  /** URL matching pattern, or the retained unmatched pattern of a legacy restriction. */
   urlPattern: string;
   title: string;
   description: string;
@@ -1849,11 +1853,11 @@ export interface AdminApi {
   setRestrictedWebFetchApprovals(enabled: boolean): Promise<void>;
 
   /**
-   * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
+   * Enable or disable a single gatekeeper resource type, keyed by vendor ID + stable resource type ID.
    * Soft enforcement: disabling hides the resource from the connect UI, the resource picker, and the
    * agent; it doesn't revoke a capability a gadget already holds.
    */
-  setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void>;
+  setResourceEnabled(vendorId: string, resourceTypeId: string, enabled: boolean): Promise<void>;
 
   /**
    * Set a gatekeeper's availability. For an auto-provisioning ("ambient") gatekeeper, `mode` is the
@@ -2750,7 +2754,8 @@ const SUGGESTED_MODEL_CATALOG = {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
     "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
     "claude-haiku-5-5": {name: "Claude Haiku 5.5", contextWindow: 1000000},
-    "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
+    "claude-fable-5-2": {name: "Claude Fable 5.2", contextWindow: 1000000},
+    "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000, hidden: true},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000, hidden: true},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000, hidden: true},
     "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000, hidden: true},
@@ -3048,15 +3053,62 @@ export type UiBundle = {
 //  url: string;
 
   /**
-   * Returns the raw JS code to execute in the Gadget iframe.
+   * A legacy UI's `client.js`: one module, which has no default export and imports only `data:`
+   * URLs. The page runs it with the `gadget` stub, `RpcTarget` and `RpcStub` as globals.
    * TODO: For now we just return the code but we should switch to serving over HTTP as described
    *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
    *   Cache API in the browser? Or some other local storage?
    */
   jsCode: string;
+} | {
+  /**
+   * `client.js`, the UI's entry, then every other module it reaches through its imports, each
+   * with its relative imports rewritten to the internal keys the page's import map resolves (see
+   * `ui-page.ts`). Anyone who can use the gadget receives these, so nothing only `server.js`
+   * imports is ever included.
+   *
+   * The page starts the UI by calling `main(gadget, host)` on `client.js`'s default export, where
+   * `host` is a `GadgetHost`, and sets no globals: the `gadget` stub reaches only code `main()`
+   * passes it to, and the modules import `RpcTarget` and `RpcStub` from "capnweb", which the page
+   * maps to the Cap'n Web its RPC session uses.
+   *
+   * That keeps the stub from code that isn't handed it, not from code trying to get it: the
+   * modules share one realm, where one can intercept what another passes around. Nor is the
+   * page's connection to the server reserved for its runtime. Any module can post the iframe's
+   * RPC handshake to the Workshop, and in a browser-mode export any module can replace the
+   * globals the export's RPC session runs through.
+   */
+  modules: UiModule[];
+};
 
-  // Other metadata could be placed here in the future, e.g. to specify what version of support
-  // libraries should be loaded.
+/**
+ * What the page running a gadget's UI offers it besides the gadget's server: the second argument
+ * of `main(gadget, host)` (see `UiBundle.modules`). The Workshop implements it for the live view,
+ * and browser-mode export implements it too, so each method also says what it does during an
+ * export, where there is no Workshop UI.
+ *
+ * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
+ * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
+ * proxies through the frame.
+ */
+export interface GadgetHost {
+  /**
+   * Shows the user the chat of an agent this gadget spawned, named by its
+   * `SpawnedAgent.getChatToken()` (see `AiChatMetadata.chatToken`). The Workshop opens the chat in
+   * its chat sidebar. Does nothing where there is no chat sidebar (a use-only view, or a
+   * browser-mode export) or while the gadget isn't on screen. Throws if the token names no chat in
+   * this workspace.
+   */
+  openAgentChat(chatToken: string): Promise<void>;
+}
+
+/** One module of a Gadget UI. */
+export type UiModule = {
+  /** The module's path in the gadget's file tree, with no `.` or `..` segments. */
+  path: string;
+
+  /** The module's code, with its relative imports rewritten. */
+  code: string;
 };
 
 /**
@@ -3359,7 +3411,9 @@ export interface Overseer extends RpcTarget {
    * `createdGadgets`), and the gadget remains pending (see WorkpieceSummary.chatId) until
    * the user accepts the chat's changes through that message (merging deletes the pending marker;
    * reverting deletes the gadget). Without `chatId` the gadget is created permanently, with an
-   * empty initial commit as its head (see WorkpieceSummary.commitId).
+   * empty initial commit as its head (see WorkpieceSummary.commitId). Throws if `chatId` names a
+   * spawned agent's chat (see AiChatMetadata.spawnerName), which may hold changes only to
+   * worktrees.
    *
    * `bindingName` is the name under which the gadget appears in chat envs and the workspace
    * default binding list (see validateBindingName()). When absent, the server chooses one from
@@ -3482,6 +3536,9 @@ export interface Overseer extends RpcTarget {
    * While an agent turn is active, the call throws a retryable error: keep the queued change and
    * resubmit after the turn ends. (The UI already locks editing during turns; this backstops
    * races.)
+   *
+   * A spawned agent's chat (see AiChatMetadata.spawnerName) may hold changes only to its
+   * worktrees, as its agent may: a submission touching a gadget there is rejected.
    *
    * A submission still rooted in the *previous* generation, when that generation was closed by
    * a merge (a content-preserving bump; see ChatCodeBase.generation), is transformed across the
@@ -4103,10 +4160,16 @@ export interface Overseer extends RpcTarget {
    * Anyone who redeems the link receives `grant`. The caller must be the owner or a "build"
    * collaborator.
    *
+   * With `default`, the link is the caller's *default* link for `grant`: each sharer has at
+   * most one live default link per grant, which the share dialog presents apart from the named
+   * links. If the caller already has one, this mints another key for it (as `newShareLinkKey`
+   * does) instead of creating a second, and returns that link's id. Otherwise it behaves as any
+   * other link, and revoking it leaves the caller with none until they create another.
+   *
    * A signed-in user redeems the key by passing it as `shareKey` to
    * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
    */
-  createShareLink(grant: CollaboratorGrant, note?: string)
+  createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }>;
 
   /**
@@ -4182,6 +4245,14 @@ export type AiChatMetadata = {
    * starts; the user's effective preference and explicit override come from `ChatReadState`.
    */
   notificationsRequireParticipation?: boolean;
+
+  /**
+   * An opaque random ID for the chat. Unlike `id`, a small integer anyone could guess, it can name
+   * the chat to a gadget: the agent spawner that created the chat hands it to the gadget
+   * (`SpawnedAgent.getChatToken()`), whose UI passes it to `GadgetHost.openAgentChat()` to show the
+   * chat. It grants no access to the chat. Absent on chats created before it was introduced.
+   */
+  chatToken?: string;
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
@@ -4965,6 +5036,9 @@ export type AiChatMessageBody = {
    */
   resourceUrlPattern?: string;
 
+  /** Stable vendor-scoped type ID. Authoritative over the legacy pattern when present. */
+  resourceTypeId?: string;
+
   /** Why the agent wants this connection. Shown to the user to inform their decision. */
   reason: string;
 
@@ -5361,6 +5435,8 @@ export type AiToolCall = {
   toolName: "requestConnection";
   input: {
     vendorId: string;
+    /** Stable type ID from listConnectableResources; omitting it retains URL-based selection. */
+    resourceTypeId?: string;
     resourceUrl?: string;
     reason: string;
 
@@ -5382,8 +5458,11 @@ export type AiToolCall = {
   input: {
     vendorId: string;
 
-    /** `urlPattern` of the creatable resource type. */
-    resourceUrlPattern: string;
+    /** Stable ID of the creatable resource type, from listConnectableResources. */
+    resourceTypeId?: string;
+
+    /** Legacy persisted tool calls used the type's exact URL pattern instead. */
+    resourceUrlPattern?: string;
 
     /** Title of the new resource, e.g. a document's title. */
     title: string;
@@ -6075,7 +6154,9 @@ export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
   resourceUrl?: string;    // absent until a resource created by createExternalResource exists
-  typeUrlPattern: string;  // URL pattern from the vendor's SupportedResource (not the specific URL)
+  /** Stable vendor-scoped type ID, absent on records created before stable IDs. */
+  resourceTypeId?: string;
+  typeUrlPattern: string;  // Matching/prefill snapshot and exact-match fallback for legacy records.
   /** The configuration createExternalResource suggested (see its `configuration`). */
   configuration?: string;
 } | {
@@ -6175,7 +6256,10 @@ export type BlueprintBinding = {
    */
   gatekeeperName: string;
 
-  /** URL pattern describing the type of resource this binding accepts. */
+  /** Stable vendor-scoped type ID. Authoritative when present, including after pattern changes. */
+  resourceTypeId?: string;
+
+  /** Matching hint; legacy bindings without an ID resolve only by exact current pattern. */
   typeUrlPattern: string;
 
   /** The specific resource URL from the source gadget (suggestion only). */
@@ -6411,7 +6495,8 @@ export interface GadgetClient extends WorkpieceClient {
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
    *
    * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
-   * agent with no code).
+   * agent with no code). Throws, naming the file and line, when the UI's imports break the rules
+   * for UI code.
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
@@ -6473,7 +6558,8 @@ export interface GadgetClient extends WorkpieceClient {
    *
    * If `chatId` is provided, the binding is treated like an edit made in the given chat -- it is
    * proposed, but someone needs to click "accept changes" (call `mergeChanges()`) to make it
-   * final. Until then it exists only in the given chat.
+   * final. Until then it exists only in the given chat. Throws if `chatId` names a spawned
+   * agent's chat (see AiChatMetadata.spawnerName), which may hold changes only to worktrees.
    */
   bind(name: string, target: WorkpieceId, chatId?: number): Promise<void>;
 
@@ -6693,4 +6779,7 @@ export type ShareLinkInfo = {
    * be created, but it can still be copied and redeemed.
    */
   gadgets?: {id: WorkpieceId; title: string}[];
+
+  /** Whether this is its creator's default link for what it grants (see `createShareLink`). */
+  default?: true;
 };

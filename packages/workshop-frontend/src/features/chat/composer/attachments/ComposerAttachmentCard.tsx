@@ -1,37 +1,12 @@
-import {
-  FileAudioIcon,
-  FileCodeIcon,
-  FileDocIcon,
-  FileIcon,
-  FilePdfIcon,
-  FilePptIcon,
-  FileTextIcon,
-  FileVideoIcon,
-  FileXlsIcon,
-  FileZipIcon,
-  WarningIcon,
-  XIcon,
-  type Icon,
-} from "@phosphor-icons/react";
+import { WarningIcon, XIcon } from "@phosphor-icons/react";
 import { SkeletonLine, Tooltip } from "@cloudflare/kumo";
-import { attachmentKind, type AttachmentKind } from "./attachmentKind";
+import { AttachmentCardFace } from "../../attachments/AttachmentCardFace";
+import { attachmentKind } from "../../attachments/attachmentKind";
+import { previewFormat } from "../../attachments/previewFormat";
+import { useAttachmentThumbnail } from "../../attachments/useAttachmentThumbnail";
 import type { ComposerAttachment } from "./useComposerAttachments";
 
 // Everything visual about an attachment card lives in this file; the tray only lays cards out.
-const KIND_ICONS: Record<AttachmentKind, Icon> = {
-  image: FileIcon,
-  pdf: FilePdfIcon,
-  audio: FileAudioIcon,
-  video: FileVideoIcon,
-  spreadsheet: FileXlsIcon,
-  document: FileDocIcon,
-  presentation: FilePptIcon,
-  archive: FileZipIcon,
-  code: FileCodeIcon,
-  text: FileTextIcon,
-  file: FileIcon,
-};
-
 const CARD_CLASS =
   "group relative h-[90px] w-[90px] shrink-0 overflow-hidden rounded-xl bg-kumo-control hover:bg-kumo-tint sm:h-[110px] sm:w-[110px]";
 
@@ -46,47 +21,68 @@ const OUTLINE_CLASS =
 const REMOVE_BUTTON_CLASS =
   "absolute right-1.5 top-1.5 flex h-5 w-5 cursor-pointer items-center justify-center rounded-full bg-kumo-base text-kumo-default shadow-sm ring-1 ring-kumo-line hover:bg-kumo-tint focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:hover)]:opacity-0 group-hover:opacity-100";
 
+// Covers the card beneath the remove button, so the whole card opens the file.
+const OPEN_BUTTON_CLASS =
+  "absolute inset-0 cursor-pointer rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-kumo-ring";
+
 export const ComposerAttachmentCard = ({
   attachment,
   disabled,
+  loadContent,
+  onOpen,
   onRemove,
 }: {
   attachment: ComposerAttachment;
   disabled: boolean;
+  loadContent: () => Promise<Uint8Array>;
+  onOpen: () => void;
   onRemove: () => void;
 }) => {
   const name = attachment.name ?? "Attached file";
-  const KindIcon = KIND_ICONS[attachmentKind(attachment.mimeType, attachment.name)];
+  const kind = attachmentKind(attachment.mimeType, attachment.name);
   const failed = attachment.uploadState === "error";
+  const uploading = attachment.uploadState === "uploading";
+  // An image is its own thumbnail (`previewUrl`).
+  const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
+    attachment.previewUrl ? undefined : previewFormat(attachment.mimeType, attachment.name),
+    loadContent,
+  );
 
   return (
     <Tooltip content={name} side="top" asChild>
-      <div className={CARD_CLASS}>
-        {attachment.uploadState === "uploading" ? (
+      <div ref={ref} className={CARD_CLASS}>
+        {uploading ? (
           <>
             <SkeletonLine minWidth={100} maxWidth={100} className="h-full w-full" />
             <span className="sr-only">Uploading {name}</span>
           </>
         ) : attachment.previewUrl && !failed ? (
           <img src={attachment.previewUrl} alt={name} className="h-full w-full object-contain" />
-        ) : (
+        ) : failed ? (
           <div className="flex h-full flex-col justify-between p-2.5 sm:p-3">
-            {failed ? (
-              <div className="flex flex-col gap-1">
-                <WarningIcon size={16} className="text-kumo-danger" />
-                <span className="text-[11px] font-medium leading-[14px] text-kumo-danger sm:text-[12px] sm:leading-4">
-                  Upload failed
-                </span>
-              </div>
-            ) : (
-              <KindIcon size={20} className="text-kumo-default" />
-            )}
-            <span className={`break-words text-[11px] font-medium leading-[14px] sm:text-[12px] sm:leading-4 ${failed ? "line-clamp-1 text-kumo-subtle sm:line-clamp-2" : "line-clamp-2 text-kumo-default"}`}>
+            <div className="flex flex-col gap-1">
+              <WarningIcon size={16} className="text-kumo-danger" />
+              <span className="text-[11px] font-medium leading-[14px] text-kumo-danger sm:text-[12px] sm:leading-4">
+                Upload failed
+              </span>
+            </div>
+            <span className="line-clamp-1 break-words text-[11px] font-medium leading-[14px] text-kumo-subtle sm:line-clamp-2 sm:text-[12px] sm:leading-4">
               {name}
             </span>
           </div>
+        ) : (
+          <AttachmentCardFace name={name} kind={kind} thumbnail={thumbnail} loading={loading} />
         )}
         <span aria-hidden="true" className={OUTLINE_CLASS} />
+        {/* The file is on this device, so it can be opened whether or not its upload worked. */}
+        {!uploading && (
+          <button
+            type="button"
+            aria-label={`Preview ${name}`}
+            onClick={onOpen}
+            className={OPEN_BUTTON_CLASS}
+          />
+        )}
         <button
           type="button"
           aria-label={`Remove ${name}`}

@@ -1,11 +1,11 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
-import { validateRpc } from "capnweb-validate";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -75,7 +75,9 @@ import {
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
-import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
+import type {
+  AgentSpawnerBinding, CallableAgent, SpawnCallableOptions, SpawnedAgent,
+} from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
 import { reportIssue } from "@gadgets/observability/error-reporting";
 import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from "./analytics";
@@ -100,6 +102,7 @@ import {
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
+import { buildUiBundle } from "./ui-bundle";
 import {
   defaultExportFormats,
   exportServerFormat,
@@ -403,6 +406,8 @@ function observerBindingNeed(record: GatekeeperRecord): ObserverBindingNeed {
     vendorId: observerVendorId(record)!,
     resourceTitle: observerBindingTitle(record),
     resourceUrl: record.resourceUrl,
+    resourceTypeId: record.creationSpec?.type === "gatekeeper"
+      ? record.creationSpec.resourceTypeId : undefined,
   };
 }
 
@@ -807,6 +812,9 @@ class OverseerImpl implements AgentHooks {
   readonly cacheWarmer: ChatCacheWarmer;
 
   #autoApprovalDrainer: AutoApprovalDrainer;
+
+  // Actions with a decision in flight (see claimDecision).
+  #deciding = new Set<number>();
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
@@ -1722,7 +1730,8 @@ class OverseerImpl implements AgentHooks {
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved));
+            this.applyPendingAction(record, resolvedBy, autoApproved),
+        id => this.#deciding.has(id));
     this.cacheWarmer = new ChatCacheWarmer(ctx.id.toString(), (chatId, resent) =>
         this.#addRequestCost(
             chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
@@ -1863,6 +1872,15 @@ class OverseerImpl implements AgentHooks {
   // Whether the id names a live worktree record (a deleted workpiece is not a worktree here).
   isWorktree(id: WorkpieceId): boolean {
     return this.storage.gadgets.get(id)?.type === "worktree";
+  }
+
+  // Refuses a user's change to a gadget filed under a spawned agent's chat. Such a chat may hold
+  // changes only to worktrees, since its agent may modify nothing else (see
+  // assertMayModifyWorkpiece in agent.ts), and a gadget change there would be credited to it.
+  assertChatMayChangeGadget(chatId: number): void {
+    if (this.storage.chatContext.get(chatId)?.spawnerConfig) {
+      throw new Error("A spawned agent's chat can't hold changes to a gadget.");
+    }
   }
 
   // Facet name for the given gadget. The facet name is a storage key, so the default gadget
@@ -3641,6 +3659,9 @@ class OverseerImpl implements AgentHooks {
       : Promise<{generation: number, revision: number}> {
     this.getChatMetaOrThrow(chatId);  // fail fast
     this.#validateSubmissionShape(submission);
+    if (changedGadgets(submission.change).some(id => !this.isWorktree(id))) {
+      this.assertChatMayChangeGadget(chatId);
+    }
     this.#validateByteChanges(submission.change);
     let digest = await submissionDigest(submission);
 
@@ -4248,6 +4269,7 @@ class OverseerImpl implements AgentHooks {
         title: `Update from blueprint: ${metadata.title}`,
         started: timestamp,
         lastActive: timestamp,
+        chatToken: crypto.randomUUID(),
         ...(pin !== undefined ? {codeBase: {pins: [pin], generation: 0, revision: 0}} : {}),
       });
       this.materializeChatChanges(chatId, undefined, {author, blueprintMerges: [merge]});
@@ -5332,10 +5354,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   async getGadgetUiBundle(gadgetId: WorkpieceId, chatId?: number): Promise<UiBundle | null> {
-    // TODO: Bundle the UI? For now we just return client.js.
     this.checkChatExistsAndMaterializeChanges(chatId);
-    let jsCode = (await this.readGadgetFiles(gadgetId, chatId)).get("client.js");
-    return jsCode !== undefined ? {jsCode} : null;
+    return buildUiBundle(await this.readGadgetFiles(gadgetId, chatId));
   }
 
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
@@ -5365,7 +5385,7 @@ class OverseerImpl implements AgentHooks {
       let bundle = await this.getGadgetUiBundle(gadgetId, chatId);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
       let title = this.getGadgetRecord(gadgetId).title;
-      return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.dup(), format);
+      return renderGadgetInBrowser(browser, bundle, title, exportGadget.dup(), format);
     }
   }
 
@@ -5496,10 +5516,33 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Marks a pending action as "being decided", so that only one approval or rejection of it can be
+  // in progress at a time. Throws "Action is not pending" if the action was already approved or
+  // rejected, or if another approval or rejection of it is still in progress. The mark is removed
+  // when the returned handle is disposed, so callers hold it with `using`.
+  //
+  // Why this is needed: approving or rejecting an action first calls its gatekeeper, and only
+  // records the action as approved or rejected after that call returns. While the call is being
+  // awaited, this Durable Object keeps handling other incoming requests, and to them the action
+  // still looks pending. Without this mark, a second decision arriving in that window -- from
+  // another tab, a retry after a dropped connection, or the auto-approval drain -- would also pass
+  // the "is it pending?" check and reach the gatekeeper a second time.
+  //
+  // This method is synchronous, so no other request can run between the check and setting the
+  // mark. Callers must call it before they contact the gatekeeper. Since it checks the action's
+  // state itself, it can come earlier than that, as in applyPendingAction.
+  claimDecision(id: number): Disposable {
+    if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
+      throw new Error(`Action is not pending: ${id}`);
+    }
+    this.#deciding.add(id);
+    return {[Symbol.dispose]: () => { this.#deciding.delete(id); }};
+  }
+
   // Apply a single pending action: invoke the gatekeeper, mark it approved, and persist (the put
   // auto-notifies subscribeToActions). Shared by manual approval (`approveAction`) and the
-  // auto-approval drain (`drainAutoApprovals`). The caller is responsible for validating that the
-  // record is still pending before calling.
+  // auto-approval drain (`drainAutoApprovals`). Refuses, as not pending, an action decided since
+  // the caller read it or whose decision is still in flight (see claimDecision).
   //
   // `resolvedBy`/`autoApproved` are required (not defaulted) so that no apply path can omit how the
   // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
@@ -5511,6 +5554,7 @@ class OverseerImpl implements AgentHooks {
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
                                        configuration: string | null}): Promise<void> {
+    using _decision = this.claimDecision(record.id);
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.creationPending(id)) {
@@ -7520,6 +7564,7 @@ class OverseerImpl implements AgentHooks {
         title: "New Chat",   // filled in later by AI
         started: timestamp,
         lastActive: timestamp,
+        chatToken: crypto.randomUUID(),
       };
       if (prepared.message !== undefined && userMeta.aiModel) {
         meta.activeAgent = userMeta.aiModel.profile;
@@ -9249,6 +9294,7 @@ class OverseerImpl implements AgentHooks {
           // Use the vendor's URL pattern, not the specific resource URL.
           // Fall back to resourceUrl for gatekeepers created before typeUrlPattern was stored.
           typeUrlPattern: spec.typeUrlPattern || spec.resourceUrl!,
+          resourceTypeId: spec.resourceTypeId,
           ...(suggestValue ? {resourceUrl: spec.resourceUrl} : {}),
         };
       } else if (spec.type === "aiModel") {
@@ -9314,6 +9360,7 @@ class OverseerImpl implements AgentHooks {
                   type: "gatekeeper",
                   gatekeeperName: targetSpec.vendorId,
                   typeUrlPattern: targetSpec.typeUrlPattern || targetSpec.resourceUrl!,
+                  resourceTypeId: targetSpec.resourceTypeId,
                 }
               : {
                   ...synthBase,
@@ -10246,9 +10293,9 @@ class OverseerImpl implements AgentHooks {
     let creations = vendor.supportedResources.filter(resource => resource.creatable);
     if (existing.length > 0) {
       lines.push("\nExisting resources (requestConnection):");
-      for (let r of existing) lines.push(`* ${r.title} — urlPattern: ${r.urlPattern}\n  ${r.description}`);
+      for (let r of existing) lines.push(`* ${r.title} — resourceTypeId: ${getResourceTypeId(r)}; urlPattern: ${r.urlPattern}\n  ${r.description}`);
       lines.push(`To connect one, call requestConnection with vendorId="${vendorId}" and a ` +
-          `matching resourceUrl (or omit resourceUrl to let the user pick).`);
+          `resourceTypeId from the list, optionally including resourceUrl to prefill the picker.`);
     } else {
       lines.push("No existing resources are offered for connection.");
     }
@@ -10256,7 +10303,7 @@ class OverseerImpl implements AgentHooks {
       lines.push("\nNew resources (createExternalResource):");
       for (let r of creations) {
         let takes = r.creationConfigurator && r.creationConfigurationDescription;
-        lines.push(`* ${r.title} — resourceUrlPattern: ${r.urlPattern}` +
+        lines.push(`* ${r.title} — resourceTypeId: ${getResourceTypeId(r)}` +
             `${takes ? ` (configuration: ${takes})` : ""}\n  ${r.description}`);
       }
     }
@@ -10269,6 +10316,7 @@ class OverseerImpl implements AgentHooks {
   // `decisionRequested` flag in agent.ts).
   async requestConnection(chatId: number, input: {
     vendorId: string;
+    resourceTypeId?: string;
     resourceUrl?: string;
     reason: string;
     bindingName: string;
@@ -10278,7 +10326,7 @@ class OverseerImpl implements AgentHooks {
     validateBindingName(input.bindingName);
 
     if (input.vendorId === AGENT_SPAWNER_CONNECTION_ID) {
-      if (input.resourceUrl !== undefined) {
+      if (input.resourceUrl !== undefined || input.resourceTypeId !== undefined) {
         return { requested: false, message:
             `Cannot request an agent spawner with a resourceUrl; omit it.` };
       }
@@ -10316,10 +10364,17 @@ class OverseerImpl implements AgentHooks {
     // Resolve the exact resource this request maps to, using the same precedence the accept modal
     // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
     // card that opens a blank "create new connection" picker. The agent is told what to fix.
-    let resolved = resolveRequestedResource(connectableResources, input.resourceUrl);
+    let resolved = resolveRequestedResource(connectableResources, input.resourceUrl, input.resourceTypeId);
     if (!resolved.ok) {
       return { requested: false, message:
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
+    }
+    if (input.resourceTypeId !== undefined && input.resourceUrl !== undefined &&
+        resolved.resource.urlPattern !== "https://*" &&
+        !matchesResourceUrlPattern(resolved.resource.urlPattern, input.resourceUrl)) {
+      return { requested: false, message:
+          `resourceUrl does not match resourceTypeId "${input.resourceTypeId}" ` +
+          `(${resolved.resource.urlPattern}). Supply a matching URL or omit resourceUrl to use the picker.` };
     }
 
     this.#captureDecisionRequest(chatId, {
@@ -10331,6 +10386,7 @@ class OverseerImpl implements AgentHooks {
       resourceTitle: resolved.resource.title,
       resourceUrl: input.resourceUrl,
       resourceUrlPattern: resolved.resource.urlPattern,
+      resourceTypeId: resolved.resource.id,
       reason: input.reason,
       state: "pending",
       // Claims the name in the chat's scope from this moment until denial; on acceptance the
@@ -10371,14 +10427,14 @@ class OverseerImpl implements AgentHooks {
       chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
       : Promise<{gatekeeperId: WorkpieceId}> {
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
-        input.vendorId, input.resourceUrlPattern, input.title, input.configuration);
+        input.vendorId, input.resourceTypeId, input.title, input.resourceUrlPattern, input.configuration);
     let id = this.allocateWorkpieceId();
     this.storage.gatekeepers.put({
       id,
       class: minted.class,
       resourceTitle: input.title,
       creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
-                     typeUrlPattern: minted.typeUrlPattern,
+                     typeUrlPattern: minted.typeUrlPattern, resourceTypeId: minted.resourceTypeId,
                      ...(input.configuration !== undefined
                          ? {configuration: input.configuration} : {})},
     });
@@ -11294,7 +11350,7 @@ class OverseerImpl implements AgentHooks {
 
   restore(params: OverseerRestoreParams)
       : Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> | Fetcher<Gatekeeper<any>> |
-        WorktreeReplicatorImpl {
+        WorktreeReplicatorImpl | SpawnedAgentImpl {
     switch (params.type) {
       case "worktreeReplicator":
         this.getWorktreeRecord(params.worktreeId);  // validate it exists
@@ -11325,6 +11381,15 @@ class OverseerImpl implements AgentHooks {
           throw new Error("This connection has been removed from the workspace.");
         }
         return this.#getGatekeeperFacetRaw(params.gatekeeperId);
+
+      case "spawnedAgent": {
+        let {type: _, ...agent} = params;
+        if (!this.storage.chatMeta.get(agent.chatId) ||
+            !this.storage.chatContext.get(agent.chatId)?.spawnerConfig) {
+          throw new Error("This agent's chat has been deleted.");
+        }
+        return new SpawnedAgentImpl(this, agent);
+      }
 
       default:
         throw new TypeError("Unknown restore params: " + JSON.stringify(params));
@@ -11370,7 +11435,11 @@ type OverseerRestoreParams = {
   // to itself stop restoring once the connection is removed.
   type: "gatekeeper";
   gatekeeperId: WorkpieceId;
-};
+} | ({
+  // A SpawnedAgent (see AgentSpawnerQueue.spawnAgentHandle). It restores while its chat exists,
+  // as the agent's CallableAgent goes on working after its spawner is deleted.
+  type: "spawnedAgent";
+} & SpawnedAgentRef);
 
 export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   private impl: OverseerImpl;
@@ -12414,6 +12483,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (!this.impl.storage.chatMeta.get(chatId)) {
         throw new Error(`No such chat: ${chatId}`);
       }
+      this.impl.assertChatMayChangeGadget(chatId);
       chatNames = this.impl.chatScopeNames(chatId);
     }
     if (bindingName === undefined) {
@@ -12598,13 +12668,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async newGatekeeper(accountId: number, resourceUrl: string)
       : Promise<GatekeeperClient<any> | null> {
-    let {class: cls, vendorId, typeUrlPattern} =
+    let {class: cls, vendorId, typeUrlPattern, resourceTypeId} =
         await this.#clientUser.getGatekeeperClassFor(accountId, resourceUrl);
     let creationSpec: GatekeeperCreationSpec = {
       type: "gatekeeper",
       vendorId,
       resourceUrl,
       typeUrlPattern,
+      resourceTypeId,
     };
     let result = await this.impl.addGatekeeper(
         cls, creationSpec, this.clientUserId, this.#mintedCapabilityHolder());
@@ -12849,6 +12920,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
       // is called.
       let profile = await this.#getClientProfile();
+      using _decision = this.impl.claimDecision(id);
       let queued = Array.from(
           this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
       this.impl.removeGatekeeper(action.gatekeeperId);
@@ -12872,6 +12944,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
 
+    using _decision = this.impl.claimDecision(id);
     await gatekeeper.rejectAction(action.action);
 
     action.state = "rejected";
@@ -13737,10 +13810,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   // --- Share link management ---
 
-  async createShareLink(grant: CollaboratorGrant, note?: string)
+  async createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }> {
-    return (await this.impl.getSharingManager())
-        .createShareLink({ caller: this.#sharingCaller(), grant, note });
+    return (await this.impl.getSharingManager()).createShareLink(
+        { caller: this.#sharingCaller(), grant, note, default: options?.default });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
@@ -13788,6 +13861,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         ...(record.gadgetIds !== undefined ? {gadgets: record.gadgetIds
           .filter(id => this.impl.isShareableGadget(id))
           .map(id => ({id, title: this.impl.getGadgetRecord(id).title}))} : {}),
+        ...(record.default ? {default: true} : {}),
       });
     }
     return result;
@@ -14223,6 +14297,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (!this.impl.storage.chatMeta.get(chatId)) {
       throw new Error(`No such chat: ${chatId}`);
     }
+    this.impl.assertChatMayChangeGadget(chatId);
     let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
     this.impl.bindWorkpiece(this.id, name, target, chatId);
     this.impl.addChatMessages(chatId, author, [{
@@ -14780,6 +14855,51 @@ interface AgentSpawnerQueue extends ApprovalQueue {
    */
   spawnCallableAgent(title: string, options: SpawnCallableOptions, creatorUserId?: string)
       : Promise<CallableAgent>;
+
+  /**
+   * Implements AgentSpawnerBinding.spawnAgent(): spawns as spawnCallableAgent() does, and returns
+   * a persistent stub to the agent's SpawnedAgent.
+   */
+  spawnAgentHandle(title: string, options: SpawnCallableOptions, creatorUserId?: string)
+      : Promise<SpawnedAgent>;
+}
+
+/**
+ * A chat spawned to implement an interface (see spawnCallable()), and who spawned it: everything
+ * its CallableAgent carries. The initiator isn't recorded on the chat, so whatever outlives the
+ * spawn call carries it.
+ */
+type SpawnedAgentRef = {
+  chatId: number;
+  initiatorUserId: string;
+  initiatorModelId: string | null;  // null when the spawner has no model
+};
+
+// A stub that delivers calls to a spawned chat thread, like the `self` magic object. Each call is
+// recorded by deliverAgentCallback(), which starts the agent when it is idle; with no model
+// configured, calls are still appended to the chat, for a human to pick up.
+function callableAgent(impl: OverseerImpl, agent: SpawnedAgentRef): CallableAgent {
+  return impl.ctx.exports.AgentSelfLoopback({props: {
+    overseerId: impl.ctx.id.toString(),
+    ...agent,
+  }}) as unknown as CallableAgent;
+}
+
+/** What a SpawnedAgent's persistent stub restores to (see OverseerRestoreParams). */
+@validateRpc()
+class SpawnedAgentImpl extends NativeRpcTarget implements SpawnedAgent {
+  constructor(private impl: OverseerImpl, private agent: SpawnedAgentRef) {
+    super();
+  }
+
+  getAgent(): CallableAgent {
+    return callableAgent(this.impl, this.agent);
+  }
+
+  getChatToken(): string {
+    // Every chat spawnAgent() creates has one.
+    return this.impl.getChatMetaOrThrow(this.agent.chatId).chatToken!;
+  }
 }
 
 @validateRpc()
@@ -14813,18 +14933,24 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
 
   async spawnCallableAgent(title: string, options: SpawnCallableOptions, creatorUserId?: string)
       : Promise<CallableAgent> {
+    return callableAgent(this.impl, await this.#createCallableChat(title, options, creatorUserId));
+  }
+
+  // Unvalidated: the generated validator would wrap the returned stub in a Proxy, which Workers RPC
+  // can't persist. Only AgentSpawnerBindingImpl calls this, with arguments it has validated.
+  @skipRpcValidation()
+  async spawnAgentHandle(title: string, options: SpawnCallableOptions, creatorUserId?: string)
+      : Promise<SpawnedAgent> {
+    let agent = await this.#createCallableChat(title, options, creatorUserId);
+    return await this.impl.ctx.restore(
+        {type: "spawnedAgent", ...agent} satisfies OverseerRestoreParams);
+  }
+
+  async #createCallableChat(title: string, options: SpawnCallableOptions,
+                            creatorUserId: string | undefined): Promise<SpawnedAgentRef> {
     let {chatId, initiatorUserId, modelId} =
         await this.#createSpawnedChat(title, creatorUserId, options);
-
-    // A stub that delivers calls to the new chat thread, like the `self` magic object. Each call
-    // is recorded by deliverAgentCallback(), which starts the agent when it is idle; with no
-    // model configured, calls are still appended to the chat, for a human to pick up.
-    return this.impl.ctx.exports.AgentSelfLoopback({props: {
-      overseerId: this.impl.ctx.id.toString(),
-      chatId,
-      initiatorUserId,
-      initiatorModelId: modelId,
-    }}) as unknown as CallableAgent;
+    return {chatId, initiatorUserId, initiatorModelId: modelId};
   }
 
   // The spawner's config and bindings, from its record.
@@ -14864,6 +14990,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       title,
       started: timestamp,
       lastActive: timestamp,
+      chatToken: crypto.randomUUID(),
       spawnerName: config.displayName,
       spawnerId: this.gatekeeperId,
     };
@@ -14913,7 +15040,7 @@ export class AgentSpawnerGatekeeper
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return AGENT_SPAWNER_BINDING_TYPES;
+    return agentApiText(AGENT_SPAWNER_BINDING_TYPES);
   }
 
   async getAutoApprovableActions() {
@@ -14980,6 +15107,13 @@ class AgentSpawnerBindingImpl extends RpcTarget {
           "interface.");
     }
     return this.queue.spawnCallableAgent(title, options, this.ctx.props.creatorUserId);
+  }
+
+  // Returns `any` so that the generated validator, which still checks the arguments, passes the
+  // persistent stub through: it would wrap a stub typed as SpawnedAgent in a Proxy, which Workers
+  // RPC can't persist.
+  async spawnAgent(title: string, options: SpawnCallableOptions): Promise<any> {
+    return this.queue.spawnAgentHandle(title, options, this.ctx.props.creatorUserId);
   }
 
   [Symbol.dispose]() {

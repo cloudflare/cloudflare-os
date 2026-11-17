@@ -20,6 +20,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
 type Values = Record<string, unknown>;
 type Spec = {
   initial: Values;
+  initialValuesFromResourceUrl(context: { resourceUrl: string; ui: unknown }): Promise<Values>;
   isReady(context: { values: Values; acceptedResourceUrlPatterns?: string[] }): boolean;
   resourceUrl(context: { values: Values }): string;
   render(context: unknown): unknown;
@@ -33,6 +34,8 @@ async function open(pattern: string, held: boolean) {
   const accepted = [pattern];
   const ui = {
     listFolders: vi.fn(async (): Promise<unknown> => ({ nodes: [] })),
+    getFolder: vi.fn(async (_id: string): Promise<unknown> => null),
+    folderForUrl: vi.fn(async (_url: string): Promise<string | null> => null),
     hasCreationAccess: vi.fn(async () => held),
   };
   const ensureResources = vi.fn(async (_patterns: string[]) => true);
@@ -47,7 +50,11 @@ async function open(pattern: string, held: boolean) {
     ready: () => spec.isReady({ values, acceptedResourceUrlPatterns: accepted }),
     location: () => parseResourceUrl(spec.resourceUrl({ values })),
     list: (parentId: string) => picker().loadItems({ parentId, query: "", cursor: null }),
+    lookUp: (id: string) => picker().loadItem(id),
     choose: (folder: string | null) => picker().onChange(folder),
+    prefill: async (resourceUrl: string) => {
+      values = { ...values, ...await spec.initialValuesFromResourceUrl({ resourceUrl, ui }) };
+    },
   };
 }
 
@@ -120,5 +127,57 @@ describe("the creation location picker", () => {
       { id: "folder:open-1", kind: "container", selectable: true },
       { id: "folder:viewer-1", kind: "container", selectable: false },
     ]);
+  });
+
+  // A suggested place is a folder only the gatekeeper, which reads Drive, can tell from its URL, and
+  // anyone the folder is shared with sees what lands there, so the approver is told it was suggested.
+  it("pre-selects a suggested folder and says the agent suggested it, until another is chosen", async () => {
+    const frame = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, true);
+    frame.ui.folderForUrl.mockResolvedValueOnce("folder:plans-1");
+    await frame.prefill("https://drive.google.com/drive/u/1/folders/plans-1");
+    expect(frame.ui.folderForUrl).toHaveBeenCalledWith("https://drive.google.com/drive/u/1/folders/plans-1");
+    expect(frame.location()).toEqual({ kind: "driveFolder", folderId: "plans-1" });
+    expect(frame.notices().map(text)).toEqual([expect.stringMatching(/^The agent suggested this folder/)]);
+
+    frame.choose("folder:root");
+    expect(frame.notices()).toEqual([]);
+  });
+
+  it("stays on My Drive, unremarked, when the suggestion is My Drive", async () => {
+    const frame = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, true);
+    frame.ui.folderForUrl.mockResolvedValueOnce("folder:root");
+    await frame.prefill("https://drive.google.com/drive/my-drive");
+    expect(frame.location()).toEqual({ kind: "driveFolder", folderId: "root" });
+    expect(frame.notices()).toEqual([]);
+  });
+
+  // Falling back to My Drive would have the approver approve it believing it is the agent's place.
+  it.each([
+    ["names no folder this account can add files to", async () => null],
+    ["cannot be looked up", async () => { throw new Error("Drive is down"); }],
+  ])("selects nothing, and says so, when a suggestion %s", async (_name, lookUp) => {
+    const frame = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, true);
+    frame.ui.folderForUrl.mockImplementationOnce(lookUp);
+    await frame.prefill("https://drive.google.com/open?id=plans-1");
+    expect(frame.ready()).toBe(false);
+    expect(frame.notices().map(text)).toEqual([expect.stringMatching(/^The agent suggested a place this Google account can't find/)]);
+
+    frame.choose("folder:root");
+    expect(frame.ready()).toBe(true);
+    expect(frame.notices()).toEqual([]);
+  });
+
+  it("shows a pre-selected folder where it lives, selectable only if it takes new files", async () => {
+    const frame = await open(GOOGLE_SHEETS_RESOURCE.urlPattern, true);
+    frame.ui.getFolder.mockResolvedValueOnce({
+      id: "folder:plans-1", title: "Plans", kind: "folder", listable: true, addable: true,
+      path: [{ id: "folder:root", title: "My Drive", listable: true, addable: true }, { id: "folder:team", title: "Team", listable: true }],
+    });
+    expect(await frame.lookUp("folder:plans-1")).toMatchObject({
+      id: "folder:plans-1", selectable: true,
+      path: [{ id: "folder:root", selectable: true }, { id: "folder:team", selectable: false }],
+    });
+    expect(frame.ui.getFolder).toHaveBeenCalledWith("folder:plans-1");
+    expect(await frame.lookUp("folder:gone")).toBeNull();
   });
 });

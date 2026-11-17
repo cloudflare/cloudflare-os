@@ -543,7 +543,7 @@ describe("getModel direct routing (no gateway)", () => {
   it.each([
     ["anthropic", "claude-opus-5-5", "Claude Opus 5.5", 1_000_000],
     ["anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000],
-    ["anthropic", "claude-fable-5-1", "Claude Fable 5.1", 1_000_000],
+    ["anthropic", "claude-fable-5-2", "Claude Fable 5.2", 1_000_000],
     ["openai", "gpt-6.1-sol", "GPT-6.1 Sol", 1_050_000],
     ["openai", "gpt-6-astra", "GPT-6 Astra", 1_050_000],
     ["openai", "gpt-6-sol", "GPT-6 Sol", 1_050_000],
@@ -574,7 +574,7 @@ describe("getModel direct routing (no gateway)", () => {
       : { supportsExplicitPromptCacheMode: true });
   });
 
-  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])(
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2"])(
       "keeps quick requests valid for %s", async (model) => {
     const handle = getModel(env({ CF_AI_GATEWAY: undefined }), {
       provider: "anthropic",
@@ -1091,6 +1091,7 @@ describe("gateway model reasoning levels", () => {
     ["anthropic", "claude-opus-5-5", LOW_TO_MAX],
     ["anthropic", "claude-sonnet-5-5", LOW_TO_MAX],
     ["anthropic", "claude-haiku-5-5", ["off", ...LOW_TO_MAX]],
+    ["anthropic", "claude-fable-5-2", ["minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-fable-5-1", ["minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-opus-5", ["off", "minimal", ...LOW_TO_MAX]],
     ["anthropic", "claude-sonnet-5", ["off", "minimal", ...LOW_TO_MAX]],
@@ -1126,6 +1127,7 @@ describe("gateway model reasoning levels", () => {
     ["anthropic", "claude-opus-5-5", "adaptive"],
     ["anthropic", "claude-sonnet-5-5", "adaptive"],
     ["anthropic", "claude-haiku-5-5", "adaptive"],
+    ["anthropic", "claude-fable-5-2", "adaptive"],
     ["anthropic", "claude-fable-5-1", "adaptive"],
     ["anthropic", "claude-opus-5", "adaptive"],
     ["anthropic", "claude-sonnet-5", "adaptive"],

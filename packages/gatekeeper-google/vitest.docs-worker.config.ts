@@ -59,7 +59,9 @@ export default defineConfig({
     testTimeout: 15_000,
     include: [
       "__tests__/workerd/calendar-actions.test.ts",
+      "__tests__/workerd/doc-actions.test.ts",
       "__tests__/workerd/drive-changes.test.ts",
+      "__tests__/workerd/drive-editors.test.ts",
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/google-file-creation.test.ts",
       "__tests__/workerd/native-sessions.test.ts",

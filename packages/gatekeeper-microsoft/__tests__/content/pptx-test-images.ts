@@ -2,7 +2,7 @@
 // readers accept. Not imported by production code.
 
 import { deflateSync } from "node:zlib";
-import { crc32 } from "../../src/content/zip";
+import { crc32 } from "@gadgets/office-content/zip";
 
 /** A PNG `width`×`height`, each pixel colored by `paint`. */
 export function makePng(width: number, height: number, paint: (x: number, y: number) => readonly [number, number, number]): Uint8Array {
