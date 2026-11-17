@@ -15,6 +15,7 @@ import {
   encodeGitTree,
   encodeLooseObject,
   gitObjectOid,
+  isCanonicalTree,
   parseGitCommit,
   parseGitCommitRefs,
   parseGitTree,
@@ -341,6 +342,45 @@ describe("tree encoder", () => {
     expect(() => encodeGitTree([entry({ oid: X_BLOB.slice(1) })])).toThrow(/Invalid git object id/);
     expect(() => encodeGitTree([entry({ mode: "040000" as GitTreeEntry["mode"] })]))
         .toThrow(/unsupported entry mode 040000/);
+  });
+});
+
+describe("isCanonicalTree", () => {
+  // A tree payload written record by record, `mode SP name NUL oid`, in the order given: what
+  // anything but the encoder may put in the store.
+  function rawTree(records: [mode: string, name: string][]): Uint8Array {
+    let oid = Uint8Array.from(X_BLOB.match(/../g)!.map(byte => parseInt(byte, 16)));
+    return concatBytes(records.flatMap(([mode, name]) =>
+        [new TextEncoder().encode(`${mode} ${name}\0`), oid]));
+  }
+
+  const canonical = (payload: Uint8Array) => isCanonicalTree(parseGitTree(payload), payload);
+
+  it("accepts what the encoder writes", () => {
+    expect(canonical(encodeGitTree([]))).toBe(true);
+    expect(canonical(encodeGitTree([entry({}), entry({ name: "other", mode: "100755" })])))
+        .toBe(true);
+    // A directory sorts as `foo/`: after `foo-bar` and `foo.txt`, before `foo0`.
+    let sorted: [string, string][] =
+        [["100644", "foo-bar"], ["100644", "foo.txt"], ["40000", "foo"], ["100644", "foo0"]];
+    expect(canonical(rawTree(sorted))).toBe(true);
+    expect(canonical(rawTree(sorted.toSorted(([, a], [, b]) => a < b ? -1 : 1)))).toBe(false);
+  });
+
+  it("refuses a name given twice", () => {
+    expect(canonical(rawTree([["100644", "notes.txt"], ["100644", "notes.txt"]]))).toBe(false);
+    expect(canonical(rawTree([["100644", "notes"], ["40000", "notes"]]))).toBe(false);
+  });
+
+  it("refuses a name that is not a single path segment", () => {
+    for (let name of ["a/b", ".", ".."]) {
+      expect(canonical(rawTree([["100644", name]]))).toBe(false);
+    }
+  });
+
+  it("refuses entries out of order", () => {
+    expect(canonical(rawTree([["100644", "a"], ["100644", "b"]]))).toBe(true);
+    expect(canonical(rawTree([["100644", "b"], ["100644", "a"]]))).toBe(false);
   });
 });
 
