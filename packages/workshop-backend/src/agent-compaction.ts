@@ -72,12 +72,15 @@ export function shouldCompactChat(contextTokens: number, inputBudget: number): b
  * prompting the model. Both the agent and the turn loop derive this from the log rather than
  * passing a flag, so a turn resumed after a restart still behaves the same. Errors and textless
  * nudges after it don't count, so a Retry or Continue of a failed or stopped `/compact` reruns it.
+ * Takes the log newest first, so a storage cursor stops at the first record that decides it.
  */
-export function isCompactionTurn(messages: AiChatMessage[]): boolean {
-  let last = messages.findLast(msg => msg.type !== "error" &&
-      !(msg.type === "agentNudge" && msg.text === undefined));
-  return last?.type === "slashCommand" && last.request.id.builtin === true &&
-      last.request.id.commandId === "compact";
+export function isCompactionTurn(newestFirst: Iterable<AiChatMessage>): boolean {
+  for (let msg of newestFirst) {
+    if (msg.type === "error" || (msg.type === "agentNudge" && msg.text === undefined)) continue;
+    return msg.type === "slashCommand" && msg.request.id.builtin === true &&
+        msg.request.id.commandId === "compact";
+  }
+  return false;
 }
 
 /** A user or gadget message that prompted a turn, rather than one that steered a running turn. */
@@ -87,9 +90,9 @@ export function isTurnPrompt(message: AiChatMessage): boolean {
 }
 
 /**
- * A message that begins an agent turn: the user or a gadget prompted, a callback or nudge arrived,
- * or an accepted connection or approved web fetch resumed the agent. Each produces a `user` model
- * message, so cutting here keeps the retained messages from opening mid-turn.
+ * A message that begins an agent turn: the user or a gadget prompted, a callback or a nudge with
+ * text arrived, or an accepted connection or approved web fetch resumed the agent. Each produces a
+ * `user` model message, so cutting here keeps the retained messages from opening mid-turn.
  */
 export function startsAgentTurn(message: AiChatMessage): boolean {
   switch (message.type) {

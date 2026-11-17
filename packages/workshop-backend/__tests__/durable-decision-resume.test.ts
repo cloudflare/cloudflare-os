@@ -558,7 +558,9 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(previous === "final response" ? 1 : 0); // Summary only, if compactable.
   });
 
-  it("Retry of a failed /compact compacts again", async () => {
+  // A /compact interrupted too often gets no note on Retry either: it is not an agent turn.
+  it.each([undefined, "resume_exhausted"])("Retry of a failed /compact compacts again (code: %s)",
+      async code => {
     const s = await scenario(null), requests = inference();
     await s.visit(async impl => {
       impl.addChatMessages(CHAT, USER, [{type: "message", message: "First"}]);
@@ -567,9 +569,11 @@ describe("decision handoff using the existing execution row", () => {
       impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Two."}]);
       impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
         request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
-      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The summary request failed.");
+      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The summary request failed.", code);
       using client = await decisionClient(impl);
       await client.retryAgent(CHAT, MODEL.profile.id);
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge" && m.text))
+          .toEqual([]);
       await impl.waitForAllAgentsToComplete();
       expect(impl.getActiveChatCompaction(CHAT)?.summary).toBe("Done.");
     });

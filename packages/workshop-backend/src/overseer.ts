@@ -74,7 +74,9 @@ import {
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
-import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
+import {
+  chatChangeStatuses, foldCompactedCode, isCompactionTurn, isTurnPrompt,
+} from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
 import { ChatCacheWarmer } from "./chat-cache-warming";
 import { ambientGatekeeperMode } from "./provisioning-policy";
@@ -13954,10 +13956,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Error records never reach the model, so a Retry of a turn that exhausted its resume
     // attempts would otherwise repeat it unaware. The attempts count model-lookup failures too,
     // so the nudge states only that the turn was interrupted and keeps its advice conditional.
-    // Any other Retry reruns the turn on the same history, telling the model nothing.
-    let [last] = [...this.impl.storage.chats.list(
-        {prefix: chatKeyPrefix(chatId), reverse: true, limit: 1})];
-    let text = last?.type === "error" && last.code === "resume_exhausted"
+    // Any other Retry reruns the turn on the same history, telling the model nothing, and so does
+    // a `/compact`'s, which a note would replace with an ordinary turn.
+    let newestFirst = {prefix: chatKeyPrefix(chatId), reverse: true};
+    let [last] = [...this.impl.storage.chats.list({...newestFirst, limit: 1})];
+    let text = last?.type === "error" && last.code === "resume_exhausted" &&
+        !isCompactionTurn(this.impl.storage.chats.list(newestFirst))
         ? "The user asked you to try again because your previous turn was abandoned. The " +
           "Durable Object your agent harness runs in reset repeatedly while you worked on it: " +
           "the turn was automatically restarted several times, and each time it reset again " +
