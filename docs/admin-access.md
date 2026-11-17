@@ -67,8 +67,10 @@ alike, and the write-request, passkey, grant and issue report methods, which che
 - **Grants**: `endWorkspaceGrant(workspaceId, grantId, reason)` ends a grant a second admin
   approved (see [Grants](#grants)). It answers whatever the level and while writes are off.
 - **The audit log**: `listAdminAudit()` and `getAdminAuditStats()`.
-- **Issue reports**: the listing, a report with its thread, an entry, the status, the links and
-  an image's bytes. None of these is audited: see [issue-reports.md](issue-reports.md).
+- **Issue reports**: the listing, a report with its thread, an entry, the status, a claim and a
+  release of a report (`claimIssueReport()`, `releaseIssueReport()`), the links and an image's
+  bytes, with `whoami()`, which names the caller as a report names its assignee. None of these
+  is audited: see [issue-reports.md](issue-reports.md).
 - **Writes**, while the deployment's `ADMIN_WORKSPACE_WRITES` is `on`:
   `requestWorkspaceWrite(workspaceId, action, args, reason)`, `getWorkspaceWrite()` and
   `denyWorkspaceWrite()` for a request; `beginWorkspaceWriteApproval()` and
@@ -1192,22 +1194,28 @@ workspaces that need it. Its design record is
 them):
 
 - **Read**: the listings, the settings getters, the audit log and its statistics, issue reports
-  with their threads and images, a write request, and `inspectWorkspace()` and `inspectUser()`
-  with every method of the view each returns. A read runs at once. A workspace's view reads
-  metadata, and content only as [Each call](#each-call) decides for any admin: the gatekeeper
-  adds no way round a grant. A view of a user's account reads metadata alone (see
-  [User inspection](#user-inspection)).
-- **Act**: an entry in a report's thread, a report's status, and a write request. The call is
-  queued as an action of the workspace and runs once a member approves it, or a rule does where
-  the kind allows one. A public reply through the binding always waits for a person, and so
-  does a request for content access.
+  with their threads and images, a write request, `inspectWorkspace()` and `inspectUser()`
+  with every method of the view each returns, and `whoami()`, which names the workspace's
+  owner: the admin every call through the binding is made as. A read runs at once. A
+  workspace's view reads metadata, and content only as [Each call](#each-call) decides for any
+  admin: the gatekeeper adds no way round a grant. A view of a user's account reads metadata
+  alone (see [User inspection](#user-inspection)).
+- **Act**: an entry in a report's thread, a report's status, claiming or releasing a report,
+  and a write request. The call is queued as an action of the workspace and runs once a member
+  approves it, or a rule does where the kind allows one. A public reply through the binding
+  always waits for a person, and so does a request for content access. A claim and a release
+  are one kind of action, for the workspace's owner, whoever in the workspace asked: a claim
+  makes the owner the report's assignee and is refused where another admin holds the report. It
+  is never a take-over, which only a person makes (see
+  [issue-reports.md](issue-reports.md#the-assignee)).
 - **Omitted**: every setter, every passkey method, approving or denying a write request, ending
   an admins' grant, and setting a report's links. They are absent from what the agent is told
   and refused.
 
 From the binding, code can also open a session limited to one issue report, which reaches that
 report as its reporter reads it and the reporter's workspace as the reporter chose to show it
-(see [Opening for content](#opening-for-content)), and subscribe to two hooks (see
+(see [Opening for content](#opening-for-content)), and subscribe to three hooks: a report
+filed, an investigation ended, and every write to a report after it was filed (see
 [issue-reports.md](issue-reports.md#hooks)).
 
 **Every call is the workspace owner's.** The gatekeeper Worker holds no credential: the workspace
@@ -1215,8 +1223,8 @@ lends it its owner's Admin API, and each call is checked and recorded as any adm
 `via: "gatekeeper"` and where it came from.
 
 **The lend.** A session is lent the read methods for at most `ADMIN_AGENT_LEND_SECONDS` (15
-minutes), and a view it opens ends with it. An approved action is lent one call, the one its kind
-names. The Workshop asks at each lend whether the owner still holds the account, and before
+minutes), and a view it opens ends with it. An approved action is lent one call, of a method its
+kind names. The Workshop asks at each lend whether the owner still holds the account, and before
 every call whether the owner is still a deployment admin and the gatekeeper is still turned on.
 
 **The workspace admits only deployment admins.** While a workspace has the connection, nobody
@@ -1245,8 +1253,8 @@ A slash command is not among them: this gatekeeper has none.
 user's account, and write requests carry `via: "gatekeeper"` and the origin (`agent`). Listings
 of users, workspaces, reports, settings and the audit log itself, and reading a report or its
 image, leave no audit record, for an agent as for any admin: their only trace is the observation
-in the activity of the workspace that called, which goes with that workspace. A report entry or
-status an agent wrote is recorded in the report's thread.
+in the activity of the workspace that called, which goes with that workspace. A report entry, a
+status or a change of assignee an agent made is recorded in the report's thread.
 
 **Removing the account.** Disconnecting the deployment admin account from Connectors ends every
 connection made with it, in every workspace its holder owns, at the next session, action or hook
@@ -1709,10 +1717,12 @@ Not recorded: reads (`getSettings`, `isBlueprintFeatured`, `getUpdateStatus`, `g
 `listAdminPasskeys`, the listings and the audit log itself), the passkey challenge calls
 (`beginAdminPasskeyEnrolment`, `beginAdminPasskeyRemoval`, `beginWorkspaceWriteApproval`), the
 gateway tests, `checkForUpdates`, the deployment's own promotion of its bundled formats, which
-no admin made, and the issue report methods, the three that write to a report included
-(`addIssueReportEntry`, `setIssueReportStatus`, `setIssueReportLinks`): a report's thread is its
-own record, of its entries and status changes; replacing a report's links keeps no author and no
-time. `endWorkspaceGrant` is recorded, as a write record and not a setting record. A write-request call first ends the requests that have run out, so a read such as
+no admin made, and the issue report methods, the five that write to a report included
+(`addIssueReportEntry`, `setIssueReportStatus`, `claimIssueReport`, `releaseIssueReport`,
+`setIssueReportLinks`): a report's thread is its own record, of its entries, its status changes
+and its changes of assignee; replacing a report's links keeps no author and no time.
+`endWorkspaceGrant` is recorded, as a write record and not a setting record. A write-request
+call first ends the requests that have run out, so a read such as
 `getWorkspaceWrite` or a begun approval, though not recorded itself, can leave another request's
 `"expired"` write record. An enrolment or a removal that a passkey check refuses records nothing
 either; it is logged for operators. That holds for the checks made before the record is appended.
@@ -2009,8 +2019,8 @@ Grants and content reads add these, in the same directory:
 The admin gatekeeper adds these, in the same directory (its own suites are listed in
 [its README](../packages/gatekeeper-instanceadmin/README.md#tests)):
 
-- `admin-agent-kinds.test.ts`: every `AdminApi` method classified, the six action kinds with a
-  tag each and their verdicts, and the constants.
+- `admin-agent-kinds.test.ts`: every `AdminApi` method classified, the seven action kinds with a
+  tag each, their methods (an assignment's two) and their verdicts, and the constants.
 - `admin-agent.test.ts`: the membrane. What `adminAgentRefusal()` refuses under a session and
   under each action kind; `restrictAdminApi()`'s checks in their order, an action's one call, a
   lend that ended or ran out; and a view behind it, of a workspace or of a user's account, which
@@ -2093,8 +2103,9 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   reply through the binding held for a person whatever the rules; a note, a status and a write
   request applied by their rules; the restricted-data mark and its order; the session limited
   to one report, its reply reaching the reporter with no person, and the mark of a reporter's
-  restricted workspace; both hooks firing into a gadget's stored callback; and a spawned agent
-  handed one report's session.
+  restricted workspace; the three hooks firing into a gadget's stored callback, once for each
+  kind of change to a report; two admins' workspaces claiming one report, of which exactly one
+  holds it; and a spawned agent handed one report's session.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it

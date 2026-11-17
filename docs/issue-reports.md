@@ -93,7 +93,9 @@ that does not exist.
 
 Each report has a thread of entries (`IssueReportEntry`). An entry has an author, a time, a
 visibility, and a text bounded as the report's is; an admin's entry also says how their call
-reached the deployment (`via`, as on an audit record).
+reached the deployment (`via`, as on an audit record). An entry with no text is a bare change:
+of the report's status (see [Statuses](#statuses)) or of its assignee (see
+[The assignee](#the-assignee)).
 
 - **`"public"`** entries are read by the reporter and the admins.
 - **`"admins"`** entries are read by the admins alone.
@@ -111,16 +113,18 @@ reaches the reporter: not through a method, a count, a time or an id.
   entries of each of three kinds: the reporter's replies, the admins' public entries, and the
   admins-only ones. A reporter who fills their side cannot stop the admins answering, and a full
   thread (`threadFull`) tells a reporter nothing of the admins' notes, since only their own
-  replies count against them. A change of status is in none of the three, so a person can
-  always close a report. What is written [through an agent](admin-access.md#through-an-agent)
-  is counted apart from what people write, since a workspace's rule can write it with no person
-  deciding: an agent's public entries, its admins-only ones and its changes of status each have
-  the same bound of their own, so an agent that fills its share leaves the admins all of theirs.
-- **A reporter reads an admin by name alone.** An admin's entries and status lines reach the
-  reporter with the admin's display name and no id: an admin's id is their account name, which
-  can be an email address, and a thread only has to say who answered. The id is returned to
-  admins only. The rule is how the entry was written (through the admins' methods), not a
-  comparison of ids, so it holds for an admin who files a report too.
+  replies count against them. A change of status or of assignee is in none of the three, so a
+  person can always close a report. What is written
+  [through an agent](admin-access.md#through-an-agent) is counted apart from what people write,
+  since a workspace's rule can write it with no person deciding: an agent's public entries, its
+  admins-only ones, its changes of status and its changes of assignee each have the same bound
+  of their own, so an agent that fills its share leaves the admins all of theirs. Those four
+  bounds are per report, for every admin's agents and gadgets together (see [Limits](#limits)).
+- **A reporter reads an admin by name alone.** An admin's public entries and public status
+  lines reach the reporter with the admin's display name and no id: an admin's id is their
+  account name, which can be an email address, and a thread only has to say who answered. The
+  id is returned to admins only. The rule is how the entry was written (through the admins'
+  methods), not a comparison of ids, so it holds for an admin who files a report too.
 
 A reporter may write `MAX_ISSUE_REPORT_REPLIES_PER_DAY` (100) replies in a UTC day, over all
 their reports (`tooManyReplies`).
@@ -145,8 +149,10 @@ through the admins' methods like any other, and its `via` is `"gatekeeper"`.
   and the reporter's workspace only as the reporter chose to show it, so its answer holds
   nothing the reporter could not see. Either of those reads marks the workspace as holding
   restricted data, and no rule applies anything there afterwards.
-- **An admins-only note and a status change** are queued as actions too, and applied by a person
-  or, where the workspace has a rule for the kind and holds no restricted data, by that rule.
+- **An admins-only note, a status change, and a claim or a release of the report** are queued
+  as actions too, and applied by a person or, where the workspace has a rule for the kind and
+  holds no restricted data, by that rule. A claim and a release are one kind of action, for the
+  workspace's owner (see [The assignee](#the-assignee)).
 
 ## Statuses
 
@@ -157,36 +163,129 @@ through the admins' methods like any other, and its `via` is `"gatekeeper"`.
 | `answered` | An admin answered, and expects nothing more. |
 | `waitingOnReporter` | An admin asked the reporter something. |
 | `withAdmin` | Back in front of the admins: the reporter replied to a report that was `answered` or `waitingOnReporter`. |
+| `fixSuggested` | It needs a change to the code, which nobody has started. |
+| `fixInProgress` | A change to the code is being made. |
+| `fixProposed` | A change was proposed, and waits for review. |
 | `closed` | Done. The reporter can no longer reply or add an image. |
 
-Admins set any status (`setIssueReportStatus()`). A reporter sets none, with one exception: their
-reply to a report that is `answered` or `waitingOnReporter` moves it to `withAdmin`, which is what
-puts it back in front of the admins. A reply to a report in any other open status leaves the
-status alone, and a closed report takes no reply (`closed`). An admin's written entry changes no
-status: the admin sets it separately.
+Admins set any status (`setIssueReportStatus()`), themselves or
+[through an agent](admin-access.md#through-an-agent) acting for them: whoever may set a status
+may set every one of them, the three fix statuses included. A reporter sets none, with one
+exception: their reply to a report that is `answered` or `waitingOnReporter` moves it to
+`withAdmin`, which is what puts it back in front of the admins. A reply to a report in any other
+open status, the three fix statuses among them, leaves the status alone, and a closed report
+takes no reply (`closed`). An admin's written entry changes no status: the admin sets it
+separately. No status needs an assignee, and setting one changes none (see
+[The assignee](#the-assignee)).
 
-**A status change is a public line in the thread that names the admin who made it.** It has no
-text, and it tells the reporter where the report stands without counting as an answer:
+In the admins' list a report whose fix is suggested is shown as waiting on an admin, as a `new`
+one and one that is `withAdmin` are.
+
+**A status change is a line in the thread that names the admin who made it.** It has no text.
+It is public when it changes the status the reporter reads, and for admins alone when it does
+not (see [What the reporter reads](#what-the-reporter-reads)). A public one tells the reporter
+where the report stands without counting as an answer. Either way:
 
 - it does not raise the reporter's count of unseen reports;
-- it is outside the thread's bound, so a full thread can still be closed;
+- it is outside the thread's bound for a person, so a full thread can still be closed;
 - setting the status a report already has adds nothing.
 
 The reporter's reopening reply carries the status it set (`withAdmin`) the same way.
 
 A status an agent set for an admin is the same line, with `via: "gatekeeper"`: the reporter
-reads "Agent, for" that admin, and admins also read the workspace and the chat it came from. It
-is set over whatever status the report has by the time the action is applied.
+reads "Agent, for" that admin on a public one, and admins also read the workspace and the chat
+it came from. It is set over whatever status the report has by the time the action is applied.
+
+### What the reporter reads
+
+`fixSuggested` and `fixInProgress` are the admins' own. The reporter reads both as `withAdmin`,
+and reads `fixProposed` under the name "Fix in review".
+
+- **One function says so**: `issueReportStatusForReporter()`, in
+  `packages/workshop-shared/src/api.ts`. The report store builds everything a reporter reads
+  with it (the report `submitIssueReport()` returns, the reporter's list, `getIssueReport()`
+  and each entry of the thread), so the Workshop, the CLI and the API agree. The admin
+  gatekeeper's session limited to one report builds its view with the same function.
+- **A change between statuses the reporter reads as the same one is a line only admins read**:
+  `withAdmin` to `fixSuggested`, `fixSuggested` to `fixInProgress`, and each of those back.
+  The reporter's thread holds no line for it.
+- **Any other change is a public line**, which carries the status as the reporter reads it:
+  a report moved from `answered` to `fixSuggested` shows its reporter a change to "With the
+  admins".
+- **Admins read the true status everywhere**: in their list, its filter, the report and its
+  thread. The Reports tab's status control says what the reporter reads wherever that is not
+  what the admins read.
+
+The two statuses are kept out of the reporter's view of the report: the reporter's API, their
+lists, the thread they read, and a session limited to the report. They are not kept out of what
+an admin, or an admin's code, may write to the reporter. The [hooks](#hooks) carry a status as
+admins read it, and receiving an event does not mark a workspace as holding restricted data. So
+a subscriber in a workspace that holds none can learn `fixSuggested` or `fixInProgress` from an
+event and say so in a public reply through a session limited to the report, which a rule there
+applies with no person (see [Limits](#limits)).
+
+## The assignee
+
+A report has at most one assignee (`IssueReportAssignee`): the deployment admin who holds it,
+having said they are dealing with it. It is an admin's own call that makes them one. Nobody
+assigns another person.
+
+- **It is for admins alone.** `AdminIssueReport.assignee` names the holder (their id and
+  display name), since when they hold the report, and how their claim reached the deployment
+  (`via`, with the workspace and the chat for one made through the admin gatekeeper), as an
+  entry's author is recorded. It is in the admins' list and the report they read, and in
+  nothing a reporter or a session limited to the report reads.
+- **Assignment and status are independent.** Claiming or releasing a report changes no status.
+
+`AdminApi.claimIssueReport(reportId, options?)` makes the caller the assignee:
+
+| The report | What a claim does |
+| --- | --- |
+| Nobody holds it | The caller holds it. |
+| The caller holds it | Nothing: no line and no event. |
+| Another admin holds it | Refused `assigned` (`ISSUE_REPORT_ASSIGNED`), a code no other refusal carries. |
+| Another admin holds it, and `options.takeOver` is set | The caller holds it instead. |
+
+- **Two admins' claims that race have one winner.** The store reads the holder and writes the
+  new one in one step, so the second claim finds the report held and is refused `assigned`.
+- **Only a person takes a report over.** The Workshop sets `takeOver` after asking, naming the
+  holder. A call made through the admin gatekeeper is refused with it set: the store reads how
+  the call is labelled, and only a workspace sets that label on the Admin API it lends. So no
+  agent and no gadget takes a report from a person.
+- **A holder who is no longer a deployment admin stays shown as the assignee.** The store never
+  asks who is an admin, and any admin can take the report over.
+
+`AdminApi.releaseIssueReport(reportId)` leaves a report the caller holds with no assignee. A
+report nobody holds is left as it is, and one another admin holds is refused `assigned`: its
+holder alone releases it, and an admin who is to hold it instead takes it over.
+
+**Each claim, take-over and release is a line in the thread that only admins read.** It has no
+text, names the admin and says how the call arrived, as a status line does. A person's are
+outside the thread's bounds. Those made through the admin gatekeeper are bounded per report as
+an agent's changes of status are: `threadFull` once `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200)
+changes of the report's assignee were made through it.
+
+**The admins' list is filtered by assignee**: `AdminIssueReportQuery.assignee` keeps the
+reports one admin holds, by the id a report shows for its assignee, and `unassigned` keeps the
+reports nobody holds. They combine as every filter does, so the two together match nothing.
+
+**`AdminApi.whoami()` names the calling admin** as reports name them (`NamedUser`): the `id` an
+entry they wrote carries as its author's and a report they hold as its assignee's, with their
+display name as it is now. Code compares a report's `assignee.id`, or an entry's `author.id`,
+with it to tell its own admin's reports from another's. Through the admin gatekeeper it is the
+workspace's owner, in whose name everything written through that connection is, so a claim made
+there is the owner's, whoever in the workspace asked for it.
 
 ## Hooks
 
-The admin gatekeeper offers two hooks to the code of a workspace that has its connection (see
+The admin gatekeeper offers three hooks to the code of a workspace that has its connection (see
 [its README](../packages/gatekeeper-instanceadmin/README.md#hooks)):
 
 | Hook | Fires | Its event |
 | --- | --- | --- |
 | Issue reported | Once for each report filed. | The report's id, its priority and when it was filed. |
-| Investigation complete | Once each time an admin moves a report from `investigating` to `answered`, `waitingOnReporter`, `withAdmin` or `closed`. | The report's id, its status and when it changed. |
+| Investigation complete | Once each time an admin moves a report from `investigating` to any status but `new`: `answered`, `waitingOnReporter`, `withAdmin`, `fixSuggested`, `fixInProgress`, `fixProposed` or `closed`. | The report's id, its status and when it changed. |
+| Report changed | Each write to a report after it was filed, whoever made it: a status set, a claim, a take-over or a release, a thread entry of either visibility (the reporter's reply, an admin's reply or note, an agent's), the links replaced. | The event's id, the report's id, what the write was, the status it set if it set one (as admins read it), and when. Never text, a name or who. |
 
 An event carries ids and labels only: a subscriber reads the report through its own connection.
 Only a deployment admin can hold that connection, and a hook delivers only while its workspace's
@@ -195,22 +294,46 @@ owner is one. A hook wakes a gadget's stored callback or an existing chat; it op
 - **"Issue reported" fires at `submitIssueReport()`**, before the reporter's client has called
   `addIssueReportImage()` or given the grant that may come with the report. A subscriber that
   reads at once may see no image and be refused content, and reads again later.
+- **One write is one "Report changed" event.** Its `change` says what the write was: `status`,
+  `assignment`, `reply` (a public entry, the reporter's or an admin's), `note` (an entry for
+  admins alone) or `links`. It carries a status on every `status`, and on the reporter's `reply`
+  that moved the report to `withAdmin`.
+- **A write that changed nothing fires nothing, and neither does a refused call**: a status
+  set to the one the report has, a claim by the report's holder, a release of a report nobody
+  holds, links replaced by the same links.
+- **Leaving `investigating` fires "Investigation complete" as well**: two events for the one
+  write, each with an id of its own.
+- **Filing is not a change, and neither is what the reporter attaches.** `submitIssueReport()`
+  fires "Issue reported" and no "Report changed". An image and a grant are what the reporter
+  attaches to the report, not writes to its status, assignee, thread or links: they fire
+  nothing, whenever they arrive. Marking a report seen fires nothing either.
+- **"Report changed" fires for the subscriber's own writes too**: those of its workspace's
+  agents and gadgets as of anyone else's. That is how code learns that an action it queued was
+  applied. So a subscriber that writes to a report on each event must not answer its own
+  change: it reads the report and writes only where something it is for has changed (see
+  [Limits](#limits)).
 - **Delivery is at least once.** A subscriber sees an event twice only when its own callback
-  failed or timed out part of the way through, so a callback of either hook keys its work by
-  the event's `eventId`: the same each time one event is delivered, and different for a report
+  failed or timed out part of the way through, so a callback of any hook keys its work by the
+  event's `eventId`: the same each time one event is delivered, and different for a report
   investigated again that ends with the status it ended with before, which is a second event
   and can carry the same time.
 - **A callback answers within 30 seconds.** It starts long work and returns; one that takes
-  longer is given up on and called again later, so that it holds back no other subscriber's
-  events.
+  longer is given up on and called again later, so that it holds back other subscribers' events
+  for no longer than that (see [Limits](#limits)).
 
 **The store's outgoing events.** The report store tells the gatekeeper; the gatekeeper holds
 nothing it could ask with. The store writes one row per event (`events`: a sequence number, a
-random id, the kind, the report's id, the priority or the status, and the time) in the same
-step as the change it reports, and deletes the row once the gatekeeper has taken it. The
-sequence number orders the rows and stays in the store; the id is what the gatekeeper and a
-subscriber know the event by, so neither learns how many events the deployment has had.
+random id, the kind, the report's id, a label, the status a write set, and the time) in the
+same step as the change it reports, and deletes the row once the gatekeeper has taken it. The
+label is the priority of a report that was filed, the status an investigation ended with, or
+what a write to a report was. The sequence number orders the rows and stays in the store; the
+id is what the gatekeeper and a subscriber know the event by, so neither learns how many events
+the deployment has had.
 
+- **Every writer writes its row in the step that made the change**, the reporter's reply
+  included: the entry and its event are one write. Delivery is started after it and waited for
+  by nobody, so a gatekeeper that is slow, failing, turned off or not bound neither fails nor
+  slows a reply, a status, a claim or any other write.
 - **It sends them oldest first**, `EVENT_BATCH` (100) a call, as soon as the change is stored
   and again from its alarm.
 - **A call that is rejected, or has not settled within `EVENT_RETRY_MS` (a minute), is given up
@@ -218,9 +341,58 @@ subscriber know the event by, so neither learns how many events the deployment h
   `EVENT_MAX_AGE_MS` (a day) is dropped.
 - **Where the gatekeeper is not bound or is turned off, every row is deleted**: nobody is to be
   told, and turning the gatekeeper on later replays nothing.
+- **The gatekeeper takes and drops an event of a kind, or with a label, that its build does not
+  know**, rather than reject the call. A rejected call's rows are all offered again, so one
+  such event would otherwise hold every later one behind it. A store released ahead of the
+  gatekeeper therefore never holds "Issue reported" back, and such an event is dropped for
+  good: it is not delivered once the gatekeeper catches up (see
+  [the deploy orders](../packages/gatekeeper-instanceadmin/README.md#deploy-orders)).
 - **It never delays the retention pass.** Every alarm runs the pass first and then offers the
   waiting events, and the alarm comes back within `EVENT_RETRY_MS` while one waits. So the pass
   can run more often than its own cadence, and never less.
+
+## Limits
+
+What the design accepts, stated as it is:
+
+1. **A status the reporter reads is public.** A change of status that was approved, by a person
+   or by a workspace's rule, tells the reporter something: through the choice and the order of
+   the statuses a reporter can tell apart. An agent's changes are bounded per report
+   (`MAX_ISSUE_REPORT_THREAD_ENTRIES`), and two of the statuses read the same to the reporter.
+   An agent's status can be any status, `closed` included, which ends the reporter's replies
+   until an admin sets another.
+2. **An admins-only note is read by every admin, now and later**, and by any agent that holds
+   the whole admin connection. It can outlive the content grant its text was read under.
+3. **The kernel holds an approved action to its kind's method and visibility** (an
+   assignment's two methods), **not to a report.** Which report the call names is the
+   gatekeeper's to keep to what the approved card said.
+4. **Actions of one connection apply in order.** One that waits for a person holds every later
+   action of that connection behind it, a note, a status and an assignment with a rule included.
+5. **The "Report changed" hook tells every subscribed admin gadget that a report was written
+   to, never what.** A subscriber that writes on every event loops until the per-report bounds
+   on what is written through the gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind)
+   refuse it `threadFull`.
+6. **Those bounds are per report and per kind, not per admin or per workspace.** Every admin's
+   agents and gadgets share them. One subscriber's loop spends a kind's bound on a report for
+   all of them, after which only a person can write that kind on that report (a note, a public
+   reply, a status or an assignment), through the Workshop or the CLI.
+7. **"Assign to me" through a gadget assigns the workspace's owner**, whoever in that workspace
+   pressed the button.
+8. **`fixSuggested` and `fixInProgress` are hidden from the reporter's view, not from what an
+   admin's code may write.** An event carries the status as admins read it, its observation is
+   not flagged as restricted, and a public reply through a session limited to the report is
+   applied by a rule in a workspace that holds no restricted data (see
+   [What the reporter reads](#what-the-reporter-reads)).
+9. **One queue delivers every hook of the deployment.** A run of it attempts 20 deliveries, the
+   earliest due first, and lasts as long as its slowest callback: up to 30 seconds. "Report
+   changed" fires far more often than the other two hooks: a reporter can write
+   `MAX_ISSUE_REPORT_REPLIES_PER_DAY` (100) replies a day where they can file
+   `MAX_ISSUE_REPORTS_PER_DAY` (20) reports; a looping subscriber whose writes a rule applies
+   can make `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) of each of the four kinds on one report; and
+   each event is one delivery for every enabled hook of its kind. So one slow or failing
+   subscriber of it can delay other workspaces' "Issue reported" deliveries by minutes. A
+   delivery is delayed, never lost: N deliveries due ahead of it cost at most ceil(N / 20)
+   runs.
 
 ## Links
 
@@ -234,25 +406,27 @@ checked. Links are shown to admins only.
 
 | | The reporter | Admins |
 | --- | --- | --- |
-| The report: text, priority, context, status, images | Their own reports | Every report |
-| Public entries and status lines | Yes, an admin named without their id | Yes |
-| Admins-only entries | Never | Yes |
+| The report: text, priority, context, images | Their own reports | Every report |
+| The status | As a reporter reads it: never `fixSuggested` or `fixInProgress` | The true status |
+| Public entries and public status lines | Yes, an admin named without their id | Yes |
+| Admins-only entries, status lines for admins alone, changes of assignee | Never | Yes |
+| The assignee | Never | Yes |
 | Links, and when the thread last grew | Never | Yes |
 | The grant given with the report | Yes | Yes, with its time left |
 | Images | Their own reports' | Every report's |
 
-The admins' methods are `listIssueReports(options)` (newest first; filtered by status, priority,
-reporter and workspace, which combine; paged with a cursor), `getIssueReport()`,
-`addIssueReportEntry()`, `setIssueReportStatus()`, `setIssueReportLinks()` and
-`readIssueReportImage()`. Each checks again, on every call, that the caller is still a deployment
-admin (`notAdmin`).
+The admins' methods are `whoami()`, `listIssueReports(options)` (newest first; filtered by
+status, priority, reporter, workspace and assignee, which combine; paged with a cursor),
+`getIssueReport()`, `addIssueReportEntry()`, `setIssueReportStatus()`, `claimIssueReport()`,
+`releaseIssueReport()`, `setIssueReportLinks()` and `readIssueReportImage()`. Each checks again,
+on every call, that the caller is still a deployment admin (`notAdmin`).
 
 ### The count
 
 My issues shows how many of the reporter's reports hold a public entry an admin wrote that they
 have not marked seen (`getUnseenIssueReportCount()`, and `OwnIssueReport.unseen` on each report).
-Only a written public entry by an admin raises it: an admins-only entry and a bare status change
-do not.
+Only a written public entry by an admin raises it: an admins-only entry and a bare change of
+status or of assignee do not.
 
 - **The count is read, not pushed.** The Workshop asks again to refresh it; no event is raised to
   the reporter's sessions.
@@ -428,9 +602,10 @@ grant.
 
 Reading and writing reports is not recorded in the admin audit log. A report is written to the
 admins, so an admin reading it is what it is for, and its thread is its own record of who did
-what: each entry and each status line keeps its author, its time and, for an admin's, how the
-call reached the deployment. So `addIssueReportEntry()`, `setIssueReportStatus()` and
-`setIssueReportLinks()` are the three `AdminApi` methods that write without an audit record.
+what: each entry, each status line and each change of assignee keeps its author, its time and,
+for an admin's, how the call reached the deployment. So `addIssueReportEntry()`,
+`setIssueReportStatus()`, `claimIssueReport()`, `releaseIssueReport()` and
+`setIssueReportLinks()` are the five `AdminApi` methods that write without an audit record.
 The links are the exception to that record: replacing them adds no line to the thread and keeps
 no author and no time, so a report shows the links it has, not who set them or when.
 
@@ -445,11 +620,11 @@ What is recorded there:
 An owner's grant, given with a report or not, is the owner's own record and is not in the audit
 log either; the report's copy of it is where admins see it.
 
-An agent's entries and status lines are recorded in the thread like any admin's, with `via`
-`"gatekeeper"` and the workspace and the chat they came from: admins read that origin, and the
-reporter reads only that an agent wrote the entry. An agent's reads of reports leave no audit
-record, as an admin's do not. Their one trace is the observation in the activity of the
-workspace that read, which is deleted with that workspace.
+An agent's entries, status lines and changes of assignee are recorded in the thread like any
+admin's, with `via` `"gatekeeper"` and the workspace and the chat they came from: admins read
+that origin, and the reporter reads only that an agent wrote a public entry. An agent's reads
+of reports leave no audit record, as an admin's do not. Their one trace is the observation in
+the activity of the workspace that read, which is deleted with that workspace.
 
 ## The Workshop
 
@@ -474,14 +649,26 @@ workspace that read, which is deleted with that workspace.
   dialog closes or goes away. Where the browser has no screen capture the button is
   absent, and nothing is captured without the press and the browser's prompt.
 - **My issues** (`/issues`, with a sidebar item that carries the count): the reporter's reports
-  with their statuses, the public thread where they reply (an entry an agent wrote for an admin
-  is shown as "Agent, for" that admin), the images they sent, and the grants they gave, each
-  with Renew and End access. End access ends that one grant, and the page says
-  so: any other grant the owner gave stays until it is ended too.
+  with their statuses as a reporter reads them ("With the admins" for a fix that is suggested
+  or in progress, "Fix in review" for one that is proposed), the public thread where they reply
+  (an entry an agent wrote for an admin is shown as "Agent, for" that admin), the images they
+  sent, and the grants they gave, each with Renew and End access. End access ends that one
+  grant, and the page says so: any other grant the owner gave stays until it is ended too.
 - **The Reports tab** of the admin panel: the list with its filters, a report with its whole
   thread (an agent's entry with the workspace and the chat it came from), a reply, an
-  admins-only note, the links, the status, the images, the grant that came with it and its time
-  left, the retention setting, and the way into the workspace's admin page.
+  admins-only note, the links, the status, the assignee, the images, the grant that came with
+  it and its time left, the retention setting, and the way into the workspace's admin page.
+  - **The status** control lists the nine statuses under the admins' names ("Fix suggested",
+    "Fix in progress", "Fix proposed") and says what the reporter reads wherever that differs.
+    In the thread, a status line the reporter does not receive says so.
+  - **The assignee** is on each row of the list ("Held by" and the holder's name, or
+    "Unassigned") and in the report, with since when and whether an agent made the claim. The
+    report offers the one thing its reader can do: "Assign to me" for a report nobody holds,
+    "Release" for their own, and "Take over…" for another admin's, which asks first in a dialog
+    that names the holder. A claim refused because another admin took the report first reads
+    the report again and shows that holder. Each change is a line of the thread.
+  - **The assignee filter** is anyone, the admin reading the list ("Me") or nobody; a holder's
+    name on a row filters the list by that admin, shown as a chip that removes the filter.
 
 ## Error codes
 
@@ -496,6 +683,7 @@ Expected refusals carry a code from `ISSUE_REPORT_ERROR_CODES` (read with
 | `ISSUE_REPORT_TOO_MANY` | The reporter filed `MAX_ISSUE_REPORTS_PER_DAY` reports today. |
 | `ISSUE_REPORT_TOO_MANY_REPLIES` | The reporter wrote `MAX_ISSUE_REPORT_REPLIES_PER_DAY` replies today. |
 | `ISSUE_REPORT_THREAD_FULL` | The thread holds `MAX_ISSUE_REPORT_THREAD_ENTRIES` entries of the kind being written. |
+| `ISSUE_REPORT_ASSIGNED` | Another admin holds the report (a claim without take-over, or a release by someone who does not hold it). |
 | `ISSUE_REPORT_TOO_MANY_IMAGES` | The report already has five images, uploads in progress included. |
 | `ISSUE_REPORT_IMAGE_TOO_LARGE` | The declared length is over 5 MiB. |
 | `ISSUE_REPORT_IMAGE_NOT_RECOGNISED` | The bytes are not a PNG's, a JPEG's or a WebP's. |
@@ -514,16 +702,31 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   statuses, the reporter's one move and a status line that does not count; links kept as parsed;
   the grant copy, linked, replaced and deleted with its last report; and the daily run with the
   committed retention.
+- `issue-reports.test.ts` also covers the three fix statuses: each set by a person and through
+  the admin gatekeeper; what each reader gets for each status and each move between two (the
+  reporter's report, list and thread never hold `fixSuggested`, `fixInProgress` or a line for a
+  move between statuses that read the same, and the admins' hold the truth); a reply that moves
+  none of the three; and an admins-only status line counted as a change of status, never as a
+  note.
+- `issue-reports.test.ts` also covers the assignee: a claim, the holder's own, another admin's
+  refused with its code, two that race, a person's take-over, a take-over refused through the
+  admin gatekeeper, a release by the holder alone, a holder who is no longer an admin, the
+  list's two filters, each change as one admins-only line, the bound on those made through the
+  gatekeeper, nothing of it in what the reporter reads, and a store that gains the columns.
 - `issue-report-images.test.ts`: images. The formats recognised from bytes; each bound, racing
   uploads included; a declared length the stream must match; an upload cut off, and one swept;
   what a failed upload leaves in the bucket; the reads, with the row checked first; and deletion
   with a report, while the bucket answers and while it does not.
 - `issue-report-events.test.ts`: the events the store sends the admin gatekeeper. One for each
-  report filed and each end of an investigation, and none for any other change of status; a
-  delivery that is not taken, offered again with its id and dropped after a day; two ends of
-  one millisecond, each with its id; a store whose `events` table gains the `id` column; a
-  deployment whose gatekeeper is off or not bound; what arms the alarm; the retention pass
-  running first; and a gatekeeper that does not answer.
+  report filed and each end of an investigation, and no end for any other change of status; one
+  "changed" for each kind of write to a report, with the status it set; none for a write that
+  changed nothing, a refused call, an image or a grant; both events, each with its id, when a
+  report leaves `investigating`; the reporter's reply written with its event, and answered while
+  the gatekeeper rejects or does not answer; a delivery that is not taken, offered again with
+  its id and dropped after a day; two ends of one millisecond, each with its id; a store whose
+  `events` table gains the `id` and the `status` columns; a deployment whose gatekeeper is off
+  or not bound; what arms the alarm; the retention pass running first; and a gatekeeper that
+  does not answer.
 - `issue-reports.test.ts` also covers an entry and a status line written through the admin
   gatekeeper: `via` and the origin kept, the origin returned to admins and never to the
   reporter, and a store whose `entries` table gains the `agent` column.
@@ -532,17 +735,34 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
 - `chat-attachment-validation.test.ts` also covers `sniffImageMimeType()`.
 - `admin-owner-grants.test.ts` and `admin-account-grant.test.ts` cover the grant given with a
   report from the grant's side (see [admin-access.md](admin-access.md#tests)).
+- `admin-api-impl.test.ts` covers `whoami()`, and `admin-agent.test.ts`,
+  `admin-agent-lend.test.ts` and `admin-agent-kinds.test.ts` the assignment kind where the
+  Admin API is lent: a claim and a release as the workspace's owner, the kind's two methods and
+  no other, and a take-over refused to a lent call.
 
 The integration suite, `packages/integration-tests/__tests__/workshop-issue-reports.test.ts`,
-follows a report from filing to closing with images, through both APIs.
+follows a report from filing to closing with images, through both APIs. Two more, with the admin
+gatekeeper and a scripted model:
+
+- `admin-gatekeeper-actions.test.ts`: two admins' workspaces claim one report and exactly one
+  holds it; an agent never takes a report from a person; a claim assigns the workspace's owner,
+  whoever asked; and a session limited to one report reads what its reporter reads.
+- `admin-gatekeeper-hooks.test.ts`: a gadget's stored callback is called once for each kind of
+  change to a report, and both hooks fire, each with an id of its own, when a report leaves
+  `investigating`.
+
+The gatekeeper's own suites are listed in
+[its README](../packages/gatekeeper-instanceadmin/README.md#tests).
 
 Frontend suites, in `packages/workshop-frontend/src/`:
 
 - `features/issue-reports/`: the dialog (`ReportIssueDialog.test.tsx`, and its browser test,
   which drives the capture with a faked `getDisplayMedia`), the capture and the re-encoding
   (`captureTab.test.ts`, `reportImage.test.ts`), the images shown (`IssueImages.test.tsx`), My
-  issues and its count (`MyIssues.test.tsx`, `MyIssues.browser.test.tsx`,
+  issues, what it calls each status and its count (`MyIssues.test.tsx`, `MyIssues.browser.test.tsx`,
   `MyIssuesSummary.test.tsx`), and the one dialog every Report issue item opens
   (`ReportIssueHost.test.tsx`).
 - `features/admin-reports/`: the Reports tab (`AdminReportsPanel.test.tsx` and its browser
-  test), its filters and its retention setting (`reportFilter.test.ts`, `reportSettings.test.ts`).
+  test), the assignee's controls, the take-over dialog and what the status control says the
+  reporter reads included; its filters and its retention setting (`reportFilter.test.ts`,
+  `reportSettings.test.ts`).

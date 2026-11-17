@@ -98,8 +98,8 @@ Run just these cases with `pnpm --filter @gadgets/integration-tests test:run __t
 `admin-gatekeeper-hooks.test.ts` boot the real `gatekeeper-instanceadmin` beside the Workshop, on a
 deployment with three admins, and drive both through the public RPC API and scripted agent turns
 whose code uses the connection. They cover who is offered the gatekeeper and admitted to a workspace
-that has its connection, how each read is recorded, the six action kinds and what a rule may apply,
-the session limited to one report, the two hooks, and what reaches a spawned agent. Nothing of the
+that has its connection, how each read is recorded, the seven action kinds and what a rule may apply,
+the session limited to one report, the three hooks, and what reaches a spawned agent. Nothing of the
 gatekeeper or of the Admin API is faked.
 
 `__tests__/admin-gatekeeper-harness.ts` holds what the three share. Its scripted model

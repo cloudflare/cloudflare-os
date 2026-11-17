@@ -3,9 +3,10 @@
 A deployment admin's agent uses the deployment's Admin API as that admin, through this gatekeeper.
 Its sessions are built from the API's generated schema: one method for each Admin API method an
 agent may call, with the declarations the agent reads and the check each call's arguments pass.
-Reads run at once; what would post to an issue report, set its status or ask the admins for a
-write is queued as an action. Two hooks start work on issue reports: one fires for each report
-filed, one each time an investigation ends. What an admin sees and does through it is in
+Reads run at once; what would post to an issue report, set its status, claim or release it, or
+ask the admins for a write is queued as an action. Three hooks start work on issue reports: one
+fires for each report filed, one each time an investigation ends, and one for every write to a
+report after it was filed. What an admin sees and does through it is in
 [docs/admin-access.md](../../docs/admin-access.md#through-an-agent), and the reports themselves
 in [docs/issue-reports.md](../../docs/issue-reports.md). This file is the design record.
 
@@ -18,9 +19,9 @@ in [docs/issue-reports.md](../../docs/issue-reports.md). This file is the design
 | The events the report store sends | `packages/workshop-backend/src/issue-reports.ts` |
 | The schema, its load-time checks, the declarations | `src/surface.ts` |
 | The sessions | `src/forward.ts` |
-| The six actions | `src/actions.ts` |
+| The seven actions | `src/actions.ts` |
 | The session limited to one report | `src/report-session.ts` |
-| The two hooks | `src/hooks.ts` |
+| The three hooks | `src/hooks.ts` |
 | The facet, the account, the vendor | `src/worker.ts` |
 
 ## Who can use it, and where
@@ -173,7 +174,7 @@ every account is alike. What it can do, the Workshop lends it:
 
 - **For a session**: the owner's Admin API, through the session's queue
   (`AdminAgentQueue.getAdminApi()`). It answers the "read" methods only.
-- **For an approved action**: an Admin API that answers one call, the one the action's kind
+- **For an approved action**: an Admin API that answers one call, of a method the action's kind
   names, handed over as an argument (`AdminGatekeeper.applyAdminAction()`).
 - **For a hook's firing**: nothing. A firing's queue is a plain approval queue, and an event is
   an id and a label.
@@ -255,7 +256,7 @@ stale (see [packages/api-schema/README.md](../api-schema/README.md)).
 - **The declarations the agent reads.** Emitted at load with `emitDeclarations()`, from a copy
   of the schema in which each "act" method returns nothing and says first that the call is
   queued (`queued()`). The hand-written `src/types.d.ts` follows them: `AdminBinding`, the
-  report session and the two hooks.
+  report session and the three hooks.
 - **The argument check.** `checkArguments()` refuses a malformed call before the queue is
   touched; the Workshop validates the call again where it lands.
 
@@ -275,8 +276,9 @@ the schema is what the sessions rely on:
 6. No method has a reserved name.
 7. Nothing carries a `secret` tag, on a named shape or on a property: no read hands an agent a
    secret.
-8. Every "act" method has a route to an action, and each route is the call of an action kind of
-   `ADMIN_AGENT_ACTIONS`.
+8. Every "act" method has a route to an action, and each route is a call of an action kind of
+   `ADMIN_AGENT_ACTIONS` (`adminAgentActionMethods()`: a kind's one method, or the two of an
+   assignment).
 
 **How a method added to `AdminApi` is classified.** A missing step 1 or step 3 fails the
 build; a missing step 2 fails the load and the tests:
@@ -309,11 +311,11 @@ thread entry or a request that does not exist yet.
 
 | Kind | Methods | What a call does |
 | --- | --- | --- |
-| `"read"` | `getSettings()`, `isBlueprintFeatured()`, `listUsers()`, `listWorkspaces()`, `inspectWorkspace()` and `inspectUser()` and every method of the view each returns, `listAdminAudit()`, `getAdminAuditStats()`, `getWorkspaceWrite()`, `listIssueReports()`, `getIssueReport()`, `readIssueReportImage()` | Runs at once, on the owner's Admin API, and returns its result. Metadata, and a workspace's content under a live grant, exactly as its view's own per-call check decides. A view of a user's account returns metadata alone. |
-| `"act"` | `addIssueReportEntry()`, `setIssueReportStatus()`, `requestWorkspaceWrite()` | Never runs when called. It is queued as one of the six actions below, and runs once that action is approved, as exactly the queued call. |
+| `"read"` | `getSettings()`, `isBlueprintFeatured()`, `listUsers()`, `listWorkspaces()`, `inspectWorkspace()` and `inspectUser()` and every method of the view each returns, `listAdminAudit()`, `getAdminAuditStats()`, `getWorkspaceWrite()`, `whoami()`, `listIssueReports()`, `getIssueReport()`, `readIssueReportImage()` | Runs at once, on the owner's Admin API, and returns its result. Metadata, and a workspace's content under a live grant, exactly as its view's own per-call check decides. A view of a user's account returns metadata alone. |
+| `"act"` | `addIssueReportEntry()`, `setIssueReportStatus()`, `claimIssueReport()`, `releaseIssueReport()`, `requestWorkspaceWrite()` | Never runs when called. It is queued as one of the seven actions below, and runs once that action is approved, as exactly the queued call. |
 | `"omitted"` | Every setter and every other method that changes a setting, the gateway tests, `checkForUpdates()` and `getUpdateStatus()`, every passkey method, approving or denying a write request, `endWorkspaceGrant()`, `setIssueReportLinks()` | Absent from the declarations and refused, by the session and by the Workshop. |
 
-The six action kinds (`ADMIN_AGENT_ACTIONS`). Each card is built from the call's own arguments,
+The seven action kinds (`ADMIN_AGENT_ACTIONS`). Each card is built from the call's own arguments,
 never from a read, so queuing an action marks nothing:
 
 | Kind | Tag | `autoApprovable` | The card says |
@@ -321,12 +323,45 @@ never from a read, so queuing an action marks nothing:
 | `issueReportReply`: a public reply through the binding | `issue-report-reply` | `false` | The report's id and the whole reply, and that it was written with access to what only admins see. |
 | `issueReportScopedReply`: a public reply through a report session | `issue-report-scoped-reply` | `true` | The report's id, its reporter, when it was filed, how it begins, and the whole reply. |
 | `issueReportNote`: an admins-only entry | `issue-report-note` | `true` | The report's id and the whole note. |
-| `issueReportStatus`: a report's status | `issue-report-status` | `true` | The report's id and the status. |
+| `issueReportStatus`: a report's status | `issue-report-status` | `true` | The report's id and the status, and what the reporter reads where that is another status. |
+| `issueReportAssignment`: a claim or a release of a report | `issue-report-assignment` | `true` | The report's id, whether it is claimed or released, and that it is for this workspace's owner. |
 | `workspaceWriteRequest`: a write request other than for content | `workspace-write-request` | `true` | The workspace, the action, its arguments and the reason. |
 | `contentAccessRequest`: a request for `"grantContentAccess"` | `content-access-request` | `false` | The same, and that nobody in this workspace can approve the request. |
 
 A scoped reply's card also names the reporter and the report's first line, which the session
 reads for the card alone and may read anyway.
+
+**A status's card says what the reporter reads.** The card names the status as admins read it
+and, for `fixSuggested` and `fixInProgress`, adds a "Reporter reads" line with the words the
+reporter's page gives `withAdmin`, "With the admins" (`issueReportStatusForReporter()`, the
+Workshop's one function for it, says which status). Its text
+says that the reporter sees the change in the thread unless they read the old status and the
+new one as the same.
+
+**An assignment is one kind for two calls.** `claimIssueReport()` and `releaseIssueReport()`
+both queue `issueReportAssignment`, so a rule for claiming is a rule for releasing, and the
+Workshop holds the approved action to one call of those two methods.
+
+- **The card names the report and whom it is for, in words.** Its title is the report's id
+  between "Assign issue report" and "to this workspace's owner", or between "Release issue
+  report" and "from this workspace's owner": the owner is the admin the connection acts as,
+  whoever approves the card. It names no person by a read, since queuing reads nothing; which
+  admin the owner is, the Workshop decides where the call lands.
+- **It never takes a report over.** The route refuses a claim with `takeOver` set before a
+  card exists, so that no person approves one by mistake, and tells the agent that only a
+  person takes a report from the admin who holds it. The report store refuses it again where
+  the call lands, whatever approved it: it reads the call's label, `via: "gatekeeper"`, which
+  only the Workshop sets.
+- **`assigned` is a refusal that ends the action** (`TERMINAL_REFUSALS`): another admin holds
+  the report, nothing was done, and the action is failed for good rather than left with an
+  outcome nobody knows.
+- **An applied claim of a report the owner already holds, and a release of one nobody holds,
+  change nothing**: no thread line and no event.
+
+**`whoami()` is a read like any other.** It returns the workspace's owner as reports name them
+(the id a report's assignee and an entry's author carry), so code can tell its own admin's
+reports from another's. It is forwarded, observed and flagged as every read of the whole
+binding is, so it marks the workspace as the next section describes.
 
 **The two `false` verdicts**, by the rules of the write-gatekeeper skill:
 
@@ -361,7 +396,12 @@ can repeat without end is bounded where it lands, in the Workshop, apart from wh
   never refused, so a report can always be closed;
 - one report takes at most that many public entries written through the gatekeeper, and that
   many admins-only ones, each counted apart from the entries people write. An agent that fills
-  its own share of a thread is refused `threadFull` and leaves the admins all of theirs.
+  its own share of a thread is refused `threadFull` and leaves the admins all of theirs;
+- one report takes at most that many changes of assignee made through the gatekeeper. A
+  person's claim, take-over or release is never refused for it.
+
+Those four bounds are per report and per kind, for every admin's agents and gadgets together
+(see [Limits](#limits)).
 
 **What is refused before a card is made.** A text or a reason the Admin API would refuse, and a
 write request's arguments that do not fit its action (`ADMIN_WRITE_ARGS`, the Workshop's own
@@ -370,11 +410,12 @@ non-negative whole number. The Admin API refuses these with no code, which an ap
 could only report as an outcome nobody knows.
 
 **No action runs twice.** Every kind claims its action before it calls. A coded refusal the
-Admin API makes before it writes anything fails the action for good; any other failure (a
-broken call, an error with no code) leaves an outcome nobody knows, which is never run again: a
-person looks at the report's thread or the audit log, and rejects the action. A status is
-claimed like the rest: set again after someone had changed the report's status, it would undo
-their change, with a second status line and a second end of an investigation.
+Admin API makes before it writes anything (a report that is gone, a full thread, a closed
+report, one another admin holds) fails the action for good; any other failure (a broken call, an
+error with no code) leaves an outcome nobody knows, which is never run again: a person looks at
+the report's thread or the audit log, and rejects the action. A status is claimed like the rest:
+set again after someone had changed the report's status, it would undo their change, with a
+second status line and a second end of an investigation.
 
 **A verdict of `true` is a ceiling.** A rule applies an action only in a workspace that holds no
 restricted data, which the next section makes rare on purpose.
@@ -463,18 +504,26 @@ prompt. That is why its reply may reach the reporter with no person in between.
 **What it reaches:**
 
 - `get()`: the report as its reporter reads it. The session builds it field by field
-  (`scopedReport()`, an allowlist): no links, no admins-only entry, no admin's id and nothing of
-  where an admin's entry came from. A field the Admin API adds later does not come through until
-  it is named there and in `src/types.d.ts`, and a status this Worker's build does not know
-  reads `withAdmin`: the Workshop is deployed apart from it, and may store one added since.
+  (`scopedReport()`, an allowlist): no links, no assignee, no admins-only entry, no admin's id
+  and nothing of where an admin's entry came from. A field the Admin API adds later does not
+  come through until it is named there and in `src/types.d.ts`, and a status this Worker's
+  build does not know reads `withAdmin`: the Workshop is deployed apart from it, and may store
+  one added since.
+  - **Each status is the one the reporter reads**: the report's and each entry's go through
+    `issueReportStatusForReporter()`, the function the report store builds the reporter's own
+    view with, so `fixSuggested` and `fixInProgress` read as `withAdmin` and the declared
+    union holds neither.
+  - **It holds no line only admins read**: not a change of assignee, and not a change of
+    status between two statuses the reporter reads as the same.
 - `readImage(imageId)`: one image of the report, as the stream the Admin API returned.
 - `reply(text)`: queues a public reply, as the kind only this session queues
   (`issueReportScopedReply`).
 - `inspectWorkspace(reason)`: an audited view of the reporter's workspace (below).
 
-**What it cannot reach:** another report, an admins-only entry, a listing, the audit log, a
-setting or a write request. No method takes a report id, nothing it returns leads elsewhere, and
-it cannot be widened.
+**What it cannot reach:** another report, an admins-only entry, a report's assignee, a listing,
+the audit log, a setting or a write request. It cannot assign: it has no method that claims or
+releases, and no `whoami()`. No method takes a report id, nothing it returns leads elsewhere,
+and it cannot be widened.
 
 **Its view of the reporter's workspace:**
 
@@ -551,13 +600,44 @@ whole binding.
 | Hook | Subscribed with | Fires | Its event |
 | --- | --- | --- | --- |
 | Issue reported | `subscribeIssueReported(hook)` | Once for each report filed. | `{ eventId, reportId, priority, filedAt }` |
-| Investigation complete | `subscribeInvestigationComplete(hook)` | Each time an admin moves a report from `investigating` to `answered`, `waitingOnReporter`, `withAdmin` or `closed`. | `{ eventId, reportId, status, at }` |
+| Investigation complete | `subscribeInvestigationComplete(hook)` | Each time an admin moves a report from `investigating` to any status but `new`. | `{ eventId, reportId, status, at }` |
+| Report changed | `subscribeIssueReportChanged(hook)` | For each write to a report after it was filed, whoever made it: its status set, a claim, a take-over or a release, an entry added to its thread, its links replaced. | `{ eventId, reportId, change, status?, at }` |
 
 An event is ids and labels only: the subscriber reads the report through its own binding.
 Subscribing reads nothing and marks nothing. The hook is bound disabled, and delivers once a
 person enables it. A hook wakes a gadget's stored callback or an existing chat, as hooks do; it
 opens no chat. A delivery is observed with the binding's subresource and no restricted-data
-flag, so a workspace that only receives events keeps its rules.
+flag, so a workspace that only receives events keeps its rules. The third hook is built as the
+other two are: who may subscribe, and whose firings the Workshop refuses, are the same.
+
+**What "Report changed" fires for.** One write to a report is one event, whose `change` says
+what the write was (`ISSUE_REPORT_CHANGES`):
+
+| `change` | The write | `status` |
+| --- | --- | --- |
+| `status` | `setIssueReportStatus()`, by an admin or an agent | The status set, as admins read it. |
+| `assignment` | A claim, a take-over or a release | |
+| `reply` | A public entry: the reporter's reply, an admin's, an agent's | `withAdmin`, on the reporter's reply that reopened the report; otherwise none. |
+| `note` | An entry for admins alone | |
+| `links` | `setIssueReportLinks()` | |
+
+- **It carries no text, no name and not who made the write.** The subscriber reads the report.
+- **A report that leaves `investigating` fires this hook and "Investigation complete"**: two
+  events for the one write, each with an `eventId` of its own.
+- **Filing fires "Issue reported" alone.** An image and a grant are what the reporter attaches
+  to a report, not writes to its status, assignee, thread or links, and fire nothing, whenever
+  they arrive.
+- **It fires for the subscriber's own writes too**: those of its workspace's agents and
+  gadgets, as of an admin, the reporter and every other admin's code. That is how code learns
+  that an action it queued was applied: the event arrives once the action was approved and has
+  run. So a subscriber that writes to a report on each event must not answer its own change.
+  The hook's description, the declarations and the preamble all say so.
+
+**What sends no event**, as the declarations tell agents: an applied action that changed
+nothing (a claim of a report the owner already holds, a status the report already has), a
+denied action, and one refused where it lands (`assigned`, `threadFull`). So code that queued
+an action and waits to learn what became of it reads the report as well, and never waits on
+the event alone.
 
 **How the gatekeeper learns of a report: the report store calls it**
 (`AdminGatekeeperVendor.issueReportEvents()`), and the deployment's one `IssueReportHookDriver`
@@ -565,8 +645,8 @@ queues each event for the hooks enabled for its kind. Polling would need the Wor
 something it could call at any time, a stored capability into the report store or a binding:
 the standing power this design rules out. A Worker that misbehaved could then list every
 report of the deployment whenever it liked, with no workspace involved. A pushed event hands it
-its own id, a report's id, a priority or a status, and a time, which is exactly what a
-subscriber receives.
+its own id, a report's id, a priority, a status or what a write was, and a time, which is
+exactly what a subscriber receives.
 
 What the Worker does keep is each enabled hook's `HookInitiator`, as every gatekeeper with
 hooks does, and that is a narrower standing power, not none: a Worker that misbehaved could
@@ -585,15 +665,16 @@ events again from the store's alarm. It holds back neither a later event nor the
 retention pass.
 
 **Delivery is at least once, twice over.** The store sends an event again until the vendor
-resolves, with the same `id`, and the kit's queue ignores a repeat for
-`DELIVERED_RETENTION_MS`. The kit retries a firing that failed, up to `MAX_DELIVERY_ATTEMPTS`
-times. So a subscriber sees an event twice only when its own callback failed or timed out after
-doing part of its work: a callback of either hook keys its work by the event's `eventId`. The
-store writes that id with the event, so every delivery of one event carries it and no two
-events share it. A report can be investigated again and end with the status it ended with
-before, in the same millisecond too, which is a second event: its `eventId` differs where its
-`at` may not. The id is random rather than the store's count of its events, which would tell a
-subscriber how many reports the deployment has had and how many investigations have ended.
+resolves, with the same `id`, and the kit's queue ignores a repeat for `DELIVERED_RETENTION_MS`.
+The kit retries a firing that failed, up to `MAX_DELIVERY_ATTEMPTS` times. So a subscriber sees
+an event twice only when its own callback failed or timed out after doing part of its work: a
+callback of any hook keys its work by the event's `eventId`, which is what the declarations and
+the preamble tell agents. The store writes that id with the event, so every delivery of one
+event carries it and no two events share it. A report can be investigated again and end with the
+status it ended with before, in the same millisecond too, which is a second event: its `eventId`
+differs where its `at` may not. The id is random rather than the store's count of its events,
+which would tell a subscriber how many reports the deployment has had and how many
+investigations have ended.
 
 **A callback has `HOOK_CALLBACK_TIMEOUT_MS` (30 seconds) to answer.** The deployment has one
 driver, and its alarm waits for every delivery it started, so a callback that did not settle
@@ -602,6 +683,56 @@ attempt. The facet's delivery gives up on a callback that has not answered in ti
 kit's queue retries and in the end drops as any failed delivery. The declarations tell a
 subscriber to start long work and return: a call to an agent is recorded and returns at once.
 
+**One queue delivers every hook, and "Report changed" fills it fastest.** The deployment has
+one driver and one queue for the hooks of all three kinds:
+
+- a run of its alarm attempts at most `MAX_DELIVERIES_PER_RUN` (20) deliveries, the earliest
+  due first, together, and lasts as long as its slowest callback: 30 seconds at most. It then
+  comes back at once for what is still due;
+- a failed delivery is due again a minute later (doubling to an hour, dropped after
+  `MAX_DELIVERY_ATTEMPTS`, 8), so it goes behind what is already due and never holds the same
+  place twice;
+- so a delivery waits behind every delivery due before it, 20 a run: with N ahead of it, it is
+  attempted within ceil(N / 20) further runs.
+
+The third hook raises N. A reporter can cause `MAX_ISSUE_REPORT_REPLIES_PER_DAY` (100) events a
+day, where filing gives `MAX_ISSUE_REPORTS_PER_DAY` (20). A subscriber that writes on every
+event, with rules that apply its writes, can cause `MAX_ISSUE_REPORT_THREAD_ENTRIES` (200) of
+each of the four kinds written through the gatekeeper: up to 800 on one report. Each event is
+one delivery for every enabled hook of its kind. With 800 events, three subscribed hooks and
+every callback timing out, that is 2,400 deliveries, 120 runs, and an hour before an "Issue
+reported" delivery behind them is attempted. It is delayed, never lost and never reordered
+past its own retries. The design accepts the delay rather than give each kind a queue.
+
+### Deploy orders
+
+A release deploys Workers one at a time, so for a while the Workshop and this Worker are of
+two builds.
+
+- **The Workshop first.** The report store sends "changed" events to a gatekeeper that has no
+  hook for them. It takes and drops them, so "Issue reported" is never held behind one. A hook
+  subscribed once the gatekeeper is deployed sees only later writes. An admin can already set
+  one of the three fix statuses: a report session of the earlier build does not know them and
+  reads each as `withAdmin`, the report's and a status line's alike, so `fixProposed` reads
+  `withAdmin` there too until this Worker is deployed.
+- **The gatekeeper first.** Nothing sends the third kind yet, so a subscribed hook stays
+  silent. A claim, a release, `whoami()` or one of the three fix statuses is refused where it
+  lands, by a Workshop that does not know it.
+
+`issueReportEvents()` takes an event of a kind, or with a label, that this Worker's build does
+not know, and drops it (`declaredFields()`), logging a count. A gatekeeper built before it
+learned to drop unknown kinds would reject such a call, and the store would resend it for a
+day, holding "Issue reported" behind it; none was released. A kind or a label added to the
+store therefore never stalls an older gatekeeper, but it is not delivered later either: an
+event of a kind the Worker has no hook for, and an event of a known kind whose label the
+Worker's build does not know, is dropped for good. Deploy the gatekeeper first when subscribers
+must see every event of a kind or a label the store adds.
+
+That is also why `GatekeeperVendor` does not declare `implements AdminGatekeeperVendor`:
+capnweb-validate would check `issueReportEvents()` against the contract's union and refuse the
+unknown event this method exists to take. The class is checked against the contract by type
+alone, and an event that is not ids and labels is still refused.
+
 **What is lost:**
 
 - events while the gatekeeper is turned off or not bound: the store deletes them, and turning
@@ -609,6 +740,8 @@ subscriber to start long work and return: a call to an agent is recorded and ret
 - events the gatekeeper did not take for `EVENT_MAX_AGE_MS`;
 - events that arrive while no hook of their kind is enabled: `ingest()` queues an event for
   the hooks enabled then, and a hook enabled later is sent nothing older;
+- events of a kind, or with a label, that this Worker's build does not know (see
+  [Deploy orders](#deploy-orders));
 - events the kit gave up on while a workspace's owner was not an admin, or held no account: the
   Workshop refuses those firings (`startHook()`).
 
@@ -626,14 +759,15 @@ for any admin, and no more:
 | Each call of a view, metadata and content | An access record, with the same `via` and `agent`, and the grant it ran under | | An observation |
 | A write request an agent filed | Its `"requested"` and `"expired"` records, with the same `via` and `agent`. A denial, an approval and what follows carry the `via` of the admin who made them. | | An action, with its card |
 | `addIssueReportEntry()`, `setIssueReportStatus()` | None | The entry or status line, with `via: "gatekeeper"` and, for admins, the origin | An action, with its card |
-| `listUsers()`, `listWorkspaces()`, `getSettings()`, `isBlueprintFeatured()`, `listAdminAudit()`, `getAdminAuditStats()`, `listIssueReports()`, `getIssueReport()`, `readIssueReportImage()`, `getWorkspaceWrite()`, and a report session's `get()` and `readImage()` | None | | An observation |
-| A hook's delivery | None | | An observation |
+| `claimIssueReport()`, `releaseIssueReport()` | None | A line only admins read, with no text: who claimed or released the report, with `via: "gatekeeper"` and the origin. The report's assignee carries the same `via` and origin while the claim holds. | An action, with its card |
+| `listUsers()`, `listWorkspaces()`, `getSettings()`, `isBlueprintFeatured()`, `listAdminAudit()`, `getAdminAuditStats()`, `whoami()`, `listIssueReports()`, `getIssueReport()`, `readIssueReportImage()`, `getWorkspaceWrite()`, and a report session's `get()` and `readImage()` | None | | An observation |
+| A hook's delivery, of any of the three | None | | An observation, with the binding's subresource and no restricted-data flag |
 
 - **In the audit log**: the calls the Admin API records for any admin. A report session's view
   adds the one `describe` it makes when it opens.
-- **In no audit record**, for an agent as for any admin: the listings and getters of the fifth
-  row, and the two report writes. For the two writes the trace is the thread entry. For the
-  reads, the only trace is the observation in the activity of the workspace that made the call
+- **In no audit record**, for an agent as for any admin: the listings and getters of the sixth
+  row, and the four report writes. For the writes the trace is the thread entry or line. For
+  the reads, the only trace is the observation in the activity of the workspace that made the call
   (`Admin API: <method>`, with who prompted the turn), which lives and is deleted with that
   workspace. A deployment that needs a durable record of an agent's listings does not get one
   from this version.
@@ -650,13 +784,14 @@ found elsewhere:
 - for a call with no chat, in the gadget's merged code;
 - for a session opened directly from the connection, the owner: nobody else is lent one, and
   nobody else's queues an action;
-- for an entry or a status line, in the report's thread, which marks an agent's;
+- for an entry, a status line or a change of assignee, in the report's thread, which marks an
+  agent's;
 - in this Worker's logs, event names only: no argument, result or report id is logged.
 
 ## Limits
 
-- **Nothing is simulated.** A queued entry, status or request is in no read until it is applied,
-  and an agent's turn waits for a manual decision.
+- **Nothing is simulated.** A queued entry, status, assignment or request is in no read until it is
+  applied, and an agent's turn waits for a manual decision.
 - **An "act" call resolves to nothing**, `requestWorkspaceWrite()` included, so an agent is not
   handed the id of the request it filed. The declarations (`src/types.d.ts`) tell it how to
   find the request:
@@ -683,10 +818,41 @@ found elsewhere:
   is not marked**, where web fetches and other connections' actions are not held (see
   [What an unmarked triage workspace holds](#what-an-unmarked-triage-workspace-holds)).
 - **A connection's actions apply in order.** A public reply that waits for a person holds back
-  that connection's later notes, status changes and requests, and a triager's scoped replies
-  too. Give triage a workspace of its own.
+  that connection's later notes, status changes, assignments and requests, and a triager's
+  scoped replies too. Give triage a workspace of its own.
 - **A status is set over whatever the report has by then.** The action is lent no read, so its
   card names no earlier status.
+- **A status the reporter reads is public.** An approved change of status tells the reporter
+  something, through the choice and the order of the statuses a reporter can tell apart. An
+  agent's changes are bounded per report, and two of the statuses read the same to the
+  reporter. It can be any status, `closed` included, which ends the reporter's replies until an
+  admin sets another.
+- **An admins-only note is read by every admin, now and later**, and by any agent that holds
+  the whole binding. It can outlive the content grant its text was read under.
+- **The Workshop holds an approved action to its kind's method and visibility** (an
+  assignment's two methods), **not to a report.** That the call names the report its card
+  named is this Worker's to keep (see
+  [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
+- **"Report changed" tells every subscribed admin gadget that a report was written to, never
+  what.** A subscriber that writes on every event loops until the per-report bounds on what
+  is written through the gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse
+  it `threadFull`.
+- **Those bounds are per report and per kind, not per admin or per workspace.** The store
+  counts what was written through the gatekeeper with no author in the count, so every
+  admin's agents and gadgets share them. One subscriber's loop spends a kind's bound on a
+  report for all of them, after which only a person can write that kind on that report (a
+  note, a public reply, a status or an assignment), through the Workshop or the CLI.
+- **A claim through a gadget assigns the workspace's owner**, whoever in that workspace pressed
+  its "Assign to me" button.
+- **`fixSuggested` and `fixInProgress` are hidden from the reporter's view, not from what an
+  admin's code may write.** An event carries the status as admins read it, its observation is
+  not flagged as restricted, and a public reply through a report session is applied by a rule
+  in a workspace that holds no restricted data. So a subscriber there can tell a reporter
+  which of the two its report has.
+- **One queue delivers every hook of the deployment**, 20 deliveries a run, each run as long
+  as its slowest callback (up to 30 seconds). One slow or failing subscriber of "Report
+  changed" can delay other workspaces' "Issue reported" deliveries by minutes, and by up to
+  an hour at the bounds (see [Hooks](#hooks)). A delivery is delayed, never lost.
 - **What the agent reads goes into the chat and to its model provider.**
 - **A view's own limits** are those of
   [docs/admin-access.md](../../docs/admin-access.md#inspection).
@@ -740,36 +906,51 @@ the schema when it is stale and building the configurator frame.
 
 - `__tests__/surface.test.ts` (Node): the generated surface. The session's methods are exactly
   those the kind table does not omit; the declarations, with each "act" method resolving to
-  nothing and no omitted method; and every load-time check refusing the schema it is for.
+  nothing and no omitted method, `whoami()` as a read, and a claim and a release as queued;
+  what the preamble says of whom the binding acts as, of the changed hook firing for a
+  workspace's own writes and of what sends no event; and every load-time check refusing the
+  schema it is for.
 - `__tests__/workerd/session.test.ts`: the facet, the account and the vendor; a session's
-  reads, lent, then observed, then forwarded, each marking under the binding's id; a view a
-  session opened; what a session refuses; disposal.
-- `__tests__/workerd/actions.test.ts`: each of the six kinds queued with its card and applied
-  as exactly the stored call, once; the verdicts, and what splits the two replies and the two
-  requests; what is refused before anything is queued; an action that fails to apply, is lent
-  nothing or is under way.
+  reads, lent, then observed, then forwarded, each marking under the binding's id, `whoami()`
+  among them; a view a session opened; what a session refuses, a claim that asks to take a
+  report over included, with nothing queued; disposal.
+- `__tests__/workerd/actions.test.ts`: each of the seven kinds queued with its card and applied
+  as exactly the stored call, once; a status's card for every status, with what its reporter
+  reads where that differs; an assignment's card, one kind for a claim and a release; the
+  verdicts, and what splits the two replies and the two requests; what is refused before
+  anything is queued; an action that fails to apply, is lent nothing or is under way.
 - `__tests__/workerd/report-session.test.ts`: the allowlist; a session that can name no other
   report; its reply's card; its view, opened for the level in force and refused by the
-  workspace's own answer; and what its reads record, with the mark of a restricted reporter's
-  workspace on its view's calls alone.
-- `__tests__/workerd/hooks.test.ts`: subscribing; an event firing each hook of its kind once; a
-  delivery that fails; the delivery stub; the vendor's `issueReportEvents()`; and the driver's
-  storage, which holds ids and labels only.
+  workspace's own answer; what its reads record, with the mark of a restricted reporter's
+  workspace on its view's calls alone; and the statuses as the reporter reads them, with no
+  admins-only status line, no assignee, no assignment line and no method that assigns.
+- `__tests__/workerd/hooks.test.ts`: subscribing; an event firing each hook of its kind once,
+  each kind of write to a report among them, and a report that leaves `investigating` firing
+  two hooks with an event id each; a delivery that fails; many changed events holding an
+  "Issue reported" delivery back by whole runs without losing it; the delivery stub; the
+  vendor's `issueReportEvents()`, through its argument validation: a batch that mixes kinds it
+  knows with one it does not delivers the known ones, a known kind with an unknown label is
+  dropped alone, and an event that is not ids and labels is still refused; the driver's
+  storage, which holds ids and labels only; and the declarations of the three hooks.
 
-The kernel's side is in `packages/workshop-backend/__tests__/`: `admin-agent-kinds.test.ts`
-(the two tables), `admin-agent.test.ts` (`restrictAdminApi()` and a view behind it),
-`admin-agent-lend.test.ts` (the lend, what it records, restricted data, who is lent, the
-insiders of a content request, a spawned chat), `admin-workspace-admission.test.ts` (the
-admission rule, with and after the connection), `issue-report-events.test.ts` (the store's
-events), `provisioning-policy.test.ts` and `user-ambient-accounts.test.ts` (the mode and who
-holds the account).
+The kernel's side is in `packages/workshop-backend/__tests__/`: `admin-agent-kinds.test.ts` (the
+two tables), `admin-agent.test.ts` (`restrictAdminApi()`, an assignment's one call of its two
+methods, and a view behind it), `admin-agent-lend.test.ts` (the lend, what it records,
+`whoami()` naming the owner, a claim applied as the owner and a take-over refused, restricted
+data, who is lent, the insiders of a content request, a spawned chat),
+`admin-workspace-admission.test.ts` (the admission rule, with and after the connection),
+`issue-report-events.test.ts` (the store's events), `issue-reports.test.ts` (the statuses each
+reader gets, and the assignee), `provisioning-policy.test.ts` and
+`user-ambient-accounts.test.ts` (the mode and who holds the account).
 
 End to end, with a scripted model, in `packages/integration-tests/__tests__/`:
 `admin-gatekeeper.test.ts` (who is offered it, the records, admission, the two-person rule,
 removal, a blueprint, a demoted owner), `admin-gatekeeper-actions.test.ts` (the verdicts under
-rules, the restricted-data order, the report session) and `admin-gatekeeper-hooks.test.ts`
-(both hooks into a gadget's stored callback, a spawned chat with and without the binding, the
-hand-off and a forged stub).
+rules, the restricted-data order, the report session and what it reads of a fix, two admins'
+workspaces claiming one report, a take-over an agent never makes) and
+`admin-gatekeeper-hooks.test.ts` (the three hooks into a gadget's stored callback, once for each
+kind of change to a report, a spawned chat with and without the binding, the hand-off and a
+forged stub).
 
 ## Reviewing a change here
 
