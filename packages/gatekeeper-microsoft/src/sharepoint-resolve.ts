@@ -64,10 +64,13 @@ const MISS = [400, 403, 404];
 const OWNED_SITE_SELECT = `${SITE_SELECT},sharepointIds`;
 const OWNED_LIST_SELECT = `${LIST_SELECT},sharepointIds`;
 
-/** The Entra tenant Graph says an object is in, lower-cased, or undefined when it doesn't say. */
-function tenantIdOf(body: unknown): string | undefined {
-  const ids = (body as { sharepointIds?: { tenantId?: unknown } } | null)?.sharepointIds;
-  return typeof ids?.tenantId === "string" ? ids.tenantId.toLowerCase() : undefined;
+/** Where Graph says an object is, as far as it says: its Entra tenant, lower-cased, and its site's host. */
+function placeOf(body: unknown): { tenantId?: string; host?: string } {
+  const ids = (body as { sharepointIds?: { tenantId?: unknown; siteUrl?: unknown } } | null)?.sharepointIds;
+  return {
+    ...(typeof ids?.tenantId === "string" ? { tenantId: ids.tenantId.toLowerCase() } : {}),
+    ...(typeof ids?.siteUrl === "string" && URL.canParse(ids.siteUrl) ? { host: new URL(ids.siteUrl).hostname } : {}),
+  };
 }
 
 /** Asks Graph for one facet of a URL, or null when that facet does not apply. */
@@ -152,9 +155,10 @@ async function fromSitePath(api: GraphApi, url: URL, owned: Owned): Promise<Reso
 
 /**
  * Resolves a URL to the scope it names.
- * @param tenant The connected tenant. A URL on its own SharePoint host is its own. A multi-geo
- * tenant has a host per geography, which no user's token can list, so on any other host what Graph
- * resolves must say it is in this tenant, and whatever doesn't is refused as another organization's.
+ * @param tenant The connected tenant. What Graph resolves is refused as another organization's
+ * when Graph places it in another tenant. Where Graph doesn't say, the tenant's own SharePoint host
+ * stands for it. A multi-geo tenant has a host per geography, which no user's token can list, so on
+ * any other host Graph must say.
  * @param options.selected Whether the grant reaches only the sites granted to the app. Graph then
  * still answers any site's metadata, so a site is checked by opening its library.
  * @throws UnresolvableUrlError for anything that is not a reachable SharePoint object, its
@@ -184,9 +188,14 @@ export function checkSharePointUrl(raw: string): URL {
 async function resolveUrl(api: GraphApi, raw: string, tenant: ConnectedTenant): Promise<ResolvedUrl> {
   const url = checkSharePointUrl(raw);
   // Off the tenant's own host, only Microsoft's word for where an object is makes it this tenant's.
-  const known = parseSharePointHost(url.hostname)!.tenant === tenant.name;
+  // That goes for the host Graph resolved the link to as well as the link's: a link may be kept
+  // alive as a redirect. And no host excuses an object Microsoft places in another tenant.
+  const own = (hostname: string) => parseSharePointHost(hostname)?.tenant === tenant.name;
+  const known = own(url.hostname);
   const owned: Owned = body => {
-    if (!known && tenantIdOf(body) !== tenant.id.toLowerCase()) throw new OtherOrganizationError(url.hostname);
+    const { tenantId, host } = placeOf(body);
+    const refused = tenantId === undefined ? !(known && (host === undefined || own(host))) : tenantId !== tenant.id.toLowerCase();
+    if (refused) throw new OtherOrganizationError(url.hostname);
     return body;
   };
   if (isAllUrl(url)) {

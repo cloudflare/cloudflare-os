@@ -419,6 +419,19 @@ describe("a link on a host other than the root site's, as a multi-geo tenant's o
     expect(failure(await hooks().resolve(id, url))).toMatch(/another organization's SharePoint/);
   });
 
+  it("is refused on the tenant's own host too, when Graph places it in another tenant or on another host without saying", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const moved = "https://contoso-my.sharepoint.com/personal/phillip_contoso_com/Documents/Attachments";
+    folderIn(graph, OTHER_TENANT);
+    expect(failure(await hooks().resolve(id, moved))).toMatch(/another organization's SharePoint \(contoso-my\.sharepoint\.com\)/);
+    folderIn(graph, undefined, "https://fabrikam-my.sharepoint.com/personal/phillip_fabrikam_com");
+    expect(failure(await hooks().resolve(id, moved))).toMatch(/another organization's SharePoint/);
+    // With nothing said either way, the tenant's own host stands for it, as it always has.
+    folderIn(graph);
+    expect(unwrap(await hooks().resolve(id, moved))).toMatchObject({ scope: { kind: "folder", siteId: `contoso-my.sharepoint.com,${siteCollection},${web}` } });
+  });
+
   it("is refused like any link that leads nowhere when Graph resolves nothing", async () => {
     const graph = new FakeGraph().install();
     const id = await seedAccount(graph);
