@@ -12,7 +12,7 @@ const user = (id: number, files: string[], sentAt?: Date): UserItem => ({
 })
 const ready = (items: ChatItem[], pinned: OutputItem[] = []): ChatSnapshot => ({
   status: 'ready', title: undefined, items, pinned, activity: undefined, work: [], agentActive: false, waiting: [],
-  sendError: undefined, actionError: undefined, hasEarlier: false, loadingEarlier: false, historyError: undefined,
+  sendError: undefined, keep: undefined, actionError: undefined, hasEarlier: false, loadingEarlier: false, historyError: undefined,
 })
 
 describe('aside refs', () => {

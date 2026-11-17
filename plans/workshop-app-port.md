@@ -13,7 +13,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 
 1. Accepting a connection request (Set up on the card). **Done.**
 2. Approving an action that creates a resource (`ChatSession.approveAction` TODO). **Done.**
-3. Keeping or discarding changes that can't be kept automatically.
+3. Keeping or discarding changes that can't be kept automatically. **Done.**
 4. Composer slash commands, skills and connection lines.
 5. Inline views and file previews (Office, worktrees).
 6. Sharing.
@@ -32,6 +32,8 @@ agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnrea
 | Setting up an agent has no "report back here" | the chat it reports to isn't a field of the spawner | `reportsToChatId` on `newAgentSpawnerGatekeeper` |
 | Approving a creation can't start from where the agent suggested, so a kind with a creation form always asks, and one without is made where the service puts things | the scaffold's `GatekeeperCreationSpec` has no `configuration` | `configuration` on `GatekeeperCreationSpec` |
 | A creation's card isn't drawn as the file it will make | that needs the live previews, which are cut | none |
+| Keeping changes names a gadget given a connection by `env.NAME`, not the connection's title, unless it is another gadget the chat shows | `listChatConnections` isn't on the scaffold's base | none once main is merged |
+| A chat's changes are kept as it finishes even when another chat has changes to the same gadget (the scaffold left them proposed) | ours brings in what the other kept first, asking only on conflicts | none |
 | Setting up a connection offers every kind of resource, not only connectable ones | the scaffold's `SupportedResource` has no `connectable` | `connectable` on `SupportedResource` |
 | Live Google Docs/Sheets/Slides previews cut | user decision | previews API |
 | Approvals tray cut | user decision; nothing to approve without previews | none |

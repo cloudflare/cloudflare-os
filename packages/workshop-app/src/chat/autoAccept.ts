@@ -4,16 +4,13 @@ type Changes = Extract<AiChatMessage, { type: 'changes' }>
 
 /**
  * Whether a chat's changes can be accepted without anyone asking, as far as the workspace goes:
- * it has some, its agent is not working, and the viewer is the only one working on what they
- * change. Nobody else is in the workspace (`shared`), and no other chat has changes waiting to
- * the same workpieces, which accepting these would leave behind.
+ * it has some, its agent is not working, and nobody else is in the workspace (`shared`), whose work
+ * in progress keeping them could overtake. Another chat with changes waiting to the same gadgets
+ * does not stop it: chats are kept as they finish, and a chat kept after another brings in what
+ * that one kept first (see `ChatSession`).
  */
-export const acceptsAlone = (chat: AiChatMetadata, chats: readonly AiChatMetadata[], shared: boolean) => {
-  const proposed = chat.proposedChangeWorkpieces ?? []
-  if (chat.activeAgent || proposed.length === 0 || shared) return false
-  return !chats.some(({ id, proposedChangeWorkpieces = [] }) =>
-    id !== chat.id && proposedChangeWorkpieces.some((workpiece) => proposed.includes(workpiece)))
-}
+export const acceptsAlone = (chat: AiChatMetadata, shared: boolean) =>
+  !chat.activeAgent && (chat.proposedChangeWorkpieces?.length ?? 0) > 0 && !shared
 
 /**
  * The batches of changes a chat still proposes: those after the merge that opened its epoch
@@ -46,4 +43,39 @@ export const proposesOnlyCode = (messages: readonly AiChatMessage[], epoch: numb
     !batch.addedBindings?.length &&
     !batch.mainlineMerge &&
     (batch.blueprintMerges ?? []).every(({ gadgetId }) => created.has(gadgetId)))
+}
+
+/** What a chat's still-proposed changes would do, as far as the user is asked to keep them. */
+export type ProposedChanges = {
+  /** Gadgets they make. */
+  created: { gadgetId: number; title: string }[]
+  /**
+   * What they give gadgets and agent spawners to reach: the one given it (`gadgetId`), the name its
+   * code reaches it by (`env.NAME`), and what it reaches.
+   */
+  bindings: { gadgetId: number; name: string; target: number }[]
+  /** Gadgets they bring a blueprint's update into. */
+  updates: { gadgetId: number; title: string }[]
+  /** They bring in what has been accepted elsewhere since the chat began. */
+  mainline: boolean
+  /** Files left with conflict markers, by path, which keeping them would keep as they are. */
+  conflicts: string[]
+}
+
+/** What the batches a chat still proposes add up to. `messages` must reach back to its epoch. */
+export const proposedChanges = (messages: readonly AiChatMessage[], epoch: number | undefined): ProposedChanges => {
+  const batches = proposedBatches(messages, epoch)
+  const conflicts = new Set<string>()
+  for (const { blueprintMerges = [], mainlineMerge } of batches) {
+    for (const { conflictPaths } of blueprintMerges) conflictPaths.forEach((path) => conflicts.add(path))
+    for (const { conflictPaths = [] } of mainlineMerge?.gadgets ?? []) conflictPaths.forEach((path) => conflicts.add(path))
+    mainlineMerge?.conflictPaths.forEach((path) => conflicts.add(path))
+  }
+  return {
+    created: batches.flatMap(({ createdGadgets = [] }) => createdGadgets.map(({ gadgetId, title }) => ({ gadgetId, title }))),
+    bindings: batches.flatMap(({ addedBindings = [] }) => addedBindings.map(({ gadgetId, name, target }) => ({ gadgetId, name, target }))),
+    updates: batches.flatMap(({ blueprintMerges = [] }) => blueprintMerges.map(({ gadgetId, title }) => ({ gadgetId, title }))),
+    mainline: batches.some(({ mainlineMerge }) => mainlineMerge !== undefined),
+    conflicts: [...conflicts],
+  }
 }

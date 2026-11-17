@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
@@ -14,8 +15,9 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, type ActionItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
+import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
@@ -48,6 +50,10 @@ export type ChatPaneProps = {
 }
 
 const LIVE_WORK = 'live:work'
+
+// A gadget by the title the chat shows its output under, where it shows one.
+const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
+  items.find((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)?.title
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation }: ChatPaneProps) => {
@@ -210,6 +216,16 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
               </LiveRows.Row>
             ))}
+            {chat.keep && (
+              <LiveRows.Row key="keep">
+                <KeepChangesCard
+                  changes={keepChangeLines(chat.keep, (gadgetId) => outputTitle([...chat.items, ...chat.pinned], gadgetId))}
+                  reason={keepReason(chat.keep)}
+                  onKeep={actions.keepChanges}
+                  onDiscard={() => void actions.discardChanges()}
+                />
+              </LiveRows.Row>
+            )}
             {chat.actionError && <LiveRows.Row key="action-error"><MessageBubble role="error">{chat.actionError}</MessageBubble></LiveRows.Row>}
             {notice && <LiveRows.Row key="notice"><p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p></LiveRows.Row>}
           </LiveRows>

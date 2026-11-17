@@ -22,22 +22,16 @@ const blueprint = (gadgetId: number): Pick<Changes, 'blueprintMerges'> => ({
 
 describe('acceptsAlone', () => {
   it('accepts a chat whose agent has stopped, in a workspace nobody else is in', () => {
-    const shown = chat(0, [1])
-    expect(acceptsAlone(shown, [shown, chat(1, [2])], false)).toBe(true)
+    expect(acceptsAlone(chat(0, [1]), false)).toBe(true)
   })
 
   it('leaves a chat with nothing proposed, or with its agent still working', () => {
-    expect(acceptsAlone(chat(0, []), [], false)).toBe(false)
-    expect(acceptsAlone(chat(0, [1], agent), [], false)).toBe(false)
+    expect(acceptsAlone(chat(0, []), false)).toBe(false)
+    expect(acceptsAlone(chat(0, [1], agent), false)).toBe(false)
   })
 
   it('leaves the changes in a shared workspace', () => {
-    expect(acceptsAlone(chat(0, [1]), [], true)).toBe(false)
-  })
-
-  it('leaves the changes when another chat has changes waiting to the same gadget', () => {
-    const shown = chat(0, [1, 2])
-    expect(acceptsAlone(shown, [shown, chat(1, [2])], false)).toBe(false)
+    expect(acceptsAlone(chat(0, [1]), true)).toBe(false)
   })
 })
 

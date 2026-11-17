@@ -3,6 +3,7 @@ import { FileTextIcon, ImageIcon, WaveformIcon } from '@phosphor-icons/react'
 import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { HookCard } from '@/blocks/HookCard'
+import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { OutputCard } from '@/blocks/OutputCard'
 import { FileListItem } from '@/blocks/FileListItem'
 import { FileView } from '@/blocks/FileView'
@@ -155,6 +156,23 @@ export const CardBlocksPreview = () => {
           <ActionCard {...request} fields={fields} state="pending" restricted incomplete onApprove={after('approved')} onDeny={after('denied')} onAlwaysApprove={after('always approve')} {...of('restricted')} />
           <ActionCard {...request} state="approved" resolution="Approved by Ada Lovelace" {...of('approved')} />
           <ActionCard {...request} state="denied" resolution="Denied by Ada Lovelace" {...of('denied')} />
+        </Column>
+      </Section>
+      <Section title="KeepChangesCard (a chat's changes that couldn't be kept on their own, at the end of the conversation: what they do and why they wait, Keep, and Discard, which asks again; a gadget given a connection, a blueprint's update with conflicts, and code in a workspace others work in too)">
+        <Column>
+          <KeepChangesCard
+            changes={['Makes “Standup notes”', 'Lets “Standup notes” use “Jira · Platform board”']}
+            reason="What a gadget can reach is yours to decide."
+            onKeep={after('kept')}
+            onDiscard={() => void after('discarded')()}
+          />
+          <KeepChangesCard
+            changes={['Brings its blueprint’s update into “Tip Jar”', 'Leaves 2 files with conflicts']}
+            reason="Look over the conflicts before keeping them."
+            onKeep={after('kept')}
+            onDiscard={() => void after('discarded')()}
+          />
+          <KeepChangesCard changes={[]} reason="Others work in this workspace too, so changes wait for you." onKeep={after('kept')} onDiscard={() => void after('discarded')()} />
         </Column>
       </Section>
       <Section title="HookCard (switchable, off, deleted)">
