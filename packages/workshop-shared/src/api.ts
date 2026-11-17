@@ -5428,6 +5428,14 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 /** The most entries one Overseer.getPushReview() call returns. */
 export const PUSH_REVIEW_PAGE_SIZE = 100;
 
+/**
+ * The largest `cursor` Overseer.getPushReview() accepts. Every call lists the review again from
+ * its start, and a few objects can list without end (a directory that names the one below it
+ * twice at every level), so this bounds the entries one call passes over. A review with more
+ * entries cannot be read past it.
+ */
+export const MAX_PUSH_REVIEW_CURSOR = 100_000;
+
 /** A tree entry as a push review names it: what it is (see TreeNode), and its object. */
 export type PushReviewTreeEntry = {
   /** The entry's git mode, in TreeNode's vocabulary; `executable` is a file with mode 100755. */
@@ -5510,21 +5518,33 @@ export type PushReviewEntry =
 export type PushReview = {
   /**
    * The entries, in order: each commit reachable from the pushed heads, parents before
-   * children, followed by its paths, a directory before what is under it; then, on the last
-   * page, the objects no commit or path accounts for.
+   * children, followed by its paths, a directory before what is under it; then the objects no
+   * commit or path accounts for, which come last and span pages as any other entry does.
    */
   entries: PushReviewEntry[];
 
   /**
    * The `cursor` that returns the next page; absent on the last page. It counts entries from
-   * the start, so it holds only while the review lists the same entries. They change when the
-   * push sends other objects (`objectCount` differs from an earlier page's) and when an object
-   * the store lacked arrives, which can turn `object` entries into `path` entries and leave
-   * the count as it was. A reader that holds the last page therefore checks that no entry
-   * came twice and that its `commit` entries, its `path` entries with `sent` and its `object`
-   * entries name exactly `objectCount` distinct objects, and reads the review again from the
-   * start when they do not. The review of a push queued from a workspace that holds restricted
-   * data lists the same entries for as long as the push is pending.
+   * the start, so it holds only while the review lists the same entries, and a `cursor` over
+   * MAX_PUSH_REVIEW_CURSOR is refused. The entries change when the push sends other objects
+   * (`objectCount` differs from an earlier page's) and when an object the store lacked arrives.
+   * An arrival can turn `object` entries into `path` entries and leave the count as it was. A
+   * parent's directory that arrives can add deletions under the directory the push has there,
+   * and can remove a `path` entry that had an `unknown` parent, when that parent turns out to
+   * have the same entry.
+   *
+   * A reader that holds the last page therefore checks that no entry came twice and that its
+   * `commit` entries, its `path` entries with `sent` and its `object` entries name exactly
+   * `objectCount` distinct objects, and reads the review again from the start when they do
+   * not. That shows every object the push sends is in the pages read. It does not show a
+   * `path` entry without `sent` that fell between two pages because an entry before it was
+   * removed. Only an entry with an `unknown` parent is ever removed, so pages that hold none
+   * miss nothing, and a reader that must rule it out for pages that hold one reads them again
+   * and compares.
+   *
+   * The review of a push queued from a workspace that holds restricted data has no `unknown`
+   * parent, so it never loses an entry while the push is pending. It can gain deletions, under
+   * an empty directory the push sends where a parent's directory was not in the store.
    */
   next?: number;
 
@@ -6032,9 +6052,11 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Read what a pending push will send: the action `actionId` must be pending and name pushed
-   * commits (ActionDescription.pushedCommits), else the call throws. The answer is built from
-   * the objects the workspace marked for the push when it was queued, which are exactly what the
-   * gatekeeper sends when the action is approved, not from a diff: see PushReviewEntry.
+   * commits (ActionDescription.pushedCommits), else the call throws. It throws as well when the
+   * action's connection was removed from the workspace: that push can never be applied, and
+   * nothing is marked for it any more. The answer is built from the objects the workspace
+   * marked for the push when it was queued, which are exactly what the gatekeeper sends when
+   * the action is approved, not from a diff: see PushReviewEntry.
    *
    * At most PUSH_REVIEW_PAGE_SIZE entries per call, and fewer once what they hold and what
    * was read to describe them passes READ_FILES_RESPONSE_BUDGET (the first entry of a page is

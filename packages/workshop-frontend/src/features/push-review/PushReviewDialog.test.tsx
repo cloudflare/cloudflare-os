@@ -340,6 +340,27 @@ describe('PushReviewDialog content', () => {
     expect(pane().querySelector('h3')?.textContent).toBe('Deleted')
   })
 
+  it('shows the file a directory replaces as what is removed', async () => {
+    const overseer = await open({
+      page: serve([
+        commit('a', { parents: [oid('p')] }), root('a', [entry('dir', 'root-p')]),
+        path('a', 'config', { entry: entry('dir', 'config-dir'), parents: [entry('file', 'old-config')], sent: dir() }),
+        added('a', 'config/new.txt'),
+      ]),
+      files: {
+        [fileKey('p', 'config')]: { kind: 'text', text: 'old config\n' },
+        [fileKey('a', 'config/new.txt')]: { kind: 'text', text: 'new\n' },
+      },
+    })
+    // The directory has a row of its own: the file it replaces has no other.
+    await press(row('config'))
+    expect(pane().textContent).toContain('Replaces a file.')
+    expect(readPaths(overseer)).toContain(`${oid('p')}:config`)
+    expect(editor()).toMatchObject({
+      filename: 'config', original: 'old config\n', text: '', readOnly: true, showInvisibles: true, wrapLines: true,
+    })
+  })
+
   it('offers each parent of a merge, and compares with the one chosen in a fresh editor', async () => {
     await open({
       page: serve([

@@ -11,6 +11,7 @@ import {
   type GitOid,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
+  MAX_PUSH_REVIEW_CURSOR,
   PUSH_REVIEW_PAGE_SIZE,
   READ_FILES_RESPONSE_BUDGET,
   type PushReviewEntry,
@@ -2596,6 +2597,31 @@ describe("assertPushReadable", () => {
       expect(t.cache.readPushReview(ACTION, [head])).toStrictEqual(review);
     });
   }
+  // The one way an accepted push's review changes while the push waits: an empty directory
+  // has no entry to compare, so nothing shows that the parent's directory there is not held.
+  it("accepts an empty directory over a parent's directory that is not in the store, and " +
+     "lists what that deletes once it is", async () => {
+    let t = await setupReview();
+    let docs = encodeGitTree([fileAt("old.md", t.readme), fileAt("plan.md", t.readme)]);
+    let base = await remoteCommit(t,
+        [fileAt("README.md", t.readme), dirAt("docs", gitObjectOid("tree", docs))], [], "docs");
+    let head = await snapshot(t,
+        [fileAt("README.md", t.readme), dirAt("docs", EMPTY_TREE_OID)], [base.commit]);
+    expect(judge(t, head)).toBeUndefined();
+    let before = readReview(t, [head]);
+    expect(listed(before.entries)).toStrictEqual([" dir", "docs dir"]);
+    expect(JSON.stringify(before)).not.toContain('"unknown"');
+
+    await t.cache.putFromGatekeeper(G1, "tree", docs);
+    let after = readReview(t, [head]);
+    expect(after.entries).toStrictEqual([
+      ...before.entries,
+      pathRow(head, "docs/old.md", undefined, [aFile(t.readme)]),
+      pathRow(head, "docs/plan.md", undefined, [aFile(t.readme)]),
+    ]);
+    expect(refusalOf(t, [head])).toBeUndefined();
+  });
+
   // `count` file entries, over one blob or over one each.
   const spread = (count: number, oid: (index: number) => GitOid) => Array.from(
       { length: count }, (_, index) => fileAt(`f${String(index).padStart(3, "0")}`, oid(index)));
@@ -2792,6 +2818,46 @@ describe("assertPushReadable", () => {
     let reads = countReads(t);
     expect(refusalOf(t, [head])).toBe(PATHS_REASON);
     expect(reads.length).toBeLessThanOrEqual(3 * MAX_RESTRICTED_PUSH_PATHS);
+  });
+
+  it("refuses a cursor past the ceiling before it walks such a tree", async () => {
+    let t = await setupReview();
+    let tree = await treeBomb(fileAt("x", await localBlob(t, "x\n")), local(t));
+    let head = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(() => t.cache.readPushReview(ACTION, [head], MAX_PUSH_REVIEW_CURSOR + 1))
+        .toThrow(`A push review cannot be read past ${MAX_PUSH_REVIEW_CURSOR} entries.`);
+    expect(reads).toStrictEqual([]);
+    expect(t.cache.readPushReview(ACTION, [head], PUSH_REVIEW_PAGE_SIZE).entries)
+        .toHaveLength(PUSH_REVIEW_PAGE_SIZE);
+  });
+
+  it("reads a file once for its size and once for its text, however many paths name it",
+     async () => {
+    let t = await setupReview();
+    let blob = await localBlob(t, "same\n");
+    // The root, README.md's deletion and every path of the file: the most paths a push may change.
+    let head = await snapshot(t, spread(MAX_RESTRICTED_PUSH_PATHS - 2, () => blob), [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBeUndefined();
+    expect(reads.filter(read => read === blob)).toHaveLength(2);
+  });
+
+  it("reads a parent once, however often a commit names it", async () => {
+    let t = await setupReview();
+    let head = await localCommit(t, t.baseTree, Array<GitOid>(1000).fill(t.base));
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBeUndefined();
+    expect(reads.filter(read => read === t.base)).toHaveLength(1);
+    reads.length = 0;
+    expect(readReview(t, [head]).entries).toHaveLength(1);
+    expect(reads.filter(read => read === t.base)).toHaveLength(1);
   });
 
   it("reads no file past the files bound", async () => {

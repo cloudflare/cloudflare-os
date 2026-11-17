@@ -867,9 +867,12 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    so it is refused wherever they fail a rule, until the waiting push has been applied. A
    waiting push too large for the Workshop to load by itself is not loaded whole unasked: the
    approver loads it page by page and its files on request, and Approve is enabled once every
-   page and every file the review shows as text has loaded. The review is the Workshop's
-   surface, as the restricted notice is: `approveAction()` called through the API approves a
-   push whether or not anyone opened its review.
+   page and every file the review shows as text has loaded. `getPushReview()` reads no further
+   than `MAX_PUSH_REVIEW_CURSOR` entries, so the Workshop never enables Approve for a waiting
+   push that lists more. It refuses a push whose connection was removed from the workspace: that
+   push can never be applied. The review is the Workshop's surface, as the restricted notice
+   is: `approveAction()` called through the API approves a push whether or not anyone opened
+   its review.
 
    Verification is held to what each collaborator opened, because `ensureObserver` can never
    verify beyond it: a `use` collaborator can't be covered for a gatekeeper their gadget doesn't

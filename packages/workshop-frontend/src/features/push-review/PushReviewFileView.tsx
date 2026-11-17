@@ -58,8 +58,9 @@ const notShown = (file: Exclude<CommitFile, { kind: 'text' }>): ReactNode =>
 /**
  * One path of a commit: what it is, in plain statements, and its content when that is text. A
  * file the push sends shows as a diff against a parent's version, or whole when there is none; a
- * deleted file shows what is removed. What the push sends is the review's own read (`state`);
- * the parent's side, and a file the push does not send, are read here when shown.
+ * deleted file shows what is removed, and so does a directory where a parent has a file. What
+ * the push sends is the review's own read (`state`); the parent's side, and a file the push does
+ * not send, are read here when shown.
  */
 export const PushReviewFileView = ({ overseer, commit, row, beneath, state, onRequest, onRetry }: {
   overseer: RpcStub<Overseer>
@@ -76,14 +77,15 @@ export const PushReviewFileView = ({ overseer, commit, row, beneath, state, onRe
   const [retryToken, setRetryToken] = useState(0)
   const retryRead = () => setRetryToken(token => token + 1)
 
-  const deleted = !row.entry
+  // A deletion, or a directory where a parent has a file: the one row that file has.
+  const removes = !row.entry || row.entry.kind === 'dir'
   const sentText = typeof state === 'object' && 'text' in state ? state.text : undefined
   const paths = [row.path]
 
   // The parent's version is read once there is something to set it against.
   const chosen = parentIndex === undefined ? undefined : row.parents[parentIndex]
   const hasFile = chosen?.kind === 'file' || chosen?.kind === 'executable' || chosen?.kind === 'symlink'
-  const comparing = hasFile && (deleted || sentText !== undefined)
+  const comparing = hasFile && (removes || sentText !== undefined)
   const parentRead = useFilesAtCommit(
     overseer, comparing ? commit.parents[parentIndex!] : undefined, paths, retryToken)
   const earlier = comparing ? parentRead.files.get(row.path) : undefined
@@ -110,7 +112,7 @@ export const PushReviewFileView = ({ overseer, commit, row, beneath, state, onRe
   ) : null
 
   let content: ReactNode = null
-  if (deleted) {
+  if (removes) {
     if (earlierLoading) {
       content = <Loader aria-label="Loading the removed file" />
     } else if (earlierFailed) {
@@ -160,7 +162,7 @@ export const PushReviewFileView = ({ overseer, commit, row, beneath, state, onRe
     )
   }
 
-  const merge = commit.parents.length > 1 && (deleted ? comparableParent(row) !== undefined : row.entry?.kind !== 'dir')
+  const merge = commit.parents.length > 1 && (!removes || comparableParent(row) !== undefined)
   return (
     <div className="flex min-h-full flex-col gap-3 p-4">
       <div>
