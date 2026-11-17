@@ -487,8 +487,8 @@ const JSON_SCALAR_RE = /[-+.0-9A-Za-z]/;
  * result is, each of its chunks is decoded as it comes and kept no longer, and cancelling the
  * result cancels `json`.
  *
- * The answer is one object whose members are strings and numbers, around `data` in any order.
- * `data` is base64 in either alphabet, padded or not, and any of its characters may be written
+ * The answer is one object whose members are strings, numbers, `true`, `false` or `null`, around
+ * `data` in any order. `data` is base64 in either alphabet, padded or not, and any of its characters may be written
  * as a JSON escape, as `=` is by some serializers. Any other answer errors the stream, with no
  * text of the answer in the error. So does a count of bytes that is not `size`: as soon as there
  * are more, and at the string's end when there are fewer.
