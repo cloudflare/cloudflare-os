@@ -15,6 +15,8 @@ type Toast = { title: string; variant: string; actions?: { children: string; onC
 const testState = vi.hoisted(() => ({
   authenticatedApi: {} as Record<string, unknown>,
   toasts: [] as unknown[],
+  // What the configurator's choice waits on, when a test holds it back.
+  collecting: undefined as Promise<void> | undefined,
 }))
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
@@ -37,7 +39,10 @@ vi.mock('../../ResourceConfiguratorHost', async () => {
   const ResourceConfiguratorHost = ({ frame, onCollectResourceUrlChange, onSelectionReadyChange }: Props) => {
     useEffect(() => {
       if (!frame) return
-      onCollectResourceUrlChange(async () => `folder of ${frame.iframeHtml}`)
+      onCollectResourceUrlChange(async () => {
+        await testState.collecting
+        return `folder of ${frame.iframeHtml}`
+      })
       onSelectionReadyChange(true)
     }, [frame, onCollectResourceUrlChange, onSelectionReadyChange])
     return null
@@ -120,6 +125,7 @@ afterEach(() => {
   container.remove()
   localStorage.clear()
   testState.toasts = []
+  testState.collecting = undefined
   exports.length = 0
   vi.clearAllMocks()
   vi.restoreAllMocks()
@@ -187,7 +193,15 @@ describe('GadgetSaveDialog saving a new file', () => {
     await typeName('Plan')
     const settings = () => document.querySelector('input')!.closest('[inert]')
 
+    // From the click, before the configurator has even answered.
+    let collected!: () => void
+    testState.collecting = new Promise(resolve => { collected = resolve })
     await act(async () => button('Save').click())
+    expect(saveFile).not.toHaveBeenCalled()
+    expect(settings()).not.toBeNull()
+    testState.collecting = undefined
+    await act(async () => collected())
+    expect(saveFile).toHaveBeenCalledOnce()
     expect(settings()).not.toBeNull()
 
     await act(async () => fail(new Error('That folder is read-only.')))

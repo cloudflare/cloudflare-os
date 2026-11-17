@@ -33,7 +33,7 @@ type Configurator = { accountId: number } & ({ frame: GatekeeperUiFrame } | { er
  * to connect one. For a type with a creation configurator (see
  * SupportedResource.creationConfigurator), it also hosts that account's configurator, started
  * for `purpose`, whose choice `onSubmit` receives as the configuration. `onSubmit` reports its
- * own failures; the dialog stays busy until it settles.
+ * own failures; with a configurator, the dialog stays busy until it settles.
  */
 export const CreationAccountDialog = ({
   title, target, purpose, submitLabel, submitDisabled = false, children, onSubmit, onCancel,
@@ -187,8 +187,8 @@ export const CreationAccountDialog = ({
       <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0 !w-[min(760px,calc(100vw-32px))]" size="lg">
         <Dialog.Title className="shrink-0 px-6 pt-6 text-lg font-semibold">{title}</Dialog.Title>
 
-        {/* What is being sent was read when it was submitted: nothing here changes it now. */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4" inert={sending}>
+        {/* What is sent was read when it was submitted: nothing here changes it from then on. */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4" inert={submitting || sending}>
           {!target || !ready ? (
             <div className="flex justify-center py-6"><Loader size="base" /></div>
           ) : (
