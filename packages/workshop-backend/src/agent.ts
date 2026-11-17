@@ -4,7 +4,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
-import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
+import { AgentCatalog } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
 import {
@@ -597,28 +597,16 @@ export interface AgentHooks {
    */
   getChatModelData(chatId: number, sequence: number): StoredAssistantMessage | undefined;
 
-  /**
-   * Record an observation in the Overseer audit log on behalf of a built-in agent tool
-   * (i.e. one that isn't backed by a gatekeeper, like `webFetch`). Used to track which
-   * external influencers may have tainted the agent's session.
-   */
-  recordAgentObservation(
-      chatId: number,
-      resourceTitle: string,
-      resourceUrl: string | undefined,
-      description: ObservationDescription): Promise<void>;
-
   /** Returns the bytes of a committed attachment owned by this chat for inclusion in model input. */
   getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array>;
 
   /**
-   * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
-   * to Workers AI, and the hosts it may reach in a workspace that has observed restricted data.
-   * Where that workspace refuses `url` but the admin lets users approve it, records a
-   * "webFetchRequest" instead, and the turn should end. Throws if the workspace may reach nothing.
+   * Returns the resources `webFetch` needs: Workers AI for document-to-Markdown conversion, and a
+   * fetcher that applies the workspace's fetch policy to each request, recording each one it
+   * allows. Where the policy refuses a URL but the admin lets users approve it, the fetcher
+   * records a "webFetchRequest" instead (see consumeCapturedDecisionRequests).
    */
-  authorizeWebFetch(chatId: number, url: string)
-      : Promise<{env: WebFetchEnv} | {approvalMessage: string}>;
+  getWebFetchEnv(chatId: number): WebFetchEnv;
 
   /**
    * Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
@@ -3096,11 +3084,10 @@ async function runAgentPass(
   let toolErrorText = (error: unknown) =>
       error instanceof Error ? error.message : String(error);
 
-  // Set to true once the agent has successfully created a connection or web fetch request this
-  // turn. Used by finishTurn to end the turn (the agent must wait for the user to decide). A
-  // *rejected* requestConnection call leaves this false so the agent can fix the request and retry
-  // without the turn ending (which would strand it, since there'd be no card to decide and thus
-  // no resume).
+  // Latched by finishTurn once a step has captured a connection or web fetch request. Used to end
+  // the turn (the agent must wait for the user to decide). A *rejected* requestConnection call
+  // captures nothing, so the agent can fix the request and retry without the turn ending (which
+  // would strand it, since there'd be no card to decide and thus no resume).
   let decisionRequested = false;
 
   // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
@@ -3714,13 +3701,12 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {url, raw}) => {
         try {
-          let authorized = await hooks.authorizeWebFetch(chatId, url);
-          if ("approvalMessage" in authorized) {
-            decisionRequested = true;
-            return toolResult(authorized.approvalMessage,
-                {output: authorized.approvalMessage} as Partial<AiToolCall>);
+          let result = await webFetchImpl(hooks.getWebFetchEnv(chatId), {url, raw});
+          // (The request it captured ends the turn; see finishTurn.)
+          if ("approvalMessage" in result) {
+            return toolResult(result.approvalMessage,
+                {output: result.approvalMessage} as Partial<AiToolCall>);
           }
-          let result = await webFetchImpl(authorized.env, {url, raw});
           // Cut the body, not the formatted result, so the frontmatter's `truncated` stays true
           // to the text and the recorded output is what the model saw. The header counts against
           // the cap too, so the formatted whole fits. Don't end on half of a surrogate pair: a
@@ -3732,21 +3718,6 @@ async function runAgentPass(
             if (last >= 0xd800 && last <= 0xdbff) --end;
             result = {...result, body: result.body.slice(0, end), truncated: true};
           }
-
-          let host = new URL(result.finalUrl).host;
-          await hooks.recordAgentObservation(
-              chatId,
-              `Web fetch: ${host}`,
-              result.finalUrl,
-              {
-                title: `Fetched ${host}`,
-                description:
-                    `GET \`${result.finalUrl}\`\n\n` +
-                    `Status: ${result.status}\n` +
-                    `Content-Type: \`${result.contentType || "(unspecified)"}\`\n` +
-                    `Body: ${result.body.length} chars` +
-                    (result.truncated ? ", truncated" : ""),
-              });
 
           let formatted = formatWebFetchResult(result);
           return toolResult(formatted, {output: formatted} as Partial<AiToolCall>);
@@ -4166,10 +4137,9 @@ async function runAgentPass(
           }
 
           let result = await hooks.requestConnection(chatId, input);
-          // Only end the turn if a request was actually created; a rejected request must let the
-          // agent retry within the same turn (see the decisionRequested flag / finishTurn).
+          // A created request is captured, which ends the turn (see finishTurn); a rejected one
+          // captures nothing, so the agent can retry within the same turn.
           if (result.requested) {
-            decisionRequested = true;
             // The name is claimed in the chat's scope from request time (released only by
             // denial), so nothing else in this step can take it.
             claimedNames.add(input.bindingName);
@@ -4253,10 +4223,11 @@ async function runAgentPass(
   // with that step's request.
   let nextRequestFits = false;
 
-  // pi 0.87 calls finishTurn before turn_end. Capture actions there so the stop decision can
-  // see them; the awaited turn_end barrier then persists this same snapshot before another
-  // model request is allowed to start.
+  // pi 0.87 calls finishTurn before turn_end. Capture actions and decision requests there so the
+  // stop decision can see them; the awaited turn_end barrier then persists this same snapshot
+  // before another model request is allowed to start.
   let capturedActionsForStep: ReturnType<AgentHooks["consumeCapturedActions"]>;
+  let decisionRequestsForStep: AiChatMessageBody[] = [];
 
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {
@@ -4415,9 +4386,8 @@ async function runAgentPass(
 
         // Append any connection and web fetch requests the agent made this step, after the
         // assistant message that contains the tool call (so ordering reads correctly).
-        for (let cr of hooks.consumeCapturedDecisionRequests(chatId)) {
-          msgs.push(cr);
-        }
+        msgs.push(...decisionRequestsForStep);
+        decisionRequestsForStep = [];
 
         // The barrier itself: one transaction persists the step's messages and its buffered
         // effects -- rows, the step's single "changes" message, retirement, registry stamps --
@@ -4588,6 +4558,8 @@ async function runAgentPass(
         text => ({role: "user" as const, content: text, timestamp: Date.now()})),
     maxTokens: maxOutputTokens,
     finishTurn: ({message, toolResults}) => {
+      decisionRequestsForStep = hooks.consumeCapturedDecisionRequests(chatId);
+      if (decisionRequestsForStep.length > 0) decisionRequested = true;
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
@@ -4603,11 +4575,9 @@ async function runAgentPass(
           // Cancelled during tool execution: turn_end will persist the completed turn before
           // this decision ends the loop; don't start another (doomed) model request.
           abortSignal.aborted ||
-          // End the turn once the agent has successfully requested a connection or a web fetch:
-          // it must wait for the user to respond, not keep reasoning in the meantime. (Approval
-          // resumes it on a fresh turn; deny just leaves the turn ended.) A rejected
-          // requestConnection (e.g. unresolvable resource) leaves this false so the agent can fix
-          // the request and retry in the same turn.
+          // End the turn once the agent has requested a connection or a web fetch, from a tool
+          // or from its code: it must wait for the user to respond, not keep reasoning in the
+          // meantime. (Approval resumes it on a fresh turn; deny just leaves the turn ended.)
           decisionRequested ||
           // Wait for approval before continuing against state that may not reflect the action.
           awaitingActionDecision) {

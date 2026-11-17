@@ -23,6 +23,7 @@ import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutp
 import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
+import { FetchLoopback } from "./fetch-loopback";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
@@ -80,6 +81,9 @@ export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelecti
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
     AgentSelfLoopback };
+
+// Re-export the loopback that applies the workspace's fetch policy.
+export { FetchLoopback };
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };

@@ -60,7 +60,7 @@ export type AdminConfig = {
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
   /**
    * The hosts `webFetch` may reach without asking in a workspace that has observed restricted data
-   * (see Overseer.authorizeWebFetch), as lowercase ASCII host names. A host
+   * (see OverseerImpl.authorizeFetch), as lowercase ASCII host names. A host
    * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
    * analytics and caches, and anything it fetches on a request's behalf.
    */
