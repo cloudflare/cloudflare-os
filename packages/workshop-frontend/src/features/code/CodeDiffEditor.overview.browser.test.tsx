@@ -126,6 +126,28 @@ describe.each(['stacked', 'split'] as const)('the overview strip (%s)', layout =
     await vi.waitFor(() => expect(inView(changedLine('const appended = true'))).toBe(true))
   })
 
+  it('reaches each of two changes whose marks overlap near the end of a long file', async () => {
+    // Both marks fall in the strip's last 2px; the append's is drawn on top.
+    const original = lines(10_000)
+    const modified = [
+      ...original.with(9967, 'const line9968 = 9968 + changed'),
+      'const appended = true',
+    ]
+    mount(layout, original.join('\n'), modified.join('\n'))
+    await vi.waitFor(() => expect(marks('add')).toHaveLength(1))
+
+    await userEvent.click(marks('add')[0])
+    await vi.waitFor(() =>
+      expect(inView(changedLine('const line9968 = 9968 + changed'))).toBe(true))
+  })
+
+  it('passes wheel scrolling over the strip to the editor', async () => {
+    mount(layout, ORIGINAL.join('\n'), MODIFIED.join('\n'))
+    await vi.waitFor(() => expect(strip().hidden).toBe(false))
+    await userEvent.wheel(strip(), { delta: { y: 200 } })
+    await vi.waitFor(() => expect(chatScroller().scrollTop).toBeGreaterThan(0))
+  })
+
   it('stays clear of the Find panel', async () => {
     const original = lines(400)
     mount(layout, original.join('\n'), original.with(379, 'const line380 = 380 + changed').join('\n'))
@@ -165,4 +187,29 @@ it('hides the strip when the whole file fits', async () => {
   mount('stacked', lines(5).join('\n'), [...lines(4), 'changed'].join('\n'))
   await vi.waitFor(() => expect(host!.querySelector('.gadgets-diff-line-add')).not.toBeNull())
   expect(strip().hidden).toBe(true)
+})
+
+it('lands on a change when wrapped lines make offscreen heights estimates', async () => {
+  // Phone widths wrap the chat side, so heights below the viewport are guesses until measured.
+  const original = Array.from({ length: 1_000 }, (_, i) =>
+    i % 2 ? `const long${i + 1} = '${'wrapped text '.repeat(30)}'` : `const short${i + 1} = 1`)
+  const modified = original.with(749, 'const line750 = 750 + changed')
+  window.localStorage.setItem('gadgets:workshop:diffLayout', 'stacked')
+  host = document.createElement('div')
+  host.style.width = '390px'
+  document.body.append(host)
+  root = createRoot(host)
+  act(() => root!.render(
+    <ThemeProvider>
+      <CodeDiffEditor
+        filename="file.ts" original={original.join('\n')} text={modified.join('\n')} height={500}
+      />
+    </ThemeProvider>,
+  ))
+  await vi.waitFor(() => expect(host!.querySelector('.cm-lineWrapping')).not.toBeNull())
+  await vi.waitFor(() => expect(marks('modified').length + marks('add').length).toBeGreaterThan(0))
+
+  await userEvent.click([...marks('modified'), ...marks('add')][0])
+  await vi.waitFor(() =>
+    expect(inView(changedLine('const line750 = 750 + changed'))).toBe(true))
 })

@@ -8,12 +8,23 @@ import type { Extension } from '@codemirror/state'
 // marks scrolls to the spot pressed.
 //
 // Marks are placed from the editor's own height map rather than line numbers, so block widgets
-// (deletion zones, split-layout blank zones) take the space they take on screen.
+// (deletion zones, split-layout blank zones) take the space they take on screen. Jumps, though,
+// go by document position and re-measure: offscreen heights are estimates (wrapped lines at phone
+// widths) until CodeMirror draws them.
 
 export type OverviewKind = 'add' | 'modified' | 'delete'
 
-/** A span to mark, in document-relative px (the coordinates of `EditorView.lineBlockAt`). */
-export type OverviewSegment = { top: number; bottom: number; kind: OverviewKind }
+/**
+ * A span to mark: `top`/`bottom` in document-relative px (the coordinates of
+ * `EditorView.lineBlockAt`) for drawing, `from`/`to` the document range to jump to.
+ */
+export type OverviewSegment = {
+  top: number
+  bottom: number
+  from: number
+  to: number
+  kind: OverviewKind
+}
 
 type Measurement = {
   segments: OverviewSegment[]
@@ -42,8 +53,8 @@ export function diffOverview(
 
 class DiffOverview implements PluginValue {
   private readonly dom: HTMLElement
-  /** Each mark's change, in scroll-space px. */
-  private readonly markSpans = new WeakMap<Element, { top: number; bottom: number }>()
+  /** Each mark's document range. */
+  private readonly markRanges = new WeakMap<Element, { from: number; to: number }>()
   // Opening a panel (Find) shrinks the scroller without a geometry or height change in any
   // ViewUpdate, so watch its size directly.
   private readonly resizeObserver = new ResizeObserver(() => this.scheduleMeasure())
@@ -59,6 +70,7 @@ class DiffOverview implements PluginValue {
     // A pointer shortcut duplicating the scrollbar; keyboard users scroll the editor itself.
     this.dom.setAttribute('aria-hidden', 'true')
     this.dom.addEventListener('mousedown', this.onMouseDown)
+    this.dom.addEventListener('wheel', this.onWheel, { passive: false })
     view.dom.append(this.dom)
     this.resizeObserver.observe(view.scrollDOM)
     this.scheduleMeasure()
@@ -115,7 +127,7 @@ class DiffOverview implements PluginValue {
       mark.style.top = `min(${percent(top)}, calc(100% - ${MIN_MARK_PX}px))`
       mark.style.height = percent(bottom - top)
       mark.style.minHeight = `${MIN_MARK_PX}px`
-      this.markSpans.set(mark, { top, bottom })
+      this.markRanges.set(mark, { from: segment.from, to: segment.to })
       return mark
     }))
   }
@@ -124,20 +136,66 @@ class DiffOverview implements PluginValue {
     if (event.button !== 0) return
     // Keep the editor's focus and selection where they are.
     event.preventDefault()
-    const scroller = this.view.scrollDOM
-    // A mark can be drawn taller than its change (the min-height), so the press point within it
-    // doesn't map back onto the change. Go to the change itself: centered when it fits, else
-    // its first line at the top.
-    const span = event.target instanceof Element ? this.markSpans.get(event.target) : undefined
-    if (span) {
-      scroller.scrollTop =
-        span.top - Math.max(0, (scroller.clientHeight - (span.bottom - span.top)) / 2)
+    // A mark can be drawn taller than its change (the min-height), so the press point doesn't
+    // map back onto a change, and nearby changes' marks overlap. Go to every change under the
+    // pointer together.
+    let from = Infinity
+    let to = -Infinity
+    for (const element of this.view.root.elementsFromPoint(event.clientX, event.clientY)) {
+      const range = this.markRanges.get(element)
+      if (range) {
+        from = Math.min(from, range.from)
+        to = Math.max(to, range.to)
+      }
+    }
+    if (from <= to) {
+      this.jumpTo(from, to)
       return
     }
+    const scroller = this.view.scrollDOM
     const rect = this.dom.getBoundingClientRect()
     if (rect.height === 0) return
     const fraction = (event.clientY - rect.top) / rect.height
     scroller.scrollTop = fraction * scroller.scrollHeight - scroller.clientHeight / 2
+  }
+
+  /**
+   * Scrolls the document range [from, to] into view: centered when it fits, else its start at the
+   * top. Each pass scrolls to the target as currently measured; once CodeMirror has drawn and
+   * measured the lines there, the next pass corrects for estimates that were off, until it
+   * settles. (Not `EditorView.scrollIntoView`: from far away in a wrapped document, the measure
+   * pass after it re-anchors on the old scroll position and throws the jump back.)
+   */
+  private jumpTo(from: number, to: number, pass = 0) {
+    this.view.requestMeasure({
+      read: view => {
+        const scroller = view.scrollDOM
+        const docOffset =
+          view.documentTop - scroller.getBoundingClientRect().top + scroller.scrollTop
+        // Line blocks include their block widgets, so a zone's own space is covered too.
+        const top = docOffset + view.lineBlockAt(from).top
+        const bottom = docOffset + view.lineBlockAt(to).bottom
+        return top - Math.max(0, (scroller.clientHeight - (bottom - top)) / 2)
+      },
+      write: target => {
+        const scroller = this.view.scrollDOM
+        const before = scroller.scrollTop
+        scroller.scrollTop = target
+        if (Math.abs(scroller.scrollTop - before) > 1 && pass < 4) this.jumpTo(from, to, pass + 1)
+      },
+    })
+  }
+
+  // The strip overlays the scroller rather than sitting inside it, so wheel gestures over it
+  // would otherwise scroll nothing.
+  private readonly onWheel = (event: WheelEvent) => {
+    if (event.ctrlKey) return // pinch-zoom
+    event.preventDefault()
+    const scroller = this.view.scrollDOM
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? this.view.defaultLineHeight
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientHeight
+      : 1
+    scroller.scrollBy({ left: event.deltaX * unit, top: event.deltaY * unit })
   }
 }
 
@@ -149,6 +207,8 @@ export function mergeSegments(segments: readonly OverviewSegment[]): OverviewSeg
     const last = merged.at(-1)
     if (last && last.kind === segment.kind && segment.top <= last.bottom + 0.5) {
       last.bottom = Math.max(last.bottom, segment.bottom)
+      last.from = Math.min(last.from, segment.from)
+      last.to = Math.max(last.to, segment.to)
     } else {
       merged.push({ ...segment })
     }

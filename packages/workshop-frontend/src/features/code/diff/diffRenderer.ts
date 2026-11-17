@@ -143,7 +143,7 @@ function overviewSegments(view: EditorView, render: DiffRenderState): OverviewSe
     const kind = marker === ADD_MARKER ? 'add' : marker === MODIFIED_MARKER ? 'modified' : null
     if (kind === null) return
     for (const block of subBlocks(view.lineBlockAt(from))) {
-      if (block.type === BlockType.Text) segments.push({ top: block.top, bottom: block.bottom, kind })
+      if (block.type === BlockType.Text) segments.push({ ...blockSpan(block), kind })
     }
   })
   // Zones are block widgets inside their anchor line's block. Read each widget off the block
@@ -157,10 +157,14 @@ function overviewSegments(view: EditorView, render: DiffRenderState): OverviewSe
       const kind = zoneOverviewKind(block.widget)
       if (kind === null || seenTops.has(block.top)) continue
       seenTops.add(block.top)
-      segments.push({ top: block.top, bottom: block.bottom, kind })
+      segments.push({ ...blockSpan(block), kind })
     }
   }
   return segments
+}
+
+function blockSpan({ top, bottom, from, to }: BlockInfo) {
+  return { top, bottom, from, to }
 }
 
 function subBlocks(block: BlockInfo): readonly BlockInfo[] {
