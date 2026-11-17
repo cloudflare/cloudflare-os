@@ -18,7 +18,8 @@ import type {
 } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
-import type { GoogleSpreadsheetSession } from "../src/sheets-types";
+import type { GoogleSpreadsheetRenderingReads, SpreadsheetDrawing } from "../src/sheets-rendering-types";
+import type { GoogleSpreadsheetSession, SpreadsheetPendingChanges } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
 import GoogleWorker, {
@@ -1036,6 +1037,30 @@ export class TestHooks extends DurableObject<Env> {
       outcome = { error: error instanceof Error ? error.message : String(error) };
     }
     return { ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations };
+  }
+
+  /**
+   * What a Sheets preview reads, through one fresh session as it reads it: a sheet's pending
+   * changes, then drawings of `ranges`. Reports the titles of what the session observed.
+   */
+  async previewSheets(facetName: string, sheet: string, ranges: string[]): Promise<{
+    changes: SpreadsheetPendingChanges; drawings: SpreadsheetDrawing[]; observed: string[];
+  }> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#sheets(facetName).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as unknown as GoogleSpreadsheetSession & GoogleSpreadsheetRenderingReads & Disposable;
+    let changes = await session.getPendingChanges(sheet);
+    let drawings: SpreadsheetDrawing[] = [];
+    for (let range of ranges) drawings.push(await session.readDrawing(range));
+    return { changes, drawings, observed: queue.reports.map(({ title }) => title) };
+  }
+
+  /** The Sheets gatekeeper's description of its resource, and the preview it offers of it. */
+  async sheetsPreview(facetName: string): Promise<{ description: ResourceDescription; files: UiFile[] }> {
+    let gatekeeper = this.#sheets(facetName);
+    return { description: await gatekeeper.describe(), files: await gatekeeper.getPreviewUi() };
   }
 
   /** Applies a Sheets change. `entered` is called once the apply has run up to its first wait. */

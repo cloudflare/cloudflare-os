@@ -34,9 +34,14 @@ export const SLIDES_TYPES_MODULE_PREFIX =
 /** Module-only prefix of the Google Sheets declaration. */
 export const SHEETS_TYPES_MODULE_PREFIX =
   "import type {\n" +
-  "  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat,\n" +
+  "  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat, SpreadsheetSheetInfo,\n" +
   '} from "./sheets-read-types";\n' +
   'export type * from "./sheets-read-types";\n\n';
+
+/** Module-only prefix of the declaration of what renders a Google Sheets spreadsheet. */
+export const SHEETS_RENDERING_TYPES_MODULE_PREFIX =
+  'import type { SheetCellFormat, SpreadsheetSheetInfo } from "./sheets-read-types";\n' +
+  'import type { SheetCellInput } from "./sheets-types";\n\n';
 
 /** Remove a declaration's expected module prefix before adding it to the flat agent type bundle. */
 export function stripTypeModulePrefix(source: string, prefix: string): string {

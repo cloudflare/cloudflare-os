@@ -2,7 +2,7 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type {
-  ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
+  ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription, UiFile,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
@@ -14,11 +14,13 @@ import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
+import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
+import { baseDrawing, drawingOf, drawnCells, mergeAnchors, pendingChangesOf } from "./sheets-drawing";
 import {
-  BlankSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges,
+  BlankSpreadsheet, enteredValue, GoogleSheetsApi, parseFormatRange, validateRanges,
   type SheetArea,
   type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
@@ -35,15 +37,24 @@ import type {
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
   overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedFormats,
-  simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type Grid, type PlannedChange,
-  type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
+  simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type BaseCells, type Grid,
+  type PlannedChange, type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions,
+  type SimulatedArea,
 } from "./sheets-simulation";
-import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
-import { SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
+import type { GoogleSpreadsheetRenderingReads, SpreadsheetDrawing } from "./sheets-rendering-types";
+import type {
+  GoogleSpreadsheetSession, SheetChange, SpreadsheetPendingChanges,
+} from "./sheets-types";
+import {
+  SHEETS_RENDERING_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+} from "./type-bundle";
+import SHEETS_PREVIEW_CLIENT from "./previews/sheets/client.txt";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
+import SHEETS_RENDERING_TYPES_CODE from "./sheets-rendering-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
 
-// A format read's result, in UTF-16 units of its JSON: Google's own answer is capped at 5 MiB.
+// A format read's result, or a drawing's, in UTF-16 units of its JSON: Google's own answer to a
+// format read is capped at 5 MiB.
 const MAX_FORMATS_READ_LENGTH = 5 * 1024 * 1024;
 // The markers batches left, each deleted by a later batch once no send of it can still commit.
 // Outside the journal's `sheets:action:` prefix and its counter.
@@ -162,6 +173,7 @@ export class GoogleSheetsGatekeeperImpl
         snippet: `Google Spreadsheet: ${title} (read-only; not created yet)`,
         suggestedBindingName: "GOOGLE_SHEET",
         tsType: "GoogleSpreadsheetSession",
+        hasPreview: true,
       };
     }
     let spreadsheet = await this.#api.getSpreadsheet(props.spreadsheetId).catch(async (error: unknown) => {
@@ -174,11 +186,16 @@ export class GoogleSheetsGatekeeperImpl
       snippet: `Google Spreadsheet: ${spreadsheet.title}`,
       suggestedBindingName: "GOOGLE_SHEET",
       tsType: "GoogleSpreadsheetSession",
+      hasPreview: true,
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
     return getGoogleSheetsTypesCode();
+  }
+
+  async getPreviewUi(): Promise<UiFile[]> {
+    return [{ path: "client.js", code: SHEETS_PREVIEW_CLIENT }, ...SHARED_PREVIEW_FILES];
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
@@ -305,10 +322,46 @@ function formatsOf(read: SpreadsheetFormats, sheetId: number, rect: Rect): BaseF
     : null;
 }
 
+/**
+ * What `simulate` makes of `areas` of `grid`, whose queued changes move rows, columns or sheets,
+ * from `entered`, what Google holds in the cells they show. Throws `Error` for more formulas or
+ * text than one read may rewrite or build.
+ */
+function simulated<T>(
+  grid: Grid, areas: readonly SimulatedArea[], entered: BaseCells<EnteredValue>, simulate: () => T,
+): T {
+  if (rewriteWork(grid, areas, entered) > MAX_REWRITE_WORK) {
+    throw new Error("These ranges hold too many formulas to read with the queued changes to rows, " +
+      "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.");
+  }
+  try {
+    return simulate();
+  } catch (error) {
+    if (error instanceof UnsimulatedFormula) {
+      throw new Error("These ranges hold a formula that cannot be shown with the queued changes to " +
+        "rows, columns and sheets applied. Read other cells, or approve or reject the queued changes " +
+        "first.", { cause: error });
+    }
+    if (!(error instanceof SimulatedTextTooLong)) throw error;
+    throw new Error("These ranges hold too much text to read with the queued changes to rows, " +
+      "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.",
+      { cause: error });
+  }
+}
+
 /** A read refused for what it found, which is reported only once the read is authorized. */
 class RefusedRead extends Error {
   constructor(readonly refusal: Error) {
     super(refusal.message);
+  }
+}
+
+/** What `work` returns, whose refusal says what the spreadsheet holds: thrown as a `RefusedRead`. */
+function refusable<T>(work: () => T): T {
+  try {
+    return work();
+  } catch (error) {
+    throw new RefusedRead(error as Error);
   }
 }
 
@@ -323,7 +376,8 @@ type Prepared = {
 
 /** A directly bound spreadsheet's session, exported for tests. */
 @validateRpc()
-export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadsheetSession {
+export class GoogleSpreadsheetSessionImpl extends RpcTarget
+    implements GoogleSpreadsheetSession, GoogleSpreadsheetRenderingReads {
   #api: GoogleSheetsApi;
   #reader: SpreadsheetReader;
   #spreadsheetId: string;
@@ -445,24 +499,9 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       this.#api.readAreas(this.#spreadsheetId, pieces, mode),
     ]);
     let base = { entered: baseValues(pieces, entered), shown: baseValues(pieces, shown) };
-    if (rewriteWork(grid, areas, base.entered) > MAX_REWRITE_WORK) {
-      throw new Error("These ranges hold too many formulas to read with the queued changes to rows, " +
-        "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.");
-    }
     let budget = textBudget();
-    try {
-      return areas.map(area => simulatedRange(grid, area, base, mode, budget));
-    } catch (error) {
-      if (error instanceof UnsimulatedFormula) {
-        throw new Error("These ranges hold a formula that cannot be shown with the queued changes to " +
-          "rows, columns and sheets applied. Read other cells, or approve or reject the queued changes " +
-          "first.", { cause: error });
-      }
-      if (!(error instanceof SimulatedTextTooLong)) throw error;
-      throw new Error("These ranges hold too much text to read with the queued changes to rows, " +
-        "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.",
-        { cause: error });
-    }
+    return simulated(grid, areas, base.entered,
+      () => areas.map(area => simulatedRange(grid, area, base, mode, budget)));
   }
 
   async #readRanges(
@@ -569,6 +608,73 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
     let shown = simulatedFormats(grid, area, base);
     return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
+  }
+
+  async getPendingChanges(sheet: string): Promise<SpreadsheetPendingChanges> {
+    let read = await this.#read(
+      () => this.#changes.snapshot(async pending => {
+        let metadata = await this.#reader.getMetadata(this.#spreadsheetId);
+        return { title: metadata.title, changes: pendingChangesOf(gridOf(metadata), pending, sheet) };
+      }),
+      ({ title }) => ({
+        title: "Read Google Sheets pending changes",
+        description: `Read the sheets of "${title}" as saved and with its pending changes, and where ` +
+          "those changes touch one sheet.",
+      }));
+    // Named only now, as the read is authorized: the answer says which sheets there are.
+    if (!read.changes) throw new Error(`The spreadsheet has no sheet named "${sheet}".`);
+    return read.changes;
+  }
+
+  async getRenderingTypes(): Promise<string> {
+    // The same text for every spreadsheet, saying nothing of this one, so no read of it is reported.
+    return stripTypeModulePrefix(SHEETS_RENDERING_TYPES_CODE, SHEETS_RENDERING_TYPES_MODULE_PREFIX);
+  }
+
+  async readDrawing(range: string): Promise<SpreadsheetDrawing> {
+    // A malformed range is refused before anything is fetched.
+    let parsed = parseRange(range);
+    let read = await this.#read(
+      () => this.#changes.snapshot(pending => this.#drawing(parsed, pending)).catch((error: unknown) => {
+        if (error instanceof RefusedRead) return error;
+        throw error;
+      }),
+      result => result instanceof RefusedRead
+        ? {
+            title: "Read a Google Sheets drawing",
+            description: "Looked up a range in the connected spreadsheet with the queued changes applied.",
+          }
+        : {
+            title: `Read a Google Sheets drawing of ${result.range}`,
+            description: `Read how ${(result.rows.length * result.columns.length).toLocaleString()} ` +
+              "cell(s) of the connected spreadsheet are drawn.",
+          });
+    if (read instanceof RefusedRead) throw read.refusal;
+    // Text is repeated as saved beside what a queued change enters, so the drawing can outgrow
+    // what Google returned.
+    if (JSON.stringify(read).length > MAX_FORMATS_READ_LENGTH) {
+      throw new Error("The drawing of this range is too large to read at once. Request fewer cells.");
+    }
+    return read;
+  }
+
+  /** The window `parsed` names, drawn as Google holds it with the queued changes made. */
+  async #drawing(
+    parsed: { sheet?: string; rect: Rect }, pending: readonly QueuedChange[],
+  ): Promise<SpreadsheetDrawing> {
+    let { grid, conflict } = replayed(gridOf(await this.#reader.getMetadata(this.#spreadsheetId)), pending);
+    // A refusal here names the spreadsheet's sheets and sizes.
+    let drawn = refusable(() => drawnCells(grid, resolveArea(grid, parsed)));
+    let rest = await this.#reader.readDrawing(this.#spreadsheetId, drawn.pieces);
+    // A merge shows what its first cell holds, wherever in the sheet that cell is.
+    let anchors = mergeAnchors(drawn, rest);
+    let starts = basePiecesOf(grid, anchors);
+    let base = baseDrawing(
+      starts.length > 0 ? [rest, await this.#reader.readDrawing(this.#spreadsheetId, starts)] : [rest], enteredValue);
+    // And one here says what the cells hold.
+    let drawing = refusable(() => simulated(grid, [...drawn.areas, ...anchors], base.entered,
+      () => drawingOf(grid, drawn, base, anchors)));
+    return conflict ? { ...drawing, queuedChangeConflict: conflict } : drawing;
   }
 
   async updateSpreadsheet(changes: SheetChange[]): Promise<void> {

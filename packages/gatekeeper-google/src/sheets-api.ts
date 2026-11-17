@@ -4,13 +4,15 @@ import type {
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
+import { DRAWING_FIELDS, THEME_FIELDS, type RestDrawing } from "./sheets-drawing";
 import {
-  baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
+  baseFormats, colorStyle, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
 } from "./sheets-format";
 import {
   a1Of, cellCount, findSheet, parseRange, validateRange, type EnteredValue, type Rect,
   type ValidatedRange,
 } from "./sheets-model";
+import { gridRange } from "./sheets-plan";
 
 const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 const MAX_RANGES = 20;
@@ -18,6 +20,8 @@ const MAX_TOTAL_CELLS = 50_000;
 const MAX_FORMAT_CELLS = 10_000;
 // Bound the encoded JSON before decoding and parsing.
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+// A drawing read asks for every cell's format in effect, which no cell leaves out.
+const MAX_DRAWING_BYTES = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 const SPREADSHEET_FIELDS = "spreadsheetId,properties(title,locale,timeZone)";
@@ -218,10 +222,14 @@ function echoes(echoed: RestGridRange | undefined, { sheetId, rect }: SheetArea)
     (echoed?.endColumnIndex ?? 0) === rect.endColumn;
 }
 
-// What a cell holds, from its `userEnteredValue`. A kind of value not known here is refused, so
-// the guard cannot mistake it for another.
-function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
+/**
+ * What a cell holds, from its `userEnteredValue`. A kind of value not known here is refused, so
+ * the guard cannot mistake it for another.
+ */
+export function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
   if (value === undefined) return null;
+  // Google returns empty text entered in a cell as a value of no kind.
+  if (Object.keys(value).length === 0) return "";
   let { formulaValue, stringValue, numberValue, boolValue, errorValue } = value;
   if (typeof formulaValue === "string") return { formula: formulaValue };
   if (typeof stringValue === "string") return stringValue;
@@ -234,6 +242,13 @@ function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
 /** The Google Sheets API, as far as the gatekeeper uses it. */
 /** The one sheet a created spreadsheet gets, named here so it doesn't depend on the account's locale. */
 const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 26 } as const;
+
+// The colours of the theme Google Sheets gives a new spreadsheet.
+const NEW_THEME = [
+  ["TEXT", "#000000"], ["BACKGROUND", "#ffffff"], ["ACCENT1", "#4285f4"], ["ACCENT2", "#ea4335"],
+  ["ACCENT3", "#fbbc04"], ["ACCENT4", "#34a853"], ["ACCENT5", "#ff6d01"], ["ACCENT6", "#46bdc6"],
+  ["LINK", "#1155cc"],
+] as const;
 
 export class GoogleSheetsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
@@ -517,6 +532,35 @@ export class GoogleSheetsApi {
     return baseFormats(sheets);
   }
 
+  /**
+   * What it takes to draw the cells of `areas`, each of which must lie within its sheet's grid,
+   * with the layout of each sheet they are on. Read by grid range with
+   * `spreadsheets:getByDataFilter`, as `readFormatAreas` reads; callers bound how many cells they
+   * ask for.
+   */
+  async readDrawing(spreadsheetId: string, areas: readonly SheetArea[]): Promise<RestDrawing> {
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
+    // With no filter Google would return every sheet whole: then only the theme is asked for.
+    url.searchParams.set("fields", areas.length > 0 ? DRAWING_FIELDS : THEME_FIELDS);
+    url.searchParams.set("prettyPrint", "false");
+    let response = await fetchWithAuthRetry(
+      url.toString(),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataFilters: areas.map(({ sheetId, rect }) => ({ gridRange: gridRange(sheetId, rect) })),
+          includeGridData: areas.length > 0,
+        }),
+      },
+      // A read, however it is sent.
+      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+    );
+    return readGoogleJson<RestDrawing>(response, {
+      provider: "Google Sheets", operation: "read drawing", maxBytes: MAX_DRAWING_BYTES,
+    });
+  }
+
   /** A developer metadata entry's value, or undefined if the spreadsheet has none with that ID. */
   async getDeveloperMetadata(
     spreadsheetId: string, metadataId: number,
@@ -564,8 +608,9 @@ export class GoogleSheetsApi {
   }
 }
 
-/** The reads a spreadsheet session makes with no change queued. */
-export type SpreadsheetReader = Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges" | "readFormats">;
+/** The reads a spreadsheet session makes with no change queued, and those a drawing is made from. */
+export type SpreadsheetReader =
+  Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges" | "readFormats" | "getMetadata" | "readDrawing">;
 
 /**
  * A spreadsheet not yet created, read as the one createSpreadsheet() makes: one empty sheet. Makes
@@ -581,6 +626,17 @@ export class BlankSpreadsheet implements SpreadsheetReader {
       title: this.title,
       sheets: [{ id: sheetId, title, index: 0, rowCount, columnCount }],
     };
+  }
+
+  async getMetadata(spreadsheetId: string): Promise<SpreadsheetMetadata> {
+    return { ...await this.getSpreadsheet(spreadsheetId), protectedRanges: [] };
+  }
+
+  /** Nothing is there to draw, and colour names are those of the theme a new spreadsheet starts with. */
+  async readDrawing(): Promise<RestDrawing> {
+    return { properties: { spreadsheetTheme: { themeColors: NEW_THEME.map(([colorType, color]) => ({
+      colorType, color: colorStyle(color),
+    })) } } };
   }
 
   /** Every requested cell is empty. */

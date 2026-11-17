@@ -9,6 +9,7 @@ import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../dri
 import { GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl } from "../../src/sheets";
 import { MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry } from "../../src/sheets-actions";
 import { GoogleSheetsApi } from "../../src/sheets-api";
+import type { RestDrawnCell } from "../../src/sheets-drawing";
 import type { RestCellFormat } from "../../src/sheets-format";
 import { rewriteFormula, type RewriteStep } from "../../src/sheets-formula";
 import { a1Of, enteredOf, parseRange, type EnteredValue, type Rect } from "../../src/sheets-model";
@@ -16,7 +17,10 @@ import type {
   SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
 } from "../../src/sheets-read-types";
 import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
-import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
+import type { SpreadsheetDrawing } from "../../src/sheets-rendering-types";
+import type {
+  SheetCellInput, SheetChange, SpreadsheetPendingChanges,
+} from "../../src/sheets-types";
 import { serveFakes, type ProviderFake } from "../slides-provider";
 import {
   protectedRange, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
@@ -44,6 +48,8 @@ function userEnteredValue(value: Exclude<EnteredValue, null>): Record<string, un
   if (typeof value === "object") {
     return "formula" in value ? { formulaValue: value.formula } : { errorValue: { type: value.error } };
   }
+  // Google returns empty text entered in a cell as a value of no kind.
+  if (value === "") return {};
   return typeof value === "string" ? { stringValue: value }
     : typeof value === "number" ? { numberValue: value } : { boolValue: value };
 }
@@ -102,6 +108,10 @@ function setPath(format: Record<string, any>, path: string[], value: unknown): v
   if (Object.keys(group).length > 0) format[head] = group;
   else delete format[head];
 }
+
+/** The metadata of lines `from` to `to - 1`: what `held` has of each, or a line of `pixelSize`. */
+const lineMetadata = (from: number, to: number, held: Record<number, object> | undefined, pixelSize: number) =>
+  Array.from({ length: to - from }, (_line, n) => held?.[from + n] ?? { pixelSize });
 
 /** The provider of the test running, whose requests `afterEach` checks. */
 let current: SheetsProvider | undefined;
@@ -179,8 +189,13 @@ class SheetsProvider {
     if (drive) return Response.json({ capabilities: { canEdit: this.canEdit } });
     let path = url.pathname.slice(base.length);
     if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
-    // Entered values for the guard, or formats: the field mask says which.
+    // A drawing, entered values for the guard, or formats: the field mask says which.
     if (path === ":getByDataFilter") {
+      if (url.searchParams.get("fields")?.includes("effectiveFormat")) return this.#drawing(await request.json());
+      if (url.searchParams.get("fields") === "properties(spreadsheetTheme(themeColors))") {
+        this.themeReads++;
+        return Response.json(this.#theme());
+      }
       return url.searchParams.get("fields")?.includes("userEnteredValue")
         ? this.#gridData(url, await request.json())
         : this.#formatsByDataFilter(url, await request.json());
@@ -447,6 +462,64 @@ class SheetsProvider {
       return blocks.length > 0 ? [{ properties: sheet.id === 0 ? {} : { sheetId: sheet.id }, data: blocks }] : [];
     });
     return Response.json({ sheets });
+  }
+
+  /** What a sheet has of its own layout, by its ID: lines by zero-based index, and merged ranges. */
+  layouts = new Map<number, {
+    rows?: Record<number, object>; columns?: Record<number, object>;
+    merges?: FixtureGridRange[]; hideGridlines?: boolean;
+  }>();
+  /** The format in effect where conditional formatting makes it differ from the one set, by cell. */
+  effective = new Map<string, NonNullable<RestDrawnCell["effectiveFormat"]>>();
+  /** The runs of a cell whose text is formatted in parts, by cell. */
+  runs = new Map<string, NonNullable<RestDrawnCell["textFormatRuns"]>>();
+  /** The grid ranges of every drawing read. */
+  drawingReads: Required<FixtureGridRange>[][] = [];
+  /** The spreadsheet's theme colours, by name. */
+  theme: Record<string, object> = {};
+  /** How many reads asked for the theme alone. */
+  themeReads = 0;
+
+  #theme() {
+    let themeColors = Object.entries(this.theme).map(([colorType, rgbColor]) => ({ colorType, color: { rgbColor } }));
+    return { properties: { spreadsheetTheme: { themeColors } } };
+  }
+
+  /** `spreadsheets:getByDataFilter` as a drawing asks: what each cell shows, holds and looks like. */
+  #drawing(body: { dataFilters: { gridRange: Required<FixtureGridRange> }[] }): Response {
+    this.drawingReads.push(body.dataFilters.map(({ gridRange }) => gridRange));
+    let sheets = this.sheets.flatMap(sheet => {
+      let ranges = body.dataFilters.flatMap(({ gridRange }) => gridRange.sheetId === sheet.id ? [gridRange] : []);
+      if (ranges.length === 0) return [];
+      let layout = this.layouts.get(sheet.id) ?? {};
+      return [{
+        properties: { sheetId: sheet.id, ...(layout.hideGridlines ? { gridProperties: { hideGridlines: true } } : {}) },
+        ...(layout.merges ? { merges: layout.merges } : {}),
+        data: ranges.map(range => ({
+          startRow: range.startRowIndex,
+          startColumn: range.startColumnIndex,
+          rowMetadata: lineMetadata(range.startRowIndex, range.endRowIndex, layout.rows, 21),
+          columnMetadata: lineMetadata(range.startColumnIndex, range.endColumnIndex, layout.columns, 100),
+          rowData: Array.from({ length: range.endRowIndex - range.startRowIndex }, (_row, r) => ({
+            values: Array.from({ length: range.endColumnIndex - range.startColumnIndex }, (_column, c) => {
+              let at = key(sheet.id, range.startRowIndex + r, range.startColumnIndex + c);
+              let value = this.cells.get(at) ?? null;
+              let raw = this.#shown(value, "UNFORMATTED_VALUE");
+              let format = this.effective.get(at) ?? this.formats.get(at);
+              return {
+                ...(value === null ? {} : {
+                  userEnteredValue: userEnteredValue(value), formattedValue: this.#shown(value, "FORMATTED_VALUE"),
+                }),
+                ...(typeof raw === "number" ? { effectiveValue: { numberValue: raw } } : {}),
+                ...(format ? { effectiveFormat: format } : {}),
+                ...(this.runs.has(at) ? { textFormatRuns: this.runs.get(at) } : {}),
+              };
+            }),
+          })),
+        })),
+      }];
+    });
+    return Response.json({ ...this.#theme(), sheets });
   }
 
   #batch(requests: BatchRequest[]): Response {
@@ -2384,6 +2457,433 @@ describe.each(RUNS)("Google Sheets formatting ($name)", run => {
   });
 });
 
+/** What the preview read `method` returns for `arg`. */
+async function previewRead<T>(sheets: ReturnType<typeof gatekeeper>, method: string, arg: string) {
+  let outcome = await sheets.call(method, arg);
+  if (outcome.error !== undefined) throw new Error(outcome.error);
+  return outcome.value as unknown as T;
+}
+
+const pendingOf = (sheets: ReturnType<typeof gatekeeper>, sheet: string) =>
+  previewRead<SpreadsheetPendingChanges>(sheets, "getPendingChanges", sheet);
+const drawingOf = (sheets: ReturnType<typeof gatekeeper>, range: string) =>
+  previewRead<SpreadsheetDrawing>(sheets, "readDrawing", range);
+
+describe("Google Sheets preview reads", () => {
+  let SALES = { id: 0, title: "Sales", index: 0, rowCount: 20, columnCount: 6 };
+  let PLAN = { id: 7, title: "Q3 Plan", index: 1, rowCount: 10, columnCount: 4 };
+
+  // What the code does is checked where it runs: the Workshop's browser test of the client.
+  it("offers a preview", async () => {
+    budget();
+
+    let { description, files } = await hooks().sheetsPreview("sheets-preview");
+
+    expect(description).toMatchObject({ hasPreview: true });
+    expect(files.map(({ path }) => path)).toEqual(["client.js", "ui/chrome.js"]);
+    expect(files[0].code).toContain("gadget.readDrawing(");
+    expect(files[0].code).toContain("from './ui/chrome.js'");
+  });
+
+  it("declares the reads its types leave out, reading nothing", async () => {
+    budget();
+
+    let { value, observations } = await gatekeeper().call("getRenderingTypes");
+
+    expect(value).toContain("readDrawing(range: string): Promise<SpreadsheetDrawing>;");
+    expect(value).not.toContain("import ");
+    expect(observations).toEqual([]);
+  });
+
+  it("lists a sheet's pending changes oldest first, where they show, and the sheets before and after, as one read", async () => {
+    budget();
+    let sheets = gatekeeper();
+    let write = await sheets.queued([
+      { op: "writeCells", range: "Sales!B2:C2", values: [[9, "=B2*3"]] },
+      { op: "writeCells", range: "'Q3 Plan'!A1", values: [["elsewhere"]] },
+    ]);
+    let rows = await sheets.queued([
+      { op: "insertRows", sheet: "Sales", at: 2, count: 2 },
+      { op: "deleteColumns", sheet: "Sales", at: "E" },
+      { op: "clearRange", range: "Sales!A5" },
+      { op: "formatCells", range: "Sales!A1:B1", format: { bold: true } },
+    ]);
+    let added = await sheets.queued([
+      { op: "addSheet", title: "Notes", index: 0, rowCount: 5, columnCount: 2 },
+      { op: "renameSheet", sheet: "Q3 Plan", title: "Plan" },
+    ]);
+
+    let outcome = await sheets.call("getPendingChanges", "sales");
+
+    expect(outcome.observations).toEqual([
+      'Read the sheets of "Budget" as saved and with its pending changes, and where those changes touch one sheet.',
+    ]);
+    let pending = outcome.value as unknown as SpreadsheetPendingChanges;
+    // Each batch as it was given, without what it does to other sheets.
+    expect(pending.changes).toEqual([
+      {
+        id: write.actionId, type: "updateSpreadsheet",
+        changes: [{ op: "writeCells", range: "Sales!B2:C2", values: [[9, "=B2*3"]] }],
+      },
+      {
+        id: rows.actionId, type: "updateSpreadsheet",
+        changes: [
+          { op: "insertRows", sheet: "Sales", at: 2, count: 2 },
+          { op: "deleteColumns", sheet: "Sales", at: "E", count: 1 },
+          { op: "clearRange", range: "Sales!A5" },
+          { op: "formatCells", range: "Sales!A1:B1", format: { bold: true } },
+        ],
+      },
+    ]);
+    // The write lies where the rows inserted after it left its cells.
+    expect(pending.areas).toEqual([
+      { change: write.actionId, op: "writeCells", range: "B4:C4" },
+      { change: rows.actionId, op: "insertRows", range: "A2:E3" },
+      { change: rows.actionId, op: "deleteColumns", count: 1, range: "E1:E22" },
+      { change: rows.actionId, op: "clearRange", range: "A5" },
+      { change: rows.actionId, op: "formatCells", range: "A1:B1" },
+    ]);
+    expect(pending.sheets.saved).toEqual([SALES, PLAN]);
+    expect(pending.sheets.pending).toEqual([
+      { id: expect.any(Number), title: "Notes", index: 0, rowCount: 5, columnCount: 2, touched: true },
+      { ...SALES, index: 1, rowCount: 22, columnCount: 5, touched: true },
+      { ...PLAN, title: "Plan", index: 2, touched: true },
+    ]);
+    // A sheet is asked for by the title the changes leave it, and nothing is listed for one they do not touch.
+    expect((await pendingOf(sheets, "Plan")).changes.map(({ id }) => id)).toEqual([write.actionId, added.actionId]);
+  });
+
+  it("names a sheet a batch renames by its new title in the changes of that batch that follow", async () => {
+    budget();
+    let sheets = gatekeeper();
+    let batch = await sheets.queued([
+      { op: "renameSheet", sheet: "Sales", title: "Revenue" },
+      { op: "writeCells", range: "Revenue!A1", values: [["x"]] },
+    ]);
+
+    expect((await pendingOf(sheets, "Revenue")).changes).toEqual([{
+      id: batch.actionId, type: "updateSpreadsheet",
+      changes: [
+        { op: "renameSheet", sheet: "Sales", title: "Revenue" },
+        { op: "writeCells", range: "Revenue!A1", values: [["x"]] },
+      ],
+    }]);
+  });
+
+  it("marks the first pending change that no longer fits and those after it stale, and places only the rest", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let fits = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[9]] }]);
+    let gone = await sheets.queued([{ op: "insertRows", sheet: "Q3 Plan", at: 1 }]);
+    let after = await sheets.queued([{ op: "writeCells", range: "Sales!A5", values: [["late"]] }]);
+
+    provider.sheets = provider.sheets.filter(s => s.id !== 7);
+
+    let pending = await pendingOf(sheets, "Sales");
+    expect(pending.changes.map(({ id, stale }) => ({ id, stale }))).toEqual([
+      { id: fits.actionId, stale: undefined }, { id: after.actionId, stale: true },
+    ]);
+    expect(pending.areas).toEqual([{ change: fits.actionId, op: "writeCells", range: "B2" }]);
+    expect(pending.sheets.pending).toEqual([{ ...SALES, touched: true }]);
+    // The sheet that is gone has no pending changes to list, and the drawing says what the reads say.
+    expect((await sheets.call("getPendingChanges", "Q3 Plan")).error).toBe('The spreadsheet has no sheet named "Q3 Plan".');
+    let drawing = await drawingOf(sheets, "Sales!A5");
+    expect(drawing.cells).toEqual([[null]]);
+    expect(drawing.queuedChangeConflict).toContain(`Queued change ${gone.actionId} no longer applies`);
+  });
+
+  it("names no sheet to a caller before the read is authorized", async () => {
+    budget();
+
+    let outcome = await gatekeeper().call("getPendingChanges", "Nope");
+
+    expect(outcome.error).toBe('The spreadsheet has no sheet named "Nope".');
+    expect(outcome.observations).toHaveLength(1);
+  });
+
+  it("draws a range as Google Sheets does, with what pending changes do to its cells", async () => {
+    let provider = budget([sheetMeta(0, "Sales", { frozenRowCount: 1 })]);
+    provider.results["=B2*2"] = 8;
+    provider.setFormat("Sales!B3", { textFormat: { italic: true } });
+    // The font, and what conditional formatting gives a cell, show in the format in effect alone.
+    for (let column of [0, 1]) {
+      provider.effective.set(key(0, 0, column), { textFormat: { bold: true, fontFamily: "Roboto" }, backgroundColor: { red: 1 } });
+    }
+    provider.effective.set(key(0, 2, 1), { textFormat: { italic: true }, backgroundColor: { green: 1 } });
+    provider.layouts.set(0, {
+      rows: { 0: { pixelSize: 30 }, 3: { pixelSize: 21, hiddenByUser: true } },
+      columns: { 1: { pixelSize: 64 } },
+      merges: [
+        { sheetId: 0, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 3, endColumnIndex: 5 },
+        { sheetId: 0, startRowIndex: 10, endRowIndex: 12, startColumnIndex: 0, endColumnIndex: 2 },
+      ],
+      hideGridlines: true,
+    });
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([
+      { op: "writeCells", range: "Sales!A2:C2", values: [["West", 7, "=B2+1"]] },
+      { op: "clearRange", range: "Sales!A3" },
+      { op: "formatCells", range: "Sales!B3", format: { bold: true } },
+    ]);
+
+    let outcome = await sheets.call("readDrawing", "Sales!A2:E4");
+
+    expect(outcome.observations).toEqual(["Read how 20 cell(s) of the connected spreadsheet are drawn."]);
+    let drawing = outcome.value as unknown as SpreadsheetDrawing;
+    let head = { bold: true, fontFamily: "Roboto", fillColor: "#ff0000" };
+    expect(drawing).toEqual({
+      range: "Sales!A2:E4",
+      sheet: { ...SALES, frozenRowCount: 1, gridlinesHidden: true },
+      // The frozen row comes with the window, which starts below it.
+      rows: [{ number: 1, size: 30 }, { number: 2, size: 21 }, { number: 3, size: 21 }, { number: 4, size: 21, hidden: true }],
+      columns: [
+        { number: 1, size: 100 }, { number: 2, size: 64 }, { number: 3, size: 100 }, { number: 4, size: 100 },
+        { number: 5, size: 100 },
+      ],
+      cells: [
+        [{ text: "Region", format: 0 }, { text: "Total", format: 0 }, null, null, null],
+        [
+          { text: "West", change: actionId, entered: "West", saved: "EMEA" },
+          // Google Sheets decides how a number shows, and what a formula comes to.
+          { pending: true, kind: "number", change: actionId, entered: 7, saved: "4" },
+          { pending: true, change: actionId, entered: "=B2+1", saved: "8" },
+          null, null,
+        ],
+        [
+          { change: actionId, entered: null, saved: "APAC" },
+          { text: "5", kind: "number", format: 1, formatted: true },
+          null, null, null,
+        ],
+        [null, null, null, null, null],
+      ],
+      // Each look once: the pending bold over what conditional formatting leaves in effect.
+      formats: [head, { bold: true, italic: true, fillColor: "#00ff00" }],
+      // Only the merges the drawing shows.
+      merges: ["D2:E3"],
+    });
+    expect(provider.drawingReads).toEqual([[
+      { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 5 },
+      { sheetId: 0, startRowIndex: 1, endRowIndex: 4, startColumnIndex: 0, endColumnIndex: 5 },
+    ]]);
+  });
+
+  it("draws text formatted in parts by its runs, until a pending change writes the cell", async () => {
+    let provider = budget();
+    provider.theme = { ACCENT1: { red: 1 } };
+    provider.runs.set(key(0, 0, 0), [
+      { format: { bold: true, foregroundColorStyle: { themeColor: "ACCENT1" } } }, { startIndex: 3 },
+      { startIndex: 4, format: { fontFamily: "Roboto", foregroundColor: { green: 1 } } },
+    ]);
+    let sheets = gatekeeper();
+
+    let drawing = await drawingOf(sheets, "Sales!A1");
+    expect(drawing.cells[0][0]).toEqual({ text: "Region", runs: [{ start: 0, format: 0 }, { start: 3 }, { start: 4, format: 1 }] });
+    expect(drawing.formats).toEqual([{ bold: true, textColor: "#ff0000" }, { textColor: "#00ff00", fontFamily: "Roboto" }]);
+
+    await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
+    expect((await drawingOf(sheets, "Sales!A1")).cells[0][0]).not.toHaveProperty("runs");
+  });
+
+  it("draws a row nobody resized as tall as its largest text", async () => {
+    let provider = budget();
+    // Google reports such a row at the default size. One sized by hand is as it was sized, and
+    // text merged down several rows makes none of them taller.
+    for (let row of [0, 1, 2]) provider.effective.set(key(0, row, 0), { textFormat: { fontSize: 24 } });
+    provider.layouts.set(0, {
+      rows: { 1: { pixelSize: 30 } },
+      merges: [{ sheetId: 0, startRowIndex: 2, endRowIndex: 4, startColumnIndex: 0, endColumnIndex: 1 }],
+    });
+
+    let drawing = await drawingOf(gatekeeper(), "Sales!A1:A4");
+
+    expect(drawing.rows.map(row => row.size)).toEqual([43, 30, 21, 21]);
+  });
+
+  it("draws rows a pending change inserts as inserted, and a sheet one adds without asking Google", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([
+      { op: "insertRows", sheet: "Sales", at: 2 },
+      { op: "writeCells", range: "Sales!A2", values: [["new"]] },
+      { op: "addSheet", title: "Notes", rowCount: 2, columnCount: 2 },
+      { op: "writeCells", range: "Notes!A1", values: [["hello"]] },
+    ]);
+
+    let drawing = await drawingOf(sheets, "Sales!A1:A3");
+    expect(drawing.rows).toEqual([{ number: 1, size: 21 }, { number: 2, size: 21, inserted: true }, { number: 3, size: 21 }]);
+    expect(drawing.cells.map(([cell]) => cell?.text ?? cell?.entered)).toEqual(["Region", "new", "EMEA"]);
+    expect(drawing.cells[1][0]).toMatchObject({ change: actionId, entered: "new" });
+
+    let reads = provider.drawingReads.length;
+    let notes = await drawingOf(sheets, "Notes!A1:B2");
+    expect(notes.cells).toEqual([[{ text: "hello", change: actionId, entered: "hello" }, null], [null, null]]);
+    expect(notes.sheet).toMatchObject({ title: "Notes", rowCount: 2, columnCount: 2 });
+    // No cell is asked of Google: only its theme, which a colour name would be looked up in.
+    expect(provider.drawingReads).toHaveLength(reads);
+    expect(provider.themeReads).toBe(1);
+  });
+
+  it("draws a theme colour queued on a sheet Google does not hold yet as the theme has it", async () => {
+    let provider = budget();
+    provider.theme = { ACCENT1: { red: 1, green: 0.4 }, TEXT: { blue: 1 } };
+    let sheets = gatekeeper();
+    await sheets.queued([
+      { op: "addSheet", title: "Notes", rowCount: 2, columnCount: 2 },
+      { op: "formatCells", range: "Notes!A1", format: { fillColor: "ACCENT1", textColor: "TEXT" } },
+      { op: "formatCells", range: "Sales!A1", format: { fillColor: "ACCENT1" } },
+    ]);
+
+    expect((await drawingOf(sheets, "Notes!A1")).formats).toEqual([{ fillColor: "#ff6600", textColor: "#0000ff" }]);
+    expect((await drawingOf(sheets, "Sales!A1")).formats).toEqual([{ fillColor: "#ff6600" }]);
+  });
+
+  it("draws a merge that starts outside the cells asked for with what its first cell holds", async () => {
+    let provider = budget([sheetMeta(0, "Sales", { frozenRowCount: 1 })]);
+    provider.setFormat("Sales!A2", { textFormat: { bold: true } });
+    provider.layouts.set(0, {
+      merges: [
+        // One starting above and left of the window, one inside it, one in the frozen row and left of it.
+        { sheetId: 0, startRowIndex: 1, endRowIndex: 4, startColumnIndex: 0, endColumnIndex: 3 },
+        { sheetId: 0, startRowIndex: 3, endRowIndex: 4, startColumnIndex: 3, endColumnIndex: 5 },
+        { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 4 },
+      ],
+    });
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B1", values: [["Sum"]] }]);
+
+    let outcome = await sheets.call("readDrawing", "Sales!C3:E4");
+
+    // The first cells are not counted among the cells drawn, and come in the one read reported.
+    expect(outcome.observations).toEqual(["Read how 9 cell(s) of the connected spreadsheet are drawn."]);
+    let drawing = outcome.value as unknown as SpreadsheetDrawing;
+    expect(drawing.merges).toEqual(["A2:C4", "D4:E4", "B1:D1"]);
+    expect(drawing.anchors).toEqual({
+      A2: { text: "EMEA", format: 0 },
+      B1: { text: "Sum", change: actionId, entered: "Sum", saved: "Total" },
+    });
+    expect(drawing.formats).toEqual([{ bold: true }]);
+    expect(provider.drawingReads.at(-1)).toEqual([
+      { sheetId: 0, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 1 },
+      { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+    ]);
+    // A drawing holding every merge's first cell asks nothing more.
+    let reads = provider.drawingReads.length;
+    expect((await drawingOf(sheets, "Sales!A1:E4")).anchors).toBeUndefined();
+    expect(provider.drawingReads).toHaveLength(reads + 1);
+  });
+
+  it("refuses a range of more cells than a drawing holds without listing its lines", async () => {
+    current = new SheetsProvider([sheetMeta(0, "Tall", { rowCount: 5_000_000, columnCount: 2 })], {}).install();
+
+    let refused = await gatekeeper().call("readDrawing", "Tall!A1:B5000000");
+
+    expect(refused.error).toBe(
+      "readDrawing may draw at most 10,000 cells, those of the sheet's frozen rows and columns included.");
+  });
+
+  it("draws empty text entered in a cell, which Google returns as a value of no kind", async () => {
+    let provider = budget();
+    provider.enter("Sales!A3", "");
+    let sheets = gatekeeper();
+
+    // It shows nothing, so it draws as an empty cell.
+    expect((await drawingOf(sheets, "Sales!A3")).cells).toEqual([[null]]);
+    // Reads through queued rows ask what each cell holds, and a change over one is checked against it.
+    await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 10 }]);
+    expect((await sheets.call("readRange", "Sales!A3", { valueMode: "formula" })).error).toBeUndefined();
+    expect((await sheets.call("updateSpreadsheet", [{ op: "writeCells", range: "Sales!A3", values: [["x"]] }])).error)
+      .toBeUndefined();
+    expect((await drawingOf(sheets, "Sales!A3")).cells[0][0]).toEqual({ text: "x", change: expect.any(Number), entered: "x" });
+  });
+
+  it("keeps a mark for each of two deletes where the second takes the line the first was marked on", async () => {
+    budget();
+    let sheets = gatekeeper();
+    let first = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 5 }]);
+    let second = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 5, count: 2 }]);
+    let columns = await sheets.queued([{ op: "deleteColumns", sheet: "Sales", at: "F" }, { op: "deleteColumns", sheet: "Sales", at: "E" }]);
+
+    expect((await pendingOf(sheets, "Sales")).areas).toEqual([
+      { change: first.actionId, op: "deleteRows", count: 1, range: "A5:D5" },
+      { change: second.actionId, op: "deleteRows", count: 2, range: "A5:D5" },
+      { change: columns.actionId, op: "deleteColumns", count: 1, after: true, range: "D1:D17" },
+      { change: columns.actionId, op: "deleteColumns", count: 1, after: true, range: "D1:D17" },
+    ]);
+  });
+
+  it("says how many rows and columns each sheet keeps in view, for a drawing to leave room for", async () => {
+    budget([sheetMeta(0, "Sales", { frozenRowCount: 2, frozenColumnCount: 1 }), sheetMeta(7, "Q3 Plan", { index: 1 })]);
+    let sheets = gatekeeper();
+
+    let { pending, saved } = (await pendingOf(sheets, "Sales")).sheets;
+    expect(pending.map(({ frozenRowCount, frozenColumnCount }) => ({ frozenRowCount, frozenColumnCount }))).toEqual([
+      { frozenRowCount: 2, frozenColumnCount: 1 }, {},
+    ]);
+    expect(saved[0]).not.toHaveProperty("frozenRowCount");
+  });
+
+  it("says what a drawing's cells make it refuse only once the read is authorized", async () => {
+    let provider = budget([sheetMeta(0, "Sales"), sheetMeta(5, "Q", { index: 1, rowCount: 5, columnCount: 5 })]);
+    provider.set("Sales!A1", '=IF(TRUE,"\uE000",Q!A1)');
+    let sheets = gatekeeper();
+    await sheets.queued([
+      { op: "deleteSheet", sheet: "Q" }, { op: "addSheet", title: "Q" }, { op: "renameSheet", sheet: "Q", title: "Renamed" },
+    ]);
+
+    let refused = await sheets.call("readDrawing", "Sales!A1");
+
+    expect(refused.error).toContain("These ranges hold a formula that cannot be shown");
+    expect(refused.observations).toEqual(["Looked up a range in the connected spreadsheet with the queued changes applied."]);
+  });
+
+  it("reads a large sheet a window at a time, each no larger than 10,000 cells with its frozen lines", async () => {
+    let provider = current = new SheetsProvider(
+      [sheetMeta(0, "Big", { rowCount: 5000, columnCount: 100, frozenRowCount: 2, frozenColumnCount: 1 })],
+      { "Big!A1": "corner", "Big!CV5000": "last" },
+    ).install();
+    let sheets = gatekeeper();
+
+    let far = await drawingOf(sheets, "Big!C4911:CV5000");
+    expect(far.rows.map(({ number }) => number)).toEqual([1, 2, ...Array.from({ length: 90 }, (_row, n) => 4911 + n)]);
+    expect(far.columns.map(({ number }) => number)).toEqual([1, ...Array.from({ length: 98 }, (_column, n) => 3 + n)]);
+    expect(far.cells[0][0]).toEqual({ text: "corner" });
+    expect(far.cells.at(-1)!.at(-1)).toEqual({ text: "last" });
+    // Only the window and the frozen lines beside it are asked of Google.
+    expect(provider.drawingReads.at(-1)).toEqual([
+      { sheetId: 0, startRowIndex: 0, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 1 },
+      { sheetId: 0, startRowIndex: 0, endRowIndex: 2, startColumnIndex: 2, endColumnIndex: 100 },
+      { sheetId: 0, startRowIndex: 4910, endRowIndex: 5000, startColumnIndex: 0, endColumnIndex: 1 },
+      { sheetId: 0, startRowIndex: 4910, endRowIndex: 5000, startColumnIndex: 2, endColumnIndex: 100 },
+    ]);
+
+    // 99 columns with the frozen one: 101 rows are 9,999 cells, and 102 too many.
+    expect((await drawingOf(sheets, "Big!C3:CV101")).cells).toHaveLength(101);
+    let reads = provider.drawingReads.length;
+    let refused = await sheets.call("readDrawing", "Big!C3:CV102");
+    expect(refused.error).toBe(
+      "readDrawing may draw at most 10,000 cells, those of the sheet's frozen rows and columns included.");
+    // Refused before Google is asked, and said only once the read is authorized.
+    expect(provider.drawingReads).toHaveLength(reads);
+    expect(refused.observations).toEqual(["Looked up a range in the connected spreadsheet with the queued changes applied."]);
+    expect((await sheets.call("readDrawing", "Big!A:A")).observations).toEqual([]);
+  });
+
+  it("reports each drawing a preview reads after a sheet's pending changes, as a read of its own", async () => {
+    budget();
+    let sheets = gatekeeper();
+    await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [["x"]] }]);
+
+    let { changes, drawings, observed } = await hooks().previewSheets(sheets.facet, "Sales", ["sales!A1:B2", "Sales!A3:B4"]);
+
+    expect(changes.areas).toHaveLength(1);
+    expect(drawings.map(({ range }) => range)).toEqual(["Sales!A1:B2", "Sales!A3:B4"]);
+    expect(observed).toEqual([
+      "Read Google Sheets pending changes",
+      "Read a Google Sheets drawing of Sales!A1:B2", "Read a Google Sheets drawing of Sales!A3:B4",
+    ]);
+  });
+});
+
 // What a bound spreadsheet stores, by its literal keys, so that moving its code cannot move its
 // storage.
 describe("Google Sheets stored layout", () => {
@@ -2654,7 +3154,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
     expect(provider.get("Sales!B2")).toBe(7);
   });
 
-  it("refuses every write of a spreadsheet that left the folder before any Sheets request", async () => {
+  it("refuses every write, and each read a preview draws from, of a spreadsheet that left the folder before any Sheets request", async () => {
     let provider = budget();
     serve(provider);
     let folder = connection(FOLDER);
@@ -2663,17 +3163,25 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
         !Object.getOwnPropertyNames(GoogleSpreadsheetReadSessionImpl.prototype).includes(name));
     let args: Record<string, unknown[]> = {
       updateSpreadsheet: [[{ op: "writeCells", range: "Sales!B2", values: [[6]] }]],
+      // The reads a preview draws from, which only a session that queues changes has.
+      getPendingChanges: ["Sales"],
+      readDrawing: ["Sales!A1:B2"],
+      // Declarations, the same for every spreadsheet: answered whatever has become of this one.
+      getRenderingTypes: [],
     };
-    // Every write method has its call here, so a new one cannot be left out.
+    // Every method only that session has is called here, so a new one cannot be left out.
     expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
 
     for (let method of writes) {
+      // A read is refused as any read of the file is.
+      let refusal = method === "updateSpreadsheet" ? OUT_OF_SCOPE
+        : method === "getRenderingTypes" ? undefined : "The requested file is outside this Drive binding.";
       sheetsRequests.requests.length = 0;
       let refused = await hooks().callDriveNativeAfter(
         folder.facet, FOLDER, "openGoogleSheet", "sheet-1", method, args[method], [],
         async () => { drive.files.get("sheet-1")!.parents = ["elsewhere"]; });
       drive.files.get("sheet-1")!.parents = [ROOT];
-      expect(refused.error, method).toBe(OUT_OF_SCOPE);
+      expect(refused.error, method).toBe(refusal);
       expect(refused.actionId, method).toBeUndefined();
       expect(sheetsRequests.requests, method).toEqual([]);
     }
