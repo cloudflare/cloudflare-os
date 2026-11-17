@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { AsideItem } from '@/aside/asideItems'
 import { AsidePane } from '@/aside/AsidePane'
+import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import { SCENARIOS } from '@/chat/mock/scenarios'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
@@ -49,8 +50,9 @@ export const ShellPreview = () => {
       {/* Wider than the gallery's column, so that there is room to drag in. */}
       <div className="relative left-1/2 h-[32rem] w-[min(72rem,100vw-4rem)] shrink-0 -translate-x-1/2 rounded-3xl bg-kumo-canvas ring-1 ring-kumo-line">
         <ApiContext value={session}>
-          {/* The pane asks who may share what it shows. */}
+          {/* The pane asks who may share what it shows, and follows the chat a gadget is being built in. */}
           <WorkspacesProvider>
+          <ChatSessionsProvider>
           <AppShell
             sidebar={(collapsed) => (
               <Sidebar
@@ -107,6 +109,7 @@ export const ShellPreview = () => {
               </Button>
             </div>
           </AppShell>
+          </ChatSessionsProvider>
           </WorkspacesProvider>
         </ApiContext>
       </div>

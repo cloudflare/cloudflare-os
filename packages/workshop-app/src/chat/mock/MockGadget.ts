@@ -1,5 +1,5 @@
 import { RpcTarget } from 'capnweb'
-import type { GadgetExportFormat, UiBundle } from '@gadgets/workshop-shared/api'
+import type { GadgetBindingInfo, GadgetExportFormat, UiBundle } from '@gadgets/workshop-shared/api'
 
 // What a gadget's UI takes to load, so that loading can be seen.
 const LOAD_TIME = 500
@@ -128,6 +128,8 @@ export class MockGadget {
         const html = `<!doctype html><title>${title}</title><h1>${title}</h1><ul>${tasks.map(({ text, done }) => `<li>${done ? '✓ ' : ''}${text}</li>`).join('')}</ul>`
         return new Blob([html], { type: 'text/html' }).stream()
       },
+      // It reaches no connections.
+      listBindings: async (): Promise<GadgetBindingInfo[]> => [],
       onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : void handle.onBroken.add(callback)),
       // Nothing to release: the fake workspace keeps its gadgets.
       [Symbol.dispose]: () => {},
