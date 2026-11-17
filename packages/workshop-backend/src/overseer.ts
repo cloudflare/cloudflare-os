@@ -564,6 +564,11 @@ const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 // recorded) the keep-alive alarm fires. See #agentKeepAliveTime.
 const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 
+// The longest one alarm invocation holds the DO open before handing off to the next. Works around
+// a Workers Runtime bug that aborts a Durable Object whose alarm handler runs for more than 15
+// minutes; remove once that is fixed. See runAlarmTasks.
+const ALARM_HANDLER_BUDGET_MS = 10 * 60_000;
+
 // The platform retries a failed alarm six times. Other durable work must remain scheduled after
 // that budget is exhausted; agent resumes have their own per-execution budget below.
 const ALARM_MAX_RETRIES = 6;
@@ -1241,9 +1246,39 @@ class OverseerImpl implements AgentHooks {
   // from now rather than re-firing on the time that has just passed. A delivery failure is
   // rethrown once everything else has settled, so the platform retries the alarm. After its last
   // retry, schedule a fresh wake-up: a long response-target outage must not strand durable work.
+  //
+  // That work is one run, which may outlast an invocation: each holds the DO open for at most
+  // ALARM_HANDLER_BUDGET_MS. When that runs out first, the invocation returns successfully and
+  // re-arms the alarm to fire at once, and the next invocation joins the same run rather than
+  // starting the concerns again, so none ever overlaps itself. If the DO dies meanwhile, the run
+  // dies with it, and the re-armed alarm starts a fresh one on wake.
   async runAlarmTasks(retryCount = 0): Promise<void> {
+    this.#scheduledAlarm = undefined; // This alarm has fired; the run recomputes the next.
+    let run = this.#alarmRun;
+    if (!run) {
+      run = this.#alarmRun = this.#runAlarmTasksOnce().finally(() => { this.#alarmRun = undefined; });
+      run.catch(() => {}); // One that fails between invocations is retried by the re-armed alarm.
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      let finished = await Promise.race([
+        run.then(() => true),
+        new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ALARM_HANDLER_BUDGET_MS); }),
+      ]);
+      if (!finished) this.#setAlarm(Date.now());
+    } catch (error) {
+      if (retryCount >= ALARM_MAX_RETRIES) this.#updateAlarm(Date.now() + AGENT_KEEPALIVE_ALARM_MS);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // The current run of the alarm's work (see runAlarmTasks), cleared as it settles.
+  #alarmRun?: Promise<void>;
+
+  async #runAlarmTasksOnce(): Promise<void> {
     this.#inAlarmHandler = true;
-    this.#scheduledAlarm = undefined; // A success recomputes the next alarm from settled state.
     let failed = false;
     try {
       if (this.storage.deleting.get()) {
@@ -1270,9 +1305,7 @@ class OverseerImpl implements AgentHooks {
     } finally {
       this.#inAlarmHandler = false;
       this.#agentKeepAliveTime = undefined;
-      if (!failed || retryCount >= ALARM_MAX_RETRIES) {
-        this.#updateAlarm(failed ? Date.now() + AGENT_KEEPALIVE_ALARM_MS : 0);
-      }
+      if (!failed) this.#updateAlarm();
     }
   }
 
@@ -11783,7 +11816,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *   handler takes over and holds the DO open until the work is done. If the DO died meanwhile,
    *   the alarm wakes it (and the constructor resumes the turns and drains the calls before
    *   alarm() itself runs). If the DO dies *while* the alarm is running, the system retries the
-   *   alarm, picking the work up yet again.
+   *   alarm, picking the work up yet again. Work that outlasts ALARM_HANDLER_BUDGET_MS is held
+   *   open by a chain of invocations, each handing off to the next, since the runtime aborts a DO
+   *   whose alarm handler runs past 15 minutes.
    * - External-message responses ready to deliver, and delivered records due to be swept.
    *
    * See OverseerImpl.runAlarmTasks for how the concerns are run together.
