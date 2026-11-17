@@ -1,0 +1,30 @@
+/* While a view is first drawn, the lines of one stand in: soft fills a sheen passes over. They
+   come in only after a moment, so a view that draws at once never shows them; still for whoever
+   asks for less motion. */
+.view-sketch {
+  animation: view-sketch-in 300ms ease-out 250ms backwards;
+}
+
+.view-sketch > span {
+  background:
+    linear-gradient(100deg, transparent 30%, color-mix(in oklab, var(--color-kumo-base) 70%, transparent) 50%, transparent 70%)
+      0 0 / 250% 100% no-repeat,
+    var(--color-kumo-fill);
+  animation: view-sketch-sheen 1.6s ease-in-out infinite;
+}
+
+.view-sketch > span:nth-child(2) { animation-delay: 80ms; }
+.view-sketch > span:nth-child(3) { animation-delay: 160ms; }
+
+@keyframes view-sketch-in {
+  from { opacity: 0; }
+}
+
+@keyframes view-sketch-sheen {
+  from { background-position: 150% 0, 0 0; }
+  to { background-position: -100% 0, 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-sketch, .view-sketch > span { animation: none; }
+}

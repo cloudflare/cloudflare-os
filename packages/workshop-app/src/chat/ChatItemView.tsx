@@ -63,6 +63,8 @@ export type ChatItemHandlers = {
   onOpenChat?: (chatId: number) => void
   /** A conversation's address in the workspace, for a link to it to open in another tab. */
   chatHref?: (chatId: number) => string
+  /** Sends what a live view in an answer asks the viewer to send, as their own message; resolves to whether it went. */
+  onSendFromView?: (message: string) => Promise<boolean>
 }
 
 export type ChatItemViewProps = {
@@ -134,6 +136,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           joins={joins}
           onReply={() => handlers.onReply(item)}
           goBack={goBackOf(item.goBack, handlers)}
+          onSendFromView={handlers.onSendFromView}
           details={{
             open: isOpen,
             onToggle: toggle,

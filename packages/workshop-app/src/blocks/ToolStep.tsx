@@ -1,5 +1,5 @@
 import {
-  BookOpenIcon, BrainIcon, ChatTextIcon, CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon,
+  AppWindowIcon, BookOpenIcon, BrainIcon, ChatTextIcon, CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon,
   MagnifyingGlassIcon, PencilSimpleIcon, PlugIcon, PlusIcon, ScrollIcon, StopIcon, type Icon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
@@ -8,6 +8,7 @@ import { CodeBlock } from '@/components/CodeBlock'
 import { Disclosure } from '@/components/Disclosure'
 import { Markdown } from '@/components/Markdown'
 import { ActionFields, type ActionField } from './ActionFields'
+import { answerParts } from './answerParts'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 
 const ICONS = {
@@ -61,7 +62,16 @@ export type ToolStepProps = { entry: ToolStepEntry; open: boolean; onToggle: () 
 
 const Detail = ({ entry }: { entry: ToolStepEntry }) => {
   if (entry.type === 'thinking') return <div className="text-sm/5 text-kumo-subtle"><Markdown>{entry.text}</Markdown></div>
-  if (entry.type === 'writing') return <div className="text-base/5 text-kumo-default"><Markdown>{entry.text}</Markdown></div>
+  // The draft's words, with each live view it draws as its name, the view itself coming with the answer.
+  if (entry.type === 'writing') {
+    return (
+      <div className="flex flex-col gap-2 text-base/5 text-kumo-default">
+        {answerParts(entry.text, { streaming: true }).map((part, index) => (part.kind === 'prose'
+          ? <Markdown key={index}>{part.text}</Markdown>
+          : <p key={index} className="flex items-center gap-1.5 text-sm/5 text-kumo-subtle"><AppWindowIcon aria-hidden="true" className="size-4 shrink-0" />{part.title ?? 'A view'}</p>))}
+      </div>
+    )
+  }
   if (entry.type === 'observation') {
     const { resource } = entry
     return (

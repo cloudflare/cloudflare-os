@@ -1,3 +1,4 @@
+import { proseOf } from '@/blocks/answerParts'
 import type { AssistantItem, ChatItem, ReportItem, UserItem } from './chatItems'
 
 /** A message that can be replied to: anything someone said. */
@@ -38,7 +39,7 @@ export const quoteOf = (text: string): string => {
  */
 export const quoteLine = (item: Quotable): string =>
   quoteOf(item.kind !== 'user'
-    ? item.text
+    ? proseOf(item.text)
     : item.parts.map((part) => (part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`)).join(''))
 
 /**

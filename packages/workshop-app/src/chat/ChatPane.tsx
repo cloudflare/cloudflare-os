@@ -227,6 +227,15 @@ export const ChatPane = ({
       onGoBack: (point) => (point.deletes.length ? setDeleting({ point, open: true }) : actions.goBack(point)),
       onOpenChat,
       chatHref,
+      // As the composer sends it, without what the composer holds: it is the view's words, not a reply.
+      onSendFromView: async (message) => {
+        list.current?.scrollToLatest()
+        if (model.status !== 'ready') {
+          setProblem(describeModelProblem(model))
+          return false
+        }
+        return actions.send(message, model.model.id)
+      },
     }
   }, [actions, model, onOpenAttachment, onOpenOutput, onOpenMade, madeHref, outputHref, onSetUpConnection, onOpenChat, chatHref, decisions.run, workspaceId])
   const keep = chat.status === 'ready' ? chat.keep : undefined

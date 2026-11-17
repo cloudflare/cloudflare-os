@@ -219,6 +219,17 @@ addresses, and links an image from elsewhere instead of loading it, which would 
 there what was read (one carried in the text, `data:` or `blob:`, is shown). Every link the app
 draws passes `components/webUrl.ts`, so none can be `javascript:`.
 
+An answer can draw live views (`<inline-html>` blocks, found by workshop-shared's one parser
+through `blocks/answerParts.ts`). Each is a card between the answer's words (`InlineView`), on the
+agent's side and a little wider than a bubble, never across to the viewer's: its HTML runs in a
+frame with no origin and a policy that reaches nothing (`blocks/inlineViewPage.ts`), whose page
+hands over a port and says only its height, its errors and what it asks to send, which the app
+reads as untrusted. It follows the app's theme, starts as it nears the screen and stops far from
+it keeping its height, and can be stopped. What a view asks the viewer to send (`agent.send`)
+waits after the answer as their message would look, in outline (`ViewAsk`), and goes only on
+Send. While one is being written the status names it ("Drawing Weekly signups…") and the draft
+shows its name, not its HTML; copied or quoted, an answer is its words alone.
+
 Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
 to the changes, and a compaction. A compaction asked for with `/compact` is announced under the
 command; one that ran on its own, at the cut. Another model taking over is not one: each message's

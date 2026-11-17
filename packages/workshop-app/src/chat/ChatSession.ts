@@ -13,6 +13,7 @@ import {
   type UserItem,
   type WorkEntry,
 } from './chatItems'
+import { viewBeingDrawn } from '@/blocks/answerParts'
 import type { GoBack } from './changePoints'
 import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
 import { quotedBy } from './replyQuote'
@@ -705,7 +706,10 @@ export class ChatSession {
     if (this.#compacting) return 'Compacting the conversation…'
     const call = this.#calls.at(-1)
     if (call) return liveToolLabel(call, this.#liveGadget(call))
-    return this.#streaming === '' ? 'Thinking…' : 'Writing…'
+    if (this.#streaming === '') return 'Thinking…'
+    // A live view it is drawing in its answer, by the name its title gives it, once that has arrived.
+    const view = viewBeingDrawn(this.#streaming)
+    return view ? `Drawing ${view.title ?? 'a view'}…` : 'Writing…'
   }
 
   #reset() {
