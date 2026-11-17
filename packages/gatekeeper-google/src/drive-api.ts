@@ -392,14 +392,14 @@ async function driveError(response: Response): Promise<Error> {
 
 /**
  * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
- * is its own credential; `total` is the file's size, given with its last chunk. Returns Drive's
- * answer to the last chunk, or nothing once it holds every byte of an earlier one, and throws its
- * refusal. After a lost or failed reply it waits, asks what the session holds, and sends only the
- * rest, so nothing Drive finished is sent again.
+ * is its own credential; `total` is the file's size, given with its last chunk. Returns the body
+ * of Drive's answer to the last chunk, or nothing once it holds every byte of an earlier one, and
+ * throws its refusal. After a reply that is lost, failed or cut short it waits, asks what the
+ * session holds, and sends only the rest, so nothing Drive finished is sent again.
  */
 async function putUploadChunk(
   session: string, bytes: Uint8Array, start: number, total?: number,
-): Promise<Response | undefined> {
+): Promise<string | undefined> {
   let ask = false;
   for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
@@ -409,7 +409,13 @@ async function putUploadChunk(
       body: ask ? undefined : bytes,
       signal: AbortSignal.timeout(total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS),
     }).catch(() => undefined);
-    if (response?.ok) return response;
+    if (response?.ok) {
+      // The file is made by now, so a body that fails to arrive is asked for again, not given up.
+      let made = await readBoundedText(response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large")
+        .catch(() => undefined);
+      if (made !== undefined) return made;
+      response = undefined;
+    }
     if (response?.status === 308) {
       void response.body?.cancel();
       // What the session holds: `Range: bytes=0-N`, or no header when it holds nothing.
@@ -1478,9 +1484,8 @@ export class DriveApi {
           offset += taken.length;
         }
       }
-      let response = (await putUploadChunk(session, chunk.subarray(0, filled), sent, sent + filled))!;
       let made = parseDriveJson(
-        await readBoundedText(response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large"), "response");
+        (await putUploadChunk(session, chunk.subarray(0, filled), sent, sent + filled))!, "response");
       if (!isRecord(made) || typeof made.id !== "string" || made.mimeType !== mimeType) {
         throw new Error("Google Drive did not convert the uploaded file into the type asked for");
       }

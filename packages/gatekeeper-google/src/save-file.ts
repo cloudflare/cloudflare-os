@@ -30,7 +30,7 @@ function saveTarget(kind: OfficeKind, destination: string): string | { folderId:
     : target.kind === "sheets" ? target.spreadsheetId : target.presentationId;
 }
 
-/** `file`, failing once it has given more than `max` bytes. */
+/** `file`, failing once it has given more than `max` bytes, or if it ends having given none. */
 function upTo(file: ReadableStream<Uint8Array>, max: number): ReadableStream<Uint8Array> {
   let size = 0;
   return file.pipeThrough(new TransformStream({
@@ -39,6 +39,9 @@ function upTo(file: ReadableStream<Uint8Array>, max: number): ReadableStream<Uin
         throw new Error(`This file is larger than the ${megabytes(max)} MB Google Drive converts into this format.`);
       }
       controller.enqueue(chunk);
+    },
+    flush() {
+      if (!size) throw new Error("This file is empty, so there is nothing to save.");
     },
   }));
 }

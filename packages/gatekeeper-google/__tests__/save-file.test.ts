@@ -143,6 +143,21 @@ describe("saveFile", () => {
       .toEqual([`bytes 0-${8 * MIB - 1}/*`, `bytes ${8 * MIB}-${10 * MIB - 1}/${10 * MIB}`]);
   });
 
+  it("asks the session again when the answer to the last chunk is cut short, and makes no second file", async () => {
+    let cut = () => new Response(new ReadableStream({ pull(controller) { controller.error(new Error("connection reset")); } }));
+    let answers = [cut, () => saved("new-1", GOOGLE_DOC_MIME_TYPE)];
+    let calls = stubDrive({ "PUT session": () => answers.shift()!() });
+    await expect(save(FOLDER_URL)).resolves.toMatchObject({ url: expect.stringContaining("/d/new-1/") });
+    expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes */6", ""]]);
+    expect(calls.map(call => call.method).filter(method => method !== "GET")).toEqual(["POST", "PUT", "PUT"]);
+  });
+
+  it("refuses an empty file, sending the session nothing", async () => {
+    let calls = stubDrive({ "DELETE session": new Response(null, { status: 499 }) });
+    await expect(save(FOLDER_URL, { file: stream() })).rejects.toThrow("This file is empty");
+    expect(uploaded(calls).chunks).toEqual([]);
+  });
+
   it("stops at a chunk the session refuses, reading and sending no more of the file", async () => {
     let calls = stubDrive({
       "PUT session": new Response(null, { status: 404 }), "DELETE session": new Response(null, { status: 499 }),
