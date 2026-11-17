@@ -400,8 +400,8 @@ export type SupportedResource = {
   /**
    * With `creationConfigurator`: the content types (MIME) of files the user can save as a resource
    * of this type through GatekeeperUser.saveFile(), best first, e.g. a word processor's document
-   * type lists docx. The Workshop offers a save for a gadget export of a listed type. Callers gate
-   * on this rather than probing.
+   * type lists the docx MIME type. The Workshop offers a save for a gadget export whose content
+   * type is exactly a listed one. Callers gate on this rather than probing.
    */
   savableFrom?: string[];
 
