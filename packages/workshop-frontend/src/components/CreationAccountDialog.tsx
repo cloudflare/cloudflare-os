@@ -184,7 +184,7 @@ export const CreationAccountDialog = ({
 
   return (
     <Dialog.Root open onOpenChange={open => { if (!open && !sending) onCancel() }}>
-      <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0 sm:w-[480px]" size="base">
+      <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0 !w-[min(760px,calc(100vw-32px))]" size="lg">
         <Dialog.Title className="shrink-0 px-6 pt-6 text-lg font-semibold">{title}</Dialog.Title>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
