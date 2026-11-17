@@ -187,8 +187,8 @@ An admin read never reaches a connection, and reads only what the workspace stor
   `getCommitLog()` and `listChangedPaths()` take any commit the workspace stores (a gadget's
   history, a worktree's commits, a chat pin's base) and refuse anything else. All of them read
   only stored objects, through the local readers of `git-cache.ts`: `readLocalCommitTree` and
-  `changedLocalFilePathsBetween`, built on `readLocalObject`, and `readCommitLog`, which reads only
-  the commits the store holds. The ordinary reads pull a missing object through the workspace's
+  `changedLocalFilePathsBetween`, which read only the objects the store holds, and `readCommitLog`,
+  which reads only the commits the store holds. The ordinary reads pull a missing object through the workspace's
   connections; these never do. A missing object is an error, not a fetch. `getCommitLog()` stops
   at a parent that is not stored (`stopAtMissing`), which is how a worktree checked out without
   its history lists.
