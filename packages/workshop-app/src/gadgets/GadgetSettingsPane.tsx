@@ -5,7 +5,6 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from './GadgetSettingsView'
-import { GadgetCodeView } from './GadgetCodeView'
 import { useBlueprintInfo, useGadgetSettings, useServices } from './useGadgetSettings'
 
 export type GadgetSettingsPaneProps = {
@@ -15,9 +14,6 @@ export type GadgetSettingsPaneProps = {
   initialTitle?: string
   tab: GadgetSettingsTab
   onTabChange: (tab: GadgetSettingsTab) => void
-  /** On the Code tab, the path of the file to show; none, the first. */
-  file?: string
-  onShowFile: (path: string) => void
   /** Back to the gadget itself. */
   onBack: () => void
   /** It was deleted: go somewhere that still is. */
@@ -33,7 +29,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * bound to, its code as it was last kept, read once the Code tab is shown, and what its template
  * says of it.
  */
-export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, file, onShowFile, onBack, onDeleted, onOpenWorkspace }: GadgetSettingsPaneProps) => {
+export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace }: GadgetSettingsPaneProps) => {
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -44,7 +40,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const title = gadget?.title ?? initialTitle
   const blueprintId = gadget?.upstream?.blueprintId
   const blueprint = useBlueprintInfo(blueprintId)
-  useDocumentTitle(title ? `${tab === 'code' ? 'Code' : 'Settings'} · ${title}` : 'Gadget settings')
+  useDocumentTitle(title ? `Settings · ${title}` : 'Gadget settings')
   // Why the last thing asked for was not done.
   const [problem, setProblem] = useState<string>()
 
@@ -77,17 +73,6 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
       bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
       services={services}
       onUnbind={(name) => attempt(`remove env.${name}`, () => settings.unbind(name))}
-      code={(
-        <GadgetCodeView
-          workspaceId={workspaceId}
-          commitId={gadget?.commitId}
-          file={file}
-          onShowFile={onShowFile}
-          active={tab === 'code'}
-          frame="card"
-          className="h-[min(72vh,760px)]"
-        />
-      )}
       onDelete={() => attempt('delete the gadget', async () => {
         await settings.remove()
         onDeleted()

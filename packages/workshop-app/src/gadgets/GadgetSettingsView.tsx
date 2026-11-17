@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { CaretLeftIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -19,11 +18,10 @@ import { groupBindings, type GadgetBinding, type Listed } from './GadgetSettings
 import type { BindingService } from './useGadgetSettings'
 
 /** What a gadget's settings page shows beneath its name. */
-export type GadgetSettingsTab = 'connections' | 'code' | 'settings'
+export type GadgetSettingsTab = 'connections' | 'settings'
 
 export const GADGET_SETTINGS_TABS: { value: GadgetSettingsTab; label: string }[] = [
   { value: 'connections', label: 'Connections' },
-  { value: 'code', label: 'Code' },
   { value: 'settings', label: 'Settings' },
 ]
 
@@ -62,8 +60,6 @@ export type GadgetSettingsViewProps = {
   services: ReadonlyMap<string, BindingService>
   /** Takes a binding away from it, by the name its code knows it by. */
   onUnbind: (name: string) => void
-  /** Its code as it was last kept, and its history (`GadgetCodeView`), for the Code tab. */
-  code: ReactNode
   /** Deletes it, for everyone it is shared with, asked for twice. */
   onDelete: () => void
   /** Back to the gadget itself. */
@@ -77,12 +73,12 @@ const Message = ({ children }: { children: string }) => <p className="appears px
 /**
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
- * connected to, with the agents it can start apart; its code, as it was last kept; and its
+ * connected to, with the agents it can start apart, and its
  * settings, which are where it is from and deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, template, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, code, onDelete, onBack, onOpenWorkspace,
+  state, title, icon, description, template, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onDelete, onBack, onOpenWorkspace,
 }: GadgetSettingsViewProps) => {
   const header = (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
@@ -171,11 +167,6 @@ export const GadgetSettingsView = ({
                   </ListGroup>
                 </SettingsGroup>
               )}
-            </Tabs.Panel>
-            {/* Wider than the settings, as code is: a line of it reads whole. */}
-            <Tabs.Panel value="code" className="flex flex-col gap-3 lg:-mx-24">
-              {code}
-              <p className="px-5 text-sm text-kumo-subtle">The code as it was last kept. To change it, ask in a chat: what the agent writes shows here once it’s kept.</p>
             </Tabs.Panel>
             <Tabs.Panel value="settings" className="flex flex-col gap-12">
               <SettingsGroup title="Gadget details">

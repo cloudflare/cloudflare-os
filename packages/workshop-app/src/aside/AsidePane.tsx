@@ -31,10 +31,10 @@ export type AsidePaneProps = {
   /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
   narrow?: boolean
   /**
-   * Goes to a gadget's settings, or its code (`tab`), with the title it has now. Left out where
+   * Goes to a gadget's settings, with the title it has now. Left out where
    * the viewer may not change it, which leaves them out of its menu.
    */
-  onOpenSettings?: (output: AsideOutput, title: string, tab?: 'code') => void
+  onOpenSettings?: (output: AsideOutput, title: string) => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */

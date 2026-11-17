@@ -1,79 +1,11 @@
 import { useState } from 'react'
 import { BindingRow } from '@/blocks/BindingRow'
-import { CodeBrowser, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import { ListGroup } from '@/blocks/ListGroup'
 import { Button } from '@/components/Button'
 import type { GadgetBinding, Listed } from '@/gadgets/GadgetSettings'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import { useReport } from './previewState'
 import { Section } from './Section'
-
-const CLIENT = `// What the tip jar shows: the total, and a button for each amount.
-import { connect } from './lib/protocol'
-
-const AMOUNTS = [2, 5, 10]
-
-export default function render(root) {
-  const server = connect()
-  const total = document.createElement('h1')
-  root.append(total)
-  for (const amount of AMOUNTS) {
-    const button = document.createElement('button')
-    button.textContent = \`Tip $\${amount}\`
-    button.onclick = async () => update(await server.tip(amount))
-    root.append(button)
-  }
-  const update = (cents) => { total.textContent = \`$\${(cents / 100).toFixed(2)}\` }
-  server.total().then(update)
-}
-`
-
-const SERVER = `import { DurableObject } from 'cloudflare:workers'
-
-/** Keeps the jar's total, in cents. */
-export class Gadget extends DurableObject {
-  async total(): Promise<number> {
-    return (await this.ctx.storage.get<number>('total')) ?? 0
-  }
-
-  async tip(dollars: number): Promise<number> {
-    const total = (await this.total()) + dollars * 100
-    await this.ctx.storage.put('total', total)
-    return total
-  }
-}
-`
-
-const TEXTS: Record<string, string> = {
-  'client.js': CLIENT,
-  'server.ts': SERVER,
-  'README.md': '# Tip jar\n\nCounts tips for the team lunch. **Tip** adds to the total, which everyone sees.\n',
-  'lib/protocol.ts': 'export const connect = () => (globalThis as any).gadget\n',
-  'lib/styles.css': 'button {\n  border-radius: 999px;\n  padding: 8px 14px;\n}\n',
-}
-
-const FILES = [
-  { path: 'client.js', role: 'What it shows' },
-  { path: 'server.ts', role: 'What it keeps and does' },
-  { path: 'README.md', role: 'What it is' },
-  { path: 'blueprint.png' },
-  { path: 'lib/protocol.ts' },
-  { path: 'lib/styles.css' },
-]
-
-/** The code of a fake gadget, a file at a time, as the Code tab is given it. */
-const useFakeCode = (): Omit<CodeBrowserProps, 'empty' | 'className'> => {
-  const [shown, setShown] = useState('client.js')
-  const text = TEXTS[shown]
-  return {
-    files: { status: 'ready', files: FILES },
-    shown,
-    onShow: setShown,
-    file: text === undefined ? { status: 'other', message: 'It isn’t text, so it isn’t shown here.' } : { status: 'text', text },
-  }
-}
-
-const Fixed = (props: Omit<CodeBrowserProps, 'onShow'>) => <CodeBrowser {...props} onShow={() => {}} onRetry={() => {}} />
 
 const SERVICES = new Map([
   ['github', { name: 'GitHub', logoUrl: '/favicon.svg' }],
@@ -98,11 +30,9 @@ const STATES = {
   failed: 'Failed',
 } as const
 
-/** A gadget's settings page and its blocks: what it is bound to, and its code. */
+/** A gadget's settings page and its blocks: what it is bound to. */
 export const GadgetSettingsPreview = () => {
   const { report, say, later } = useReport()
-  const code = useFakeCode()
-  const narrowCode = useFakeCode()
   const [tab, setTab] = useState<GadgetSettingsTab>('connections')
   const [title, setTitle] = useState('Tip jar')
   const [bindings, setBindings] = useState(BINDINGS)
@@ -131,19 +61,7 @@ export const GadgetSettingsPreview = () => {
           </ListGroup>
         </div>
       </Section>
-      <Section title="CodeBrowser (a gadget’s Code tab: its files beside the one shown, highlighted, with Copy; the arrow keys step through them; a picture says it isn’t shown. Where it is narrow, the files are a drawer its header opens)">
-        <div className="w-full max-w-5xl"><CodeBrowser {...code} /></div>
-        <div className="w-full max-w-[420px]"><CodeBrowser {...narrowCode} /></div>
-      </Section>
-      <Section title="CodeBrowser, while reading, and when a file or all of it could not be read, or there is no code yet">
-        <div className="grid w-full max-w-5xl gap-4">
-          <Fixed files={{ status: 'loading' }} file={{ status: 'loading' }} />
-          <Fixed files={{ status: 'ready', files: FILES }} shown="server.ts" file={{ status: 'failed', message: 'The workspace didn’t answer.' }} />
-          <Fixed files={{ status: 'failed', message: 'The workspace didn’t answer.' }} file={{ status: 'loading' }} />
-          <Fixed files={{ status: 'ready', files: [] }} file={{ status: 'loading' }} empty="It has no code yet. Once a chat writes some and it’s kept, it shows here." />
-        </div>
-      </Section>
-      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, one for its code, and one for where it is from and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
+      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, and one for where it is from and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(STATES).map(([key, label]) => (
@@ -173,7 +91,6 @@ export const GadgetSettingsPreview = () => {
                   say(`env.${name} removed`)
                 })
               }}
-              code={<CodeBrowser {...code} frame="card" className="h-[560px]" />}
               onDelete={() => say('deleted the gadget')}
               onBack={() => say('back to the gadget')}
               onOpenWorkspace={() => say('open the workspace')}

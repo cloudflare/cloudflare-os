@@ -151,11 +151,11 @@ const AppFrame = () => {
   // its workspace, which they are about; the server checks again.
   const builds = (inWorkspace: string) =>
     workspacesState.status === 'ready' && workspacesState.workspaces.some(({ id, role }) => id === inWorkspace && role !== 'use')
-  const openSettings = (output: AsideOutput, title: string, tab?: 'code') =>
+  const openSettings = (output: AsideOutput, title: string) =>
     navigate({
       to: '/app/$itemId/settings',
       params: { itemId: itemPageId(output.workspaceId, { kind: 'output', workpieceId: output.workpieceId }) },
-      search: { tab },
+      search: {},
       state: { fromItem: true, gadgetTitle: title },
     })
 

@@ -522,11 +522,10 @@ its workspace, which shows its code in the gadget's place in the pane (`GadgetCo
 gadget, which keeps running under it: the title becomes a trail, the gadget's name (a button back,
 as is the menu's item for it then) and Code after it, growing out of the bubble. The code opened
 again is at the file it was left at. The menu also has Gadget settings for whoever may build there,
-which goes to its settings page (`/app/<id>/settings`,
-`GadgetSettingsPane`), laid out as a skill's page is: what it is drawn as, its title, renamed
-where it is, and what its template says it is for, which is the template's and only read here.
-The way back to the gadget goes back where it was opened from it (`fromItem`). Under them, a tab
-each (`?tab=`, kept in place in the history):
+which goes to its settings page (`/app/<id>/settings`, `GadgetSettingsPane`), laid out as a skill's
+page is: what it is drawn as, its title, renamed where it is, and what its template says it is for,
+which is the template's and only read here. The way back to the gadget goes back where it was
+opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in the history):
 
 - Connections, which is the first: what it is bound to (`GadgetSettings`, plain and tested,
   `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
@@ -534,7 +533,6 @@ each (`?tab=`, kept in place in the history):
   agent and the model it thinks with, or a model. One is taken away from the gadget, asked for
   twice, and stays in the workspace. Nothing is added here: the agent asks for what it needs in a
   chat.
-- Code: the same `GadgetCodeView` as a card, its file in the address (`?file=`).
 - Settings: where it is from, and deleting it.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
