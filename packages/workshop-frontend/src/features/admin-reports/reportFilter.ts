@@ -7,7 +7,8 @@ import {
 
 /**
  * The Reports tab's filters, kept in the admin page's URL as search parameters of these names, so
- * a filtered list can be linked. Each is passed to AdminApi.listIssueReports() as is.
+ * a filtered list can be linked. Each is passed to AdminApi.listIssueReports() as is. The tab sets
+ * `assignee` or `unassigned`, never both: together they match no report.
  */
 export type ReportFilter = {
   /** Only reports with this status. */
@@ -18,6 +19,10 @@ export type ReportFilter = {
   reporter?: string
   /** Only reports naming this workspace, by id. */
   workspace?: string
+  /** Only reports this admin holds, by the id a report shows for its assignee. */
+  assignee?: string
+  /** Only reports nobody holds. */
+  unassigned?: true
 }
 
 /** What the Reports tab keeps in the URL: its filters, and the report that is open. */
@@ -45,11 +50,14 @@ export const reportSearchOf = (search: Record<string, unknown>): ReportSearch =>
   if (reporter !== undefined) found.reporter = reporter
   const workspace = id(search.workspace)
   if (workspace !== undefined) found.workspace = workspace
+  const assignee = id(search.assignee)
+  if (assignee !== undefined) found.assignee = assignee
+  if (search.unassigned === true) found.unassigned = true
   const report = id(search.report)
   if (report !== undefined) found.report = report
   return found
 }
 
 /** Whether any filter is set. */
-export const isFiltered = ({ status, priority, reporter, workspace }: ReportFilter) =>
-  [status, priority, reporter, workspace].some((value) => value !== undefined)
+export const isFiltered = ({ status, priority, reporter, workspace, assignee, unassigned }: ReportFilter) =>
+  [status, priority, reporter, workspace, assignee, unassigned].some((value) => value !== undefined)

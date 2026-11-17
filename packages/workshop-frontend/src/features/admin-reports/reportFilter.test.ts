@@ -5,7 +5,8 @@ import { isFiltered, reportSearchOf } from './reportFilter'
 describe('reportSearchOf', () => {
   it('keeps every filter and the open report', () => {
     const search = {
-      tab: 'reports', status: 'withAdmin', priority: 'high', reporter: 'rita', workspace: 'ws-1', report: 'r-1',
+      tab: 'reports', status: 'withAdmin', priority: 'high', reporter: 'rita', workspace: 'ws-1',
+      assignee: 'grace', report: 'r-1',
     }
     const { tab: _tab, ...kept } = search
 
@@ -36,6 +37,26 @@ describe('reportSearchOf', () => {
       .toEqual({ reporter: '42', workspace: '7', report: '2026' })
   })
 
+  it('keeps the assignee, by id, and that only reports nobody holds are listed', () => {
+    expect(reportSearchOf({ assignee: 'grace@example.test' })).toEqual({ assignee: 'grace@example.test' })
+    expect(reportSearchOf({ assignee: 42 })).toEqual({ assignee: '42' })
+    expect(reportSearchOf({ unassigned: true })).toEqual({ unassigned: true })
+  })
+
+  it('leaves out an empty or malformed assignee, and any `unassigned` but true', () => {
+    expect(reportSearchOf({ assignee: '' })).toEqual({})
+    expect(reportSearchOf({ assignee: ['grace'] })).toEqual({})
+    expect(reportSearchOf({ assignee: true })).toEqual({})
+    expect(reportSearchOf({ unassigned: false })).toEqual({})
+    expect(reportSearchOf({ unassigned: 'true' })).toEqual({})
+    expect(reportSearchOf({ unassigned: 1 })).toEqual({})
+  })
+
+  // The server matches nothing for the two together: what the URL holds is sent as it is.
+  it('keeps an assignee and `unassigned` that the URL holds together', () => {
+    expect(reportSearchOf({ assignee: 'grace', unassigned: true })).toEqual({ assignee: 'grace', unassigned: true })
+  })
+
   it('leaves out a parameter that belongs to another tab', () => {
     expect(reportSearchOf({ tab: 'reports', admin: 'ada', kind: 'write', exposed: 'content' })).toEqual({})
   })
@@ -48,6 +69,7 @@ describe('isFiltered', () => {
 
   it.each([
     { status: 'new' }, { priority: 'low' }, { reporter: 'rita' }, { workspace: 'ws-1' },
+    { assignee: 'grace' }, { unassigned: true },
   ] as const)('is true for %o', (filter) => {
     expect(isFiltered(filter)).toBe(true)
   })

@@ -4,7 +4,7 @@ import { Badge } from '@cloudflare/kumo'
 import type { AdminAgentOrigin, IssueReport, IssueReportEntry } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import { IssueImages } from './IssueImages'
-import { ADMIN_ISSUE_STATUS_NAMES, entryAuthorLabel, ISSUE_STATUS_NAMES } from './issueLabels'
+import { ADMIN_ISSUE_STATUS_NAMES, ASSIGNMENT_LINES, entryAuthorLabel, ISSUE_STATUS_NAMES } from './issueLabels'
 
 const When = ({ at }: { at: Date }) => (
   <time dateTime={at.toISOString()} className="text-xs text-kumo-subtle">{formatFullTimestamp(at)}</time>
@@ -29,17 +29,25 @@ const AgentOrigin = ({ agent }: { agent: AdminAgentOrigin }) => (
 // One entry of the thread. Its author is shown by name alone and the row is keyed by the entry's
 // id: an admin's entry carries no author id where the reporter reads it. An entry is an admin's
 // when it says how their call reached the deployment. Where an agent's entry came from is shown to
-// the admins alone: what the reporter reads carries none of it.
+// the admins alone: what the reporter reads carries none of it. An entry with no text is a quiet
+// line: a change of assignee, which the admins alone read, or a change of status. One that is
+// neither is of a kind this client does not know, and is not shown as an empty note.
 const Entry = ({ entry, forAdmins }: { entry: IssueReportEntry; forAdmins: boolean }) => {
   const statusNames = forAdmins ? ADMIN_ISSUE_STATUS_NAMES : ISSUE_STATUS_NAMES
   const author = entryAuthorLabel(entry)
   const viaCli = forAdmins && entry.via === 'cli' && <span className="text-xs text-kumo-subtle">via the CLI</span>
   const origin = forAdmins && entry.agent !== undefined && <AgentOrigin agent={entry.agent} />
   if (entry.text === '') {
-    if (entry.status === undefined) return null
+    const did = entry.assignment !== undefined
+      ? forAdmins && ASSIGNMENT_LINES[entry.assignment]
+      : entry.status !== undefined && `set the status to ${statusNames[entry.status]}`
+    if (!did) return null
     return (
       <li className="flex flex-wrap items-baseline gap-x-2 px-1 text-xs text-kumo-subtle">
-        <span>{author}{entry.via === 'gatekeeper' ? ',' : ''} set the status to {statusNames[entry.status]}</span>
+        <span>{author}{entry.via === 'gatekeeper' ? ',' : ''} {did}</span>
+        {forAdmins && entry.assignment === undefined && entry.visibility === 'admins' && (
+          <span>(not shown to the reporter)</span>
+        )}
         {viaCli}
         <When at={entry.at} />
         {origin}
@@ -80,7 +88,10 @@ const Entry = ({ entry, forAdmins }: { entry: IssueReportEntry; forAdmins: boole
  * Read by the admins, an entry for admins alone is marked "Admins only" and set apart from those
  * the reporter reads, an admin's entry made through the CLI says so, an agent's says which
  * workspace and chat it came from, a status is named as the admins read it, and the workspace is
- * not linked: it is the reporter's to open, not theirs.
+ * not linked: it is the reporter's to open, not theirs. The admins' thread holds two kinds of
+ * line the reporter's never receives: a change of assignee, one quiet line naming who took, took
+ * over or released the report, and a change of status that leaves what the reporter reads as it
+ * was, which says it is not shown to the reporter.
  */
 export const IssueThread = ({ report, entries, readImage, forAdmins = false, children }: {
   report: IssueReport
