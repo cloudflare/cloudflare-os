@@ -2,7 +2,7 @@
 // whether moving between two versions crosses a breaking boundary.
 
 /** A plain `major.minor.patch[-prerelease]` version. */
-export interface Version {
+interface Version {
   major: number;
   minor: number;
   patch: number;
