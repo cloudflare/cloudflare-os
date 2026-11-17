@@ -510,6 +510,7 @@ export class SharePointReaderImpl extends RpcTarget implements SharePointReader 
       // "all" covers whatever the owner can open in the tenant, so there the reason gives nothing
       // away, unless it is that the link resolved outside it: that reads as one leading nowhere,
       // down to the error having no cause to tell them apart by.
+      // oxlint-disable-next-line eslint/preserve-caught-error -- the cause would say which refusal it was.
       if (scope.kind === "all") throw new Error((error instanceof OtherOrganizationError ? new UnresolvableUrlError() : error).message);
       throw new OutsideScopeError();
     }
