@@ -179,6 +179,7 @@ describe("getPushReview over the Overseer interface", () => {
       message: "local work",
       timestamp: new Date(1700000000_000),
     });
+    storage.gatekeepers.put({ id: 1, class: {} as any });
     putAction(storage, PLAIN_ACTION);
     putAction(storage, OBSERVATION, { type: "observation" });
     putAction(storage, HOOK, { type: "bindHook" });
@@ -190,7 +191,7 @@ describe("getPushReview over the Overseer interface", () => {
     }
     gitCache.markPushClosure(1, PUSH, [head]);
     let client = await openFakeOverseer(storage, { role, impl: { gitCache } });
-    return { head, gitCache, client };
+    return { head, gitCache, client, storage };
   }
 
   it("returns a page of what a pending push will send", async () => {
@@ -212,6 +213,16 @@ describe("getPushReview over the Overseer interface", () => {
       await expect(client.getPushReview(id, -1))
           .rejects.toThrow(`Action ${id} is not a pending push.`);
     }
+  });
+
+  it("refuses a push whose connection was removed, rather than say it sends nothing", async () => {
+    let { gitCache, client, storage } = await openWithActions();
+    // What removeGatekeeper() leaves: the record still pending, its marks cleared.
+    gitCache.clearPushMarks(PUSH);
+    storage.gatekeepers.delete(1);
+    await expect(client.getPushReview(PUSH)).rejects.toThrow(
+        `Action ${PUSH} can never be applied: the connection it was submitted through has been ` +
+        "removed from this workspace.");
   });
 
   it("refuses a cursor that is not a count of entries", async () => {

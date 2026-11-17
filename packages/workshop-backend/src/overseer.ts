@@ -14308,6 +14308,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         !action.description.pushedCommits?.length) {
       throw new Error(`Action ${actionId} is not a pending push.`);
     }
+    // removeGatekeeper() leaves such a push pending with its marks cleared, which would read
+    // as a push that sends nothing.
+    if (!this.impl.storage.gatekeepers.get(action.gatekeeperId)) {
+      throw new Error(
+          `Action ${actionId} can never be applied: the connection it was submitted through ` +
+          "has been removed from this workspace.");
+    }
     if (cursor !== undefined && !(Number.isInteger(cursor) && cursor >= 0)) {
       throw new Error("Invalid cursor.");
     }

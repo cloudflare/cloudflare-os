@@ -286,6 +286,27 @@ it.concurrent("getPushReview refuses what is not a pending push", async () => {
   expect(model.remainingSteps()).toBe(1);
 });
 
+it.concurrent("a waiting push whose connection is removed is refused a review, rather than read as " +
+    "one that sends nothing", async () => {
+  const model = models.script(textPush(false));
+  await using session = await openSession(model, "pushremoved");
+
+  await session.runTurn("Add the docs and push them.");
+  await asOwner(session, async ws => {
+    const push = await onlyPendingPush(ws);
+    expect((await wholeReview(ws, push.id)).objectCount).toBe(TEXT_PUSH_OBJECTS);
+
+    using connection = ws.getGatekeeperById(push.gatekeeperId!);
+    await connection.remove();
+    // The record stays pending, and nothing is marked for it any more.
+    expect((await onlyPendingPush(ws)).id).toBe(push.id);
+    await expect(ws.getPushReview(push.id)).rejects.toThrow(
+      `Action ${push.id} can never be applied: the connection it was submitted through has been ` +
+      "removed from this workspace.");
+  });
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it.concurrent("a push that was waiting when the workspace became restricted can still be reviewed, " +
     "and a push on top of it is refused", async () => {
   const model = models.script([

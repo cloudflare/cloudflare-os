@@ -97,6 +97,7 @@ import {
   type GitPullHints,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
+  MAX_PUSH_REVIEW_CURSOR,
   PUSH_REVIEW_PAGE_SIZE,
   READ_FILES_RESPONSE_BUDGET,
   type AdminFileContent,
@@ -1917,9 +1918,12 @@ export class WorkspaceGitCache {
     };
     // Every call runs the walk again from its start, since nothing is kept between calls. For
     // the entries it skips, that parses their commits and directories again and looks up each
-    // sent file's size, and decodes none of their text: only the page returned is settled. The
-    // marked set is what buildPackForAction lists whole, so a push that can be sent can be
-    // walked.
+    // sent file's size, and decodes none of their text: only the page returned is settled. A
+    // few objects can list without end (a directory that names the one below it twice at every
+    // level), so the entries a call may skip are bounded.
+    if (cursor > MAX_PUSH_REVIEW_CURSOR) {
+      throw new Error(`A push review cannot be read past ${MAX_PUSH_REVIEW_CURSOR} entries.`);
+    }
     let index = 0, bytes = 0;
     for (let entry of this.#pushReviewEntries(actionId, heads)) {
       if (index++ < cursor) continue;
@@ -1930,7 +1934,7 @@ export class WorkspaceGitCache {
       }
       entry = this.#settlePushReviewEntry(entry);
       // What the entry holds and what settling it read, so that neither the size of a page nor
-      // the work of a call is the pusher's to choose.
+      // what a call reads for it is the pusher's to choose.
       bytes += PUSH_REVIEW_ENTRY_COST;
       if (entry.kind === "commit") {
         bytes += PUSH_REVIEW_ENTRY_COST * entry.parents.length;
@@ -1966,7 +1970,7 @@ export class WorkspaceGitCache {
     let commits = 0, paths = 0, text = 0, files = new Set<GitOid>();
     let commitParents: GitOid[] = [];
     for (let row of this.#pushReviewEntries(actionId, heads)) {
-      let where = "";
+      let where = "", judged = false;
       if (row.kind === "object") {
         refusePush(
             `object ${row.oid} is sent but is neither a commit of this push nor at a path of one`);
@@ -2010,9 +2014,10 @@ export class WorkspaceGitCache {
         text += new TextEncoder().encode(row.path).byteLength;
         if (sent?.kind === "dir") {
           text += sent.size;
-        } else if (sent?.kind === "text" && !files.has(entry!.oid)) {
+        } else if (sent?.kind === "text") {
+          judged = files.has(entry!.oid);
           files.add(entry!.oid);
-          text += sent.size;
+          if (!judged) text += sent.size;
         }
       }
 
@@ -2029,6 +2034,8 @@ export class WorkspaceGitCache {
         refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_TEXT_SIZE} bytes of text`);
       }
 
+      // The same file at another path is the same text, read where it was first listed.
+      if (judged) continue;
       let settled = this.#settlePushReviewEntry(row);
       if (settled.kind === "commit" && settled.text === undefined) {
         refusePush(
@@ -2090,6 +2097,15 @@ export class WorkspaceGitCache {
     };
     let entryAt = (parent: Directory, name: string) =>
         parent === undefined ? undefined : parent?.get(name) ?? null;
+    // The store is read once for an object, however many paths or parent lines name it.
+    let stat = oncePerOid(oid => this.#statLocal(oid));
+    // A parent commit's root, as the directory that holds it; undefined when the commit is not
+    // held.
+    let root = oncePerOid((parent): Directory => {
+      let local = this.#readLocalShallow(parent);
+      return local?.type !== "commit" ? undefined : new Map(
+          [["", rootTreeEntry(parseGitCommitRefs(local.payload, parent).tree)]]);
+    });
 
     // Commits, depth first from the heads: a commit comes off the stack once to be read and
     // once more, after its marked parents, to be listed.
@@ -2123,11 +2139,7 @@ export class WorkspaceGitCache {
             path: "",
             entries: [rootTreeEntry(read.tree)],
             next: 0,
-            parents: read.parents.map(parent => {
-              let local = this.#readLocalShallow(parent);
-              return local?.type !== "commit" ? undefined : new Map(
-                  [["", rootTreeEntry(parseGitCommitRefs(local.payload, parent).tree)]]);
-            }),
+            parents: read.parents.map(root),
           }];
       while (frames.length > 0) {
         let frame = frames.at(-1)!;
@@ -2160,7 +2172,7 @@ export class WorkspaceGitCache {
         let sent: PushReviewSent | undefined, entries: GitTreeEntry[] | undefined;
         if (entry.mode !== "160000" && marked.has(entry.oid)) {
           accounted.add(entry.oid);
-          let held = this.#statLocal(entry.oid);
+          let held = stat(entry.oid);
           if (held === undefined) {
             sent = { kind: "absent" };
           } else if (held.type !== treeEntryObjectType(entry.mode)) {
@@ -2417,6 +2429,15 @@ function joinTreePath(path: string, name: string): string {
 // any other.
 function rootTreeEntry(tree: GitOid): GitTreeEntry {
   return { mode: "40000", name: "", oid: tree };
+}
+
+// `read`, remembering what it returned for each oid.
+function oncePerOid<T>(read: (oid: GitOid) => T): (oid: GitOid) => T {
+  let known = new Map<GitOid, T>();
+  return oid => {
+    if (!known.has(oid)) known.set(oid, read(oid));
+    return known.get(oid) as T;
+  };
 }
 
 // What a parent has at a path, as a push review says it: its entry, null where it has none,
