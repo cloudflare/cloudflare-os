@@ -13586,6 +13586,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      rulesApplyWhileRestricted: this.impl.storage.adminRestrictedDataOnly.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
@@ -13611,6 +13612,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       title: this.impl.storage.title.get(),
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
+      rulesApplyWhileRestricted: this.impl.storage.adminRestrictedDataOnly.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
@@ -13635,6 +13637,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let rulesApplySubscriber = {
+      update(value: boolean) {
+        // Written with every restricted observation: only a change is sent.
+        if (value === metadata.rulesApplyWhileRestricted) return;
+        metadata.rulesApplyWhileRestricted = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
     let ownerInvitesOnlySubscriber = {
       update(value: boolean | undefined) {
         metadata.ownerInvitesOnly = value;
@@ -13646,6 +13656,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
+      this.impl.storage.adminRestrictedDataOnly.unsubscribe(rulesApplySubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
       callback[Symbol.dispose]();
     };
@@ -13653,6 +13664,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.title.subscribe(titleSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
+    this.impl.storage.adminRestrictedDataOnly.subscribe(rulesApplySubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
 
     callback(metadata).catch(unsubscribe);

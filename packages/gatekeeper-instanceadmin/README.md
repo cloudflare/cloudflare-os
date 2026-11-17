@@ -555,8 +555,12 @@ pending, neither failed nor of unknown outcome, so a person can still approve it
 (`Overseer.listPreApprovableActions()`) lists this gatekeeper's connection though no gadget
 binds it, since an agent uses it with none, and says for each kind whether a rule applies it
 in the workspace as it is (`PreApprovableAction.ruleApplies`). The Workshop offers a rule in a
-marked workspace only where that is true. The preamble and the report session's declarations
-tell an agent the same.
+marked workspace only where that is true. The catalog is read, never pushed, so the
+workspace's metadata, which is pushed, carries the third condition
+(`WorkspaceMetadata.rulesApplyWhileRestricted`) to the collaborators who may read the
+catalog: when another connection's restricted read ends it, an open Workshop stops offering
+and promising a rule at once, without a reload. The preamble and the report session's
+declarations tell an agent the same.
 
 ### What the latch does not hold back
 
@@ -1109,7 +1113,8 @@ data and what a rule applies under the mark, with another vendor's restricted re
 admin connection's, after it, between an action's submission and its apply and in each of
 the two waits between the lend and the write, a workspace
 marked before it kept track of whose reads marked it and another vendor's action under a
-note's tag, the catalog, who is lent, the insiders of a content request, a spawned chat),
+note's tag, the catalog and the metadata that says when its answers end, who is lent, the
+insiders of a content request, a spawned chat),
 `auto-approval.test.ts` (`ruleApplies()`, each of its three conditions failing alone, the
 drain under the mark, and `guardRuleExemption()` against a writer that keeps no count),
 `admin-workspace-admission.test.ts` (the admission rule, with and after the connection, whose

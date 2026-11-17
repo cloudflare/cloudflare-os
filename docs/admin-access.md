@@ -1283,7 +1283,9 @@ Everything else waits for a person there:
 Web fetches are held and a push is refused as in any marked workspace. The exception is the
 kernel's: nothing in a gatekeeper's declarations asks for it, and no other vendor can have it.
 The Workshop reads the answer for each kind from the workspace
-(`PreApprovableAction.ruleApplies`). In a marked workspace "Always approve" is offered, and the
+(`PreApprovableAction.ruleApplies`), and is told through the workspace's metadata when
+another connection's restricted read ends every such answer
+(`WorkspaceMetadata.rulesApplyWhileRestricted`). In a marked workspace "Always approve" is offered, and the
 Auto-approval tab lets a rule be turned on, only for the kinds one still applies there; a rule
 that applies nothing says so in the tab and can still be turned off.
 

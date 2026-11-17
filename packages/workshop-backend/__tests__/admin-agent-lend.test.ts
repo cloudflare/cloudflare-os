@@ -20,7 +20,7 @@ import {
   ADMIN_WRITE_ERROR_CODES, getAdminWriteErrorCode,
   type AdminAccessRecord, type AdminAuditRecord, type AdminWriteAction, type AdminWriteRecord,
   type AdminWriteRequest, type AiChatAuthorInfo, type IssueReportAssignee, type IssueReportEntry,
-  type Overseer,
+  type Overseer, type WorkspaceMetadata,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS, type AdminAgentAction,
@@ -888,6 +888,51 @@ describe("the catalog of auto-approvable kinds", () => {
     // Once another vendor's restricted data was read here: nothing.
     await observe(otherId);
     expect(await listed()).toEqual({ [ws.gatekeeperId]: tags(() => false) });
+  }));
+
+  it("tells a client that reads it when a rule starts and stops applying anything under the mark",
+      () => adminWorkspace(async ws => {
+    let other = await ws.impl.addGatekeeper(
+        ws.impl.ctx.exports.FakeAdminGatekeeper({ props: {} }),
+        { type: "gatekeeper", vendorId: "othervendor", resourceUrl: "https://other.example/",
+          typeUrlPattern: "https://other.example/" }, "owner-user-do");
+    let otherId: number = await other.getId();
+    let observe = async (id: number) => {
+      using session = await ws.impl.openGatekeeperSession(
+          id, await ws.impl.getGatekeeperFacet(id), { from: "user" });
+      await session.observe(
+          { title: "Read", description: "A read.", containsRestrictedData: true });
+    };
+    ws.impl.ensureAmbientCapsules = async () => {};
+    using notifyClosed = new NativeRpcStub<() => void>(() => {});
+    using client = await ws.instance.open(ws.impl.ownerId, ws.owner.id, notifyClosed) as
+        unknown as Overseer & Disposable;
+
+    // Each state the subscription was sent, a repeat of the one before left out.
+    let sent: string[] = [];
+    using callback = new NativeRpcStub((metadata: WorkspaceMetadata) => {
+      let state = `${metadata.containsRestrictedData ? "marked" : "unmarked"}, ` +
+          `${metadata.rulesApplyWhileRestricted ? "rules apply" : "no rule applies"}`;
+      if (sent.at(-1) !== state) sent.push(state);
+    });
+    using _subscription = await client.subscribeToMetadata(callback as never) as
+        unknown as Disposable;
+    const UNMARKED = "unmarked, no rule applies";
+    await vi.waitFor(() => expect(sent).toEqual([UNMARKED]));
+
+    // The admin connection's mark, twice: the second changes nothing.
+    await observe(ws.gatekeeperId);
+    await observe(ws.gatekeeperId);
+    let marked = [UNMARKED, "unmarked, rules apply", "marked, rules apply"];
+    await vi.waitFor(() => expect(sent).toEqual(marked));
+    expect(await client.getMetadata()).toMatchObject(
+        { containsRestrictedData: true, rulesApplyWhileRestricted: true });
+
+    // Another vendor's: the catalog a client read until now no longer holds.
+    await observe(otherId);
+    await vi.waitFor(() => expect(sent).toEqual([...marked, "marked, no rule applies"]));
+    expect(await client.getMetadata()).toMatchObject(
+        { containsRestrictedData: true, rulesApplyWhileRestricted: false });
   }));
 });
 

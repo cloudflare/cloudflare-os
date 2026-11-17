@@ -5308,6 +5308,17 @@ export type WorkspaceMetadata = {
   containsRestrictedData?: boolean;
 
   /**
+   * Whether a rule still applies some kinds of action in a workspace that
+   * `containsRestrictedData`: true while every observation that marked it came through the
+   * admin gatekeeper's connection. PreApprovableAction.ruleApplies says which kinds, and of
+   * which connection. Once it is false there, no rule applies anything, whatever the catalog
+   * said before, and it does not turn true again. It is false, and says nothing, where the
+   * workspace holds no restricted data. Sent to those who may read that catalog, the
+   * collaborators whose role is "build", and absent for everyone else.
+   */
+  rulesApplyWhileRestricted?: boolean;
+
+  /**
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
