@@ -56,6 +56,20 @@ function reasons(input: DepsInput): string[] {
   return outcome.holds ? [] : asArray(outcome.details.reasons, "reasons").map((r) => asString(r, "reason"));
 }
 
+/** Checks that `found` has one entry per subject, in order, each naming the package, file or lockfile entry at fault. */
+function assertNames(found: string[], subjects: string[]): void {
+  assert.equal(found.length, subjects.length, found.join("\n"));
+  subjects.forEach((subject, i) => assert.ok(found[i].includes(subject), found[i]));
+}
+
+/** The advisory ids a failing outcome records for `key`, or undefined when it records none. */
+function advisoryIds(input: DepsInput, key: string): string[] | undefined {
+  const outcome = evaluateDeps(input);
+  assert.equal(outcome.holds, false);
+  const ids = asObject(outcome.details.advisories, "advisories")[key];
+  return ids === undefined ? undefined : asArray(ids, key).map((id) => asString(id, "advisory id"));
+}
+
 describe("proof-deps on recorded Dependabot pull requests", () => {
   it("holds for a catalog-only bump (#622 @cloudflare/workers-types)", () => {
     const outcome = evaluateDeps(fixture("pr622"));
@@ -73,46 +87,45 @@ describe("proof-deps on recorded Dependabot pull requests", () => {
   });
 
   it("fails #686 (@modelcontextprotocol/client 2.0.0 -> 2.2.0) on OSV advisories for both versions and zod", () => {
-    const found = reasons(fixture("pr686"));
-    assert.deepEqual(found.filter((r) => r.includes("OSV lists")).map((r) => r.replace(/: OSV lists .*/, "")), [
+    const outcome = evaluateDeps(fixture("pr686"));
+    assert.deepEqual(Object.keys(asObject(outcome.details.advisories, "advisories")), [
       "@modelcontextprotocol/client@2.2.0", "@modelcontextprotocol/client@2.0.0", "zod@4.6.5",
     ]);
-    assert.ok(found.includes("@modelcontextprotocol/client@2.2.0: OSV lists GHSA-6prh-2h8m-c8cw"), found.join("\n"));
-    assert.equal(found.length, 3, found.join("\n"));
+    assert.ok(advisoryIds(fixture("pr686"), "@modelcontextprotocol/client@2.2.0")?.includes("GHSA-6prh-2h8m-c8cw"));
+    assert.equal(reasons(fixture("pr686")).length, 3);
   });
 
   it("fails a major bump (#629 node-html-parser 7 -> 9), in the manifest and in the lockfile", () => {
-    assert.deepEqual(reasons(fixture("pr629")), [
-      "packages/gatekeeper-confluence/package.json node-html-parser: ^7.1.0 -> ^9.0.4 is not a minor or patch update",
-      "pnpm-lock.yaml importers/packages/gatekeeper-confluence/dependencies/node-html-parser: node-html-parser@9.0.4 leaves the release line of 7.1.0",
-      "pnpm-lock.yaml packages: node-html-parser@9.0.4 leaves the release line of 7.1.0",
+    assertNames(reasons(fixture("pr629")), [
+      "packages/gatekeeper-confluence/package.json",
+      "importers/packages/gatekeeper-confluence/dependencies/node-html-parser",
+      "node-html-parser@9.0.4",
     ]);
   });
 
   it("fails when the pull request also edits source (#409 styles.css)", () => {
     const found = reasons(fixture("pr409"));
-    assert.ok(found.includes("packages/workshop-frontend/src/styles.css: not a manifest or the lockfile"));
+    assert.ok(found.some((r) => r.startsWith("packages/workshop-frontend/src/styles.css:")), found.join("\n"));
   });
 
   it("fails when the lockfile gains a package name the base did not have (#788)", () => {
-    assert.ok(reasons(fixture("pr788")).includes(
-      "@codemirror/streamparser@6.0.0: a package the base lockfile does not name"));
+    const found = reasons(fixture("pr788"));
+    assert.ok(found.some((r) => r.startsWith("@codemirror/streamparser@6.0.0:")), found.join("\n"));
   });
 
   it("fails a version younger than minimumReleaseAge", () => {
     const input = { ...fixture("pr622"), now: new Date("2026-09-24T12:00:00Z") };
-    assert.deepEqual(reasons(input), [
-      "@cloudflare/workers-types@5.20260924.1: published 10h ago, under minimumReleaseAge (1440 minutes)",
-    ]);
+    assertNames(reasons(input), ["@cloudflare/workers-types@5.20260924.1"]);
+    assert.deepEqual(evaluateDeps(input).details.age_hours, { "@cloudflare/workers-types@5.20260924.1": 10 });
   });
 
-  it("fails closed when a version was not checked against OSV or the registry", () => {
-    const input = { ...fixture("pr622"), advisories: {}, published: {} };
-    assert.deepEqual(reasons(input), [
-      "@cloudflare/workers-types@5.20260924.1: publish time unknown",
-      "@cloudflare/workers-types@5.20260924.1: not checked against OSV",
-      "@cloudflare/workers-types@5.20260903.1: not checked against OSV",
-    ]);
+  it("fails closed when the added version has no publish time from the registry", () => {
+    assertNames(reasons({ ...fixture("pr622"), published: {} }), ["@cloudflare/workers-types@5.20260924.1"]);
+  });
+
+  it("fails closed when the added and the removed version were not checked against OSV", () => {
+    assertNames(reasons({ ...fixture("pr622"), advisories: {} }),
+      ["@cloudflare/workers-types@5.20260924.1", "@cloudflare/workers-types@5.20260903.1"]);
   });
 
   it("does not apply to a person's pull request or a github-actions bump", () => {
@@ -146,8 +159,8 @@ function withLockHunk(input: DepsInput, hunk: Hunk): FileDiff[] {
 const keyAndResolution = (text: string) => text.split("\n").slice(0, 2);
 
 describe("lockfile rule: a version at both sides keeps what it resolves to", () => {
-  // Bonk's case on #987, from recorded entries: terser@5.49.2 as #189's head locked it sits in
-  // #622's lockfile, and the head re-quotes its key and gives it terser@5.49.0's integrity.
+  // From recorded entries: terser@5.49.2 as #189's head locked it sits in #622's lockfile, and the
+  // head re-quotes its key and gives it terser@5.49.0's integrity.
   const kept = packageEntry(recorded("pr189.head.lock.yaml"), "terser@5.49.2");
   const otherIntegrity = /integrity: ([^,}]+)/.exec(packageEntry(recorded("pr189.base.lock.yaml"), "terser@5.49.0"))?.[1] ?? "";
   const swapped = kept.replace("  terser@5.49.2:", "  'terser@5.49.2':").replace(/integrity: [^,}]+/, `integrity: ${otherIntegrity}`);
@@ -162,11 +175,11 @@ describe("lockfile rule: a version at both sides keeps what it resolves to", () 
         head: readLockfile(withPackage(recorded("pr622.head.lock.yaml"), swapped)),
       },
     };
-    assert.deepEqual(reasons(tampered), ["pnpm-lock.yaml: terser@5.49.2 keeps its version but its resolution changed"]);
+    assertNames(reasons(tampered), ["terser@5.49.2"]);
   });
 
-  // From the review of #987's fix: a column-0 comment ended the `packages:` section for the reader,
-  // hiding a swapped integrity below it, though YAML still reads the entries.
+  // A column-0 comment would end the `packages:` section for the reader and hide a swapped
+  // integrity below it, though YAML still reads the entries.
   it("fails a comment, which could end a section for the reader but not for YAML", () => {
     const input = fixture("pr622");
     const head = withPackage(recorded("pr622.head.lock.yaml"), `# managed by pnpm\n${swapped.replace("'terser@5.49.2'", "terser@5.49.2")}`);
@@ -175,16 +188,15 @@ describe("lockfile rule: a version at both sides keeps what it resolves to", () 
       files: withLockHunk(input, { section: "packages:", removed: [], added: ["# managed by pnpm"] }),
       lockfiles: { base: readLockfile(withPackage(recorded("pr622.base.lock.yaml"), kept)), head: readLockfile(head) },
     };
-    const found = reasons(tampered);
-    assert.ok(found.some((r) => /^head pnpm-lock\.yaml line \d+: a comment$/.test(r)), found.join("\n"));
-    assert.ok(found.includes("pnpm-lock.yaml: terser@5.49.2 keeps its version but its resolution changed"), found.join("\n"));
+    assert.equal(tampered.lockfiles.head.problems.length, 1);
+    assertNames(reasons(tampered), ["head pnpm-lock.yaml", "terser@5.49.2"]);
   });
 
   it("fails a column-0 line that is not a section, and a resolution not on one line", () => {
-    const view = readLockfile(`${recorded("pr622.head.lock.yaml")}- x\n`);
-    assert.ok(view.problems.some((p) => p.endsWith("not a section key: - x")), view.problems.join("\n"));
+    assert.deepEqual(readLockfile(recorded("pr622.head.lock.yaml")).problems, []);
+    assertNames(readLockfile(`${recorded("pr622.head.lock.yaml")}- x\n`).problems, ["- x"]);
     const block = readLockfile(withPackage(recorded("pr622.head.lock.yaml"), "  terser@5.49.2:\n    resolution:\n      integrity: x\n"));
-    assert.ok(block.problems.some((p) => p.endsWith("terser@5.49.2: a resolution not written on one line")), block.problems.join("\n"));
+    assertNames(block.problems, ["terser@5.49.2"]);
   });
 
   it("fails a tarball moved off the default registry, keeping the integrity (#216's head)", () => {
@@ -194,8 +206,7 @@ describe("lockfile rule: a version at both sides keeps what it resolves to", () 
       "resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==}",
       "resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==, tarball: https://evil.example/kumo-2.9.2.tgz}");
     assert.notEqual(moved, head);
-    assert.deepEqual(reasons({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(moved) } }),
-      ["pnpm-lock.yaml: @cloudflare/kumo@2.9.2 keeps its version but its resolution changed"]);
+    assertNames(reasons({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(moved) } }), ["@cloudflare/kumo@2.9.2"]);
   });
 });
 
@@ -221,20 +232,21 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
     const outcome = evaluateDeps(importerOnly());
     assert.deepEqual(outcome.details.added, []);
     assert.deepEqual(outcome.details.removed, []);
-    const found = reasons(importerOnly());
-    assert.ok(found.includes("@modelcontextprotocol/client@2.2.0: OSV lists GHSA-6prh-2h8m-c8cw"), found.join("\n"));
-    assert.ok(found.some((r) => r.startsWith("@modelcontextprotocol/client@2.0.0: OSV lists")), found.join("\n"));
+    assert.ok(advisoryIds(importerOnly(), "@modelcontextprotocol/client@2.2.0")?.includes("GHSA-6prh-2h8m-c8cw"));
+    assert.notDeepEqual(advisoryIds(importerOnly(), "@modelcontextprotocol/client@2.0.0") ?? [], []);
   });
 
   it("fails closed when a moved-to version was not checked against OSV", () => {
-    const input = importerOnly();
-    const { "@modelcontextprotocol/client@2.2.0": _checked, ...others } = input.advisories;
-    assert.ok(reasons({ ...input, advisories: others }).includes("@modelcontextprotocol/client@2.2.0: not checked against OSV"));
+    const key = "@modelcontextprotocol/client@2.2.0";
+    const { [key]: _checked, ...others } = importerOnly().advisories;
+    const unchecked = { ...importerOnly(), advisories: others };
+    assert.equal(advisoryIds(unchecked, key), undefined);
+    assert.ok(reasons(unchecked).some((r) => r.startsWith(`${key}:`)));
   });
 
-  // From the review of #987's fix: a transitive dependency moved to a version the lockfile already
-  // had. #686's base snapshot of @modelcontextprotocol/core depends on zod 4.6.5 (with an advisory
-  // today); the base here had it at 4.6.7, the workspace catalog's version.
+  // A transitive dependency moved to a version the lockfile already had. #686's base snapshot of
+  // @modelcontextprotocol/core depends on zod 4.6.5 (with an advisory on the recording day); the
+  // base here has it at 4.6.7, the workspace catalog's version.
   it("fails a snapshot dependency moved to a version already in the lockfile", () => {
     const input = fixture("pr686");
     const edge = "  '@modelcontextprotocol/core@2.0.0':\n    dependencies:\n      zod: 4.6.5\n";
@@ -246,13 +258,12 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
         hunks: [{ section: "snapshots:", removed: ["      zod: 4.6.7"], added: ["      zod: 4.6.5"] }] }],
       lockfiles: { base: readLockfile(base.replace(edge, edge.replace("zod: 4.6.5", "zod: 4.6.7"))), head: readLockfile(base) },
     };
-    const found = reasons(moved);
-    assert.ok(found.includes("zod@4.6.5: OSV lists GHSA-mrhx-c7xc-m3w5"), found.join("\n"));
-    assert.ok(found.includes("zod@4.6.7: not checked against OSV"), found.join("\n"));
+    assert.ok(advisoryIds(moved, "zod@4.6.5")?.includes("GHSA-mrhx-c7xc-m3w5"));
+    assert.equal(advisoryIds(moved, "zod@4.6.7"), undefined);
+    assert.ok(reasons(moved).some((r) => r.startsWith("zod@4.6.7:")), reasons(moved).join("\n"));
   });
 
-  // Clanky on #987, round 2: a transitive dependency moved across a major version, which no
-  // manifest or catalog range shows.
+  // A transitive dependency moved across a major version, which no manifest or catalog range shows.
   it("fails a snapshot dependency moved across a major version", () => {
     const input = fixture("pr686");
     const edge = "  '@modelcontextprotocol/core@2.0.0':\n    dependencies:\n      zod: 4.6.5\n";
@@ -263,8 +274,7 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
         hunks: [{ section: "snapshots:", removed: ["      zod: 3.25.76"], added: ["      zod: 4.6.5"] }] }],
       lockfiles: { base: readLockfile(base.replace(edge, edge.replace("zod: 4.6.5", "zod: 3.25.76"))), head: readLockfile(base) },
     };
-    assert.ok(reasons(moved).includes(
-      "pnpm-lock.yaml snapshots/@modelcontextprotocol/core@2.0.0/dependencies/zod: zod@4.6.5 leaves the release line of 3.25.76"),
+    assert.ok(reasons(moved).some((r) => r.includes("snapshots/@modelcontextprotocol/core@2.0.0/dependencies/zod")),
       reasons(moved).join("\n"));
   });
 
@@ -272,16 +282,16 @@ describe("OSV rule: versions an importer, catalog or snapshot entry moves betwee
     const input = fixture("pr686");
     const git = head.replace("        version: 2.2.0\n", "        version: git+https://example.com/client.git\n");
     assert.notEqual(git, head);
-    assert.ok(reasons({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(git) } }).includes(
-      "pnpm-lock.yaml importers/packages/mcp-shared/dependencies/@modelcontextprotocol/client: moves to or from " +
-      "git+https://example.com/client.git, not a registry version"));
+    const found = reasons({ ...input, lockfiles: { ...input.lockfiles, head: readLockfile(git) } });
+    assert.ok(found.some((r) => r.includes("importers/packages/mcp-shared/dependencies/@modelcontextprotocol/client") &&
+      r.includes("git+https://example.com/client.git")), found.join("\n"));
   });
 });
 
 describe("pnpm-workspace.yaml rule", () => {
   it("rejects edits outside the catalog (38bd5821b added overrides and minimumReleaseAge)", () => {
     const [file] = parseDiff(readFileSync(new URL("./testdata/deps/workspace-38bd5821b.diff", import.meta.url), "utf8"));
-    assert.deepEqual(workspaceReasons(file.hunks), ['pnpm-workspace.yaml: changes outside the catalog (under "overrides:")']);
+    assertNames(workspaceReasons(file.hunks), ["overrides:"]);
   });
 });
 

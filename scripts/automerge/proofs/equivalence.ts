@@ -21,10 +21,10 @@ import { decide, runProducer, type Outcome } from "./artifact.ts";
 import { asObject, isObject, jsonEqual, parseJson, type Json, type JsonObject } from "./json.ts";
 
 /** Manifest fields that name the build rather than what it contains. */
-export const BUILD_IDENTITY = ["commit", "createdAt", "releaseId"];
+const BUILD_IDENTITY = ["commit", "createdAt", "releaseId"];
 
 /** The manifest paths that differ: `workers.<name>.<field>`, `assets`, or a top-level field. */
-export function manifestDifferences(base: JsonObject, head: JsonObject): string[] {
+function manifestDifferences(base: JsonObject, head: JsonObject): string[] {
   const differences: string[] = [];
   const keys = new Set([...Object.keys(base), ...Object.keys(head)]);
   for (const key of [...keys].toSorted()) {

@@ -70,19 +70,19 @@ const LOCK_INTEGRITY = /^ {4}resolution: /;
 const CATALOG_ENTRY = /^ {2,4}('?)([^'\s#][^':]*)\1: (\S+)$/;
 
 /** `name@version`, the key the registry and OSV results are filed under. */
-export function versionKey({ name, version }: PackageVersion): string {
+function versionKey({ name, version }: PackageVersion): string {
   return `${name}@${version}`;
 }
 
 /** The versions a lockfile diff adds and removes, and the lockfile rules it breaks. */
-export interface LockfileChanges {
+interface LockfileChanges {
   added: PackageVersion[];
   removed: PackageVersion[];
   reasons: string[];
 }
 
 /** Reads a lockfile diff. A version both removed and added (a moved line) counts as neither. */
-export function lockfileChanges(hunks: Hunk[]): LockfileChanges {
+function lockfileChanges(hunks: Hunk[]): LockfileChanges {
   const added = new Map<string, PackageVersion>();
   const removed = new Map<string, PackageVersion>();
   const reasons: string[] = [];
@@ -127,7 +127,7 @@ interface Pin {
 }
 
 /** A lockfile, as far as the whole-file rules read it. */
-export interface LockfileView {
+interface LockfileView {
   /** Each `packages:` entry's resolution, keyed by `name@version`. */
   resolutions: Map<string, string>;
   /** Each importer and catalog dependency, keyed by where it is declared. */
@@ -247,7 +247,7 @@ function normalResolution(key: string, resolution: string): string {
  * Every package version at both base and head whose resolution or integrity is not the same, and
  * every line of either lockfile the reading could not take as pnpm writes it.
  */
-export function retainedPackageReasons(base: LockfileView, head: LockfileView): string[] {
+function retainedPackageReasons(base: LockfileView, head: LockfileView): string[] {
   const reasons = [...base.problems.map((problem) => `base ${problem}`), ...head.problems.map((problem) => `head ${problem}`)];
   for (const [key, after] of head.resolutions) {
     const before = base.resolutions.get(key);
@@ -259,7 +259,7 @@ export function retainedPackageReasons(base: LockfileView, head: LockfileView): 
 }
 
 /** The registry versions importer, catalog and snapshot entries stopped and started resolving to. */
-export interface PinMoves {
+interface PinMoves {
   from: PackageVersion[];
   to: PackageVersion[];
   reasons: string[];
@@ -299,7 +299,7 @@ function splitKey(key: string): PackageVersion {
  * package version the lockfile adds. A package the base does not have at all is left to the rule
  * on new package names.
  */
-export function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
+function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
   const from = new Map<string, PackageVersion>();
   const to = new Map<string, PackageVersion>();
   const reasons: string[] = [];
@@ -353,7 +353,7 @@ export function pinMoves(base: LockfileView, head: LockfileView): PinMoves {
 }
 
 /** The versions OSV must be asked about: every version added, removed, or moved to or from. */
-export function advisoryTargets(lock: LockfileChanges, moves: PinMoves): PackageVersion[] {
+function advisoryTargets(lock: LockfileChanges, moves: PinMoves): PackageVersion[] {
   const targets = new Map<string, PackageVersion>();
   for (const entry of [...lock.added, ...lock.removed, ...moves.from, ...moves.to]) targets.set(versionKey(entry), entry);
   return [...targets.values()];
@@ -395,7 +395,7 @@ function versionMoveReasons(what: string, from: string, to: string): string[] {
 }
 
 /** Every rule a package.json change breaks. */
-export function manifestReasons(path: string, base: string | undefined, head: string | undefined): string[] {
+function manifestReasons(path: string, base: string | undefined, head: string | undefined): string[] {
   if (base === undefined || head === undefined) return [`${path}: added or deleted`];
   const before = asObject(parseJson(base), `${path} at base`);
   const after = asObject(parseJson(head), `${path} at head`);
@@ -428,7 +428,7 @@ export function manifestReasons(path: string, base: string | undefined, head: st
 }
 
 /** The base workspace's `minimumReleaseAge`, in minutes. */
-export function minimumReleaseAge(workspaceYaml: string): number {
+function minimumReleaseAge(workspaceYaml: string): number {
   const match = /^minimumReleaseAge: (\d+)\s*$/m.exec(workspaceYaml);
   if (!match) throw new Error("pnpm-workspace.yaml at base sets no minimumReleaseAge");
   return Number(match[1]);
@@ -510,7 +510,7 @@ export function lockfileNames(lockfile: LockfileView): Set<string> {
 }
 
 /** Publish times for `entries`, from each package's full registry document. */
-export async function fetchPublishTimes(entries: PackageVersion[]): Promise<Record<string, string>> {
+async function fetchPublishTimes(entries: PackageVersion[]): Promise<Record<string, string>> {
   const times: Record<string, string> = {};
   for (const name of new Set(entries.map((entry) => entry.name))) {
     const response = await fetch(`https://registry.npmjs.org/${name.replaceAll("/", "%2f")}`);
@@ -525,7 +525,7 @@ export async function fetchPublishTimes(entries: PackageVersion[]): Promise<Reco
 }
 
 /** OSV advisory ids for `entries`, from one `querybatch` call. */
-export async function fetchAdvisories(entries: PackageVersion[]): Promise<Record<string, string[]>> {
+async function fetchAdvisories(entries: PackageVersion[]): Promise<Record<string, string[]>> {
   if (entries.length === 0) return {};
   const response = await fetch("https://api.osv.dev/v1/querybatch", {
     method: "POST",

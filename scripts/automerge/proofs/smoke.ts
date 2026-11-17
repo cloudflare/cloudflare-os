@@ -26,10 +26,10 @@ export interface Answer {
   body: string;
 }
 
-export const LOCAL_PORT = 8799;
+const LOCAL_PORT = 8799;
 const LOCAL_READY_MINUTES = 15;
 /** How long one request, body included, may take before the smoke is status `error`. */
-export const REQUEST_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 60_000;
 
 /** Judges the answers to `GET /` and `GET /api/version`. */
 export function evaluateSmoke(url: string, root: Answer, version: Answer): Outcome {

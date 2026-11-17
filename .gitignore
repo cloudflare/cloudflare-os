@@ -39,7 +39,7 @@ wrangler.staging.jsonc
 # Site-specific dev server configs.
 wrangler.dev.jsonc
 
-# Scratch output from scripts/preview (the PR-preview comment body and URL).
+# Scratch output from scripts/preview (the PR-preview comment body).
 /output/
 
 # Mutation runs (scripts/automerge/proofs/tests.ts).

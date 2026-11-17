@@ -1,5 +1,4 @@
 // JSON values as they arrive from files, registries and APIs, with the narrowing the proofs need.
-// The judge scripts take no dependencies (see import-policy.test.ts), so JSONC is parsed here too.
 
 /** Any value `JSON.parse` can return. */
 export type Json = null | boolean | number | string | Json[] | JsonObject;
@@ -56,66 +55,4 @@ export function jsonEqual(a: Json | undefined, b: Json | undefined): boolean {
       keys.every((key) => Object.hasOwn(b, key) && jsonEqual(a[key], b[key]));
   }
   return false;
-}
-
-/**
- * Parses JSONC: JSON plus `//` and `/* *\/` comments and trailing commas, which is what Wrangler
- * accepts in `wrangler.jsonc`. Comment markers inside strings are left alone.
- */
-export function parseJsonc(text: string): Json {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const char = text[i];
-    if (char === '"') {
-      const end = stringEnd(text, i);
-      out += text.slice(i, end);
-      i = end;
-    } else if (char === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++;
-    } else if (char === "/" && text[i + 1] === "*") {
-      const end = text.indexOf("*/", i + 2);
-      if (end === -1) throw new Error("unterminated block comment in JSONC");
-      i = end + 2;
-    } else {
-      out += char;
-      i++;
-    }
-  }
-  return parseJson(withoutTrailingCommas(out));
-}
-
-function stringEnd(text: string, start: number): number {
-  let i = start + 1;
-  while (i < text.length) {
-    if (text[i] === "\\") i += 2;
-    else if (text[i] === '"') return i + 1;
-    else i++;
-  }
-  throw new Error("unterminated string in JSONC");
-}
-
-function withoutTrailingCommas(text: string): string {
-  let out = "";
-  let i = 0;
-  while (i < text.length) {
-    const char = text[i];
-    if (char === '"') {
-      const end = stringEnd(text, i);
-      out += text.slice(i, end);
-      i = end;
-      continue;
-    }
-    if (char === ",") {
-      let j = i + 1;
-      while (j < text.length && /\s/.test(text[j])) j++;
-      if (text[j] === "}" || text[j] === "]") {
-        i++;
-        continue;
-      }
-    }
-    out += char;
-    i++;
-  }
-  return out;
 }
