@@ -1,6 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react'
-import { Badge } from '@cloudflare/kumo'
 import { cn } from '@cloudflare/kumo/utils'
+import { Tag } from '@/components/Tag'
 
 export type SettingRowProps = {
   title: string
@@ -30,7 +30,7 @@ export const SoonContext = createContext(false)
 export const SOON = 'opacity-50'
 
 /** Said of what is not there yet, beside its name, quietly: it is a note, not a state to act on. */
-export const SoonBadge = () => <Badge variant="outline" className="font-normal text-kumo-subtle">Coming soon</Badge>
+export const SoonBadge = () => <Tag>Coming soon</Tag>
 
 /**
  * One setting, on one line of a `SettingsGroup`, in two columns: what it is, and what it is set

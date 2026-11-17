@@ -264,12 +264,13 @@ export const SettingsPreview = () => {
           <MutedWorkspaces title="With none" muted={[]} others={WORKSPACES} problem="Couldn’t mute the workspace." onMute={(id) => say(`muted ${id}`)} onUnmute={() => {}} />
         </div>
       </Section>
-      <Section title="SkillRow, in a ScrollArea, which is as tall as three of them and draws its scrollbar over their ends: a skill as a list has it, which opens it: with a tag, somebody else’s, with neither a tag nor a time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and a tag, offered from those there are">
+      <Section title="SkillRow, in a ScrollArea, which is as tall as three of them and draws its scrollbar over their ends: a skill as a list has it, which opens it: the viewer’s own with a tag, somebody else’s, the organization’s, one with nobody’s picture, tag or time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and a tag, offered from those there are">
         <div className="flex w-full max-w-3xl flex-col gap-3">
           <ScrollArea className="max-h-48 rounded-3xl bg-kumo-tint">
             <div className="flex flex-col p-1.5">
-              <SkillRow name="Summarize meeting notes" detail="Turn a transcript into decisions, owners and next steps." tag="Meetings" time="2h ago" onSelect={() => say('opened the skill')} />
-              <SkillRow name="Weekly report" detail="Shared by Grace Hopper · How the team writes the weekly status report." tag="Reports" time="Nov 12" onSelect={() => say('opened the skill')} />
+              <SkillRow name="Summarize meeting notes" detail="Turn a transcript into decisions, owners and next steps." owner={{ kind: 'person', name: 'Ada Lovelace', you: true }} tag="Meetings" time="2h ago" onSelect={() => say('opened the skill')} />
+              <SkillRow name="Weekly report" detail="How the team writes the weekly status report." owner={{ kind: 'person', name: 'Grace Hopper' }} tag="Reports" time="Nov 12" onSelect={() => say('opened the skill')} />
+              <SkillRow name="Brand voice" detail="How the organization writes." owner={{ kind: 'organization' }} time="Oct 2" onSelect={() => say('opened the skill')} />
               <SkillRow name="Plan a trip" detail="Preferences for flights and hotels." onSelect={() => say('opened the skill')} />
               <SkillRow name="A skill with a name long enough that it has to be cut off somewhere along the line it is on" detail="And with so much to say of what it is for that it cannot all be said on the one line there is for it" tag="A tag that is long too" time="Sep 3" onSelect={() => say('opened the skill')} />
             </div>

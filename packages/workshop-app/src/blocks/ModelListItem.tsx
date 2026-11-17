@@ -1,6 +1,7 @@
 import { Badge } from '@cloudflare/kumo'
 import { TrashIcon } from '@phosphor-icons/react'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
+import { Tag } from '@/components/Tag'
 import { LIST_ACTION } from './StarButton'
 
 export type ModelListItemProps = {
@@ -31,7 +32,7 @@ export const ModelListItem = ({ name, id, builtIn = false, roles = [], onRemove,
       {id !== name && <span className="truncate text-sm text-kumo-subtle">{id}</span>}
     </span>
     {roles.map((role) => <Badge key={role} variant="info">{ROLE[role]}</Badge>)}
-    {builtIn && <Badge variant="outline" className="font-normal text-kumo-subtle">Built-in</Badge>}
+    {builtIn && <Tag>Built-in</Tag>}
     {onRemove && (
       <ConfirmMenu
         icon={TrashIcon}

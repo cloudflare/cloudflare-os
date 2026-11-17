@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Badge } from '@cloudflare/kumo'
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
+import { Tag } from '@/components/Tag'
 
 export type FilePreviewCardProps = {
   /** Where it is in what it belongs to: "templates/report.md". */
@@ -57,7 +57,7 @@ export const FilePreviewCard = ({ path, detail, role, href, onSelect, tall = fal
           {path.slice(path.lastIndexOf('/') + 1)}
         </LinkButton>
         {/* Kumo rings a badge in a link that is pointed at; this one is beside it. */}
-        {role && <Badge variant="outline" className="shrink-0 font-normal text-kumo-subtle">{role}</Badge>}
+        {role && <Tag className="shrink-0">{role}</Tag>}
         {detail && <span className="ms-auto shrink-0 text-sm text-kumo-subtle">{detail}</span>}
       </div>
       {shows && (

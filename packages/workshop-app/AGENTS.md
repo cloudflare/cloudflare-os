@@ -402,7 +402,8 @@ out.
 
 The skills are listed in the settings' Skills part (`SkillLibrary`): one flat list on one
 surface, whatever the order, in a `ScrollArea` once there are more than fit, with rows only and no
-icon on them. What a skill is collected in is a tag on it. The organization's are left out until
+icon on them. What a skill is collected in is a tag on it, and whose it is is a picture, as a
+workspace's members are where it is listed: the owner's, or the organization's mark. The organization's are left out until
 the filter for them is on (`startsNarrowedTo`), and the filters are kept on this device
 (`keepsFilters`). One is added by writing it or by uploading Markdown files or a folder.
 

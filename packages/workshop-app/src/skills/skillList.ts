@@ -1,14 +1,16 @@
 import { groupByTime } from '@/chat/timeGroups'
 import type { ListFilter, ListOrder } from '@/components/listView'
 import { groupByName } from '@/components/nameGroups'
+import type { SkillOwner } from '@/blocks/SkillRow'
 import type { ListViewSpec } from '@/hooks/useListView'
 import type { Skill } from './SkillStore'
 
 /** Whose a skill is, where it is not the user's own. */
 export const sourceLabel = ({ source }: Skill) => (source.kind === 'shared' ? `Shared by ${source.by}` : source.kind === 'organization' ? 'Organization' : undefined)
 
-/** What there is to say of a skill under its name, on one line: whose it is, where not the user's own, then what it is for. */
-export const skillDetail = (skill: Skill) => [sourceLabel(skill), skill.description].filter(Boolean).join(' · ')
+/** Whose a skill is, as its row shows it: the user, called `userName`, whoever shared it with them, or the organization. */
+export const skillOwner = ({ source }: Skill, userName: string): SkillOwner =>
+  source.kind === 'organization' ? { kind: 'organization' } : source.kind === 'shared' ? { kind: 'person', name: source.by } : { kind: 'person', name: userName, you: true }
 
 /** The tags the skills have, each once, by name. */
 export const skillTags = (skills: Skill[]) => [...new Set(skills.flatMap(({ tag }) => tag ?? []))].toSorted((a, b) => a.localeCompare(b))

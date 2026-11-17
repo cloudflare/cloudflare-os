@@ -15,6 +15,7 @@ import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
+import { Tag } from '@/components/Tag'
 import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
@@ -265,6 +266,12 @@ function Gallery() {
         <Avatar name="Balint" />
         <Avatar name="Ada Lovelace" />
         <Avatar name="Broken image" src="/missing.png" />
+      </Section>
+      <Section title="Tag (an outline only, the same on the page and on a tinted surface)">
+        <Tag>Meetings</Tag>
+        <span className="flex rounded-2xl bg-kumo-tint p-3">
+          <Tag>Meetings</Tag>
+        </span>
       </Section>
       <Section title="ConnectButton">
         <ConnectButton>

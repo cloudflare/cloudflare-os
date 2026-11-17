@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { narrowList } from '@/components/listView'
-import { skillDetail, skillList, skillTags } from './skillList'
+import { skillList, skillOwner, skillTags } from './skillList'
 import type { Skill } from './SkillStore'
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000)
@@ -70,9 +70,9 @@ describe('skillList', () => {
     expect(left('organization')).toEqual(['Incident'])
   })
 
-  it('says whose a skill is before what it is for, where it is not the user’s own', () => {
-    expect(skillDetail(SKILLS[0])).toBe('How to review.')
-    expect(skillDetail(SKILLS[1])).toBe('Shared by Grace Hopper · How to report.')
-    expect(skillDetail(SKILLS[3])).toBe('Organization · How to incident.')
+  it('says whose a skill is: the user, whoever shared it, or the organization', () => {
+    expect(skillOwner(SKILLS[0], 'Ada Lovelace')).toEqual({ kind: 'person', name: 'Ada Lovelace', you: true })
+    expect(skillOwner(SKILLS[1], 'Ada Lovelace')).toEqual({ kind: 'person', name: 'Grace Hopper' })
+    expect(skillOwner(SKILLS[3], 'Ada Lovelace')).toEqual({ kind: 'organization' })
   })
 })

@@ -1,5 +1,4 @@
 import { useRef, useState, type ChangeEvent } from 'react'
-import { Badge } from '@cloudflare/kumo'
 import { CaretLeftIcon, FolderSimpleIcon, UploadSimpleIcon } from '@phosphor-icons/react'
 import { FilePreviewCard } from '@/blocks/FilePreviewCard'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -17,6 +16,7 @@ import { ENOUGH } from '@/components/listView'
 import { Markdown } from '@/components/Markdown'
 import { Switch } from '@/components/Switch'
 import { Tabs, type TabsTab } from '@/components/Tabs'
+import { Tag } from '@/components/Tag'
 import { saveBytes } from '@/files/saveBytes'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useListView } from '@/hooks/useListView'
@@ -237,8 +237,8 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
           {problem && <p role="alert" className="text-base text-kumo-danger">{problem}</p>}
           {(skill.tag || whose) && (
             <p className="mt-1 flex flex-wrap items-center justify-center gap-1.5">
-              {skill.tag && <Badge variant="outline" className="font-normal text-kumo-subtle">{skill.tag}</Badge>}
-              {whose && <Badge variant="outline" className="font-normal text-kumo-subtle">{whose}</Badge>}
+              {skill.tag && <Tag>{skill.tag}</Tag>}
+              {whose && <Tag>{whose}</Tag>}
             </p>
           )}
         </div>

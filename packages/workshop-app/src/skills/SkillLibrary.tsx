@@ -9,9 +9,10 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 import { ENOUGH } from '@/components/listView'
 import { ScrollArea } from '@/components/ScrollArea'
 import { useListView } from '@/hooks/useListView'
+import { useApi } from '@/rpc/ApiContext'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { readUploadFiles } from './skillFiles'
-import { skillDetail, skillList, skillTags } from './skillList'
+import { skillList, skillOwner, skillTags } from './skillList'
 import { prepareSkillUploads } from './skillUpload'
 import { skillStore, useSkills } from './useSkills'
 
@@ -25,7 +26,8 @@ export type SkillLibraryProps = {
  * The user's skills, as any list in the app is, but for its groups: one flat list in the order
  * chosen, all on one surface, under a search, the order, the filters and the way to add one. They are rows only: a skill is a name and a line
  * about it, which a card has nothing to add to. What a skill used to be collected in is a tag on
- * it, which the list can be grouped and narrowed by. A row opens the skill's own page.
+ * it, which the list can be grouped and narrowed by, and whose it is is a picture: theirs, or the
+ * organization's mark. A row opens the skill's own page.
  *
  * One is added by writing it, or from files: each Markdown file chosen is a skill, and a folder
  * with a `SKILL.md` is one with everything in it (`prepareSkillUploads`). One added alone is
@@ -36,6 +38,7 @@ export type SkillLibraryProps = {
  */
 export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
   const skills = useSkills()
+  const { user } = useApi()
   const [writing, setWriting] = useState(false)
   // Why what was chosen made no skills.
   const [problem, setProblem] = useState<string>()
@@ -54,7 +57,8 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
       <li key={value.id}>
         <SkillRow
           name={value.name}
-          detail={skillDetail(value)}
+          detail={value.description}
+          owner={skillOwner(value, user.name)}
           tag={value.tag}
           time={time ?? formatActivity(value.updated)}
           href={skillHref?.(value.id)}

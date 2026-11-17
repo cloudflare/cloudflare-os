@@ -1,8 +1,8 @@
-import { Badge } from '@cloudflare/kumo'
 import { DownloadSimpleIcon, FileIcon, FileImageIcon, FileTextIcon, TrashIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { LinkButton } from '@/components/LinkButton'
+import { Tag } from '@/components/Tag'
 import { CardAction } from './CardAction'
 import { LIST_ACTION } from './StarButton'
 
@@ -45,7 +45,7 @@ export const SkillFileRow = ({ path, kind, detail, role, href, onSelect, onDownl
         {detail && <span className="block truncate text-kumo-subtle">{detail}</span>}
       </span>
       {/* Kumo rings a badge in a link that is pointed at, which here is the whole row. */}
-      {role && <Badge variant="outline" className="shrink-0 font-normal text-kumo-subtle [a:hover_&]:ring-0">{role}</Badge>}
+      {role && <Tag className="shrink-0">{role}</Tag>}
     </>
   )
   const shape = 'flex min-w-0 flex-1 items-center gap-3 rounded-2xl py-3 pr-2.5 pl-3.5 text-left text-base'
