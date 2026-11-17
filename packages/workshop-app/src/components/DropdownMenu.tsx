@@ -42,6 +42,8 @@ export type DropdownMenuProps = TriggerContent & {
   keepTrigger?: boolean
   /** How long the opening morph takes, in milliseconds. Every other timing scales with it. */
   duration?: number
+  /** Lifted off what it covers by a faint shadow, for one that stands apart from a surface like its own. */
+  raised?: boolean
 }
 
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
@@ -72,6 +74,7 @@ const DropdownMenuRoot = ({
   inPlace = false,
   keepTrigger = false,
   duration = 360,
+  raised = false,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const actionsRef = useRef<Menu.Root.Actions>(null)
@@ -131,6 +134,7 @@ const DropdownMenuRoot = ({
             ref={popupRef}
             data-in-place={inPlace || undefined}
             data-keep-trigger={keepsTrigger || undefined}
+            data-raised={raised || undefined}
             data-variant={triggerVariant}
             style={time}
             aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}

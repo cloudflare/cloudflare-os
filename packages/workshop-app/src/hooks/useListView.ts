@@ -11,6 +11,8 @@ export type ListViewSpec<T, Order extends ListOrder<T>> = {
   facetMenus?: Record<string, string>
   /** What a search looks through for an item: its title, and whatever else it may be known by. */
   searchText: (item: T) => string
+  /** How it is drawn until the user chooses: as rows, unless it says cards. */
+  startsAs?: ListViewMode
 }
 
 export type ListView<T, Order extends ListOrder<T>> = {
@@ -34,13 +36,13 @@ export type ListView<T, Order extends ListOrder<T>> = {
  * list it is and must not change.
  */
 export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: string, spec: ListViewSpec<T, Order>): ListView<T, Order> => {
-  const [prefs, setPrefs] = useState(() => listViewPrefs(name).read())
+  const [prefs, setPrefs] = useState(() => listViewPrefs(name, spec.startsAs).read())
   const [query, setQuery] = useState('')
   const [filtersOn, setFiltersOn] = useState<string[]>([])
 
   const keep = (next: ListViewPrefs) => {
     setPrefs(next)
-    listViewPrefs(name).write(next)
+    listViewPrefs(name, spec.startsAs).write(next)
   }
   // One kept from before may be gone since.
   const order = spec.orders.find(({ id }) => id === prefs.order) ?? spec.orders[0]

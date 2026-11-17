@@ -10,6 +10,8 @@ const parse = (value: unknown): ListViewPrefs | undefined =>
 
 /**
  * What is kept of how the list called `name` is looked at. A search and filters are not: they are
- * for the visit, and a list that came back narrowed would seem to have lost things.
+ * for the visit, and a list that came back narrowed would seem to have lost things. Until the user
+ * has chosen, it is looked at as `mode`.
  */
-export const listViewPrefs = (name: string) => stored<ListViewPrefs>(`workshop-app:list-view:${name}`, parse, { mode: 'list' })
+export const listViewPrefs = (name: string, mode: ListViewPrefs['mode'] = 'list') =>
+  stored<ListViewPrefs>(`workshop-app:list-view:${name}`, parse, { mode })

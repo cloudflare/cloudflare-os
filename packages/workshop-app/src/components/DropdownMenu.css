@@ -201,6 +201,12 @@
   background-color: color-mix(in oklch, var(--color-kumo-base) calc(clamp(0, var(--menu-size) / 0.5, 1) * 100%), var(--color-kumo-contrast));
 }
 
+/* A raised menu lifts off what it covers by a faint shadow, which grows in with the surface, as
+   the trigger it starts from has none. On the surface's inner layer, as its ring is a shadow. */
+.dropdown-menu[data-raised] .dropdown-menu-surface > div {
+  box-shadow: 0 4px 16px rgb(0 0 0 / calc(0.04 * clamp(0, var(--menu-size), 1)));
+}
+
 .dropdown-menu-shadow {
   /* Share the morph's clock so both handoffs match the shadowless trigger. */
   opacity: clamp(0, var(--menu-size), 1);

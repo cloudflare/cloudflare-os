@@ -1,7 +1,8 @@
 # Workshop App
 
 The reworked Workshop frontend, built beside `workshop-frontend` (which stays the shipped app until
-cutover). Scope is deliberately small: chat, chat settings, and the Library and Workspaces pages.
+cutover). Scope is deliberately small: chat, chat settings, and the Library, Workspaces and
+Connections pages.
 Follow `../../AGENTS.md` and the `frontend-conventions` skill in addition to this file.
 
 Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old frontend uses 3000).
@@ -33,6 +34,8 @@ src/
   chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
   aside/        What is open beside the page (a file, an output), and the ways to open it
   library/      Everything the user's workspaces have made (`useLibrary`), and the Library page
+  connections/  The services the user has connected and could connect (`useConnections`), the
+                Connections page, and the window a service is signed in to in
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -40,7 +43,7 @@ src/
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`) are the only code that talks to the
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`) are the only code that talks to the
 backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
@@ -267,13 +270,85 @@ first message names the format ahead of what was written and says where the name
 (`chat/startWithFormat.ts`), which is what the old composer's Start with menu sent: the agent
 reads the name and makes one from the deployment's blueprint, and the feed draws it as a chip.
 
+## The Connections page
+
+`/connections` (the sidebar's Connections button) lists the services the app can use on the
+user's behalf, the way a store lists apps (`useConnections`): one entry for each account
+connected, and one for each service on offer that could be connected, which is every one but those
+added as they are that have their one account: a service that is signed in to takes another
+account, so it is offered beside the accounts it has. It is the old app's Gatekeepers page,
+without a service's own page.
+
+`connections/connectionList.ts` (plain, tested) says what is listed and how. It has the one order,
+so no control to choose it by: what needs attention first (an account whose sign-in ran out), then
+the accounts connected, each a group of its own however few it has, then what could be connected,
+by category. A service can be of several categories, the first the one it is most, which is the
+one it is listed under (Google is for mail and data too, but is listed under Productivity). A
+category with enough services for the view is a group of its own, and the rest, with those that
+have no category, are gathered after them under More; while no category has enough, they are all
+under Available. A service says nothing of its categories itself, so
+`connections/serviceCategories.ts` says them for the services this repository has a gatekeeper
+for, by their id. A deployment's own services have none: they should be the gatekeeper's to say
+(`VendorDescription`), once the backend can. The filters are where a connection stands and, in a
+menu of their own, the categories that something listed is of, which a service passes by any of
+its own. The search also finds one by what it is for, its categories, what it gives access to,
+and whose account it is.
+
+It starts as cards (`startsAs`), two to a line (`CardGrid`'s `wide`), each laid out along its line
+(`ConnectionCard`): the logo, the name over what the service is for, and at the end a mark of
+what the card does, with the logo and that staying at the top as what is said grows down. A
+connected account has a dot on its logo (`ConnectionStatus`): green (`--color-live`) while it can
+be used, red once it has to be signed in to again. Under its name is whose account it is instead
+of what the service is for, which whoever connected it knows, unless that is only the service's
+name again, as it is for one added as it is.
+
+All of the card or the row is a button. That of a service that could be connected has a plus at
+its end, and opens `ConnectDialog` (a `Dialog`): what the service is for
+and what it gives access to, with a switch for each kind that is given on its own, all on to start
+with, and the way on to the service to sign in, or to add it where there is nothing to sign in to.
+What it gives access to is one surface, no taller than a few of its lines and scrolled within,
+by a scrollbar that is always there to say so (`.scrollbar-shown` in `styles.css`, which only
+WebKit and Chromium can draw). Anything said at length, of the service or of one of those, is cut
+short with "more" right after it (`ClampedText`): by how many characters it has
+(`clampText.ts`, plain and tested), not by how many lines it takes, so that nothing is measured.
+The dialog stays until the service's window is open, with why under it when it could not be, and
+`ConnectionsPane` puts it away then.
+
+That of a connected account has a chevron at its end, and opens `ManageConnectionDialog`, which
+is laid out as the other is (`ServiceDialogHeader`, `ServiceDialogBody`): whose account it is, in
+an outline, over what it has access to, where a kind it does not have is switched on and given by
+going on to the service; what it has is only taken back by disconnecting, which its switch, which
+cannot be changed, says when pointed at. At its foot are Disconnect, which is
+asked for twice (as is the sign-out button at the end of the account's outline, which asks the
+same) by a `ConfirmMenu`: the question grows out of the button in place, as a menu does
+(`DropdownMenu`'s `raised`, with a faint shadow, as it covers a surface like its own), with
+Cancel beside the button that does it, and Tab going between the two, which in a menu would close it. Ask that way for anything else that cannot be taken back. Then come the way to add another account, and Done. An account that has to be signed in to
+again says so first, in a `Banner` with Reconnect in it, which is the one place it is signed in to
+again from: its card or row only has a badge before the chevron. What was asked for
+in either dialog and could not be done is said in a `Banner` over its buttons. A dialog is given
+the connection as it is listed now, so that what an account is given shows while it is up.
+
+`Banner` is the app's own, drawn from Kumo's colours: a rounded surface in the colour of what went
+wrong, with its icon and its action on the title's line, the action a button of the app's shape
+a shade deeper than the banner. A surface in a dialog, the banner or a list, is a step less round than
+the dialog (`--surface-radius`, which `Dialog` sets). `Button`'s `danger`
+is `secondary` in that colour, for what cannot be taken back.
+
+A service is signed in to in a window of its own (`connections/connectHandoff.ts`, plain and
+tested, ported from the old app without the native app's path; see `docs/connect-handoff.md`). The
+window is opened empty, disowned and given the flow's nonce before it is sent to the service, and
+ends on `/connect/handoff` (`ConnectHandoffPane`, outside the app's frame), which redeems its
+ticket with the nonce over its own session. Redeeming is what connects the account, which then
+shows on the page through `subscribeConnectedAccounts()`. The flow ends on the deployment's public
+address, so in development it only finishes when that is this app's.
+
 ## Lists
 
 A list that is more than a few rows has the same controls over it (`ListToolbar`), on one line: a
 search at the start, a round button that opens out over the room when clicked or tabbed to
 (`SearchField`); then rows or cards, the order, the filters, and what the list offers to do, such
-as New. Each is drawn only if given, so a list has the ones it has a use for. The Workspaces and
-Library pages have them; use the same pieces for the next rather than building beside them, down
+as New. Each is drawn only if given, so a list has the ones it has a use for. The Workspaces,
+Library and Connections pages have them; use the same pieces for the next rather than building beside them, down
 to a row's and a card's buttons (`RowAction`, `CardAction`, `StarButton`):
 
 - `components/listView.ts` (plain, tested) has what a list says of itself: its orders
@@ -285,12 +360,14 @@ to a row's and a card's buttons (`RowAction`, `CardAction`, `StarButton`):
   (`DropdownMenu.Submenu`) with a field to find one by (`OptionPicker`): for alternatives that are
   many, or that come and go, such as people.
 - `hooks/useListView.ts` keeps how one list is looked at. Rows or cards and the order are kept on
-  this device (`prefs/listView.ts`), under the list's name. The search and the filters last for the
+  this device (`prefs/listView.ts`), under the list's name. A list is rows until the user chooses,
+  unless it says it starts as cards (`startsAs`). The search and the filters last for the
   visit: a list that came back narrowed would seem to have lost things. It gives the controls
   `ListToolbar` draws, ready to spread.
 - `GroupedList` draws the groups as rows, `CardGrid` as cards, each group under its label. Both
   take `onReorder` for a group whose order is the user's. The pane gives each a row or a card of
-  its own block.
+  its own block. Cards laid out along a line, as a row is, are `wide`: two to a line, and one
+  where two would be too narrow.
 
 On a narrow screen the controls are under the list, in reach of a thumb: the pane gives them to
 `PageLayout` as its `footer`, which floats over the end of the content as a chat's composer does
@@ -437,8 +514,8 @@ as it does for a pointer that is only beside one.
 Narrower than `md` (`hooks/useNarrowScreen.ts`), such as a phone, there is room for one thing at
 a time, and `_app` lays the frame out with `NarrowShell` instead of `AppShell`: edge to edge, with
 no cards, clear of the system's safe areas. The pages are the same, home included. The sidebar is
-beneath the page, on the backdrop. On the pages it goes to (home, a workspace, Library and
-Workspaces), a button at the start of the header (which leaves it the room, `--header-lead`)
+beneath the page, on the backdrop. On the pages it goes to (home, a workspace, Library,
+Workspaces and Connections), a button at the start of the header (which leaves it the room, `--header-lead`)
 moves the page aside to the far edge, where what stays in sight of it is tapped to put the sidebar
 away again, as is Escape. It is not swiped. Going anywhere puts it away: like full screen, it is
 left behind with the page. A page further in goes up to one of those by its header: a chat, one

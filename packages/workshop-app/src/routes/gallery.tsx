@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input, Switch, Tabs } from '@cloudflare/kumo'
-import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, SignOutIcon, TableIcon } from '@phosphor-icons/react'
 import { Composer } from '@/blocks/Composer'
 import type { ComposerSkill } from '@/blocks/ComposerAddMenu'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
@@ -15,7 +15,9 @@ import type { WorkspacePickerProps } from '@/blocks/WorkspacePicker'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
+import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
+import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { ShimmerText } from '@/components/ShimmerText'
 import { Tabs as PageTabs } from '@/components/Tabs'
 import { ConnectButton } from '@/components/ConnectButton'
@@ -24,6 +26,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { LibraryListPreview } from '@/gallery/LibraryListPreview'
 import { ListViewPreview } from '@/gallery/ListViewPreview'
@@ -238,6 +241,17 @@ function Gallery() {
         <Button icon={MagnifyingGlassIcon} aria-label="Search" />
         <Button variant="ghost">Ghost</Button>
         <Button variant="primary">Primary</Button>
+        <Button variant="danger">Danger</Button>
+      </Section>
+      <Section title="ConfirmMenu (what cannot be taken back, asked in place: growing up from the end, and down from an icon)">
+        <ConfirmMenu label="Delete chat" title="Delete this chat?" description="What was said in it goes for everyone in the workspace. What it made stays in the library." confirmLabel="Delete chat" onConfirm={() => {}} />
+        <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" triggerClassName="text-kumo-danger" side="bottom" title="Sign out?" description="You will have to sign in again on this device." confirmLabel="Sign out" onConfirm={() => {}} />
+      </Section>
+      <Section title="Banner (something wrong: said alone, and with what to do about it and the way to)">
+        <div className="flex w-full max-w-lg flex-col gap-3">
+          <Banner title="Couldn’t connect Slack: the service did not answer." />
+          <Banner title="Sign-in expired" description="Sign in to Jira again to keep using this account." action={{ label: 'Reconnect', onSelect: () => {} }} />
+        </div>
       </Section>
       <Section title="ShimmerText (something under way, in the colour of what it is in; still with reduced motion, or not active)">
         <ShimmerTextPreview />
@@ -323,6 +337,7 @@ function Gallery() {
       <TabsPreview />
       <ListViewPreview />
       <LibraryListPreview />
+      <ConnectionsPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">

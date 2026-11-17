@@ -69,6 +69,7 @@ const AppFrame = () => {
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
+  const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
@@ -219,6 +220,13 @@ const AppFrame = () => {
           void navigate({ to: '/workspaces' })
         },
       }}
+      connectionsPage={{
+        current: connectionsPage !== undefined,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/connections' })
+        },
+      }}
       collapsed={collapsed}
     />
   )
@@ -249,7 +257,7 @@ const AppFrame = () => {
           onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
           // On the pages the sidebar goes to. Those further in have their way up already, such as
           // a chat's workspace crumb, or an item's own back button.
-          button: [homePage, workspacePage, libraryPage, workspacesPage].some((match) => match !== undefined),
+          button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage].some((match) => match !== undefined),
         }}
         status={status}
         aside={pageItem ? undefined : asideElement}

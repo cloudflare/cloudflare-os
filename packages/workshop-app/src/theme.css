@@ -51,6 +51,11 @@
      in dark with the rest of what is in contrast. */
   --color-island: light-dark(#000, oklch(98.5% 0 0));
 
+  /* The dot that says something is on and working, such as a connected account: a signal's green,
+     brighter than Kumo's `success`, which is deep enough to be text. A little lighter in dark, as
+     a light is on a dark surface. */
+  --color-live: light-dark(oklch(73% 0.21 147), oklch(78% 0.22 147));
+
   /* What a workspace's icon can be drawn in instead of `contrast`, and its letters then. The same
      in dark, as the brand is: an icon is told by its colour. Each is deep enough for the letters. */
   --color-workspace-red: oklch(58% 0.2 25);

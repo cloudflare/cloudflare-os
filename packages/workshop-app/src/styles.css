@@ -69,6 +69,41 @@
   }
 }
 
+/* A scrollbar that is always there, for a short list inside something else, which nothing but its
+   scrollbar says can be scrolled: the system's shows only while it is. Only a scrollbar drawn
+   here stays, which WebKit and Chromium can do, and Chromium only once the colour above is put
+   back, which would have it draw its own. Elsewhere it is the system's, as everywhere else.
+
+   With what is left of the padding beside it, it is as wide as the list's padding (`px-5`), whose
+   place at that end it takes whether or not there is anything to scroll, so that what is in the
+   list is as far from both sides either way. Some padding is left, as what is in the list is cut
+   off where the scrollbar starts, and a switch's outline is drawn outside it. The thumb is the
+   middle of the scrollbar, and stops short of the list's rounded corners. Not expressible with
+   utilities, which cannot ask whether a scrollbar can be drawn. */
+@supports selector(::-webkit-scrollbar) {
+  .scrollbar-shown {
+    padding-inline-end: 0.25rem;
+    overflow-y: scroll;
+    scrollbar-color: auto;
+  }
+  .scrollbar-shown::-webkit-scrollbar {
+    width: 1rem;
+  }
+  .scrollbar-shown::-webkit-scrollbar-track {
+    margin-block: 0.75rem;
+    background: transparent;
+  }
+  .scrollbar-shown::-webkit-scrollbar-thumb {
+    border: 0.3125rem solid transparent;
+    border-radius: 9999px;
+    background: color-mix(in oklch, var(--color-kumo-contrast) 20%, transparent);
+    background-clip: content-box;
+  }
+  .scrollbar-shown::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--color-kumo-contrast) 40%, transparent);
+  }
+}
+
 /* What a page opens on is faded in rather than cut to, as a conversation is once it has loaded.
    The note that something is loading is held back first: most loads are over before it is due,
    and it would only flash by. */

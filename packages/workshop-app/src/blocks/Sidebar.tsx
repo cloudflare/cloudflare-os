@@ -26,6 +26,8 @@ export type SidebarProps = {
   library?: { current: boolean; onOpen: () => void }
   /** The page listing every workspace, and whether it is the one showing. */
   workspacesPage?: { current: boolean; onOpen: () => void }
+  /** The page listing what is connected and what could be, and whether it is the one showing. */
+  connectionsPage?: { current: boolean; onOpen: () => void }
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
   /**
@@ -103,6 +105,7 @@ export const Sidebar = ({
   connections,
   library,
   workspacesPage,
+  connectionsPage,
   collapsed = false,
   layout = 'rows',
 }: SidebarProps) => {
@@ -155,7 +158,13 @@ export const Sidebar = ({
         <footer className="mt-5 flex flex-col items-center gap-1.5">
           {workspacesButton}
           {libraryButton}
-          <Button icon={PuzzlePieceIcon} aria-label="Connections" />
+          <Button
+            icon={PuzzlePieceIcon}
+            aria-label="Connections"
+            aria-current={connectionsPage?.current ? 'page' : undefined}
+            onClick={connectionsPage?.onOpen}
+            className="aria-[current=page]:bg-kumo-tint"
+          />
           {account}
         </footer>
       </div>
@@ -178,7 +187,7 @@ export const Sidebar = ({
         <NavRows>
           <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
           <NavRow icon={<CirclesFourIcon />} label="Library" current={library?.current} onClick={library?.onOpen} />
-          <NavRow icon={<PuzzlePieceIcon />} label="Connections" />
+          <NavRow icon={<PuzzlePieceIcon />} label="Connections" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
           <NavRow icon={<Avatar name={user.name} src={user.avatarUrl} />} label={user.name} aria-label={`Account, ${user.name}`} />
         </NavRows>
       </div>
@@ -201,7 +210,7 @@ export const Sidebar = ({
         </header>
         {nav}
         <footer className="mt-3 flex flex-col items-center gap-1">
-          <ConnectButton />
+          <ConnectButton onConnect={connectionsPage?.onOpen} />
           {account}
         </footer>
       </div>
@@ -219,7 +228,7 @@ export const Sidebar = ({
       {nav}
       <footer className="flex items-center justify-between">
         {account}
-        <ConnectButton>{connections}</ConnectButton>
+        <ConnectButton onConnect={connectionsPage?.onOpen}>{connections}</ConnectButton>
       </footer>
     </div>
   )
