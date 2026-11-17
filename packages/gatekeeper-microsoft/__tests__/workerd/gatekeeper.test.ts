@@ -239,6 +239,23 @@ describe("links", () => {
     expect((await hooks().queueLog(name)).observations).toEqual([]);
   });
 
+  it("tells an agent the same of a link Graph resolved outside the tenant as of one that leads nowhere", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph);
+    const binding = props(id, { kind: "all" });
+    const name = facet("link-other-tenant");
+    const link = "https://fabrikam-my.sharepoint.com/personal/mallory_fabrikam_com/Documents/shared.docx";
+    graph.on("GET", /^\/v1\.0\/(shares|sites)\//, () => json({ error: { code: "itemNotFound", message: "Not found." } }, { status: 404 }));
+    const nowhere = failure(await hooks().run(name, binding, [["resolveUrl", link]]));
+    graph.on("GET", /^\/v1\.0\/shares\/[^/]+\/driveItem/, () => json({
+      id: "01SHARED", name: "shared.docx", file: {}, webUrl: link, parentReference: { driveId: "b!Fabrikam", id: "01FABRIKAMROOT" },
+      sharepointIds: { siteId: "d0d0d0d0-0000-0000-0000-000000000009", webId: "f0f0f0f0-0000-0000-0000-000000000009", tenantId: "22222222-2222-2222-2222-222222222222" },
+    }));
+    expect(failure(await hooks().run(name, binding, [["resolveUrl", link]]))).toBe(nowhere);
+    expect(nowhere).toMatch(/doesn't lead to anything/);
+    expect((await hooks().queueLog(name)).observations).toEqual([]);
+  });
+
   it("refuses a file link Graph can't resolve rather than widening it to the site it is in", async () => {
     // `shares` misses everything but seeded files; the site itself answers by path, as for a link to it.
     const graph = shares(new FakeGraph().install());

@@ -49,6 +49,14 @@ export type ConnectedTenant = { name: string; id: string };
  */
 type Owned = <T>(body: T) => T;
 
+/** A link Graph resolved, to something it doesn't place in the connected tenant. */
+export class OtherOrganizationError extends UnresolvableUrlError {
+  constructor(hostname: string) {
+    super(`That link is to another organization's SharePoint (${hostname}), which this connection can't open.`);
+    this.name = "OtherOrganizationError";
+  }
+}
+
 /** Statuses that mean "not this facet, or not visible": try the next. */
 const MISS = [400, 403, 404];
 
@@ -79,7 +87,9 @@ function fromSite(site: GraphSite): ResolvedUrl {
 }
 
 function fromItem(host: string, item: GraphDriveItem): ResolvedUrl {
-  const siteId = siteIdOf(host, item);
+  // The host Graph gives for the item's site, not the link's: a link kept alive from before a move
+  // between geographies resolves to where the item is now.
+  const siteId = siteIdOf(item.siteHost ?? host, item);
   if (siteId === null) throw new UnresolvableUrlError();
   if (item.isRoot) {
     return { scope: { kind: "library", siteId, driveId: item.driveId }, name: item.name, webUrl: item.webUrl };
@@ -140,7 +150,6 @@ async function fromSitePath(api: GraphApi, url: URL, owned: Owned): Promise<Reso
   return body === null ? null : fromSite(parseSite(owned(body)));
 }
 
-
 /**
  * Resolves a URL to the scope it names.
  * @param tenant The connected tenant. A URL on its own SharePoint host is its own. A multi-geo
@@ -148,7 +157,8 @@ async function fromSitePath(api: GraphApi, url: URL, owned: Owned): Promise<Reso
  * resolves must say it is in this tenant, and whatever doesn't is refused as another organization's.
  * @param options.selected Whether the grant reaches only the sites granted to the app. Graph then
  * still answers any site's metadata, so a site is checked by opening its library.
- * @throws UnresolvableUrlError for anything that is not a reachable SharePoint object, and its
+ * @throws UnresolvableUrlError for anything that is not a reachable SharePoint object, its
+ * OtherOrganizationError for one Graph resolved outside the connected tenant, and its
  * SiteNotGrantedError for a site the app wasn't granted.
  */
 export async function resolveSharePointUrl(api: GraphApi, raw: string, tenant: ConnectedTenant, options: { selected?: boolean } = {}): Promise<ResolvedUrl> {
@@ -173,16 +183,14 @@ export function checkSharePointUrl(raw: string): URL {
 
 async function resolveUrl(api: GraphApi, raw: string, tenant: ConnectedTenant): Promise<ResolvedUrl> {
   const url = checkSharePointUrl(raw);
-  const otherOrganization = () => new UnresolvableUrlError(
-    `That link is to another organization's SharePoint (${url.hostname}), which this connection can't open.`);
   // Off the tenant's own host, only Microsoft's word for where an object is makes it this tenant's.
   const known = parseSharePointHost(url.hostname)!.tenant === tenant.name;
   const owned: Owned = body => {
-    if (!known && tenantIdOf(body) !== tenant.id.toLowerCase()) throw otherOrganization();
+    if (!known && tenantIdOf(body) !== tenant.id.toLowerCase()) throw new OtherOrganizationError(url.hostname);
     return body;
   };
   if (isAllUrl(url)) {
-    if (!known) throw otherOrganization();
+    if (!known) throw new OtherOrganizationError(url.hostname);
     return { scope: { kind: "all" }, name: "SharePoint & OneDrive", webUrl: allUrl(tenant.name) };
   }
 
