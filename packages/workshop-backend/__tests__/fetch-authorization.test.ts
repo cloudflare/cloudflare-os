@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -87,6 +87,50 @@ describe("OverseerImpl.authorizeFetch", () => {
       expect(await impl.authorizeFetch(AGENT, "exec", "GET", "https://example.com/"))
           .toEqual({ allowed: false, message: expect.stringMatching(/has ended/) });
       expect(impl.consumeCapturedDecisionRequests(1)).toEqual([]);
+    });
+  });
+});
+
+describe("ApprovalQueueImpl.getFetcher", () => {
+  // A session's queue on a gatekeeper connection, as the gatekeeper receives it.
+  async function openQueue(impl: any, caller: object, executionId?: string) {
+    impl.storage.gatekeepers.put({ id: 7, class: impl.ctx.exports.ReplicaGitSource({}) });
+    return await impl.openGatekeeperSession(
+        7, { startSession: (queue: unknown) => queue } as never, caller, executionId);
+  }
+
+  it("mints a fetcher for the queue's caller with a snapshot of the policy as it stands", async () => {
+    await inOverseer({ restrictedWebFetchHosts: ["docs.example.com"] }, false, async impl => {
+      let minted = vi.spyOn(impl, "makeFetchLoopback");
+      let queue = await openQueue(impl, AGENT, "exec");
+      impl.isLiveExecution = () => true;
+      impl.isStoppedExecution = () => false;
+      await queue.getFetcher();
+      impl.storage.containsRestrictedData.put(true);
+      let fetcher = await queue.getFetcher();
+      expect(minted.mock.calls).toEqual([
+        [AGENT, "exec", { approvals: false }],
+        [AGENT, "exec", { allowedHosts: ["docs.example.com"], approvals: false }],
+      ]);
+
+      // The fetcher refuses by its snapshot, without asking the workspace.
+      let asked = vi.spyOn(impl, "authorizeFetch");
+      let response = await fetcher.fetch("https://other.example/");
+      expect(response.status).toBe(403);
+      expect(response.headers.get("cloudflare-os-fetch-refused")).toBe("denied");
+      expect(await response.text()).toMatch(/may only fetch from docs\.example\.com/);
+      expect(asked).not.toHaveBeenCalled();
+    });
+  });
+
+  it("throws once the session has ended", async () => {
+    await inOverseer({}, false, async impl => {
+      let queue = await openQueue(impl, AGENT, "exec");
+      impl.isLiveExecution = () => false;
+      await expect(queue.getFetcher()).rejects.toThrow(/code execution this session belongs to has ended/);
+      queue = await openQueue(impl, { from: "user" });
+      impl.removeGatekeeper(7);
+      await expect(queue.getFetcher()).rejects.toThrow(/connection has been removed/);
     });
   });
 });

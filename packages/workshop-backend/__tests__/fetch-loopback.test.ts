@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { sendFetch, type FetchAuthorization } from "../src/fetch-loopback.js";
+import {
+  sendFetch, snapshotAuthorizer, type FetchAuthorization, type FetchPolicy,
+} from "../src/fetch-loopback.js";
+import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
 
 const ALLOW: FetchAuthorization = { allowed: true, restricted: false, approved: false };
 
@@ -30,6 +33,18 @@ describe("FetchLoopback's sendFetch", () => {
       asked.push(href);
       return decision;
     });
+    return { response, asked };
+  }
+
+  // Sends `request` decided by `snapshot` for `caller`, with `decision` as the workspace's answer
+  // to any URL the snapshot refers to it.
+  async function sendBySnapshot(request: Request, snapshot: FetchPolicy, caller: GatekeeperCaller,
+                                decision: FetchAuthorization = ALLOW) {
+    const asked: string[] = [];
+    const response = await sendFetch(request, snapshotAuthorizer(snapshot, caller, async href => {
+      asked.push(href);
+      return decision;
+    }));
     return { response, asked };
   }
 
@@ -170,5 +185,67 @@ describe("FetchLoopback's sendFetch", () => {
     routes["https://example.com/"] = () =>
       new Response("page", { headers: { "content-signal": "ai-train=no, ai-input=yes" } });
     expect((await send(new Request("https://example.com/"))).response.status).toBe(200);
+  });
+
+  describe("with a snapshot", () => {
+    const GATEKEEPER_USER: GatekeeperCaller = { from: "user" };
+    const AGENT: GatekeeperCaller = { from: "agent", chatId: 1 };
+    const RESTRICTED: FetchPolicy = { allowedHosts: ["docs.example.com"], approvals: true };
+
+    it("allows what it permits without asking the workspace", async () => {
+      routes["https://example.com/?q=1"] = () => new Response("open");
+      routes["https://docs.example.com/page"] = () => new Response("trusted");
+      for (const [url, snapshot] of [
+        ["https://example.com/?q=1", { approvals: false }],
+        ["https://docs.example.com/page", RESTRICTED],
+      ] as const) {
+        const { response, asked } = await sendBySnapshot(new Request(url), snapshot, AGENT);
+        expect(response.status).toBe(200);
+        expect(asked).toEqual([]);
+      }
+      expect(sent.map(request => request.url))
+          .toEqual(["https://example.com/?q=1", "https://docs.example.com/page"]);
+    });
+
+    it("forwards none of the caller's headers once restricted", async () => {
+      routes["https://docs.example.com/"] = () => new Response("ok");
+      await sendBySnapshot(new Request("https://docs.example.com/", {
+        headers: { "accept": "application/secret", "accept-language": "secret" },
+      }), RESTRICTED, GATEKEEPER_USER);
+      expect(Object.fromEntries(sent[0].headers)).toEqual({
+        "accept": expect.stringMatching(/^text\/markdown,/),
+        "user-agent": "Cloudflare-OS/1.0",
+      });
+    });
+
+    it("refuses what it does not permit without asking the workspace", async () => {
+      for (const [snapshot, caller, message] of [
+        [RESTRICTED, GATEKEEPER_USER, /may only fetch from docs\.example\.com/],
+        [{ ...RESTRICTED, approvals: false }, AGENT, /may only fetch from docs\.example\.com/],
+        [{ allowedHosts: [], approvals: false }, AGENT, /prohibited from fetching/],
+      ] as const) {
+        const { response, asked } =
+            await sendBySnapshot(new Request("https://other.example/"), snapshot, caller);
+        await expectRefusal(response, 403, "denied", message);
+        expect(asked).toEqual([]);
+      }
+      const { response } = await sendBySnapshot(
+          new Request("https://docs.example.com/?q=secret"), RESTRICTED, GATEKEEPER_USER);
+      await expectRefusal(response, 403, "denied", /query string/);
+      expect(sent).toEqual([]);
+    });
+
+    it("asks the workspace about what it refuses where an agent may ask the user", async () => {
+      let { response, asked } = await sendBySnapshot(new Request("https://other.example/"),
+          RESTRICTED, AGENT, { allowed: false, message: "Ask first.", approvalRequested: true });
+      await expectRefusal(response, 403, "approval-requested", /^Ask first\.$/);
+      expect(asked).toEqual(["https://other.example/"]);
+
+      routes["https://other.example/"] = () => new Response("approved");
+      ({ response, asked } = await sendBySnapshot(new Request("https://other.example/"),
+          RESTRICTED, AGENT, { allowed: true, restricted: true, approved: true }));
+      expect(await response.text()).toBe("approved");
+      expect(asked).toEqual(["https://other.example/"]);
+    });
   });
 });

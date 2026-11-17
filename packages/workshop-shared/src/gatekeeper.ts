@@ -1620,6 +1620,34 @@ export interface ApprovalQueue extends ObservationAuthorizer {
   bindHook<Hook extends RpcTarget>(
         controller: Fetcher<HookController<Hook>>, callback: RpcStub<Hook>,
         description: HookDescription): Promise<void>;
+
+  /**
+   * A Fetcher that applies this session's caller's fetch policy as it stands now: which hosts the
+   * caller may reach, GET and HEAD only, no credentials. It is for code the gatekeeper hosts on
+   * the caller's behalf, such as a container's outbound traffic. The gatekeeper's own calls to
+   * its vendor keep using its own `fetch()`. A refused request is answered with a 403 (405 for
+   * the method) whose `Cloudflare-OS-Fetch-Refused` header says why, with the reason as its body.
+   *
+   * The Fetcher reflects the policy at the time it was made and never updates, even after the
+   * session ends; keeping it current is the gatekeeper's responsibility. A workspace's policy
+   * tightens when it observes restricted data, which can reach what the Fetcher filters only
+   * through a call to the gatekeeper. So:
+   *
+   * - Call `getFetcher()` on every call the gatekeeper receives, after that call's own
+   *   `authorizeObservation()` calls and before handing any new data to whatever the Fetcher
+   *   filters, and replace the Fetcher installed there with the new one.
+   * - Take the Fetcher, install it and deliver the data as one serialized unit for each
+   *   environment the Fetcher filters. Two overlapping calls must not interleave these steps, or
+   *   one could install the Fetcher it took earlier over the newer, stricter one the other
+   *   installed before delivering restricted data. A Fetcher must never replace one taken after
+   *   it.
+   *
+   * Requests the Fetcher allows on its own are not recorded by the workspace, so the gatekeeper
+   * audits its own work (the command it ran, for a container) through `authorizeObservation()`.
+   *
+   * Throws if the session has ended (see `requireLive()`).
+   */
+  getFetcher(): Promise<Fetcher>;
 }
 
 /** What a gadget is about to read from an external service, for `authorizeObservation()`. */

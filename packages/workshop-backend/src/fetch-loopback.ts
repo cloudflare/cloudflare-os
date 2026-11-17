@@ -1,6 +1,7 @@
 // The one place outbound web requests from the workspace's untrusted callers are policed: the
-// agent's `webFetch` tool sends every hop through a FetchLoopback, and the workspace decides each
-// request in OverseerImpl.authorizeFetch().
+// agent's `webFetch` tool, sandboxed code and gatekeepers send every request through a
+// FetchLoopback, and the workspace decides each request in OverseerImpl.authorizeFetch(), or the
+// fetcher decides it from a snapshot of the workspace's policy (ApprovalQueue.getFetcher()).
 //
 // SSRF protection is workerd's, as for webFetch (see web-fetch.ts): this entrypoint runs in
 // workshop-backend, so its fetch() keeps `global_fetch_strictly_public`.
@@ -19,6 +20,12 @@ export type FetchLoopbackProps = {
 
   /** The executeCode call the fetcher was minted for, for an agent caller. */
   executionId?: string;
+
+  /**
+   * The policy as it stood when the fetcher was minted, which it applies without asking the
+   * workspace. Absent: ask the workspace on every request.
+   */
+  snapshot?: FetchPolicy;
 };
 
 /** The fetch policy a workspace applies to its untrusted callers' requests. */
@@ -66,12 +73,50 @@ const RESERVED_HEADER_PREFIX = "cloudflare-os-fetch-";
  */
 export class FetchLoopback extends WorkerEntrypoint<Cloudflare.Env, FetchLoopbackProps> {
   fetch(request: Request): Promise<Response> {
-    let { overseerId, caller, executionId } = this.ctx.props;
+    let { overseerId, caller, executionId, snapshot } = this.ctx.props;
     let ns = this.ctx.exports.OverseerDurableObject;
-    let overseer = ns.get(ns.idFromString(overseerId));
-    return sendFetch(request,
-        href => overseer.authorizeFetch(caller, executionId, request.method, href));
+    let ask = (href: string) => ns.get(ns.idFromString(overseerId))
+        .authorizeFetch(caller, executionId, request.method, href);
+    return sendFetch(request, snapshot ? snapshotAuthorizer(snapshot, caller, ask) : ask);
   }
+}
+
+/**
+ * Why `policy` refuses `href`, a URL that has passed validateWebFetchUrl(), or undefined if it
+ * allows it.
+ */
+export function fetchPolicyRefusal(policy: FetchPolicy, href: string): string | undefined {
+  if (!policy.allowedHosts) return undefined;
+  try {
+    validateWebFetchUrl(href, new Set(policy.allowedHosts));
+    return undefined;
+  } catch (err) {
+    // TODO: Disallowing fetches is a bit draconian. Ideally, we would have some way to detect if
+    //   a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in a
+    //   search index, then it's not leaking anything.
+    return policy.allowedHosts.length > 0 ? errorMessage(err)
+        : "This workspace has observed sensitive data. To prevent leaks, the workspace is " +
+          "prohibited from fetching from public web sites.";
+  }
+}
+
+/**
+ * Decides `caller`'s requests by `snapshot`, with no round trip to the workspace, except a URL
+ * the snapshot refuses that a user could approve, which goes to the workspace through `ask`:
+ * only an agent can wait for the user's decision.
+ */
+export function snapshotAuthorizer(
+    snapshot: FetchPolicy, caller: GatekeeperCaller,
+    ask: (href: string) => Promise<FetchAuthorization>)
+    : (href: string) => Promise<FetchAuthorization> {
+  return async href => {
+    let message = fetchPolicyRefusal(snapshot, href);
+    if (message === undefined) {
+      return { allowed: true, restricted: snapshot.allowedHosts !== undefined, approved: false };
+    }
+    if (snapshot.approvals && caller.from === "agent") return ask(href);
+    return { allowed: false, message };
+  };
 }
 
 /**
