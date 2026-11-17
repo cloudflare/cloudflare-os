@@ -668,12 +668,21 @@ function addOAuthApp(
 export function resolveGatekeeperSecrets({
   githubClientId = process.env.PREVIEW_GITHUB_CLIENT_ID,
   githubClientSecret = process.env.PREVIEW_GITHUB_CLIENT_SECRET,
+  cloudflareClientId = process.env.PREVIEW_CLOUDFLARE_CLIENT_ID,
+  cloudflareClientSecret = process.env.PREVIEW_CLOUDFLARE_CLIENT_SECRET,
 }: {
   githubClientId?: string;
   githubClientSecret?: string;
+  cloudflareClientId?: string;
+  cloudflareClientSecret?: string;
 } = {}): Map<string, Record<string, string>> {
   const configured = new Map<string, Record<string, string>>();
   addOAuthApp(configured, "gatekeeper-github", "PREVIEW_GITHUB", githubClientId, githubClientSecret);
+  // A Cloudflare dashboard OAuth client matches redirect URIs exactly, with no wildcard, so one
+  // client serves one preview: register `https://<preview>-router.<subdomain>/gatekeeper/cloudflare/oauth`.
+  // That suits a named preview deployed by hand, which is why the preview workflow does not pass it.
+  addOAuthApp(configured, "gatekeeper-cloudflare", "PREVIEW_CLOUDFLARE", cloudflareClientId,
+      cloudflareClientSecret);
   return configured;
 }
 

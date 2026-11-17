@@ -54,7 +54,9 @@ const SECRETS = backendSecrets({
   adminConfigSeed: {},
 });
 const GITHUB_OAUTH = { githubClientId: "Iv1.preview0000000f", githubClientSecret: "9".repeat(40) };
-const GATEKEEPER_SECRETS = resolveGatekeeperSecrets(GITHUB_OAUTH);
+const CLOUDFLARE_OAUTH = { cloudflareClientId: "c".repeat(32), cloudflareClientSecret: "8".repeat(40) };
+const NO_OAUTH = { githubClientId: "", githubClientSecret: "", cloudflareClientId: "", cloudflareClientSecret: "" };
+const GATEKEEPER_SECRETS = resolveGatekeeperSecrets({ ...GITHUB_OAUTH, ...CLOUDFLARE_OAUTH });
 
 /** One gatekeeper's OAuth secrets, so a gatekeeper losing its entry fails here rather than silently. */
 function oauthFor(pkgName: string): Record<string, string> {
@@ -500,13 +502,27 @@ test("a gatekeeper's OAuth app is optional, but never half of one", () => {
     CLIENT_ID: GITHUB_OAUTH.githubClientId,
     CLIENT_SECRET: GITHUB_OAUTH.githubClientSecret,
   });
-  assert.equal(resolveGatekeeperSecrets({ githubClientId: "", githubClientSecret: "" }).size, 0);
+  assert.deepEqual(oauthFor("gatekeeper-cloudflare"), {
+    CLIENT_ID: CLOUDFLARE_OAUTH.cloudflareClientId,
+    CLIENT_SECRET: CLOUDFLARE_OAUTH.cloudflareClientSecret,
+  });
+  assert.equal(resolveGatekeeperSecrets(NO_OAUTH).size, 0);
+  // Each gatekeeper's app is independent: one configured leaves the other unconfigured.
+  assert.deepEqual([...resolveGatekeeperSecrets({ ...NO_OAUTH, ...CLOUDFLARE_OAUTH }).keys()],
+      ["gatekeeper-cloudflare"]);
   for (const half of [
     { githubClientId: GITHUB_OAUTH.githubClientId, githubClientSecret: "" },
     { githubClientId: "", githubClientSecret: GITHUB_OAUTH.githubClientSecret },
   ]) {
-    assert.throws(() => resolveGatekeeperSecrets(half),
+    assert.throws(() => resolveGatekeeperSecrets({ ...NO_OAUTH, ...half }),
         /PREVIEW_GITHUB_CLIENT_ID and PREVIEW_GITHUB_CLIENT_SECRET must be set together/);
+  }
+  for (const half of [
+    { cloudflareClientId: CLOUDFLARE_OAUTH.cloudflareClientId, cloudflareClientSecret: "" },
+    { cloudflareClientId: "", cloudflareClientSecret: CLOUDFLARE_OAUTH.cloudflareClientSecret },
+  ]) {
+    assert.throws(() => resolveGatekeeperSecrets({ ...NO_OAUTH, ...half }),
+        /PREVIEW_CLOUDFLARE_CLIENT_ID and PREVIEW_CLOUDFLARE_CLIENT_SECRET must be set together/);
   }
 });
 

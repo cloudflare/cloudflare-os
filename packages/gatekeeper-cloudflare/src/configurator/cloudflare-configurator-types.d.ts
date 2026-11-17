@@ -16,3 +16,16 @@ export interface CloudflareAccountConfiguratorRpc {
 export interface CloudflareWorkerConfiguratorRpc extends CloudflareAccountConfiguratorRpc {
   listWorkers(accountId: string, query: string): Promise<ConfiguratorUIOption[]>;
 }
+
+export type CloudflareNotificationsConfiguratorValues = CloudflareAccountConfiguratorValues & {
+  status?: string | null;
+  statusDetails?: string | null;
+};
+export type CloudflareNotificationsSetupStatus = {
+  summary: string;
+  details?: string;
+};
+
+export interface CloudflareNotificationsConfiguratorRpc extends CloudflareAccountConfiguratorRpc {
+  getSetupStatus(accountId: string): Promise<CloudflareNotificationsSetupStatus>;
+}

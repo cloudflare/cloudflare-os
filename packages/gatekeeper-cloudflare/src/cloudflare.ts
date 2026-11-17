@@ -18,10 +18,10 @@ import {
 } from "./oauth";
 import { fetchIdentity } from "./cloudflare-api";
 import {
-  OBSERVABILITY_RESOURCES,
+  CLOUDFLARE_RESOURCES, NOTIFICATIONS_RESOURCE, NOTIFICATIONS_SCOPE,
+  parseNotificationsResourceUrl, assertCloudflareAccountId, grantedCloudflareResourcePatterns,
   ACCOUNT_OBSERVABILITY_RESOURCE,
   WORKER_OBSERVABILITY_RESOURCE,
-  grantedObservabilityResourcePatterns,
   accountObservabilityUrl,
   workerObservabilityUrl,
   parseObservabilityResourceUrl,
@@ -33,13 +33,20 @@ import { CloudflareObservabilitySessionImpl } from "./observability-session.js";
 import {
   CloudflareAccountConfiguratorUI,
   CloudflareWorkerConfiguratorUI,
+  CloudflareNotificationsConfiguratorUI,
 } from "./cloudflare-configurators.js";
 import ACCOUNT_CONFIGURATOR_HTML from "./generated/cloudflare-account-configurator-ui.txt";
 import WORKER_CONFIGURATOR_HTML from "./generated/cloudflare-worker-configurator-ui.txt";
+import NOTIFICATIONS_CONFIGURATOR_HTML from "./generated/cloudflare-notifications-configurator-ui.txt";
 import type { CloudflareObservabilitySession } from "./types.js";
 import { VENDOR_ID } from "./vendor.js";
 import TYPES_CODE from "./types.txt";
 import { obsContext } from "./observability.js";
+import { readTextCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
+import { parseNotificationWebhookPath, notificationReceiverName, configuredNotificationBaseUrl,
+  notificationWebhookBaseUrl, MAX_NOTIFICATION_BODY_BYTES } from "./notifications-webhook.js";
+export { CloudflareNotificationsGatekeeper, CloudflareNotificationHookController,
+  CloudflareNotificationReceiver } from "./notifications.js";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.cloudflare", vendorId: VENDOR_ID,
@@ -108,6 +115,7 @@ type Env = Cloudflare.Env & {
   BASE_URL?: string;
   CLIENT_ID?: string;
   CLIENT_SECRET?: string;
+  NOTIFICATIONS_WEBHOOK_BASE_URL?: string;
 };
 
 function getBaseUrl(env: Env) {
@@ -133,11 +141,39 @@ const NOT_CONFIGURED_HTML = `<!DOCTYPE html>
 <p>Please see the README.md for instructions on configuring an OAuth client ID and secret.</p>
 </body></html>`;
 
-/** Main HTTP entrypoint — used only to initiate and complete the OAuth flow. */
+/** Main HTTP entrypoint for OAuth and authenticated Cloudflare notification webhooks. */
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(req.url);
     const basePath = getBasePath(env);
+    let notificationPath: ReturnType<typeof parseNotificationWebhookPath> = null;
+    try {
+      const webhookBasePath = new URL(configuredNotificationBaseUrl(env)).pathname.replace(/\/$/, "");
+      notificationPath = parseNotificationWebhookPath(url.pathname, webhookBasePath);
+    } catch {
+      // A misconfigured notification address must not break OAuth routes.
+    }
+    // The standard gatekeeper path is the only historical fallback, never an arbitrary base.
+    notificationPath ??= parseNotificationWebhookPath(url.pathname, basePath);
+    if (notificationPath) {
+      if (req.method !== "POST") return new Response(null, { status: 405, headers: { Allow: "POST" } });
+      const apiKey = req.headers.get("cf-webhook-auth");
+      if (!apiKey || !/^[a-f\d]{64}$/i.test(apiKey)) return new Response(null, { status: 401 });
+      try {
+        const name = notificationReceiverName(notificationPath.userObjectId, notificationPath.accountId);
+        const receiver = ctx.exports.CloudflareNotificationReceiver.getByName(name);
+        const authenticated = await receiver.authenticateWebhook(apiKey, url.pathname);
+        if (authenticated !== 204) return new Response(null, { status: authenticated });
+        const body = await readTextCapped(new Response(req.body, { headers: req.headers }),
+          MAX_NOTIFICATION_BODY_BYTES);
+        const status = await receiver.receiveWebhook(apiKey,
+          req.headers.get("content-type") ?? "", body, url.pathname);
+        return new Response(null, { status });
+      } catch (error) {
+        return new Response(null, { status: error instanceof ResponseTooLargeError ? 413 : 500 });
+      }
+    }
+    if (url.pathname.includes("/webhooks/")) return new Response(null, { status: 404 });
     if (!url.pathname.startsWith(basePath + "/") && url.pathname !== basePath) {
       throw new Error(`Request path ${url.pathname} does not match BASE_URL path ${basePath}`);
     }
@@ -193,11 +229,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       url: "https://cloudflare.com",
       logo: { url: CLOUDFLARE_LOGO_URL },
       color: "#fbece0",
-      tagline: "Sign in, use AI Gateway, and inspect Workers Observability",
+      tagline: "Sign in, use AI Gateway, inspect Workers, and subscribe to notifications",
       description:
           "Sign in with your Cloudflare account and use your own Cloudflare AI Gateway credits for " +
           "usage beyond the free tier. You can also connect Workers Observability to inspect logs, " +
-          "invocations, traces, and aggregate metrics.",
+          "invocations, traces, and aggregate metrics, or receive Cloudflare notifications in your workspaces.",
       providesAuth: true,
     };
   }
@@ -213,14 +249,14 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     const authOnly = options?.scopes === "auth";
     const scopes = authOnly
       ? AUTH_SCOPES
-      : persistentScopesForResources(requestedResourceUrlPatterns(options, OBSERVABILITY_RESOURCES));
+      : persistentScopesForResources(requestedResourceUrlPatterns(options, CLOUDFLARE_RESOURCES));
     await this.ctx.exports.UserAccount.get(userObjectId)
         .setCallback(callback, initiationNonce, scopes, authOnly);
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return OBSERVABILITY_RESOURCES;
+    return CLOUDFLARE_RESOURCES;
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -363,6 +399,7 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
   async commitReconnect(stageId: string): Promise<void> {
+    if (this.ctx.storage.kv.get("revoking")) throw new Error("Cloudflare disconnect cleanup is still pending. Connect a new account after disconnect completes.");
     const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
     if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     this.#writeGrant(grant);
@@ -374,6 +411,7 @@ export class UserAccount extends DurableObject<Env> {
     this.ctx.storage.kv.put<StoredAccessToken>("accessToken", grant.accessToken);
     this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
     this.#access.invalidateAll();
+    this.ctx.storage.kv.delete("credentialsExpired");
   }
 
   hasRefreshToken() {
@@ -396,7 +434,7 @@ export class UserAccount extends DurableObject<Env> {
     // Read after the token, since a refresh records the scopes it returned, which may have narrowed.
     const scopes = await this.getGrantedScopes();
     const allowed: boolean[] = [];
-    if (!token || !grantedObservabilityResourcePatterns(scopes)
+    if (!token || !grantedCloudflareResourcePatterns(scopes)
         .includes(ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern)) {
       allowed.push(...accountIds.map(() => false));
     } else {
@@ -421,6 +459,7 @@ export class UserAccount extends DurableObject<Env> {
    * token, or throws.
    */
   async getAccessToken(): Promise<string | null> {
+    if (this.ctx.storage.kv.get("credentialsExpired")) return null;
     const refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
     if (!refreshToken) return null;
 
@@ -456,6 +495,7 @@ export class UserAccount extends DurableObject<Env> {
     if ("error" in outcome) {
       const { error } = outcome;
       if (isGrantDeath(error)) {
+        this.ctx.storage.kv.put("credentialsExpired", true);
         logger.info("refresh rejected; grant expired", { event: "credentials.refresh.expired", error });
         const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
         callback?.credentialsExpired().catch(err =>
@@ -486,6 +526,10 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    if (this.ctx.storage.kv.get("revoking")) {
+      await this.revoke();
+      return;
+    }
     // Drop the account if the flow never completed, or if this was a transient auth-only sign-in
     // grant (used once to read the email for login).
     if (!this.hasRefreshToken() || this.ctx.storage.kv.get<boolean>("ephemeral")) {
@@ -493,7 +537,35 @@ export class UserAccount extends DurableObject<Env> {
     }
   }
 
+  async registerNotificationAccount(accountId: string): Promise<void> {
+    if (this.ctx.storage.kv.get("revoking")) throw new Error("Cloudflare is being disconnected.");
+    this.ctx.storage.kv.put(`notifications:${assertCloudflareAccountId(accountId)}`, true);
+  }
+
+  /** Local grant fence for ingress; never refresh OAuth on the webhook hot path. */
+  hasNotificationGrant(): boolean {
+    return !this.ctx.storage.kv.get("revoking") && !this.ctx.storage.kv.get("credentialsExpired") &&
+      this.hasRefreshToken() && this.ctx.storage.kv.get<string[]>("grantedScopes")?.includes(NOTIFICATIONS_SCOPE) === true;
+  }
+
   async revoke(): Promise<void> {
+    this.ctx.storage.kv.put("revoking", true);
+    await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    // Stop delivery before deleting provider resources. A transient cleanup failure retains
+    // credentials for retry; a dead grant (null token) or denied access cleans up locally only.
+    const accounts = [...this.ctx.storage.kv.list({ prefix: "notifications:" })].map(([key]) => key);
+    for (const key of accounts) {
+      await this.ctx.exports.CloudflareNotificationReceiver.getByName(
+        notificationReceiverName(this.ctx.id.toString(), key.slice("notifications:".length))).suspend();
+    }
+    if (accounts.length) {
+      const token = await this.getAccessToken();
+      for (const key of accounts) {
+        await this.ctx.exports.CloudflareNotificationReceiver.getByName(
+          notificationReceiverName(this.ctx.id.toString(), key.slice("notifications:".length))).revokeWithToken(token);
+        this.ctx.storage.kv.delete(key);
+      }
+    }
     this.ctx.storage.deleteAlarm();
     this.ctx.storage.deleteAll();
   }
@@ -517,13 +589,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       account.getAccessToken().catch(() => null), account.getGrantedScopes(),
     ]);
     const identity = token ? await fetchIdentity(token) : null;
-    const grantedResourceUrlPatterns = grantedObservabilityResourcePatterns(grantedScopes);
+    const grantedResourceUrlPatterns = grantedCloudflareResourcePatterns(grantedScopes);
     return {
       displayName: identity?.displayName,
       uniqueName: identity?.email,
       avatar: { url: CLOUDFLARE_LOGO_URL },
       grantedResourceUrlPatterns,
-      grantedResourceTypeIds: getGrantedResourceTypeIds({ grantedResourceUrlPatterns }, OBSERVABILITY_RESOURCES),
+      grantedResourceTypeIds: getGrantedResourceTypeIds({ grantedResourceUrlPatterns }, CLOUDFLARE_RESOURCES),
     };
   }
 
@@ -535,9 +607,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {
-    resourceUrlPatterns = resourceUrlPatterns.map(value => resourceTypeUrlPattern(OBSERVABILITY_RESOURCES, value));
+    resourceUrlPatterns = resourceUrlPatterns.map(value => resourceTypeUrlPattern(CLOUDFLARE_RESOURCES, value));
     const account = this.#account();
-    const grantedPatterns = new Set(grantedObservabilityResourcePatterns(await account.getGrantedScopes()));
+    const grantedPatterns = new Set(grantedCloudflareResourcePatterns(await account.getGrantedScopes()));
     if (resourceUrlPatterns.every(pattern => grantedPatterns.has(pattern))) return {};
 
     const union = [...new Set([...grantedPatterns, ...resourceUrlPatterns])];
@@ -551,13 +623,27 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return OBSERVABILITY_RESOURCES;
+    return CLOUDFLARE_RESOURCES;
   }
 
   async getGatekeeperClassFor(url: string): Promise<{
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
+    let notifications: { accountId: string } | undefined;
+    try { notifications = parseNotificationsResourceUrl(url); } catch { /* Try telemetry below. */ }
+    if (notifications) {
+      const { accountId } = notifications;
+      if (!(await this.#account().getGrantedScopes()).includes(NOTIFICATIONS_SCOPE)) {
+        throw new Error("Reconnect Cloudflare with Notifications access first.");
+      }
+      return {
+        class: this.ctx.exports.CloudflareNotificationsGatekeeper({
+          props: { userObjectId: this.ctx.props.userObjectId, accountId },
+        }),
+        resource: NOTIFICATIONS_RESOURCE,
+      };
+    }
     const parsed = parseObservabilityResourceUrl(url);
     return {
       class: this.ctx.exports.CloudflareObservabilityGatekeeper({
@@ -570,6 +656,39 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
     resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const getToken = () => this.#account().getAccessToken();
+    if (resourceUrlPattern === NOTIFICATIONS_RESOURCE.urlPattern) {
+      return { iframeHtml: NOTIFICATIONS_CONFIGURATOR_HTML,
+        ui: new RpcStub(new CloudflareNotificationsConfiguratorUI(getToken, async accountId => {
+          accountId = assertCloudflareAccountId(accountId);
+          const status = await this.ctx.exports.CloudflareNotificationReceiver.getByName(
+            notificationReceiverName(this.ctx.props.userObjectId, accountId)).getStatus();
+          if (status.suspended) return {
+            summary: "Delivery stopped",
+            details: "Finish disconnecting this Cloudflare connection, then reconnect.",
+          };
+          if (status.installed && status.credentials !== "ready") return {
+            summary: status.credentials === "reconnect_required" ? "Cloudflare authorization expired" : "Could not check Cloudflare authorization",
+            details: status.credentials === "reconnect_required"
+              ? "Reconnect this Cloudflare connection with Notifications access to resume delivery."
+              : "Reopen this connection to retry its authorization health check.",
+          };
+          if (status.installed) return {
+            summary: `Connected · ${status.subscribers}/${status.subscriberLimit} active subscriptions`,
+            details: `Destination ${status.webhookId}. ` +
+              `${status.pendingDeliveries} pending handoffs (${status.retryingDeliveries} attempted). ` +
+              (status.lastTestAt ? `Last webhook test: ${status.lastTestAt}.` : "No webhook test received yet."),
+          };
+          try {
+            notificationWebhookBaseUrl(configuredNotificationBaseUrl(this.env));
+          } catch {
+            return {
+              summary: "Public webhook address needed",
+              details: "Ask the deployment administrator to configure a public HTTPS notification address on port 443 before enabling this connection.",
+            };
+          }
+          return { summary: "Ready to connect", details: `Up to ${status.subscriberLimit} notification subscriptions per connection/account.` };
+        })) };
+    }
     if (resourceUrlPattern === ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern) {
       return {
         iframeHtml: ACCOUNT_CONFIGURATOR_HTML,
