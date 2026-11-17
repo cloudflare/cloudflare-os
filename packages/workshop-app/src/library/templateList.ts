@@ -4,9 +4,14 @@ import { groupByName } from '@/components/nameGroups'
 import type { ListViewSpec } from '@/hooks/useListView'
 import { templateNeeds, templateSearchText, templateType, templateTypes, type Template } from './templates'
 
-/** The most used first, and of those used as much, the latest published. */
+/**
+ * The most used first, and of those used as much, the organization's, then the latest published.
+ * Where how much each is used is not known, as the backend does not say yet, that is the
+ * organization's first.
+ */
 export const mostUsed = (templates: Template[]): Template[] =>
-  templates.toSorted((a, b) => b.uses - a.uses || b.metadata.created.getTime() - a.metadata.created.getTime())
+  templates.toSorted((a, b) =>
+    (b.uses ?? 0) - (a.uses ?? 0) || Number(Boolean(b.organization)) - Number(Boolean(a.organization)) || b.metadata.created.getTime() - a.metadata.created.getTime())
 
 /** The latest published first. */
 export const recentlyAdded = (templates: Template[]): Template[] =>

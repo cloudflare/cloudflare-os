@@ -3,6 +3,7 @@ import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { ListToolbar } from '@/blocks/ListToolbar'
 import { PromoCarousel } from '@/blocks/PromoCarousel'
 import { TemplateCard } from '@/blocks/TemplateCard'
+import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -18,7 +19,7 @@ import { PublishMenu } from './PublishMenu'
 import { mostUsed, recentlyAdded, templatesByType } from './templateList'
 import { TemplateEntries } from './TemplateEntries'
 import { TemplateEntry } from './TemplateEntry'
-import { templateCreator, templateNeeds, templateType, type Template } from './templates'
+import { templateCreator, templateServices, templateType, type Template } from './templates'
 
 /** The tab that makes much of a few, and the tab of all of them. The others are a type's id each. */
 export const DISCOVER_TAB = 'discover'
@@ -35,6 +36,10 @@ export type TemplateStoreViewProps = {
   tab: string
   onTabChange: (tab: string) => void
   templates: Template[]
+  /** Said in place of the templates while there are none to show yet: still being read, or why they could not be. */
+  status?: { loading: true } | { failed: string; onRetry: () => void }
+  /** Why the last thing asked for, such as publishing, could not be done. */
+  problem?: string
   /** How they are listed: the order, the filters and what they are searched for. */
   list: ListView<Template, ListOrder<Template>>
   /** The ids of the starred ones, in their order. */
@@ -49,9 +54,8 @@ export type TemplateStoreViewProps = {
   /** The apps the user could publish as templates (`ownApps`), which Publish lists; left out until they are known. */
   apps?: OutputSummary[]
   /**
-   * Publishes the app chosen as a template. Left out, choosing one only closes the menu: a
-   * blueprint is made from the app it is of (`GadgetClient.createBlueprint()`), with a title and
-   * the rest of what a template says of itself, which this page has no step for yet.
+   * Publishes the app chosen as a template, under its own title. Left out, choosing one only
+   * closes the menu.
    */
   onPublish?: (app: OutputSummary) => void
 }
@@ -70,7 +74,7 @@ const promoted = (templates: Template[]) => {
  * them, and one each those of a kind, under the controls a list has; a search or a filter lists
  * what it leaves in place of the front.
  */
-export const TemplateStoreView = ({ tab, onTabChange, templates, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onPublish }: TemplateStoreViewProps) => {
+export const TemplateStoreView = ({ tab, onTabChange, templates, status, problem, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onPublish }: TemplateStoreViewProps) => {
   const narrow = useNarrowScreen()
   const kinds = templatesByType(templates)
   const tabs = [
@@ -142,7 +146,15 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, list, stars, on
           {/* The one panel, whichever tab it is of, so that what is typed in the search is not let go of from one to the next. */}
           <Tabs.Panel value={current} className="flex flex-col gap-6">
             {!narrow && toolbar}
-            {templates.length === 0 && <p className="px-4 text-center text-base text-kumo-subtle">No templates yet.</p>}
+            {problem && <Banner title={problem} />}
+            {status && 'loading' in status && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading templates…</p>}
+            {status && 'failed' in status && (
+              <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
+                Couldn’t load templates: {status.failed}
+                <Button variant="ghost" onClick={status.onRetry}>Try again</Button>
+              </p>
+            )}
+            {!status && templates.length === 0 && <p className="px-4 text-center text-base text-kumo-subtle">No templates yet.</p>}
             {front && templates.length > 0 && (
               <div className="flex flex-col gap-8">
                 <Shelf title="Most used" more={{ label: 'See all', 'aria-label': 'See all, the most used first', onSelect: seeAllIn('used') }}>
@@ -159,7 +171,7 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, list, stars, on
                             kind={noun}
                             icon={icon}
                             creator={templateCreator(template)}
-                            connections={templateNeeds(template).map(({ name }) => name)}
+                            connections={templateServices(template).map(({ name }) => name)}
                             previewUrl={template.screenshotUrl}
                             starred={starred.has(template.id)}
                             onStarredChange={(on) => onStarsChange(withStar(stars, template.id, on))}

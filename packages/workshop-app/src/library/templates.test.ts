@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { BlueprintBinding, BlueprintOutput } from '@gadgets/workshop-shared/api'
+import type { BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { narrowList } from '@/components/listView'
 import { mostUsed, recentlyAdded, templateList, templatesByType } from './templateList'
-import { templateNeeds, templateSearchText, templateTypes, type Template } from './templates'
+import { templateNeeds, templateSearchText, templatesOf, templateTypes, type Template } from './templates'
 
 const DOCUMENT: BlueprintOutput = { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' }
 
@@ -36,10 +36,15 @@ describe('templates', () => {
         GITHUB: service('GitHub'),
       },
     }))
-    expect(needs).toEqual([
-      { key: 'JIRA', name: 'Jira', description: 'What it does with Jira' },
-      { key: 'GITHUB', name: 'GitHub', description: 'What it does with GitHub' },
+    expect(needs.map(({ key, name, description, vendorId }) => ({ key, name, description, vendorId }))).toEqual([
+      { key: 'JIRA', name: 'Jira', description: 'What it does with Jira', vendorId: 'jira' },
+      { key: 'GITHUB', name: 'GitHub', description: 'What it does with GitHub', vendorId: 'github' },
     ])
+  })
+
+  it('names a service as the deployment does, with what its publisher called it said of it', () => {
+    const [need] = templateNeeds({ ...template('Budget', { bindings: { SHEET: { ...service('Budget sheet'), description: '' } } }), services: { SHEET: { name: 'Google', logoUrl: '/google.svg' } } })
+    expect(need).toMatchObject({ name: 'Google', description: 'Budget sheet', logoUrl: '/google.svg' })
   })
 
   it('lists each type once, in the order they are first met, with an app for no format', () => {
@@ -87,5 +92,40 @@ describe('templateList', () => {
     expect(left('starred')).toEqual(['Retro'])
     expect(left('ready')).toEqual(['Notes', 'Retro'])
     expect(left('ready', 'needs:Jira')).toEqual([])
+  })
+})
+
+const metadata = (title: string, extra: Partial<BlueprintMetadata> = {}): BlueprintMetadata => ({ ...template(title).metadata, ...extra })
+const info = (id: string, title: string): BlueprintPublicInfo => ({ id, metadata: metadata(title), screenshotUrl: `/blueprint-screenshot/${id}` })
+const summary = (id: string, source: { type: 'deletedWorkspace' } | { type: 'imported' }, pinned?: true) =>
+  ({ id, title: id, description: '', source, version: 1, lastUpdated: new Date(2026, 1, 1), pinned })
+
+describe('templatesOf', () => {
+
+  it('lists each blueprint once, however many ways the user has it: the featured as the organization’s, what they published as theirs', () => {
+    const { templates, stars } = templatesOf({
+      featured: [info('a', 'Tip jar')],
+      library: [
+        { id: 'a', metadata: metadata('Tip jar'), addedAt: new Date(), uploaded: false, pinned: true },
+        { id: 'c', metadata: metadata('Planner', { screenshot: true }), addedAt: new Date(), uploaded: true },
+      ],
+      own: [
+        { summary: summary('b', { type: 'deletedWorkspace' }, true), info: info('b', 'Standup') },
+        // Added, not published: listed from the library, where it is.
+        { summary: summary('c', { type: 'imported' }), info: info('c', 'Planner') },
+        // Its record could not be read: there is nothing to show of it.
+        { summary: summary('z', { type: 'deletedWorkspace' }), info: null },
+      ],
+      vendors: [],
+    })
+    expect(templates.map(({ id, organization, mine }) => [id, organization, mine])).toEqual([['a', true, undefined], ['c', undefined, undefined], ['b', undefined, true]])
+    expect(templates.find(({ id }) => id === 'c')!.screenshotUrl).toMatch(/^\/blueprint-screenshot\/c\?v=/)
+    expect(stars).toEqual(['a', 'b'])
+  })
+
+  it('names the services its bindings are to as the deployment does', () => {
+    const vendors = [{ id: 'jira', description: { displayName: 'Jira Cloud', logo: { url: '/jira.svg' } } }] as unknown as GatekeeperVendorInfo[]
+    const { templates: [made] } = templatesOf({ featured: [{ ...info('a', 'Board'), metadata: metadata('Board', { bindings: { JIRA: service('Jira'), OTHER: service('Other') } }) }], library: [], own: [], vendors })
+    expect(made.services).toEqual({ JIRA: { name: 'Jira Cloud', logoUrl: '/jira.svg', color: undefined } })
   })
 })
