@@ -4,6 +4,9 @@
   "name": "pdf-renderer",
   "main": ".wrangler/validate/src/worker.ts",
   "compatibility_date": "2026-09-04",
+  "limits": {
+    "cpu_ms": 300000
+  },
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,

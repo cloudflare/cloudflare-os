@@ -229,6 +229,21 @@ test("an internal worker ships with the core and is reached only by a service bi
         entrypoint: "PdfRenderer" });
 });
 
+// A Worker's limits are the platform's unless its config says otherwise, and the deploy service
+// uploads what the entry carries: a limit dropped here would leave customer instances on the
+// default with nothing to say so.
+test("a worker's limits travel verbatim, and only where its config sets them", () => {
+  const { workers } = buildTestManifest();
+  assert.deepEqual(workers["pdf-renderer"].limits, { cpu_ms: 300_000 });
+  assert.equal("limits" in workers["workshop-backend"], false);
+
+  const renderer = readTestWorkerBuilds().find((w) => w.pkgName === "pdf-renderer");
+  assert.ok(renderer);
+  const limits = { cpu_ms: 60_000, subrequests: 20_000 };
+  const entry = buildTestManifest([{ ...renderer, config: { ...renderer.config, limits } }]);
+  assert.deepEqual(entry.workers["pdf-renderer"].limits, limits);
+});
+
 // A service binding's target is deployed from the same manifest, so a name no entry answers to
 // would leave the deploy service with a worker name it cannot resolve.
 test("every service binding names a worker of the release", () => {

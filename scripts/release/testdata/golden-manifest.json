@@ -1383,6 +1383,9 @@
       "compatibilityFlags": [],
       "installable": false,
       "kind": "internal",
+      "limits": {
+        "cpu_ms": 300000
+      },
       "mainModule": "worker.js",
       "migrations": [],
       "modules": [

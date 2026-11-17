@@ -78,6 +78,17 @@ export interface ObservabilityConfig {
 }
 
 /**
+ * What one invocation of a Worker may use, where that is not the platform's default. Closed, as
+ * {@link ObservabilityConfig} is and for its reason.
+ */
+export interface LimitsConfig {
+  /** CPU time, in milliseconds. */
+  cpu_ms?: number;
+  /** Subrequests. */
+  subrequests?: number;
+}
+
+/**
  * One Durable Object migration step, verbatim from wrangler.jsonc. Only the operations the
  * deployable workers actually use are named; the index signature carries anything else through
  * untouched, since the manifest replays the history rather than interpreting it.
@@ -109,6 +120,8 @@ export interface WranglerConfig {
   migrations?: DurableObjectMigration[];
   /** Workers observability settings. */
   observability?: ObservabilityConfig;
+  /** What one invocation may use, where that is not the platform's default. */
+  limits?: LimitsConfig;
   /** KV namespace bindings; ids become `$KV_<BINDING>_ID` placeholders. */
   kv_namespaces?: KvNamespaceDecl[];
   /** R2 bucket bindings; names become `$R2_<BINDING>_NAME` placeholders. */
@@ -207,6 +220,11 @@ export interface WorkerEntry {
   vars: Record<string, unknown>;
   /** Workers observability settings. */
   observability: ObservabilityConfig;
+  /**
+   * What one invocation may use, verbatim from wrangler.jsonc. Absent for a worker that runs
+   * under the platform's defaults.
+   */
+  limits?: LimitsConfig;
   /** How the deploy service expands installed gatekeepers into `GATEKEEPER_*` bindings. */
   gatekeeperBindingExpansion?: {
     entrypoint?: string;
@@ -260,6 +278,9 @@ const HANDLED_CONFIG_KEYS = new Set([
   "$schema", "name", "main", "build", "compatibility_date", "compatibility_flags", "rules",
   "migrations", "observability", "kv_namespaces", "r2_buckets", "worker_loaders", "services",
   "assets", "vars",
+  // What one invocation may use (pdf-renderer's CPU time). Carried verbatim, like observability:
+  // a customer instance's Worker needs what an internal one does.
+  "limits",
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
@@ -576,6 +597,7 @@ export function buildWorkerEntry(
     bindings,
     vars,
     observability: config.observability ?? { enabled: false },
+    ...(config.limits ? { limits: config.limits } : {}),
     ...(gatekeeperBindingExpansion ? { gatekeeperBindingExpansion } : {}),
     ...(assetsConfig ? { assetsConfig } : {}),
     ...(inputs ? { inputs } : {}),

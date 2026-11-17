@@ -6,6 +6,10 @@ export default defineGadgetsWorker({
   name: "pdf-renderer",
   entrypoint: ".wrangler/validate/src/worker.ts",
   observability: OBSERVABILITY,
+  // Every page drawn of one open PDF counts against one invocation's CPU time, and a PDF the
+  // default 30 seconds runs out on is downloaded and opened again. Five minutes is the most a
+  // Worker may be given; a PDF that outruns that too is still opened again (README.md).
+  limits: { cpuMs: 300_000 },
 });
 
 export const wrangler = {

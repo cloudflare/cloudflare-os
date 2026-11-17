@@ -42,10 +42,12 @@ opened.document[Symbol.dispose]();
   document that goes two minutes without a call can lose its room to another PDF that needs it:
   its next call is answered `released`, and the caller opens the PDF again.
 - Every call on one document is part of the invocation that opened it, and counts against the
-  CPU time an invocation may use (30 seconds unless the Worker is given more). What uses it up
-  is the drawing, not the number of pages: measured, the heaviest page that is still drawn
-  within the limits below takes 3 to 5 seconds, so about ten such pages use it up, as some 200
-  fax pages at 300 dpi do; a 26-page JPEG 2000 scan uses 12 seconds of it. The call
+  CPU time an invocation may use: five minutes, which is what this Worker's config asks for
+  (`limits.cpuMs`) and the most a Worker may have, where the default is 30 seconds. What uses
+  it up is the drawing, not the number of pages: measured, the heaviest page that is still
+  drawn within the limits below takes 3 to 5 seconds, so about a hundred such pages use it up,
+  where ten used up the default, as some 200 fax pages at 300 dpi did; a 26-page JPEG 2000
+  scan uses 12 seconds of it. The call
   that runs out fails in the caller with the runtime's own error, and nothing in this Worker
   runs to clear up after it. So the next thing asked of the renderer, by anyone, first puts the
   instance back and lets that document's room go (`cut-off` in the log): a caller that opens
@@ -105,8 +107,9 @@ isolate is next asked for anything, with that moment as its time, and never when
 goes away first. Measured against a renderer held to 150 ms of CPU, seven of nine such documents
 were counted. The caller sees the call throw every time, and counts it as a `render-page` that
 failed with the reason `call`, and the PDF it then downloads and opens again as a `reopen` with
-the cause `call`, as it does when the isolate went away. Those counts are what to watch before
-giving this Worker more CPU time.
+the cause `call`, as it does when the isolate went away. The Worker has all the CPU time there
+is to give, so those counts say how often a PDF still outruns it, each time at the cost of
+downloading the file again.
 
 ## The vendored build
 
