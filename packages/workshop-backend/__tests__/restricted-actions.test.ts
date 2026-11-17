@@ -1,5 +1,5 @@
-// submitAction refusals: a push under the restricted-data latch, and any action on a removed
-// connection.
+// submitAction refusals: under the restricted-data latch, a push that sends what its approver
+// could not read; and any action on a removed connection.
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding); records are seeded
 // directly through the impl.
 
@@ -8,6 +8,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { encodeGitTree, encodeLooseObject, gitObjectOid } from "../src/git-codec";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -72,20 +73,36 @@ function actionStates(impl: any): Array<{ gatekeeperId: number; state: string }>
 }
 
 describe("submitAction refusals", () => {
-  it("refuses a push while restricted, even one claiming a complete description", async () => {
+  it("refuses a push that sends a file that is not text while restricted, even one claiming " +
+      "a complete description", async () => {
     let stub = env.TEST_OVERSEER.getByName("restricted-actions-push");
     await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
       let impl = getImpl(instance);
       seedGatekeeper(impl, 1);
+      // A commit the connection's remote has and, on it, a local commit that adds an image.
+      let commit = (tree: string, parents: string[]) => new TextEncoder().encode(
+          `tree ${tree}\n${parents.map(parent => `parent ${parent}\n`).join("")}` +
+          "author Test <test@example.com> 1700000000 +0000\n" +
+          "committer Test <test@example.com> 1700000000 +0000\n\nchange\n");
+      let store = (type: "blob" | "tree" | "commit", payload: Uint8Array) => {
+        let oid = gitObjectOid(type, payload);
+        impl.storage.gitObjects.put({ oid, data: encodeLooseObject(type, payload) });
+        return oid;
+      };
+      let empty = await impl.gitCache.putFromGatekeeper(1, "tree", new Uint8Array(0));
+      let base = await impl.gitCache.putFromGatekeeper(1, "commit", commit(empty, []));
+      let image = store("blob", Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0));
+      let tree = store("tree", encodeGitTree([{ mode: "100644", name: "logo.png", oid: image }]));
+      let head = store("commit", commit(tree, [base]));
       seedRestrictedObservation(impl, 1, 100);
+      let nextActionId = impl.storage.nextActionId.get();
 
-      // Commits cannot be reviewed as text, so the claim does not count. Refused before push
-      // ancestry is even checked, which is why an unproven head is fine here.
-      await expect(impl.submitAction(1, 0, {
-        ...POKE,
-        pushedCommits: ["0123456789abcdef0123456789abcdef01234567"],
-      }, CALLER)).rejects.toThrow(/git push cannot be reviewed as of yet/i);
+      // What a push sends is its commits, whatever its description claims to show.
+      await expect(impl.submitAction(1, 0, { ...POKE, pushedCommits: [head] }, CALLER))
+          .rejects.toThrow(`"logo.png" in commit ${head} is not UTF-8 text`);
       expect(actionStates(impl)).toEqual([]);
+      expect([...impl.storage.gitObjectMetadata.byPendingPushAction.list()]).toEqual([]);
+      expect(impl.storage.nextActionId.get()).toBe(nextActionId);
     });
   });
 

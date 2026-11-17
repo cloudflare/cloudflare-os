@@ -1685,8 +1685,24 @@ export type ObservationDescription = {
    *   declaration asks for. The approver is shown the action's full `description` and is
    *   responsible for checking it contains none of the restricted data. An action whose
    *   description is not complete
-   *   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only
-   *   git pushes are refused. The kernel does not restrict which connections may be acted on.
+   *   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver. A git
+   *   push (`ActionDescription.pushedCommits`) is accepted only when the approver can read
+   *   everything it will send: every object it sends is in the workspace's git store and is what
+   *   the commit or directory naming it says it is (a commit's tree a tree, a directory's entry a
+   *   tree or a blob as its mode says); each commit and each file it sends is UTF-8 text with no
+   *   NUL, of at most `MAX_BUFFERED_BLOB_SIZE`; each directory it sends is in the form git writes
+   *   (every entry name valid UTF-8, a single path segment, present once, in order); no file it
+   *   sends is the target of a symbolic link, and no commit adds or changes a submodule entry;
+   *   each path a commit changes can be compared with every parent of that commit, the parent
+   *   and its directories on the way to the path being in the store too; every object it sends
+   *   is a commit of the push or sits at a path of one; and it stays within
+   *   `MAX_RESTRICTED_PUSH_COMMITS`, `MAX_RESTRICTED_PUSH_FILES`, `MAX_RESTRICTED_PUSH_PATHS` and
+   *   `MAX_RESTRICTED_PUSH_TEXT_SIZE`. Any other push is refused, queuing nothing, with an error
+   *   naming what failed. An accepted push waits for a person, who reads its commits through
+   *   `Overseer.getPushReview()` (see `@gadgets/workshop-shared/api`). A push that was already
+   *   waiting when the workspace first read restricted data is not judged again: what it sends
+   *   was fixed before that read. The kernel does not restrict which connections may be acted
+   *   on.
    *
    * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
    *   actions whose visibility is limited to people verified to have access to the same data: an
@@ -1847,8 +1863,9 @@ export type ActionDescription = {
    * with `origin: "provider"`. A provisional ID standing for something this workspace creates
    * counts as shown when the description says the gatekeeper sends the provider's ID in its place.
    * Absent means incomplete: a summary, a truncated field, or opaque bytes the approver cannot read
-   * as text. A push (`pushedCommits`) is never complete. Approval surfaces tell the approver when
-   * this is absent; an incomplete description is never refused for that reason.
+   * as text. A push (`pushedCommits`) is never complete as text: what it sends is its commits,
+   * which the approver reads through `Overseer.getPushReview()`. Approval surfaces tell the
+   * approver when this is absent; an incomplete description is never refused for that reason.
    */
   descriptionIsComplete?: boolean;
 
@@ -1864,7 +1881,9 @@ export type ActionDescription = {
    * that remote -- a policy which prevents accidentally pushing commits to the wrong repository,
    * possibly exposing confidential data. In any case, the Overseer typically applies such policies
    * at submit time (rather than apply time) and, if they indicate the action should not proceed,
-   * will cause `submitAction()` to throw an exception.
+   * will cause `submitAction()` to throw an exception. In a workspace that holds restricted data
+   * the Overseer also refuses a push whose content the approver could not read in full (see
+   * `ObservationDescription.containsRestrictedData`).
    *
    * Even when the action is successfully submitted, the Gatekeeper is obliged -- as always -- not
    * to actually transmit any data until the action is approved and applied with `applyAction()`.
@@ -2047,6 +2066,34 @@ export type GitObjectType = "commit" | "tree" | "blob" | "tag";
  * row's worth.
  */
 export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
+
+/**
+ * The most commits a push may send from a workspace that holds restricted data (see
+ * `ObservationDescription.containsRestrictedData`). With `MAX_RESTRICTED_PUSH_FILES`,
+ * `MAX_RESTRICTED_PUSH_PATHS` and `MAX_RESTRICTED_PUSH_TEXT_SIZE`, it keeps such a push to what
+ * its approver can read in full.
+ */
+export const MAX_RESTRICTED_PUSH_COMMITS = 20;
+
+/** The most files (blobs) a push may send from a workspace that holds restricted data. */
+export const MAX_RESTRICTED_PUSH_FILES = 50;
+
+/**
+ * The most paths at which the commits of a push from a workspace that holds restricted data may
+ * differ from their parents: every file and directory a commit adds, changes or deletes, the
+ * directories on the way to a changed file included. A path of a merge counts once for each
+ * parent it is compared with.
+ */
+export const MAX_RESTRICTED_PUSH_PATHS = 500;
+
+/**
+ * The most text, in bytes, a push from a workspace that holds restricted data may put before
+ * its approver: its commits' payloads, its files' whole contents, its directories' listings
+ * and the paths its commits change, together. A changed file is sent whole, so it counts
+ * whole, however small the change, and so do the listing of every directory on the way to it
+ * and each changed path, written out in full as UTF-8.
+ */
+export const MAX_RESTRICTED_PUSH_TEXT_SIZE = 2 * 1024 * 1024;
 
 /**
  * Interface to the workspace's git object cache, as exposed to one gatekeeper.

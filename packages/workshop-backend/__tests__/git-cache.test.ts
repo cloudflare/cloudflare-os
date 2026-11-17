@@ -3,6 +3,10 @@ import { env } from "cloudflare:workers";
 import { deflateSync } from "node:zlib";
 import {
   MAX_BUFFERED_BLOB_SIZE,
+  MAX_RESTRICTED_PUSH_COMMITS,
+  MAX_RESTRICTED_PUSH_FILES,
+  MAX_RESTRICTED_PUSH_PATHS,
+  MAX_RESTRICTED_PUSH_TEXT_SIZE,
   type GitPullHints,
   type GitOid,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -1181,6 +1185,14 @@ const listed = (entries: PushReviewEntry[]) => entries.flatMap(entry =>
     entry.kind === "path" ? [`${entry.path} ${entry.entry?.kind ?? "-"}`]
         : entry.kind === "object" ? [`object ${entry.type}`] : []);
 
+// Trees no encoder writes, stored as an agent can store them: nothing checks a tree's form.
+const UNLISTABLE: [string, (a: GitOid, b: GitOid) => GitTreeEntry[]][] = [
+  ["a name twice", (a, b) => [fileAt("notes.txt", a), fileAt("notes.txt", b)]],
+  ["the name .", a => [fileAt(".", a)]],
+  ["the name ..", a => [fileAt("..", a)]],
+  ["entries out of order", (a, b) => [fileAt("b", a), fileAt("a", b)]],
+];
+
 describe("push review", () => {
   it("lists a file under the commit that adds it and under the one that changes it",
       async () => {
@@ -1688,13 +1700,6 @@ describe("push review", () => {
     expect(reads.filter(oid => chunks.includes(oid))).toStrictEqual([]);
   });
 
-  // Trees no encoder writes, stored as an agent can store them: nothing checks a tree's form.
-  const UNLISTABLE: [string, (a: GitOid, b: GitOid) => GitTreeEntry[]][] = [
-    ["a name twice", (a, b) => [fileAt("notes.txt", a), fileAt("notes.txt", b)]],
-    ["the name .", a => [fileAt(".", a)]],
-    ["the name ..", a => [fileAt("..", a)]],
-    ["entries out of order", (a, b) => [fileAt("b", a), fileAt("a", b)]],
-  ];
   for (let [what, entries] of UNLISTABLE) {
     it(`does not list a directory with ${what}`, async () => {
       let t = await setupReview();
@@ -2233,6 +2238,575 @@ describe("push review", () => {
     // A read from the start lists each marked object once.
     expect(listed(readReview(t, [commit]).entries).slice(1, 6))
         .toStrictEqual(["a dir", "a/0 file", "a/1 file", "a/2 file", "b100 file"]);
+  });
+});
+
+// =======================================================================================
+
+type ReviewSetup = Awaited<ReturnType<typeof setupReview>>;
+
+const REFUSAL = new RegExp(
+    "^This workspace has observed sensitive data, so a push is accepted only when its approver " +
+    "can read everything it will send\\. This push was not queued: (.*)\\. Change the commits " +
+    "and push again\\.$", "s");
+
+// The reason assertPushReadable gives for refusing a marked push, or undefined when it accepts
+// the push.
+function refusalOf(t: TestCache, heads: GitOid[], actionId = ACTION): string | undefined {
+  try {
+    t.cache.assertPushReadable(actionId, heads);
+    return undefined;
+  } catch (error) {
+    let match = REFUSAL.exec((error as Error).message);
+    if (match === null) throw error;
+    return match[1];
+  }
+}
+
+// Marks a push of one head, as submitAction does, and judges it.
+function judge(t: TestCache, head: GitOid): string | undefined {
+  t.cache.markPushClosure(G1, ACTION, [head]);
+  return refusalOf(t, [head]);
+}
+
+// A path of a commit, as a refusal names it.
+const at = (path: string, commit: GitOid) =>
+    `${path === "" ? "the root directory" : JSON.stringify(path)} in commit ${commit}`;
+
+const NOT_HELD = " is not in the workspace's git store";
+const NOT_IN_FORM = " is not in the form git writes: an entry name is not valid UTF-8, is " +
+    "repeated, is out of order or is not a single path segment";
+const notComparable = (parent: GitOid) => ` cannot be compared with parent ${parent}, which is ` +
+    "not in the workspace's git store as far as that path. Read that directory at the parent " +
+    "commit, then push again";
+
+// A local commit, on `parents`, of a tree written here with these entries.
+async function snapshot(t: TestCache, entries: GitTreeEntry[], parents: GitOid[],
+                        message?: string): Promise<GitOid> {
+  return await localCommit(t, await localTree(t, entries), parents, message);
+}
+
+// A commit the remote G1 is known to have and the store does not hold: the parent of a commit
+// G1 put. `supply` stores it.
+async function unheldRemoteCommit(t: ReviewSetup) {
+  let payload = commitPayload(t.baseTree, [t.base], "not fetched");
+  let commit = gitObjectOid("commit", payload);
+  await t.cache.putFromGatekeeper(G1, "commit", commitPayload(t.baseTree, [commit], "tip"));
+  return { commit, supply: () => t.cache.putFromGatekeeper(G1, "commit", payload) };
+}
+
+describe("assertPushReadable", () => {
+  const ACCEPTED: [string, (t: ReviewSetup) => Promise<GitOid>][] = [
+    ["a file added in one commit and changed in the next", async t => {
+      let first = await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("notes.txt", await localBlob(t, "one\n"))],
+          [t.base], "add");
+      return await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("notes.txt", await localBlob(t, "one\ntwo\n"))],
+          [first], "change");
+    }],
+    ["a file that begins with a UTF-8 byte order mark", async t => snapshot(t,
+        [fileAt("bom.txt", await localBlob(t, Uint8Array.of(0xef, 0xbb, 0xbf, 0x61, 0x0a)))],
+        [t.base])],
+    ["a file of exactly the buffered size", async t => {
+      let blob = await localBlob(t, new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61));
+      return await snapshot(t, [fileAt("exact.txt", blob)], [t.base]);
+    }],
+    ["an empty file", async t =>
+        snapshot(t, [fileAt("empty.txt", await localBlob(t, ""))], [t.base])],
+    ["an empty directory", t =>
+        snapshot(t, [fileAt("README.md", t.readme), dirAt("empty", EMPTY_TREE_OID)], [t.base])],
+    ["a deletion", t => snapshot(t, [], [t.base])],
+    ["a change of mode alone", t => snapshot(t, [executableAt("README.md", t.readme)], [t.base])],
+    ["an unchanged submodule entry and an unchanged symbolic link beside a changed file",
+     async t => {
+      await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+      await t.cache.putFromGatekeeper(G1, "tree", fixture(TREE_1).payload);
+      let entries = parseGitTree(fixture(TREE_1).payload);
+      expect(entries.map(entry => entry.name))
+          .toStrictEqual(expect.arrayContaining(["README.md", "link.md", "vendored"]));
+      let changed = await localBlob(t, "changed\n");
+      return await snapshot(t,
+          entries.map(entry => entry.name === "README.md" ? fileAt("README.md", changed) : entry),
+          [COMMIT_1]);
+    }],
+    ["a symbolic link to a file the remote has", t =>
+        snapshot(t, [fileAt("README.md", t.readme), linkAt("link", t.readme)], [t.base])],
+    ["a file turned into a symbolic link over the same content", t =>
+        snapshot(t, [linkAt("README.md", t.readme)], [t.base])],
+    ["a return to a tree the remote has", async t => {
+      let blob = await t.cache.putFromGatekeeper(G1, "blob", utf8("later\n"));
+      let later = await remoteCommit(t, [fileAt("README.md", blob)], [t.base], "later");
+      return await localCommit(t, t.baseTree, [later.commit], "revert");
+    }],
+    ["a head the remote already has", async t => t.base],
+    ["a merge whose root is one parent's, the other parent not in the store", async t =>
+        localCommit(t, t.baseTree, [t.base, (await unheldRemoteCommit(t)).commit], "merge")],
+  ];
+  for (let [what, build] of ACCEPTED) {
+    it(`accepts ${what}`, async () => {
+      let t = await setupReview();
+      expect(judge(t, await build(t))).toBeUndefined();
+    });
+  }
+
+  // Each builds a push that breaks one rule, and says what the refusal names.
+  const withFile = async (t: ReviewSetup, name: string, content: Uint8Array) =>
+      snapshot(t, [fileAt("README.md", t.readme), fileAt(name, await localBlob(t, content))],
+          [t.base]);
+  const withCommit = (t: ReviewSetup, payload: Uint8Array) =>
+      storeLocal(t.storage, { type: "commit", payload });
+  const notText = (commit: GitOid) =>
+      `commit ${commit} is not UTF-8 text of at most ${MAX_BUFFERED_BLOB_SIZE} bytes`;
+  const SUBMODULE = " adds or changes a submodule entry";
+  const SENT_LINK = " is a symbolic link whose target this push sends";
+  const REFUSED: [string, (t: ReviewSetup) => Promise<{ head: GitOid, reason: string }>][] = [
+    ["a commit the store does not hold", async t => {
+      let head = gitObjectOid("commit", commitPayload(t.baseTree, [t.base], "never stored"));
+      return { head, reason: `commit ${head}${NOT_HELD}` };
+    }],
+    ["a root directory the store does not hold", async t => {
+      let tree = gitObjectOid("tree", encodeGitTree([fileAt("x", t.readme)]));
+      let head = await localCommit(t, tree, [t.base]);
+      return { head, reason: at("", head) + NOT_HELD };
+    }],
+    ["a file the store does not hold", async t => {
+      let absent = gitObjectOid("blob", utf8("never stored\n"));
+      let head = await snapshot(t, [fileAt("gone.txt", absent)], [t.base]);
+      return { head, reason: at("gone.txt", head) + NOT_HELD };
+    }],
+
+    ["a commit whose tree is a file", async t => {
+      let head = await localCommit(t, await localBlob(t, "not a tree\n"), [t.base]);
+      return { head, reason: `${at("", head)} names a blob where a tree is expected` };
+    }],
+    ["a directory entry that names a file", async t => {
+      let head = await snapshot(t, [dirAt("d", await localBlob(t, "not a tree\n"))], [t.base]);
+      return { head, reason: `${at("d", head)} names a blob where a tree is expected` };
+    }],
+    ["a file entry that names a directory", async t => {
+      let sub = await localTree(t, [fileAt("x", t.readme)]);
+      let head = await snapshot(t, [fileAt("f", sub)], [t.base]);
+      return { head, reason: `${at("f", head)} names a tree where a blob is expected` };
+    }],
+    ["a file entry that names a commit", async t => {
+      let other = await localCommit(t, t.baseTree, [t.base], "other");
+      let head = await snapshot(t, [fileAt("f", other)], [t.base]);
+      return { head, reason: `${at("f", head)} names a commit where a blob is expected` };
+    }],
+
+    ...[...UNLISTABLE, ["a name holding a slash", a => [fileAt("a/b", a)]] as typeof UNLISTABLE[0]]
+        .map(([what, entries]): typeof REFUSED[0] => [`a directory with ${what}`, async t => {
+          let payload = treePayload(entries(await localBlob(t, "a\n"), await localBlob(t, "b\n")));
+          let odd = await storeLocal(t.storage, { type: "tree", payload });
+          let head = await snapshot(t,
+              [fileAt("README.md", t.readme), dirAt("odd", odd)], [t.base]);
+          return { head, reason: `the directory ${at("odd", head)}${NOT_IN_FORM}` };
+        }]),
+    ["a root directory with a name holding a slash", async t => {
+      let payload = treePayload([fileAt("a/b", await localBlob(t, "a\n"))]);
+      let head = await localCommit(t, await storeLocal(t.storage, { type: "tree", payload }),
+          [t.base]);
+      return { head, reason: at("", head) + NOT_IN_FORM };
+    }],
+    ["a directory with a name that is not UTF-8", async t => {
+      await storeLocal(t.storage, fixture(BAD_NAME_TREE));
+      await storeLocal(t.storage, fixture(scanGitTree(fixture(BAD_NAME_TREE).payload)[0].oid));
+      let head = await snapshot(t, [dirAt("odd", BAD_NAME_TREE)], [t.base]);
+      return { head, reason: `the directory ${at("odd", head)}${NOT_IN_FORM}` };
+    }],
+
+    ["a file with a NUL", async t => {
+      let head = await withFile(t, "a.bin", Uint8Array.of(0x61, 0, 0x62));
+      return { head, reason: `${at("a.bin", head)} is not UTF-8 text` };
+    }],
+    // The name is written as JSON, so that no character of it can pass for the refusal's own
+    // words.
+    ["a file that is not text, whose name holds a quote and a line break", async t => {
+      let name = 'a"\nb.bin';
+      let head = await withFile(t, name, Uint8Array.of(0x61, 0, 0x62));
+      expect(at(name, head)).toBe(String.raw`"a\"\nb.bin" in commit ` + head);
+      return { head, reason: `${at(name, head)} is not UTF-8 text` };
+    }],
+    ["a file that is not valid UTF-8", async t => {
+      let head = await withFile(t, "latin1.txt", Uint8Array.of(0x63, 0x61, 0x66, 0xe9, 0x0a));
+      return { head, reason: `${at("latin1.txt", head)} is not UTF-8 text` };
+    }],
+    ["a file of UTF-16 text with a byte order mark", async t => {
+      let head = await withFile(t, "wide.txt", Uint8Array.of(0xff, 0xfe, 0x68, 0, 0x69, 0));
+      return { head, reason: `${at("wide.txt", head)} is not UTF-8 text` };
+    }],
+
+    ["a symbolic link whose target it sends", async t => {
+      let target = await localBlob(t, "README.md");
+      let head = await snapshot(t, [fileAt("README.md", t.readme), linkAt("link", target)],
+          [t.base]);
+      return { head, reason: at("link", head) + SENT_LINK };
+    }],
+    ["such a link under the commit that adds it, where a later commit keeps it", async t => {
+      let link = linkAt("link", await localBlob(t, "README.md"));
+      let first = await snapshot(t, [fileAt("README.md", t.readme), link], [t.base], "link");
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), link, fileAt("more.txt", await localBlob(t, "more\n"))],
+          [first], "more");
+      return { head, reason: at("link", first) + SENT_LINK };
+    }],
+
+    ["a submodule entry it adds", async t => {
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), submoduleAt("mod", GITLINK_TARGET)], [t.base]);
+      return { head, reason: at("mod", head) + SUBMODULE };
+    }],
+    ["a submodule entry whose target it changes", async t => {
+      let base = await remoteCommit(t, [submoduleAt("mod", GITLINK_TARGET)], [t.base], "mod");
+      let head = await snapshot(t, [submoduleAt("mod", "2".repeat(40))], [base.commit]);
+      return { head, reason: at("mod", head) + SUBMODULE };
+    }],
+    ["a submodule entry in a subdirectory", async t => {
+      let lib = await localTree(t, [submoduleAt("nested", GITLINK_TARGET)]);
+      let head = await snapshot(t, [fileAt("README.md", t.readme), dirAt("lib", lib)], [t.base]);
+      return { head, reason: at("lib/nested", head) + SUBMODULE };
+    }],
+    ["a submodule entry where the parent's directory is not in the store", async t => {
+      // The remote's tree may hold this very entry, and nothing held here shows that it does.
+      let entries = [submoduleAt("mod", GITLINK_TARGET)];
+      let remote = await t.cache.putFromGatekeeper(G1, "commit",
+          commitPayload(gitObjectOid("tree", encodeGitTree(entries)), [], "remote"));
+      let head = await snapshot(t, [...entries, fileAt("new.txt", t.readme)], [remote]);
+      return { head, reason: at("mod", head) + SUBMODULE };
+    }],
+
+    ["a commit that is not valid UTF-8", async t => {
+      let head = await withCommit(t, concatBytes(
+          [commitPayload(t.baseTree, [t.base], "invalid"), Uint8Array.of(0xff, 0x0a)]));
+      return { head, reason: notText(head) };
+    }],
+    ["a commit with a NUL", async t => {
+      let head = await withCommit(t, commitPayload(t.baseTree, [t.base], "nul \0"));
+      return { head, reason: notText(head) };
+    }],
+    ["a commit over the buffered size", async t => {
+      let head = await withCommit(t,
+          commitPayload(t.baseTree, [t.base], "x".repeat(MAX_BUFFERED_BLOB_SIZE)));
+      return { head, reason: notText(head) };
+    }],
+
+    ["an object marked for it that is at no path of its commits", async t => {
+      let stray = await localBlob(t, "stray\n");
+      t.storage.gitObjectMetadata.put({
+        oid: stray, type: "blob", onRemote: [], pullableFrom: [],
+        pendingPush: [{ gatekeeperId: G1, actionId: ACTION }],
+      });
+      let head = await withFile(t, "a.txt", utf8("text\n"));
+      return {
+        head,
+        reason: `object ${stray} is sent but is neither a commit of this push nor at a path of one`,
+      };
+    }],
+    ["a parent that is not a commit", async t => {
+      // Straight to the marks: the ancestry check refuses this push before it is queued.
+      let blob = await localBlob(t, "not a commit\n");
+      let head = await localCommit(t, t.baseTree, [t.base, blob]);
+      return {
+        head,
+        reason: `object ${blob} is sent but is neither a commit of this push nor at a path of one`,
+      };
+    }],
+  ];
+  for (let [what, build] of REFUSED) {
+    it(`refuses ${what}`, async () => {
+      let t = await setupReview();
+      let { head, reason } = await build(t);
+      expect(judge(t, head)).toBe(reason);
+    });
+  }
+
+  it("refuses a directory with a name twice whichever of its two files is text", async () => {
+    for (let textFirst of [true, false]) {
+      let t = await setupReview();
+      let blobs = [await localBlob(t, "benign\n"), await localBlob(t, Uint8Array.of(0, 1, 2))];
+      if (!textFirst) blobs.reverse();
+      let odd = await storeLocal(t.storage, {
+        type: "tree",
+        payload: treePayload([fileAt("notes.txt", blobs[0]), fileAt("notes.txt", blobs[1])]),
+      });
+      let head = await snapshot(t, [fileAt("README.md", t.readme), dirAt("odd", odd)], [t.base]);
+      expect(judge(t, head)).toBe(`the directory ${at("odd", head)}${NOT_IN_FORM}`);
+    }
+  });
+
+  it("refuses a file over the buffered size without reading it", async () => {
+    let t = await setupReview();
+    let over = t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x61)).oid;
+    let head = await snapshot(t, [fileAt("README.md", t.readme), fileAt("big.txt", over)],
+        [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head]))
+        .toBe(`${at("big.txt", head)} is larger than ${MAX_BUFFERED_BLOB_SIZE} bytes`);
+    let chunks = chunksOf(t, over);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(reads.filter(oid => chunks.includes(oid))).toStrictEqual([]);
+  });
+
+  // A push whose commit cannot be compared with a parent, and what stores the missing object.
+  const INCOMPARABLE: [string, (t: ReviewSetup) => Promise<
+      { head: GitOid, reason: string, supply: () => unknown }>][] = [
+    ["a commit whose parent is not in the store", async t => {
+      let parent = await unheldRemoteCommit(t);
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("a.txt", await localBlob(t, "a\n"))],
+          [parent.commit]);
+      return { head, reason: at("", head) + notComparable(parent.commit), supply: parent.supply };
+    }],
+    ...([
+      ["a changed file", "old.md", (t: ReviewSetup) => localBlob(t, "fresh\n")],
+      ["an entry over a file the remote has", "renamed.md", async (t: ReviewSetup) => t.readme],
+    ] as const).map(([what, name, blob]): typeof INCOMPARABLE[0] =>
+        [`${what} under a directory the parent's tree for which is not in the store`, async t => {
+          let docs = encodeGitTree([fileAt("old.md", t.readme)]);
+          let base = await remoteCommit(t, [dirAt("docs", gitObjectOid("tree", docs))], [], "docs");
+          let now = await localTree(t, [fileAt(name, await blob(t))]);
+          let head = await snapshot(t, [dirAt("docs", now)], [base.commit]);
+          return {
+            head,
+            reason: at(`docs/${name}`, head) + notComparable(base.commit),
+            supply: () => t.cache.putFromGatekeeper(G1, "tree", docs),
+          };
+        }]),
+    ["a merge that differs from a parent in the store and one that is not", async t => {
+      let parent = await unheldRemoteCommit(t);
+      let head = await snapshot(t,
+          [fileAt("README.md", t.readme), fileAt("m.txt", await localBlob(t, "merged\n"))],
+          [t.base, parent.commit], "merge");
+      return { head, reason: at("", head) + notComparable(parent.commit), supply: parent.supply };
+    }],
+  ];
+  for (let [what, build] of INCOMPARABLE) {
+    it(`refuses ${what}, and accepts it once that is stored`, async () => {
+      let t = await setupReview();
+      let { head, reason, supply } = await build(t);
+      expect(judge(t, head)).toBe(reason);
+
+      await supply();
+      let review = t.cache.readPushReview(ACTION, [head]);
+      expect(JSON.stringify(review)).not.toContain('"unknown"');
+      expect(refusalOf(t, [head])).toBeUndefined();
+      expect(t.cache.readPushReview(ACTION, [head])).toStrictEqual(review);
+    });
+  }
+  // `count` file entries, over one blob or over one each.
+  const spread = (count: number, oid: (index: number) => GitOid) => Array.from(
+      { length: count }, (_, index) => fileAt(`f${String(index).padStart(3, "0")}`, oid(index)));
+  const TOO_MUCH_TEXT = `it sends more than ${MAX_RESTRICTED_PUSH_TEXT_SIZE} bytes of text`;
+
+  // Each builds a push of a given size in what one bound counts, the largest it allows and
+  // the reason one more gives.
+  const BOUNDS: [string, number, string, (t: ReviewSetup, size: number) => Promise<GitOid>][] = [
+    ["commits", MAX_RESTRICTED_PUSH_COMMITS,
+     `it sends more than ${MAX_RESTRICTED_PUSH_COMMITS} commits`, async (t, size) => {
+      let head = t.base;
+      for (let i = 0; i < size; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+      return head;
+    }],
+    ["files", MAX_RESTRICTED_PUSH_FILES,
+     `it sends more than ${MAX_RESTRICTED_PUSH_FILES} files`, async (t, size) => {
+      let blobs: GitOid[] = [];
+      for (let i = 0; i < size; i++) blobs.push(await localBlob(t, `${i}\n`));
+      return await snapshot(t, spread(size, index => blobs[index]), [t.base]);
+    }],
+    // The root, a directory and its entries, each over a file the remote has: no file is sent.
+    ["paths", MAX_RESTRICTED_PUSH_PATHS,
+     `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`, async (t, size) => {
+      let inner = await localTree(t, spread(size - 2, () => t.readme));
+      return await snapshot(t, [fileAt("README.md", t.readme), dirAt("d", inner)], [t.base]);
+    }],
+    // The same under a merge, whose every path is compared with two parents and counts twice.
+    ["paths of a merge", MAX_RESTRICTED_PUSH_PATHS / 2,
+     `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`, async (t, size) => {
+      let other = await remoteCommit(t, [fileAt("other.txt", t.readme)], [], "other");
+      let inner = await localTree(t, spread(size - 2, () => t.readme));
+      return await snapshot(t, [dirAt("d", inner)], [t.base, other.commit], "merge");
+    }],
+    // A commit with no parent, marked directly since the ancestry check refuses to queue one
+    // the remote does not have: its paths are compared with nothing and each counts once.
+    ["paths of a parentless commit", MAX_RESTRICTED_PUSH_PATHS,
+     `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`, (t, size) =>
+        snapshot(t, spread(size - 1, () => t.readme), [])],
+  ];
+  for (let [what, most, reason, build] of BOUNDS) {
+    it(`accepts ${most} ${what} and refuses one more`, async () => {
+      let t = await setupReview();
+      expect(judge(t, await build(t, most))).toBeUndefined();
+      t = await setupReview();
+      expect(judge(t, await build(t, most + 1))).toBe(reason);
+    });
+  }
+
+  it("counts a file once, at however many paths it is", async () => {
+    let t = await setupReview();
+    // One of them is half the text bound, so that counting it at both its paths would pass it.
+    let blobs = [await localBlob(t, new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61))];
+    for (let i = 1; i < MAX_RESTRICTED_PUSH_FILES; i++) blobs.push(await localBlob(t, `${i}\n`));
+    let head = await snapshot(t,
+        spread(2 * MAX_RESTRICTED_PUSH_FILES, index => blobs[index % blobs.length]), [t.base]);
+    expect(judge(t, head)).toBeUndefined();
+  });
+
+  // The text a push puts before its approver, counted from its review as
+  // MAX_RESTRICTED_PUSH_TEXT_SIZE says: commits, paths, listings and each file once.
+  function reviewText(t: TestCache, head: GitOid): number {
+    let files = new Map<GitOid, number>(), text = 0;
+    for (let entry of readReview(t, [head]).entries) {
+      if (entry.kind === "commit") text += entry.size!;
+      if (entry.kind !== "path") continue;
+      text += utf8(entry.path).byteLength;
+      if (entry.sent?.kind === "dir") text += entry.sent.size;
+      if (entry.sent?.kind === "text") files.set(entry.entry!.oid, entry.sent.size);
+    }
+    return text + [...files.values()].reduce((sum, size) => sum + size, 0);
+  }
+
+  // Trees that come close to the text bound by one kind of text. The commit's message makes
+  // up the rest, to the byte.
+  const NEAR_TEXT_BOUND: [string, (t: ReviewSetup) => Promise<GitTreeEntry[]>][] = [
+    ["its files", async t => [
+      fileAt("a.txt", await localBlob(t, new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x61))),
+      fileAt("b.txt", await localBlob(t, new Uint8Array(
+          MAX_RESTRICTED_PUSH_TEXT_SIZE - MAX_BUFFERED_BLOB_SIZE - 4096).fill(0x62))),
+    ]],
+    // Four names over a file the remote has, each written in the listing and as a path.
+    ["the long names of a directory's listing", async t => Array.from({ length: 4 }, (_, i) =>
+        fileAt(`${i}`.padEnd(MAX_RESTRICTED_PUSH_TEXT_SIZE / 8 - 2048, "n"), t.readme))],
+    // Three directories with long names, one in the other, whose listings are small. The
+    // paths of the entries in the last repeat all three names.
+    ["its paths alone", async t => {
+      let tree = await localTree(t, spread(340, () => t.readme));
+      for (let name of ["c", "b", "a"]) {
+        tree = await localTree(t, [dirAt(name.repeat(2000), tree)]);
+      }
+      return parseGitTree(t.cache.readLocalObject(tree)!.payload);
+    }],
+  ];
+  for (let [what, entries] of NEAR_TEXT_BOUND) {
+    it(`counts ${what} toward the text bound, exactly`, async () => {
+      let push = async (pad: number) => {
+        let t = await setupReview();
+        let head = await snapshot(t, await entries(t), [t.base], "x".repeat(pad));
+        t.cache.markPushClosure(G1, ACTION, [head]);
+        return { t, head };
+      };
+      let bare = await push(0);
+      let slack = MAX_RESTRICTED_PUSH_TEXT_SIZE - reviewText(bare.t, bare.head);
+      expect(slack).toBeGreaterThan(0);
+      expect(slack).toBeLessThan(64 * 1024);
+
+      let exact = await push(slack);
+      expect(reviewText(exact.t, exact.head)).toBe(MAX_RESTRICTED_PUSH_TEXT_SIZE);
+      expect(refusalOf(exact.t, [exact.head])).toBeUndefined();
+      let over = await push(slack + 1);
+      expect(refusalOf(over.t, [over.head])).toBe(TOO_MUCH_TEXT);
+    });
+  }
+
+  it("counts a path in bytes: names of three-byte characters reach the text bound at a " +
+      "third of the length", async () => {
+    // Ten entries over a file the remote has, in a directory with a long name: the name is
+    // written in the listing above it, as its own path and in the path of each entry.
+    let refusal = async (unit: string, length: number) => {
+      let t = await setupReview();
+      let inner = await localTree(t,
+          Array.from({ length: 10 }, (_, i) => fileAt(`${i}`, t.readme)));
+      return judge(t, await snapshot(t, [dirAt(unit.repeat(length), inner)], [t.base]));
+    };
+    let ascii = Math.floor((MAX_RESTRICTED_PUSH_TEXT_SIZE - 1024) / 12);
+    expect(await refusal("a", ascii)).toBeUndefined();
+    expect(await refusal("a", ascii + 100)).toBe(TOO_MUCH_TEXT);
+    expect(await refusal("€", Math.floor(ascii / 3))).toBeUndefined();
+    expect(await refusal("€", Math.floor(ascii / 3) + 34)).toBe(TOO_MUCH_TEXT);
+  });
+
+  it("refuses more objects than the bounds allow before it reads one", async () => {
+    let t = await setupReview(makeCache(makeLargeStorage()));
+    let most = MAX_RESTRICTED_PUSH_COMMITS + MAX_RESTRICTED_PUSH_PATHS;
+    let head = t.base;
+    for (let i = 0; i < most; i++) head = await localCommit(t, t.baseTree, [head], `${i}`);
+    // As many objects as the bounds allow are walked, and refused by the bound they break.
+    t.cache.markPushClosure(G1, OTHER_ACTION, [head]);
+    expect(listMarks(t.storage, OTHER_ACTION).length).toBe(most);
+    expect(refusalOf(t, [head], OTHER_ACTION))
+        .toBe(`it sends more than ${MAX_RESTRICTED_PUSH_COMMITS} commits`);
+
+    head = await localCommit(t, t.baseTree, [head], "one more");
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    expect(listMarks(t.storage, ACTION).length).toBe(most + 1);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(
+        `it sends more objects than ${MAX_RESTRICTED_PUSH_COMMITS} commits changing ` +
+        `${MAX_RESTRICTED_PUSH_PATHS} paths can`);
+    expect(reads).toStrictEqual([]);
+  });
+
+  // A directory thirty levels deep in which every level names the level below twice: some
+  // thirty objects, and two to the power of thirty paths.
+  async function treeBomb(leaf: GitTreeEntry,
+                          store: (payload: Uint8Array) => GitOid | Promise<GitOid>) {
+    let tree = await store(encodeGitTree([leaf]));
+    for (let i = 0; i < 30; i++) {
+      tree = await store(encodeGitTree([dirAt("a", tree), dirAt("b", tree)]));
+    }
+    return tree;
+  }
+  const local = (t: TestCache) => (payload: Uint8Array) =>
+      storeLocal(t.storage, { type: "tree", payload });
+  const PATHS_REASON = `its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`;
+
+  it("stops at the paths bound in a tree of few objects and many paths", async () => {
+    let t = await setupReview();
+    let tree = await treeBomb(fileAt("x", await localBlob(t, "x\n")), local(t));
+    let head = await localCommit(t, tree, [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+    expect(listMarks(t.storage, ACTION).length).toBeLessThan(40);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(PATHS_REASON);
+    expect(reads.length).toBeLessThanOrEqual(3 * MAX_RESTRICTED_PUSH_PATHS);
+  });
+
+  it("stops at the paths bound in a merge of such trees that sends no file", async () => {
+    let t = await setupReview();
+    let remote = (payload: Uint8Array) => t.cache.putFromGatekeeper(G1, "tree", payload);
+    let sides: GitOid[] = [];
+    for (let name of ["left", "right"]) {
+      let tree = await treeBomb(fileAt(name, t.readme), remote);
+      sides.push(await t.cache.putFromGatekeeper(G1, "commit", commitPayload(tree, [], name)));
+    }
+    // Every directory of the merge differs from both sides', down to an entry over a file the
+    // remote has.
+    let tree = await treeBomb(fileAt("merged", t.readme), local(t));
+    let head = await localCommit(t, tree, sides, "merge");
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(PATHS_REASON);
+    expect(reads.length).toBeLessThanOrEqual(3 * MAX_RESTRICTED_PUSH_PATHS);
+  });
+
+  it("reads no file past the files bound", async () => {
+    let t = await setupReview();
+    let blobs: GitOid[] = [];
+    for (let i = 0; i <= MAX_RESTRICTED_PUSH_FILES; i++) blobs.push(await localBlob(t, `${i}\n`));
+    let head = await snapshot(t, spread(blobs.length, index => blobs[index]), [t.base]);
+    t.cache.markPushClosure(G1, ACTION, [head]);
+
+    let reads = countReads(t);
+    expect(refusalOf(t, [head])).toBe(`it sends more than ${MAX_RESTRICTED_PUSH_FILES} files`);
+    // The walk looks up each file's size as it lists it, and the pass then reads the file for
+    // its text. The file that trips the bound is looked up and not read, and none follows it.
+    let timesRead = blobs.map(oid => reads.filter(read => read === oid).length);
+    expect(timesRead).toStrictEqual([...blobs.slice(1).map(() => 2), 1]);
   });
 });
 

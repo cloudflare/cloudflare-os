@@ -74,7 +74,8 @@
 // - `verifyPushAncestry()`/`markPushClosure()` implement `ActionDescription.pushedCommits`
 //   authorization at the `submitAction` chokepoint, and the mark lifecycle helpers convert or
 //   clear the marks when the action applies, is rejected, or its gatekeeper is deleted.
-//   `readPushReview()` reads the review of a queued push from the same marks.
+//   `readPushReview()` reads the review of a queued push from the same marks, and
+//   `assertPushReadable()` judges from them whether an approver can read all of it.
 //
 // Trust model note (do not document the view as a confinement boundary): oids are capabilities
 // and gatekeepers are trusted with the objects whose oids they know. The scoped read view and
@@ -86,6 +87,10 @@ import { validateRpc } from "capnweb-validate";
 import type { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
 import {
   MAX_BUFFERED_BLOB_SIZE,
+  MAX_RESTRICTED_PUSH_COMMITS,
+  MAX_RESTRICTED_PUSH_FILES,
+  MAX_RESTRICTED_PUSH_PATHS,
+  MAX_RESTRICTED_PUSH_TEXT_SIZE,
   type GitCache,
   type GitObjectType,
   type GitOid,
@@ -1939,6 +1944,101 @@ export class WorkspaceGitCache {
     return review;
   }
 
+  /**
+   * Throws unless an approver can read everything the queued push will send (see
+   * `ObservationDescription.containsRestrictedData` for the rules). The error is agent-visible
+   * and names the rule and the commit, path or object that failed it, never content. Callers
+   * run this in the transaction that marks the push, so a refusal queues nothing.
+   */
+  assertPushReadable(actionId: number, heads: GitOid[]): void {
+    // Every tree and blob sent has a path of its own and every commit is one, so no push within
+    // the bounds sends more. Checked before the walk, which reads every marked commit to order
+    // them before it lists the first.
+    if (this.#recordsMarkedFor(actionId).length >
+        MAX_RESTRICTED_PUSH_COMMITS + MAX_RESTRICTED_PUSH_PATHS) {
+      refusePush(`it sends more objects than ${MAX_RESTRICTED_PUSH_COMMITS} commits changing ` +
+          `${MAX_RESTRICTED_PUSH_PATHS} paths can`);
+    }
+
+    // The review's own rows, judged one at a time: what the row says as the walk left it, then
+    // the bounds, and only then its text, so that nothing is read for a push over a bound.
+    let commits = 0, paths = 0, text = 0, files = new Set<GitOid>();
+    let commitParents: GitOid[] = [];
+    for (let row of this.#pushReviewEntries(actionId, heads)) {
+      let where = "";
+      if (row.kind === "object") {
+        refusePush(
+            `object ${row.oid} is sent but is neither a commit of this push nor at a path of one`);
+      } else if (row.kind === "commit") {
+        if (row.size === undefined) {
+          refusePush(`commit ${row.oid} is not in the workspace's git store`);
+        }
+        commitParents = row.parents;
+        commits++;
+        text += row.size;
+      } else {
+        let { entry, sent } = row;
+        where = `${row.path === "" ? "the root directory" : JSON.stringify(row.path)} in commit ` +
+            row.commit;
+        if (entry?.kind === "submodule") refusePush(`${where} adds or changes a submodule entry`);
+        if (sent?.kind === "absent") refusePush(`${where} is not in the workspace's git store`);
+        if (sent?.kind === "mistyped") {
+          refusePush(`${where} names a ${sent.type} where a ` +
+              `${entry?.kind === "dir" ? "tree" : "blob"} is expected`);
+        }
+        if (sent?.kind === "unlistable") {
+          refusePush(`${row.path === "" ? "" : "the directory "}${where} is not in the form ` +
+              "git writes: an entry name is not valid UTF-8, is repeated, is out of order or is " +
+              "not a single path segment");
+        }
+        if (sent?.kind === "large") {
+          refusePush(`${where} is larger than ${MAX_BUFFERED_BLOB_SIZE} bytes`);
+        }
+        if (sent !== undefined && entry?.kind === "symlink") {
+          refusePush(`${where} is a symbolic link whose target this push sends`);
+        }
+        // Last, so that a more specific reason wins. A row compared with a parent the store
+        // lacks could vanish once that parent arrives, moving the rows after it.
+        let unknown = row.parents.findIndex(parent => parent.kind === "unknown");
+        if (unknown >= 0) {
+          refusePush(`${where} cannot be compared with parent ${commitParents[unknown]}, which ` +
+              "is not in the workspace's git store as far as that path. Read that directory at " +
+              "the parent commit, then push again");
+        }
+        paths += Math.max(1, row.parents.length);
+        text += new TextEncoder().encode(row.path).byteLength;
+        if (sent?.kind === "dir") {
+          text += sent.size;
+        } else if (sent?.kind === "text" && !files.has(entry!.oid)) {
+          files.add(entry!.oid);
+          text += sent.size;
+        }
+      }
+
+      if (commits > MAX_RESTRICTED_PUSH_COMMITS) {
+        refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_COMMITS} commits`);
+      }
+      if (paths > MAX_RESTRICTED_PUSH_PATHS) {
+        refusePush(`its commits change more than ${MAX_RESTRICTED_PUSH_PATHS} paths`);
+      }
+      if (files.size > MAX_RESTRICTED_PUSH_FILES) {
+        refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_FILES} files`);
+      }
+      if (text > MAX_RESTRICTED_PUSH_TEXT_SIZE) {
+        refusePush(`it sends more than ${MAX_RESTRICTED_PUSH_TEXT_SIZE} bytes of text`);
+      }
+
+      let settled = this.#settlePushReviewEntry(row);
+      if (settled.kind === "commit" && settled.text === undefined) {
+        refusePush(
+            `commit ${settled.oid} is not UTF-8 text of at most ${MAX_BUFFERED_BLOB_SIZE} bytes`);
+      }
+      if (settled.kind === "path" && settled.sent?.kind === "binary") {
+        refusePush(`${where} is not UTF-8 text`);
+      }
+    }
+  }
+
   // Every entry of the review, in order, lazily, without reading any file: a commit row has no
   // `text` yet, a sent file within MAX_BUFFERED_BLOB_SIZE is provisionally `text`, and an
   // `object` row has the recorded type and no size. Callers settle the entries they use.
@@ -2323,6 +2423,15 @@ function rootTreeEntry(tree: GitOid): GitTreeEntry {
 function pushReviewParentEntry(entry: GitTreeEntry | null | undefined): PushReviewParentEntry {
   if (entry === undefined) return { kind: "unknown" };
   return entry === null ? { kind: "none" } : { kind: MODE_KINDS[entry.mode], oid: entry.oid };
+}
+
+// Refuses a push from a workspace that holds restricted data (see `assertPushReadable`). The
+// message reaches the agent, which can change its commits and push again.
+function refusePush(reason: string): never {
+  throw new Error(
+      "This workspace has observed sensitive data, so a push is accepted only when its " +
+      "approver can read everything it will send. This push was not queued: " + reason +
+      ". Change the commits and push again.");
 }
 
 // A Git blob payload as strict text, or undefined if it is not text.
