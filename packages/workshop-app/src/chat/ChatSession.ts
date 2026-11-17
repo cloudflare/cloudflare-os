@@ -1,5 +1,5 @@
 import type { RpcStub } from 'capnweb'
-import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
   toChatFeed,
@@ -80,6 +80,7 @@ type Calls =
   | 'listChats'
   | 'getChatHistory'
   | 'sendChatMessage'
+  | 'listSlashCommands'
   | 'uploadBlob'
   | 'retryAgent'
   | 'stopAgent'
@@ -338,12 +339,13 @@ export class ChatSession {
   }
 
   /**
-   * Sends a message to the chat, with `files` uploaded for it to carry, and resolves to whether it
+   * Sends a message to the chat, words or a skill or command with what it is given, with `files`
+   * uploaded for it to carry, and resolves to whether it
    * went, so that whoever drafted it can keep the draft when it did not. The message and the reply
    * come back through the subscription, not from here; a failure is reported in the snapshot's
    * `sendError`.
    */
-  send = async (text: string, modelId: string, files: readonly File[] = []): Promise<boolean> => {
+  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = []): Promise<boolean> => {
     if (this.options.connection?.blocked()) return false
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) {
@@ -357,14 +359,14 @@ export class ChatSession {
     const run = this.#run
     this.#sendError = undefined
     // Only plain text steers a running agent; the server refuses anything else until it is done.
-    if (files.length && this.#agentActive) {
-      this.#sendError = 'Files can be sent once the agent has finished.'
+    if ((files.length || typeof message !== 'string') && this.#agentActive) {
+      this.#sendError = files.length ? 'Files can be sent once the agent has finished.' : 'Skills can be used once the agent has finished.'
       this.#publishReady()
       return false
     }
     try {
       const attachments = await uploadAttachments(overseer, files)
-      await overseer.sendChatMessage(this.chatId, text, modelId, undefined, attachments)
+      await overseer.sendChatMessage(this.chatId, message, modelId, undefined, attachments)
     } catch (error) {
       if (run === this.#run) {
         this.#sendError = messageOf(error)
@@ -374,6 +376,16 @@ export class ChatSession {
     }
     if (run === this.#run) this.#publishReady()
     return true
+  }
+
+  /**
+   * The skills and commands the chat's composer can send (`Overseer.listSlashCommands`): read
+   * again on each call, as skills come and go elsewhere. Nothing while the chat is not connected.
+   */
+  listCommands = async (): Promise<SlashCommandChoice[]> => {
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) return []
+    return overseer.listSlashCommands()
   }
 
   /** Puts away the report of a failed send. */

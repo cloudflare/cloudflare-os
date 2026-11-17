@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, SignOutIcon, TableIcon } from '@phosphor-icons/react'
 import { Composer } from '@/blocks/Composer'
-import type { ComposerSkill } from '@/blocks/ComposerAddMenu'
+import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
@@ -52,10 +52,10 @@ export const Route = createFileRoute('/gallery')({
   ),
 })
 
-const previewSkills: ComposerSkill[] = [
-  { id: 'review', name: 'Review writing', description: 'Polish a draft and make it clearer.', source: 'Writing tools' },
-  { id: 'summarize', name: 'Summarize', description: 'Turn a long document into the key takeaways.', source: 'Documents' },
-  { id: 'compact', name: 'Compact chat', description: 'Make room while keeping the important context.', source: 'Gadgets' },
+const previewCommands: ComposerCommand[] = [
+  { key: 'review', name: 'review-writing', title: 'Review Writing', description: 'Polish a draft and make it clearer.', kind: 'skill', source: 'Writing tools' },
+  { key: 'summarize', name: 'summarize', title: 'Summarize', description: 'Turn a long document into the key takeaways.', kind: 'skill', source: 'Documents' },
+  { key: 'compact', name: 'compact', title: 'Compact', description: 'Sum up the chat so far, to make room for more', kind: 'builtin' },
 ]
 
 const previewWorkspaces: SidebarWorkspace[] = [
@@ -224,10 +224,11 @@ function Gallery() {
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
-    skills: { items: previewSkills, onSelect: (skill: ComposerSkill) => setMenuAction(`Preview: ${skill.name} selected.`) },
   }
-  const previewSend = (text: string, files: File[]) => {
-    setMenuAction(`Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
+  const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
+    setMenuAction(command
+      ? `Preview: sent /${command.name}${text ? ` with “${text}”` : ''}.`
+      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
     return true
   }
   const [replying, setReplying] = useState(true)
@@ -402,8 +403,9 @@ function Gallery() {
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
+            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft; the + menu lists a few. Backspace at the start or Escape takes it off.
           </p>
-          <Composer onSend={previewSend} addActions={addActions} />
+          <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
           <div className="w-80 max-w-full">
             <Composer onSend={previewSend} />
@@ -491,7 +493,7 @@ function Gallery() {
           <p className="text-sm text-kumo-subtle">
             The + expands in place, keeping its anchored corner at the button while following the same curved path.
           </p>
-          <Composer onSend={previewSend} addActions={addActions} addMenuInPlace />
+          <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} addMenuInPlace />
         </div>
       </Section>
       <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave; go to the oldest loaded message from near it to scroll there, or from pages away to fade over to it)">

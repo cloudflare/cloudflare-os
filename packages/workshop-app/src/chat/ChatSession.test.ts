@@ -89,6 +89,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     setChatTitle: vi.fn<Overseer['setChatTitle']>(async () => {}),
     listCollaborators: vi.fn<Overseer['listCollaborators']>(async () => []),
     mergeChanges: vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' })),
+    listSlashCommands: vi.fn<Overseer['listSlashCommands']>(async () => []),
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
   }
@@ -1100,6 +1101,19 @@ describe('ChatSession', () => {
 
       expect(fake.uploadBlob).not.toHaveBeenCalled()
       expect(fake.sendChatMessage).not.toHaveBeenCalled()
+    })
+
+    it('sends a skill with what it is given, and holds one back while the agent works', async () => {
+      const request = { id: { gatekeeperId: 7, commandId: 'c1/brief/SKILL.md' }, args: 'for Tuesday', commandPosition: 0 }
+      const idle = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      expect(await (await started(idle)).send(request, 'model-1')).toBe(true)
+      expect(idle.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, request, 'model-1', undefined, undefined)
+
+      const working = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
+      const session = await started(working)
+      expect(await session.send(request, 'model-1')).toBe(false)
+      expect(working.sendChatMessage).not.toHaveBeenCalled()
+      expect(ready(session).sendError).toBe('Skills can be used once the agent has finished.')
     })
 
     it('holds files back while the agent works, which only plain text can steer', async () => {

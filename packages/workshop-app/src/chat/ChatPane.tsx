@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -20,6 +21,8 @@ import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
+import { slashRequestFor, missingCommand } from './slashCommands'
+import { useChatCommands } from './useChatCommands'
 import { useChatSession } from './useChatSession'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 
@@ -80,6 +83,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
+  const commands = useChatCommands(actions.listCommands, chat.status === 'ready')
   useOpenNewOutputs(chat.status === 'ready' ? chat : undefined, onOpenOutput)
 
   const handlers = useMemo((): ChatItemHandlers => {
@@ -139,7 +143,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   }, [items, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
-  const sendMessage = async (text: string, files: File[]) => {
+  const sendMessage = async (text: string, files: File[], command?: ComposerCommand) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
@@ -155,7 +159,15 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     setProblem(undefined)
     setNotice(undefined)
     const replied = reply
-    const sent = await actions.send(replied ? withQuote(replied.quote, text) : text, model.id, files)
+    const words = replied ? withQuote(replied.quote, text) : text
+    // A skill or command goes as the workspace offers it, given the words; one it no longer
+    // offers, such as a skill deleted since, does not go.
+    const request = command && slashRequestFor(commands.choices, command, words)
+    if (command && !request) {
+      setProblem(missingCommand(command))
+      return false
+    }
+    const sent = await actions.send(request ?? words, model.id, files)
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
@@ -174,6 +186,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         <Composer
           ref={composer}
           onSend={sendMessage}
+          commands={commands.commands}
           stop={chat.status === 'ready' && chat.agentActive ? {
             waiting: chat.waiting,
             onStop: () => {
