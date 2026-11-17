@@ -11,9 +11,10 @@ import { waitFor, type ConnectedAccount } from "../src/rpc-client.js";
 import {
   addAdminConnection, adminActions, adminApiOf, agentTurn, approveWrite, auditRecords,
   buildGadget, enableEveryRule, enrolPasskey, EVERY_TAG, fileReport, GRACE, HEIDI, isRestricted,
-  listed, newMember, newUser, newWorkspace, observationTitles, opening, OWNER, pendingActions,
-  provisionAdminAccount, reporterThread, requestsFiled, scriptedTurn, settle, startAdminHarness, TAGS,
-  turnModels, VENDOR, type AdminConnection, type Authenticator, type Suite, type SuiteUser,
+  listed, newMember, newUser, newWorkspace, observationTitles, openAs, opening, OWNER,
+  pendingActions, provisionAdminAccount, recordingGadget, reporterThread, requestsFiled,
+  scriptedTurn, settle, startAdminHarness, TAGS, turnModels, VENDOR, type AdminConnection,
+  type Authenticator, type Suite, type SuiteUser,
 } from "./admin-gatekeeper-harness.js";
 
 // The gatekeeper's seven action kinds, what a rule may apply, and what marks a workspace as holding
@@ -43,6 +44,7 @@ let admin: RpcStub<AdminApi>;
 let graceAdmin: RpcStub<AdminApi>;
 let heidiAdmin: RpcStub<AdminApi>;
 let ownerAccount: ConnectedAccount;
+let graceAccount: ConnectedAccount;
 let ownerKey: Authenticator;
 let heidiKey: Authenticator;
 
@@ -59,6 +61,7 @@ beforeAll(async () => {
   ownerAccount = await provisionAdminAccount(owner);
   ownerKey = await enrolPasskey(admin, "owner");
   graceAdmin = await adminApiOf(suite, grace);
+  graceAccount = await provisionAdminAccount(grace);
   heidiAdmin = await adminApiOf(suite, heidi);
   heidiKey = await enrolPasskey(heidiAdmin, "heidi");
 });
@@ -247,6 +250,168 @@ it("files a write request by its rule, and holds a request for content for a per
   expect(await isRestricted(ws)).toBe(false);
 });
 
+/** The report's assignee as admins read it. */
+const assigneeOf = async (reportId: string) => (await admin.getIssueReport(reportId)).assignee;
+/** The ids of the reports `holder` holds, as the admins' list filters them. */
+const heldBy = async (holder: string) =>
+  (await admin.listIssueReports({ assignee: holder })).reports.map(found => found.id);
+/** Each change of the report's assignee as [what it was, whose it is, how it arrived]. */
+const assignments = async (reportId: string) => (await adminThread(reportId))
+    .flatMap(({ assignment, author, via }) => assignment ? [[assignment, author.id, via]] : []);
+const claim = (reportId: string) => `env.ADMIN.claimIssueReport(${json(reportId)})`;
+const ASSIGNED = "Another admin holds this issue report.";
+
+it("lets two admins' workspaces claim one report, and exactly one holds it", async () => {
+  const report = await fileReport(await newMember(suite, "claimed"));
+  const mine = await triageWorkspace("Claims, the owner's");
+  const hers = await newWorkspace(suite, grace, "Claims, Grace's");
+  const herConnection = await addAdminConnection(hers.ws, graceAccount.id);
+  // The owner's workspace watches for changes to reports, as a gadget that lists them would.
+  const watching = await recordingGadget(
+      suite, owner, mine.ws, mine.connection, ["subscribeIssueReportChanged"]);
+  const hooks = await mine.ws.listHooks();
+  for (const hook of hooks) await mine.ws.enableHook(hook.id);
+
+  // Each workspace's agent claims the report: two cards, and nobody holds it yet.
+  const ownerTurn = await agentTurn(
+      owner, mine.ws, attempt("claim", claim(report.id)), { connection: mine.connection });
+  const graceTurn = await agentTurn(
+      grace, hers.ws, attempt("claim", claim(report.id)), { connection: herConnection });
+  const [[ownerCard], [graceCard]] =
+      [await pendingActions(mine.ws, 1), await pendingActions(hers.ws, 1)];
+  for (const card of [ownerCard, graceCard]) {
+    // The card says which report, and for whom: the workspace's owner, whoever approves it.
+    expect(card).toMatchObject({ description: {
+      title: `Assign issue report ${report.id} to this workspace's owner`,
+      autoApprovable: true,
+      actionKind: ADMIN_AGENT_ACTIONS.issueReportAssignment.kind,
+      fields: [
+        { label: "Report", kind: "inline", value: report.id },
+        { label: "Assignee", kind: "inline", value: "This workspace's owner" },
+      ],
+    } });
+  }
+  expect(await assigneeOf(report.id)).toBeUndefined();
+
+  // The first approved is applied: the report is held by that workspace's owner.
+  await hers.ws.approveAction(graceCard!.id);
+  expect(await graceTurn.resumed()).toEqual({ claim: { value: null } });
+  const held = {
+    id: GRACE, name: GRACE, at: expect.any(Date), via: "gatekeeper",
+    agent: { workspaceId: hers.id, chatId: graceTurn.chatId },
+  };
+  expect(await assigneeOf(report.id)).toEqual(held);
+
+  // The second is refused, and its card stays for a person to decide: nothing changed.
+  await expect(mine.ws.approveAction(ownerCard!.id)).rejects.toThrow(ASSIGNED);
+  expect(await assigneeOf(report.id)).toEqual(held);
+  expect(await assignments(report.id)).toEqual([["claimed", GRACE, "gatekeeper"]]);
+  expect(await decisions(mine.ws)).toEqual([[TAGS.issueReportAssignment, "pending", false]]);
+
+  // The owner's workspace learns of it from the hook, which says that the report's assignee
+  // changed and never whose it is, and from a read: the holder is not the admin it acts as.
+  // The turn that lost still waits on its card, so the read is another chat's.
+  const assignment = { kind: "issueReportChanged", event: {
+    eventId: expect.any(String), reportId: report.id, change: "assignment", at: expect.any(Date),
+  } };
+  const told = (count: number) => waitFor(`${count} call(s) of the hook for the report`, async () => {
+    const calls = (await watching.calls()).filter(call => call.event.reportId === report.id);
+    return calls.length >= count ? calls : null;
+  });
+  expect(await told(1)).toEqual([assignment]);
+  const ids = attempt("ids", `Promise.all([
+      env.ADMIN.getIssueReport(${json(report.id)}), env.ADMIN.whoami(),
+    ]).then(([report, me]) => ({ assignee: report.assignee.id, me: me.id }))`);
+  const ownerRead = await agentTurn(owner, mine.ws, ids, { connection: mine.connection });
+  expect(await ownerRead.results()).toEqual({ ids: { value: { assignee: GRACE, me: OWNER } } });
+  const graceRead = await agentTurn(grace, hers.ws, ids, { chatId: graceTurn.chatId });
+  expect(await graceRead.results()).toEqual({ ids: { value: { assignee: GRACE, me: GRACE } } });
+  // The claim that was refused changed nothing, so the hook was called for the one alone.
+  expect(await told(1)).toEqual([assignment]);
+
+  // It failed for good: once Grace has released the report, approving the card again is
+  // refused the same way and takes nothing, and all that is left is to discard it.
+  await graceAdmin.releaseIssueReport(report.id);
+  expect(await assigneeOf(report.id)).toBeUndefined();
+  await expect(mine.ws.approveAction(ownerCard!.id)).rejects.toThrow(ASSIGNED);
+  expect(ownerTurn.paused()).toBe(true);
+  await mine.ws.rejectAction(ownerCard!.id);
+  expect(await decisions(mine.ws)).toEqual([[TAGS.issueReportAssignment, "rejected", false]]);
+  expect(await assigneeOf(report.id)).toBeUndefined();
+  expect(await assignments(report.id))
+      .toEqual([["claimed", GRACE, "gatekeeper"], ["released", GRACE, "api"]]);
+  // The hook was called for the release as well, and for nothing else.
+  expect(await told(2)).toEqual([assignment, assignment]);
+
+  // The gadget has no part in the rest of the file's reports.
+  for (const hook of hooks) await mine.ws.disableHook(hook.id);
+});
+
+it("never lets an agent take a report from a person", async () => {
+  const report = await fileReport(await newMember(suite, "kept"));
+  await graceAdmin.claimIssueReport(report.id);
+  const hers = { id: GRACE, name: GRACE, at: expect.any(Date), via: "api" };
+  expect(await assigneeOf(report.id)).toEqual(hers);
+  const { ws, connection } = await triageWorkspace("Claims, a take-over");
+
+  // The gatekeeper refuses the call itself, so no card exists for a person to approve.
+  const turn = await agentTurn(owner, ws, attempt("takeOver",
+      `env.ADMIN.claimIssueReport(${json(report.id)}, { takeOver: true })`), { connection });
+  expect(await turn.results()).toEqual({
+    takeOver: { error: expect.stringContaining("Only a person takes an issue report") },
+  });
+  expect(turn.paused()).toBe(false);
+  expect(await adminActions(ws)).toEqual([]);
+  expect(await assigneeOf(report.id)).toEqual(hers);
+
+  // A person's plain claim is refused as well; their take-over, through their own Admin API,
+  // is what takes it.
+  await expect(admin.claimIssueReport(report.id)).rejects.toThrow(ASSIGNED);
+  await admin.claimIssueReport(report.id, { takeOver: true });
+  expect(await assigneeOf(report.id))
+      .toEqual({ id: OWNER, name: OWNER, at: expect.any(Date), via: "api" });
+  expect(await assignments(report.id))
+      .toEqual([["claimed", GRACE, "api"], ["takenOver", OWNER, "api"]]);
+  expect(await isRestricted(ws)).toBe(false);
+});
+
+it("assigns the workspace's owner, whoever in the workspace asked", async () => {
+  const report = await fileReport(await newMember(suite, "asked"));
+  const { ws, id, connection } = await triageWorkspace("Claims, a member asks");
+  expect(await ws.addCollaborator(GRACE, "workspace")).not.toBeNull();
+  using graceWs = await openAs(suite, grace, id, { accountId: graceAccount.id });
+  const decide = async () => {
+    const [card] = await pendingActions(ws, 1);
+    await graceWs.approveAction(card!.id);
+    return card!.description.title;
+  };
+
+  // Grace's agent asks, and Grace approves: the call is the owner's, as every call lent to
+  // this connection is, so the owner holds the report and Grace holds nothing.
+  const turn = await agentTurn(grace, graceWs, attempt("claim", claim(report.id)), { connection });
+  expect(await decide()).toBe(`Assign issue report ${report.id} to this workspace's owner`);
+  expect(await turn.resumed()).toEqual({ claim: { value: null } });
+  expect(await assigneeOf(report.id)).toEqual({
+    id: OWNER, name: OWNER, at: expect.any(Date), via: "gatekeeper",
+    agent: { workspaceId: id, chatId: turn.chatId },
+  });
+  expect(await heldBy(OWNER)).toContain(report.id);
+  expect(await heldBy(GRACE)).not.toContain(report.id);
+
+  // A release is the same kind, and the owner's call as well.
+  const release = await agentTurn(grace, graceWs, attempt("release",
+      `env.ADMIN.releaseIssueReport(${json(report.id)})`), { chatId: turn.chatId });
+  expect(await decide()).toBe(`Release issue report ${report.id} from this workspace's owner`);
+  expect(await release.resumed()).toEqual({ release: { value: null } });
+  expect(await assigneeOf(report.id)).toBeUndefined();
+  expect(await assignments(report.id))
+      .toEqual([["claimed", OWNER, "gatekeeper"], ["released", OWNER, "gatekeeper"]]);
+  expect((await adminActions(ws)).map(action =>
+    [tagOf(action), action.state, action.resolvedBy?.id])).toEqual([
+    [TAGS.issueReportAssignment, "approved", GRACE], [TAGS.issueReportAssignment, "approved", GRACE],
+  ]);
+});
+
 it("applies nothing ahead of an action that waits for a person", async () => {
   const reporter = await newMember(suite, "ordered");
   const report = await fileReport(reporter);
@@ -297,34 +462,37 @@ it("marks the workspace at any read through the binding, after which no rule app
     ${attempt("reports", "env.ADMIN.listIssueReports().then(page => page.reports.length > 0)")}
     ${attempt("note", addEntry(report.id, "A note", "admins"))}
     ${attempt("status", `env.ADMIN.setIssueReportStatus(${json(report.id)}, "investigating")`)}
+    ${attempt("claim", claim(report.id))}
     ${attempt("request", `env.ADMIN.requestWorkspaceWrite(
         ${json(wanted.id)}, "restartWorkspace", {}, "Stuck after the report")`)}
     ${attempt("scoped", scopedReply(report.id, "A scoped reply"))}`, { connection });
   expect(await turn.results()).toEqual({
     reports: { value: true }, note: { value: null }, status: { value: null },
-    request: { value: null }, scoped: { value: null },
+    claim: { value: null }, request: { value: null }, scoped: { value: null },
   });
   expect(await isRestricted(ws)).toBe(true);
 
-  // Every one of the four has a rule, and each waits for a person.
+  // Every one of the five has a rule, and each waits for a person.
   await settle(ws);
-  const pending = await pendingActions(ws, 4);
+  const pending = await pendingActions(ws, 5);
   expect(pending.map(tagOf)).toEqual([
-    TAGS.issueReportNote, TAGS.issueReportStatus, TAGS.workspaceWriteRequest,
-    TAGS.issueReportScopedReply,
+    TAGS.issueReportNote, TAGS.issueReportStatus, TAGS.issueReportAssignment,
+    TAGS.workspaceWriteRequest, TAGS.issueReportScopedReply,
   ]);
   expect(turn.paused()).toBe(true);
   expect(await adminThread(report.id)).toEqual([]);
+  expect(await assigneeOf(report.id)).toBeUndefined();
   expect(await requestsFiled(admin, wanted.id, id)).toEqual([]);
 
   for (const action of pending) await ws.approveAction(action.id);
   await turn.resumed();
   expect(await decisions(ws)).toEqual(pending.map(action => [tagOf(action), "approved", false]));
-  expect((await adminThread(report.id)).map(({ text, visibility, status }) =>
-    [text, visibility, status])).toEqual([
-    ["A note", "admins", undefined], ["", "public", "investigating"],
+  expect((await adminThread(report.id)).map(({ text, visibility, status, assignment }) =>
+    [text, visibility, status ?? assignment])).toEqual([
+    ["A note", "admins", undefined], ["", "public", "investigating"], ["", "admins", "claimed"],
     ["A scoped reply", "public", undefined],
   ]);
+  expect(await assigneeOf(report.id)).toMatchObject({ id: OWNER, via: "gatekeeper" });
   expect(await requestsFiled(admin, wanted.id, id)).toHaveLength(1);
 });
 
@@ -524,6 +692,41 @@ it("limits a report session to its one report, as its reporter reads it", async 
   expect((await admin.getIssueReport(report!.id)).status).toBe("new");
   // What it read is what the reporter could see: the workspace is not marked.
   expect(await observationTitles(ws)).toEqual(["Issue report: get"]);
+  expect(await isRestricted(ws)).toBe(false);
+});
+
+it("shows a session limited to one report what its reporter reads", async () => {
+  const reporter = await newMember(suite, "fixed");
+  const report = await fileReport(reporter);
+  // With the admins, then on to a status the reporter reads as the same, and held.
+  await admin.setIssueReportStatus(report.id, "withAdmin");
+  await admin.setIssueReportStatus(report.id, "fixSuggested");
+  await admin.claimIssueReport(report.id);
+  expect(await admin.getIssueReport(report.id))
+      .toMatchObject({ status: "fixSuggested", assignee: { id: OWNER } });
+  expect((await adminThread(report.id)).map(({ visibility, status, assignment }) =>
+    [visibility, status ?? assignment])).toEqual([
+    ["public", "withAdmin"], ["admins", "fixSuggested"], ["admins", "claimed"],
+  ]);
+  const { ws, connection } = await triageWorkspace("Triage, a fix suggested");
+
+  const turn = await agentTurn(
+      owner, ws, inSession(report.id, attempt("get", "report.get()")), { connection });
+  const { get } = await turn.results();
+  // Neither the admins' status, nor the holder, nor a line only admins read.
+  expect(get!.value).toMatchObject({
+    id: report.id, status: "withAdmin",
+    entries: [{ text: "", visibility: "public", status: "withAdmin", author: { name: OWNER } }],
+  });
+  const own = await reporter.api.getIssueReport(report.id);
+  expect(own.status).toBe("withAdmin");
+  expect((await reporterThread(reporter, report.id)).map(({ visibility, status }) =>
+    [visibility, status])).toEqual([["public", "withAdmin"]]);
+  for (const read of [get!.value, own]) {
+    for (const hidden of ["fixSuggested", "assignee", "assignment", "claimed"]) {
+      expect(json(read), hidden).not.toContain(hidden);
+    }
+  }
   expect(await isRestricted(ws)).toBe(false);
 });
 

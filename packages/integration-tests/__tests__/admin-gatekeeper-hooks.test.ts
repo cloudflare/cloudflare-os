@@ -10,14 +10,15 @@ import { SCRIPTED_MODEL_ID } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { waitFor, type ConnectedAccount } from "../src/rpc-client.js";
 import {
-  addAdminConnection, adminApiOf, agentTurn, auditRecords, buildGadget, codeResults, codeStep,
-  fileReport,
-  isRestricted, newMember, newUser, newWorkspace, observationTitles, OWNER, provisionAdminAccount,
-  startAdminHarness, turnModels, VENDOR, type Suite, type SuiteUser,
+  addAdminConnection, adminApiOf, agentTurn, auditRecords, buildGadget, callsOf, codeResults,
+  codeStep, fileReport, GRACE, isRestricted, newMember, newUser, newWorkspace, observationTitles,
+  OWNER, pendingActions, provisionAdminAccount, recordingGadget, startAdminHarness, turnModels,
+  VENDOR, type AdminConnection, type HookCall, type HookMethod, type Recorder, type Suite,
+  type SuiteUser,
 } from "./admin-gatekeeper-harness.js";
 
-// The gatekeeper's two hooks, fired into a gadget's stored callback, and what reaches an agent a
-// gadget spawns: nothing unless its spawner names the connection, or a stub the gadget hands it.
+// The gatekeeper's three hooks, fired into a gadget's stored callback, and what reaches an agent
+// a gadget spawns: nothing unless its spawner names the connection, or a stub the gadget hands it.
 //
 // A hook is called for every report of the deployment, so this file owns its harness and its
 // cases run in order.
@@ -51,72 +52,24 @@ afterAll(async () => {
   }
 });
 
-/**
- * A gadget that subscribes both hooks with one stored callback, keeps every call it receives,
- * and handles each report once, keyed by its id. `failNext()` makes its next call throw.
- */
-const RECORDING_GADGET = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
-export class Gadget extends DurableObject {
-  async [restore](params) {
-    if (params.type !== "hook") throw new TypeError("Unknown restore type: " + params.type);
-    return new Hook(this);
-  }
-  async subscribe() {
-    await this.env.ADMIN.subscribeIssueReported(await this.ctx.restore({ type: "hook" }));
-    await this.env.ADMIN.subscribeInvestigationComplete(await this.ctx.restore({ type: "hook" }));
-  }
-  async failNext() { await this.ctx.storage.put("fail", true); }
-  async failed() {
-    return (await this.ctx.storage.get("fail")) ? null : (await this.ctx.storage.get("failed")) ?? null;
-  }
-  async calls() { return (await this.ctx.storage.get("calls")) ?? []; }
-  async handled() { return [...(await this.ctx.storage.list({ prefix: "handled:" })).values()]; }
-  async record(kind, event) {
-    if (await this.ctx.storage.get("fail")) {
-      await this.ctx.storage.put("failed", event);
-      await this.ctx.storage.delete("fail");
-      throw new Error("The callback failed this once.");
-    }
-    const calls = (await this.ctx.storage.get("calls")) ?? [];
-    await this.ctx.storage.put("calls", [...calls, { kind, event }]);
-    await this.ctx.storage.put("handled:" + event.eventId, event.reportId);
-  }
+type Watcher = { ws: RpcStub<Overseer>; connection: AdminConnection; facet: RpcStub<Recorder> };
+
+/** A workspace of the owner whose recording gadget has subscribed `hooks` with one callback. */
+async function watcher(title: string, hooks: HookMethod[]): Promise<Watcher> {
+  const { ws } = await newWorkspace(suite, owner, title);
+  const connection = await addAdminConnection(ws, ownerAccount.id);
+  return { ws, connection, facet: await recordingGadget(suite, owner, ws, connection, hooks) };
 }
-class Hook extends RpcTarget {
-  constructor(gadget) { super(); this.gadget = gadget; }
-  async issueReported(event) { await this.gadget.record("issueReported", event); }
-  async investigationComplete(event) { await this.gadget.record("investigationComplete", event); }
-}`;
 
-type Call = { kind: string; event: Record<string, unknown> };
-type Recorder = {
-  subscribe(): void; failNext(): void; calls(): Call[];
-  /** The event of the call that failed, once the failure failNext() asked for has happened. */
-  failed(): Call["event"] | null;
-  /** The report of each event the gadget handled, which it keys by the event's id. */
-  handled(): string[];
-};
-
-/** The calls the gadget has received, once there are `count` of them. */
-const callsOf = (facet: RpcStub<Recorder>, count: number, timeoutMs?: number) =>
-  waitFor(`${count} call(s) of the callback`, async () => {
-    const received = await facet.calls();
-    return received.length >= count ? received : null;
-  }, timeoutMs);
-
-// The recording gadget's workspace, set up by the first case and used by the second.
-let recording: { ws: RpcStub<Overseer>; facet: RpcStub<Recorder> };
+// The workspace that watches the first two hooks, set up by the first case and used by the second.
+let recording: Watcher;
 
 it("calls a gadget's stored callback once for each new report and each end of an " +
     "investigation, with ids and labels only", async () => {
-  const { ws } = await newWorkspace(suite, owner, "Triage, watching");
-  const connection = await addAdminConnection(ws, ownerAccount.id);
-  const { gadget } = await buildGadget(owner, ws,
-      { name: "WATCHER", server: RECORDING_GADGET, bindings: { ADMIN: connection.id } });
-  const facet = scope.use(await gadget.connectToGadget() as RpcStub<Recorder>);
-  recording = { ws, facet };
+  recording = await watcher(
+      "Triage, watching", ["subscribeIssueReported", "subscribeInvestigationComplete"]);
+  const { ws, facet } = recording;
   // Subscribing binds each hook disabled: nothing is delivered until a person enables it.
-  await facet.subscribe();
   const hooks = await ws.listHooks();
   expect(hooks.map(hook => [hook.description.title, hook.enabled])).toEqual([
     ["Watch for new issue reports", false], ["Watch for investigations that end", false],
@@ -175,6 +128,125 @@ it("delivers an event again, with the same id, after a callback that failed, whi
   const calls = await callsOf(facet, before + 1, 90_000);
   expect(calls.slice(before)).toEqual([{ kind: "issueReported", event: failed }]);
   expect((await facet.handled()).filter(reportId => reportId === report.id)).toHaveLength(1);
+});
+
+// The smallest PNG the report store takes: its signature, and filler.
+const PNG = new Uint8Array(64).fill(0x11);
+PNG.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+it("calls a gadget's stored callback once for each kind of change to a report", async () => {
+  const { ws, connection, facet } = await watcher(
+      "Triage, watching changes", ["subscribeIssueReportChanged"]);
+  const hooks = await ws.listHooks();
+  expect(hooks.map(hook => [hook.description.title, hook.enabled]))
+      .toEqual([["Watch for changes to issue reports", false]]);
+  for (const hook of hooks) await ws.enableHook(hook.id);
+  const graceAdmin = await adminApiOf(suite, await newUser(suite, GRACE));
+  const reporter = await newMember(suite, "writer");
+  const theirs = await newWorkspace(suite, reporter, "A writer's workspace");
+  // Filing is no change: the first call is for the first write after it.
+  const report = await fileReport(reporter, { context: { workspaceId: theirs.id } });
+
+  // Each write is awaited in the callback before the next is made, so the calls come in the
+  // writes' order, and a write that must call nothing shows as a call too many.
+  let expected = 0;
+  const called = async (change: string, status?: string) => {
+    const calls = await callsOf(facet, ++expected);
+    expect(calls, change).toHaveLength(expected);
+    expect(calls.at(-1), change).toEqual({ kind: "issueReportChanged", event: {
+      eventId: expect.any(String), reportId: report.id, change, at: expect.any(Date),
+      ...(status && { status }),
+    } });
+  };
+
+  // A status, by an admin: the event carries it. The status the report has is no change.
+  await admin.setIssueReportStatus(report.id, "answered");
+  await called("status", "answered");
+  await admin.setIssueReportStatus(report.id, "answered");
+
+  // The reporter's reply reopens an answered report, and says so; their next one moves nothing.
+  await reporter.api.replyToIssueReport(report.id, "It still fails for me");
+  await called("reply", "withAdmin");
+  await reporter.api.replyToIssueReport(report.id, "And once more today");
+  await called("reply");
+
+  // An admin's entries, of either visibility.
+  await admin.addIssueReportEntry(report.id, "Likely the quota", "admins");
+  await called("note");
+  await admin.addIssueReportEntry(report.id, "We are looking into it", "public");
+  await called("reply");
+
+  // A claim, a take-over and a release. The holder's own claim and a refused one are no change.
+  await admin.claimIssueReport(report.id);
+  await called("assignment");
+  await admin.claimIssueReport(report.id);
+  await expect(graceAdmin.claimIssueReport(report.id))
+      .rejects.toThrow("Another admin holds this issue report.");
+  await graceAdmin.claimIssueReport(report.id, { takeOver: true });
+  await called("assignment");
+  await graceAdmin.releaseIssueReport(report.id);
+  await called("assignment");
+
+  // The links replaced, once: the links the report has are no change.
+  await admin.setIssueReportLinks(report.id, ["https://tracker.example/issue/7"]);
+  await called("links");
+  await admin.setIssueReportLinks(report.id, ["https://tracker.example/issue/7"]);
+
+  // What the reporter attaches to their report is no write to it.
+  await reporter.api.addIssueReportImage(report.id, new Response(PNG).body!, PNG.byteLength);
+  await theirs.ws.grantAdminAccess({ reportId: report.id });
+
+  // The subscriber's own workspace's change, once a person approved it: how code learns that
+  // an action it queued was applied. The status is the one admins read.
+  const turn = await agentTurn(owner, ws, `await attempt("status", () =>
+    env.ADMIN.setIssueReportStatus(${JSON.stringify(report.id)}, "fixSuggested"));`, { connection });
+  const [queued] = await pendingActions(ws, 1);
+  await ws.approveAction(queued!.id);
+  expect(await turn.resumed()).toEqual({ status: { value: null } });
+  await called("status", "fixSuggested");
+
+  // Once each, with an id each, and nothing of what was written or of who wrote it.
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const calls = await facet.calls();
+  expect(calls).toHaveLength(expected);
+  expect(new Set(calls.map(call => call.event.eventId)).size).toBe(expected);
+  for (const hidden of [
+    report.text, "It still fails", "Likely the quota", "We are looking", "tracker.example",
+    reporter.name, GRACE,
+  ]) {
+    expect(JSON.stringify(calls), hidden).not.toContain(hidden);
+  }
+  // Neither subscribing nor a firing marks the workspace.
+  expect(await observationTitles(ws)).toEqual(Array(expected).fill("Receive an issue report event"));
+  expect(await isRestricted(ws)).toBe(false);
+});
+
+it("fires both hooks when a report leaves investigating, each with an id of its own", async () => {
+  const { ws, facet } = await watcher(
+      "Triage, watching both", ["subscribeInvestigationComplete", "subscribeIssueReportChanged"]);
+  for (const hook of await ws.listHooks()) await ws.enableHook(hook.id);
+  const report = await fileReport(await newMember(suite, "both"));
+  const changed = (status: string) => ({ kind: "issueReportChanged", event: {
+    eventId: expect.any(String), reportId: report.id, change: "status", status, at: expect.any(Date),
+  } });
+
+  // Entering "investigating" is a change, and ends no investigation.
+  await admin.setIssueReportStatus(report.id, "investigating");
+  expect(await callsOf(facet, 1)).toEqual([changed("investigating")]);
+
+  // Leaving it is one write and two events, which arrive in either order.
+  await admin.setIssueReportStatus(report.id, "fixSuggested");
+  const [complete, change] = (await callsOf(facet, 3)).slice(1)
+      .toSorted((a, b) => a.kind.localeCompare(b.kind));
+  expect(complete).toEqual({ kind: "investigationComplete", event: {
+    eventId: expect.any(String), reportId: report.id, status: "fixSuggested", at: expect.any(Date),
+  } });
+  expect(change).toEqual(changed("fixSuggested"));
+  expect(complete!.event.eventId).not.toBe(change!.event.eventId);
+  expect(complete!.event.at).toEqual(change!.event.at);
+
+  await new Promise(resolve => setTimeout(resolve, 500));
+  expect(await facet.calls()).toHaveLength(3);
 });
 
 /** What a triage agent is told of its interface: one call, with a stub that reaches one report. */
@@ -268,7 +340,7 @@ export class Gadget extends DurableObject {
 }`;
 
 type Desk = {
-  subscribe(): void; arm(instructions: string): void; calls(): Call[];
+  subscribe(): void; arm(instructions: string): void; calls(): HookCall[];
   handOff(spawner: string, reportId: string, instructions: string): void;
   /** What `get()` answers on the target the gadget restores from `params`. */
   restored(params: object): unknown;
@@ -327,10 +399,6 @@ it("gives a spawned chat no admin binding unless its spawner names one", async (
   expect((await own.results()).admin!.value).not.toBe("undefined");
   expect(await isRestricted(ws)).toBe(false);
 });
-
-// The smallest PNG the report store takes: its signature, and filler.
-const PNG = new Uint8Array(64).fill(0x11);
-PNG.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 it("triages a report with no person: a gadget hands a spawned agent a stub that reaches " +
     "that one report, and its reply reaches the reporter", async () => {

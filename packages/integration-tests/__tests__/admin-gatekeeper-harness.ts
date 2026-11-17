@@ -571,6 +571,81 @@ export async function buildGadget(
   return { id: await gadget.getId(), gadget };
 }
 
+/** A method of the admin binding that subscribes a hook. */
+export type HookMethod =
+    "subscribeIssueReported" | "subscribeInvestigationComplete" | "subscribeIssueReportChanged";
+
+/**
+ * A gadget that subscribes the hooks of its admin binding it is told to, all with one stored
+ * callback, keeps every call it receives, and handles each event once, keyed by its id.
+ * `failNext()` makes its next call throw.
+ */
+const RECORDING_GADGET = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async [restore](params) {
+    if (params.type !== "hook") throw new TypeError("Unknown restore type: " + params.type);
+    return new Hook(this);
+  }
+  async subscribe(hooks) {
+    for (const hook of hooks) await this.env.ADMIN[hook](await this.ctx.restore({ type: "hook" }));
+  }
+  async failNext() { await this.ctx.storage.put("fail", true); }
+  async failed() {
+    return (await this.ctx.storage.get("fail")) ? null : (await this.ctx.storage.get("failed")) ?? null;
+  }
+  async calls() { return (await this.ctx.storage.get("calls")) ?? []; }
+  async handled() { return [...(await this.ctx.storage.list({ prefix: "handled:" })).values()]; }
+  async record(kind, event) {
+    if (await this.ctx.storage.get("fail")) {
+      await this.ctx.storage.put("failed", event);
+      await this.ctx.storage.delete("fail");
+      throw new Error("The callback failed this once.");
+    }
+    const calls = (await this.ctx.storage.get("calls")) ?? [];
+    await this.ctx.storage.put("calls", [...calls, { kind, event }]);
+    await this.ctx.storage.put("handled:" + event.eventId, event.reportId);
+  }
+}
+class Hook extends RpcTarget {
+  constructor(gadget) { super(); this.gadget = gadget; }
+  async issueReported(event) { await this.gadget.record("issueReported", event); }
+  async investigationComplete(event) { await this.gadget.record("investigationComplete", event); }
+  async issueReportChanged(event) { await this.gadget.record("issueReportChanged", event); }
+}`;
+
+/** One call RECORDING_GADGET's callback received: the method called, and the event it was given. */
+export type HookCall = { kind: string; event: Record<string, unknown> };
+
+/** What RECORDING_GADGET serves. */
+export type Recorder = {
+  subscribe(hooks: HookMethod[]): void; failNext(): void; calls(): HookCall[];
+  /** The event of the call that failed, once the failure failNext() asked for has happened. */
+  failed(): HookCall["event"] | null;
+  /** The report of each event the gadget handled, which it keys by the event's id. */
+  handled(): string[];
+};
+
+/** The calls the gadget has received, once there are `count` of them. */
+export const callsOf = (facet: RpcStub<Recorder>, count: number, timeoutMs?: number) =>
+  waitFor(`${count} call(s) of the callback`, async () => {
+    const received = await facet.calls();
+    return received.length >= count ? received : null;
+  }, timeoutMs);
+
+/**
+ * A RECORDING_GADGET built in `ws` by `user`, bound to `connection` and subscribed to `hooks`.
+ * Subscribing binds each hook disabled: nothing is delivered until a person enables it.
+ */
+export async function recordingGadget(
+    suite: Suite, user: SuiteUser, ws: RpcStub<Overseer>, connection: AdminConnection,
+    hooks: HookMethod[]): Promise<RpcStub<Recorder>> {
+  const { gadget } = await buildGadget(user, ws,
+      { name: "WATCHER", server: RECORDING_GADGET, bindings: { ADMIN: connection.id } });
+  const facet = suite.scope.use(await gadget.connectToGadget() as RpcStub<Recorder>);
+  await facet.subscribe(hooks);
+  return facet;
+}
+
 /**
  * Removes `profileId` from the workspace as its owner. Removing a collaborator restarts the
  * workspace, which breaks every session on it, `ws` included: resolves to the owner's workspace,
