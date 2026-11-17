@@ -228,20 +228,21 @@ function idClaims(idToken: string | undefined, clientId: string): IdClaims {
  * Reads the signed-in user and their tenant's SharePoint host. The host comes from the root site;
  * a user with no SharePoint license gets a 403 or 404 there and connects without one, to be told
  * so when they try to bind something. A multi-geo tenant has a host per geography, and the root
- * site is in its first, so the user's own OneDrive is read for their geography's. Connecting
+ * site is in its first, so the address of the user's own OneDrive is read for their geography's:
+ * `mySite`, since reading the drive itself would create one for a user who has none. Connecting
  * doesn't need it, so a failure there only leaves that host unlearned. The other geographies' hosts
  * stay unknown: Graph lists them for an application, not for a user.
  */
 async function fetchIdentity(accessToken: string, tenantId: string): Promise<StoredIdentity> {
   const api = new GraphApi(accessToken);
-  const [me, root, drive] = await Promise.all([
+  const [me, root, mySite] = await Promise.all([
     api.get<unknown>("/me", { query: { $select: "id,displayName,userPrincipalName,mail" } }).then(parseMe),
     api.find<unknown>("/sites/root", { query: { $select: SITE_SELECT } }),
-    api.find<{ webUrl?: unknown }>("/me/drive", { query: { $select: "webUrl" } }).catch(() => null),
+    api.find<{ value?: unknown }>("/me/mySite").catch(() => null),
   ]);
   const host = root === null ? null : parseSharePointHost(new URL(parseSite(root).webUrl).hostname);
-  const oneDrive = typeof drive?.webUrl === "string" && URL.canParse(drive.webUrl)
-    ? parseSharePointHost(new URL(drive.webUrl).hostname) : null;
+  const oneDrive = typeof mySite?.value === "string" && URL.canParse(mySite.value)
+    ? parseSharePointHost(new URL(mySite.value).hostname) : null;
   return {
     tenantId,
     objectId: me.id,

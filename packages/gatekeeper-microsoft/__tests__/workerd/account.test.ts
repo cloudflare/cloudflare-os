@@ -106,7 +106,7 @@ describe("first connect", () => {
   it("learns a multi-geo tenant's SharePoint name in the user's geography, and resolves a link on its host", async () => {
     const graph = new FakeGraph().install();
     const oneDrive = "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/Documents";
-    graph.on("GET", /^\/v1\.0\/me\/drive\?/, () => json({ webUrl: oneDrive }));
+    graph.on("GET", /^\/v1\.0\/me\/mySite/, () => json({ value: "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/" }));
     const { id } = await firstConnect(graph);
     expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ sharePointTenant: "contoso", sharePointGeoTenant: "contosoeur" });
 
@@ -128,9 +128,9 @@ describe("first connect", () => {
     expect(graph.count("GET", /\/shares\//)).toBe(asked);
   });
 
-  it("connects without the user's geography when their OneDrive can't be read", async () => {
+  it("connects without the user's geography when their OneDrive's address can't be read", async () => {
     const graph = new FakeGraph().install();
-    graph.on("GET", /^\/v1\.0\/me\/drive\?/, () => json({ error: { code: "invalidRequest", message: "Not ready." } }, { status: 400 }));
+    graph.on("GET", /^\/v1\.0\/me\/mySite/, () => json({ error: { code: "invalidRequest", message: "Not ready." } }, { status: 400 }));
     const { id, result } = await firstConnect(graph);
     expect(result).toHaveProperty("ok.handoff");
     const identity = unwrap<Record<string, unknown>>(await hooks().account(id, "getIdentity"));

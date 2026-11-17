@@ -32,7 +32,7 @@ export type StoredIdentity = {
   sharePointTenant?: string;
   /**
    * The tenant's SharePoint name in the user's own geography (`contosoeur`), read from their
-   * OneDrive. Present only where a multi-geo tenant gives that geography another name.
+   * OneDrive's address. Present only where a multi-geo tenant gives that geography another name.
    */
   sharePointGeoTenant?: string;
   fetchedAt: number;
