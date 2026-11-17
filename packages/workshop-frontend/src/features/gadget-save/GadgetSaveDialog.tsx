@@ -37,10 +37,11 @@ export const GadgetSaveDialog = ({
       const { url } = await authenticatedApi.saveFile(accountId, getResourceTypeId(resource),
         destination, fileName, format.contentType, file)
       writeSavedFile(storageKey, { accountId, url, name: fileName })
+      const href = safeExternalUrl(url)
       toasts.add({
         title: `Saved to ${resource.title}`,
         variant: 'success',
-        actions: [{ children: 'Open', onClick: () => window.open(safeExternalUrl(url), '_blank', 'noopener') }],
+        actions: href ? [{ children: 'Open', onClick: () => window.open(href, '_blank', 'noopener') }] : undefined,
       })
       onClose()
     } catch (err) {

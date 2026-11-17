@@ -126,6 +126,16 @@ afterEach(() => {
 })
 
 describe('GadgetSaveDialog saving a new file', () => {
+  it('offers no Open action for a URL that is not safe to open', async () => {
+    saveFile.mockResolvedValue({ url: 'javascript:alert(1)' })
+    await render({ target, storageKey: KEY })
+
+    await act(async () => button('Save').click())
+
+    expect(toasts()).toMatchObject([{ title: 'Saved to Office Docs', variant: 'success' }])
+    expect(toasts()[0].actions).toBeUndefined()
+  })
+
   it('connects another account asking for no resource types, leaving that to the configurator', async () => {
     const connectAccount = vi.fn<(vendorId: string, typeIds?: string[]) => Promise<never>>(
       () => new Promise(() => {}))
