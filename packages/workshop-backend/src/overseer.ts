@@ -8131,9 +8131,11 @@ class OverseerImpl implements AgentHooks {
     // restart recovery clears any busy marker left without an execution row.
     this.storage.activeAgents.delete(chatId);
     this.#resumeErrors.delete(chatId);
+    // End the turn's decision segment, so approving one of its cards later doesn't resume it. The
+    // boundary tells the model nothing: Continue reruns the turn on the same history, and a new
+    // request arrives as its own prompt.
     let author = this.storage.chatMeta.get(chatId)?.activeAgent ?? this.#decisionWait(chatId)?.agent;
-    if (author) this.addChatMessages(chatId, author,
-        [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+    if (author) this.addChatMessages(chatId, author, [{type: "agentNudge"}]);
     let ctx = this.#liveChats.get(chatId);
     if (ctx) {
       ctx.cancelController.abort(new Error("User requested to stop agent."));
@@ -8627,8 +8629,7 @@ class OverseerImpl implements AgentHooks {
           // may already be ready; #finishAgentTurn claims it in this same synchronous span.
           if (meta && liveChat.cancelController.signal.aborted && this.#decisionWait(chatId)) {
             // A tool that was already in flight may have committed its card after Stop's boundary.
-            this.addChatMessages(chatId, initiator,
-                [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+            this.addChatMessages(chatId, initiator, [{type: "agentNudge"}]);
           }
           let wait = this.#decisionWait(chatId);
           this.#unregisterRunningAgent(chatId,

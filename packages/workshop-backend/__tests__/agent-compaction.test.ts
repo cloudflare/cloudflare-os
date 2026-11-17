@@ -200,7 +200,7 @@ describe("compaction trigger", () => {
       type: "agentCallback", methodName: "run", argsSummary: "", initiatorModelId: "m",
     }))).toBe(true);
     expect(startsAgentTurn(record(0, agent, {type: "agentNudge", text: "continue"}))).toBe(true);
-    // A textless nudge (a plain Retry) produces no model message, so the turn starts earlier.
+    // A textless nudge (Stop, or a plain Retry) produces no model message, so the turn starts earlier.
     expect(startsAgentTurn(record(0, user, {type: "agentNudge"}))).toBe(false);
     expect(startsAgentTurn(record(0, agent, {
       type: "connectionRequest", requestId: "1:1", vendorId: "v", vendorName: "V",

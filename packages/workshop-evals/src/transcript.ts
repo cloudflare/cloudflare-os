@@ -75,7 +75,7 @@ export function toTranscriptEvents(history: readonly AiChatMessage[]): Transcrip
       continue;
     }
     if (message.type === "agentNudge") {
-      // agent.ts replays a nudge's text as a user message; one without text (a plain Retry) only
+      // agent.ts replays a nudge's text as a user message; one without text (Stop, or a plain Retry) only
       // marks a recovery boundary and reaches the model as nothing.
       if (message.text !== undefined) {
         events.push({ type: "message", role: "user", content: message.text, metadata });

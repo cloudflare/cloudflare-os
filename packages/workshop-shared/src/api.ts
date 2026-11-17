@@ -5968,7 +5968,8 @@ export type AiChatMessageBody = {
   type: "agentNudge";
   /**
    * The note the model reads, as a user message. Absent when the record only marks the segment
-   * boundary, as for a Retry with nothing to tell the agent: it then reruns on the same history.
+   * boundary, as for Stop and for a Retry with nothing to tell the agent, which then reruns on
+   * the same history.
    */
   text?: string;
 } | {
