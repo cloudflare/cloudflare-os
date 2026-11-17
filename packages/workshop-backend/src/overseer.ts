@@ -13950,15 +13950,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error("No AI model available.");
     }
 
-    // Error records never reach the model, so a Retry of a turn abandoned for repeated resets
-    // would otherwise repeat whatever reset the workspace.
+    // Error records never reach the model, so a Retry of a turn that exhausted its resume
+    // attempts would otherwise repeat it unaware. The attempts count model-lookup failures too,
+    // so the nudge states only that the turn was interrupted and keeps its advice conditional.
     let [last] = [...this.impl.storage.chats.list(
         {prefix: chatKeyPrefix(chatId), reverse: true, limit: 1})];
     let nudge = last?.type === "error" && last.code === "resume_exhausted"
-        ? "Retry the previous request. Your last attempt was abandoned because the workspace " +
-          "restarted repeatedly before you could finish a step; work that exceeds the " +
-          "workspace's CPU or memory limits can do this. Don't repeat the same approach " +
-          "unchanged: do less per step, for example by processing data in smaller pieces."
+        ? "Retry the previous request. Your last attempt was interrupted repeatedly before it " +
+          "could finish a step, and was abandoned. If it was doing heavy work, such as " +
+          "processing a large file, that work may have exceeded the workspace's CPU or memory " +
+          "limits: don't repeat it unchanged, do less per step."
         : "Retry the previous request.";
 
     let result = this.impl.materializeChatChanges(chatId, meta);

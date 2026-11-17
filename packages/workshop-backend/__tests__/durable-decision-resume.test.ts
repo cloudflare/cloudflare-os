@@ -692,7 +692,7 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(4);
   });
 
-  it("tells the model, on Retry, that the abandoned turn kept restarting the workspace", async () => {
+  it("tells the model on Retry that the abandoned turn was interrupted", async () => {
     const s = await scenario(), stalled = inference(new Promise(() => {}));
     for (let attempt = 1; attempt <= 4; attempt++) {
       await expect(s.visit(async impl => {
@@ -717,7 +717,7 @@ describe("decision handoff using the existing execution row", () => {
       await client.retryAgent(CHAT, MODEL.profile.id);
       await impl.waitForAllAgentsToComplete();
       expect(bodies).toHaveLength(1);
-      expect(bodies[0]).toContain("the workspace restarted repeatedly");
+      expect(bodies[0]).toContain("interrupted repeatedly before it could finish a step");
     });
   });
 
