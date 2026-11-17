@@ -41,6 +41,12 @@ not let history be rewritten. Excluded actions are still approved by hand as bef
 advertises through `getAutoApprovableActions()` only the eligible kinds its session can submit (an
 issue binding, for example, never lists pushes).
 
+A push's card names the ref it moves in three fields, each shown exactly: **Branch**, **Current
+head** (absent when the push creates the branch) and **New head**. The sentence above them names
+the same three in code spans, which drop backticks, clip a long name and leave an invisible
+character invisible, so the fields are what an approver checks the destination against. The
+action's title, `Push <commit> to <branch>`, is plain text and carries the branch as given.
+
 The approval of a push offers **Review commits**, which lists the commits the push will send and
 each file they add, change or delete. In a workspace that has read restricted data a push is queued
 only when all of it reads as text (see [docs/observers.md](../../docs/observers.md) §6, item 4),
