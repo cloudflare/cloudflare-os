@@ -20,7 +20,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 7. Gadget settings and the Code tab.
 8. Real blueprints behind Templates, real skills behind `SkillStore`.
 9. Automations, read only.
-10. ⌘K search and right-click menus.
+10. ⌘K search **(done)** and right-click menus.
 
 Waiting on a merge of main into the scaffold (its base, Oct 27, predates them): inline-view
 agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnreadThreads`).

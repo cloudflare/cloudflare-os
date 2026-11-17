@@ -34,6 +34,8 @@ export type SidebarProps = {
    * `SettingsSidebar` takes this one's place while the settings show.
    */
   settingsPage?: { current: boolean; onOpen: () => void }
+  /** Opens search, as ⌘K (Ctrl K) does anywhere. */
+  onSearch?: () => void
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
   /**
@@ -117,6 +119,7 @@ export const Sidebar = ({
   workspacesPage,
   connectionsPage,
   settingsPage,
+  onSearch,
   collapsed = false,
   layout = 'rows',
 }: SidebarProps) => {
@@ -141,7 +144,7 @@ export const Sidebar = ({
       className="aria-[current=page]:bg-kumo-tint"
     />
   )
-  const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+  const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch} />
   const account = (
     <Button
       icon={<Avatar name={user.name} src={user.avatarUrl} />}
@@ -197,7 +200,7 @@ export const Sidebar = ({
           {home}
           {/* A keyboard's shortcut says nothing on a phone. */}
           {narrow ? search : (
-            <Button icon={MagnifyingGlassIcon} aria-label="Search">
+            <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch}>
               <kbd className="font-sans font-normal text-kumo-subtle">{searchKeys()}</kbd>
             </Button>
           )}

@@ -39,6 +39,7 @@ import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
 import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
+import { SearchPreview } from '@/gallery/SearchPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
@@ -356,6 +357,7 @@ function Gallery() {
       <SetUpConnectionPreview />
       <AddConnectionPreview />
       <SettingsPreview />
+      <SearchPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">

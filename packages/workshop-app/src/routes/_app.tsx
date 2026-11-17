@@ -24,6 +24,7 @@ import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { AppSearch } from './-AppSearch'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
 export const Route = createFileRoute('/_app')({
@@ -125,6 +126,8 @@ const AppFrame = () => {
   // The sidebar out over a narrow screen, which, like full screen, is left behind with the page:
   // going anywhere puts it away.
   const [sidebarAt, setSidebarAt] = useState<string>()
+  // Search is open, over whatever page it was opened from.
+  const [searching, setSearching] = useState(false)
   const sidebarOpen = sidebarAt === pathname
   const leaveSidebar = () => setSidebarAt(undefined)
   // Up from an item's own page on a narrow screen, to what it is in: the chat it was shown from,
@@ -269,6 +272,10 @@ const AppFrame = () => {
         },
       }}
       settingsPage={{ current: inSettings, onOpen: toggleSettings }}
+      onSearch={() => {
+        leaveSidebar()
+        setSearching(true)
+      }}
       collapsed={collapsed}
     />
   )
@@ -290,8 +297,12 @@ const AppFrame = () => {
     : undefined
   const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
 
+  // Over the page, whichever shell it is in, and reached by ⌘K from either.
+  const search = <AppSearch open={searching} onOpenChange={setSearching} />
+
   if (narrow) {
     return (
+      <>
       <NarrowShell
         sidebar={{
           content: sidebar(false),
@@ -310,10 +321,13 @@ const AppFrame = () => {
       >
         {pageItem ? asideElement : <Outlet />}
       </NarrowShell>
+      {search}
+      </>
     )
   }
 
   return (
+    <>
     <AppShell
       sidebar={inSettings ? settingsSidebar : sidebar}
       status={status}
@@ -329,5 +343,7 @@ const AppFrame = () => {
     >
       <Outlet />
     </AppShell>
+    {search}
+    </>
   )
 }
