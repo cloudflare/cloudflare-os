@@ -4,6 +4,10 @@ import {
   type PushReviewEntry, type PushReviewParentEntry, type PushReviewSent, type PushReviewTreeEntry,
 } from '@gadgets/workshop-shared/api'
 import {
+  MAX_RESTRICTED_PUSH_COMMITS, MAX_RESTRICTED_PUSH_FILES, MAX_RESTRICTED_PUSH_PATHS,
+  MAX_RESTRICTED_PUSH_TEXT_SIZE,
+} from '@gadgets/workshop-shared/gatekeeper'
+import {
   MAX_WHOLE_REVIEW_ENTRIES, ROOT_LABEL, commitSubject, comparableParent, entryKey, expectsText, formatCommitText,
   groupPushReview, listedPaths, notShownAsText, parseCommitText, pathChange, pathNotes,
   reviewItems, reviewReadiness, reviewTooLarge, sentObjectCount,
@@ -257,6 +261,27 @@ describe('reviewTooLarge', () => {
       commit(C1),
       path(C1, 'huge.bin', { entry: entry('file', 'huge'), sent: { kind: 'large', size: 10 * READ_FILES_RESPONSE_BUDGET } }),
     ], 2)).toBe(false)
+  })
+
+  it('loads whole every push a restricted workspace may queue', () => {
+    expect(MAX_RESTRICTED_PUSH_COMMITS + MAX_RESTRICTED_PUSH_PATHS).toBeLessThanOrEqual(MAX_WHOLE_REVIEW_ENTRIES)
+    expect(MAX_RESTRICTED_PUSH_TEXT_SIZE).toBeLessThanOrEqual(READ_FILES_RESPONSE_BUDGET)
+
+    // The largest review the kernel accepts: as many commits, paths and files as it allows, and
+    // as much text, the paths' own bytes included.
+    const fileSize = Math.floor(MAX_RESTRICTED_PUSH_TEXT_SIZE / (2 * MAX_RESTRICTED_PUSH_FILES))
+    const paths = Array.from({ length: MAX_RESTRICTED_PUSH_PATHS }, (_, index) =>
+      path(oid(`b${index % MAX_RESTRICTED_PUSH_COMMITS}x`), `f${index}`, {
+        entry: entry('file', `f${index % MAX_RESTRICTED_PUSH_FILES}x`), sent: text(fileSize),
+      }))
+    const used = MAX_RESTRICTED_PUSH_FILES * fileSize + paths.reduce((sum, row) => sum + row.path.length, 0)
+    const atBounds: PushReviewEntry[] = [
+      ...Array.from({ length: MAX_RESTRICTED_PUSH_COMMITS }, (_, index) =>
+        commit(oid(`b${index}x`), { size: index === 0 ? MAX_RESTRICTED_PUSH_TEXT_SIZE - used : 0 })),
+      ...paths,
+    ]
+    expect(atBounds).toHaveLength(MAX_RESTRICTED_PUSH_COMMITS + MAX_RESTRICTED_PUSH_PATHS)
+    expect(reviewTooLarge(atBounds, atBounds.length)).toBe(false)
   })
 })
 
