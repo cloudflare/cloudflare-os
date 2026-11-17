@@ -30,6 +30,10 @@ export type SettingsPaneProps = {
   onSectionChange: (section: SettingsSection | undefined) => void
   /** A part's address, so that it can be opened in another tab. */
   sectionHref?: (section: SettingsSection) => string
+  /** One of the skills listed was opened, which has a page of its own. */
+  onOpenSkill: (id: string) => void
+  /** A skill's page, so that it can be opened in another tab. */
+  skillHref?: (id: string) => string
 }
 
 /**
@@ -39,7 +43,7 @@ export type SettingsPaneProps = {
  * for one thing at a time: the list of the parts is the page, and a part is gone into from it,
  * with the way back at the start of its header.
  */
-export const SettingsPane = ({ section, onSectionChange, sectionHref }: SettingsPaneProps) => {
+export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkill, skillHref }: SettingsPaneProps) => {
   const { user } = useApi()
   const avatarUrl = useOwnAvatar()
   const narrow = useNarrowScreen()
@@ -53,7 +57,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref }: Settings
     usage: <UsageSettings />,
     models: <ModelSettings />,
     approvals: <ApprovalSettings />,
-    skills: <SkillSettings />,
+    skills: <SkillSettings onOpenSkill={onOpenSkill} skillHref={skillHref} />,
     preferences: <PreferenceSettings />,
     notifications: <NotificationSettings />,
     collaboration: <CollaborationSettings />,

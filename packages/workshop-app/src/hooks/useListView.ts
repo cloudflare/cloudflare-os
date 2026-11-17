@@ -7,6 +7,10 @@ export type ListViewSpec<T, Order extends ListOrder<T>> = {
   orders: Order[]
   /** What the list can be narrowed to, if anything. */
   filters?: ListFilter<T>[]
+  /** The ids of the filters that are on to start with, for a list that leaves something out until it is asked for. */
+  startsNarrowedTo?: string[]
+  /** The filters that are on are kept on this device, as the order is, rather than for the visit. */
+  keepsFilters?: boolean
   /** The facets whose filters have a menu of their own, by what it is called (see `ListControls`). */
   facetMenus?: Record<string, string>
   /** What a search looks through for an item: its title, and whatever else it may be known by. */
@@ -32,17 +36,22 @@ export type ListView<T, Order extends ListOrder<T>> = {
 
 /**
  * How one list is looked at: as rows or cards and in which order, both kept on this device under
- * `name`, and what it is searched for and narrowed to, which last for the visit. `name` says which
- * list it is and must not change.
+ * `name`, and what it is searched for and narrowed to, which last for the visit, unless the list
+ * keeps its filters too (`keepsFilters`). `name` says which list it is and must not change.
  */
 export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: string, spec: ListViewSpec<T, Order>): ListView<T, Order> => {
   const [prefs, setPrefs] = useState(() => listViewPrefs(name, spec.startsAs).read())
   const [query, setQuery] = useState('')
-  const [filtersOn, setFiltersOn] = useState<string[]>([])
+  // Those kept from before, where the list keeps them, or else those it starts with.
+  const [filtersOn, setFiltersOn] = useState<string[]>(() => (spec.keepsFilters ? prefs.filters : undefined) ?? spec.startsNarrowedTo ?? [])
 
   const keep = (next: ListViewPrefs) => {
     setPrefs(next)
     listViewPrefs(name, spec.startsAs).write(next)
+  }
+  const narrowTo = (ids: string[]) => {
+    setFiltersOn(ids)
+    if (spec.keepsFilters) keep({ ...prefs, filters: ids })
   }
   // One kept from before may be gone since.
   const order = spec.orders.find(({ id }) => id === prefs.order) ?? spec.orders[0]
@@ -57,7 +66,7 @@ export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: 
     arrange: (items) => order.arrange(items, ENOUGH[prefs.mode]),
     showAll: () => {
       setQuery('')
-      setFiltersOn([])
+      narrowTo([])
     },
     controls: {
       search: { value: query, onChange: setQuery },
@@ -67,7 +76,7 @@ export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: 
         value: on.map(({ id }) => id),
         options: filters.map(({ id, label, facet, icon }) => ({ id, label, facet, icon })),
         facetMenus: spec.facetMenus,
-        onChange: setFiltersOn,
+        onChange: narrowTo,
       },
     },
   }

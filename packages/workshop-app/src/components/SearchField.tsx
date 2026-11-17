@@ -7,18 +7,21 @@ export type SearchFieldProps = {
   onValueChange: (value: string) => void
   /** What it searches, as its name and its placeholder: "Search workspaces". */
   label: string
+  /** It is open whether or not it is being typed in, where its row has nothing better to do with the room. */
+  expanded?: boolean
   className?: string
 }
 
 /**
  * A search field that keeps to a round button, the size of `Button` with an icon alone, until it is
  * clicked or tabbed to. It then opens out into the room its row has to spare, and stays open for as
- * long as there is text in it. Escape clears it, and from empty puts it away.
+ * long as there is text in it. Escape clears it, and from empty puts it away. `expanded`, it is
+ * open all along.
  */
-export const SearchField = ({ value, onValueChange, label, className }: SearchFieldProps) => {
+export const SearchField = ({ value, onValueChange, label, expanded = false, className }: SearchFieldProps) => {
   const inputRef = useRef<HTMLInputElement>(null)
   const [focused, setFocused] = useState(false)
-  const open = focused || value !== ''
+  const open = expanded || focused || value !== ''
 
   return (
     // A label, so that all of it, the icon included, takes a click to the field.

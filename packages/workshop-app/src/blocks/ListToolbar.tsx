@@ -10,6 +10,8 @@ import type { ListControls } from '@/components/listView'
 export type ListToolbarProps = ListControls & {
   /** What is listed, in the plural, for the names of its controls: "workspaces". */
   noun: string
+  /** The search is open all along, rather than once it is clicked: for a short bar with the room to spare. */
+  searchExpanded?: boolean
   /** What the list offers to do, such as making a new one: a button or a menu, at the end. */
   action?: ReactNode
   /**
@@ -86,11 +88,11 @@ const FilterMenu = ({ value, options, facetMenus = {}, onChange, side, className
  * drawn only if given, so a list has the ones it has a use for. Over the list they are at its two
  * ends; under it (`at`), on a narrow screen, they are together in the middle.
  */
-export const ListToolbar = ({ noun, search, view, order, filter, action, at = 'top' }: ListToolbarProps) => {
+export const ListToolbar = ({ noun, search, searchExpanded = false, view, order, filter, action, at = 'top' }: ListToolbarProps) => {
   const lifted = at === 'bottom' ? LIFTED : undefined
   return (
     <div className={cn('flex items-center gap-2', at === 'bottom' && 'justify-center')}>
-      {search && <SearchField value={search.value} onValueChange={search.onChange} label={`Search ${noun}`} className={lifted} />}
+      {search && <SearchField value={search.value} onValueChange={search.onChange} label={`Search ${noun}`} expanded={searchExpanded} className={lifted} />}
       <div className={cn('flex shrink-0 items-center gap-2', at === 'top' && 'ms-auto')}>
         {view && (
           // It shows the view it goes to, as the button of a thing to do.

@@ -31,6 +31,9 @@ function Settings() {
         void navigate({ to: '/settings', search: { section: next }, state: { settingsPartOpenedHere: true } })
       }}
       sectionHref={(id) => router.buildLocation({ to: '/settings', search: { section: id } }).href}
+      // From the list, so the way back from the skill goes back to it, where it was.
+      onOpenSkill={(skillId) => navigate({ to: '/skills/$skillId', params: { skillId }, state: { fromSkillList: true } })}
+      skillHref={(skillId) => router.buildLocation({ to: '/skills/$skillId', params: { skillId } }).href}
     />
   )
 }

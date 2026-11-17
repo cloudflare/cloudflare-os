@@ -55,9 +55,9 @@ export const SETTINGS_GROUPS: { label: string; sections: SectionInfo[] }[] = [
   {
     label: 'Assistant',
     sections: [
-      { id: 'models', label: 'Models', summary: 'Default model, reasoning and context', icon: CpuIcon },
+      { id: 'models', label: 'Models', summary: 'Default model, context and custom instructions', icon: CpuIcon },
       { id: 'approvals', label: 'Approvals', summary: 'What the assistant can do without asking', icon: ShieldCheckIcon },
-      { id: 'skills', label: 'Instructions & skills', summary: 'Custom instructions and skills', icon: LightningIcon },
+      { id: 'skills', label: 'Skills', summary: 'Your skills and how they are used', icon: LightningIcon },
     ],
   },
   {

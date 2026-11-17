@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { ApprovalRules, type ApprovalRule } from '@/blocks/ApprovalRules'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
+import { FilePreviewCard } from '@/blocks/FilePreviewCard'
+import { FileEditor } from '@/blocks/FileEditor'
+import { ListToolbar } from '@/blocks/ListToolbar'
 import { ModelListItem } from '@/blocks/ModelListItem'
 import { MutedWorkspaces, type MutableWorkspace } from '@/blocks/MutedWorkspaces'
 import { PasswordForm } from '@/blocks/PasswordForm'
@@ -11,10 +14,14 @@ import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
 import { SettingsMenu } from '@/blocks/SettingsMenu'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
+import { SkillFileRow } from '@/blocks/SkillFileRow'
 import { SkillRow } from '@/blocks/SkillRow'
 import { Button } from '@/components/Button'
+import { Markdown } from '@/components/Markdown'
+import { ScrollArea } from '@/components/ScrollArea'
 import { Select } from '@/components/Select'
 import { Switch } from '@/components/Switch'
+import { Tabs } from '@/components/Tabs'
 import { TextField } from '@/components/TextField'
 import { settingsNavGroups } from '@/settings/settingsSections'
 import { useReport } from './previewState'
@@ -58,6 +65,10 @@ export const SettingsPreview = () => {
   const [tokens, setTokens] = useState('150000')
   const [text, setText] = useState('')
   const [notes, setNotes] = useState('')
+  const [fileQuery, setFileQuery] = useState('')
+  const [skillTab, setSkillTab] = useState('preview')
+  const [openTabs, setOpenTabs] = useState(['summary.md', 'report.md'])
+  const [fileText, setFileText] = useState('---\nname: summarize-meeting-notes\ndescription: Turn a transcript into decisions, owners and next steps.\n---\n\n# Summarize meeting notes\n\n1. List the decisions that were made.\n2. Name an owner for each action.\n')
   const [picture, setPicture] = useState<string>()
   const [rules, setRules] = useState(RULES)
   const [quiet, setQuiet] = useState(['design'])
@@ -253,14 +264,16 @@ export const SettingsPreview = () => {
           <MutedWorkspaces title="With none" muted={[]} others={WORKSPACES} problem="Couldn’t mute the workspace." onMute={(id) => say(`muted ${id}`)} onUnmute={() => {}} />
         </div>
       </Section>
-      <Section title="SkillRow: a skill as a list has it, which is not opened: with a tag, somebody else’s, with neither a tag nor a time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and a tag, offered from those there are">
+      <Section title="SkillRow, in a ScrollArea, which is as tall as three of them and draws its scrollbar over their ends: a skill as a list has it, which opens it: with a tag, somebody else’s, with neither a tag nor a time, and one whose name and what it is for are too long. AddSkillDialog: a name and what it is for, without which it cannot be added, and a tag, offered from those there are">
         <div className="flex w-full max-w-3xl flex-col gap-3">
-          <div className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
-            <SkillRow name="Summarize meeting notes" detail="Turn a transcript into decisions, owners and next steps." tag="Meetings" time="2h ago" />
-            <SkillRow name="Weekly report" detail="Shared by Grace Hopper · How the team writes the weekly status report." tag="Reports" time="Nov 12" />
-            <SkillRow name="Plan a trip" detail="Preferences for flights and hotels." />
-            <SkillRow name="A skill with a name long enough that it has to be cut off somewhere along the line it is on" detail="And with so much to say of what it is for that it cannot all be said on the one line there is for it" tag="A tag that is long too" time="Sep 3" />
-          </div>
+          <ScrollArea className="max-h-48 rounded-3xl bg-kumo-tint">
+            <div className="flex flex-col p-1.5">
+              <SkillRow name="Summarize meeting notes" detail="Turn a transcript into decisions, owners and next steps." tag="Meetings" time="2h ago" onSelect={() => say('opened the skill')} />
+              <SkillRow name="Weekly report" detail="Shared by Grace Hopper · How the team writes the weekly status report." tag="Reports" time="Nov 12" onSelect={() => say('opened the skill')} />
+              <SkillRow name="Plan a trip" detail="Preferences for flights and hotels." onSelect={() => say('opened the skill')} />
+              <SkillRow name="A skill with a name long enough that it has to be cut off somewhere along the line it is on" detail="And with so much to say of what it is for that it cannot all be said on the one line there is for it" tag="A tag that is long too" time="Sep 3" onSelect={() => say('opened the skill')} />
+            </div>
+          </ScrollArea>
           <div>
             <Button onClick={() => setAddingSkill(true)}>Add skill</Button>
           </div>
@@ -273,6 +286,47 @@ export const SettingsPreview = () => {
               setAddingSkill(false)
             }}
           />
+        </div>
+      </Section>
+      <Section title="SkillFileRow: a skill’s files, with the ways to download one and to take it out while it is pointed at: its instructions, which cannot be taken out, one in a folder, a picture, and one that is only downloaded, under a ListToolbar whose search is open all along. FileEditor: what is written in one, saved with Cmd or Ctrl and S, then one that is only read">
+        <div className="flex w-full max-w-3xl flex-col gap-3">
+          <div className="px-5">
+            <ListToolbar noun="files" search={{ value: fileQuery, onChange: setFileQuery }} searchExpanded action={<Button variant="primary" onClick={() => say('chose files')}>Upload files</Button>} />
+          </div>
+          <ul className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
+            <SkillFileRow path="SKILL.md" kind="text" detail="Markdown · 412 B" role="Instructions" onSelect={() => say('opened SKILL.md')} onDownload={() => say('downloaded SKILL.md')} />
+            <SkillFileRow path="templates/summary.md" kind="text" detail="Markdown · 1.2 KB" onSelect={() => say('opened the template')} onDownload={() => say('downloaded the template')} onRemove={() => say('deleted the template')} />
+            <SkillFileRow path="assets/a-diagram-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-along-the-line-it-is-on.png" kind="image" detail="Image · 48 KB" onSelect={() => say('opened the picture')} onDownload={() => say('downloaded the picture')} onRemove={() => say('deleted the picture')} />
+            <SkillFileRow path="data/archive.zip" kind="other" detail="ZIP file · 1.4 MB" onDownload={() => say('downloaded the archive')} onRemove={() => say('deleted the archive')} />
+          </ul>
+          <FileEditor aria-label="SKILL.md" value={fileText} onValueChange={setFileText} onSave={() => say('saved SKILL.md')} />
+          <FileEditor aria-label="notes.txt" value={'Ana: the importer is done, review today.\nBen: blocked on the staging database.'} onValueChange={() => {}} readOnly />
+        </div>
+      </Section>
+      <Section title="FilePreviewCard: a file as a card that opens it, with the start of what is in it: one with more than there is room for, which fades out, and more room than the rest have; a short one; and one there is nothing to show of. Tabs: with two that were opened between its own, each with the way to put it away, and one of them with something unsaved, which has a dot instead">
+        <div className="flex w-full max-w-3xl flex-col gap-6">
+          <Tabs
+            value={skillTab}
+            onValueChange={setSkillTab}
+            aria-label="Skill"
+            tabs={[
+              { value: 'preview', label: 'Preview' },
+              { value: 'files', label: 'Files' },
+              ...openTabs.map((file) => ({ value: file, label: file, title: `templates/${file}`, unsaved: file === 'report.md', onClose: () => { setOpenTabs(openTabs.filter((other) => other !== file)); setSkillTab('preview') } })),
+              { value: 'settings', label: 'Settings' },
+            ]}
+          >
+            {['preview', 'files', 'settings', ...openTabs].map((value) => <Tabs.Panel key={value} value={value} className="text-center text-base text-kumo-subtle">{value}</Tabs.Panel>)}
+          </Tabs>
+          <ul className="flex flex-col gap-3">
+            <FilePreviewCard path="SKILL.md" detail="Markdown · 2.1 KB" role="Instructions" tall onSelect={() => say('opened SKILL.md')}>
+              <Markdown onTint>{'# Summarize meeting notes\n\n' + Array.from({ length: 24 }, (_, at) => `${at + 1}. List the decisions that were made, one line each, with \`code\` where it helps.`).join('\n') + '\n\n```\nA block of code\n```'}</Markdown>
+            </FilePreviewCard>
+            <FilePreviewCard path="templates/summary.md" detail="Markdown · 105 B" onSelect={() => say('opened the template')}>
+              <Markdown onTint>{'## Decisions\n\n## Actions'}</Markdown>
+            </FilePreviewCard>
+            <FilePreviewCard path="data/archive.zip" detail="ZIP file · 1.4 MB" onSelect={() => say('opened the archive')} />
+          </ul>
         </div>
       </Section>
       <Section title="ModelListItem: the deployment's, the user's own with the way to remove it, what each is used for, one known only by its id, and one being removed">

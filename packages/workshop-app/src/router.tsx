@@ -41,5 +41,7 @@ declare module '@tanstack/react-router' {
      * the way back to the list goes back.
      */
     settingsPartOpenedHere?: boolean
+    /** This skill's page was opened from the list of them, so the way back to the list goes back. */
+    fromSkillList?: boolean
   }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { narrowList } from '@/components/listView'
-import { skillDetail, skillList, skillTags, type Skill } from './skillList'
+import { skillDetail, skillList, skillTags } from './skillList'
+import type { Skill } from './SkillStore'
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000)
 
@@ -10,6 +11,8 @@ const skill = (name: string, rest: Partial<Skill> = {}): Skill => ({
   description: `How to ${name.toLowerCase()}.`,
   source: { kind: 'mine' },
   updated: daysAgo(1),
+  autoUse: true,
+  files: [],
   ...rest,
 })
 
@@ -53,6 +56,10 @@ describe('skillList', () => {
     expect(left('', 'shared', 'organization')).toEqual(['Report', 'Incident'])
     expect(left('', 'mine', 'tag:Engineering')).toEqual(['Review'])
     expect(left('', 'tag:Engineering', 'tag:Reports')).toEqual(['Review', 'Report', 'Incident'])
+  })
+
+  it('leaves the organization’s out to start with, until they are asked for', () => {
+    expect(left('', ...spec.startsNarrowedTo!)).toEqual(['Review', 'Report', 'Travel'])
   })
 
   it('finds a skill by its name, what it is for, its tag, and who shared it', () => {

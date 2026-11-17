@@ -2,26 +2,10 @@ import { groupByTime } from '@/chat/timeGroups'
 import type { ListFilter, ListOrder } from '@/components/listView'
 import { groupByName } from '@/components/nameGroups'
 import type { ListViewSpec } from '@/hooks/useListView'
-
-/**
- * A skill: instructions the assistant loads when a task calls for them. They are one flat list:
- * what used to be the collection a skill was in is a tag on it.
- */
-export type Skill = {
-  id: string
-  /** What it is called, as it is read: "Summarize meeting notes". */
-  name: string
-  /** What it is for, which is what the assistant goes by to load it. */
-  description: string
-  /** What it is filed under, if anything. */
-  tag?: string
-  /** Whose it is: the user's own, somebody's who shared it with them, or the deployment's, for everyone. */
-  source: { kind: 'mine' } | { kind: 'shared'; by: string } | { kind: 'organization' }
-  updated: Date
-}
+import type { Skill } from './SkillStore'
 
 /** Whose a skill is, where it is not the user's own. */
-const sourceLabel = ({ source }: Skill) => (source.kind === 'shared' ? `Shared by ${source.by}` : source.kind === 'organization' ? 'Organization' : undefined)
+export const sourceLabel = ({ source }: Skill) => (source.kind === 'shared' ? `Shared by ${source.by}` : source.kind === 'organization' ? 'Organization' : undefined)
 
 /** What there is to say of a skill under its name, on one line: whose it is, where not the user's own, then what it is for. */
 export const skillDetail = (skill: Skill) => [sourceLabel(skill), skill.description].filter(Boolean).join(' · ')
@@ -62,7 +46,8 @@ const tagFilters = (skills: Skill[]): ListFilter<Skill>[] => {
 
 /**
  * How the skills can be ordered, narrowed and searched: by when they were last updated, by name,
- * by tag, by whose they are, and by what they are for.
+ * by tag, by whose they are, and by what they are for. To start with it is the user's own and
+ * those shared with them: the organization's are a filter away.
  */
 export const skillList = (skills: Skill[]): ListViewSpec<Skill, ListOrder<Skill>> => ({
   orders: [
@@ -75,6 +60,10 @@ export const skillList = (skills: Skill[]): ListViewSpec<Skill, ListOrder<Skill>
     byTag,
   ],
   filters: [...SOURCE_FILTERS, ...tagFilters(skills)],
+  // The organization's are everyone's, and many: they are listed once asked for.
+  startsNarrowedTo: ['mine', 'shared'],
+  // What is left out is the user's to say from then on, so it is as they left it when they come back.
+  keepsFilters: true,
   // As many as the user has made, so they have a menu of their own.
   facetMenus: { tag: 'Tag' },
   searchText: (skill) => [skill.name, skill.description, skill.tag, sourceLabel(skill)].filter(Boolean).join(' '),

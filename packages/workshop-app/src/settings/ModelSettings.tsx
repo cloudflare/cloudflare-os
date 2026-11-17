@@ -6,6 +6,7 @@ import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
 import { Select } from '@/components/Select'
+import { TextField } from '@/components/TextField'
 import { defaultModelOf } from '@/chat/defaultModel'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { contextWindowPresets, modelOptionsOf } from './modelOptions'
@@ -121,7 +122,26 @@ const DefaultModelOptions = ({ modelId, own }: { modelId: string; own: boolean }
   )
 }
 
-/** Which model answers, how it goes about it, and the models there are. */
+/** What every model is told beyond what it comes with. Not there yet, so nothing is kept: it is there to be tried. */
+const CustomInstructions = () => {
+  const [instructions, setInstructions] = useState('')
+  return (
+    <SettingsGroup title="Custom instructions" soon plain>
+      <SettingsCard field>
+        <TextField
+          aria-label="Custom instructions"
+          rows={4}
+          value={instructions}
+          placeholder="What the assistant should always know or do, such as “Answer in British English.”"
+          onValueChange={setInstructions}
+          className="rounded-2xl"
+        />
+      </SettingsCard>
+    </SettingsGroup>
+  )
+}
+
+/** Which model answers, how it goes about it and what it is always told, and the models there are. */
 export const ModelSettings = () => {
   const { state, setPreferred, setQuick, remove } = useModelSettings()
   const { problem, attempt } = useAttempt()
@@ -171,6 +191,7 @@ export const ModelSettings = () => {
           </SettingRow>
         </SettingsCard>
       </SettingsGroup>
+      <CustomInstructions />
       <SettingsGroup title="Available models" plain>
         <SettingsCard>
           {models.length === 0

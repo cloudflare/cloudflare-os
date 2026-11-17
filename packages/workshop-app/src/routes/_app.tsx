@@ -75,6 +75,9 @@ const AppFrame = () => {
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const settingsPage = useMatch({ from: '/_app/settings', shouldThrow: false })
+  // A skill's page is part of the settings, where the skills are listed.
+  const skillPage = useMatch({ from: '/_app/skills/$skillId', shouldThrow: false })
+  const inSettings = settingsPage !== undefined || skillPage !== undefined
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
@@ -199,7 +202,7 @@ const AppFrame = () => {
   // opened from, or home when they were come to some other way.
   const toggleSettings = () => {
     leaveSidebar()
-    if (!settingsPage) return void navigate({ to: '/settings', state: { settingsOpenedHere: true } })
+    if (!inSettings) return void navigate({ to: '/settings', state: { settingsOpenedHere: true } })
     if (router.state.location.state.settingsOpenedHere) return router.history.back()
     void navigate({ to: '/' })
   }
@@ -208,11 +211,13 @@ const AppFrame = () => {
   const settingsSidebar = (collapsed: boolean) => (
     <SettingsSidebar
       groups={settingsNavGroups((section) => router.buildLocation({ to: '/settings', search: { section } }).href)}
-      current={settingsPage?.search.section ?? FIRST_SECTION}
+      current={skillPage ? 'skills' : (settingsPage?.search.section ?? FIRST_SECTION)}
       // In place, so that going back leaves the settings rather than going through their parts.
+      // Not from a skill's page, which is somewhere to go back to.
       onSelect={(section) => {
         // The ids are the parts' own, which the block knows only as strings.
-        if (isSettingsSection(section)) void navigate({ to: '/settings', search: { section }, replace: true, state: true })
+        if (!isSettingsSection(section)) return
+        void navigate({ to: '/settings', search: { section }, ...(skillPage ? {} : { replace: true, state: true }) })
       }}
       onClose={toggleSettings}
       collapsed={collapsed}
@@ -255,7 +260,7 @@ const AppFrame = () => {
           void navigate({ to: '/connections' })
         },
       }}
-      settingsPage={{ current: settingsPage !== undefined, onOpen: toggleSettings }}
+      settingsPage={{ current: inSettings, onOpen: toggleSettings }}
       collapsed={collapsed}
     />
   )
@@ -300,7 +305,7 @@ const AppFrame = () => {
 
   return (
     <AppShell
-      sidebar={settingsPage ? settingsSidebar : sidebar}
+      sidebar={inSettings ? settingsSidebar : sidebar}
       status={status}
       initialSidebar={prefs.sidebar}
       onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}

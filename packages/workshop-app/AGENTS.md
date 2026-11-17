@@ -1,8 +1,8 @@
 # Workshop App
 
 The reworked Workshop frontend, built beside `workshop-frontend` (which stays the shipped app until
-cutover). Scope is deliberately small: chat, chat settings, and the Library, Workspaces and
-Connections pages.
+cutover). Scope is deliberately small: chat, chat settings, the Library, Workspaces and
+Connections pages, and the Settings page with the skills listed in it.
 Follow `../../AGENTS.md` and the `frontend-conventions` skill in addition to this file.
 
 Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old frontend uses 3000).
@@ -36,6 +36,10 @@ src/
   library/      Everything the user's workspaces have made (`useLibrary`), and the Library page
   connections/  The services the user has connected and could connect (`useConnections`), the
                 Connections page, and the window a service is signed in to in
+  settings/     The Settings page (`SettingsPane`), a file for each of its parts, and what they
+                read and write of the user's account
+  skills/       The user's skills (`SkillStore`, in memory for now), the list of them in the
+                settings (`SkillLibrary`) and one skill's page (`SkillPane`)
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -43,7 +47,7 @@ src/
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`) are the only code that talks to the
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`) are the only code that talks to the
 backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
@@ -344,6 +348,78 @@ ticket with the nonce over its own session. Redeeming is what connects the accou
 shows on the page through `subscribeConnectedAccounts()`. The flow ends on the deployment's public
 address, so in development it only finishes when that is this app's.
 
+## The Settings page
+
+`/settings` (the user's own button in the sidebar) is one route, with `?section=` naming the part
+that is showing (`settings/settingsSections.ts` has them, in order, with their names and icons).
+Where there is room for a sidebar, the parts are listed there in place of the app's own
+(`SettingsSidebar`, which `_app.tsx` swaps in for as long as the page is a settings one), and
+choosing one replaces the address, so that going back leaves the settings rather than going
+through their parts. On a narrow screen the list of the parts is the page (`SettingsMenu`), and a
+part is gone into from it. The user's button leaves the settings again: back to where they were
+opened from (`settingsOpenedHere`), or home.
+
+A part is a file in `settings/` (`ProfileSettings`, `ModelSettings`, …) made of the same blocks:
+
+- `SettingsGroup` is settings that belong together under a title, on one surface (`SettingsCard`)
+  or, `plain`, on the few it gives itself. A group's title is said once in all of the settings:
+  do not give two groups the same one. A description under the title is for a group whose rows
+  are not settings, such as a list.
+- `SettingRow` is one setting: what it is, and what it is set by, in a column of one width down
+  the group. `SettingField` and `SettingPresets` are rows that are a line of text, kept on Enter or
+  on leaving the field (`useEditedField`).
+- What is not there yet is marked `soon` ("Coming soon"), on the group where all of it is, or else
+  on the row. Its controls still work, to show what it will be like, and keep nothing
+  (`settings/SoonControls.tsx`): replace one with the real control once its setting is there.
+- A `ghost` button does not show being pointed at on a `SettingsCard`, which is the colour it
+  turns: give a text one `ON_SETTINGS_CARD` and an icon alone `LIST_ACTION`. A row's buttons that
+  show only while it is pointed at are in `CardAction`, which keeps their room, so that nothing
+  beside them moves.
+
+Approvals are the user's own, for every workspace: the defaults ("Permission defaults"), then
+rules that always ask and rules that allow without asking (`ApprovalRules`), in that order of
+precedence, which the groups' descriptions say. `useStandingApprovals` is kept, unused, for when a
+workspace has settings of its own.
+
+## Skills
+
+A skill is instructions the assistant loads when a task calls for them, with the files they refer
+to. The Workshop's API has none of the user's to read or write yet (they are the Context
+Library's, `gatekeeper-context`, which has its own app), so `skills/SkillStore.ts` (plain, tested)
+keeps them in memory for the visit, starting from examples (`exampleSkills.ts`), and the list says
+"Coming soon". Its methods are the operations a backend would have: put it over one once there is
+one, and take the examples out.
+
+A skill's name and what it is for are kept twice: on the skill, as they are read, and in the
+frontmatter of its `SKILL.md`, as the Agent Skills format has them (`name` in lowercase with
+hyphens). A change to either is made to the other, whichever was changed. How uploaded files
+become skills (`skillUpload.ts`, `skillName.ts`, `skillFiles.ts`) is ported from the Context
+Library's app, tests and all, so that what is uploaded here reads as it does there: keep the two
+alike. Text is kept as written and anything else as base64; hidden files (`.DS_Store`) are left
+out.
+
+The skills are listed in the settings' Skills part (`SkillLibrary`): one flat list on one
+surface, whatever the order, in a `ScrollArea` once there are more than fit, with rows only and no
+icon on them. What a skill is collected in is a tag on it. The organization's are left out until
+the filter for them is on (`startsNarrowedTo`), and the filters are kept on this device
+(`keepsFilters`). One is added by writing it or by uploading Markdown files or a folder.
+
+A skill's page (`/skills/<id>`, `SkillPane`) keeps the settings' sidebar, and its header is the
+way back to the list and then the skill. Its name and what it is for are edited where they are
+(`EditableTitle`, `multiline` for the latter), by whoever's it is; the rest only read it. Under
+them, a tab each (`?tab=`):
+
+- Preview, which is the first: the start of each file as it reads, `SKILL.md` before the rest
+  (`FilePreviewCard`), so that the skill can be read without opening anything.
+- Files: the list of them by path, folders and all, under the list controls, with the way to
+  upload more, or a folder, which goes in under its own name.
+- A file that is opened (`?file=<path>`, from either) has a tab of its own after those
+  (`Tabs`' `onClose`), with all of it as it reads (`SkillFileView`). Only Markdown is edited, in a
+  plain editor (`FileEditor`) in place of how it reads, and kept on Save. The tab is put away by
+  going to another, unless something typed in it has not been saved: it then stays, with a dot,
+  and the way back to the list asks first.
+- Settings: its tag, whether the assistant may use it on its own (coming soon), and deleting it.
+
 ## Lists
 
 A list that is more than a few rows has the same controls over it (`ListToolbar`), on one line: a
@@ -353,6 +429,10 @@ as New. Each is drawn only if given, so a list has the ones it has a use for. Th
 Library and Connections pages have them; use the same pieces for the next rather than building beside them, down
 to a row's and a card's buttons (`RowAction`, `CardAction`, `StarButton`):
 
+- A list that leaves something out until it is asked for says which filters are on to start
+  with (`startsNarrowedTo`), and may keep the filters on this device as the order is kept
+  (`keepsFilters`); otherwise filters are for the visit. A short bar with room to spare has its
+  search open all along (`ListToolbar`'s `searchExpanded`).
 - `components/listView.ts` (plain, tested) has what a list says of itself: its orders
   (`ListOrder`), its filters (`ListFilter`) and how a search and the filters narrow it. An order is
   also how the list is grouped: `arrange` gives the items in groups, by when (`groupByTime`), by
