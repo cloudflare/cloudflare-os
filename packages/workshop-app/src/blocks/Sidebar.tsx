@@ -75,7 +75,7 @@ const NavRow = ({ icon, label, current, onClick, ...props }: NavRowProps) => (
     className={cn(
       // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
       "relative after:absolute after:inset-0 after:content-['']",
-      'flex w-full items-center gap-2.5 rounded-2xl p-2.5 pr-4 text-left text-(length:--control-text) font-medium text-kumo-default',
+      'flex w-full items-center gap-2.5 rounded-2xl p-2 pr-4 text-left text-(length:--control-text) font-medium text-kumo-default',
       'not-data-underlay:hover:bg-kumo-fill not-data-underlay:aria-[current=page]:bg-kumo-fill',
     )}
     {...props}
