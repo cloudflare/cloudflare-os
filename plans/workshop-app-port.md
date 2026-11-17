@@ -15,11 +15,11 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 2. Approving an action that creates a resource (`ChatSession.approveAction` TODO). **Done.**
 3. Keeping or discarding changes that can't be kept automatically. **Done.**
 4. Composer slash commands, skills and connection lines. **Done** (skills in a new chat: step 8).
-5. Inline views and file previews (Office, worktrees).
+5. Inline views and file previews (Office, worktrees). **Done**, but inline views wait on main.
 6. Sharing.
 7. Gadget settings and the Code tab.
 8. Real blueprints behind Templates, real skills behind `SkillStore`.
-9. Automations, read only.
+9. Automations, read only. **Done.**
 10. ⌘K search **(done)** and right-click menus.
 
 Waiting on a merge of main into the scaffold (its base, Oct 27, predates them): inline-view
@@ -38,6 +38,13 @@ agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnrea
 | The composer has no model row in its + menu | user decision (model in settings only) | none |
 | Skills are titled as the scaffold titles them ("Meeting Brief") | its `humanizeSkillName` | none |
 | Add a connection, and a pasted link, offer every kind of resource, not only connectable ones | as above, no `connectable` | `connectable` on `SupportedResource` |
+| A chat's automations are the hooks its cards show, as far as its history has loaded | no `chatId` on `BoundHookInfo` | `BoundHookInfo.chatId` |
+| A scheduled task is told from an event's hook by its `scheduler:` address, and matched to its schedule by title, description and gadget | no `vendorId` on `BoundHookInfo`, no `hookId` on schedules | `BoundHookInfo.vendorId`, `hookId` on `ManagementSchedule` |
+| Agents are listed only once they have run, by `spawnerName`; no agent page, model, callers or waiting runs; no agents menu in a chat's header | no `listAgentSpawners`, no `spawnerId`/`parentChatId`/`awaitingDecision` on chats | those, on `AiChatMetadata` and the Overseer |
+| The scheduler's management app is typed by a local `{ list }` | its class is the worker's and the shared API types a frame's `ui` loosely | a shared type for it |
+| Automations can't be created, edited or deleted here, only switched on and off | read only, by scope | none |
+| No inline views in answers | the agent support came in a later main | none once main is merged |
+| An output's card has no gadget colour | the prototype's gadget colours | none |
 | Setting up a connection offers every kind of resource, not only connectable ones | the scaffold's `SupportedResource` has no `connectable` | `connectable` on `SupportedResource` |
 | Live Google Docs/Sheets/Slides previews cut | user decision | previews API |
 | Approvals tray cut | user decision; nothing to approve without previews | none |

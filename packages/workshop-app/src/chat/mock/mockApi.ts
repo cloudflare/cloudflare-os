@@ -29,6 +29,13 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     listOutputs: async () => ({ outputs: [], catchingUp: false }),
     // No gatekeeper has an app here, the scheduler included: automations show without when they run.
     getGatekeeperApp: async () => null,
+    // No services and no accounts: a pasted link stays as it was written.
+    listGatekeeperVendors: async () => [],
+    listAddableGatekeepers: async () => [],
+    subscribeConnectedAccounts: (subscriber: { ready: () => void }) => {
+      subscriber.ready()
+      return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
+    },
   }
   const api = new Proxy(implemented, {
     get: (target, name) => {
