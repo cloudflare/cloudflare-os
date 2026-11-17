@@ -1,0 +1,89 @@
+/*
+ * The one place this app overrides Kumo's design tokens. Components use semantic tokens only.
+ *
+ * Deliberately unlayered: Kumo defines each token twice, in Tailwind's `theme` layer and again in
+ * `base`, and which of those wins depends on layer order, which is fixed by whichever stylesheet
+ * mentions a layer first (Kumo's, imported before Tailwind's, in dev). Unlayered rules beat every
+ * layer regardless. Because that also beats Kumo's `[data-mode="dark"]` values, each token is a
+ * `light-dark()` pair; `color-scheme`, which Kumo sets from `data-mode` (see index.html), picks the
+ * side. Tokens not set here keep Kumo's own pair.
+ *
+ * Dark is the light theme read through three rules, so that what matches in one matches in the other:
+ *
+ * - Depth: what is further back is darker, in both. The canvas is under the cards, and the composer
+ *   (`elevated`) sits a little down into its card, nearer the canvas than the card.
+ * - Emphasis: fills, outlines, hovers and selections lean towards the text colour, by the same
+ *   amount in both: black at 4% in light is white at 4% in dark, as `contrast/8` already is.
+ * - Inversion: what is drawn in `contrast` (the viewer's own messages, the primary button, the
+ *   mascot, a workspace's folder) is the page's opposite, so it flips.
+ *
+ * Status colours keep Kumo's dark pairs, which are tuned for dark surfaces. The brand does not
+ * change.
+ */
+:root {
+  /* The app backdrop behind the content card. */
+  --color-kumo-canvas: light-dark(#fafafa, oklch(18% 0 0));
+  /* The content card, and everything raised to it: buttons, menus, tooltips, header bubbles. */
+  --color-kumo-base: light-dark(#fff, oklch(22% 0 0));
+  /* A field let into a card (the composer): between the two, nearer the canvas. */
+  --color-kumo-elevated: light-dark(#fbfbfb, oklch(19% 0 0));
+  /* Inputs sit on the card as its own surface. */
+  --color-kumo-control: light-dark(#fff, oklch(22% 0 0));
+
+  /* Translucent so edges adapt to the surface beneath. `line` outlines controls (buttons, inputs,
+     popovers); `hairline` is the quieter structure (table dividers, checkbox and switch edges).
+     Kept as two tokens so they can be tuned apart. Dark is a little stronger than light: on dark
+     a white edge laid over the canvas comes out no lighter than the card it outlines, so at the
+     light theme's 4% a card would lose its edge. */
+  --color-kumo-line: light-dark(oklch(0% 0 0 / 0.04), oklch(100% 0 0 / 0.07));
+  --color-kumo-hairline: light-dark(oklch(0% 0 0 / 0.04), oklch(100% 0 0 / 0.07));
+
+  /* Translucent, like the borders, so it reads on any surface. */
+  --color-kumo-fill: light-dark(oklch(0% 0 0 / 0.04), oklch(100% 0 0 / 0.04));
+  /* The fill laid over the card, made opaque: hovered buttons, menu items, the side pane's surface.
+     On the card the two look the same, in both themes. */
+  --color-kumo-tint: light-dark(oklch(97% 0 0), oklch(25.9% 0 0));
+
+  /* What is drawn in the page's opposite (the viewer's own messages, the primary button, the
+     mascot): in light a near black that is softer than Kumo's, which is all but black. */
+  --color-kumo-contrast: light-dark(#222, oklch(98.5% 0 0));
+  /* The connection island is the window's own, as a phone's is: in light all black, and flipped
+     in dark with the rest of what is in contrast. */
+  --color-island: light-dark(#000, oklch(98.5% 0 0));
+
+  /* The dot that says something is on and working, such as a connected account: a signal's green,
+     brighter than Kumo's `success`, which is deep enough to be text. A little lighter in dark, as
+     a light is on a dark surface. */
+  --color-live: light-dark(oklch(73% 0.21 147), oklch(78% 0.22 147));
+
+  /* What a workspace's icon can be drawn in instead of `contrast`, and its letters then. The same
+     in dark, as the brand is: an icon is told by its colour. Each is deep enough for the letters. */
+  --color-workspace-red: oklch(58% 0.2 25);
+  --color-workspace-orange: oklch(63% 0.18 48);
+  --color-workspace-green: oklch(57% 0.15 150);
+  --color-workspace-teal: oklch(57% 0.1 205);
+  --color-workspace-blue: oklch(56% 0.18 258);
+  --color-workspace-purple: oklch(54% 0.2 295);
+  --color-workspace-pink: oklch(60% 0.2 355);
+  --color-workspace-ink: #fff;
+
+  /* The primary colour is the logo's orange (#FF5C2E). Kumo ships blue for the fill and hover and a
+     different orange for brand text, so all three are set. It is the same in dark, where Kumo would
+     darken it: an unread dot matches the logo beside it. */
+  --color-kumo-brand: #ff5c2e;
+  --color-kumo-brand-hover: color-mix(in oklch, #ff5c2e, black 15%);
+  --text-color-kumo-brand: #ff5c2e;
+}
+
+/* A switch is the light one in dark too: its thumb is raised, and so the lightest part, on or off,
+   on a track that is a fill when off. Kumo's own dark switch has a dark thumb that turns pale blue,
+   and paints it off with a shade Tailwind does not have, so that it shows as an outline. */
+[data-mode='dark'] button[data-kumo-component='Switch'] {
+  &[data-unchecked] {
+    background-color: oklch(34% 0 0);
+    --tw-ring-color: oklch(40% 0 0);
+  }
+  & > div {
+    background-color: oklch(94% 0 0);
+  }
+}

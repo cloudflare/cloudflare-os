@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- An on-screen keyboard makes the page shorter (Chrome on Android; Safari ignores it), so
+         the composer sits whole above it rather than under it, but for the line typed on. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Cloudflare OS</title>
+    <script>
+      // The app follows the system's appearance, unless light or dark was chosen on this device
+      // (`src/prefs/appearance.ts`, whose key and event these are). Kumo's dark tokens and `dark:`
+      // styles key off `data-mode` on the root. Set inline, before anything is drawn, so a dark
+      // page never shows light first, and kept in step as the system or the choice changes, in
+      // this tab or another.
+      {
+        const dark = matchMedia('(prefers-color-scheme: dark)')
+        const kept = () => {
+          try {
+            return JSON.parse(localStorage.getItem('workshop-app:appearance'))?.theme
+          } catch {}
+        }
+        const apply = (theme = kept()) => {
+          document.documentElement.dataset.mode = theme === 'light' || theme === 'dark' ? theme : dark.matches ? 'dark' : 'light'
+        }
+        apply()
+        dark.addEventListener('change', () => apply())
+        addEventListener('storage', () => apply())
+        addEventListener('workshop-app:appearance', (event) => apply(event.detail))
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

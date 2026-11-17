@@ -1,0 +1,59 @@
+@property --composer-open {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+
+@property --composer-field-height {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 20px;
+}
+
+/* One clock drives the shell, text reveal and curved path. The horizontal cubic
+   and vertical arc steer the visible field around the buttons in both directions. */
+.composer {
+  --composer-line-height: 20px;
+  /* Everything is placed around the buttons (`--composer-button`: 30px, and 36px on a narrow
+     screen), which sit 6px in from the field's edges. */
+  /* Where the inline message starts: clear of the button at the start. */
+  --composer-start: calc(var(--composer-button) + 12px);
+  /* Where it ends: clear of the buttons at the end (4px apart), and 8px more. */
+  --composer-end: calc(var(--composer-button) + 14px);
+  --composer-sweep: calc(var(--composer-open) * var(--composer-open) * var(--composer-open));
+  --composer-lift: calc(32px * var(--composer-open) * (1 - var(--composer-open)));
+  /* On one line it is as tall as a button and the room around it. Opened, the field is over the
+     buttons: a line's height and 10px more than the field itself. */
+  height: calc(var(--composer-button) + 12px + var(--composer-open) * (var(--composer-field-height) - var(--composer-line-height) + 30px));
+  transition:
+    --composer-open 220ms cubic-bezier(0.2, 0, 0.2, 1),
+    --composer-field-height 180ms ease-out,
+    box-shadow 100ms ease-out;
+}
+
+.composer[data-expanded] {
+  --composer-open: 1;
+}
+
+.composer[data-two-actions] {
+  --composer-end: calc(2 * var(--composer-button) + 18px);
+}
+
+.composer-editor {
+  /* In the middle of the one line's height, and 12px down once opened. */
+  --composer-top: calc((var(--composer-button) + 12px - var(--composer-line-height)) / 2);
+  top: calc(var(--composer-top) + var(--composer-open) * (12px - var(--composer-top)) - var(--composer-lift));
+  left: calc(var(--composer-start) - (var(--composer-start) - 16px) * var(--composer-sweep));
+  right: calc(var(--composer-end) - (var(--composer-end) - 8px) * var(--composer-sweep));
+  height: calc(var(--composer-line-height) + var(--composer-open) * (var(--composer-field-height) - var(--composer-line-height)));
+}
+
+.composer-input {
+  padding-right: calc(16px * var(--composer-sweep));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer {
+    transition: none;
+  }
+}
