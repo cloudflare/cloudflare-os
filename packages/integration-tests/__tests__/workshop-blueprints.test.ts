@@ -1,5 +1,5 @@
 import type { RpcStub } from "capnweb";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type {
   AiChatMetadata, AiChatSubscriber, ChatGadgetPinRecord, GadgetClient, Overseer, PublicApi,
@@ -1041,9 +1041,15 @@ it.concurrent("a pending export is saved into the user's own account for a type 
   expect(Object.fromEntries(new URL(url).searchParams)).toEqual(
       { destination, name: "Report", contentType: "text/csv", content: "a,b\n1,2\n" });
 
-  await expect(api.saveFile(
-      account.id, "thing", destination, "Report", "text/plain", streamOf(new Uint8Array())))
+  // A refused save cancels the file, so its producer does not wait out its own deadline.
+  let cancelled = false;
+  const unread = new ReadableStream<Uint8Array>({
+    pull(controller) { controller.enqueue(new Uint8Array(1024)); },
+    cancel() { cancelled = true; },
+  });
+  await expect(api.saveFile(account.id, "thing", destination, "Report", "text/plain", unread))
       .rejects.toThrow("cannot save that kind of file");
+  await vi.waitFor(() => expect(cancelled).toBe(true));
 
   await ws.deleteSelf();
 });

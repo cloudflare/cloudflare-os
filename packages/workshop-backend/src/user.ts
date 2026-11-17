@@ -2535,15 +2535,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
       contentType: string, file: ReadableStream<Uint8Array>): Promise<{url: string}> {
-    let record = this.storage.connectedAccounts.get(accountId);
-    if (!record) throw new Error("No such account.");
-    let resource = findResourceType(await record.account.getSupportedResources(), resourceTypeId);
-    if (!resource?.savableFrom?.includes(contentType)) {
-      throw new Error("This account cannot save that kind of file as that resource type.");
+    try {
+      let record = this.storage.connectedAccounts.get(accountId);
+      if (!record) throw new Error("No such account.");
+      let resource = findResourceType(await record.account.getSupportedResources(), resourceTypeId);
+      if (!resource?.savableFrom?.includes(contentType)) {
+        throw new Error("This account cannot save that kind of file as that resource type.");
+      }
+      await this.#assertResourceEnabled(record.vendorId, resource);
+      return await (record.account as unknown as FileSaverStub)
+          .saveFile(resourceTypeId, destination, name, contentType, file);
+    } catch (err) {
+      // A refusal leaves the file unread: tell its producer now, not at its own deadline.
+      void file.cancel(err).catch(() => {});
+      throw err;
     }
-    await this.#assertResourceEnabled(record.vendorId, resource);
-    return (record.account as unknown as FileSaverStub)
-        .saveFile(resourceTypeId, destination, name, contentType, file);
   }
 
   /**
