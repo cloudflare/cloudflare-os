@@ -5934,7 +5934,8 @@ export type AiChatMessageBody = {
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
-   * marks a run the user stopped, which is not a failure).
+   * marks a run the user stopped, which is not a failure). "resume_exhausted" marks a turn
+   * abandoned after repeated workspace resets; `retryAgent()` tells the agent so.
    */
   code?: string;
 } | {

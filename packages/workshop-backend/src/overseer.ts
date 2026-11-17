@@ -1747,7 +1747,7 @@ class OverseerImpl implements AgentHooks {
       });
       this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
           "The agent could not be resumed because it was interrupted too many times without " +
-          "making progress.");
+          "making progress.", "resume_exhausted");
       finish();
       return;
     }
@@ -13950,13 +13950,23 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error("No AI model available.");
     }
 
+    // Error records never reach the model, so a Retry of a turn abandoned for repeated resets
+    // would otherwise repeat whatever reset the workspace.
+    let [last] = [...this.impl.storage.chats.list(
+        {prefix: chatKeyPrefix(chatId), reverse: true, limit: 1})];
+    let nudge = last?.type === "error" && last.code === "resume_exhausted"
+        ? "Retry the previous request. Your last attempt was abandoned because the workspace " +
+          "restarted repeatedly before you could finish a step; work that exceeds the " +
+          "workspace's CPU or memory limits can do this. Don't repeat the same approach " +
+          "unchanged: do less per step, for example by processing data in smaller pieces."
+        : "Retry the previous request.";
+
     let result = this.impl.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
     // An explicit retry starts a fresh segment, rather than inheriting an older decision wait
     // if this execution is interrupted before it can commit its first response.
-    this.impl.addChatMessages(chatId, userMeta.profile,
-        [{type: "agentNudge", text: "Retry the previous request."}]);
+    this.impl.addChatMessages(chatId, userMeta.profile, [{type: "agentNudge", text: nudge}]);
     meta.activeAgent = userMeta.aiModel.profile;
     meta.lastActive = this.impl.getChatTimestamp();
     this.impl.storage.chatMeta.put(meta);

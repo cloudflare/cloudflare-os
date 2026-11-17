@@ -692,6 +692,35 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(4);
   });
 
+  it("tells the model, on Retry, that the abandoned turn kept restarting the workspace", async () => {
+    const s = await scenario(), stalled = inference(new Promise(() => {}));
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await expect(s.visit(async impl => {
+        if (attempt === 1) { decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT); }
+        await vi.waitFor(() => expect(stalled()).toBe(attempt));
+        await impl.ctx.storage.sync();
+        impl.ctx.abort("Injected reset during resumed turn");
+      })).rejects.toThrow(/Injected reset/);
+    }
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      inference();
+      const answer = globalThis.fetch, bodies: string[] = [];
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(input instanceof Request ? input.url : input);
+        if (url.origin === MODEL.config.apiUrl) {
+          bodies.push(input instanceof Request ? await input.clone().text() : String(init?.body));
+        }
+        return answer(input, init);
+      });
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      await impl.waitForAllAgentsToComplete();
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toContain("the workspace restarted repeatedly");
+    });
+  });
+
   it("Stop clears a retry handoff that no longer has a running task", async () => {
     const s = await scenario();
     await s.visit(async impl => {
