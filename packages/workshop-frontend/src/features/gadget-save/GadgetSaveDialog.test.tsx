@@ -179,13 +179,20 @@ describe('GadgetSaveDialog saving a new file', () => {
     expect(saveFile.mock.calls[0][3]).toBe('Plan')
   })
 
-  it('reports a failed save and stays open', async () => {
+  it('holds its settings still while a save is sent, and keeps them when it fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    saveFile.mockRejectedValueOnce(new Error('That folder is read-only.'))
+    let fail!: (error: Error) => void
+    saveFile.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject }))
     await render({ target, storageKey: KEY })
+    await typeName('Plan')
+    const settings = () => document.querySelector('input')!.closest('[inert]')
 
     await act(async () => button('Save').click())
+    expect(settings()).not.toBeNull()
 
+    await act(async () => fail(new Error('That folder is read-only.')))
+    expect(settings()).toBeNull()
+    expect(document.querySelector('input')!.value).toBe('Plan')
     expect(toasts()).toEqual([{ title: 'That folder is read-only.', variant: 'error' }])
     expect(onClose).not.toHaveBeenCalled()
     expect(localStorage.getItem(KEY)).toBeNull()
