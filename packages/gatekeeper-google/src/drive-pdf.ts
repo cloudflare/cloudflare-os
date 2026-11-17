@@ -336,9 +336,13 @@ type PageSource = {
    * there is no more. Asked for in order, each only once the text has been read up to it.
    * `signal` is aborted when the text ends first, after which nothing this gives is used, and
    * `moved` is to be called whenever what is waited for moves, so that a page that takes long
-   * is not taken for a text that sits idle.
+   * is not taken for a text that sits idle. `working` is for a source whose text sits idle only
+   * once it has work that may stall ({@link transcription}): it is to be called before the
+   * first such work is begun, and may be called again.
    */
-  next(index: number, signal: AbortSignal, moved: () => void): Promise<SourcedPage | undefined>;
+  next(
+    index: number, signal: AbortSignal, moved: () => void, working: () => void,
+  ): Promise<SourcedPage | undefined>;
   /** What a log line says of what comes `index`th: nothing when it is not known to be a page. */
   fields(index: number): { page?: number; imageEncoding?: string };
   /**
@@ -489,7 +493,7 @@ export async function pdfToText(
     let pages = mixedPages(
       conversion, start.passed, first!,
       renderedPdf(ai, gatewayId, found, readRange!, renderer!, source, slots, tally), source, tally);
-    return { text: transcription(pages, source, tally), hasText, transcribed: false, rereads: true };
+    return { text: transcription(pages, source, tally, true), hasText, transcribed: false, rereads: true };
   }
 
   let encoder = new TextEncoder();
@@ -1217,8 +1221,8 @@ function renderedPages(
   };
 
   return {
-    async next(index, signal, moved) {
-      if (fallback) return fallback.next(index, signal, moved);
+    async next(index, signal, moved, working) {
+      if (fallback) return fallback.next(index, signal, moved, working);
       // How many pages there are is known once the first has been taken.
       let last = Math.min(pdf.pages ?? Infinity, index + READ_AHEAD.pages);
       while (ahead < last) pdf.ahead(ahead++, signal, touch);
@@ -1240,7 +1244,7 @@ function renderedPages(
             event: "google.drive.pdf.renderer_fallback", route: "stored", ...page.unrendered,
           });
           fallback = stored;
-          return fallback.next(index, signal, moved);
+          return fallback.next(index, signal, moved, working);
         }
         throw failed(page.unrendered, first);
       }
@@ -1390,6 +1394,8 @@ function mixedPages(
   /** What the reader is to be told has moved, while it waits for something. */
   let reader: (() => void) | undefined;
   let touch = () => reader?.();
+  /** What is told that a page is about to be asked of `pdf`: the text's first read gives it. */
+  let working: (() => void) | undefined;
   /** Those waiting on each other: the reader for a piece, the reading ahead for room. */
   let waiters: (() => void)[] = [];
   let wait = () => new Promise<void>(resolve => waiters.push(resolve));
@@ -1414,6 +1420,8 @@ function mixedPages(
   /** Asks `pdf` for the pages found, as many as may be begun and not yet given. */
   let hand = (signal: AbortSignal) => {
     while (begun < READ_AHEAD.pages && found.length > 0) {
+      // A page read from its image is the first of the text's work that may stall.
+      working?.();
       pdf.ahead(found.shift()!, signal, touch);
       begun++;
     }
@@ -1520,7 +1528,8 @@ function mixedPages(
   };
 
   return {
-    async next(_index, signal, moved) {
+    async next(_index, signal, moved, begins) {
+      working = begins;
       // What is read ahead moves the text only while its reader waits.
       reader = moved;
       try {
@@ -1565,6 +1574,9 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  *
  * The text of a PDF that has text of its own is read the same way, and ends the same ways.
  * `pages` then gives it in pieces, its page headings in them, and each is passed on as it is.
+ * It is read with `idleOnceWorking`: until `pages` says it has work that may stall, the text is
+ * a conversion's and nothing more, which no model can stall and which may be left unread as
+ * long as any conversion's, so the idle time is counted only from then.
  *
  * However the text ends, what `pages` has in flight is given up and what it holds let go, and
  * what the calls made for it came to, in `tally`, is written.
@@ -1575,7 +1587,7 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  * file, is passed on as it is.
  */
 function transcription(
-  pages: PageSource, source: PdfSource, tally: SubserviceTally,
+  pages: PageSource, source: PdfSource, tally: SubserviceTally, idleOnceWorking = false,
 ): ReadableStream<Uint8Array> {
   let encoder = new TextEncoder();
   /**
@@ -1590,11 +1602,13 @@ function transcription(
   let ended = false;
   /** When the text last moved: asked for, handed over, or something it waits on arriving. */
   let moved = Date.now();
-  let timer!: ReturnType<typeof setTimeout>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let touch = () => { moved = Date.now(); };
+  /** Begins counting the idle time, once and only while the text has not ended: set as it starts. */
+  let arm!: () => void;
   /** Lets go of what the text holds once it has ended, failed, been cancelled or sat idle. */
   let letGo = (reason?: unknown) => {
-    clearTimeout(timer);
+    if (timer !== undefined) clearTimeout(timer);
     over.abort(reason);
     pages.release();
     tally.flush();
@@ -1619,7 +1633,12 @@ function transcription(
           event: "google.drive.pdf.transcription_idle", ...pages.fields(index),
         });
       };
-      timer = setTimeout(check, TRANSCRIPTION_IDLE_MS);
+      arm = () => {
+        if (timer !== undefined || over.signal.aborted) return;
+        touch();
+        timer = setTimeout(check, TRANSCRIPTION_IDLE_MS);
+      };
+      if (!idleOnceWorking) arm();
     },
     async pull(controller) {
       touch();
@@ -1631,7 +1650,7 @@ function transcription(
         // A pull that enqueues nothing is not called again, so go on until there is text.
         for (;;) {
           if (!current) {
-            let page = await pages.next(index, over.signal, touch);
+            let page = await pages.next(index, over.signal, touch, arm);
             // Ended as the page was made ready: nothing more is given or asked for.
             if (ended) return;
             if (!page) {

@@ -2930,6 +2930,29 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     expect([asked, images(), state.events]).toEqual([[], [], []]);
   });
 
+  it("may be left unread, and read with pauses of over a minute, while no page without text has been found", async () => {
+    vi.useFakeTimers();
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, TEXT_PAGE]);
+    let markdown = `${PREAMBLE}### Page 1\n${SHEET_A}\n\n\n### Page 2\n${SHEET_B}\n\n`;
+    let { result, asked } = await mixed(markdown, renderer);
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(2 * TRANSCRIPTION_IDLE_MS);
+
+    let reader = result.text.getReader();
+    let decoder = new TextDecoder();
+    let text = "";
+    for (;;) {
+      let chunk = await reader.read();
+      if (chunk.done) break;
+      text += decoder.decode(chunk.value, { stream: true });
+      await vi.advanceTimersByTimeAsync(2 * TRANSCRIPTION_IDLE_MS);
+    }
+    expect(text).toBe(ownText(markdown));
+    expect([asked, state.events]).toEqual([[], []]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("finds the pages without text wherever the response is split", async () => {
     for (let [markdown, empty] of [[HEADING_IN_TEXT, 2], [GAPS_IN_TEXT, 3]] as const) {
       let json = markdownJson(markdown);
@@ -3407,18 +3430,51 @@ describe("a PDF with text whose pages without any are read, however its text end
     vi.useFakeTimers();
   });
 
-  it("ends a text nobody reads after a minute, counted from when it was returned, and lets the conversion go", async () => {
-    let { renderer, state } = fakeRenderer([drawn([11])]);
-    let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
-    let { result, asked } = await mixed(conversion.response, renderer);
-    expect(vi.getTimerCount()).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
-    await expect(result.text.getReader().read()).rejects.toThrow(IDLE);
-    expect(conversion.state.cancelled).toBe(true);
-    expect([asked, state.events]).toEqual([[], []]);
+  it("does not end a text nobody has read, whatever its pages: nothing of it can stall before its first read", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let { result, asked } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
     expect(vi.getTimerCount()).toBe(0);
-    expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toEqual([expect.not.objectContaining({ page: expect.anything() })]);
+
+    await vi.advanceTimersByTimeAsync(2 * TRANSCRIPTION_IDLE_MS);
+    expect([asked, state.events]).toEqual([[], []]);
+    expect(await pumped(read(result), PACE)).toBe(sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51")));
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("counts the minute from when its first page without text is asked of the renderer, ahead of the reader", async () => {
+    // The second page's heading and all after it arrive only when let through.
+    let json = markdownJson(TRAILING_IMAGES);
+    let cut = json.indexOf("### Page 2"), rest = deferred<void>();
+    let sent = 0;
+    let conversion = new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (sent === 1) await rest.promise;
+        if (sent === 2) return controller.close();
+        controller.enqueue(new TextEncoder().encode(sent++ === 0 ? json.slice(0, cut) : json.slice(cut)));
+      },
+    }, { highWaterMark: 0 }));
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, drawn([21]), drawn([null]), drawn([null])]);
+    let { result } = await mixed(conversion, renderer);
+    let reader = result.text.getReader();
+    let first = await pumped(reader.read());
+    expect(new TextDecoder().decode(first.value)).toContain("### Page 1\n");
+
+    // The reader has what there is, and may wait as long as it likes: no page was found yet.
+    await vi.advanceTimersByTimeAsync(2 * TRANSCRIPTION_IDLE_MS);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(state.events).toEqual([]);
+
+    // The pages without text arrive and are asked of the renderer with nobody reading: the
+    // minute counts from now.
+    rest.resolve();
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - 1);
+    expect(state.events).toContain("render 2");
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(readThrough(reader, "### Page 4")).rejects.toThrow(IDLE);
+    expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("ends a text left unread after a page was read from its image, naming no page, and lets the document go", async () => {
