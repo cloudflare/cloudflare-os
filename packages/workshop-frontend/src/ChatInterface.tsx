@@ -135,6 +135,8 @@ import {
 import { actionLogResumed, useActionEntries, useActions } from "./useActions";
 import { useAutoApprovalRules } from "./features/approvals/useAutoApprovalRules";
 import { useResolveAction } from "./useResolveAction";
+import { ApproveControl } from "./features/approvals/ApproveControl";
+import { isPush } from "./features/approvals/pushApproval";
 import type { ActivityView } from "./Activity";
 import type { AutoApprovalChannel } from "./features/approvals/autoApprovalChannel";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -2400,8 +2402,9 @@ interface ChatInterfaceProps {
   ownsWorkspace?: boolean;
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData).
   // A rule applies under it only what the kernel says (`AutoApprovalRules.applies`), so "Always
-  // approve" is offered for those kinds alone.
-  restricted?: boolean;
+  // approve" is offered for those kinds alone. Required, because approving a push goes through
+  // the review of its commits while it is true (see useResolveAction).
+  restricted: boolean;
   // WorkspaceMetadata.rulesApplyWhileRestricted: once false, no rule applies anything under
   // the latch, so no rule is offered and none reads as applying.
   rulesApplyWhileRestricted?: boolean;
@@ -4599,8 +4602,8 @@ function ChatInterface({
     { actionId: number; gatekeeperId: number; resourceTitle: string; actionKind: ActionKind } | null
   >(null);
 
-  const { resolveAction, creationAccountModal } =
-    useResolveAction(overseer, setProcessingActions, (actionId, state) => {
+  const { resolveAction, reviewPush, creationAccountModal, pushReviewDialog } =
+    useResolveAction(overseer, setProcessingActions, restricted, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
       // Under the latch a request decided by hand may be one whose rule the kernel stopped
       // applying before this client was told: have every surface read its answer again.
@@ -4678,6 +4681,7 @@ function ChatInterface({
     processing: processingActions,
     onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
     onReject: (entry: PendingChange) => void resolveAction(entry, "deny"),
+    onReviewPush: reviewPush,
     onAlwaysApprove: (entry: PendingChange) => {
       if (!entry.description.actionKind) return;
       setAutoApproveConfirm({
@@ -4688,7 +4692,7 @@ function ChatInterface({
       });
     },
     onManageRules: () => onViewActivity?.("auto"),
-  }), [processingActions, resolveAction, onViewActivity]);
+  }), [processingActions, resolveAction, reviewPush, onViewActivity]);
 
   // The queue belongs to the workspace, not to whichever conversation happens to be open, so it
   // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
@@ -5444,12 +5448,14 @@ function ChatInterface({
           disabled={decisionLocked}
           describedBy={describedBy}
         />
-        <ResolveButton
-          tone="approve"
+        <ApproveControl
+          record={log}
+          restricted={restricted}
           variant={isBlocking ? "filled" : "quiet"}
-          onClick={() => void resolveAction(log, "approve")}
           disabled={decisionLocked}
           describedBy={describedBy}
+          onApprove={() => void resolveAction(log, "approve")}
+          onReviewPush={() => reviewPush(log)}
         />
       </>
     ) : null;
@@ -5485,11 +5491,15 @@ function ChatInterface({
       return (
         <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
           <div className="rounded-2xl border border-kumo-brand/40 bg-kumo-brand/10 px-4 py-3">
-            <div className="flex items-start gap-3">
+            {/* The controls wrap below the request rather than squeeze it, and among themselves
+                where the callout is narrower than they are: a push adds "Review commits" to
+                them. The request's minimum leaves the icon its place on the first line at any
+                width. */}
+            <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
               <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-kumo-tint text-kumo-brand" aria-hidden="true">
                 <ShieldCheck size={20} weight="fill" />
               </span>
-              <div className="min-w-0 flex-1">
+              <div className="min-w-[min(12rem,calc(100%-3rem))] flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   <span className="min-w-0 truncate font-medium text-kumo-default">
                     {log.description.title}
@@ -5505,9 +5515,9 @@ function ChatInterface({
                     <ActionFields fields={entryFields(log)} uncapped={restricted} />
                   </div>
                 )}
-                {incomplete && <IncompleteDescriptionNotice id={incompleteId} className="mt-2" />}
+                {incomplete && <IncompleteDescriptionNotice id={incompleteId} push={isPush(log)} className="mt-2" />}
               </div>
-              <div className="ml-3 flex flex-shrink-0 items-center gap-1 self-center">
+              <div className="ml-auto flex max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-1 self-center pl-3">
                 {actionControls}
               </div>
             </div>
@@ -5528,11 +5538,11 @@ function ChatInterface({
 
     return (
       <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <button
             type="button"
             onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
+            className="flex min-w-[8rem] flex-1 cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
             aria-expanded={open}
           >
             {titleIcon}
@@ -5551,9 +5561,13 @@ function ChatInterface({
             </span>
           </button>
           {/* Only reached when the tray could not load its queue, or loaded it without this
-              request: the cases a non-blocking request still has to be answered here. */}
+              request: the cases a non-blocking request still has to be answered here. The
+              controls wrap among themselves where the pane is narrower than they are: a push
+              that also offers a rule carries four. */}
           {actionControls && (
-            <div className="flex flex-shrink-0 items-center gap-1">{actionControls}</div>
+            <div className="ml-auto flex max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-1">
+              {actionControls}
+            </div>
           )}
         </div>
         {showDescription && (
@@ -5567,7 +5581,7 @@ function ChatInterface({
                 <ActionFields fields={entryFields(log)} uncapped={restrictedReview} />
               </div>
             )}
-            {incomplete && <IncompleteDescriptionNotice id={incompleteId} />}
+            {incomplete && <IncompleteDescriptionNotice id={incompleteId} push={isPush(log)} />}
             {resourceMeta}
           </div>
         )}
@@ -7105,6 +7119,7 @@ function ChatInterface({
       )}
 
       {creationAccountModal}
+      {pushReviewDialog}
 
       {/* Accept flow for an agent connection request: pre-seeds the gatekeeper modal and, on
           creation, finalizes the request so the agent resumes. */}

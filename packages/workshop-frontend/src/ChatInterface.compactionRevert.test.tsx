@@ -128,6 +128,7 @@ async function openChat(
     <ChatInterface
       workspaceId="workspace"
       overseer={server.overseer as RpcStub<Overseer>}
+      restricted={false}
       selectedChatId={CHAT_ID}
       onNavigateToChat={() => {}}
       onChatChangesChange={onChatChangesChange}

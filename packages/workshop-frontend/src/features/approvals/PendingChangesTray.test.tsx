@@ -4,6 +4,9 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ADMIN_AGENT_ACTIONS } from '@gadgets/workshop-shared/admin-agent'
+import {
+  INCOMPLETE_DESCRIPTION_COPY, PUSH_DESCRIPTION_COPY,
+} from '../../components/IncompleteDescriptionNotice'
 import { PendingChangesTray } from './PendingChangesTray'
 import type { PendingChangeActions } from './PendingChangeGroupRow'
 import type {
@@ -16,6 +19,7 @@ import type { BulkResolve } from './useBulkResolve'
 const APPEND = { tag: 'append', label: 'Append a slide' }
 const NOTE = ADMIN_AGENT_ACTIONS.issueReportNote.kind
 const REPLY = ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind
+const HEAD = '1a2b3c4'.padEnd(40, '0')
 
 let root: Root | undefined
 afterEach(() => {
@@ -31,6 +35,8 @@ function request(id: number, over: {
   actionKind?: { tag: string, label: string }
   creation?: true
   origin?: RequestOrigin
+  /** The commits a push names; present, the request is a push. */
+  pushedCommits?: string[]
 } = {}): PendingChange {
   return {
     id,
@@ -47,6 +53,7 @@ function request(id: number, over: {
       implementsRevert: false,
       autoApprovable: over.autoApprovable ?? false,
       ...('actionKind' in over ? { actionKind: over.actionKind } : { actionKind: APPEND }),
+      ...(over.pushedCommits ? { pushedCommits: over.pushedCommits } : {}),
     },
   } as PendingChange
 }
@@ -83,6 +90,7 @@ async function render(options: {
     processing: new Set<number>(),
     onApprove: entry => calls.push(`approve:${entry.id}`),
     onReject: entry => calls.push(`reject:${entry.id}`),
+    onReviewPush: entry => calls.push(`review:${entry.id}`),
     onAlwaysApprove: entry => calls.push(`always:${entry.id}`),
     onManageRules: () => calls.push('manage'),
     ...options.actions,
@@ -178,6 +186,45 @@ describe('PendingChangesTray', () => {
     expect(button('Apply all 2')).toBeUndefined()
     await click(buttons().filter(b => b.textContent === 'Approve')[1])
     expect(calls).toEqual(['approve:2'])
+  })
+
+  it('offers no bulk resolve while the workspace is restricted, a push pending or not', async () => {
+    await render({ groups: [group([request(1, { pushedCommits: [HEAD] }), request(2)])], restricted: true })
+
+    expect(button('Apply all 2')).toBeUndefined()
+    expect(button('Discard all')).toBeUndefined()
+  })
+
+  it('offers Review commits in place of Approve for a push in a restricted workspace', async () => {
+    const { calls } = await render({
+      groups: [group([request(1, { pushedCommits: [HEAD], title: 'Push to main' })])], restricted: true,
+    })
+    await openGroup()
+
+    expect(button('Approve')).toBeUndefined()
+    expect(button('Deny')).toBeDefined()
+    await click(button('Review commits'))
+    expect(calls).toEqual(['review:1'])
+  })
+
+  it('offers both for a push in an unrestricted workspace', async () => {
+    const { calls } = await render({
+      groups: [group([request(1, { pushedCommits: [HEAD], title: 'Push to main' })])],
+    })
+    await openGroup()
+
+    await click(button('Review commits'))
+    await click(button('Approve'))
+    expect(calls).toEqual(['review:1', 'approve:1'])
+  })
+
+  it('points a push at the review of its commits, and only a push', async () => {
+    await render({ groups: [group([request(1, { pushedCommits: [HEAD] }), request(2)])] })
+    await openGroup()
+
+    const notices = [...document.querySelectorAll('[role="note"]')].map(note => note.textContent)
+    expect(notices).toEqual([PUSH_DESCRIPTION_COPY, INCOMPLETE_DESCRIPTION_COPY])
+    expect(buttons().filter(b => b.textContent === 'Review commits')).toHaveLength(1)
   })
 
   it('leaves a connection with a pending creation out of bulk resolve', async () => {

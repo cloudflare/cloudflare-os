@@ -9,6 +9,14 @@ export const INCOMPLETE_DESCRIPTION_COPY =
   "This description is incomplete: part of what this action will send isn't shown."
 
 /**
+ * What an approver is told of a push, whose description is never complete: where to read what
+ * it sends. It names the review without placing it, because a chat card shows the notice while
+ * the request is decided in the tray above the composer.
+ */
+export const PUSH_DESCRIPTION_COPY =
+  'This description is a summary: what this push sends is in its commits. Review commits, offered where this request is decided, shows them.'
+
+/**
  * True when a pending entry should carry the notice: an action its gatekeeper did not mark
  * complete. Hooks and observations send nothing, so they never do.
  */
@@ -19,9 +27,16 @@ export function isDescriptionIncomplete(entry: ActionLogEntry): boolean {
 /**
  * Shown below a pending action's description on every approve surface (Activity review pane,
  * chat card, notifications popover) when the description is not complete. The action is still
- * submitted and approvable; the notice only tells the approver what they are not seeing.
+ * submitted and approvable; the notice only tells the approver what they are not seeing. For a
+ * `push` it says instead that the content is in the commits and that Review commits shows them,
+ * so the approver is not left with nowhere to look.
  */
-export function IncompleteDescriptionNotice({ id, className = '' }: { id?: string, className?: string }) {
+export function IncompleteDescriptionNotice({ id, className = '', push = false }: {
+  id?: string
+  className?: string
+  /** The action is a push (see `isPush`): point at the review of its commits. */
+  push?: boolean
+}) {
   return (
     <div
       id={id}
@@ -32,7 +47,7 @@ export function IncompleteDescriptionNotice({ id, className = '' }: { id?: strin
         <Warning size={18} weight="duotone" />
       </div>
       <p className="m-0 text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
-        {INCOMPLETE_DESCRIPTION_COPY}
+        {push ? PUSH_DESCRIPTION_COPY : INCOMPLETE_DESCRIPTION_COPY}
       </p>
     </div>
   )

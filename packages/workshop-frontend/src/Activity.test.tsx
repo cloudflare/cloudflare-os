@@ -33,10 +33,15 @@ const auth = vi.hoisted(() => ({ authenticatedApi: {} as Record<string, unknown>
 vi.mock('./AuthContext', () => ({ useAuthenticatedApi: () => auth }))
 
 import {
-  clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
+  clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot, pushEntry,
+  pushReviewDialog, settlePushReview,
 } from './action-test-harness'
 import Activity from './Activity'
 import { KEEPS_APPLYING_COPY } from './components/AutoApproveConfirmDialog'
+import {
+  INCOMPLETE_DESCRIPTION_COPY, PUSH_DESCRIPTION_COPY,
+} from './components/IncompleteDescriptionNotice'
+import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 
 const view = makeTestRoot()
 
@@ -190,7 +195,7 @@ describe('Activity rule offers in a restricted workspace', () => {
       [{ gatekeeperId: 7, actionKind: STATUS }])
     Object.assign(server.overseer, { listAutoApprovedActionKinds: stored })
     const render = (reloadTrigger: number) => view.render(
-      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+      <Activity overseer={server.overseer} restricted={false} view="review" onViewChange={() => {}}
         autoApproval={{ reloadTrigger, changed: () => {} }} />,
     )
     await render(0)
@@ -407,7 +412,7 @@ describe('Activity rule offers in a workspace that holds no restricted data', ()
   async function confirmationFor(actionKind: { tag: string, label: string }) {
     const server = makeOverseer()
     await view.render(
-      <Activity overseer={server.overseer} view="review" onViewChange={() => {}} />,
+      <Activity overseer={server.overseer} restricted={false} view="review" onViewChange={() => {}} />,
     )
     await server.resolveSubscription()
     await server.resolvePendingQuery({ entries: [request(1, 'A request', actionKind)] })
@@ -429,6 +434,61 @@ describe('Activity rule offers in a workspace that holds no restricted data', ()
     view.cleanup()
     expect(await confirmationFor({ tag: 'append', label: 'Append a slide' }))
       .not.toContain('keeps applying')
+    })
+  })
+
+describe('Activity push approval', () => {
+  // Renders the review view with one pending push.
+  async function renderPush(restricted: boolean) {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} restricted={restricted} view="review" onViewChange={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pushEntry(1)] })
+    flushFrames()
+    return server
+  }
+  const DECISIONS = ['Always approve', 'Deny', 'Review commits', 'Approve']
+  const decisionLabels = (within: ParentNode) => [...within.querySelectorAll('button')]
+    .map(button => button.textContent ?? '').filter(label => DECISIONS.includes(label))
+  const press = async (label: string, within: ParentNode) => {
+    await act(async () =>
+      [...within.querySelectorAll('button')].find(button => button.textContent === label)!.click())
+    await settlePushReview()
+  }
+  const row = () => document.querySelector('article')!
+
+  it('offers Review commits in place of Approve for a push in a restricted workspace', async () => {
+    const server = await renderPush(true)
+    expect(decisionLabels(row())).toEqual(['Deny', 'Review commits'])
+    expect(row().textContent).toContain(RESTRICTED_APPROVAL_COPY)
+
+    await press('Review commits', row())
+    expect(server.decisionCalls).toEqual([])
+    expect(decisionLabels(pushReviewDialog()!)).toEqual(['Deny', 'Approve'])
+
+    await press('Approve', pushReviewDialog()!)
+    expect(server.decisionCalls).toEqual(['approve:1'])
+    expect(pushReviewDialog()).toBeNull()
+  })
+
+  it('offers both for a push in an unrestricted workspace, where the review decides nothing', async () => {
+    const server = await renderPush(false)
+    expect(decisionLabels(row())).toEqual(['Deny', 'Review commits', 'Approve'])
+
+    await press('Review commits', row())
+    expect(decisionLabels(pushReviewDialog()!)).toEqual([])
+    expect(server.decisionCalls).toEqual([])
+
+    await press('Approve', row())
+    expect(server.decisionCalls).toEqual(['approve:1'])
+  })
+
+  it('points a push at the review of its commits instead of calling its description incomplete', async () => {
+    await renderPush(false)
+    expect(row().textContent).toContain(PUSH_DESCRIPTION_COPY)
+    expect(row().textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
 })
 
@@ -461,7 +521,7 @@ describe('Activity creation approval', () => {
       }),
     })
     await view.render(
-      <Activity overseer={server.overseer} view="review" onViewChange={() => {}} />,
+      <Activity overseer={server.overseer} restricted={false} view="review" onViewChange={() => {}} />,
     )
     await server.resolveSubscription()
     await server.resolvePendingQuery({ entries: [entry(1, { gatekeeperId: 7, creation: true })] })
@@ -488,7 +548,8 @@ describe('Activity creation approval', () => {
       approveAction: vi.fn<Overseer['approveAction']>(async () => { throw new Error(message) }),
     })
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    await view.render(<Activity overseer={server.overseer} view="review" onViewChange={() => {}} />)
+    await view.render(
+      <Activity overseer={server.overseer} restricted={false} view="review" onViewChange={() => {}} />)
     await server.resolveSubscription()
     await server.resolvePendingQuery({ entries: [entry(1)] })
     flushFrames()
