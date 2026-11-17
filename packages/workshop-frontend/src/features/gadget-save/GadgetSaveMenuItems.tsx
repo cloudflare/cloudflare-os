@@ -43,6 +43,8 @@ export const GadgetSaveMenuItems = ({ formats, scope, onSelect }: {
         const storageKey = currentUser && savedFileKey(currentUser.id, scope, target)
         const saved = readSavedFile(storageKey)
         const key = `${target.vendor.id}:${getResourceTypeId(target.resource)}`
+        // What the gatekeeper draws its type with, or failing that the service.
+        const iconUrl = target.resource.icon?.url ?? target.vendor.description.logo?.url
         return [
           saved && (
             <DropdownMenu.Item
@@ -56,7 +58,9 @@ export const GadgetSaveMenuItems = ({ formats, scope, onSelect }: {
           ),
           <DropdownMenu.Item
             key={key}
-            icon={<CloudArrowUp className="size-3" />}
+            icon={iconUrl
+              ? <img src={iconUrl} alt="" className="size-3 object-contain" />
+              : <CloudArrowUp className="size-3" />}
             onClick={() => onSelect({ target, storageKey })}
             className={ITEM}
           >

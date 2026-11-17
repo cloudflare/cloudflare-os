@@ -13,8 +13,8 @@ const testState = vi.hoisted(() => ({
 vi.mock('@cloudflare/kumo', () => ({
   DropdownMenu: {
     Separator: () => <hr />,
-    Item: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
-      <button type="button" onClick={onClick}>{children}</button>
+    Item: ({ children, icon, onClick }: { children: ReactNode; icon?: ReactNode; onClick?: () => void }) => (
+      <button type="button" onClick={onClick}>{icon}{children}</button>
     ),
   },
 }))
@@ -82,6 +82,18 @@ describe('GadgetSaveMenuItems', () => {
 
     await act(async () => container.querySelector('button')!.click())
     expect(onSelect).toHaveBeenCalledExactlyOnceWith({ target, storageKey: key })
+  })
+
+  it('draws each save with its type\'s icon, or the service\'s logo', async () => {
+    const branded = {
+      ...vendor,
+      description: { ...vendor.description, logo: { url: 'data:,office' } },
+      supportedResources: [vendor.supportedResources[0], { ...vendor.supportedResources[1], icon: { url: 'data:,sheet' } }],
+    }
+    testState.authenticatedApi = { listGatekeeperVendors: async () => [branded] }
+    await render([html, { ...html, id: 'csv', contentType: 'text/csv' }])
+    expect([...container.querySelectorAll('img')].map(img => img.getAttribute('src')))
+      .toEqual(['data:,office', 'data:,sheet'])
   })
 
   it('renders nothing when no type matches', async () => {
