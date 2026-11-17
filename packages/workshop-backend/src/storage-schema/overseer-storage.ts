@@ -19,6 +19,7 @@ import type {
   AssistantMessage, TextContent, ThinkingContent, ToolCall,
 } from "@earendil-works/pi-ai";
 import { createTypedStorage, collection, singleton, keyString } from "@gadgets/typed-storage";
+import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import {
   actionChangeTime,
   type ActionState, type AdminAccessGrant, type AgentSpawnerConfig, type AiChatAuthorInfo,
@@ -89,6 +90,14 @@ export type GatekeeperRecord = {
 export function connectionVendorId(record: GatekeeperRecord | undefined): string | undefined {
   let spec = record?.creationSpec;
   return spec && "vendorId" in spec ? spec.vendorId : undefined;
+}
+
+/**
+ * Whether `record` is a connection of the admin gatekeeper: its vendor is
+ * ADMIN_GATEKEEPER_VENDOR_ID (connectionVendorId()).
+ */
+export function isAdminGatekeeper(record: GatekeeperRecord | undefined): boolean {
+  return connectionVendorId(record) === ADMIN_GATEKEEPER_VENDOR_ID;
 }
 
 /**
@@ -1419,9 +1428,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // True if any past observation was authorized that had the `containsRestrictedData` flag
       // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
       // `AdminConfig.restrictedWebFetchHosts` or a URL a user approves (where
-      // `AdminConfig.restrictedWebFetchApprovals` allows it), and every action pends for manual
-      // approval (autoApprovalRule never fires); the approver checks the action text for restricted
-      // data. The key on disk predates the flag's rename.
+      // `AdminConfig.restrictedWebFetchApprovals` allows it), and a rule applies an action only
+      // where ruleApplies() says so (auto-approval.ts); every other action pends for manual
+      // approval; the approver checks the action text for restricted data. The key on disk
+      // predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True once this workspace read through the whole admin binding of an admin gatekeeper
@@ -1432,6 +1442,18 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // set, the workspace admits only its owner and deployment admins (see
       // OverseerImpl.adminsOnly()), with or without the connection: its chats hold what was read.
       adminReads: singleton(false),
+
+      // True while every observation that set `containsRestrictedData` was made through a
+      // connection of the admin gatekeeper (isAdminGatekeeper(): the whole binding or a session
+      // limited to one report). One value for the workspace, not one per connection, written
+      // only by authorizeObservation() in the transaction that sets the latch: true only when
+      // the latch is set for the first time by such an observation; false, for good, once any
+      // other connection's observation carries the flag; never turned true in a workspace
+      // already latched, so one latched before this singleton existed has it false. While true,
+      // what the workspace holds is what deployment admins can already read, and a rule may
+      // apply the admin gatekeeper's kinds that ADMIN_AGENT_ACTIONS marks
+      // `autoApprovableWhileRestricted` (see ruleApplies() in auto-approval.ts).
+      adminRestrictedDataOnly: singleton(false),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
       // its `ObservationDescription`. Share links stop working and only the owner can add

@@ -112,6 +112,14 @@ export const ADMIN_AGENT_KINDS = {
  *     (ActionDescription.autoApprovable). The Workshop refuses to lend to an auto-approval of
  *     an action whose TAG is that of a kind whose verdict is false, whatever verdict the
  *     action's own description claims.
+ *   - `autoApprovableWhileRestricted`: whether a rule may still apply an action of the kind in
+ *     a workspace marked as holding restricted data, where a rule applies no other action of
+ *     any connection. It is the Workshop's own exception, read from this table and from nothing
+ *     a gatekeeper declares, and it holds only while every observation that marked the
+ *     workspace was made through the admin gatekeeper's connection: what an admins-only note,
+ *     a status or an assignment can then carry is what admins can already read. True for those
+ *     three kinds alone. A public reply, scoped or not, and both requests wait for a person
+ *     there. Never true for a kind whose `autoApprovable` is false.
  *   - `kind`: what the action carries as ActionDescription.actionKind. Auto-approval rules are
  *     stored under the tag, so a tag is never renamed or reused, and a kind added here takes a
  *     tag no other kind has.
@@ -144,11 +152,11 @@ export const ADMIN_AGENT_KINDS = {
  * takes a report from another admin, which the report store refuses to a call made through
  * the gatekeeper.
  *
- * A verdict of true is a ceiling, not a promise: a rule applies an action only in a workspace
- * that holds no restricted data, and everything read or received through the admin gatekeeper,
- * a session limited to one report and a hook's delivery included, marks its workspace as holding
- * some. So in a workspace whose agents or gadgets have read or received anything through it,
- * every kind waits for a person.
+ * A verdict of true is a ceiling, not a promise: in a workspace marked as holding restricted
+ * data, which everything read or received through the admin gatekeeper makes its workspace (a
+ * session limited to one report and a hook's delivery included), a rule applies only the kinds
+ * `autoApprovableWhileRestricted` names, and those only while no other connection's restricted
+ * data was read there. Every other kind waits for a person.
  */
 export const ADMIN_AGENT_ACTIONS = {
   issueReportReply: {
@@ -156,11 +164,13 @@ export const ADMIN_AGENT_ACTIONS = {
     // Rule 2: sends what an agent that reads what only admins see wrote to the reporter, a
     // person outside the workspace.
     autoApprovable: false,
+    autoApprovableWhileRestricted: false,
     kind: { tag: "issue-report-reply", label: "Reply to an issue report's reporter" },
   },
   issueReportScopedReply: {
     method: "addIssueReportEntry", visibility: "public",
     autoApprovable: true,
+    autoApprovableWhileRestricted: false,
     kind: {
       tag: "issue-report-scoped-reply",
       label: "Reply to a reporter from a session limited to their report",
@@ -169,17 +179,20 @@ export const ADMIN_AGENT_ACTIONS = {
   issueReportNote: {
     method: "addIssueReportEntry", visibility: "admins",
     autoApprovable: true,
+    autoApprovableWhileRestricted: true,
     kind: { tag: "issue-report-note", label: "Add an admins-only note to an issue report" },
   },
   issueReportStatus: {
     method: "setIssueReportStatus", visibility: undefined,
     autoApprovable: true,
+    autoApprovableWhileRestricted: true,
     kind: { tag: "issue-report-status", label: "Set an issue report's status" },
   },
   issueReportAssignment: {
     // One kind for the two calls: a rule for claiming is a rule for releasing.
     method: ["claimIssueReport", "releaseIssueReport"], visibility: undefined,
     autoApprovable: true,
+    autoApprovableWhileRestricted: true,
     kind: { tag: "issue-report-assignment", label: "Claim or release an issue report" },
   },
   workspaceWriteRequest: {
@@ -187,6 +200,7 @@ export const ADMIN_AGENT_ACTIONS = {
     // Runs a deployment admin's write in another workspace once approved, with no second check:
     // a person decides each one.
     autoApprovable: false,
+    autoApprovableWhileRestricted: false,
     kind: { tag: "workspace-write-request", label: "Write to a workspace as a deployment admin" },
   },
   contentAccessRequest: {
@@ -194,6 +208,7 @@ export const ADMIN_AGENT_ACTIONS = {
     // Rule 7: asks for access to a workspace's content, and the person who approves the filing
     // is one of those who may not approve the request.
     autoApprovable: false,
+    autoApprovableWhileRestricted: false,
     kind: {
       tag: "content-access-request",
       label: "Ask the admins for access to a workspace's content",

@@ -1680,16 +1680,19 @@ export type ObservationDescription = {
    * - Once observed, the gadget enters a restricted mode: web fetches reach only the hosts the
    *   deployment admin trusts with such data (none by default) or, where the admin allows it, a
    *   URL a user approves, and every action
-   *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
-   *   action's full `description` and is responsible for checking it contains none of the
-   *   restricted data. An action whose description is not complete
+   *   requires manual approval -- auto-approval rules are suspended, but for the Workshop's own
+   *   exception for the admin gatekeeper (see ADMIN_AGENT_ACTIONS), which no gatekeeper's
+   *   declaration asks for. The approver is shown the action's full `description` and is
+   *   responsible for checking it contains none of the restricted data. An action whose
+   *   description is not complete
    *   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only
    *   git pushes are refused. The kernel does not restrict which connections may be acted on.
    *
    * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
    *   actions whose visibility is limited to people verified to have access to the same data: an
    *   action should declare who can see its effects, and each restricted producer verify that
-   *   every such person can already see the data.
+   *   every such person can already see the data. The admin gatekeeper's notes, statuses and
+   *   assignments are the one case built, by a table of the Workshop's own.
    */
   containsRestrictedData?: boolean;
 

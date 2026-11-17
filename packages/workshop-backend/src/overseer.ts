@@ -20,8 +20,8 @@ import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeC
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, MAX_BUFFERED_BLOB_SIZE, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
-  adminAgentAction,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS, ADMIN_BINDING_SUBRESOURCE,
+  ADMIN_GATEKEEPER_VENDOR_ID, adminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type {
   AdminAgentApi, AdminAgentQueue, AdminGatekeeper,
@@ -34,7 +34,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
-  makeOverseerStorage,
+  isAdminGatekeeper, makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
@@ -138,7 +138,7 @@ import {
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
+import { AutoApprovalDrainer, autoApprovalRule, ruleApplies } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -471,12 +471,6 @@ function defaultBlueprintBindingTitle(record: GatekeeperRecord, bindingName?: st
 
 function gatekeeperVendorId(record: GatekeeperRecord | undefined): string | undefined {
   return connectionVendorId(record)?.toLowerCase();
-}
-
-// Whether `record` is a connection of the admin gatekeeper: its vendor is
-// ADMIN_GATEKEEPER_VENDOR_ID (connectionVendorId()).
-function isAdminGatekeeper(record: GatekeeperRecord | undefined): boolean {
-  return connectionVendorId(record) === ADMIN_GATEKEEPER_VENDOR_ID;
 }
 
 // What a connection of the admin gatekeeper is told once its workspace's owner holds no account
@@ -6371,6 +6365,12 @@ class OverseerImpl implements AgentHooks {
       let actionId = this.storage.transaction(() => {
         let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
         if (description.containsRestrictedData) {
+          // Only the admin gatekeeper's observations have marked this workspace while this
+          // stays true: set by the first mark, kept by a later one of that connection, and
+          // ended for good by any other connection's (see storage.adminRestrictedDataOnly).
+          this.storage.adminRestrictedDataOnly.put(isAdminGatekeeper(gatekeeper) &&
+              (!this.storage.containsRestrictedData.get() ||
+               this.storage.adminRestrictedDataOnly.get()));
           this.storage.containsRestrictedData.put(true);
           // ADMIN_BINDING_SUBRESOURCE is the one subresource id the Workshop reads rather than
           // treats as opaque: only the gatekeeper's own declaration says a read was made through
@@ -7102,8 +7102,9 @@ class OverseerImpl implements AgentHooks {
 
     // Restricted mode: the approver vouches for the text they read, and a push's commits cannot
     // be reviewed as text here, so a push is refused outright until there is a UI to review
-    // commits. Any other action pends for manual approval; one whose description is not complete
-    // (ActionDescription.descriptionIsComplete) is flagged to the approver rather than refused.
+    // commits. Any other action pends for a person unless ruleApplies() lets a rule apply it;
+    // one whose description is not complete (ActionDescription.descriptionIsComplete) is flagged
+    // to the approver rather than refused.
     // The message reaches the agent as the tool error.
     if (this.storage.containsRestrictedData.get() && description.pushedCommits?.length) {
       throw new Error(
@@ -7689,11 +7690,11 @@ class OverseerImpl implements AgentHooks {
    * gatekeeper could end, so removing it ends its connections here, where the power is lent), a
    * session a member opened directly from the connection was opened by the owner and, for an
    * approved action, whoever approved it is an admin too; and for an auto-approved
-   * action, unless the workspace holds no restricted data. The origin recorded with every call
-   * is this workspace and the chat `caller` is tied to, if any. A lend that files a request for
-   * content access also says who was here (see AdminAgentInsiders). THE one place an AdminApiImpl
-   * is made with via "gatekeeper": it hands that AdminApiImpl to restrictAdminApi()
-   * (admin-agent.ts) and returns the result.
+   * action, unless ruleApplies() allows its kind in the workspace as it is now. The origin
+   * recorded with every call is this workspace and the chat `caller` is tied to, if any. A lend
+   * that files a request for content access also says who was here (see AdminAgentInsiders).
+   * THE one place an AdminApiImpl is made with via "gatekeeper": it hands that AdminApiImpl to
+   * restrictAdminApi() (admin-agent.ts) and returns the result.
    *
    * What a lend costs, none of it cached, so that turning the gatekeeper off stops the very next
    * call and removing the account the next lend: one read of the admin config
@@ -7727,8 +7728,9 @@ class OverseerImpl implements AgentHooks {
       if (!isDeploymentAdmin(this.env, use.decidedBy)) {
         throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
       }
-      // The latch autoApprovalRule() reads, read once more where the power is handed over.
-      if (use.autoApproved && this.storage.containsRestrictedData.get()) {
+      // What autoApprovalRule() asked, asked once more where the power is handed over.
+      if (use.autoApproved &&
+          !ruleApplies(this.storage, gatekeeperId, ADMIN_AGENT_ACTIONS[use.kind].kind.tag)) {
         throw new Error("This workspace holds restricted data: this action waits for a person.");
       }
     }
@@ -14124,6 +14126,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         boundIds.add(edge.target);
       }
     }
+    // The admin gatekeeper's connections too: an agent uses one with no gadget binding it,
+    // and its rules are the ones that can apply under the restricted-data mark.
+    for (let gk of this.impl.storage.gatekeepers.list()) {
+      if (isAdminGatekeeper(gk)) boundIds.add(gk.id);
+    }
 
     // TODO: a single gatekeeper failing (e.g. a rejected RPC) currently fails the whole catalog,
     // since we let getAutoApprovableActions() reject. Eventually we should isolate per-gatekeeper
@@ -14145,6 +14152,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         actionKind,
         alreadyEnabled:
             this.impl.storage.autoApproveTags.get(`${gk.id}:${actionKind.tag}`) !== undefined,
+        ruleApplies: ruleApplies(this.impl.storage, gk.id, actionKind.tag),
       }));
     });
 
