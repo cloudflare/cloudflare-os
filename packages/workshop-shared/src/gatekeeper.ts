@@ -1627,15 +1627,20 @@ export interface ApprovalQueue extends ObservationAuthorizer {
    * the caller's behalf, such as a container's outbound traffic. The gatekeeper's own calls to
    * its vendor keep using its own `fetch()`. A refused request is answered with a 403 (405 for
    * the method) whose `Cloudflare-OS-Fetch-Refused` header says why, with the reason as its body.
+   * On `approval-requested`, which only an agent caller gets, nothing more need be done: the
+   * agent's turn ends, and it runs its code again once the user approves.
    *
    * The Fetcher reflects the policy at the time it was made and never updates, even after the
    * session ends; keeping it current is the gatekeeper's responsibility. A workspace's policy
    * tightens when it observes restricted data, which can reach what the Fetcher filters only
-   * through a call to the gatekeeper. So:
+   * through a call to the gatekeeper. It may be stored, in the gatekeeper's Durable Object storage
+   * for example, and used from later calls; nothing needs releasing when one is replaced. So:
    *
-   * - Call `getFetcher()` on every call the gatekeeper receives, after that call's own
-   *   `authorizeObservation()` calls and before handing any new data to whatever the Fetcher
-   *   filters, and replace the Fetcher installed there with the new one.
+   * - Each time information flows into what the Fetcher filters, obtain a new Fetcher first:
+   *   call `getFetcher()` after that call's own `authorizeObservation()` calls and before handing
+   *   any new data from the workspace to whatever the Fetcher filters, and replace the Fetcher
+   *   installed there with the new one. Code that has received nothing new needs no new Fetcher;
+   *   taking one on every call the gatekeeper receives is the simple way to meet this.
    * - Take the Fetcher, install it and deliver the data as one serialized unit for each
    *   environment the Fetcher filters. Two overlapping calls must not interleave these steps, or
    *   one could install the Fetcher it took earlier over the newer, stricter one the other

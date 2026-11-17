@@ -1,6 +1,13 @@
 # Plan: One fetch policy for webFetch, sandboxes and gatekeepers
 
-Status: planned, not implemented.
+Status: implemented on the `kenton/network-fetcher-policy-f00189` branch, in the five commits under
+[Commit sequence](#commit-sequence-one-pr), with the deviations listed under
+[Implementation notes](#implementation-notes).
+[`docs/unified-fetch.md`](../docs/unified-fetch.md) describes the design as built: who can fetch,
+the policy and its two modes, redirects, refusals, approvals and the action log. The gatekeeper's
+contract is in `.agents/skills/write-gatekeeper/SKILL.md` and the `ApprovalQueue.getFetcher()` doc
+comment. This record keeps the reasoning and decisions; the Background section describes the code
+before this plan.
 
 ## Goal
 
@@ -245,26 +252,70 @@ Routing the tool through the `Fetcher` changes three things:
 
 Ordered so each kernel diff can be read on its own. Every commit builds and passes tests.
 
-1. **`FetchLoopback` and `authorizeFetch()`; `webFetch` goes through them.** `fetch-loopback.ts`,
-   the `server.ts` export, `authorizeFetch()` replacing `authorizeWebFetch()`, the generalised
-   observation record, `web-fetch.ts` taking a `Fetcher`, and the turn-end latch moved to
-   `finishTurn`'s capture of decision requests. Unit tests for the entrypoint; `web-fetch.test.ts`
-   and `workshop-restricted-web-fetch.test.ts` updated for the changes above.
-2. **Sandbox fetch.** `globalOutbound` in `loadGadgetWorker()` and `executeCodeMode()`, and the
-   three prompt passages in `agent.ts` that say `fetch()` does not work (the gadget sandbox
-   description, the `webFetch` tool description, the `executeCode` tool description). Integration
-   tests.
-3. **`ApprovalQueue.getFetcher()`.** The `workshop-shared` method with its doc comment,
-   `ApprovalQueueImpl.getFetcher()`, and policy snapshots.
-4. **Gatekeeper-side tests.** A session method on the test gatekeeper fixture that fetches through
-   `queue.getFetcher()`, its integration test, and `getFetcher()` on the fake queues in
-   `gatekeeper-google`'s tests.
+1. **`FetchLoopback` and `authorizeFetch()`; `webFetch` goes through them** (`5dc064d8`).
+   `fetch-loopback.ts`, the `server.ts` export, `authorizeFetch()` replacing
+   `authorizeWebFetch()`, `#recordBuiltinObservation()` replacing `recordAgentObservation()`, the
+   agent hook `getWebFetchEnv()`, `web-fetch.ts` taking a `Fetcher`, and the turn-end latch moved
+   to `finishTurn`'s capture of decision requests, for the `webFetch` tool and
+   `requestConnection` alike. Unit tests for the entrypoint (`fetch-loopback.test.ts`) and for
+   `authorizeFetch()` (`fetch-authorization.test.ts`); `web-fetch.test.ts` and
+   `workshop-restricted-web-fetch.test.ts` updated for the changes above.
+2. **Sandbox fetch** (`c0a388d3`). `makeFetchLoopback()`, `globalOutbound` in `loadGadgetWorker()`
+   and `executeCodeMode()`, and the three prompt passages in `agent.ts` that said `fetch()` does
+   not work (the gadget sandbox description, the `webFetch` tool description, the `executeCode`
+   tool description). `FetchLoopback` re-exported from the backend's unit-test worker. Integration
+   tests in a new `workshop-sandbox-fetch.test.ts`.
+3. **`ApprovalQueue.getFetcher()`** (`90824a76`). The `workshop-shared` method with its doc
+   comment, `ApprovalQueueImpl.getFetcher()`, policy snapshots (`snapshotAuthorizer()`), the
+   shared `fetchPolicyRefusal()`, `fetchPolicy()` made public, and `getFetcher()` stubs that throw
+   on the fake queues in `gatekeeper-google`'s tests, so that the commit builds.
+4. **Gatekeeper-side tests** (`0c467536`). `fetchUrl()` and `fetchInstalled()` on the test
+   gatekeeper fixture, and their cases in `workshop-sandbox-fetch.test.ts`.
 5. **Docs.** `docs/unified-fetch.md` describing the design as built, the contract in
-   `.agents/skills/write-gatekeeper/SKILL.md`, and the `authorizeWebFetch` references in
-   `docs/observers.md` and `docs/testing.md`.
+   `.agents/skills/write-gatekeeper/SKILL.md` and reworded in the `getFetcher()` doc comment, the
+   `authorizeWebFetch` references in `docs/observers.md` and `docs/testing.md`, a stale
+   "no outbound network" comment in `bundled-blueprints`, and this record's status and notes.
 
 The internal repository's gatekeepers and fake queues need `getFetcher()` too once commit 3 lands
 there.
+
+## Implementation notes
+
+Where the implementation departed from the design above:
+
+- **The observation record** (`5dc064d8`). `recordAgentObservation()` was not generalised in
+  place: it became the private `#recordBuiltinObservation(caller, ...)`, which only
+  `authorizeFetch()` calls, and the `AgentHooks` member is gone.
+- **The agent hook** (`5dc064d8`). `authorizeWebFetch` on `AgentHooks` became a synchronous
+  `getWebFetchEnv(chatId)`, which returns the Workers AI binding, the gateway config and a
+  no-snapshot fetcher for the chat. The tool learns of a requested approval from the fetcher's
+  refusal.
+- **Refusals** (`5dc064d8`). An error while the loopback follows an approved URL's redirects (too
+  many, an invalid or disallowed `location`, a network failure) comes back as a `denied` refusal,
+  not a thrown error. The 405 carries `allow: GET, HEAD`.
+- **The turn-end latch** (`5dc064d8`). Removed from `requestConnection` as well as the `webFetch`
+  tool: `finishTurn` latches on any captured decision request, which covers both.
+- **Order of checks** (`5dc064d8`). `authorizeFetch()` checks that an agent's execution is live
+  and not stopped after reading the policy (and so the admin config), so the check sees the state
+  after that await.
+- **Test placement** (`c0a388d3`). `FetchLoopback` is re-exported from the backend's unit-test
+  worker. The sandbox integration tests are in a new `workshop-sandbox-fetch.test.ts`, which the
+  gatekeeper tests later joined, since it owns a serial harness for the deployment-wide trusted
+  hosts.
+- **`fetchPolicy()` is public, and the refusal is shared** (`90824a76`). `ApprovalQueueImpl`
+  calls it, so it is not `#fetchPolicy()`. The check that turns a `FetchPolicy` into a refusal
+  message moved out of `authorizeFetch()` into `fetchPolicyRefusal()` in `fetch-loopback.ts`, so
+  the workspace and a snapshot refuse with the same words.
+- **`gatekeeper-google`'s fake queues** (`90824a76`) got their throwing `getFetcher()` stubs in
+  commit 3, not commit 4, so that every commit builds.
+- **What the action log shows** (`0c467536`). The Testing line "each allowed request appears in
+  the action log" holds only for requests the workspace decides. Requests a gatekeeper's snapshot
+  allows are not recorded, by design (Decisions); the gatekeeper's own `authorizeObservation()` is
+  their record. A snapshot-refused request the workspace then allows is recorded.
+- **The `getFetcher()` rule** (docs commit). The maintainer's statement is that a gatekeeper must
+  obtain a new `Fetcher` each time information flows into what it filters; a long-running
+  container that has received nothing new needs no update. Taking one on every call is the simple
+  way to meet that, not the requirement itself, and the doc comment now says so.
 
 ## Runtime assumptions
 
@@ -284,7 +335,8 @@ must see the fetches `FetchLoopback` makes. It patches the Node process's `fetch
 harness routes each Worker's outbound `fetch()` through, and it already intercepts the `webFetch`
 tool's requests from the Overseer in `workshop-restricted-web-fetch.test.ts`. An entrypoint of the
 same Worker should use the same outbound; commit 1's updated `webFetch` tests show whether it
-does.
+does. It does: `workshop-restricted-web-fetch.test.ts` and `workshop-sandbox-fetch.test.ts` see
+the requests `FetchLoopback` sends through the interceptor, and assert that none went unmocked.
 
 ## Testing
 
@@ -308,7 +360,9 @@ does.
   - A gadget's server code fetches; the same gadget is refused once the workspace is restricted.
   - The test gatekeeper fetches through `queue.getFetcher()`, unrestricted and restricted, and a
     `Fetcher` taken before the workspace became restricted is replaced by the next call's.
-  - Each allowed request appears in the action log.
+  - Each allowed request the workspace decides appears in the action log. A request a
+    gatekeeper's snapshot allows does not, by design (see Implementation notes); the tests assert
+    both.
 - **End to end:** one agent turn through `pnpm cf-os api` against `pnpm dev-server`, fetching from
   `executeCode`.
 
@@ -322,7 +376,7 @@ does.
 
 ## Future work
 
-- Hosts known to be safe in a restricted workspace, added inside `#fetchPolicy()` and
-  `validateWebFetchUrl()` with no change to callers.
+- Hosts known to be safe in a restricted workspace, added inside `fetchPolicy()`,
+  `fetchPolicyRefusal()` and `validateWebFetchUrl()` with no change to callers.
 - Approval for callers with no chat turn, through the action queue.
 - Coalescing repeated fetch observations.

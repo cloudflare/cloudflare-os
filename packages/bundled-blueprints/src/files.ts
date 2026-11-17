@@ -186,9 +186,10 @@ export async function readSourceFiles(
  *
  * `external` is what that runtime supplies, and it is little: the iframe supplies nothing, and the
  * Durable Object gets `cloudflare:workers`, the one `cloudflare:` module the gadget's worker loader
- * gives it (`loadGadgetWorker` in the backend's overseer.ts: no outbound network, so
- * `cloudflare:sockets` is moot, and none of the flags behind the others). Everything else a
- * blueprint imports has to be a file it owns or a gadget library (see {@link auditInputs}), so a
+ * gives it (`loadGadgetWorker` in the backend's overseer.ts: its outbound network is a
+ * FetchLoopback with no `connect` handler, so `cloudflare:sockets` is moot, and none of the flags
+ * behind the others). Everything else a blueprint imports has to be a file it owns or a gadget
+ * library (see {@link auditInputs}), so a
  * bare `import "yjs"` fails this build rather than going missing inside the sandbox -- and so does
  * `cloudflare:test`, which a `BUNDLED_BLUEPRINTS_DIR` tree no tsc program checks could otherwise
  * ship to a Durable Object that fails to instantiate.
