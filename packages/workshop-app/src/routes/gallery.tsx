@@ -44,6 +44,7 @@ import { Section } from '@/gallery/Section'
 import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
 import { SearchPreview } from '@/gallery/SearchPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
+import { SharingPreview } from '@/gallery/SharingPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
@@ -360,6 +361,7 @@ function Gallery() {
       <SetUpConnectionPreview />
       <AddConnectionPreview />
       <GadgetSettingsPreview />
+      <SharingPreview />
       <SettingsPreview />
       <SearchPreview />
       <HeaderPreview />

@@ -2,7 +2,7 @@ import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, t
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon,
+  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, UserPlusIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -58,6 +58,8 @@ export type SidePaneProps = Placement & {
   onOpenSettings?: () => void
   /** Goes to the code of the one shown, a gadget, which is a tab of its settings. */
   onViewCode?: () => void
+  /** Shares the one shown with people, for whoever may. */
+  onShare?: () => void
   /**
    * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
    * step up, and the step down is a back button at the start of the header.
@@ -81,7 +83,7 @@ const COMMITS_AT = 0.2
  * It grows in steps, and the end of its header has the step up, with the step down in the same
  * place: beside the page it expands to take the page's place; expanded, it collapses back and
  * fills the window; filling the window, it goes back. Before those are who else is looking at it,
- * more that can be done with it (which beside the page includes putting the pane away), and a link
+ * more that can be done with it (sharing it, and beside the page putting the pane away), and a link
  * to it. Beside the page, the header starts with how many things the page has to show, which
  * opens to the list of them, then the name of the one shown.
  *
@@ -90,7 +92,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, onShare, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -171,11 +173,12 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || onOpenSettings || onViewCode))) && (
+            {(beside || (active && (onReload || onDownload || onOpenSettings || onViewCode || onShare))) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
+                  {onShare && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
                   {onViewCode && <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>}
                   {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}

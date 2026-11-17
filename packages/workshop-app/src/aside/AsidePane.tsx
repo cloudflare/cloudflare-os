@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
@@ -7,6 +7,8 @@ import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
+import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { asideItemIcon } from './asideItemIcon'
 import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
@@ -69,6 +71,26 @@ export const AsidePane = (props: AsidePaneProps) => {
   // As the page, it names the tab; beside one, the page does.
   useDocumentTitle(props.placement === 'page' ? title : undefined)
 
+  // A gadget is shared with its workspace, by whoever can share what is in it. Its link is to its
+  // own page, without the chat it was shown from, whose changes are not for whoever it lets in.
+  const workspaces = useWorkspaces()
+  const listed = item.kind === 'output' && workspaces.status === 'ready'
+    ? workspaces.workspaces.find(({ id }) => id === item.output.workspaceId)
+    : undefined
+  const [sharing, setSharing] = useState(false)
+  const page = link && new URL(link)
+  if (page) page.search = ''
+  const share = item.kind === 'output' && item.output.type !== 'worktree' && listed !== undefined && listed.role !== 'use' && page && (
+    <ShareWorkspaceDialog
+      workspaceId={item.output.workspaceId}
+      title={listed.title || 'Workspace'}
+      page={page.href}
+      gadget={title}
+      open={sharing}
+      onOpenChange={setSharing}
+    />
+  )
+
   // Escape is for whatever has focus first, such as a menu that is open.
   useEffect(() => {
     if (!fullScreen) return
@@ -96,6 +118,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
     onOpenSettings: gadget && onOpenSettings && (() => onOpenSettings(gadget, title)),
     onViewCode: gadget && onOpenSettings && (() => onOpenSettings(gadget, title, 'code')),
+    onShare: share ? () => setSharing(true) : undefined,
     narrow,
   }
 
@@ -109,10 +132,12 @@ export const AsidePane = (props: AsidePaneProps) => {
       onExpand={props.onExpand}
     >
       {content}
+      {share}
     </SidePane>
   ) : (
     <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
+      {share}
     </SidePane>
   )
 }

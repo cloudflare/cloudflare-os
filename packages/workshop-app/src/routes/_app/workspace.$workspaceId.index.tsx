@@ -49,6 +49,8 @@ function Workspace() {
       onOpenItem={(item) => aside.show(item.key, { workspaceId })}
       itemHref={(item) => router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library', open: item.key } }).href}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open: carriedOpen(open) } })}
+      // Its own address, whole, as it is copied to be opened elsewhere.
+      link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
     />
   )
 }
