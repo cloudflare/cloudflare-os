@@ -210,7 +210,7 @@ Importing a version 2 archive stores the same release commit under a new bluepri
 
 ## Admin Features and Featured Blueprints
 
-Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed. `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` bound what those admins may choose for workspace inspection and audit retention; see [admin-access.md](admin-access.md).
+Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed. `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` bound what those admins may choose for inspecting workspaces and users' accounts and for audit retention; see [admin-access.md](admin-access.md).
 
 Admins get access to two extra RPCs:
 

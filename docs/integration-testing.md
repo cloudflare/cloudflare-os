@@ -117,8 +117,8 @@ RPC session the child needs. See `observer-exclusion.test.ts`'s `reopenAfterRest
 
 `await harness.server.getWorker(name).getDurableObjectStorage(className, { id } | { name })` returns
 a handle on one Durable Object's SQLite storage, whose `exec()` resolves to the result rows.
-`{ name: "" }` addresses the object a Worker reaches with `getByName("")`. Two uses shape the admin
-suites:
+`{ name: "" }` addresses the object a Worker reaches with `getByName("")`. Three uses shape the
+admin suites:
 
 - **Faulting a store.** To show that a call fails when its audit record cannot be written, the suite
   installs a trigger on `admin_audit`, the deployment-wide audit log's table
@@ -134,6 +134,13 @@ suites:
   anything has been written. `_cf_KV` itself is unreadable (`SQLITE_AUTH`), hence `sqlite_master`. A
   test client cannot mint an unused workspace id (creating a workspace opens it), so the suite uses
   a deleted one.
+- **Proving a call wrote nothing.** `SELECT total_changes()` through the handle counts every row the
+  object has written since it started, the KV API's records and the alarm included, so equal counts
+  around one call show that the call wrote nothing. The count restarts with the object, so both
+  reads bracket a single call, and the suite checks that an ordinary write moves it. A workspace
+  reports to its owner's account after the call that caused the report has returned, so the user
+  view's suite closes what it opened to seed an account, and waits for the account's count to
+  settle, before its first read.
 
 ### A redeploy keeps storage, so an upgrade can be tested
 
