@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SlashCommandChoice } from '@gadgets/workshop-shared/api'
-import { composerCommandOf, missingCommand, orderCommands, slashRequestFor } from './slashCommands'
+import { composerCommandOf, missingCommand, orderCommands, skillCommandOf, slashRequestFor } from './slashCommands'
 
 const SKILL: SlashCommandChoice = {
   selection: { gatekeeperId: 7, commandId: 'c1/meeting-brief/SKILL.md' },
@@ -29,5 +29,11 @@ describe('composer commands', () => {
     const gone = composerCommandOf({ ...SKILL, selection: { gatekeeperId: 7, commandId: 'c1/old/SKILL.md' }, name: 'old' })
     expect(slashRequestFor([SKILL], gone, '')).toBeUndefined()
     expect(missingCommand(gone)).toMatch(/Old isn’t available here/)
+  })
+
+  it('offers a Library skill before there is a workspace as the workspace will know it, by its id', () => {
+    const offered = skillCommandOf({ id: 'c1/meeting-brief/SKILL.md', name: 'Meeting brief', description: 'Before a meeting', tag: 'Meetings' })
+    expect(offered).toMatchObject({ key: composerCommandOf(SKILL).key, name: 'meeting-brief', title: 'Meeting brief', kind: 'skill', source: 'Meetings' })
+    expect(slashRequestFor([COMPACT, SKILL], offered, 'for Tuesday')).toEqual({ id: SKILL.selection, args: 'for Tuesday', commandPosition: 0 })
   })
 })

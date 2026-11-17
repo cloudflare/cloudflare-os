@@ -22,12 +22,14 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useListView } from '@/hooks/useListView'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { sectionInfo } from '@/settings/settingsSections'
 import { skillFileList } from './skillFileList'
 import { readableMarkdown, SkillFileView } from './SkillFileView'
 import { fileBytes, fileKind, fileName, fileSize, formatFileSize, isMarkdownPath, isTextContentType, MANIFEST, readUploadFiles, type SkillFile } from './skillFiles'
 import { sourceLabel } from './skillList'
-import { skillStore, useSkills } from './useSkills'
+import { SkillStore } from './SkillStore'
+import { skillStore, useSkill } from './useSkills'
 
 /** What a skill's page shows beneath its name, when not one of its files. */
 export type SkillTab = 'preview' | 'files' | 'settings'
@@ -63,7 +65,11 @@ export type SkillPaneProps = {
   fileHref?: (path: string) => string
   /** Back to the settings the skills are listed in. */
   onBack: () => void
+  /** It was renamed or filed under another tag, which moves it: it is `id` from then on. */
+  onMoved: (id: string) => void
 }
+
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /** What a file is drawn as where it is listed. */
 const rowKind = ({ contentType }: SkillFile) => (isTextContentType(contentType) ? 'text' : contentType.startsWith('image/') ? 'image' : 'other')
@@ -95,10 +101,12 @@ const previewOf = (file: SkillFile) => {
  * whichever tab is showing, until it is saved or given up. The way back to the list asks first
  * while there is any.
  *
- * None of it is kept beyond the visit yet (see `SkillStore`), which the list it is opened from says.
+ * It is kept in the user's Context Library (see `SkillStore`), and its files are read from there
+ * once it is shown. What is changed is kept there, and said where it could not be.
  */
-export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpenFile, fileHref, onBack }: SkillPaneProps) => {
-  const skill = useSkills().find(({ id }) => id === skillId)
+export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpenFile, fileHref, onBack, onMoved }: SkillPaneProps) => {
+  const { state, skill, filesProblem } = useSkill(skillId)
+  const connection = useConnectionNotice()
   const narrow = useNarrowScreen()
   useDocumentTitle(skill ? `${skill.name} · Skills` : 'Skill')
   // Why the last change was not made.
@@ -113,7 +121,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
   const setDraft = (path: string, draft: string | undefined) =>
     setDrafts(({ [path]: _, ...rest }) => (draft === undefined ? rest : { ...rest, [path]: draft }))
   const unsaved = (file: SkillFile) => drafts[file.path] !== undefined && drafts[file.path] !== file.body
-  const anyUnsaved = skill?.files.some(unsaved) ?? false
+  const anyUnsaved = skill?.files?.some(unsaved) ?? false
 
   const backLabel = narrow ? `Back to ${SKILLS_SECTION.label}` : SKILLS_SECTION.label
   const backIcon = narrow ? CaretLeftIcon : SKILLS_SECTION.icon
@@ -153,10 +161,13 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
   if (!skill) {
     return (
       <PageLayout header={header}>
-        {!deleted && (
+        {state.status === 'loading' && <p role="status" className="appears-late pt-8 text-center text-base text-kumo-subtle">Loading the skill…</p>}
+        {state.status !== 'loading' && !deleted && (
           <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 pt-8 text-center">
-            <h1 className="text-xl font-medium text-kumo-default">Skill not found</h1>
-            <p className="max-w-md text-base text-kumo-subtle">It may have been deleted. Until skills are saved to your account, the ones you add last only until the page is reloaded.</p>
+            <h1 className="text-xl font-medium text-kumo-default">{state.status === 'failed' ? 'Couldn’t load the skill' : state.status === 'off' ? 'Skills aren’t turned on for you' : 'Skill not found'}</h1>
+            <p className="max-w-md text-base text-kumo-subtle">
+              {state.status === 'failed' ? state.message : state.status === 'off' ? 'They’re kept in the Context Library, which is turned on from the skills in the settings.' : 'It may have been deleted, or no longer be shared with you.'}
+            </p>
           </div>
         )}
       </PageLayout>
@@ -164,16 +175,23 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
   }
 
   const mine = skill.source.kind === 'mine'
+  // None until they have been read, which the tabs that list them say.
+  const skillFiles = skill.files ?? []
+  const filesNote = skill.files === undefined && (
+    filesProblem
+      ? <p role="alert" className="px-5 text-center text-base text-kumo-danger">Couldn’t read its files: {filesProblem}</p>
+      : <p role="status" className="appears-late px-5 text-center text-base text-kumo-subtle">Reading its files…</p>
+  )
   // The files the search leaves, in the order chosen, on the one surface.
-  const shown = list.order.arrange(list.narrow(skill.files), ENOUGH.list).flatMap(({ entries }) => entries.map(({ value }) => value))
+  const shown = list.order.arrange(list.narrow(skillFiles), ENOUGH.list).flatMap(({ entries }) => entries.map(({ value }) => value))
   const { search, order } = list.controls
   const whose = sourceLabel(skill)
   const SkillIcon = SKILLS_SECTION.icon
 
   // The files that have a tab: the one that is showing, which is put away by going anywhere else,
   // and any with something typed that has not been saved, which would be lost with it.
-  const showing = showingPath === undefined ? undefined : skill.files.find(({ path }) => path === showingPath)
-  const tabFiles = skill.files.filter((file) => file === showing || unsaved(file))
+  const showing = showingPath === undefined ? undefined : skillFiles.find(({ path }) => path === showingPath)
+  const tabFiles = skillFiles.filter((file) => file === showing || unsaved(file))
   const fileTabs: TabsTab<PageTab>[] = tabFiles.map((file) => ({
     value: `file:${file.path}`,
     // Its name, or all of its path where another that is open has the same name.
@@ -185,8 +203,27 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
   }))
   const [preview, files, settings] = SKILL_TABS
 
+  // Asks the store for a change, saying why where it could not be made; resolves to whether it was.
+  const change = async (doing: string, run: () => Promise<unknown>) => {
+    if (connection?.blocked()) return false
+    setProblem(undefined)
+    try {
+      await run()
+      return true
+    } catch (error) {
+      setProblem(`Couldn’t ${doing}: ${messageOf(error)}`)
+      return false
+    }
+  }
+  // A new name or tag moves it, so its page is at another address from then on.
+  const moving = (run: () => Promise<string>) => async () => {
+    const id = await run()
+    if (id !== skill.id) onMoved(id)
+  }
+
   const rename = (title: string) => {
-    setProblem(skillStore.rename(skill.id, title) ? undefined : 'A skill’s name needs letters or numbers in it, and can’t be longer than 64 characters.')
+    if (!SkillStore.canBeCalled(title)) return setProblem('A skill’s name needs letters or numbers in it, and can’t be longer than 64 characters.')
+    void change('rename it', moving(() => skillStore.rename(skill.id, title)))
   }
 
   const upload = async ({ target }: ChangeEvent<HTMLInputElement>) => {
@@ -199,7 +236,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
     if (tooBig.length > 0) setProblem(`Too big to add: ${tooBig.map(({ name }) => name).join(', ')}. A file can be up to ${formatFileSize(MAX_FILE_BYTES)}.`)
     try {
       const read = await readUploadFiles(chosen.filter((one) => !tooBig.includes(one)))
-      if (read.length > 0) skillStore.putFiles(skill.id, read)
+      if (read.length > 0) void change('add them', () => skillStore.putFiles(skill.id, read))
     } catch (error) {
       setProblem(`Couldn’t read what was chosen: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -226,7 +263,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                   <EditableTitle
                     multiline
                     value={skill.description}
-                    onRename={(description) => skillStore.describe(skill.id, description)}
+                    onRename={(description) => void change('change it', () => skillStore.describe(skill.id, description))}
                     aria-label="What the skill is for"
                     placeholder="What it’s for, which is what the assistant goes by to load it"
                     className="text-center text-pretty"
@@ -251,7 +288,8 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
         >
           <Tabs.Panel value="preview">
             <ul className="flex flex-col gap-3">
-              {skill.files.map((file) => (
+              {filesNote}
+              {skillFiles.map((file) => (
                 <FilePreviewCard
                   key={file.path}
                   path={file.path}
@@ -274,8 +312,10 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                 draft={drafts[file.path]}
                 onDraftChange={(draft) => setDraft(file.path, draft)}
                 onSave={(body) => {
-                  skillStore.saveFile(skill.id, file.path, body)
-                  setDraft(file.path, undefined)
+                  // What was typed stays until it is kept.
+                  void change('save it', () => skillStore.saveFile(skill.id, file.path, body)).then((saved) => {
+                    if (saved) setDraft(file.path, undefined)
+                  })
                 }}
               />
             </Tabs.Panel>
@@ -303,7 +343,8 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
             <input ref={uploadRef} type="file" multiple hidden onChange={(event) => void upload(event)} />
             {/* A folder is chosen whole, which no standard attribute asks for. */}
             <input ref={folderRef} type="file" multiple hidden onChange={(event) => void upload(event)} {...{ webkitdirectory: '' }} />
-            {shown.length === 0 && (
+            {filesNote}
+            {skill.files !== undefined && shown.length === 0 && (
               <p className="flex items-center justify-center gap-3 px-5 text-base text-kumo-subtle">
                 Nothing matches.
                 <Button variant="ghost" onClick={list.showAll}>Show all</Button>
@@ -325,7 +366,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                         href={fileHref?.(file.path)}
                         onSelect={() => onOpenFile(file.path)}
                         onDownload={() => saveBytes(fileBytes(file), fileName(file.path))}
-                        onRemove={mine && !manifest ? () => skillStore.removeFile(skill.id, file.path) : undefined}
+                        onRemove={mine && !manifest ? () => void change('remove it', () => skillStore.removeFile(skill.id, file.path)) : undefined}
                       />
                     )
                   })}
@@ -343,8 +384,13 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                   optional
                   placeholder="No tag"
                   onSave={async (tag) => {
-                    skillStore.setTag(skill.id, tag)
-                    return { saved: true }
+                    if (connection?.blocked()) return { saved: false }
+                    try {
+                      await moving(() => skillStore.setTag(skill.id, tag))()
+                      return { saved: true }
+                    } catch (error) {
+                      return { saved: false, problem: messageOf(error) }
+                    }
                   }}
                 />
               )}
@@ -358,12 +404,16 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                   <ConfirmMenu
                     label="Delete skill"
                     title={`Delete “${skill.name}”?`}
-                    description={`${skill.files.length === 1 ? 'Its file is' : `Its ${skill.files.length} files are`} deleted with it. This can’t be undone.`}
+                    description={`${skillFiles.length < 2 ? 'Its files are' : `Its ${skillFiles.length} files are`} deleted with it. This can’t be undone.`}
                     confirmLabel="Delete"
                     onConfirm={() => {
-                      setDeleted(true)
-                      skillStore.remove(skill.id)
-                      onBack()
+                      void change('delete it', async () => {
+                        setDeleted(true)
+                        await skillStore.remove(skill.id)
+                        onBack()
+                      }).then((done) => {
+                        if (!done) setDeleted(false)
+                      })
                     }}
                   />
                 </SettingRow>

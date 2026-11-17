@@ -1345,6 +1345,9 @@ importers:
         specifier: ^2.9.1
         version: 2.9.1
     devDependencies:
+      '@gadgets/gatekeeper-context':
+        specifier: workspace:*
+        version: link:../gatekeeper-context
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts

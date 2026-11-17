@@ -43,8 +43,8 @@ function Home() {
         value: startsIn,
         onValueChange: setChosenId,
       }}
-      start={(text, files, modelId, formats) =>
-        startConversation(() => (startsIn === undefined ? api.newWorkspace() : api.openWorkspace(startsIn)), text, files, modelId, formats)}
+      start={(text, files, modelId, command, formats) =>
+        startConversation(() => (startsIn === undefined ? api.newWorkspace() : api.openWorkspace(startsIn)), text, files, modelId, command, formats)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
     />
   )

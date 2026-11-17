@@ -1,5 +1,5 @@
 import { TemplateListing } from '@/blocks/TemplateListing'
-import { templateCreator, templateNeeds, templateType, type Template } from './templates'
+import { templateCreator, templateServices, templateType, type Template } from './templates'
 
 export type TemplateEntryProps = {
   template: Template
@@ -20,7 +20,7 @@ export const TemplateEntry = ({ template, onOpenTemplate, templateHref }: Templa
       kind={noun}
       icon={icon}
       creator={templateCreator(template)}
-      connections={templateNeeds(template).map(({ name }) => name)}
+      connections={templateServices(template).map(({ name }) => name)}
       href={templateHref?.(template)}
       onSelect={() => onOpenTemplate(template)}
     />

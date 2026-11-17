@@ -423,11 +423,12 @@ function Gallery() {
           </div>
         </div>
       </Section>
-      <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them)">
+      <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them; a slash offers the user’s skills, from the Library, as there is no workspace yet to list them)">
         <div className="flex h-[32rem] w-full rounded-3xl bg-kumo-base">
           <ChatStart
             greeting="Hello Ada, what should we do today?"
             onSend={previewSend}
+            commands={previewCommands.filter(({ kind }) => kind === 'skill')}
             workspace={{ workspaces: pickerWorkspaces, value: startWorkspace, onValueChange: setStartWorkspace }}
           />
         </div>

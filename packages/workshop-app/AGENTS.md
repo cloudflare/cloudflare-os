@@ -38,8 +38,8 @@ src/
                 Connections page, and the window a service is signed in to in
   settings/     The Settings page (`SettingsPane`), a file for each of its parts, and what they
                 read and write of the user's account
-  skills/       The user's skills (`SkillStore`, in memory for now), the list of them in the
-                settings (`SkillLibrary`) and one skill's page (`SkillPane`)
+  skills/       The user's skills (`SkillStore`, over their Context Library), the list of them in
+                the settings (`SkillLibrary`) and one skill's page (`SkillPane`)
   automations/  What runs by itself in a workspace (`useAutomations`), and the tab that lists it
                 (`AutomationsTab`)
   gadgets/      One gadget's settings page (`GadgetSettingsPane`): what it is bound to, its code,
@@ -275,8 +275,9 @@ other. They are reordered on their tab and on All. `LibraryPane` reads what the 
 The header ends in Explore templates (Explore, on a narrow screen) and New, whose menu ends in the templates too. The templates
 (`/library/templates`, `TemplateStoreView`) are what the backend calls blueprints, the way a store
 lists apps, with Publish at the header's end (`PublishMenu`: the user's own apps, `ownApps`,
-under a field to find one by; choosing one does nothing yet, as a blueprint is made from its app,
-`GadgetClient.createBlueprint()`, with a step this app lacks), and a banner of the organization's
+under a field to find one by; choosing one publishes it under its own title,
+`GadgetClient.createBlueprint()`, and goes to its page: there is no step yet for a description or a
+screenshot), and a banner of the organization's
 own over everything else (`PromoCarousel`, in the workspace colours, moving on by itself while it
 is not pointed at or focused, and not with reduced motion): a tab each (`?tab=`) for its front (Discover: the most used on one line that is
 scrolled along (`ScrollRow`), the latest published two to a line, then some of each kind they
@@ -295,14 +296,21 @@ kind from Kumo's tokens until its publisher gives a screenshot), what it is for,
 needs connected in place of an app's privacy (`ConnectionNeeds`), the facts at length, and others
 of its kind. A section's title is a group of settings' (`text-lg`).
 
-None of the templates is read yet: they are examples (`exampleTemplates.ts`) of the backend's
-`BlueprintPublicInfo` with how much each is used and whether it is the organization's own, which
-it does not say. Their stars last for the visit (`useTemplates`), Use template is out of use until
-there is a way to start something from one (which, for one that needs connections, is
-`newWorkspaceFromBlueprint()` with a setup step this app lacks), and which of its services the
-user has connected is not asked. Read `listFeaturedBlueprints()` and the user's saved ones in their
-place, keep `/blueprint/<id>` public for share links, and do not call starring one "Add to
-library", which lists outputs.
+The templates are the deployment's featured blueprints (`listFeaturedBlueprints()`), which are the
+organization's own, then the user's saved and uploaded ones (`listLibraryBlueprints()`), then those
+they published (`listOwnBlueprints()`, each read from its public record), once each
+(`templatesOf`, plain and tested), held by `TemplateStore` so that the store and a template's page
+show the same. A template's services are named as the deployment's vendors name them. Its stars are
+the backend's `pinned` (`setBlueprintPinned()`, which saves one to the library first), shown at once
+and put back if refused. How much each is used is not said by the backend, so the store's front
+puts the organization's first among the most used, and a template's page leaves Used out; the
+examples (`exampleTemplates.ts`) say it, for the gallery. A template whose link was shared, which
+is not listed, is read on its own (`getBlueprint()`). Use template (`UseTemplate`,
+`UseTemplateDialog`) sets up each binding with the user's own (a connection in its service's form,
+`ConnectResource`; a model, starting as its publisher suggested, `library/templateSetup.ts`), then
+makes it in a new workspace named after it (`newWorkspaceFromBlueprint()`) and shows what it made.
+Making one in a workspace the user has is for the backend to offer. Keep `/blueprint/<id>` public
+for share links, and do not call starring one "Add to library", which lists outputs.
 
 The types are what the old Outputs page had: apps (an output made as no format), then the formats
 the deployment offers (`listOutputFormats()`, `useOutputFormats`), in its order and whether or not
@@ -436,10 +444,23 @@ workspace has settings of its own.
 ## Skills
 
 A skill is instructions the assistant loads when a task calls for them, with the files they refer
-to. The Workshop's API has none of the user's to read or write yet (they are the Context
-Library's, `gatekeeper-context`, which has its own app), so `skills/SkillStore.ts` (plain, tested)
-keeps them in memory for the visit, starting from examples (`exampleSkills.ts`). Its methods are the operations a backend would have: put it over one once there is
-one, and take the examples out.
+to. They are the user's Context Library's (`gatekeeper-context`, see its `AGENTS.md`), which
+`skills/SkillStore.ts` (plain, tested over `MemorySkillsBackend`) reads and writes through the
+management API its app is given (`getGatekeeperApp('context')`'s `ui`, a `ContextApi`). Every
+collection the user can read is listed, its skills flat, the collection as the tag, but for the
+user's own first one (`My skills`), which is no tag. Changing a tag moves the skill, files and all,
+to the user's collection of that name, made for it where there is none: the Context Library has no
+move between collections, so it is made again there and deleted here. A rename moves it to a
+folder of the new name, so both give it another id, which the page goes to. A skill's files are
+read once it is opened. Auto-use is not kept anywhere, so it lasts the visit, as does the title a
+skill was given here while its name is still made from it. A user with no Context Library is told
+so, with the way to turn it on where the deployment offers it. The examples (`exampleSkills.ts`)
+are kept the same way for the scripted chats (`exampleSkillsBackend`).
+
+A new chat's composer offers the user's skills from the Library, as there is no workspace yet to
+list them, by the id the workspace knows each by (`skillCommandOf`); the first message finds it in
+the workspace it goes to (`startConversation`), and says so where that workspace does not offer
+it.
 
 A skill's name and what it is for are kept twice: on the skill, as they are read, and in the
 frontmatter of its `SKILL.md`, as the Agent Skills format has them (`name` in lowercase with

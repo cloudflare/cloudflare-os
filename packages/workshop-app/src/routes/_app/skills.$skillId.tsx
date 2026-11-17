@@ -32,6 +32,8 @@ function SkillPage() {
       file={file}
       onOpenFile={(path) => navigate({ to: '/skills/$skillId', params: { skillId }, search: { file: path }, replace: true, state: true })}
       fileHref={(path) => router.buildLocation({ to: '/skills/$skillId', params: { skillId }, search: { file: path } }).href}
+      // In place, so that going back does not come to where it no longer is.
+      onMoved={(id) => navigate({ to: '/skills/$skillId', params: { skillId: id }, search: { tab: tab === 'preview' ? undefined : tab }, replace: true, state: true })}
       onBack={() => {
         // To the list as it was left, where the skill was opened from it.
         if (router.state.location.state.fromSkillList) return router.history.back()

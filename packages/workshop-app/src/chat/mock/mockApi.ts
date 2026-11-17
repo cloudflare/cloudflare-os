@@ -1,5 +1,6 @@
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { ApiSession } from '@/rpc/ApiContext'
+import { exampleSkillsBackend } from '@/skills/MemorySkillsBackend'
 import { MockOverseer } from './MockOverseer'
 import { AGENT, VIEWER, type Scenario } from './scenario'
 
@@ -27,11 +28,12 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     listWorkspaces: async () => [workspace],
     // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.
     listOutputs: async () => ({ outputs: [], catchingUp: false }),
-    // No gatekeeper has an app here, the scheduler included: automations show without when they run.
-    getGatekeeperApp: async () => null,
+    // The example skills, kept as the Context Library would keep them, for a new chat's composer.
+    // No other gatekeeper has an app here, the scheduler included: automations show without when
+    // they run.
+    ...exampleSkillsBackend().asApi(),
     // No services and no accounts: a pasted link stays as it was written.
     listGatekeeperVendors: async () => [],
-    listAddableGatekeepers: async () => [],
     subscribeConnectedAccounts: (subscriber: { ready: () => void }) => {
       subscriber.ready()
       return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })

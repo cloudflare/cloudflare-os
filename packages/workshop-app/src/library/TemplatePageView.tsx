@@ -13,7 +13,7 @@ import { Shelf } from '@/components/Shelf'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
 import { TemplateEntries } from './TemplateEntries'
-import { templateCreator, templateNeeds, templateType, type Template, type TemplateNeed } from './templates'
+import { templateCreator, templateNeeds, templateServices, templateType, type Template, type TemplateNeed } from './templates'
 
 const count = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
 const day = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short' })
@@ -23,6 +23,8 @@ const date = new Intl.DateTimeFormat('en', { day: 'numeric', month: 'long', year
 export type TemplatePageViewProps = {
   /** The template, or none where there is none of the id asked for. */
   template?: Template
+  /** Said in place of it while there is none to show yet: still being read, or why it could not be. */
+  status?: { loading: true } | { failed: string }
   starred: boolean
   onStarredChange: (starred: boolean) => void
   /** Starts something from it. Until there is a way to, the button is there and out of use. */
@@ -49,7 +51,7 @@ const HEADING = 'text-lg font-medium text-kumo-default'
  * of what it makes, what it is for, the services it has to be connected to, the same facts at
  * length, and others of its kind.
  */
-export const TemplatePageView = ({ template, starred, onStarredChange, onUse, connected, onConnect, related, onOpenTemplate, templateHref, onBack }: TemplatePageViewProps) => {
+export const TemplatePageView = ({ template, status, starred, onStarredChange, onUse, connected, onConnect, related, onOpenTemplate, templateHref, onBack }: TemplatePageViewProps) => {
   const narrow = useNarrowScreen()
   const connectionsId = useId()
   const informationId = useId()
@@ -76,10 +78,14 @@ export const TemplatePageView = ({ template, starred, onStarredChange, onUse, co
   if (!template) {
     return (
       <PageLayout header={header}>
-        <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 pt-8 text-center">
-          <h1 className="text-xl font-medium text-kumo-default">Template not found</h1>
-          <p className="max-w-md text-base text-kumo-subtle">It may have been taken down by whoever published it.</p>
-        </div>
+        {status && 'loading' in status
+          ? <p role="status" className="appears-late pt-8 text-center text-base text-kumo-subtle">Loading the template…</p>
+          : (
+              <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 pt-8 text-center">
+                <h1 className="text-xl font-medium text-kumo-default">{status ? 'Couldn’t load the template' : 'Template not found'}</h1>
+                <p className="max-w-md text-base text-kumo-subtle">{status ? status.failed : 'It may have been taken down by whoever published it.'}</p>
+              </div>
+            )}
       </PageLayout>
     )
   }
@@ -124,9 +130,10 @@ export const TemplatePageView = ({ template, starred, onStarredChange, onUse, co
         <FactStrip
           facts={[
             { label: 'Makes', value: <FormatIcon name={icon} />, detail: noun },
-            { label: 'Used', value: count.format(template.uses), detail: template.uses === 1 ? 'time' : 'times' },
+            // Only where it is known, which the backend does not say yet.
+            ...(template.uses === undefined ? [] : [{ label: 'Used', value: count.format(template.uses), detail: template.uses === 1 ? 'time' : 'times' }]),
             // The logos, as a card shows them, where there are any to show.
-            { label: 'Connections', value: needs.length > 0 ? <ServiceStack label="Needs" services={needs} /> : 'None', detail: names || 'Nothing to connect' },
+            { label: 'Connections', value: needs.length > 0 ? <ServiceStack label="Needs" services={templateServices(template)} /> : 'None', detail: names || 'Nothing to connect' },
             { label: 'Author', value: creator.organization ? <BuildingsIcon aria-hidden="true" /> : <UserIcon aria-hidden="true" />, detail: creator.name },
             { label: 'Updated', value: day.format(lastUpdated), detail: String(lastUpdated.getFullYear()) },
             { label: 'Version', value: version, detail: `Since ${month.format(created)}` },
