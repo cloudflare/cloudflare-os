@@ -116,8 +116,10 @@ export interface InvestigationCompleteHook {
  * It is called for a write this workspace's own agents and gadgets made too. A report that
  * leaves "investigating" calls this and InvestigationCompleteHook, with an event id each. A
  * callback can be called more than once for the same event: key the work by `eventId`, which
- * is the same each time one event is delivered and differs between two writes. It answers
- * within 30 seconds, as IssueReportedHook's does.
+ * is the same each time one event is delivered and differs between two writes. The events of
+ * one report can arrive in any order, and two calls for it can run at once: never keep the
+ * last event's `status` as the report's, and never take two calls for one report to run one
+ * after the other. It answers within 30 seconds, as IssueReportedHook's does.
  */
 export interface IssueReportChangedHook {
   /** Called when the report was written to, at `at`. */
@@ -130,7 +132,9 @@ export interface IssueReportChangedHook {
      * admins alone ("note"), or the links replaced ("links"). */
     change: "status" | "assignment" | "reply" | "note" | "links";
     /** The status the write set, as admins read it, when it set one: on every "status", and
-     * on the reporter's "reply" that reopened the report. */
+     * on the reporter's "reply" that reopened the report. A later write may have set another
+     * by the time this arrives, in an event that arrived first: read the report for the status
+     * it has. */
     status?: "new" | "investigating" | "answered" | "waitingOnReporter" | "withAdmin" |
         "fixSuggested" | "fixInProgress" | "fixProposed" | "closed";
     at: Date;

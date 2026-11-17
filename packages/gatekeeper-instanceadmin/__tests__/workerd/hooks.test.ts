@@ -259,6 +259,10 @@ describe("subscribing", () => {
         "It fires for changes this workspace's own agents and gadgets made too");
     expect(description.description).toContain("an action it queued was applied");
     expect(description.description).toContain("must not answer its own change");
+    // Nor does it promise an order: the status on an event is not where the report stands.
+    expect(description.description).toContain(
+        "The events of one report can arrive in any order, so the status on one may no longer " +
+        "be the report's.");
 
     await ingest(changed("r-unbound", "note"));
     expect(state.firings).toBe(0);
@@ -1036,6 +1040,16 @@ describe("the declarations", () => {
     expect(callback).toContain("never the text of an entry, a name or who made the write");
     expect(callback).toContain("It is called for a write this workspace's own agents and gadgets made too.");
     expect(callback).toContain("calls this and InvestigationCompleteHook, with an event id each");
+  });
+
+  it("say that a report's events keep no order and that an event's status can be stale", () => {
+    expect(docOf(HAND_WRITTEN_TYPES, "export interface IssueReportChangedHook {")).toContain(
+        "The events of one report can arrive in any order, and two calls for it can run at once: " +
+        "never keep the last event's `status` as the report's, and never take two calls for one " +
+        "report to run one after the other.");
+    expect(docOf(HAND_WRITTEN_TYPES, "    status?: ")).toContain(
+        "A later write may have set another by the time this arrives, in an event that arrived " +
+        "first: read the report for the status it has.");
   });
 
   it("say what sends no event, and to read the report rather than wait for one", () => {

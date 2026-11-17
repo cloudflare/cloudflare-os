@@ -97,7 +97,8 @@ const HOOK_DESCRIPTIONS: Record<IssueReportHookKind, HookDescription> = {
       "if it set one, and the time: nothing of the report's text, its thread or who wrote. " +
       "It fires for changes this workspace's own agents and gadgets made too, which is how " +
       "code learns that an action it queued was applied, so a subscriber that writes to a " +
-      "report on each event must not answer its own change.",
+      "report on each event must not answer its own change. The events of one report can " +
+      "arrive in any order, so the status on one may no longer be the report's.",
   },
 };
 

@@ -1207,7 +1207,9 @@ them):
   are one kind of action, for the workspace's owner, whoever in the workspace asked: a claim
   makes the owner the report's assignee and is refused where another admin holds the report. It
   is never a take-over, which only a person makes (see
-  [issue-reports.md](issue-reports.md#the-assignee)).
+  [issue-reports.md](issue-reports.md#the-assignee)). An action refused where it lands, such
+  a claim included, stays pending until a person rejects it, and the connection's later
+  actions wait behind it (see [its limits](issue-reports.md#limits)).
 - **Omitted**: every setter, every passkey method, approving or denying a write request, ending
   an admins' grant, and setting a report's links. They are absent from what the agent is told
   and refused.

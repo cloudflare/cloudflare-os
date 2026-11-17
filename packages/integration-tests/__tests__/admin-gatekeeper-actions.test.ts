@@ -347,6 +347,49 @@ it("lets two admins' workspaces claim one report, and exactly one holds it", asy
   for (const hook of hooks) await mine.ws.disableHook(hook.id);
 });
 
+it("holds what a rule would apply behind a claim that lost, until a person rejects it", async () => {
+  const reporter = await newMember(suite, "lost");
+  const [held, free] = [await fileReport(reporter), await fileReport(reporter)];
+  await graceAdmin.claimIssueReport(held.id);
+  const { ws, connection } = await triageWorkspace("Claims, one lost under a rule", { rules: true });
+
+  // Each call has a rule, so nothing pauses the turn; the first is refused where it lands.
+  const turn = await agentTurn(owner, ws, `
+    ${attempt("lost", claim(held.id))}
+    ${attempt("note", addEntry(free.id, "A note", "admins"))}
+    ${attempt("claim", claim(free.id))}`, { connection });
+  expect(await turn.results())
+      .toEqual({ lost: { value: null }, note: { value: null }, claim: { value: null } });
+  expect(turn.paused()).toBe(false);
+
+  // The refused claim stays pending, and no rule applies the note or the claim behind it.
+  await settle(ws);
+  const [lost] = await pendingActions(ws, 3);
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportAssignment, "pending", false], [TAGS.issueReportNote, "pending", false],
+    [TAGS.issueReportAssignment, "pending", false],
+  ]);
+  expect(await assigneeOf(free.id)).toBeUndefined();
+  expect(await adminThread(free.id)).toEqual([]);
+
+  // A person's approval only repeats the refusal, and still nothing behind it is applied.
+  await expect(ws.approveAction(lost!.id)).rejects.toThrow(ASSIGNED);
+  await settle(ws);
+  await pendingActions(ws, 3);
+
+  // Rejecting it is what lets the rest through, by rule.
+  await ws.rejectAction(lost!.id);
+  await pendingActions(ws, 0);
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportAssignment, "rejected", false], [TAGS.issueReportNote, "approved", true],
+    [TAGS.issueReportAssignment, "approved", true],
+  ]);
+  expect(await assigneeOf(free.id)).toMatchObject({ id: OWNER, via: "gatekeeper" });
+  expect((await adminThread(free.id)).flatMap(({ text, visibility, assignment }) =>
+    assignment ? [] : [[text, visibility]])).toEqual([["A note", "admins"]]);
+  expect(await assigneeOf(held.id)).toMatchObject({ id: GRACE, via: "api" });
+});
+
 it("never lets an agent take a report from a person", async () => {
   const report = await fileReport(await newMember(suite, "kept"));
   await graceAdmin.claimIssueReport(report.id);

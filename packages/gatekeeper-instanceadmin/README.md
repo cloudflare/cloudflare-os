@@ -354,7 +354,8 @@ Workshop holds the approved action to one call of those two methods.
   only the Workshop sets.
 - **`assigned` is a refusal that ends the action** (`TERMINAL_REFUSALS`): another admin holds
   the report, nothing was done, and the action is failed for good rather than left with an
-  outcome nobody knows.
+  outcome nobody knows. Its card stays pending in the Workshop until a person rejects it, and
+  holds the connection's later actions meanwhile (see [Limits](#limits)).
 - **An applied claim of a report the owner already holds, and a release of one nobody holds,
   change nothing**: no thread line and no event.
 
@@ -413,7 +414,11 @@ could only report as an outcome nobody knows.
 Admin API makes before it writes anything (a report that is gone, a full thread, a closed
 report, one another admin holds) fails the action for good; any other failure (a broken call, an
 error with no code) leaves an outcome nobody knows, which is never run again: a person looks at
-the report's thread or the audit log, and rejects the action. A status is claimed like the rest:
+the report's thread or the audit log, and rejects the action. Either way the Workshop keeps the
+action pending until a person rejects it, with nothing on its card that says it failed:
+approving it again answers with the same failure and calls nothing, and a rule's drain stops at
+it each time, so the connection's later actions wait behind it (see [Limits](#limits)). A
+status is claimed like the rest:
 set again after someone had changed the report's status, it would undo their change, with a
 second status line and a second end of an investigation.
 
@@ -627,6 +632,13 @@ what the write was (`ISSUE_REPORT_CHANGES`):
 - **Filing fires "Issue reported" alone.** An image and a grant are what the reporter attaches
   to a report, not writes to its status, assignee, thread or links, and fire nothing, whenever
   they arrive.
+- **A report's events reach a subscriber in no particular order, and several at once.** The
+  report store sends them oldest first, but the driver queues one call's events as due
+  together, and the kit's queue attempts what is due together side by side. So an event's
+  `status` is the one that write set, which may no longer be the report's, and the two events
+  of a write that left `investigating` come in either order. The declarations, the preamble
+  and the hook's description tell a subscriber to read the report rather than keep the last
+  `status` it was sent.
 - **It fires for the subscriber's own writes too**: those of its workspace's agents and
   gadgets, as of an admin, the reporter and every other admin's code. That is how code learns
   that an action it queued was applied: the event arrives once the action was approved and has
@@ -820,6 +832,14 @@ found elsewhere:
 - **A connection's actions apply in order.** A public reply that waits for a person holds back
   that connection's later notes, status changes, assignments and requests, and a triager's
   scoped replies too. Give triage a workspace of its own.
+- **An action refused where it lands holds them back too, until a person rejects it**
+  (`assigned`, `threadFull`, `notFound`). It is never applied, by a rule or by a
+  person, yet the Workshop keeps it pending, looking like any action that waits for a
+  decision: approving it only repeats the refusal. A claim that loses to another admin's is
+  the ordinary case. With a rule for assignments on, the workspace whose claim lost applies no
+  later note, status or claim of this connection until someone rejects the lost claim, and
+  nothing pauses its agent or tells its gadget. The preamble tells agents so, and to read a
+  report's assignee before claiming it.
 - **A status is set over whatever the report has by then.** The action is lent no read, so its
   card names no earlier status.
 - **A status the reporter reads is public.** An approved change of status tells the reporter
@@ -833,10 +853,10 @@ found elsewhere:
   assignment's two methods), **not to a report.** That the call names the report its card
   named is this Worker's to keep (see
   [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
-- **"Report changed" tells every subscribed admin gadget that a report was written to, never
-  what.** A subscriber that writes on every event loops until the per-report bounds on what
-  is written through the gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse
-  it `threadFull`.
+- **"Report changed" tells every subscribed admin gadget that a report was written to and which
+  kind of write it was, never its text or who made it.** A subscriber that writes on every
+  event loops until the per-report bounds on what is written through the gatekeeper
+  (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse it `threadFull`.
 - **Those bounds are per report and per kind, not per admin or per workspace.** The store
   counts what was written through the gatekeeper with no author in the count, so every
   admin's agents and gadgets share them. One subscriber's loop spends a kind's bound on a
@@ -845,10 +865,13 @@ found elsewhere:
 - **A claim through a gadget assigns the workspace's owner**, whoever in that workspace pressed
   its "Assign to me" button.
 - **`fixSuggested` and `fixInProgress` are hidden from the reporter's view, not from what an
-  admin's code may write.** An event carries the status as admins read it, its observation is
-  not flagged as restricted, and a public reply through a report session is applied by a rule
-  in a workspace that holds no restricted data. So a subscriber there can tell a reporter
-  which of the two its report has.
+  admin's code may write, and neither is the fact of a write only admins read.** An event
+  carries the status as admins read it and what the write was, its observation is not flagged
+  as restricted, and a public reply through a report session is applied by a rule in a
+  workspace that holds no restricted data. So a subscriber there can tell a reporter, with no
+  person in between, which of the two its report has, and that and when admins wrote a note,
+  changed the report's assignee or replaced its links: never a note's text, a link or an
+  admin's name, which no event carries.
 - **One queue delivers every hook of the deployment**, 20 deliveries a run, each run as long
   as its slowest callback (up to 30 seconds). One slow or failing subscriber of "Report
   changed" can delay other workspaces' "Issue reported" deliveries by minutes, and by up to

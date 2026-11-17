@@ -214,6 +214,22 @@ describe("the declarations", () => {
         "lands: code reads the report, and never waits on the event alone.");
   });
 
+  it("say that a report's events keep no order, so an event's status is not the report's", () => {
+    expect(PREAMBLE.replace(/\s+/g, " ")).toContain(
+        "The events of one report can arrive in any order, and two calls for it can run at once: " +
+        "an event's status is the one that write set and may no longer be the report's, so a " +
+        "callback reads the report rather than keeping the last status it was sent.");
+  });
+
+  it("say that a refused action stays queued and holds what a rule would apply behind it", () => {
+    expect(PREAMBLE.replace(/\s+/g, " ")).toContain(
+        "An action refused where it lands (a claim of a report another admin holds, an entry on " +
+        "a full thread, a report that is gone) is never applied, and stays queued until a person " +
+        "rejects it: no rule applies anything queued after it through this binding meanwhile. " +
+        "Read a report's assignee before claiming it, and when a read shows that a queued action " +
+        "did nothing, tell the person which action to reject.");
+  });
+
   it("are followed by hand-written ones that name, to find a filed request, only what they declare", () => {
     const recipe = HAND_WRITTEN_TYPES.replace(/\n \* /g, " ");
     expect(recipe).toContain(

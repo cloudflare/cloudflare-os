@@ -222,7 +222,9 @@ an admin, or an admin's code, may write to the reporter. The [hooks](#hooks) car
 admins read it, and receiving an event does not mark a workspace as holding restricted data. So
 a subscriber in a workspace that holds none can learn `fixSuggested` or `fixInProgress` from an
 event and say so in a public reply through a session limited to the report, which a rule there
-applies with no person (see [Limits](#limits)).
+applies with no person. The same goes for the rest of what a "Report changed" event says: that,
+and when, a note for admins alone was written, the report's assignee changed or its links were
+replaced (see [Limits](#limits)).
 
 ## The assignee
 
@@ -317,6 +319,11 @@ owner is one. A hook wakes a gadget's stored callback or an existing chat; it op
   event's `eventId`: the same each time one event is delivered, and different for a report
   investigated again that ends with the status it ended with before, which is a second event
   and can carry the same time.
+- **A subscriber gets a report's events in no particular order, and several at once.** The
+  store sends them oldest first, but the gatekeeper's queue attempts the deliveries that are
+  due together side by side. So the status on an event is the one that write set, which may no
+  longer be the report's, and the two events of a write that left `investigating` come in
+  either order: a subscriber reads the report to learn where it stands.
 - **A callback answers within 30 seconds.** It starts long work and returns; one that takes
   longer is given up on and called again later, so that it holds back other subscribers' events
   for no longer than that (see [Limits](#limits)).
@@ -368,10 +375,16 @@ What the design accepts, stated as it is:
    gatekeeper's to keep to what the approved card said.
 4. **Actions of one connection apply in order.** One that waits for a person holds every later
    action of that connection behind it, a note, a status and an assignment with a rule included.
+   So does an action refused where it lands (`assigned`, `threadFull`, `notFound`). It is never
+   applied, by a rule or by a person, yet it stays pending, looking like any action that
+   waits for a decision, until a person rejects it: approving it only repeats the refusal. A
+   claim that loses to another admin's is the ordinary case. With a rule for assignments on,
+   the workspace whose claim lost applies no later note, status or claim of that connection
+   until someone rejects the lost claim, and nothing pauses its agent or tells its gadget.
 5. **The "Report changed" hook tells every subscribed admin gadget that a report was written
-   to, never what.** A subscriber that writes on every event loops until the per-report bounds
-   on what is written through the gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind)
-   refuse it `threadFull`.
+   to and which kind of write it was, never its text or who made it.** A subscriber that
+   writes on every event loops until the per-report bounds on what is written through the
+   gatekeeper (`MAX_ISSUE_REPORT_THREAD_ENTRIES` for each kind) refuse it `threadFull`.
 6. **Those bounds are per report and per kind, not per admin or per workspace.** Every admin's
    agents and gadgets share them. One subscriber's loop spends a kind's bound on a report for
    all of them, after which only a person can write that kind on that report (a note, a public
@@ -379,10 +392,14 @@ What the design accepts, stated as it is:
 7. **"Assign to me" through a gadget assigns the workspace's owner**, whoever in that workspace
    pressed the button.
 8. **`fixSuggested` and `fixInProgress` are hidden from the reporter's view, not from what an
-   admin's code may write.** An event carries the status as admins read it, its observation is
-   not flagged as restricted, and a public reply through a session limited to the report is
-   applied by a rule in a workspace that holds no restricted data (see
-   [What the reporter reads](#what-the-reporter-reads)).
+   admin's code may write, and neither is the fact of a write only admins read.** An event
+   carries the status as admins read it and what the write was, its observation is not flagged
+   as restricted, and a public reply through a session limited to the report is applied by a
+   rule in a workspace that holds no restricted data (see
+   [What the reporter reads](#what-the-reporter-reads)). So a subscriber there can tell a
+   reporter, with no person in between, which of the two statuses the report has, and that and
+   when admins wrote a note, changed the report's assignee or replaced its links: never a
+   note's text, a link or an admin's name, which no event carries.
 9. **One queue delivers every hook of the deployment.** A run of it attempts 20 deliveries, the
    earliest due first, and lasts as long as its slowest callback: up to 30 seconds. "Report
    changed" fires far more often than the other two hooks: a reporter can write

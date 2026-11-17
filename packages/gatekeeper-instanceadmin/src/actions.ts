@@ -122,10 +122,12 @@ export function requestArgs(action: AdminWriteAction, args: AdminWriteArgs): Adm
 
 /**
  * The coded refusals after which an action can never apply: the Admin API makes each before it
- * writes anything, and no later approval changes it. For an entry, a status or an assignment,
- * the report does not exist, its thread is full, it is closed or another admin holds it; for a
- * request, writes are off, the workspace's id is malformed or the directory does not list it, the
- * deployment has no origin to approve on, too many requests are pending, or content access is off.
+ * writes anything, and the action is not run again, even once what refused it has passed (a
+ * holder who released the report). The Workshop keeps it pending until a person rejects it.
+ * For an entry, a status or an assignment, the report does not exist, its thread is full, it is
+ * closed or another admin holds it; for a request, writes are off, the workspace's id is
+ * malformed or the directory does not list it, the deployment has no origin to approve on, too
+ * many requests are pending, or content access is off.
  */
 export const TERMINAL_REFUSALS: ReadonlySet<string> = new Set([
   ISSUE_REPORT_ERROR_CODES.notFound,

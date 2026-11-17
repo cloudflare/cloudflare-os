@@ -237,6 +237,11 @@ the user who owns this workspace, a deployment admin.
   and releaseIssueReport() assign a report to that admin or release it, whoever in this
   workspace asked, and never take a report another admin holds: compare a report's
   assignee.id with whoami()'s id to tell this workspace's reports from another admin's.
+- An action refused where it lands (a claim of a report another admin holds, an entry on a
+  full thread, a report that is gone) is never applied, and stays queued until a person rejects
+  it: no rule applies anything queued after it through this binding meanwhile. Read a report's
+  assignee before claiming it, and when a read shows that a queued action did nothing, tell
+  the person which action to reject.
 - A view lasts no longer than the session that opened it: its lifetimeSeconds is capped at what the
   session has left, and it stops answering when the session ends. Open a view where you use it.
 - An Admin API method these declarations lack is not available here.
@@ -268,6 +273,9 @@ the user who owns this workspace, a deployment admin.
   lands: code reads the report, and never waits on the event alone.
 - A callback can be called more than once for the same event: it keys its work by the event's
   id (eventId), which is the same each time one event is delivered and never another event's.
+- The events of one report can arrive in any order, and two calls for it can run at once: an
+  event's status is the one that write set and may no longer be the report's, so a callback
+  reads the report rather than keeping the last status it was sent.
 - A callback answers within ${HOOK_CALLBACK_TIMEOUT_MS / 1000} seconds: it starts long work and returns without waiting for it.
   One that takes longer counts as failed and is called again later.
 - A hook wakes a gadget's stored callback or this chat, never a new chat.
