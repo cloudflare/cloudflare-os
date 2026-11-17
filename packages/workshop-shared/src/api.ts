@@ -4160,7 +4160,8 @@ export interface Overseer extends RpcTarget {
   /**
    * Every connection to a service in the workspace, whatever uses it or once did: each with the
    * gadgets bound to it and the chats that read or changed something through it. Models and agent
-   * spawners are not connections to a service, so they are left out.
+   * spawners are not connections to a service, so they are left out, as is a resource the agent
+   * has asked to create until its creation is approved.
    */
   listConnections(): Promise<WorkspaceConnectionInfo[]>;
 

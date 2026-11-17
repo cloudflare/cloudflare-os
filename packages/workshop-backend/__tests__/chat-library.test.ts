@@ -249,6 +249,12 @@ describe("listing a workspace's connections", () => {
       // A deleted chat's, and a hook's, which has none.
       action(2, 12, {from: "agent", chatId: 9});
       action(3, 12, {from: "hook", gadgetId: 100});
+      // A doc the agent has only asked to create is not there yet.
+      gatekeeper(14, "Not made yet", {type: "gatekeeper", vendorId: "google", typeUrlPattern: "https://docs/:id"});
+      impl.storage.actions.put({
+        id: 4, type: "action", action: "create", gatekeeperId: 14, caller: {from: "agent", chatId: 1},
+        createdAt: new Date(4), state: "pending", description: {title: "Create", description: ""},
+      } as never);
 
       using notifyClosed = new NativeRpcStub<() => void>(() => {});
       using client: Overseer = await instance.open(ownerId, "owner-profile", notifyClosed) as never;
@@ -259,6 +265,36 @@ describe("listing a workspace's connections", () => {
           gadgetIds: [], chatIds: []},
         {gatekeeperId: 12, title: "Web Search", vendorId: "websearch", ambient: true, gadgetIds: [], chatIds: []},
       ]);
+    });
+  });
+
+  it("loses a resource a deleted chat's agent asked to create, rejected, and keeps the rest", async () => {
+    let workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
+    await runInDurableObject(workspace, async (instance: OverseerDurableObject) => {
+      let impl = instance.impl;
+      let ownerId = impl.users.newUniqueId().toString();
+      impl.ownerId = ownerId;
+      impl.ensureAmbientCapsules = async () => {};
+      impl.markOutputsDirty = () => {};
+      impl.traceAgentActionApproval = () => {};
+      for (let [id, chatId] of [[10, 1], [11, 2]]) {
+        impl.storage.chatMeta.put({id: chatId, title: `Chat ${chatId}`, started: new Date(chatId), lastActive: new Date(chatId)});
+        impl.storage.gatekeepers.put({id, resourceTitle: "Plan", class: {} as never,
+          creationSpec: {type: "gatekeeper", vendorId: "google", typeUrlPattern: "https://docs/:id"} as never});
+        impl.storage.actions.put({
+          id, type: "action", action: "create", gatekeeperId: id, caller: {from: "agent", chatId},
+          createdAt: new Date(id), state: "pending", description: {title: "Create", description: ""},
+        } as never);
+      }
+
+      using notifyClosed = new NativeRpcStub<() => void>(() => {});
+      using client: Overseer = await instance.open(ownerId, "owner-profile", notifyClosed) as never;
+      await client.deleteChat(1);
+      expect(impl.storage.gatekeepers.get(10)).toBeUndefined();
+      expect(impl.storage.actions.get(10)).toMatchObject({state: "rejected"});
+      // Another chat's is still waiting on its decision.
+      expect(impl.storage.gatekeepers.get(11)).toBeDefined();
+      expect(impl.storage.actions.get(11)).toMatchObject({state: "pending"});
     });
   });
 });

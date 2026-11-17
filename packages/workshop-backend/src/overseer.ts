@@ -5919,6 +5919,11 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Whether a decision on action `id` is in flight (see claimDecision).
+  isDeciding(id: number): boolean {
+    return this.#deciding.has(id);
+  }
+
   // Marks a pending action as "being decided", so that only one approval or rejection of it can be
   // in progress at a time. Throws "Action is not pending" if the action was already approved or
   // rejected, or if another approval or rejection of it is still in progress. The mark is removed
@@ -10947,6 +10952,24 @@ class OverseerImpl implements AgentHooks {
     return {gatekeeperId: id};
   }
 
+  // Reject a pending creation: its connection goes, as disconnecting would (clearing queued pushes'
+  // marks), with every action queued against the simulated resource, none of which can apply now.
+  // Their gatekeeper-side state goes with the facet's storage, so no rejectAction() is called. The
+  // caller holds the creation's decision (claimDecision). Returns the actions it rejected.
+  rejectCreation(id: WorkpieceId, resolvedBy: AiChatAuthorInfo) {
+    let queued = Array.from(this.storage.actions.pendingByGatekeeper.get(id))
+        .filter(record => record.type === "action");
+    this.removeGatekeeper(id);
+    for (let record of queued) {
+      record.state = "rejected";
+      record.appliedAt = new Date();
+      record.resolvedBy = resolvedBy;
+      this.storage.actions.put(record);
+      this.traceAgentActionApproval(record, "denied");
+    }
+    return queued;
+  }
+
   // Whether the gatekeeper's resource is still simulated: its creation is pending.
   creationPending(id: WorkpieceId): boolean {
     return [...this.storage.actions.pendingByGatekeeper.get(id)]
@@ -13585,22 +13608,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     if (action.action === "create") {
-      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
-      // pushes' marks), and rejects every action queued against the simulated resource: none can
-      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
-      // is called.
+      // Rejecting a creation removes its connection and what was queued against it (rejectCreation).
       let profile = await this.#getClientProfile();
       using _decision = this.impl.claimDecision(id);
-      let queued = Array.from(
-          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
-      this.impl.removeGatekeeper(action.gatekeeperId);
-      for (let record of queued) {
-        if (record.type !== "action") continue;
-        record.state = "rejected";
-        record.appliedAt = new Date();
-        record.resolvedBy = profile;
-        this.impl.storage.actions.put(record);
-        this.impl.traceAgentActionApproval(record, "denied");
+      for (let record of this.impl.rejectCreation(action.gatekeeperId, profile)) {
         if (record.caller.from === "agent") {
           this.impl.resumeAgentAfterDecision(record.caller.chatId, record.id);
         }
@@ -14008,7 +14019,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let ids = chatIds.get(action.gatekeeperId) ?? new Set();
       chatIds.set(action.gatekeeperId, ids.add(chatId));
     }
-    return [...storage.gatekeepers.list()].flatMap((record): WorkspaceConnectionInfo[] => {
+    // Not a resource the agent has only asked to create: nothing is there until it is approved.
+    // (Filtered after the listing: reading another index mid-listing would end it.)
+    let records = [...storage.gatekeepers.list()].filter(record => !this.impl.creationPending(record.id));
+    return records.flatMap((record): WorkspaceConnectionInfo[] => {
       let spec = record.creationSpec;
       if (spec?.type !== "gatekeeper" && spec?.type !== "ambient") return [];
       let resourceUrl = record.resourceUrl ?? (spec.type === "gatekeeper" ? spec.resourceUrl : undefined);
@@ -14315,6 +14329,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
     // and provisional binding edges.
     await this.impl.removeChatWorkpieces(chatId);
+    // A resource its agent asked to create that is still waiting goes with it, as rejected: once
+    // the chat is gone it would stay among the workspace's connections, made by nothing. (One
+    // being approved right now is left to become real.)
+    let creations = [...this.impl.storage.actions.byHistoryFilter.get("pending")].filter(record =>
+        record.type === "action" && record.action === "create" &&
+        "chatId" in record.caller && record.caller.chatId === chatId);
+    if (creations.length) {
+      let profile = await this.#getClientProfile();
+      for (let creation of creations) {
+        if (this.impl.storage.actions.get(creation.id)?.state !== "pending" ||
+            this.impl.isDeciding(creation.id)) continue;
+        using _decision = this.impl.claimDecision(creation.id);
+        this.impl.rejectCreation(creation.gatekeeperId, profile);
+      }
+    }
     this.impl.storage.chatMeta.delete(chatId);
     this.impl.storage.chatContext.delete(chatId);
     for (let event of Array.from(this.impl.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
