@@ -123,7 +123,9 @@ export const ADMIN_AGENT_KINDS = {
  *     workspace was made through the admin gatekeeper's connection: what an admins-only note,
  *     a status or an assignment can then carry is what admins can already read. True for those
  *     three kinds alone. A public reply, scoped or not, and both requests wait for a person
- *     there. Never true for a kind whose `autoApprovable` is false.
+ *     there. Never true for a kind whose `autoApprovable` is false. A rule is for a kind on a
+ *     connection, whenever it was turned on: one turned on before the workspace was marked
+ *     applies these kinds after it, and the Workshop says so where the rule is turned on.
  *   - `kind`: what the action carries as ActionDescription.actionKind. Auto-approval rules are
  *     stored under the tag, so a tag is never renamed or reused, and a kind added here takes a
  *     tag no other kind has.

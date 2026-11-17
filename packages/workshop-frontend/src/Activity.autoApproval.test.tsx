@@ -17,6 +17,7 @@ vi.mock('./AuthContext', () => ({
 }))
 
 const { default: Activity } = await import('./Activity')
+const { KEEPS_APPLYING_COPY } = await import('./components/AutoApproveConfirmDialog')
 const { useAutoApprovalChannel } = await import('./features/approvals/autoApprovalChannel')
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -255,6 +256,18 @@ describe('Activity auto-approval rules in a restricted workspace', () => {
     await panel.row(NOTE).toggle()
 
     expect([...panel.enabled]).toEqual([])
+  })
+
+  it('says which rules keep applying once the workspace has read sensitive data, before it has',
+      async () => {
+    const panel = await mountAdminRules([], [NOTE, REPLY], false)
+
+    expect(panel.row(NOTE).text).toContain(KEEPS_APPLYING_COPY)
+    expect(panel.row(REPLY).text).not.toContain('keeps applying')
+
+    // Once it has, the reply's row says its rule stopped, and the note's needs no telling.
+    await panel.render(true)
+    expect(panel.row(NOTE).text).not.toContain('keeps applying')
   })
 
   it('says a rule its connection no longer offers still applies where no latch is set', async () => {

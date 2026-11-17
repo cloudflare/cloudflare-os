@@ -1,4 +1,6 @@
-import { ADMIN_AGENT_ACTIONS, adminAgentAction } from '@gadgets/workshop-shared/admin-agent'
+import {
+  ADMIN_AGENT_ACTIONS, ADMIN_GATEKEEPER_VENDOR_ID, adminAgentAction,
+} from '@gadgets/workshop-shared/admin-agent'
 import type { PendingChange } from './pendingChangeGroups'
 
 /** Which auto-approval rules the workspace holds, and which kinds a rule can apply at all. */
@@ -71,8 +73,23 @@ export function canOfferAlwaysApprove(entry: Candidate, rules: AutoApprovalRules
  * answer, which also depends on the connection and on what the workspace has read.
  */
 export function mayApplyWhileRestricted(entry: Pick<Candidate, 'description'>): boolean {
-  const kind = adminAgentAction(entry.description.actionKind?.tag)
+  return tagAppliesWhileRestricted(entry.description.actionKind?.tag)
+}
+
+function tagAppliesWhileRestricted(tag: string | undefined): boolean {
+  const kind = adminAgentAction(tag)
   return kind !== undefined && ADMIN_AGENT_ACTIONS[kind].autoApprovableWhileRestricted
+}
+
+/**
+ * Whether a rule for `tag` on a connection of `vendorId` is one the person turning it on is
+ * told keeps applying once the workspace has read sensitive data: a kind the kernel's table
+ * lets a rule apply under the restricted-data latch, on the admin gatekeeper's connection. A
+ * connection whose vendor is not known here is taken for that one: its tags are its own.
+ */
+export function keepsApplyingWhileRestricted(tag: string, vendorId: string | undefined): boolean {
+  return (vendorId === undefined || vendorId === ADMIN_GATEKEEPER_VENDOR_ID) &&
+    tagAppliesWhileRestricted(tag)
 }
 
 /**

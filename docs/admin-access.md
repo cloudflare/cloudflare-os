@@ -1289,6 +1289,11 @@ another connection's restricted read ends every such answer
 Auto-approval tab lets a rule be turned on, only for the kinds one still applies there; a rule
 that applies nothing says so in the tab and can still be turned off.
 
+A rule for one of the three kinds that was turned on before the workspace was marked keeps
+applying after the admin connection's reads mark it, with no second confirmation: a rule is
+for a kind on a connection. The Auto-approval tab and the "Always approve" confirmation say
+so for these kinds in a workspace that is not marked yet.
+
 **Where the person behind a call is found.** Every record names the owner, so:
 
 - for an agent's turn, the chat the record names says who prompted it;
@@ -2201,7 +2206,10 @@ Frontend suites, in `packages/workshop-frontend/src/`:
   record carries, and the access setting's Content option under each cap.
 - `Activity.test.tsx` and `Activity.autoApproval.test.tsx` also cover a marked workspace:
   "Always approve" offered, and a rule's switch usable, only for the kinds a rule still applies
-  there, and a rule that applies nothing saying so and staying revocable.
+  there, and a rule that applies nothing saying so and staying revocable; a rule the stored
+  list already holds not offered again; every offer withdrawn once the workspace's metadata
+  says no rule applies; and the sentence that tells whoever turns on a rule for one of the
+  three kinds that it keeps applying once the workspace is marked.
   `features/approvals/autoApprovalRules.test.ts`, `useRuleCatalog.test.tsx` and
   `useStandingRules.test.tsx` cover the answer both are built from, and
   `features/approvals/PendingChangesTray.browser.test.tsx` the rule list's rows and keyboard

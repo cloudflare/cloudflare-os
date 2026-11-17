@@ -519,6 +519,16 @@ deployment admins can already read, and admins are who reads a note and a change
 A status is read by the report's reporter too, which is a limit this design accepts (see
 [Limits](#limits)).
 
+**A rule turned on before the first read keeps applying after it.** A rule is for a kind on
+a connection, not for the workspace as it was when the rule was turned on. One turned on for
+a note, a status or an assignment in a workspace that had read nothing applies those actions
+once the workspace has read through this connection, with no second confirmation, where a
+rule for any other kind stops. No rule for these kinds is older than the exception: the
+kinds arrive with this gatekeeper. The Workshop tells whoever turns such a rule on in a
+workspace that is not marked, in the Auto-approval tab and in the "Always approve"
+confirmation: "This rule keeps applying after this workspace reads sensitive data through
+this connection." It does until another connection's restricted data is read there.
+
 **The exception is the Workshop's, not this Worker's.** Nothing in an action's description or
 in this Worker's declarations asks for it, and no other vendor can have it. The Worker offers
 a rule for each of the five kinds whose verdict is `true` (`getAutoApprovableActions()`),
