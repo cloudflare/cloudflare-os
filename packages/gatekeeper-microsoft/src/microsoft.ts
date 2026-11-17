@@ -228,21 +228,24 @@ function idClaims(idToken: string | undefined, clientId: string): IdClaims {
  * Reads the signed-in user and their tenant's SharePoint host. The host comes from the root site;
  * a user with no SharePoint license gets a 403 or 404 there and connects without one, to be told
  * so when they try to bind something. A multi-geo tenant has a host per geography, and the root
- * site is in its first, so the address of the user's own OneDrive is read for their geography's:
- * `mySite`, since reading the drive itself would create one for a user who has none. Connecting
- * doesn't need it, so a failure there only leaves that host unlearned. The other geographies' hosts
- * stay unknown: Graph lists them for an application, not for a user.
+ * site is in its first, so the user's own OneDrive is read for their geography's. It is the drive
+ * that is read, whose address is Microsoft's to say, not the profile's `mySite`, which the user
+ * can edit; and since reading a drive creates one for a user who has none, only a grant that
+ * reaches OneDrive reads it. Connecting doesn't need it, so a failure there only leaves that host
+ * unlearned. The other geographies' hosts stay unknown: Graph lists them for an application, not
+ * for a user.
  */
-async function fetchIdentity(accessToken: string, tenantId: string): Promise<StoredIdentity> {
-  const api = new GraphApi(accessToken);
-  const [me, root, mySite] = await Promise.all([
+async function fetchIdentity(grant: Pick<PublicGrant, "accessToken" | "scopes">, tenantId: string): Promise<StoredIdentity> {
+  const api = new GraphApi(grant.accessToken);
+  const [me, root, drive] = await Promise.all([
     api.get<unknown>("/me", { query: { $select: "id,displayName,userPrincipalName,mail" } }).then(parseMe),
     api.find<unknown>("/sites/root", { query: { $select: SITE_SELECT } }),
-    api.find<{ value?: unknown }>("/me/mySite").catch(() => null),
+    grantedSharePoint(grant.scopes)?.oneDrive
+      ? api.find<{ webUrl?: unknown }>("/me/drive", { query: { $select: "webUrl" } }).catch(() => null) : null,
   ]);
   const host = root === null ? null : parseSharePointHost(new URL(parseSite(root).webUrl).hostname);
-  const oneDrive = typeof mySite?.value === "string" && URL.canParse(mySite.value)
-    ? parseSharePointHost(new URL(mySite.value).hostname) : null;
+  const oneDrive = typeof drive?.webUrl === "string" && URL.canParse(drive.webUrl)
+    ? parseSharePointHost(new URL(drive.webUrl).hostname) : null;
   return {
     tenantId,
     objectId: me.id,
@@ -629,7 +632,7 @@ export class UserAccount extends DurableObject<Env> {
 
     let identity: StoredIdentity;
     try {
-      identity = await fetchIdentity(grant.accessToken, claims.tid);
+      identity = await fetchIdentity(grant, claims.tid);
     } catch (error) {
       throw new Error("Could not read which Microsoft 365 account authorized this connection. Please try again.",
         { cause: error });
@@ -743,7 +746,7 @@ export class UserAccount extends DurableObject<Env> {
     if (Date.now() - stored.fetchedAt < IDENTITY_TTL_MS) return stored;
     try {
       const { creds } = await this.#creds.snapshot(this.#refresh, { notify: this.#notify });
-      const fresh = await fetchIdentity(creds.accessToken, stored.tenantId);
+      const fresh = await fetchIdentity(creds, stored.tenantId);
       if (fresh.objectId !== stored.objectId) {
         logger.error("Microsoft identity changed under a pinned connection", { event: "microsoft.identity.changed" });
         return stored;

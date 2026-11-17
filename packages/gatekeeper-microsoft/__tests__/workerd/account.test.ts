@@ -106,7 +106,7 @@ describe("first connect", () => {
   it("learns a multi-geo tenant's SharePoint name in the user's geography, and resolves a link on its host", async () => {
     const graph = new FakeGraph().install();
     const oneDrive = "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/Documents";
-    graph.on("GET", /^\/v1\.0\/me\/mySite/, () => json({ value: "https://contosoeur-my.sharepoint.com/personal/phillip_contoso_com/" }));
+    graph.on("GET", /^\/v1\.0\/me\/drive\?/, () => json({ webUrl: oneDrive }));
     const { id } = await firstConnect(graph);
     expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ sharePointTenant: "contoso", sharePointGeoTenant: "contosoeur" });
 
@@ -128,9 +128,9 @@ describe("first connect", () => {
     expect(graph.count("GET", /\/shares\//)).toBe(asked);
   });
 
-  it("connects without the user's geography when their OneDrive's address can't be read", async () => {
+  it("connects without the user's geography when their OneDrive can't be read", async () => {
     const graph = new FakeGraph().install();
-    graph.on("GET", /^\/v1\.0\/me\/mySite/, () => json({ error: { code: "invalidRequest", message: "Not ready." } }, { status: 400 }));
+    graph.on("GET", /^\/v1\.0\/me\/drive\?/, () => json({ error: { code: "invalidRequest", message: "Not ready." } }, { status: 400 }));
     const { id, result } = await firstConnect(graph);
     expect(result).toHaveProperty("ok.handoff");
     const identity = unwrap<Record<string, unknown>>(await hooks().account(id, "getIdentity"));
@@ -401,6 +401,16 @@ describe("identity", () => {
     graph.on("GET", /^\/v1\.0\/sites\/root/, () => json({ error: { code: "accessDenied", message: "No license." } }, { status: 403 }));
     expect(unwrap(await hooks().account(id, "getIdentity")))
       .toMatchObject({ sharePointTenant: "contoso", sharePointGeoTenant: "contosoeur" });
+  });
+
+  it("doesn't read the OneDrive, which would create one, under a grant that can't reach it", async () => {
+    const graph = new FakeGraph().install();
+    const id = await seedAccount(graph, PHILLIP, {
+      scopes: ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/Mail.Read", "openid"], identity: { fetchedAt: 0 },
+    });
+    expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ name: "Phillip", sharePointTenant: "contoso" });
+    expect(graph.count("GET", /^\/v1\.0\/me\?/)).toBe(1);
+    expect(graph.count("GET", /^\/v1\.0\/me\/drive/)).toBe(0);
   });
 
   it("reports no resources for a grant without SharePoint", async () => {
