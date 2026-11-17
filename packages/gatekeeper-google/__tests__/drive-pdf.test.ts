@@ -4461,11 +4461,11 @@ describe("pdfToText reading a Gmail attachment", () => {
     await failure(withText(fakeRenderer([drawn([11]), TEXT_PAGE, refusedAs("empty-work")]).renderer));
     await failure(withText(undefined, ({ shade }) =>
       shade === 32 ? new Response(JSON.stringify({ internalCode: 8006 }), { status: 400 }) : [`band ${shade}`]));
-    // And a scan's text, and such a PDF's, that sit unread for a minute.
+    // And a scan's text that sits unread for a minute.
     vi.useFakeTimers();
-    let idle = [await gmailPdf(ocrAi().ai), await withText()];
+    let idle = await gmailPdf(ocrAi().ai);
     await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
-    for (let text of idle) await failure(Promise.resolve(text));
+    await failure(Promise.resolve(idle));
 
     expect(said.map(error => (error as Error | undefined)?.message)).toEqual([
       GMAIL_CONVERSION_FAILED, GMAIL_TRANSCRIPTION_FAILED, ENCRYPTED, GMAIL_CHANGED, undefined,
@@ -4473,7 +4473,7 @@ describe("pdfToText reading a Gmail attachment", () => {
       expect.stringContaining(unread("fax (CCITT)")),
       expect.stringContaining("which is not available on this deployment"), ENCRYPTED,
       undefined, undefined, undefined, undefined,
-      IDLE, IDLE,
+      IDLE,
     ]);
     let lines = [console.info, console.warn].flatMap(log => vi.mocked(log).mock.calls)
       .map(([line]) => line as Record<string, string>);

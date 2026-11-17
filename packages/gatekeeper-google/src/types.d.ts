@@ -251,9 +251,9 @@ export type GmailPdfText = {
    * ahead of you also when you never read it:
    * four for most pages that are drawn and up to eight for a closely written one, more when a
    * part of it is asked for again, and one for a page read as the file stores it. So stop reading, and cancel, to stop paying for pages you
-   * do not need. Read the text straight away and without long pauses: one whose reading may
-   * read the attachment again is ended with an error after a minute with nothing moving,
-   * because it was left unread or the model stopped answering. It also errors when the
+   * do not need. Read the text straight away and without long pauses: a scan's, and any other's
+   * once a page of it is being read by the model, is ended with an error after a minute with
+   * nothing moving, because it was left unread or the model stopped answering. It also errors when the
    * attachment cannot be read again as `readPdf()` read it, as it is read from Gmail again
    * while the text is, which a draft's attachment cannot be once its draft has changed; when
    * the model fails on a page of a scanned PDF; and when a scanned PDF's pages have to be drawn
