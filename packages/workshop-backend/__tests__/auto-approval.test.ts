@@ -607,4 +607,16 @@ describe("autoApprovalRule", () => {
         .toEqual(ENABLER);
     expect(autoApprovalRule(storage, GK, described("issueReportScopedReply"))).toBeUndefined();
   });
+
+  it("gives a push its rule, and none while the restricted-data latch is set", () => {
+    let storage = makeStorage();
+    enableRule(storage);
+    let push = eligibleDescription({ pushedCommits: ["0123456789abcdef0123456789abcdef01234567"] });
+    // Without the latch the rule is the push's, so it is the latch that withholds it below.
+    expect(autoApprovalRule(storage, GK, push)?.enabledBy).toEqual(ENABLER);
+    // A push queued from a restricted workspace waits for the person who reads its commits,
+    // whatever the gatekeeper declares and whatever rules the workspace holds.
+    storage.containsRestrictedData.put(true);
+    expect(autoApprovalRule(storage, GK, push)).toBeUndefined();
+  });
 });

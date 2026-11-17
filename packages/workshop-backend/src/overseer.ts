@@ -7044,19 +7044,6 @@ class OverseerImpl implements AgentHooks {
           "removed from this workspace.");
     }
 
-    // Restricted mode: the approver vouches for the text they read, and a push's commits cannot
-    // be reviewed as text here, so a push is refused outright until there is a UI to review
-    // commits. Any other action pends for a person unless ruleApplies() lets a rule apply it;
-    // one whose description is not complete (ActionDescription.descriptionIsComplete) is flagged
-    // to the approver rather than refused.
-    // The message reaches the agent as the tool error.
-    if (this.storage.containsRestrictedData.get() && description.pushedCommits?.length) {
-      throw new Error(
-          "This workspace has observed sensitive data. To prevent leaks, an action is only accepted " +
-          "when the approver can review everything it will send, and a git push cannot be " +
-          "reviewed as of yet.");
-    }
-
     // Push authorization (see ActionDescription.pushedCommits): before anything is queued,
     // verify that every declared head's ancestry reaches a commit proven on this gatekeeper's
     // remote. This is the chokepoint that makes an accidental push to an unrelated remote fail
@@ -7067,7 +7054,6 @@ class OverseerImpl implements AgentHooks {
     }
 
     let actionId = this.storage.nextActionId.get();
-    this.storage.nextActionId.put(actionId + 1);
 
     let record: ActionRecord = {
       id: actionId,
@@ -7085,9 +7071,22 @@ class OverseerImpl implements AgentHooks {
     // The marking walk stamps the verified push closure "pending push" -- the read grant that
     // lets the gatekeeper simulate the queued push -- in the same transaction that persists the
     // action record, so the marks and the action can never disagree.
+    //
+    // Restricted mode: the approver vouches for what they read, so a push is queued only when
+    // everything it will send reads as text (assertPushReadable). The check runs over the marks
+    // just written, in their transaction: a refusal leaves no marks, no record and no used id,
+    // and reaches the agent as the tool error. An accepted push sends exactly what was judged,
+    // since marks grow only when an absent marked object arrives, and none is absent. Any other
+    // action pends for a person unless ruleApplies() lets a rule apply it; one whose description
+    // is not complete (ActionDescription.descriptionIsComplete) is flagged to the approver rather
+    // than refused.
     this.storage.transaction(() => {
+      this.storage.nextActionId.put(actionId + 1);
       if (description.pushedCommits !== undefined && description.pushedCommits.length > 0) {
         this.gitCache.markPushClosure(gatekeeperId, actionId, description.pushedCommits);
+        if (this.storage.containsRestrictedData.get()) {
+          this.gitCache.assertPushReadable(actionId, description.pushedCommits);
+        }
       }
       this.storage.actions.put(record);
     });
