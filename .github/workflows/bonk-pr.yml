@@ -210,4 +210,4 @@ jobs:
           # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
           # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
           # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.
-          opencode_version: 1.18.33
+          opencode_version: 1.19.6
