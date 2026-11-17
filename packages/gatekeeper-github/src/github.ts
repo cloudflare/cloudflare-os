@@ -561,7 +561,9 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
     }
     case "push": {
       const creating = action.expectedOldSha === ZERO_OID;
-      const description = creating
+      // The sentence names the branch through `codeSpan`, which is lossy; the ref this push
+      // moves and both heads are the fields, which show each exactly.
+      const builder = buildDescription(creating
         ? `Push commit ${codeSpan(action.newSha)} to ${repo}, ` +
           `creating branch ${codeSpan(action.branch)}.`
         : `Push commit ${codeSpan(action.newSha)} to branch ${codeSpan(action.branch)} of ${repo}, ` +
@@ -570,10 +572,13 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
           (action.gatedBranch === true
             ? ` Branch ${codeSpan(action.branch)} is the repository's default branch or a protected ` +
               `branch, the repository is empty, or GitHub could not be asked which.`
-            : "");
+            : ""))
+        .inline("Branch", action.branch);
+      if (!creating) builder.inline("Current head", action.expectedOldSha);
       // The commits are reviewed through the Workshop's push review, not this text, so no
       // completeness claim.
-      return { description };
+      const { description, fields } = builder.inline("New head", action.newSha).finish();
+      return { description, fields };
     }
   }
 }

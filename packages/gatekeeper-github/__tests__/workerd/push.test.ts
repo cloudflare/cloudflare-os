@@ -459,6 +459,61 @@ describe("queue time", () => {
   });
 });
 
+// A push's card binds the ref move the approver agrees to. Its sentence names the branch in a
+// code span, which drops backticks, clips at 120 characters and leaves an invisible character
+// invisible, so the branch and both heads are fields, which show each exactly.
+describe("card", () => {
+  /** Queues one push of HEAD1 to `branch` and returns the description it was submitted with. */
+  async function card(branch: string, exists = true) {
+    const github = new FakeGitHub();
+    github.branches.set("main", BASE);
+    if (exists) github.branches.set(branch, BASE);
+    github.install();
+    const gk = await repoGatekeeper();
+    const queue = new TestApprovalQueue();
+    await queuePush(gk, new TestGitCache().withAncestry(BASE, HEAD1), queue, branch, HEAD1);
+    return queue.submitted[0].description;
+  }
+
+  it("names the branch and both heads in fields, and never claims to be complete", async () => {
+    const pushed = await card("feature");
+    expect(pushed.fields).toEqual([
+      { label: "Branch", kind: "inline", value: "feature" },
+      { label: "Current head", kind: "inline", value: BASE },
+      { label: "New head", kind: "inline", value: HEAD1 },
+    ]);
+    expect(pushed.description).toContain(`to branch \`feature\` of ${OWNER}/${REPO}`);
+    expect(pushed.descriptionIsComplete).not.toBe(true);
+  });
+
+  it("has no current head for a push that creates the branch", async () => {
+    const pushed = await card("feature", false);
+    expect(pushed.fields).toEqual([
+      { label: "Branch", kind: "inline", value: "feature" },
+      { label: "New head", kind: "inline", value: HEAD1 },
+    ]);
+    expect(pushed.descriptionIsComplete).not.toBe(true);
+  });
+
+  it("shows whole a branch name its sentence cannot: backticks, an invisible character, " +
+     "a long name", async () => {
+    const ticked = await card("release`s");
+    expect(ticked.description).toContain("to branch `releases` of");
+    expect(ticked.fields?.[0]).toEqual({ label: "Branch", kind: "inline", value: "release`s" });
+
+    // A zero-width space makes a second branch that reads as `main`: the field escapes it.
+    const hidden = await card("ma\u200bin");
+    expect(hidden.description).toContain("to branch `ma\u200bin` of");
+    expect(hidden.fields?.[0]).toEqual({ label: "Branch", kind: "json", value: '"ma\\u200bin"' });
+
+    const long = `${"a".repeat(150)}/tail`;
+    const clipped = await card(long);
+    expect(clipped.description).not.toContain("tail");
+    expect(clipped.fields?.[0]).toEqual({ label: "Branch", kind: "text", value: long });
+    expect(clipped.descriptionIsComplete).not.toBe(true);
+  });
+});
+
 describe("auto-approval", () => {
   /** Queues one push and returns the gate flag recorded on it and the verdict it was submitted with. */
   async function verdict(github: FakeGitHub, branch: string, force = false) {
