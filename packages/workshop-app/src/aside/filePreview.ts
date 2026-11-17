@@ -8,21 +8,21 @@ import { isSvgImage, looksLikeSvg, SVG_TYPE } from '@/files/svgImage'
  * or not at all. The type is never the file's own word for itself unless it is one of the kinds
  * the browser only displays: a file that says it is a page is shown as text, and never run. An
  * image is pixels (`isRasterImage`), or an SVG, which is a page too and so is only ever shown as
- * an image from an address of no origin (`svgImage.ts`). A Word document, PowerPoint deck or Excel
- * workbook (the Open XML formats) is drawn here in its own layout from its bytes, and a CSV or TSV
- * as a grid.
+ * an image from an address of no origin (`svgImage.ts`). A PDF is drawn here page by page from its
+ * bytes, a Word document, PowerPoint deck or Excel workbook (the Open XML formats) in its own layout,
+ * and a CSV or TSV as a grid.
  */
 export type FilePreview =
-  | { kind: 'image' | 'pdf' | 'audio' | 'video'; type: string }
+  | { kind: 'image' | 'audio' | 'video'; type: string }
   | { kind: 'markdown' | 'text'; text: string }
-  | { kind: OfficeKind }
+  | { kind: DrawnKind }
   | { kind: 'none' }
 
 /** The files drawn from their bytes by this app's own previewers. */
-export type OfficeKind = 'document' | 'slides' | 'workbook' | 'delimited'
+export type DrawnKind = 'pdf' | 'document' | 'slides' | 'workbook' | 'delimited'
 
-export const isOfficeKind = (kind: FilePreview['kind']): kind is OfficeKind =>
-  kind === 'document' || kind === 'slides' || kind === 'workbook' || kind === 'delimited'
+export const isDrawnKind = (kind: FilePreview['kind']): kind is DrawnKind =>
+  kind === 'pdf' || kind === 'document' || kind === 'slides' || kind === 'workbook' || kind === 'delimited'
 
 const startsWith = (bytes: Uint8Array, signature: number[], at = 0) => signature.every((byte, index) => bytes[at + index] === byte)
 
@@ -76,7 +76,7 @@ export const previewOf = (file: { name: string; mimeType: string }, bytes: Uint8
       if (sniffed?.startsWith('image/')) return { kind: 'image', type: sniffed }
       return asText(file.name, mimeType, bytes)
     case 'pdf':
-      return sniffed === 'application/pdf' ? { kind: 'pdf', type: sniffed } : { kind: 'none' }
+      return sniffed === 'application/pdf' ? { kind: 'pdf' } : { kind: 'none' }
     case 'audio':
       return { kind: 'audio', type: mimeType.startsWith('audio/') ? mimeType : 'audio/mpeg' }
     case 'video':
@@ -94,7 +94,7 @@ export const previewOf = (file: { name: string; mimeType: string }, bytes: Uint8
     }
     case 'file':
       // It says nothing useful about itself, so its bytes say.
-      if (sniffed === 'application/pdf') return { kind: 'pdf', type: sniffed }
+      if (sniffed === 'application/pdf') return { kind: 'pdf' }
       if (sniffed) return { kind: 'image', type: sniffed }
       return asText(file.name, mimeType, bytes)
     default:

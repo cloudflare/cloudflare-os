@@ -1,0 +1,72 @@
+/*
+ * pdf.js's own rules for the text it lays over a drawn page (`web/pdf_viewer.css`), only those a
+ * page shown here uses: the text is transparent and in the place of what is drawn beneath it, so it
+ * can be selected, copied and found with the browser's find.
+ */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+
+  :is(span, br) {
+    position: absolute;
+    color: transparent;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+    user-select: text;
+  }
+
+  > :not(.markedContent),
+  .markedContent span:not(.markedContent) {
+    z-index: 1;
+    --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1;
+    --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+  }
+
+  .markedContent {
+    display: contents;
+  }
+
+  span[role='img'] {
+    user-select: none;
+    cursor: default;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, AccentColor, transparent 50%);
+    color: transparent;
+  }
+
+  br::selection {
+    background: transparent;
+  }
+
+  /* Past the last line, so that dragging below the text selects to its end, not back to the top. */
+  .endOfContent {
+    position: absolute;
+    inset: 100% 0 0;
+    z-index: 0;
+    display: block;
+    cursor: default;
+    user-select: none;
+  }
+
+  &.selecting .endOfContent {
+    top: 0;
+  }
+}

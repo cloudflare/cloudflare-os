@@ -8,7 +8,7 @@ const PDF = text('%PDF-1.7\n')
 describe('previewOf', () => {
   it('shows images, PDFs, audio and video as the browser does', () => {
     expect(previewOf({ name: 'a.png', mimeType: 'image/png' }, PNG)).toEqual({ kind: 'image', type: 'image/png' })
-    expect(previewOf({ name: 'a.pdf', mimeType: 'application/pdf' }, PDF)).toEqual({ kind: 'pdf', type: 'application/pdf' })
+    expect(previewOf({ name: 'a.pdf', mimeType: 'application/pdf' }, PDF)).toEqual({ kind: 'pdf' })
     expect(previewOf({ name: 'a.wav', mimeType: 'audio/wav' }, new Uint8Array(4))).toEqual({ kind: 'audio', type: 'audio/wav' })
     expect(previewOf({ name: 'a.mp4', mimeType: 'video/mp4' }, new Uint8Array(4))).toEqual({ kind: 'video', type: 'video/mp4' })
   })
@@ -57,7 +57,7 @@ describe('previewOf', () => {
 
   it('goes by the bytes for a file that does not say what it is', () => {
     expect(previewOf({ name: 'File', mimeType: '' }, PNG)).toEqual({ kind: 'image', type: 'image/png' })
-    expect(previewOf({ name: 'File', mimeType: 'application/octet-stream' }, PDF)).toEqual({ kind: 'pdf', type: 'application/pdf' })
+    expect(previewOf({ name: 'File', mimeType: 'application/octet-stream' }, PDF)).toEqual({ kind: 'pdf' })
     expect(previewOf({ name: 'File', mimeType: '' }, text('plain'))).toEqual({ kind: 'text', text: 'plain' })
     expect(previewOf({ name: 'File', mimeType: '' }, new Uint8Array([0, 1, 2]))).toEqual({ kind: 'none' })
   })

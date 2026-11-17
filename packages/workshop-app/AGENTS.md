@@ -633,9 +633,12 @@ coloured once `highlightCode` (Lezer's parsers, imported only then) has read it,
 `--color-code-*` tokens of `theme.css`. The `worktree` scenario plays one.
 
 A file is shown as what it is (`aside/filePreview.ts`, tested; `FileView` draws each kind): an
-image, a PDF in the browser's own viewer, audio, video, Markdown, and text or code as written.
-A Word document, PowerPoint deck or Excel workbook (the Open XML formats only) is drawn in its own
-layout from its bytes, and a CSV or TSV as a grid (`blocks/file-preview/`, `OfficePreview`): read
+image, audio, video, Markdown, and text or code as written. A PDF is drawn page by page with
+pdf.js (`PdfPreview`), white sheets on the pane as a Word document's are, each drawn only while near
+the screen and given up again far from it, with its text laid over it to select and find
+(`pdfTextLayer.css`, pdf.js's own rules) and its web links followed. A Word document, PowerPoint
+deck or Excel workbook (the Open XML formats only) is drawn in its own layout from its bytes, and a
+CSV or TSV as a grid (`blocks/file-preview/`, `DrawnPreview`): read
 in a worker (`officeReader.ts`) by `@gadgets/office-content`, so a crafted file stalls only the
 worker, and each previewer loaded on first use. A file's tile in a message or the composer shows a
 glimpse of its first page, slide or sheet, or of a PDF (pdf.js) or text, made once the tile nears

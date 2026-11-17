@@ -10,7 +10,7 @@ import { FileView } from '@/blocks/FileView'
 import { LibraryRow } from '@/blocks/LibraryRow'
 import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceRow } from '@/blocks/WorkspaceRow'
-import { BUDGET_XLSX, Q3_PLAN_DOCX, ROADMAP_PPTX } from '@/chat/mock/officeFiles'
+import { BUDGET_XLSX, Q2_REVIEW_PDF, Q3_PLAN_DOCX, ROADMAP_PPTX } from '@/chat/mock/officeFiles'
 import { groupByTime } from '@/chat/timeGroups'
 import { GroupedList, type GroupedListGroup } from '@/components/GroupedList'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -147,11 +147,12 @@ export const CardBlocksPreview = () => {
           <WorkspaceRowsPreview />
         </Column>
       </Section>
-      <Section title="FileView (a file in the aside or on its own page: an image, Markdown, text or code as it was written, a Word document, PowerPoint deck and Excel workbook in their own layout, a CSV as a grid, and one that cannot be shown here, which offers the download)">
+      <Section title="FileView (a file in the aside or on its own page: an image, Markdown, text or code as it was written, a PDF page by page, its text selectable and its link followed, with the page in view at the bottom, a Word document, PowerPoint deck and Excel workbook in their own layout, a CSV as a grid, and one that cannot be shown here, which offers the download)">
         <Column>
           <Surface><FileView kind="image" name="favicon.svg" url="/favicon.svg" onDownload={() => say('download the image')} /></Surface>
           <Surface><FileView kind="markdown" name="checklist.md" text={NOTES} onDownload={() => say('download the notes')} /></Surface>
           <Surface><FileView kind="text" name="export.ts" text={'export const timeout = 30_000\n\nexport async function exportAll(ids: string[]) {\n  for (const id of ids) await exportOne(id, { timeout })\n}'} onDownload={() => say('download the code')} /></Surface>
+          <Surface><FileView kind="pdf" name="Q2 platform review.pdf" mimeType="application/pdf" bytes={Q2_REVIEW_PDF} onDownload={() => say('download the PDF')} /></Surface>
           {OFFICE_SAMPLES.map((sample) => <Surface key={sample.kind}><OfficeSample sample={sample} onDownload={() => say(`download ${sample.name}`)} /></Surface>)}
           <Surface><FileView kind="delimited" name="tickets.csv" mimeType="text/csv" bytes={TICKETS_CSV} onDownload={() => say('download the CSV')} /></Surface>
           <Surface><FileView kind="none" name="Q3 forecast.xlsx" details="application/vnd.ms-excel · 48KB" onDownload={() => say('download the spreadsheet')} /></Surface>

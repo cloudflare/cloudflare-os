@@ -1,6 +1,6 @@
 import { FileIcon, MusicNotesIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { Markdown } from '@/components/Markdown'
-import { OfficePreview, type OfficePreviewKind } from './file-preview/OfficePreview'
+import { DrawnPreview, type DrawnPreviewKind } from './file-preview/DrawnPreview'
 import { PaneNotice } from './PaneNotice'
 
 export type FileViewProps = {
@@ -11,10 +11,10 @@ export type FileViewProps = {
   onDownload: () => void
 } & (
   /** Shown by the browser from `url`, which holds the file's bytes. */
-  | { kind: 'image' | 'pdf' | 'audio' | 'video'; url: string }
+  | { kind: 'image' | 'audio' | 'video'; url: string }
   | { kind: 'markdown' | 'text'; text: string }
-  /** A Word document, PowerPoint deck, Excel workbook or CSV, drawn here from its bytes. */
-  | { kind: OfficePreviewKind; bytes: Uint8Array; mimeType: string }
+  /** A PDF, Word document, PowerPoint deck, Excel workbook or CSV, drawn here from its bytes. */
+  | { kind: DrawnPreviewKind; bytes: Uint8Array; mimeType: string }
   /** Not something that can be shown here. */
   | { kind: 'none' }
 )
@@ -29,9 +29,6 @@ export const FileView = (props: FileViewProps) => {
           <img src={props.url} alt={name} className="max-h-full max-w-full rounded-xl object-contain" />
         </div>
       )
-    case 'pdf':
-      // The browser's own viewer, which a sandboxed frame would not have.
-      return <iframe src={props.url} title={name} className="appears block min-h-0 w-full flex-1 border-0" />
     case 'audio':
       return (
         <div className="appears flex flex-1 flex-col items-center justify-center gap-4 p-6">
@@ -61,13 +58,14 @@ export const FileView = (props: FileViewProps) => {
           <pre className="p-6 font-mono text-sm/6 break-words whitespace-pre-wrap text-kumo-default">{props.text}</pre>
         </div>
       )
+    case 'pdf':
     case 'document':
     case 'slides':
     case 'workbook':
     case 'delimited':
       return (
         <div className="appears min-h-0 flex-1 overflow-auto">
-          <OfficePreview
+          <DrawnPreview
             kind={props.kind}
             name={name}
             mimeType={props.mimeType}
