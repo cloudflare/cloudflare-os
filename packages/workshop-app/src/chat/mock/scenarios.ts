@@ -391,6 +391,44 @@ const output: Scenario = {
   ],
 }
 
+const RATES_BASE = 'b000000000000000000000000000000000000052'
+const checkout = call(
+  'createWorktree',
+  { title: 'rates', bindingName: 'RATES', commitId: RATES_BASE },
+  { output: { worktreeId: 52, baseCommit: RATES_BASE } },
+)
+
+const worktree: Scenario = {
+  id: 'worktree',
+  title: 'Rates fix',
+  description:
+    'The agent checked out a repository and fixed it there. Its card opens the worktree beside the chat: ' +
+    'what changed and its commits, which open, then its code, the changed files first.',
+  history: history([
+    user('The expenses tool rounds conversions wrong. Can you fix it in the rates repo?'),
+    agent({ toolCalls: [checkout] }),
+    agent({ text: 'Conversions now round to the cent, with a test for it. Both commits are in the worktree.' }),
+  ]),
+  worktrees: {
+    52: {
+      title: 'rates',
+      files: {
+        'src/rates.ts': "/** Converts between currencies at the day's rate. */\nexport const convert = (amount: number, rate: number) =>\n  Math.round(amount * rate * 100) / 100\n",
+        'src/rates.test.ts': "import { expect, it } from 'vitest'\nimport { convert } from './rates'\n\nit('rounds to the cent', () => {\n  expect(convert(10, 1.23456)).toBe(12.35)\n})\n",
+        'src/index.ts': "export * from './rates'\n",
+        'README.md': '# Rates\n\nCurrency conversion for the expenses tool.\n',
+        'package.json': '{\n  "name": "rates",\n  "type": "module"\n}\n',
+      },
+      changed: ['src/rates.ts', 'src/rates.test.ts'],
+      commits: [
+        { message: 'Round conversions to the cent', minutesAgo: 3 },
+        { message: 'Add a test for rounding', minutesAgo: 5 },
+      ],
+    },
+  },
+  script: [],
+}
+
 const errors: Scenario = {
   id: 'errors',
   title: 'Flaky model',
@@ -622,6 +660,7 @@ export const SCENARIOS: Scenario[] = [
   observationHook,
   connection,
   output,
+  worktree,
   errors,
   sendRefused,
   workspaceRestart,

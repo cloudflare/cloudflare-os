@@ -8,13 +8,17 @@ import type {
   AiChatSubscriber,
   ChatAttachmentHandle,
   ChatAttachmentRef,
+  CommitInfo,
+  FileAtCommit,
   PresenceSubscriber,
   SlashCommandRequest,
+  TreeNode,
+  WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
-import { AGENT, stamp, VIEWER, type MessageSource, type Scenario, type ScriptStep } from './scenario'
+import { AGENT, stamp, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
 
 // Who else has the workspace open, beside the viewer.
 const COLLABORATORS = [
@@ -29,6 +33,21 @@ type ActionEvents = Pick<ActionsSubscriber, 'entry'>
 type ActionMessage = Extract<AiChatMessage, { type: 'action' }>
 
 const lease = (release: () => void) => Promise.resolve({ [Symbol.dispose]: release })
+
+// A worktree's three commits, made up from its id: where it started, its agent's last, and as kept.
+const worktreeCommit = (id: number, which: 'base' | 'head' | 'kept') => `${which[0]}${String(id).padStart(39, '0')}`
+
+// A worktree's files as the nested tree `listTree` gives, folders before what is beside them.
+const treeOf = (paths: string[]): TreeNode[] => {
+  const folders = new Map<string, string[]>()
+  const files: TreeNode[] = []
+  for (const path of paths) {
+    const at = path.indexOf('/')
+    if (at === -1) files.push({ name: path, kind: 'file' })
+    else folders.set(path.slice(0, at), [...(folders.get(path.slice(0, at)) ?? []), path.slice(at + 1)])
+  }
+  return [...[...folders].map(([name, inside]): TreeNode => ({ name, kind: 'dir', children: treeOf(inside) })), ...files]
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 // Made up, and only told apart here. Not `crypto.randomUUID()`, which a page that is not served
@@ -54,6 +73,7 @@ export class MockOverseer {
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
   #files: NonNullable<Scenario['files']>
+  #worktrees: Record<number, MockWorktree>
   #blobs = new Map<GitOid, Uint8Array>()
   #refusals: string[]
   #sendDelay: number
@@ -78,6 +98,7 @@ export class MockOverseer {
     this.#sendDelay = scenario.sendDelay ?? 0
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
+    this.#worktrees = scenario.worktrees ?? {}
     this.#metadata = {
       id: CHAT_ID,
       title: scenario.title,
@@ -128,9 +149,57 @@ export class MockOverseer {
     return gadget
   }
 
-  /** The scenarios' gadgets keep their code. */
-  subscribeToWorkpieces() {
+  /** The scenarios' gadgets keep their code; their worktrees are listed, as they are to the chat that made them. */
+  subscribeToWorkpieces(subscriber: WorkpiecesSubscriber) {
+    for (const [key, worktree] of Object.entries(this.#worktrees)) {
+      const id = Number(key)
+      subscriber.entry({
+        id,
+        type: 'worktree',
+        title: worktree.title,
+        chatId: CHAT_ID,
+        pinBase: worktreeCommit(id, 'kept'),
+        headCommit: worktreeCommit(id, 'head'),
+        baseCommit: worktreeCommit(id, 'base'),
+      })
+    }
+    subscriber.ready()
     return lease(() => {})
+  }
+
+  // The worktree a commit is one of.
+  #worktreeAt(commitId: string): MockWorktree | undefined {
+    return this.#worktrees[Number(commitId.slice(1))]
+  }
+
+  async listTree(commitId: string): Promise<TreeNode[]> {
+    const worktree = this.#worktreeAt(commitId)
+    if (!worktree) throw new Error(`No commit ${commitId}`)
+    return treeOf(Object.keys(worktree.files))
+  }
+
+  async readFilesAtCommit(commitId: string, paths: string[]): Promise<Array<[string, FileAtCommit]>> {
+    const files = this.#worktreeAt(commitId)?.files ?? {}
+    return paths.map((path) => [path, path in files ? { kind: 'text', text: files[path] } : { kind: 'absent' }])
+  }
+
+  async listChangedPaths(_fromCommit: string, toCommit: string): Promise<string[]> {
+    return this.#worktreeAt(toCommit)?.changed ?? []
+  }
+
+  async getCommitLog(fromCommit: string): Promise<CommitInfo[]> {
+    const id = Number(fromCommit.slice(1))
+    const worktree = this.#worktrees[id]
+    if (!worktree) return []
+    const author = { name: AGENT.name, email: 'agent@localhost' }
+    const commits = worktree.commits.map(({ message, minutesAgo }, index): CommitInfo => ({
+      oid: index === 0 ? fromCommit : `c${String(id * 100 + index).padStart(39, '0')}`,
+      parents: [],
+      message: `${message}\n`,
+      author,
+      timestamp: new Date(Date.now() - minutesAgo * 60_000),
+    }))
+    return [...commits, { oid: worktreeCommit(id, 'base'), parents: [], message: 'Where it started\n', author, timestamp: new Date(0) }]
   }
 
   subscribeToPresence(subscriber: PresenceSubscriber) {

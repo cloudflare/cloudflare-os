@@ -620,12 +620,28 @@ asks, with a port it posts. Only messages from the pane's own frame are listened
 chat, a gadget shows that chat's proposed changes. It is loaded again when its code changes: a
 change to its files in that chat, the chat's changes being accepted or thrown away, or its head
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
-the one shown is connected: going to another tab and back starts it over. Worktrees only say what
-they are, for now.
+the one shown is connected: going to another tab and back starts it over.
+
+A worktree (a repository an agent checked out, `WorktreeSummary`) is shown as its code
+(`WorktreeView` over `CodeBrowser`, read by `aside/useWorktree` through `gadgets/useGadgetCode`):
+as kept (`pinBase`), the files changed since it was made (`listChangedPaths` from `baseCommit`)
+marked with a brand dot and listed first, and above them a line of how many changed and its
+agent's commits (`getCommitLog` from `headCommit`, back to `baseCommit`), which open into a list.
+`CodeBrowser` lays the files out by its own width (container queries, not the window's): beside a
+chat the list is a drawer the file's header opens. `CodeView` shows a file with line numbers,
+coloured once `highlightCode` (Lezer's parsers, imported only then) has read it, in the
+`--color-code-*` tokens of `theme.css`. The `worktree` scenario plays one.
 
 A file is shown as what it is (`aside/filePreview.ts`, tested; `FileView` draws each kind): an
 image, a PDF in the browser's own viewer, audio, video, Markdown, and text or code as written.
-Anything else offers its download, which the pane's more menu has for every file. The bytes come
+A Word document, PowerPoint deck or Excel workbook (the Open XML formats only) is drawn in its own
+layout from its bytes, and a CSV or TSV as a grid (`blocks/file-preview/`, `OfficePreview`): read
+in a worker (`officeReader.ts`) by `@gadgets/office-content`, so a crafted file stalls only the
+worker, and each previewer loaded on first use. A file's tile in a message or the composer shows a
+glimpse of its first page, slide or sheet, or of a PDF (pdf.js) or text, made once the tile nears
+the screen (`useFileThumbnail`); a message's tiles fetch through `ChatSession.attachmentContent`,
+which keeps the last few so that opening one fetches nothing again. Google's own files are not
+drawn here: they open in Google. Anything else offers its download, which the pane's more menu has for every file. The bytes come
 inline with the message or are fetched through the chat it was sent in, so a file's own page
 needs `?chat=`. What the browser is given to show is never typed by the file's word alone: only
 the kinds a browser displays without running anything are, a PDF must start like one, a page is

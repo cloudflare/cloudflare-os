@@ -29,6 +29,7 @@ import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/componen
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { CodePreview } from '@/gallery/CodePreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { LibraryListPreview } from '@/gallery/LibraryListPreview'
@@ -401,6 +402,7 @@ function Gallery() {
       <MessageBlocksPreview />
       <ToolBlocksPreview />
       <CardBlocksPreview />
+      <CodePreview />
       <SystemBlocksPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">

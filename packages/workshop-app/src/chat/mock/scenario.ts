@@ -255,6 +255,17 @@ type StepEffect =
  */
 export type ScriptStep = StepEffect & ({ delay?: number; on?: undefined } | { on: Trigger | Trigger[]; delay?: undefined })
 
+/**
+ * A checkout the agent made and worked in (`createWorktree`): its files as last kept, by path,
+ * those it changed since it was made, and the commits it made there, newest first.
+ */
+export type MockWorktree = {
+  title: string
+  files: Record<string, string>
+  changed: string[]
+  commits: Array<{ message: string; minutesAgo: number }>
+}
+
 export type Scenario = {
   id: string
   title: string
@@ -269,6 +280,8 @@ export type Scenario = {
    * id; or how to make them, for a file that takes a moment to build, such as an Office package.
    */
   files?: Record<string, Uint8Array | (() => Promise<Uint8Array>)>
+  /** The worktrees the chat's agent has made, by the id its `createWorktree` call recorded. */
+  worktrees?: Record<number, MockWorktree>
   /** What the workspace says to the first messages sent, which it refuses, in order. */
   refusals?: string[]
   /** How long a message takes to be sent, in milliseconds, so that one on its way can be seen. */

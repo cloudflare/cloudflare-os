@@ -1,15 +1,18 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
+import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { formatActivity } from '@/workspaces/formatActivity'
 import { asideItemIcon } from './asideItemIcon'
-import type { AsideFile, AsideItem } from './asideItems'
+import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
+import { useWorktree } from './useWorktree'
 
 export type AsidePaneProps = {
   /** The one shown. */
@@ -74,7 +77,7 @@ export const AsidePane = (props: AsidePaneProps) => {
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.output.type === 'worktree' ? (
-    <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
+    <WorktreeContent key={item.key} worktree={item.output} />
   ) : (
     <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
   )
@@ -165,6 +168,27 @@ const GadgetView = ({ title, ui, frame, onReload }: {
 }
 
 const SIZE = new Intl.NumberFormat('en', { notation: 'compact', style: 'unit', unit: 'byte', unitDisplay: 'narrow' })
+
+// A worktree's code, and what its agent did to it.
+const WorktreeContent = ({ worktree }: { worktree: AsideOutput }) => {
+  const { changes, code, show } = useWorktree(worktree)
+  return (
+    <WorktreeView
+      changes={changes.status === 'ready'
+        ? {
+            status: 'ready',
+            changedFiles: changes.changed.size,
+            commits: changes.commits.map(({ oid, message, timestamp }) => ({ id: oid, summary: message.split('\n')[0], time: formatActivity(timestamp) })),
+          }
+        : changes}
+      files={code.files}
+      shown={code.shown}
+      onShow={show}
+      file={code.file}
+      onRetry={code.retry}
+    />
+  )
+}
 
 const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => {
   switch (state.status) {
