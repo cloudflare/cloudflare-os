@@ -97,6 +97,19 @@ describe("ADMIN_AGENT_ACTIONS", () => {
         { method: "setIssueReportStatus", visibility: undefined, autoApprovable: true });
   });
 
+  it("lets a rule apply under the mark exactly an admins-only note, a status and an assignment", () => {
+    let exempt = actions.filter(([, action]) => action.autoApprovableWhileRestricted)
+        .map(([name]) => name);
+    expect(exempt.toSorted())
+        .toEqual(["issueReportAssignment", "issueReportNote", "issueReportStatus"]);
+  });
+
+  it("never marks so a kind that always waits for a person", () => {
+    for (let [name, action] of actions) {
+      expect(action.autoApprovableWhileRestricted && !action.autoApprovable, name).toBe(false);
+    }
+  });
+
   it("names one method for every kind but an assignment, which names its two", () => {
     for (let [name, action] of actions) {
       if (name === "issueReportAssignment") continue;

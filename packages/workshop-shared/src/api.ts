@@ -4121,9 +4121,12 @@ export type AdminObserver = {
  * One auto-approval rule of a workspace, as AdminWorkspaceView.listAutoApprovals() lists it: a
  * member's opt-in for actions of `actionKind` on the connection. A rule alone applies nothing. An
  * action of that kind is applied without a manual approval only when its author also marked it
- * `autoApprovable` (ActionDescription.autoApprovable), and never once the workspace has read
- * restricted data (`containsRestrictedData`, which describe() reports): the rule then stays
- * stored, and listed here, while every action waits for a manual approval.
+ * `autoApprovable` (ActionDescription.autoApprovable), and, once the workspace has read
+ * restricted data (`containsRestrictedData`, which describe() reports), only for the admin
+ * gatekeeper's kinds that ADMIN_AGENT_ACTIONS marks `autoApprovableWhileRestricted`, and only
+ * while no other connection's restricted data was read there (PreApprovableAction.ruleApplies
+ * is the answer for the workspace as it is): every other rule then stays stored, and listed
+ * here, while its actions wait for a manual approval.
  */
 export type AdminAutoApproval = {
   /** The connection the rule is on. */
@@ -4298,11 +4301,11 @@ export interface AdminWorkspaceView extends RpcTarget {
 
   /** The auto-approval rules, each with its connection, its kind of action and who turned it on.
    * A rule is a member's opt-in and applies nothing alone (see AdminAutoApproval): an action is
-   * applied without a manual approval only when its author also marked it `autoApprovable`, and
-   * never once the workspace has read restricted data (`containsRestrictedData`, which
-   * describe() reports), when every action waits whatever the rules say. listActions() shows
-   * each action's `description.autoApprovable` and `description.actionKind`, and `autoApproved`
-   * on one a rule applied. */
+   * applied without a manual approval only when its author also marked it `autoApprovable`, and,
+   * once the workspace has read restricted data (`containsRestrictedData`, which describe()
+   * reports), only as AdminAutoApproval says: a rule listed here may be applying nothing.
+   * listActions() shows each action's `description.autoApprovable` and
+   * `description.actionKind`, and `autoApproved` on one a rule applied. */
   listAutoApprovals(): Promise<AdminAutoApproval[]>;
 
   /** The published blueprints, as Overseer.listBlueprints() lists them. Unless the call runs
@@ -5293,7 +5296,8 @@ export type WorkspaceMetadata = {
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
    * fetches reach only the hosts the deployment admin trusts (none by default) or, where the admin
-   * allows it, a URL a user approves, and every action requires manual approval.
+   * allows it, a URL a user approves, and every action requires manual approval, but for the
+   * few a rule may still apply (see PreApprovableAction.ruleApplies).
    */
   containsRestrictedData?: boolean;
 
@@ -6132,8 +6136,9 @@ export interface Overseer extends RpcTarget {
    * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
    * no matter which gadget invokes it.
    *
-   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), rules
-   * are stored but never fire: every action pends for manual approval.
+   * Once the workspace has read restricted data (`WorkspaceMetadata.containsRestrictedData`), a
+   * rule is stored but applies nothing unless PreApprovableAction.ruleApplies says it does:
+   * every other action pends for manual approval.
    */
   setAutoApprovedActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
 
@@ -6147,8 +6152,10 @@ export interface Overseer extends RpcTarget {
   listAutoApprovedActionKinds(): Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>>;
 
   /**
-   * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
-   * entry identifies its connection and reports whether a matching auto-approval rule is enabled.
+   * List the auto-approvable action kinds offered by gatekeepers bound in this workspace, and
+   * by its connections of the admin gatekeeper, which agents use whether or not anything binds
+   * them. Each entry identifies its connection and reports whether a matching auto-approval
+   * rule is enabled and whether one applies in the workspace as it is now.
    */
   listPreApprovableActions(): Promise<PreApprovableAction[]>;
 
@@ -8614,14 +8621,31 @@ export type GadgetBindingInfo = {
 };
 
 /**
- * An auto-approvable action kind offered by a specific connection. Aggregated from each bound
- * gatekeeper's getAutoApprovableActions(); `alreadyEnabled` reports whether a matching rule exists.
+ * An auto-approvable action kind offered by one connection of this workspace, as
+ * Overseer.listPreApprovableActions() lists it: each kind the connection's gatekeeper returns
+ * from getAutoApprovableActions(), with whether a rule for it is stored and whether one
+ * applies.
  */
 export type PreApprovableAction = {
+  /** The connection that offers the kind: the gatekeeper a rule for it is stored against. */
   gatekeeperId: WorkpieceId;
+  /** The connection's title, as its gatekeeper last described it; a placeholder when the
+   * Workshop holds none. */
   resourceTitle: string;
+  /** The kind: its `tag` is what a rule is stored under (see setAutoApprovedActionKind()). */
   actionKind: ActionKind;
+  /** Whether a rule for this kind is stored for this connection. A stored rule applies an
+   * action only where `ruleApplies` is true. */
   alreadyEnabled: boolean;
+  /**
+   * Whether a rule for this kind applies an action in the workspace as it is now. True in a
+   * workspace that holds no restricted data. In one that does
+   * (WorkspaceMetadata.containsRestrictedData), true only for the admin gatekeeper's kinds
+   * that ADMIN_AGENT_ACTIONS marks `autoApprovableWhileRestricted`, and only while no other
+   * connection's restricted data was read there; a later read can make it false, and
+   * nothing makes it true again. A client offers to turn a rule on only where this is true.
+   */
+  ruleApplies: boolean;
 
   /** Vendor of the gatekeeper holding this connection. Absent for vendorless gatekeepers. */
   vendorId?: string;

@@ -74,10 +74,12 @@ export interface AdminGatekeeper<Session> extends Gatekeeper<Session> {
    * action; a second call, and any call after this method returned, is refused. The Workshop
    * calls this in place of applyAction(), and only for an action whose tag is one of
    * ADMIN_AGENT_ACTIONS'; an auto-approval of an action tagged with a kind whose verdict is
-   * false ("issue-report-reply", "content-access-request"), and any auto-approval in a
-   * workspace marked as holding restricted data, never reaches it. Both tests read what the
-   * gatekeeper itself declared (the action's tag, the flag on its observations): they bind
-   * the agents and gadgets that use the gatekeeper, not the gatekeeper.
+   * false ("issue-report-reply", "content-access-request"), and an auto-approval in a
+   * workspace marked as holding restricted data of a kind that is not
+   * `autoApprovableWhileRestricted`, or where another connection's restricted data was read,
+   * never reaches it. The tests read the tag the gatekeeper declared on the action and what
+   * the Workshop recorded of each connection's restricted observations: they bind the agents
+   * and gadgets that use the gatekeeper, not the gatekeeper.
    */
   applyAdminAction(action: number, admin: RpcStub<AdminAgentApi>): Promise<void>;
 }

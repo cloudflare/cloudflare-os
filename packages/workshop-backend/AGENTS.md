@@ -82,7 +82,9 @@ them:
   admins and is injected nowhere, a workspace that has its connection, or has read through it,
   admits only admins, and a workspace lends it its owner's `AdminApi` only through
   `OverseerImpl.lendAdminApi()` (`src/admin-agent.ts` decides each lent call), the one place
-  `via: "gatekeeper"` is minted.
+  `via: "gatekeeper"` is minted. Under the restricted-data mark a rule applies only what
+  `ruleApplies()` (`src/auto-approval.ts`) allows, the kernel's own exception for the kinds
+  `ADMIN_AGENT_ACTIONS` flags, which no gatekeeper's declaration can ask for.
 - **Authentication/authorization config (sign-in providers via `AUTH_GATEKEEPERS`, password login
   via `DISABLE_PASSWORD_AUTH`) is deliberately NOT in `AdminConfig`** — it stays env-var driven
   (`auth/config.ts`) so it can't be changed by a compromised admin session.

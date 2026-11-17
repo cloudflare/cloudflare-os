@@ -479,6 +479,104 @@ async function refusedEverywhere(ws: Workspace, user: AiChatAuthorInfo): Promise
   return answers[0]!;
 }
 
+describe("whose reads marked a workspace as holding restricted data", () => {
+  const RESTRICTED = { containsRestrictedData: true };
+  const WHOLE_BINDING = { ...RESTRICTED, subresources: [ADMIN_BINDING_SUBRESOURCE] };
+  const REPORT_SESSION = { ...RESTRICTED, subresources: [REPORT_SUBRESOURCE] };
+
+  // Adds a connection of another vendor and returns its id.
+  async function otherConnection(ws: Workspace): Promise<number> {
+    let other = await ws.impl.addGatekeeper(
+        ws.impl.ctx.exports.FakeAdminGatekeeper({ props: {} }),
+        { type: "gatekeeper", vendorId: "othervendor", resourceUrl: "https://other.example/",
+          typeUrlPattern: "https://other.example/" },
+        ws.impl.ownerId, undefined, undefined, ws.owner);
+    return other.getId();
+  }
+
+  // The latch, and whether only the admin connection's observations set it.
+  const mark = (ws: Workspace) => ({
+    restricted: ws.impl.storage.containsRestrictedData.get(),
+    adminOnly: ws.impl.storage.adminRestrictedDataOnly.get(),
+  });
+
+  it.each([
+    { through: "the whole binding", claims: WHOLE_BINDING },
+    { through: "a session limited to one report", claims: REPORT_SESSION },
+    { through: "an observation that names no subresource", claims: RESTRICTED },
+  ])("is the admin connection's alone when $through set the mark first",
+      ({ claims }) => withWorkspace(async ws => {
+    expect(mark(ws)).toEqual({ restricted: false, adminOnly: false });
+    await observe(ws, claims);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+    // A later mark of the same connection keeps it, whichever capability read.
+    await observe(ws, REPORT_SESSION);
+    await observe(ws, WHOLE_BINDING);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+  }));
+
+  it("is not the admin connection's alone once another vendor set the mark first",
+      () => withWorkspace(async ws => {
+    await observe(ws, RESTRICTED, await otherConnection(ws));
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
+    // An observation of the admin connection in a workspace already marked never changes that.
+    await observe(ws, WHOLE_BINDING);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
+  }));
+
+  it("stops being the admin connection's alone, for good, at another vendor's mark",
+      () => withWorkspace(async ws => {
+    let otherId = await otherConnection(ws);
+    await observe(ws, WHOLE_BINDING);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+    await observe(ws, RESTRICTED, otherId);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
+    await observe(ws, WHOLE_BINDING);
+    await observe(ws, REPORT_SESSION);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
+  }));
+
+  it("is untouched by an observation that does not carry the flag",
+      () => withWorkspace(async ws => {
+    let otherId = await otherConnection(ws);
+    await observe(ws, { subresources: [ADMIN_BINDING_SUBRESOURCE] });
+    await observe(ws, {}, otherId);
+    expect(mark(ws)).toEqual({ restricted: false, adminOnly: false });
+
+    await observe(ws, WHOLE_BINDING);
+    // Another vendor's read that holds no restricted data ends nothing.
+    await observe(ws, {}, otherId);
+    await observe(ws, {});
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+  }));
+
+  it("stays unset in a workspace marked before it was kept, whatever the admin connection reads",
+      () => withWorkspace(async ws => {
+    ws.impl.storage.containsRestrictedData.put(true);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
+    await observe(ws, WHOLE_BINDING);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
+  }));
+
+  it("is not kept when the observation's record cannot be written",
+      () => withWorkspace(async ws => {
+    let { actions } = ws.impl.storage;
+    let put = actions.put.bind(actions);
+    actions.put = () => { throw new Error("audit write failed"); };
+    try {
+      expect(await refusal(observe(ws, WHOLE_BINDING))).toMatch(/audit write failed/);
+    } finally {
+      actions.put = put;
+    }
+    expect(mark(ws)).toEqual({ restricted: false, adminOnly: false });
+    expect(ws.impl.storage.adminReads.get()).toBe(false);
+
+    // The first mark that lands is still the first.
+    await observe(ws, WHOLE_BINDING);
+    expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+  }));
+});
+
 describe("removing the admin connection", () => {
   it("restores ordinary sharing in a workspace that read nothing through the whole binding",
       () => withWorkspace(async ws => {
@@ -580,14 +678,20 @@ describe("removing the admin connection", () => {
     await observe(ws, { containsRestrictedData: true, subresources: [REPORT_SUBRESOURCE] });
     expect(marks(ws)).toEqual({ restricted: true, adminReads: false, adminsOnly: "connection" });
 
-    // The latch holds: a rule applies nothing from here on.
-    ws.impl.storage.autoApproveTags.put({
-      gatekeeperId: ws.gatekeeperId, actionKind: ADMIN_AGENT_ACTIONS.issueReportNote.kind,
-      enabledBy: ADMIN,
-    });
-    let id = await queueAction(ws, 1, "issueReportNote");
+    // The latch holds, and a report session's mark is the admin connection's: a rule still
+    // applies a note, and no longer a reply to the reporter.
+    for (let kind of ["issueReportNote", "issueReportScopedReply"] as const) {
+      ws.impl.storage.autoApproveTags.put({
+        gatekeeperId: ws.gatekeeperId, actionKind: ADMIN_AGENT_ACTIONS[kind].kind,
+        enabledBy: ADMIN,
+      });
+    }
+    let note = await queueAction(ws, 1, "issueReportNote");
+    let reply = await queueAction(ws, 2, "issueReportScopedReply");
     await ws.impl.drainAutoApprovals(ws.gatekeeperId);
-    expect(ws.impl.storage.actions.get(id).state).toBe("pending");
+    expect(ws.impl.storage.actions.get(note)).toMatchObject(
+        { state: "approved", autoApproved: true });
+    expect(ws.impl.storage.actions.get(reply).state).toBe("pending");
 
     await removeConnection(ws);
     expect(marks(ws)).toEqual({ restricted: true, adminReads: false, adminsOnly: undefined });

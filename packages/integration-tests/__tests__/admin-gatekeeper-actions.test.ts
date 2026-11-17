@@ -496,13 +496,27 @@ it("applies nothing ahead of an action that waits for a person", async () => {
 const decisions = async (ws: RpcStub<Overseer>) =>
   (await adminActions(ws)).map(action => [tagOf(action), action.state, action.autoApproved === true]);
 
-it("marks the workspace at any read through the binding, after which no rule applies anything",
-    async () => {
+/** Whether a rule applies each kind the workspace's catalog lists for `connection`, by tag. */
+const ruleApplies = async (ws: RpcStub<Overseer>, connection: AdminConnection) =>
+  Object.fromEntries((await ws.listPreApprovableActions())
+      .filter(offer => offer.gatekeeperId === connection.id)
+      .map(offer => [offer.actionKind.tag, offer.ruleApplies]));
+
+it("marks the workspace at any read through the binding, after which a rule applies a note, a " +
+    "status and an assignment and nothing else", async () => {
   const reporter = await newMember(suite, "marked");
   const report = await fileReport(reporter);
   const wanted = await newWorkspace(suite, reporter, "Marked target");
   await listed(admin, reporter.name, wanted.id);
   const { ws, id, connection } = await triageWorkspace("Triage, read first", { rules: true });
+  // No gadget binds the connection, and the catalog lists it all the same: a rule applies each
+  // of the five kinds one can be turned on for.
+  const offered = [
+    TAGS.issueReportNote, TAGS.issueReportStatus, TAGS.issueReportAssignment,
+    TAGS.workspaceWriteRequest, TAGS.issueReportScopedReply,
+  ];
+  expect(await ruleApplies(ws, connection))
+      .toEqual(Object.fromEntries(offered.map(tag => [tag, true])));
 
   const turn = await agentTurn(owner, ws, `
     ${attempt("reports", "env.ADMIN.listIssueReports().then(page => page.reports.length > 0)")}
@@ -518,27 +532,37 @@ it("marks the workspace at any read through the binding, after which no rule app
   });
   expect(await isRestricted(ws)).toBe(true);
 
-  // Every one of the five has a rule, and each waits for a person.
+  // Every one of the five has a rule. The note, the status and the claim are applied with no
+  // person: what they carry is what admins can already read. The request and the reply wait.
   await settle(ws);
-  const pending = await pendingActions(ws, 5);
-  expect(pending.map(tagOf)).toEqual([
-    TAGS.issueReportNote, TAGS.issueReportStatus, TAGS.issueReportAssignment,
-    TAGS.workspaceWriteRequest, TAGS.issueReportScopedReply,
-  ]);
+  const pending = await pendingActions(ws, 2);
+  expect(pending.map(tagOf)).toEqual([TAGS.workspaceWriteRequest, TAGS.issueReportScopedReply]);
   expect(turn.paused()).toBe(true);
-  expect(await adminThread(report.id)).toEqual([]);
-  expect(await assigneeOf(report.id)).toBeUndefined();
+  expect(await decisions(ws)).toEqual([
+    [TAGS.issueReportNote, "approved", true], [TAGS.issueReportStatus, "approved", true],
+    [TAGS.issueReportAssignment, "approved", true],
+    [TAGS.workspaceWriteRequest, "pending", false], [TAGS.issueReportScopedReply, "pending", false],
+  ]);
+  const thread = async () =>
+    (await adminThread(report.id)).map(({ text, visibility, status, assignment }) =>
+      [text, visibility, status ?? assignment]);
+  const applied = [
+    ["A note", "admins", undefined], ["", "public", "investigating"], ["", "admins", "claimed"],
+  ];
+  expect(await thread()).toEqual(applied);
+  expect(await assigneeOf(report.id)).toMatchObject({ id: OWNER, via: "gatekeeper" });
   expect(await requestsFiled(admin, wanted.id, id)).toEqual([]);
+  expect(await ruleApplies(ws, connection)).toEqual(Object.fromEntries(offered.map(tag =>
+    [tag, tag !== TAGS.workspaceWriteRequest && tag !== TAGS.issueReportScopedReply])));
+  // The connection is listed once.
+  expect((await ws.listPreApprovableActions()).map(offer => offer.gatekeeperId))
+      .toEqual(offered.map(() => connection.id));
 
   for (const action of pending) await ws.approveAction(action.id);
   await turn.resumed();
-  expect(await decisions(ws)).toEqual(pending.map(action => [tagOf(action), "approved", false]));
-  expect((await adminThread(report.id)).map(({ text, visibility, status, assignment }) =>
-    [text, visibility, status ?? assignment])).toEqual([
-    ["A note", "admins", undefined], ["", "public", "investigating"], ["", "admins", "claimed"],
-    ["A scoped reply", "public", undefined],
-  ]);
-  expect(await assigneeOf(report.id)).toMatchObject({ id: OWNER, via: "gatekeeper" });
+  expect((await decisions(ws)).slice(3)).toEqual(
+      pending.map(action => [tagOf(action), "approved", false]));
+  expect(await thread()).toEqual([...applied, ["A scoped reply", "public", undefined]]);
   expect(await requestsFiled(admin, wanted.id, id)).toHaveLength(1);
 });
 
