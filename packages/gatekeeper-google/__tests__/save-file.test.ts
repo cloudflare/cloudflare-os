@@ -218,6 +218,18 @@ describe("saveFile", () => {
     expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes */6", ""], ["bytes 2-5/6", "docx"]]);
   });
 
+  it.each(["rateLimitExceeded", "userRateLimitExceeded"])(
+    "waits out a 403 that throttles with %s, and stops at any other", async reason => {
+      let answers = [() => refusal(403, reason), () => saved("new-1", GOOGLE_DOC_MIME_TYPE)];
+      let calls = stubDrive({ "PUT session": () => answers.shift()!() });
+      await expect(save(FOLDER_URL)).resolves.toMatchObject({ url: expect.stringContaining("/d/new-1/") });
+      expect(uploaded(calls).chunks).toEqual([["bytes 0-5/6", "PKdocx"], ["bytes */6", ""]]);
+
+      calls = stubDrive({ "PUT session": refusal(403, "insufficientFilePermissions"), "DELETE session": new Response(null, { status: 499 }) });
+      await expect(save(FOLDER_URL)).rejects.toThrow("can't add files to that folder");
+      expect(uploaded(calls).chunks).toHaveLength(1);
+    });
+
   it.each([
     ["in the trash", { mimeType: GOOGLE_DOC_MIME_TYPE, trashed: true }, /in the Drive trash/],
     ["no longer of the native type", { mimeType: DOCX, trashed: false }, /is not a Google Doc saved from here/],

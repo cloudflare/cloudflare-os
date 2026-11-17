@@ -390,6 +390,10 @@ async function driveError(response: Response): Promise<Error> {
   return new DriveApiRequestError(response.status, reason);
 }
 
+/** Whether Drive refused for now, with the 403 it throttles with: like a 429, worth waiting out. */
+const isThrottle = (error: Error) => error instanceof DriveApiRequestError && error.status === 403 &&
+  (error.reason === "rateLimitExceeded" || error.reason === "userRateLimitExceeded");
+
 /**
  * Sends `bytes`, which start at `start` of the file, to the upload session at `session`, whose URL
  * is its own credential; `total` is the file's size, given with its last chunk. Returns the body
@@ -426,13 +430,17 @@ async function putUploadChunk(
       start = held;
       ask = false;
       if (!bytes.length && total === undefined) return undefined;
-    } else if (response && response.status < 500 && response.status !== 429) {
-      // The session is gone, which says nothing of the folder or file it was opened for.
-      throw response.status === 404 || response.status === 410
-        ? new Error("Google Drive ended the upload before the file was sent. Save it again.")
-        : await driveError(response);
     } else {
-      void response?.body?.cancel();
+      if (response && response.status < 500 && response.status !== 429) {
+        // The session is gone, which says nothing of the folder or file it was opened for.
+        if (response.status === 404 || response.status === 410) {
+          throw new Error("Google Drive ended the upload before the file was sent. Save it again.");
+        }
+        let refusal = await driveError(response);
+        if (!isThrottle(refusal)) throw refusal;
+      } else {
+        void response?.body?.cancel();
+      }
       await new Promise(resolve => setTimeout(resolve, UPLOAD_RETRY_DELAY_MS * 2 ** failures++));
       ask = true;
     }
