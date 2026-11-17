@@ -36,6 +36,7 @@ import {
   clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
 } from './action-test-harness'
 import Activity from './Activity'
+import { KEEPS_APPLYING_COPY } from './components/AutoApproveConfirmDialog'
 
 const view = makeTestRoot()
 
@@ -353,6 +354,44 @@ describe('Activity rule offers in a restricted workspace', () => {
     expect(confirmation()).toBeNull()
     expect(alwaysApproveButtons()).toHaveLength(0)
     expect(listPreApprovableActions).not.toHaveBeenCalled()
+  })
+})
+
+describe('Activity rule offers in a workspace that holds no restricted data', () => {
+  const request = (id: number, title: string, actionKind: { tag: string, label: string }) =>
+    entry(id, {
+      gatekeeperId: 7,
+      description: {
+        title, description: '', implementsRevert: false, autoApprovable: true, actionKind,
+      },
+    })
+
+  // The confirmation "Always approve" opens on the one pending request of `actionKind`.
+  async function confirmationFor(actionKind: { tag: string, label: string }) {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [request(1, 'A request', actionKind)] })
+    flushFrames()
+    await act(async () => {})
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Always approve')!.click())
+    return document.querySelector('[role="dialog"]')!.textContent ?? ''
+  }
+
+  it.each(['issueReportNote', 'issueReportStatus', 'issueReportAssignment'] as const)(
+      'says a rule for %s keeps applying once the workspace has read sensitive data', async kind => {
+    expect(await confirmationFor(ADMIN_AGENT_ACTIONS[kind].kind)).toContain(KEEPS_APPLYING_COPY)
+  })
+
+  it('says it of no kind whose rule stops applying there', async () => {
+    expect(await confirmationFor(ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind))
+      .not.toContain('keeps applying')
+    view.cleanup()
+    expect(await confirmationFor({ tag: 'append', label: 'Append a slide' }))
+      .not.toContain('keeps applying')
   })
 })
 

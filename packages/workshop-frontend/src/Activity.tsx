@@ -12,7 +12,9 @@ import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
-import { canOfferAlwaysApprove, mayApplyWhileRestricted } from './features/approvals/autoApprovalRules'
+import {
+  canOfferAlwaysApprove, keepsApplyingWhileRestricted, mayApplyWhileRestricted,
+} from './features/approvals/autoApprovalRules'
 import { useAutoApprovalRules } from './features/approvals/useAutoApprovalRules'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
@@ -20,7 +22,7 @@ import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
-import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
+import AutoApproveConfirmDialog, { KEEPS_APPLYING_COPY } from './components/AutoApproveConfirmDialog'
 import { ActionFields, entryFields } from './components/ActionFields'
 
 export type ActivityView = 'review' | 'history' | 'auto'
@@ -461,6 +463,9 @@ export default function Activity({
           open
           actionLabel={confirmAutoApprove.actionKind.label}
           resourceTitle={confirmAutoApprove.resourceTitle}
+          // This list reads no vendors: the kind's tag is all it has to go by.
+          keepsApplyingWhileRestricted={!restricted &&
+            keepsApplyingWhileRestricted(confirmAutoApprove.actionKind.tag, undefined)}
           isProcessing={processingActions.has(confirmAutoApprove.actionId)}
           onOpenChange={open => { if (!open) setConfirmAutoApprove(null) }}
           onConfirm={async () => {
@@ -628,6 +633,13 @@ function AutoApprovalPanel({
                             ? 'Applied without asking'
                             : 'Waits for your approval'}
                     </span>
+                    {/* Before the latch only: under it, the other kinds' rows say they stop. */}
+                    {!restricted && !entry.orphaned &&
+                        keepsApplyingWhileRestricted(entry.actionKind.tag, entry.vendorId) && (
+                      <span className="mt-0.5 block text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
+                        {KEEPS_APPLYING_COPY}
+                      </span>
+                    )}
                   </span>
                   <Switch
                     size="sm"

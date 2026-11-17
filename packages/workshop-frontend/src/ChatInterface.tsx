@@ -121,7 +121,9 @@ import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
 import {
   chatRequestIds, pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
-import { canOfferAlwaysApprove, mayApplyWhileRestricted } from "./features/approvals/autoApprovalRules";
+import {
+  canOfferAlwaysApprove, keepsApplyingWhileRestricted, mayApplyWhileRestricted,
+} from "./features/approvals/autoApprovalRules";
 import { useBulkResolve } from "./features/approvals/useBulkResolve";
 import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
@@ -7085,6 +7087,9 @@ function ChatInterface({
           open
           actionLabel={autoApproveConfirm.actionKind.label}
           resourceTitle={autoApproveConfirm.resourceTitle}
+          keepsApplyingWhileRestricted={!restricted && keepsApplyingWhileRestricted(
+            autoApproveConfirm.actionKind.tag,
+            vendorIdByGatekeeper.get(autoApproveConfirm.gatekeeperId))}
           isProcessing={processingActions.has(autoApproveConfirm.actionId)}
           onOpenChange={(open) => {
             if (!open) setAutoApproveConfirm(null);

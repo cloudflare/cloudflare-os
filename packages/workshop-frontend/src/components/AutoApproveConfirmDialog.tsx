@@ -2,12 +2,24 @@ import { Dialog } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
 import { WorkshopButton, WorkshopIconButton } from './WorkshopControls'
 
+/**
+ * What a person is told where they turn on a rule that goes on applying once the workspace has
+ * read sensitive data (`keepsApplyingWhileRestricted`), here and in the Auto-approval tab, in a
+ * workspace that has read none yet. Every other rule stops applying there, so one turned on
+ * before that would be taken to stop too.
+ */
+export const KEEPS_APPLYING_COPY =
+  'This rule keeps applying after this workspace reads sensitive data through this connection.'
+
 interface AutoApproveConfirmDialogProps {
   open: boolean
   // Human-readable label of the action kind, e.g. "Append to Google Doc".
   actionLabel: string
   // Title of the connection (gatekeeper) the rule applies to, e.g. "My Google Doc".
   resourceTitle: string
+  // The rule is one that will go on applying once the workspace has read sensitive data, which
+  // the person enabling it is told (`KEEPS_APPLYING_COPY`).
+  keepsApplyingWhileRestricted?: boolean
   isProcessing?: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
@@ -21,6 +33,7 @@ export default function AutoApproveConfirmDialog({
   open,
   actionLabel,
   resourceTitle,
+  keepsApplyingWhileRestricted = false,
   isProcessing = false,
   onOpenChange,
   onConfirm,
@@ -45,6 +58,7 @@ export default function AutoApproveConfirmDialog({
               Future <span className="font-medium text-kumo-default">{actionLabel}</span> actions on{' '}
               <span className="font-medium text-kumo-default">{resourceTitle}</span> will be applied
               automatically, without asking for approval. This action will be applied now too.
+              {keepsApplyingWhileRestricted && ` ${KEEPS_APPLYING_COPY}`}
             </Dialog.Description>
           </div>
           <Dialog.Close
