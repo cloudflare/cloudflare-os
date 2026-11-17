@@ -67,7 +67,9 @@ function WorkspaceChat() {
       onOpenWorkspace={() =>
         navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(router.state.location.search.open, { workspaceId }) } })
       }
-      onOpenSettings={() => navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, state: { fromChat: true } })}
+      onOpenSettings={(tab) =>
+        navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: { tab }, state: { fromChat: true } })
+      }
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}
       outputHref={outputHref}

@@ -27,6 +27,7 @@ import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
+import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
@@ -359,6 +360,7 @@ function Gallery() {
       <SettingsPreview />
       <SearchPreview />
       <HeaderPreview />
+      <AutomationsPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
         <div className="flex gap-4">

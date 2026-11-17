@@ -1,4 +1,5 @@
 import type {
+  BoundHookInfo,
   ActionLogEntry,
   ActionsSubscriber,
   AiChatHistoryPage,
@@ -216,6 +217,16 @@ export class MockOverseer {
     const pending = this.#messages.filter((message) => this.#autoApproves(message))
     for (const { actionId } of pending) this.#resolve(actionId, { state: 'approved', resolvedBy: VIEWER, autoApproved: true })
     if (pending.length) this.player.fire('onApprove')
+  }
+
+  /** The hooks the conversation's cards set up, each waking the scenarios' one gadget. */
+  async listHooks(): Promise<BoundHookInfo[]> {
+    return this.#messages.flatMap((message) => {
+      const log = message.type === 'action' ? message.actionLog : undefined
+      if (log?.type !== 'bindHook' || log.hookId === undefined) return []
+      const { hookId: id, gatekeeperId = 0, resourceTitle, resourceUrl, description, enabled } = log
+      return [{ id, gatekeeperId, gadgetId: 1, resourceTitle, resourceUrl, description, enabled }]
+    })
   }
 
   async enableHook(id: number) {

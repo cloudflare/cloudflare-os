@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { hooksShownIn } from '@/automations/automations'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
@@ -37,8 +38,8 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
-  /** Opens the chat's settings, from its title. */
-  onOpenSettings?: () => void
+  /** Opens the chat's settings, from its title, or at what it set up to run by itself, from the header's clock. */
+  onOpenSettings?: (tab?: 'automations') => void
   /**
    * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
    * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
@@ -81,6 +82,9 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
+  // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
+  const pinned = chat.status === 'ready' ? chat.pinned : undefined
+  const automations = useMemo(() => hooksShownIn([...(items ?? []), ...(pinned ?? [])]).length, [items, pinned])
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
@@ -199,7 +203,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         <ChatHeader
           workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look, onOpen: onOpenWorkspace }}
           title={title}
-          onOpenSettings={onOpenSettings}
+          onOpenSettings={onOpenSettings && (() => onOpenSettings())}
+          automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}
         />
       )}
       composer={(

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { NotePencilIcon } from '@phosphor-icons/react'
 import type { AsideItem } from '@/aside/asideItems'
+import { AutomationsTab } from '@/automations/AutomationsTab'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { Button } from '@/components/Button'
@@ -20,11 +21,12 @@ import { workspaceLabel } from './workspaceLabel'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 
 /** What a workspace's page shows beneath its title. */
-export type WorkspaceTab = 'chats' | 'library' | 'members'
+export type WorkspaceTab = 'chats' | 'library' | 'automations' | 'members'
 
 export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'chats', label: 'Chats' },
   { value: 'library', label: 'Library' },
+  { value: 'automations', label: 'Automations' },
   { value: 'members', label: 'Members' },
 ]
 
@@ -44,7 +46,7 @@ export type WorkspacePaneProps = {
 
 /**
  * One workspace: its title, which can be renamed, the way to start a chat in it, and, a tab each,
- * its chats, what it has made and who has access to it. Each tab loads what it lists once chosen.
+ * its chats, what it has made, what runs in it by itself and who has access to it. Each tab loads what it lists once chosen.
  */
 export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenItem, itemHref, onNewChat }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
@@ -101,6 +103,16 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} />
+          </Tabs.Panel>
+          <Tabs.Panel value="automations" className="flex flex-col gap-8">
+            <AutomationsTab
+              workspaceId={workspaceId}
+              onOpenItem={onOpenItem}
+              itemHref={itemHref}
+              onOpenChat={onOpenChat}
+              chatHref={chatHref}
+              empty="Nothing runs here by itself yet. Ask in a chat for something to happen on a schedule, or when something arrives."
+            />
           </Tabs.Panel>
           <Tabs.Panel value="members" className="flex flex-col gap-8">
             <WorkspaceMemberList workspaceId={workspaceId} />

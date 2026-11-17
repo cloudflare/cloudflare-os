@@ -40,6 +40,8 @@ src/
                 read and write of the user's account
   skills/       The user's skills (`SkillStore`, in memory for now), the list of them in the
                 settings (`SkillLibrary`) and one skill's page (`SkillPane`)
+  automations/  What runs by itself in a workspace (`useAutomations`), and the tab that lists it
+                (`AutomationsTab`)
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -47,7 +49,7 @@ src/
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`) are the only code that talks to the
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`, `automations/`) are the only code that talks to the
 backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
@@ -467,6 +469,28 @@ them, a tab each (`?tab=`):
   going to another, unless something typed in it has not been saved: it then stays, with a dot,
   and the way back to the list asks first.
 - Settings: its tag, whether the assistant may use it on its own (coming soon), and deleting it.
+
+## Automations
+
+What runs by itself is a workspace's hooks (`listHooks()`): a scheduled task, which the scheduler
+gatekeeper delivers, or something an event a service delivers sets off. They are listed, read only
+but for each one's switch (`enableHook`/`disableHook`, for whoever may build there), on a tab of
+the workspace's page and of a chat's settings page (`?tab=automations`), which the chat header's
+clock opens with how many the chat has (`AutomationsTab`, `AutomationRow`): the scheduled first,
+then the rest, each with when it runs and when next or why it stopped, what it does, what it
+watches and the gadget it runs, which opens beside the page.
+
+When a schedule runs is the scheduler's to say, from its management app
+(`getGatekeeperApp('scheduler')`, whose `ui` lists the account's schedules), and it is matched to
+its hook by the title, description and gadget it was enabled with (`automations/automations.ts`,
+plain and tested): neither says which the other is. A hook does not say who delivers it either, so
+one is a schedule by having one, or by the scheduler's resource (`scheduler://tasks`), which keeps
+a paused one, which has no schedule, among the scheduled. Nor does it say which chat set it up: a
+chat's are those its cards show, as far as its conversation has been loaded.
+
+After the automations, the workspace's page lists the agents its gadgets call on, by their runs
+among its chats (`spawnerName`), each opening its latest run. An agent that has not run is not
+known, and nothing says what calls on it or what it thinks with, until the backend lists them.
 
 ## Lists
 

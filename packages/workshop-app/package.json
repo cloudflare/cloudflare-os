@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.14.0",
+    "@gadgets/gatekeeper-scheduler": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",

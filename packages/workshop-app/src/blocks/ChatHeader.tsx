@@ -1,4 +1,4 @@
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { CaretRightIcon, ClockIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import type { WorkspaceLook } from '@/components/workspaceLook'
@@ -19,10 +19,16 @@ export type ChatHeaderProps = {
   title?: string
   /** Opens the chat's settings, from its title. */
   onOpenSettings?: () => void
+  /** What the chat has set up to run by itself, while there is any: how many, and the way to them. */
+  automations?: { count: number; onOpen: () => void }
 }
 
-/** A chat's header: the way back to its workspace, then the chat's title, which opens its settings. */
-export const ChatHeader = ({ workspace, title, onOpenSettings }: ChatHeaderProps) => (
+/**
+ * A chat's header: the way back to its workspace, then the chat's title, which opens its settings,
+ * and while the chat has set something up to run by itself, a clock with how many, which opens
+ * them. The clock is a bubble of its own, so it pops in as the first is set up.
+ */
+export const ChatHeader = ({ workspace, title, onOpenSettings, automations }: ChatHeaderProps) => (
   <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
     {workspace && <WorkspaceCrumb {...workspace} />}
     {title && (
@@ -34,6 +40,18 @@ export const ChatHeader = ({ workspace, title, onOpenSettings }: ChatHeaderProps
             <span className="truncate">{title}</span>
             {onOpenSettings && <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />}
           </span>
+        </Button>
+      </HeaderBubble>
+    )}
+    {automations && (
+      <HeaderBubble className="shrink-0">
+        <Button
+          icon={ClockIcon}
+          aria-label={automations.count === 1 ? 'Automations: 1' : `Automations: ${automations.count}`}
+          title="Automations"
+          onClick={automations.onOpen}
+        >
+          {automations.count}
         </Button>
       </HeaderBubble>
     )}

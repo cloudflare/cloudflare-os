@@ -7,8 +7,9 @@ const validateTab = (value: unknown): WorkspaceTab | undefined =>
   WORKSPACE_TABS.find((tab) => tab.value === value && value !== 'chats')?.value
 
 /**
- * One workspace: its chats, or with `?tab=`, what it has made or who has access to it, and what
- * is shown beside it (`?open=`, see `asideItems`), which the frame lays out (`_app`).
+ * One workspace: its chats, or with `?tab=`, what it has made, what runs in it by itself or who has
+ * access to it, and what is shown beside it (`?open=`, see `asideItems`), which the frame lays out
+ * (`_app`).
  */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/')({
   validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab; open?: string } => ({
