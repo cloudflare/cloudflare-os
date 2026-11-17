@@ -117,9 +117,7 @@ import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
 import {
   chatRequestIds, pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
-import {
-  canOfferAlwaysApprove, mayApplyWhileRestricted, type AutoApprovalRules,
-} from "./features/approvals/autoApprovalRules";
+import { canOfferAlwaysApprove, mayApplyWhileRestricted } from "./features/approvals/autoApprovalRules";
 import { useBulkResolve } from "./features/approvals/useBulkResolve";
 import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
@@ -129,8 +127,7 @@ import {
   agentsNeedingAttention, deriveAgents, ownConversations,
 } from "./features/chat/agents/agentList";
 import { actionLogResumed, useActionEntries, useActions } from "./useActions";
-import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
-import { useStandingRules } from "./features/approvals/useStandingRules";
+import { useAutoApprovalRules } from "./features/approvals/useAutoApprovalRules";
 import { useResolveAction } from "./useResolveAction";
 import type { ActivityView } from "./Activity";
 import type { AutoApprovalChannel } from "./features/approvals/autoApprovalChannel";
@@ -4546,12 +4543,6 @@ function ChatInterface({
     { actionId: number; gatekeeperId: number; resourceTitle: string; actionKind: ActionKind } | null
   >(null);
 
-  // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
-  // server applies the now-eligible pending action(s) via its drain, and the action state flips to
-  // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed);
-
   const { resolveAction, creationAccountModal } =
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
@@ -4583,45 +4574,21 @@ function ChatInterface({
 
   // The real rule list, not an inference from a request still being pending: the drain stops at
   // the first manual gate and never skips ahead, so a covered request can sit behind an uncovered
-  // one indefinitely.
+  // one indefinitely. Turning a rule on is gated by the confirm dialog.
   const {
-    enabledRuleKeys,
+    rules: autoApprovalRules,
+    alwaysApproveTag,
     vendorIdByGatekeeper,
-    ruleApplies,
     isLoading: autoApprovalLoading,
     loadError: autoApprovalLoadError,
-    refresh: refreshAutoApproval,
-  } = useStandingRules(overseer, {
+  } = useAutoApprovalRules(overseer, {
     vendors: trayGroups.length > 0,
     restricted: restricted === true,
     // Not the latch alone: this component is always mounted, and the catalog starts every
     // gatekeeper it lists. While the queue has not loaded nothing is asked, and nothing offered.
     applies: restricted === true &&
       trayGroups.some(group => group.entries.some(mayApplyWhileRestricted)),
-  });
-  const autoApproveReload = autoApproval?.reloadTrigger;
-  // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
-  // including about a rule someone has just turned off, so the optimistic overlay has nothing left
-  // to add and must stop outranking it -- unless the read was overtaken or failed, which set
-  // nothing: retiring the overlay against a list that never landed would read a just-enabled rule
-  // as off.
-  const rulesReadFor = useRef(autoApproveReload);
-  useEffect(() => {
-    if (autoApproveReload === rulesReadFor.current) return;
-    rulesReadFor.current = autoApproveReload;
-    void refreshAutoApproval().then(applied => {
-      if (applied) forgetOptimisticTags();
-    });
-  }, [autoApproveReload, refreshAutoApproval, forgetOptimisticTags]);
-
-  const autoApprovalRules: AutoApprovalRules = useMemo(() => ({
-    // A rule enabled in this session counts before the catalog is re-read, so the affordance
-    // disappears on the click rather than a round trip later.
-    isEnabled: (gatekeeperId, tag) =>
-      enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
-    applies: ruleApplies,
-    restricted: restricted === true,
-  }), [enabledRuleKeys, isTagAutoApproved, ruleApplies, restricted]);
+  }, setProcessingActions, autoApproval);
 
   // The pending snapshot pages in, and a run that trusted a partial one could apply a later
   // request while earlier ones on the same connection were still out of sight.

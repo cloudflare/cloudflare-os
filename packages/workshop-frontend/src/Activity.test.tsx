@@ -23,7 +23,10 @@ vi.mock('./useAlwaysApproveTag', async (importOriginal) => {
   return {
     useAlwaysApproveTag: (...args: Parameters<typeof actual.useAlwaysApproveTag>) => alwaysApprove.real
       ? actual.useAlwaysApproveTag(...args)
-      : { alwaysApproveTag: vi.fn<() => Promise<void>>(), isTagAutoApproved: () => false },
+      : {
+          alwaysApproveTag: vi.fn<() => Promise<void>>(), isTagAutoApproved: () => false,
+          forgetOptimisticTags: () => {},
+        },
   }
 })
 const auth = vi.hoisted(() => ({ authenticatedApi: {} as Record<string, unknown> }))
@@ -121,7 +124,8 @@ describe('Activity rule offers in a restricted workspace', () => {
    * Renders a restricted workspace's pane with `pending` waiting. The catalog lists the admin
    * connection as the kernel does, saying a rule applies a status and not a reply.
    */
-  async function renderRestricted(pending: ActionLogEntry[], shown: 'review' | 'history' = 'review') {
+  async function renderRestricted(pending: ActionLogEntry[], shown: 'review' | 'history' = 'review',
+      answers: Partial<Overseer> = {}) {
     const server = makeOverseer()
     const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () =>
       [STATUS, REPLY].map(actionKind => ({
@@ -129,7 +133,7 @@ describe('Activity rule offers in a restricted workspace', () => {
         actionKind, alreadyEnabled: false, ruleApplies: actionKind === STATUS,
       })))
     const setAutoApprovedActionKind = vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {})
-    Object.assign(server.overseer, { listPreApprovableActions, setAutoApprovedActionKind })
+    Object.assign(server.overseer, { listPreApprovableActions, setAutoApprovedActionKind, ...answers })
     await view.render(
       <Activity overseer={server.overseer} restricted view={shown} onViewChange={() => {}} />,
     )
@@ -163,6 +167,51 @@ describe('Activity rule offers in a restricted workspace', () => {
     await act(async () =>
       [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Always approve')!.click())
     expect(server.setAutoApprovedActionKind).toHaveBeenCalledExactlyOnceWith(7, STATUS)
+  })
+
+  it('offers no rule that is already stored, to a request waiting behind an older one', async () => {
+    // The drain stops at the reply, which waits for a person, so the status behind it is still
+    // pending with its rule on. Offering that rule again would replace who enabled it.
+    const stored = vi.fn<Overseer['listAutoApprovedActionKinds']>(async () =>
+      [{ gatekeeperId: 7, actionKind: STATUS }])
+    await renderRestricted([
+      request(1, 'Tell the reporter it is fixed', REPLY),
+      request(2, 'Close report 12', STATUS),
+    ], 'review', { listAutoApprovedActionKinds: stored })
+
+    expect(stored).toHaveBeenCalledTimes(1)
+    expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('reads the stored rules again when one changes on another surface', async () => {
+    const server = makeOverseer()
+    const stored = vi.fn<Overseer['listAutoApprovedActionKinds']>(async () =>
+      [{ gatekeeperId: 7, actionKind: STATUS }])
+    Object.assign(server.overseer, { listAutoApprovedActionKinds: stored })
+    const render = (reloadTrigger: number) => view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        autoApproval={{ reloadTrigger, changed: () => {} }} />,
+    )
+    await render(0)
+    await server.resolveSubscription()
+    // A request no rule can apply holds the one behind it, whose rule is on.
+    await server.resolvePendingQuery({ entries: [
+      entry(1, { gatekeeperId: 7, description: {
+        title: 'Ask for a write', description: '', implementsRevert: false, autoApprovable: false,
+      } }),
+      request(2, 'Close report 12', STATUS),
+    ] })
+    flushFrames()
+    await act(async () => {})
+    expect(alwaysApproveButtons()).toHaveLength(0)
+
+    // The rule is turned off in the Auto-approval tab, whose end of the channel says so.
+    stored.mockResolvedValue([])
+    await render(1)
+    await act(async () => {})
+
+    expect(stored).toHaveBeenCalledTimes(2)
+    expect(alwaysApproveButtons()).toHaveLength(1)
   })
 
   it('does not read the catalog for requests no rule could apply under the latch', async () => {
