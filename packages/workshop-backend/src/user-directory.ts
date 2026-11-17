@@ -62,12 +62,6 @@ function validateQuery(query: string): void {
   }
 }
 
-function validateLimit(limit: number): void {
-  if (!Number.isSafeInteger(limit) || limit < 1) {
-    throw new TypeError("A page limit must be a positive whole number.");
-  }
-}
-
 // A time as the directory stores it: epoch ms, NULL for unknown.
 function epochMs(date: Date | undefined): number | null {
   return date ? date.getTime() : null;
@@ -206,7 +200,7 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * The title (clamped) and owner the directory lists for a workspace, or null when it lists none:
-   * what AdminApiImpl records, the title cut, for an open refused before reaching the workspace.
+   * what AdminApiImpl records for an open refused before reaching the workspace.
    * Rejects an id over 1000 characters (workspace ids are 64).
    */
   workspaceListing(id: string): { title: string; ownerId: string } | null {
@@ -247,12 +241,11 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
    * `query` as searchUsers() matches (blank matches all), with their activity and clamped names:
    * at most `limit`, and fewer once the page's ids and names would pass a million characters
    * (never none while any remain). Rejects a `query` over 1000 characters or with a line break;
-   * `limit` must be a positive whole number (AdminApiImpl bounds it).
+   * `limit` is validated by the caller (see adminListLimit()).
    */
   listUsers(options: { query?: string; cursor?: string; limit: number }): UserDirectoryPage {
     const { query = "", cursor, limit } = options;
     validateQuery(query);
-    validateLimit(limit);
     const needle = query.trim().toLowerCase();
     const conditions: string[] = [];
     const bindings: string[] = [];
@@ -292,7 +285,6 @@ export class UserDirectoryDurableObject extends DurableObject<Cloudflare.Env> {
       : AdminWorkspacePage {
     const { owner, query = "", cursor, limit } = options;
     validateQuery(query);
-    validateLimit(limit);
     const needle = query.trim().toLowerCase();
     const conditions: string[] = [];
     const bindings: string[] = [];

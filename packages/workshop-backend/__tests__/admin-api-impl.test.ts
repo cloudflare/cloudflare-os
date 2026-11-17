@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  createAdminAccessError, getAdminAccessErrorCode,
+  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  getAdminAccessErrorCode,
   type AdminAccessRecord, type AdminVia,
 } from "@gadgets/workshop-shared/api";
 import { AdminApiImpl } from "../src/admin-settings.js";
@@ -126,9 +126,6 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     ["ADMIN_WORKSPACE_ACCESS_MAX off", { vars: { ADMIN_WORKSPACE_ACCESS_MAX: "off" } }],
     ["ADMIN_WORKSPACE_ACCESS_MAX not a level", { vars: { ADMIN_WORKSPACE_ACCESS_MAX: "none" } }],
     ["ADMIN_WORKSPACE_ACCESS_MAX full", { vars: { ADMIN_WORKSPACE_ACCESS_MAX: "full" } }],
-    // The fake answers committedAdminConfig() with the config as given, so the policy alone turns
-    // this one off.
-    ["a committed level that is not one", { config: { adminWorkspaceAccess: "full" as never } }],
   ])("while access is off by %s", (_label, setup) => {
     const offDeployment = (listing: Handler, append: Handler = () => {}) => deployment({
       ...setup,
@@ -170,13 +167,6 @@ describe("AdminApiImpl.inspectWorkspace", () => {
       await rejection(api.inspectWorkspace(id, REASON));
       const [second] = callsTo("audit", "append")[1]!.args as [AdminAccessRecord];
       expect(second.sessionId).toBe(record.sessionId);
-    });
-
-    it("cuts a long title as the audit log cuts any", async () => {
-      const { mint, callsTo } = offDeployment(() => ({ title: "t".repeat(1000), ownerId: "ada" }));
-      await rejection(mint().inspectWorkspace(workspaceId(), REASON));
-      const [record] = callsTo("audit", "append")[0]!.args as [AdminAccessRecord];
-      expect(record.workspaceTitle).toBe(`${"t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`);
     });
 
     it.each([

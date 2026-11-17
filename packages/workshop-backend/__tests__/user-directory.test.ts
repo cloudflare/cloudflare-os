@@ -222,8 +222,6 @@ describe("UserDirectoryDurableObject.listUsers", () => {
     });
     await expectRejection(stub.listUsers({ query: "a".repeat(1001), limit: 10 }), "at most 1000 characters");
     await expectRejection(stub.listUsers({ query: "ada\nlove", limit: 10 }), "no line breaks");
-    await expectRejection(stub.listUsers({ limit: 0 }), "positive whole number");
-    await expectRejection(stub.listUsers({ limit: 1.5 }), "positive whole number");
     // A cursor is a previous page's last id, which has no length limit.
     await expect(stub.listUsers({ cursor: "a".repeat(300_000), limit: 10 })).resolves.toEqual({
       users: [user("ada@example.com", "Ada Lovelace"), user("grace@example.com", "Grace Hopper")],
@@ -304,7 +302,6 @@ describe("UserDirectoryDurableObject workspaces", () => {
 
     await expectRejection(stub.listWorkspaces({ query: "a".repeat(1001), limit: 10 }), "at most 1000 characters");
     await expectRejection(stub.listWorkspaces({ query: "a\rb", limit: 10 }), "no line breaks");
-    await expectRejection(stub.listWorkspaces({ limit: -1 }), "positive whole number");
     // Neither a cursor nor an owner filter is capped: both are ids.
     await expect(stub.listWorkspaces({ owner: "a".repeat(300_000), limit: 10 })).resolves.toEqual({
       workspaces: [],

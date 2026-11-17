@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminVia, AdminWorkspaceAccess, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -19,7 +19,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
 import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -1554,12 +1554,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       // Appended without a retention, as a view's records are: the directory read awaits, and a
       // retention an admin raised meanwhile must not be pruned to the one read above.
       let listing = await this.#directoryListing(id.toString());
-      let workspaceTitle = cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH);
       await this.audits.getByName("").append({
         kind: "workspace", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId, workspaceTitle,
-        method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason,
-        access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+        via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId,
+        workspaceTitle: listing.title, method: "inspectWorkspace",
+        args: { expiresAt: expiresAt.toISOString() }, reason, access: "off",
+        refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
       });
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
     }

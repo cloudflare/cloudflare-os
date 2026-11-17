@@ -114,24 +114,6 @@ describe("adminAccessPolicy", () => {
         envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "metadata" })))
         .toEqual({ access: "off", retentionDays: 400 });
   });
-
-  // lowerAdminWorkspaceAccess() sorts a value that is not a level lowest and returns it, so the
-  // policy checks the chosen value itself: every enforcement point compares its answer with "off".
-  describe.each([
-    ["no cap", {}],
-    ["the cap at metadata", { ADMIN_WORKSPACE_ACCESS_MAX: "metadata" }],
-  ])("with %s", (_name, vars) => {
-    it.each(["full", "FULL", "", "none", undefined, null])(
-        "gives off for a chosen value that is not a level: %j", value => {
-      let env = envWith({ ...vars, ADMIN_AUDIT_RETENTION_MIN_DAYS: "7" });
-      expect(adminAccessPolicy(
-          { adminWorkspaceAccess: value as never, adminAuditRetentionDays: 30 }, env))
-          .toEqual({ access: "off", retentionDays: 30 });
-      expect(adminAccessPolicy(
-          { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: 30 }, env))
-          .toEqual({ access: "metadata", retentionDays: 30 });
-    });
-  });
 });
 
 describe("validators", () => {

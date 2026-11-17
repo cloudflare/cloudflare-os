@@ -103,9 +103,8 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
         workspaceOwner: owner, ...fields
       } = record;
       workspaceId = id ?? null;
-      // Its callers cut the title already, but neither a title nor a username has a length limit of
-      // its own, and a page of records holding them whole could pass the RPC size limit, so the store
-      // holds the bound itself.
+      // Neither a title nor a username has a length limit of its own, and a page of records holding
+      // them whole could pass the RPC size limit, so the store holds the bound itself.
       workspaceTitle = typeof title === "string"
           ? cutAdminAuditText(title, MAX_ADMIN_AUDIT_ARG_LENGTH) : null;
       rest = typeof owner === "string" ? { ...fields, workspaceOwner: auditOwnerId(owner) } : fields;

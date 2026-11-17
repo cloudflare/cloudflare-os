@@ -133,11 +133,8 @@ session's `via` and the view's expiry (`expiresAt`).
   [observers.md](observers.md#admin-access-a-deliberate-exception));
 - reads its environment only through the `OverseerImpl` (`impl.env`), never through the Durable
   Object's own `env`;
-- rejects malformed terms with a `TypeError`, unrecorded: a blank or over-long reason, a `via` that
-  is not `"api"` or `"cli"`, and an expiry that is not a valid time or lies beyond the longest
-  lifetime. An expiry already past when the workspace answers is not malformed: the open is refused
-  as any call on an expired view is (`viewExpired`, unrecorded), so a slow hop never surfaces as a
-  validation error.
+- refuses an expiry already past when the workspace answers as any call on an expired view is
+  (`viewExpired`, unrecorded).
 
 The view (`AdminWorkspaceViewImpl`) is not an `Overseer`. It joins no presence, session count or
 outputs fan-out, and starts no agent, ambient capsule or gatekeeper facet; waking the Durable Object
@@ -529,10 +526,9 @@ Expected refusals carry a code from `ADMIN_ACCESS_ERROR_CODES` (read with
 
 Unit suites, in `packages/workshop-backend/__tests__/`:
 
-- `admin-access.test.ts`: admin status, the bounds' parsing (failing closed), the policy (which
-  gives `"off"` for a chosen value that is not a level, with or without a cap), validation (the
-  commit log's depth included), the cuts, setting values and excerpts, and each withholding helper
-  on a copy.
+- `admin-access.test.ts`: admin status, the bounds' parsing (failing closed), the policy, validation
+  (the commit log's depth included), the cuts, setting values and excerpts, and each withholding
+  helper on a copy.
 - `admin-config.test.ts` (`diffAdminConfig`) and `admin-settings-audit.test.ts`: what each setter
   records, before which write, and the setters' bounds: a value that is not a level refused,
   nothing stored or recorded, and a stored one reported as `"off"` until an admin chooses.
@@ -541,8 +537,8 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   access record and null for a setting record), retention, stats (per day, the top admins, by
   kind), the method and owner indexes, multi-MiB titles, and each record returned as it is stored.
 - `admin-api-impl.test.ts`: `AdminApiImpl`'s inspection path, opens refused while access is off (by
-  the setting, by a cap or a committed level that is not a level), the setter's validator refusing
-  a value that is not a level with a `TypeError`, listings and forwarding.
+  the setting or by a cap), the setter's validator refusing a value that is not a level with a
+  `TypeError`, listings and forwarding.
 - `cli-admins-only.test.ts`: the `via` a session's User-Agent gives its records.
 - `admin-workspace-view.test.ts`: the view, from an uninitialised id that stays uninitialised to the
   per-call checks; every method recorded and none refused, each record stored with `exposed`

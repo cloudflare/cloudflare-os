@@ -14,8 +14,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { RpcTarget } from "capnweb";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
+  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH, getAdminAccessErrorCode,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess,
   type AdminWorkspaceView, type AiChatAuthorInfo,
@@ -627,20 +626,10 @@ describe("opening an admin view", () => {
     expect(await deploymentRecords(ws)).toStrictEqual([]);
   }, { seed: false }));
 
-  it("refuses, unrecorded, a caller who is not an admin and malformed terms",
+  it("refuses, unrecorded, a caller who is not an admin and an expiry already past",
       () => withWorkspace(async ws => {
     expect(await codeOf(open(ws, {}, "owner@example.test")))
         .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
-    await expect(open(ws, {}, ADMIN, "   ")).rejects.toThrow(TypeError);
-    await expect(open(ws, {}, ADMIN, "x".repeat(MAX_ADMIN_ACCESS_REASON_LENGTH + 1)))
-        .rejects.toThrow(TypeError);
-    await expect(open(ws, { via: "gatekeeper" as any })).rejects.toThrow(TypeError);
-    await expect(open(ws, { expiresAt: new Date(NaN) })).rejects.toThrow(TypeError);
-    await expect(open(ws, { expiresAt: "tomorrow" as any })).rejects.toThrow(TypeError);
-    await expect(open(ws, {
-      expiresAt: new Date(Date.now() + (MAX_ADMIN_VIEW_LIFETIME_SECONDS + 120) * 1000),
-    })).rejects.toThrow(TypeError);
-    // Already past is not malformed: it is an expired view.
     expect(await codeOf(open(ws, { expiresAt: new Date(Date.now() - 1000) })))
         .toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
 

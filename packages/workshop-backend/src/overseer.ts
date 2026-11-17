@@ -3,8 +3,7 @@ import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
@@ -68,7 +67,7 @@ import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
   adminAccessPolicy, adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText,
-  redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
+  redactAdminAuditArgs, withholdActionContent,
   withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
   withholdHookContent,
   type AdminViewTerms,
@@ -11864,11 +11863,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *
    * Refuses (`workspaceNotFound`) a workspace never initialised or since deleted, before anything
    * else and writing nothing: unlike open()'s first-open path it never asks a user DO whether the
-   * workspace is theirs and never claims ownership. Rejects (TypeError) malformed terms: a blank or
-   * over-long reason, a `via` that is not "api" or "cli", and an `expiresAt` that is not a valid
-   * Date or lies more than MAX_ADMIN_VIEW_LIFETIME_SECONDS (plus a minute of clock skew) ahead. An
-   * `expiresAt` already past is not malformed: the open is then refused `viewExpired`, unrecorded,
-   * as any call on an expired view is.
+   * workspace is theirs and never claims ownership. `reason` and `terms` arrive validated (see
+   * AdminApiImpl.inspectWorkspace()). An `expiresAt` already past refuses the open `viewExpired`,
+   * unrecorded, as any call on an expired view is.
    *
    * By explicit policy it skips authorizeCollaborator() and observer verification (see
    * docs/observers.md): the admin is not a collaborator, is never registered with the workspace's
@@ -11887,22 +11884,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
 
-    let trimmedReason = validateAdminAccessReason(reason);
-    if (terms.via !== "api" && terms.via !== "cli") {
-      throw new TypeError("An admin view's via must be \"api\" or \"cli\".");
-    }
-    let expiresAt = terms.expiresAt instanceof Date ? terms.expiresAt.getTime() : NaN;
-    if (Number.isNaN(expiresAt) ||
-        expiresAt > Date.now() + (MAX_ADMIN_VIEW_LIFETIME_SECONDS + 60) * 1000) {
-      throw new TypeError(
-          "An admin view's expiry must be a valid time within its longest lifetime.");
-    }
-
     // The owner is resolved now, since a call's record is built before its first await (see
     // AdminWorkspaceViewImpl), and never changes.
     let ownerId = await this.impl.getOwnerProfileId();
     let view = await AdminWorkspaceViewImpl.open(
-        this.impl, adminId, trimmedReason, sessionId, terms, ownerId);
+        this.impl, adminId, reason, sessionId, terms, ownerId);
     this.impl.logger.info("admin workspace view opened", {event: "admin.view.opened"});
     return view;
   }

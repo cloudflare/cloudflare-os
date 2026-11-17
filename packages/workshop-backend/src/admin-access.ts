@@ -88,8 +88,7 @@ export function lowerAdminWorkspaceAccess(a: AdminWorkspaceAccess, b: AdminWorks
 
 /** What the deployment enforces now: the admins' choices held within the environment's bounds. */
 export type AdminAccessPolicy = {
-  /** The level in force: the chosen level, at most maxAdminWorkspaceAccess(); "off" when either
-   * is not a level. */
+  /** The level in force: the chosen level, at most maxAdminWorkspaceAccess(). */
   access: AdminWorkspaceAccess;
   /** How many days the audit log keeps a record: the chosen retention, at least
    * minAdminAuditRetentionDays(). */
@@ -97,15 +96,13 @@ export type AdminAccessPolicy = {
 };
 
 /** The policy `config` and the environment give. Every enforcement point computes it from a config
- * it has just read; none holds one from earlier. A chosen value that is not a level gives "off",
- * as a bound that is not one does (see maxAdminWorkspaceAccess()). */
+ * it has just read; none holds one from earlier. `config` is a normalized one, so its chosen level
+ * is a level (see normalizeAdminConfig()). */
 export function adminAccessPolicy(
     config: Pick<AdminConfig, "adminWorkspaceAccess" | "adminAuditRetentionDays">,
     env: Cloudflare.Env): AdminAccessPolicy {
-  let chosen = config.adminWorkspaceAccess;
   return {
-    access: isAdminWorkspaceAccess(chosen)
-        ? lowerAdminWorkspaceAccess(chosen, maxAdminWorkspaceAccess(env)) : "off",
+    access: lowerAdminWorkspaceAccess(config.adminWorkspaceAccess, maxAdminWorkspaceAccess(env)),
     retentionDays: Math.max(config.adminAuditRetentionDays, minAdminAuditRetentionDays(env)),
   };
 }
