@@ -1,5 +1,6 @@
 import { useState, useSyncExternalStore } from 'react'
-import { Switch, Tabs } from '@cloudflare/kumo'
+import { Tabs } from '@cloudflare/kumo'
+import { Switch } from '@/components/Switch'
 import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/ConnectionIsland'
 import { Button } from '@/components/Button'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'

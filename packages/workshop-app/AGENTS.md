@@ -332,7 +332,9 @@ the connection as it is listed now, so that what an account is given shows while
 wrong, with its icon and its action on the title's line, the action a button of the app's shape
 a shade deeper than the banner. A surface in a dialog, the banner or a list, is a step less round than
 the dialog (`--surface-radius`, which `Dialog` sets). `Button`'s `danger`
-is `secondary` in that colour, for what cannot be taken back.
+is `secondary` in that colour, for what cannot be taken back. Switches are the app's own
+`Switch`, fully round as the buttons are, in Kumo's blue with a thumb that is white in either
+theme: Kumo's is a squircle whose thumb cannot be reshaped from outside. Use it for any new one.
 
 A service is signed in to in a window of its own (`connections/connectHandoff.ts`, plain and
 tested, ported from the old app without the native app's path; see `docs/connect-handoff.md`). The

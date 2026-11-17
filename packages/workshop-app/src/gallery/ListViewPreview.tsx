@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Switch } from '@cloudflare/kumo'
 import { FileTextIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { ListToolbar } from '@/blocks/ListToolbar'
@@ -15,6 +14,7 @@ import { formatActivity } from '@/workspaces/formatActivity'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { workspaceList, workspaceTitle } from '@/workspaces/workspaceList'
 import type { WorkspaceMember } from '@/workspaces/workspaceMembers'
+import { Switch } from '@/components/Switch'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

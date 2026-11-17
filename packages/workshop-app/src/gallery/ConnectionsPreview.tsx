@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Switch } from '@cloudflare/kumo'
 import { cn } from '@cloudflare/kumo/utils'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
@@ -14,6 +13,7 @@ import { ManageConnectionDialog } from '@/blocks/ManageConnectionDialog'
 import { connectionList, connectionName, connectionsOf, type ConnectedAccount, type Connection } from '@/connections/connectionList'
 import { connectDialogProps, connectionProps, manageDialogProps, type ConnectionActions } from '@/connections/connectionProps'
 import { useListView } from '@/hooks/useListView'
+import { Switch } from '@/components/Switch'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

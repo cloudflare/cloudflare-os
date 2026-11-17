@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { Switch, Tabs } from '@cloudflare/kumo'
+import { Tabs } from '@cloudflare/kumo'
+import { Switch } from '@/components/Switch'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { WorkLog } from '@/blocks/WorkLog'

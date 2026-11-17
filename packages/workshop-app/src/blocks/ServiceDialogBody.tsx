@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import { Switch } from '@cloudflare/kumo'
 import { cn } from '@cloudflare/kumo/utils'
 import { UserIcon } from '@phosphor-icons/react'
 import { ClampedText } from '@/components/ClampedText'
+import { Switch } from '@/components/Switch'
 import { Tooltip } from '@/components/Tooltip'
 
 /** A kind of thing a service gives access to, such as its mail or its calendar, as a dialog lists it. */
@@ -28,7 +28,7 @@ const AccessSwitch = ({ toggle }: { toggle: NonNullable<ServiceAccess['toggle']>
     // As tall as the title's line, so that the switch is on its middle. With a note it is what is
     // pointed at and focused, as a switch that cannot be changed is neither.
     <span tabIndex={note ? 0 : undefined} className="flex h-[1lh] shrink-0 items-center rounded-full leading-snug">
-      <Switch size="sm" aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} className={note && 'pointer-events-none'} />
+      <Switch aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} className={note && 'pointer-events-none'} />
     </span>
   )
   return note ? <Tooltip content={note} delay={200}>{control}</Tooltip> : control

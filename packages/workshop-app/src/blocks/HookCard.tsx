@@ -1,7 +1,7 @@
-import { Switch } from '@cloudflare/kumo'
 import { LightningIcon } from '@phosphor-icons/react'
 import { Card } from '@/components/Card'
 import { Markdown } from '@/components/Markdown'
+import { Switch } from '@/components/Switch'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 import { usePending, type ActionResult } from './usePending'
 
@@ -29,15 +29,11 @@ export const HookCard = ({ title, description, resource, enabled, onEnabledChang
       </div>
       {onEnabledChange ? (
         <Switch
-          size="sm"
           aria-label={`Hook: ${title}`}
           checked={enabled}
           // Not `disabled`, which would take focus from a keyboard user mid-change.
-          aria-disabled={pending || undefined}
-          transitioning={pending}
-          onCheckedChange={(checked) => {
-            if (!pending) run(() => onEnabledChange(checked))
-          }}
+          busy={pending}
+          onCheckedChange={(checked) => run(() => onEnabledChange(checked))}
         />
       ) : (
         <span className="shrink-0 text-sm text-kumo-inactive">Deleted</span>

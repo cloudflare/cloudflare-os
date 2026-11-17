@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Switch } from '@cloudflare/kumo'
 import { cn } from '@cloudflare/kumo/utils'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
 import { LibraryCard } from '@/blocks/LibraryCard'
@@ -14,6 +13,7 @@ import { useListView } from '@/hooks/useListView'
 import { libraryList, outputDetail, outputKey, outputTitle } from '@/library/libraryList'
 import { withStar, withStarOrder } from '@/library/libraryStars'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { Switch } from '@/components/Switch'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
