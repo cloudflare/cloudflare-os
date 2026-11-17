@@ -6,19 +6,28 @@ import type { GadgetClient } from '@gadgets/workshop-shared/api'
 import type { GadgetExportFormat } from '@gadgets/workshop-shared/api'
 import { WorkshopIconButton } from './components/WorkshopControls'
 import { makeExportFilename, saveStreamToFile } from './fileTransfers'
+import { GadgetSaveDialog } from './features/gadget-save/GadgetSaveDialog'
+import { GadgetSaveMenuItems, useSaveVendors, type SaveRequest } from './features/gadget-save/GadgetSaveMenuItems'
+import type { SaveScope } from './features/gadget-save/savedFiles'
 
 type Props = {
   gadget: RpcStub<GadgetClient> | null
   gadgetTitle: string
   chatId?: number
+  /** Offers saving the Gadget, identified by this, to a connected account. */
+  saveScope?: SaveScope
 }
 
-export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props) {
+export default function GadgetExportMenu({ gadget, gadgetTitle, chatId, saveScope }: Props) {
   const [formats, setFormats] = useState<GadgetExportFormat[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadFailed, setLoadFailed] = useState(false)
   const [exportingId, setExportingId] = useState<string | null>(null)
+  // A save belongs to the Gadget and preview it was asked of: once either changes, as when the
+  // editor follows the agent to another Gadget, it is dropped rather than saving the new one.
+  const [saving, setSaving] = useState<{ request: SaveRequest; gadget: object; chatId?: number } | null>(null)
   const formatRequest = useRef(0)
+  const { vendors: saveVendors, refresh: refreshSaveVendors } = useSaveVendors(!!saveScope)
   const toasts = useKumoToastManager()
 
   useEffect(() => {
@@ -26,6 +35,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
     setFormats(null)
     setLoading(false)
     setLoadFailed(false)
+    setSaving(null)
   }, [gadget, chatId])
 
   const loadFormats = () => {
@@ -49,6 +59,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
   const handleOpenChange = (open: boolean) => {
     if (open) {
       loadFormats()
+      refreshSaveVendors()
     } else {
       ++formatRequest.current
       setFormats(null)
@@ -99,7 +110,7 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
             )}
           />
           <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[144px] rounded-lg border border-kumo-line bg-kumo-base p-1">
-            {loading ? (
+            {loading || !saveVendors ? (
               <div role="status" aria-label="Loading export formats" className="space-y-1 py-0.5">
                 {['w-20', 'w-14'].map(width => (
                   <div key={width} className="flex h-7 items-center gap-2 px-2.5">
@@ -133,8 +144,25 @@ export default function GadgetExportMenu({ gadget, gadgetTitle, chatId }: Props)
                 {format.label}
               </DropdownMenu.Item>
             ))}
+            {saveScope && formats && saveVendors && (
+              <GadgetSaveMenuItems
+                vendors={saveVendors}
+                formats={formats}
+                scope={saveScope}
+                onSelect={request => setSaving({ request, gadget, chatId })}
+              />
+            )}
           </DropdownMenu.Content>
         </DropdownMenu>
+        {saving?.gadget === gadget && saving.chatId === chatId && (
+          <GadgetSaveDialog
+            gadget={gadget}
+            gadgetTitle={gadgetTitle}
+            chatId={chatId}
+            request={saving.request}
+            onClose={() => setSaving(current => current === saving ? null : current)}
+          />
+        )}
         {exportingId !== null && (
           <span className="pointer-events-none absolute bottom-0 left-1 right-1 h-0.5 overflow-hidden rounded-full bg-kumo-fill">
             <span className="absolute inset-y-0 w-1/3 bg-kumo-brand animate-[thinking_1.5s_ease-in-out_infinite]" />
