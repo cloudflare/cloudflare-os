@@ -19,8 +19,11 @@ const readSurface = (surface: HTMLElement) => {
   return { top: style.top, height: style.height, borderRadius: style.borderRadius }
 }
 
-/** Joins active and hover surfaces, preserving the direction from which the pointer approached. */
-export const useWorkspaceUnderlay = () => {
+/**
+ * Joins active and hover surfaces, preserving the direction from which the pointer approached.
+ * The rows are the list's children that match `rowSelector`; the current one has `aria-current`.
+ */
+export const useWorkspaceUnderlay = (rowSelector = '[data-workspace-id]') => {
   const listRef = useRef<HTMLDivElement>(null)
   const underlayRef = useRef<HTMLDivElement>(null)
   const hoverUnderlayRef = useRef<HTMLDivElement>(null)
@@ -67,12 +70,15 @@ export const useWorkspaceUnderlay = () => {
     }
 
     const rowAt = (element: EventTarget | null) => {
-      const row = element instanceof Element ? element.closest<HTMLButtonElement>('[data-workspace-id]') : null
+      const row = element instanceof Element ? element.closest<HTMLButtonElement>(rowSelector) : null
       return row?.parentElement === list ? row : undefined
     }
 
     const update = (hoverChanged = false) => {
-      const selected = rows.find((row) => row.getAttribute('aria-current') === 'true')
+      const selected = rows.find((row) => {
+        const current = row.getAttribute('aria-current')
+        return current !== null && current !== 'false'
+      })
       const selectedIndex = selected ? rows.indexOf(selected) : -1
       const hoveredIndex = hovered ? rows.indexOf(hovered) : -1
       const neighbour = selectedIndex >= 0 && hoveredIndex >= 0 && Math.abs(selectedIndex - hoveredIndex) === 1
@@ -190,7 +196,7 @@ export const useWorkspaceUnderlay = () => {
     observer.observe(list)
 
     refreshRef.current = () => {
-      const nextRows = Array.from(list.querySelectorAll<HTMLButtonElement>(':scope > [data-workspace-id]'))
+      const nextRows = Array.from(list.querySelectorAll<HTMLButtonElement>(`:scope > ${rowSelector}`))
       for (const row of rows) {
         if (!nextRows.includes(row)) {
           observer.unobserve(row)

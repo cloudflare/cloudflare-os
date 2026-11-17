@@ -1,10 +1,12 @@
 import type { ReactNode } from 'react'
 import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, PuzzlePieceIcon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { LogoIcon } from '@/components/LogoIcon'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
 
 export type { SidebarWorkspace }
@@ -52,14 +54,21 @@ type NavRowProps = {
 /**
  * A round button with its name beside it. The whole row is the button, filled while pointed at or
  * current, as a workspace's is, with room around the circle: give that room back around the rows
- * (`-m-1.5`), so that the circles stay in line with the buttons over the list.
+ * (`-m-1.5`), so that the circles stay in line with the buttons over the list. In `NavRows`, the
+ * fill is the shared highlight's.
  */
 const NavRow = ({ icon, label, current, onClick, ...props }: NavRowProps) => (
   <button
     type="button"
+    data-nav-row=""
     aria-current={current ? 'page' : undefined}
     onClick={onClick}
-    className="flex w-full items-center gap-2.5 rounded-full p-1.5 pr-4 text-left text-(length:--control-text) font-medium text-kumo-default hover:bg-kumo-fill aria-[current=page]:bg-kumo-fill"
+    className={cn(
+      // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
+      "relative after:absolute after:inset-0 after:content-['']",
+      'flex w-full items-center gap-2.5 rounded-2xl p-2.5 pr-4 text-left text-(length:--control-text) font-medium text-kumo-default',
+      'not-data-underlay:hover:bg-kumo-fill not-data-underlay:aria-[current=page]:bg-kumo-fill',
+    )}
     {...props}
   >
     <span className="grid size-(--control-size) shrink-0 place-items-center rounded-full bg-kumo-base ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
@@ -68,6 +77,20 @@ const NavRow = ({ icon, label, current, onClick, ...props }: NavRowProps) => (
     <span className="min-w-0 flex-1 truncate">{label}</span>
   </button>
 )
+
+const navUnderlay = 'pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded-2xl bg-kumo-fill'
+
+/** The rows under the list, with one highlight shared between the current row and the one pointed at, as the workspaces have. */
+const NavRows = ({ children }: { children: ReactNode }) => {
+  const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay('[data-nav-row]')
+  return (
+    <footer ref={listRef} className="relative isolate mt-0.5 -mb-1.5 flex flex-col gap-0">
+      <div ref={underlayRef} aria-hidden="true" className={navUnderlay} />
+      <div ref={hoverUnderlayRef} aria-hidden="true" className={navUnderlay} />
+      {children}
+    </footer>
+  )
+}
 
 /** The sidebar: the logo and the global buttons, the workspaces, and the user and connections. */
 export const Sidebar = ({
@@ -152,12 +175,12 @@ export const Sidebar = ({
           )}
         </header>
         {nav}
-        <footer className="-mx-1.5 mt-0.5 -mb-1.5 flex flex-col gap-0.5">
+        <NavRows>
           <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
           <NavRow icon={<CirclesFourIcon />} label="Library" current={library?.current} onClick={library?.onOpen} />
           <NavRow icon={<PuzzlePieceIcon />} label="Connections" />
           <NavRow icon={<Avatar name={user.name} src={user.avatarUrl} />} label={user.name} aria-label={`Account, ${user.name}`} />
-        </footer>
+        </NavRows>
       </div>
     )
   }
