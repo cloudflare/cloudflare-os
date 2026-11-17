@@ -557,8 +557,9 @@ function watched(
  * as one), a page image is not where the file says, is too large as stored or as the rows that would be
  * inflated, or is in an encoding that is not read. Only JPEG images are, and deflated grey or
  * RGB ones whose rows a PNG can hold. A mask as large as a page that is stored as fax or JBIG2
- * counts as a page stored so does: it is where the text of a layered scan's pages is, and its
- * other layers would be read without it. Nothing is logged or thrown here.
+ * counts as a page stored so does, and one of one bit a pixel stored any other way is refused
+ * beside page images: it is where the text of a layered scan's pages is, and its other layers
+ * would be read without it. Nothing is logged or thrown here.
  */
 function unreadAsStored(
   found: PdfImages,
@@ -572,6 +573,12 @@ function unreadAsStored(
       why: "a mask the size of a page, which is where a layered scan keeps its text, is stored in " +
         `an image encoding that is not read yet, ${UNREAD_ENCODINGS[found.maskEncoding]}`,
       encoding: found.maskEncoding,
+    };
+  }
+  if (found.bilevelMask && found.images.length > 0) {
+    return {
+      why: "a mask the size of a page holds one bit a pixel, which is how a layered scan keeps " +
+        "its text, and its page images would be read without it",
     };
   }
   for (let image of found.images) {

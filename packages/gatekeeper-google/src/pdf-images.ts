@@ -42,10 +42,14 @@ export type PdfImages = {
   /** Whether the file is encrypted, which makes every stream in it unreadable as it is. */
   encrypted: boolean;
   /**
-   * How a mask as large as a page is stored, when the file has one stored as fax or JBIG2. A mask
-   * is no page image, but those two hold one bit a pixel, which is how a page's text is kept: as
-   * the mask over a layered scan's colour layers, or as the whole of a black-and-white page.
+   * Present when the file has a mask as large as a page that holds one bit a pixel, however it
+   * is stored: a stencil (`/ImageMask`), or an image that another names as its mask and whose
+   * samples are one bit each. A mask is no page image, but one bit a pixel is how a page's text
+   * is kept: as the mask over a layered scan's colour layers, or as the whole of a
+   * black-and-white page. A mask of more bits is a picture's transparency.
    */
+  bilevelMask?: true;
+  /** How such a mask is stored, when the file has one stored as fax or JBIG2. */
   maskEncoding?: "fax" | "jbig2";
   /** How many bytes the file had. */
   bytes: number;
@@ -152,6 +156,8 @@ type Candidate = {
   height: number;
   /** How the dictionary says the data is encoded; `lossless` only if `rows` prove to be a PNG's. */
   encoding: PdfImageEncoding;
+  /** Whether it holds one bit a pixel, which matters should another image name it as its mask. */
+  bilevel: boolean;
   /** Present when the data is deflated rows a PNG may hold. */
   rows?: Rows;
   /** The length the dictionary gave, or the object it named for it. */
@@ -178,8 +184,9 @@ type Candidate = {
  *
  * An image is taken for a page when both its sides are at least {@link MIN_PAGE_SIDE} pixels and it is
  * neither a mask nor another image's mask. A smaller one is only counted
- * ({@link PdfImages.pieces}), and so is a mask that large ({@link PdfImages.pageMasks}), with how
- * it is stored when that is as fax or JBIG2 ({@link PdfImages.maskEncoding}). Both counts are made
+ * ({@link PdfImages.pieces}), and so is a mask that large ({@link PdfImages.pageMasks}), with
+ * whether it holds one bit a pixel ({@link PdfImages.bilevelMask}) and how it is stored when that
+ * is as fax or JBIG2 ({@link PdfImages.maskEncoding}). Both counts are made
  * as the file goes by, so an image defined again is counted again. Nothing here follows the page
  * tree, so the order is the file's, which is page order for scanner output but is not guaranteed,
  * and an image that no page shows is reported like any other. An object defined again later in
@@ -216,10 +223,10 @@ export class PdfImageScan {
   #more = false;
   #encrypted = false;
   /**
-   * How each mask as large as a page is stored, by object number, when that is as fax or JBIG2;
-   * at most {@link MAX_NOTED}.
+   * How each mask as large as a page that holds one bit a pixel is stored, by object number; at
+   * most {@link MAX_NOTED}.
    */
-  #pageMasks = new Map<number, "fax" | "jbig2">();
+  #bilevelMasks = new Map<number, PdfImageEncoding>();
   /** Objects that are a whole number, by number: a stream's length is often one. */
   #integers = new Map<number, number>();
   /**
@@ -284,10 +291,11 @@ export class PdfImageScan {
         damaged: candidate.damaged || length === undefined || length === 0,
       });
     }
-    let [maskEncoding] = this.#pageMasks.values();
+    let maskEncoding = [...this.#bilevelMasks.values()].find(stored => stored === "fax" || stored === "jbig2");
     return {
       images, more: this.#more || this.#candidates.size > MAX_PAGE_IMAGES,
       encrypted: this.#encrypted, bytes: this.#passed + this.#pending.length,
+      ...(this.#bilevelMasks.size > 0 ? { bilevelMask: true as const } : {}),
       ...(maskEncoding ? { maskEncoding } : {}),
       pieces: this.#pieces, pageMasks: this.#pageMaskCount,
       ...(this.#masksRedefined ? { masksRedefined: true as const } : {}),
@@ -394,7 +402,7 @@ export class PdfImageScan {
     this.#drop(end.after);
     // Whatever the object is, it replaces all that an earlier definition of it was noted as,
     // short of a page image, which one defined again as a page image keeps the place of.
-    for (let noted of [this.#integers, this.#spaces, this.#profiles, this.#pageMasks]) {
+    for (let noted of [this.#integers, this.#spaces, this.#profiles, this.#bilevelMasks]) {
       noted.delete(this.#object);
     }
     if (!end.stream) {
@@ -568,8 +576,12 @@ export class PdfImageScan {
       else this.#masksRedefined = true;
       // A mask is no page, whether the file holds it before the image it masks or after, so
       // it is let go as soon as it is known for one and never counts towards the most kept.
-      this.#noteMask(mask.ref, this.#candidates.get(mask.ref)?.encoding);
-      if (this.#candidates.delete(mask.ref)) this.#pageMaskCount++;
+      let held = this.#candidates.get(mask.ref);
+      if (held) {
+        this.#noteMask(mask.ref, held);
+        this.#candidates.delete(mask.ref);
+        this.#pageMaskCount++;
+      }
       if (this.#masks.size < MAX_NOTED) this.#masks.add(mask.ref);
     }
     let width = dict.get("/Width"), height = dict.get("/Height");
@@ -580,8 +592,12 @@ export class PdfImageScan {
       return undefined;
     }
     let stored = encoding(dict, width);
-    if (dict.get("/ImageMask") === true || this.#masks.has(this.#object)) {
-      this.#noteMask(this.#object, stored.encoding);
+    let stencil = dict.get("/ImageMask") === true;
+    // Fax and JBIG2 hold nothing but one bit a pixel, whatever the dictionary says.
+    let bilevel = stencil || dict.get("/BitsPerComponent") === 1 ||
+      stored.encoding === "fax" || stored.encoding === "jbig2";
+    if (stencil || this.#masks.has(this.#object)) {
+      this.#noteMask(this.#object, { encoding: stored.encoding, bilevel });
       this.#pageMaskCount++;
       return undefined;
     }
@@ -591,18 +607,16 @@ export class PdfImageScan {
     }
     let declared = dict.get("/Length");
     let candidate: Candidate = {
-      offset: this.#passed, width, height, damaged: false, ...stored,
+      offset: this.#passed, width, height, damaged: false, ...stored, bilevel,
       declared: typeof declared === "number" || isRef(declared) ? declared : undefined,
     };
     this.#candidates.set(this.#object, candidate);
     return candidate;
   }
 
-  /** Notes how `mask`, a mask as large as a page, is stored, when that is as fax or JBIG2. */
-  #noteMask(mask: number, stored: PdfImageEncoding | undefined): void {
-    if ((stored === "fax" || stored === "jbig2") && this.#pageMasks.size < MAX_NOTED) {
-      this.#pageMasks.set(mask, stored);
-    }
+  /** Notes how `mask`, a mask as large as a page, is stored, when it holds one bit a pixel. */
+  #noteMask(mask: number, stored: Pick<Candidate, "encoding" | "bilevel">): void {
+    if (stored.bilevel && this.#bilevelMasks.size < MAX_NOTED) this.#bilevelMasks.set(mask, stored.encoding);
   }
 
   /** After a stream's data: the file must say `endstream` here, or the length was wrong. */

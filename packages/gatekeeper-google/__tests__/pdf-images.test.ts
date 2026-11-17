@@ -383,34 +383,56 @@ describe("PdfImageScan", () => {
     }
   });
 
-  it("notes a mask as large as a page that is stored as fax or JBIG2, wherever the file holds it", () => {
-    let layer = (id: number, extra: string) =>
-      `${id} 0 obj\n<< ${IMAGE} ${extra} /Length 1 >>\nstream\nx\nendstream\nendobj\n`;
+  it("notes a mask as large as a page that holds one bit a pixel, and how it is stored when that is as fax or JBIG2, wherever the file holds it", () => {
+    let layer = (id: number, extra: string, bits = 8) =>
+      `${id} 0 obj\n<< ${IMAGE.replace("/BitsPerComponent 8", `/BitsPerComponent ${bits}`)} ${extra} /Length 1 >>\n` +
+      "stream\nx\nendstream\nendobj\n";
     let found = (...objects: string[]) => {
       let bytes = pdf(`%PDF-1.4\n${objects.join("")}`);
       let whole = scan(bytes);
       for (let sizes of [[1], [7]]) expect(scan(bytes, sizes)).toEqual(whole);
-      return { images: whole.images.map(({ encoding }) => encoding), maskEncoding: whole.maskEncoding };
+      let { images, bilevelMask, maskEncoding } = whole;
+      return { images: images.map(({ encoding }) => encoding), bilevelMask, maskEncoding };
     };
     let background = layer(5, "/Filter /DCTDecode");
     let foreground = layer(6, "/Filter /DCTDecode /SMask 7 0 R");
-    // A layered scan, whose text is the mask over its colour layers.
+    let layers = { images: ["jpeg", "jpeg"], bilevelMask: true };
+    // A layered scan, whose text is the mask over its colour layers. Fax and JBIG2 hold one bit
+    // a pixel whatever the dictionary says.
     let text = layer(7, "/ColorSpace /DeviceGray /Filter /JBIG2Decode");
-    expect(found(background, foreground, text)).toEqual({ images: ["jpeg", "jpeg"], maskEncoding: "jbig2" });
-    expect(found(text, background, foreground)).toEqual({ images: ["jpeg", "jpeg"], maskEncoding: "jbig2" });
+    expect(found(background, foreground, text)).toEqual({ ...layers, maskEncoding: "jbig2" });
+    expect(found(text, background, foreground)).toEqual({ ...layers, maskEncoding: "jbig2" });
     expect(found(background, layer(6, "/Filter /DCTDecode /Mask 7 0 R"), text))
-      .toEqual({ images: ["jpeg", "jpeg"], maskEncoding: "jbig2" });
+      .toEqual({ ...layers, maskEncoding: "jbig2" });
     // A stencil, over a background and as the whole of a black-and-white page.
     let stencil = layer(7, "/ImageMask true /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns 600 >>");
-    expect(found(background, stencil)).toEqual({ images: ["jpeg"], maskEncoding: "fax" });
-    expect(found(stencil)).toEqual({ images: [], maskEncoding: "fax" });
-    // A mask stored another way, or too small to be a page's, is passed over and nothing more.
-    let plain = { images: ["jpeg", "jpeg"], maskEncoding: undefined };
-    expect(found(background, foreground, layer(7, "/ColorSpace /DeviceGray /Filter /FlateDecode"))).toEqual(plain);
-    expect(found(layer(7, "/ColorSpace /DeviceGray /Filter /JPXDecode"), background, foreground)).toEqual(plain);
+    expect(found(background, stencil)).toEqual({ images: ["jpeg"], bilevelMask: true, maskEncoding: "fax" });
+    expect(found(stencil)).toEqual({ images: [], bilevelMask: true, maskEncoding: "fax" });
+    // One bit a pixel stored another way: a stencil, whatever it says of its bits, and a mask
+    // an image names, read before that image and after it.
+    let unnamed = { ...layers, maskEncoding: undefined };
     expect(found(background, layer(6, "/Filter /DCTDecode"), layer(7, "/ImageMask true /Filter /FlateDecode")))
-      .toEqual(plain);
+      .toEqual(unnamed);
+    expect(found(background, layer(7, "/ImageMask true /Filter /FlateDecode", 1)))
+      .toEqual({ images: ["jpeg"], bilevelMask: true, maskEncoding: undefined });
+    for (let key of ["/SMask", "/Mask"]) {
+      let masked = layer(6, `/Filter /DCTDecode ${key} 7 0 R`);
+      for (let filter of ["/FlateDecode", "/FlateDecode /DecodeParms << /Predictor 2 >>", "/LZWDecode"]) {
+        let mask = layer(7, `/ColorSpace /DeviceGray /Filter ${filter}`, 1);
+        expect(found(background, masked, mask)).toEqual(unnamed);
+        expect(found(mask, background, masked)).toEqual(unnamed);
+      }
+    }
+    // A mask of more bits is a picture's transparency, and one too small is no page's: both
+    // are passed over and nothing more. So is an image of one bit a pixel that nothing names.
+    let plain = { images: ["jpeg", "jpeg"], bilevelMask: undefined, maskEncoding: undefined };
+    expect(found(background, foreground, layer(7, "/ColorSpace /DeviceGray /Filter /FlateDecode"))).toEqual(plain);
+    expect(found(layer(7, "/ColorSpace /DeviceGray /Filter /FlateDecode"), background, foreground)).toEqual(plain);
+    expect(found(layer(7, "/ColorSpace /DeviceGray /Filter /JPXDecode"), background, foreground)).toEqual(plain);
+    expect(found(background, foreground, layer(7, "/ColorSpace /DeviceGray /Filter /DCTDecode"))).toEqual(plain);
     expect(found(background, foreground, text.replace("/Width 600", "/Width 60"))).toEqual(plain);
+    expect(found(background, layer(7, "/ColorSpace /DeviceGray /Filter /FlateDecode", 1)))
+      .toEqual({ images: ["jpeg", "lossless"], bilevelMask: undefined, maskEncoding: undefined });
   });
 
   it("forgets how a mask was stored once its object is defined again", () => {
@@ -440,6 +462,10 @@ describe("PdfImageScan", () => {
       expect(found(...objects, REVISION_END, mask("/CCITTFaxDecode")))
         .toEqual({ images: ["jpeg", "jpeg"], maskEncoding: "fax" });
     }
+    // One of one bit a pixel that is stored another way is forgotten likewise.
+    let deflated = stencil(9, "/FlateDecode");
+    expect(scan(pdf(`%PDF-1.4\n${deflated}`)).bilevelMask).toBe(true);
+    expect(scan(pdf(`%PDF-1.4\n${deflated}${REVISION_END}${imageObject(9, "x")}`)).bilevelMask).toBeUndefined();
   });
 
   it("reads past blanks left between the stream keyword and the line end before its data", () => {
@@ -630,7 +656,7 @@ describe("PdfImageScan", () => {
     expect(found(background, fax)).toEqual({ images: 1, pageMasks: 1, pieces: 0, maskEncoding: "fax" });
     expect(found(background, foreground("/SMask 7 0 R"), mask(7, "/JBIG2Decode")))
       .toEqual({ images: 2, pageMasks: 1, pieces: 0, maskEncoding: "jbig2" });
-    // Stored in ways that are not noted: deflated, a JPEG, JPEG 2000.
+    // Stored in ways whose name is not noted: deflated, a JPEG, JPEG 2000.
     expect(found(imageObject(7, "x", "/ImageMask true /Filter /FlateDecode"))).toEqual({ images: 0, pageMasks: 1, ...none });
     for (let filter of ["/FlateDecode", "/DCTDecode", "/JPXDecode"]) {
       for (let key of ["/SMask", "/Mask"]) {

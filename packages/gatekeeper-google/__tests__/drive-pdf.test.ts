@@ -468,6 +468,10 @@ function maskUnread(encoding: string): string {
     `image encoding that is not read yet, ${encoding}`;
 }
 
+/** Why a PDF with page images and a page-sized mask of one bit a pixel, stored any other way, is refused. */
+const MASK_BILEVEL = "a mask the size of a page holds one bit a pixel, which is how a layered scan " +
+  "keeps its text, and its page images would be read without it";
+
 /** A one-page scan whose page is `rows` of 8-bit grey samples as `data`, deflated or said to be. */
 function greyScan(data: Uint8Array, width: number, height: number, extra?: string): BuiltPdf {
   return imagePdf([{ data, width, height, filter: "/FlateDecode", colorSpace: "/DeviceGray", ...(extra ? { extra } : {}) }]);
@@ -744,6 +748,19 @@ describe("pdfToText transcribing a scanned PDF", () => {
     ["a page stored as nothing but a fax stencil",
       imagePdf([scanPage(1, { filter: "/CCITTFaxDecode", bitsPerComponent: 1, extra: "/ImageMask true" })]),
       maskUnread("fax (CCITT)"), "fax"],
+    // One bit a pixel is a page's text however it is stored: sent, the JPEG beside it would be
+    // the page without its writing.
+    ["a layered scan whose text is a deflated stencil", imagePdf([scanPage(1),
+      scanPage(2, { filter: "/FlateDecode", bitsPerComponent: 1, extra: "/ImageMask true" })]),
+      MASK_BILEVEL, undefined],
+    ["a layered scan whose text is a deflated mask of one bit a pixel",
+      imagePdf([scanPage(1, { extra: "/SMask 9 0 R" }),
+        scanPage(2, { filter: "/FlateDecode", colorSpace: "/DeviceGray", bitsPerComponent: 1 })]),
+      MASK_BILEVEL, undefined],
+    ["a layered scan whose one-bit mask the file holds before the layer it masks",
+      imagePdf([scanPage(1, { filter: "/FlateDecode", colorSpace: "/DeviceGray", bitsPerComponent: 1 }),
+        scanPage(2, { extra: "/Mask 5 0 R" })]),
+      MASK_BILEVEL, undefined],
   ])("refuses %s before transcribing anything", async (_label, pdf, why, imageEncoding) => {
     let { ai, images } = ocrAi();
     let { asked, readRange } = ranges(pdf);
@@ -754,6 +771,16 @@ describe("pdfToText transcribing a scanned PDF", () => {
     expect(vi.mocked(console.info)).toHaveBeenCalledWith(expect.objectContaining({
       event: "google.drive.pdf.untranscribable", ...(imageEncoding ? { imageEncoding } : {}),
     }));
+  });
+
+  it("sends a page whose mask holds more than one bit a pixel, which is a picture's transparency", async () => {
+    let { ai, images } = ocrAi([["a photo"]]);
+    // The second page's image is object 9: the first's soft mask, of 8 bits a pixel.
+    let pdf = imagePdf([scanPage(1, { extra: "/SMask 9 0 R" }),
+      scanPage(2, { filter: "/FlateDecode", colorSpace: "/DeviceGray" })]);
+    let result = await pdfToText(ai, undefined, byteStream(pdf.bytes).stream, ranges(pdf).readRange);
+    expect(await read(result)).toBe("### Page 1\na photo");
+    expect(images()).toHaveLength(1);
   });
 
   it("refuses a PDF with more page images than it keeps", async () => {
