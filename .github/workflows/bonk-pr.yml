@@ -109,7 +109,7 @@ jobs:
   # Also one of the two verdicts the risk-review gate reads: bonk.ts turns the report Bonk writes in
   # this job into the `automerge-verdict-bonk` artifact. This job installs and runs the pull
   # request's code next to the AI Gateway token and `id-token: write`, so a maintainer's pull request
-  # or a compromised dependency can forge that verdict (accepted 2026-11-10). The Opus verdict from
+  # or a compromised dependency can forge that verdict: an accepted limit. The Opus verdict from
   # review-verdict.yml, which no pull request code reaches, is the other one the gate requires.
   bonk:
     if: >-

@@ -5,9 +5,9 @@
 // finds nothing, and its comments cannot be tied to one run, since `/bonk` runs post as the same App.
 //
 // That job installs and runs the pull request's code next to the AI Gateway token, so a maintainer's
-// pull request or a compromised dependency can forge this verdict (accepted 2026-11-10). The Opus
+// pull request or a compromised dependency can forge this verdict: an accepted limit. The Opus
 // verdict, which no pull request code reaches, is the other one the gate requires.
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,15 +15,13 @@ import { pathToFileURL } from "node:url";
 import { parseReview, REPORT_FORMAT } from "./parse-review.ts";
 import { replaceInstructionFiles } from "./review-copy.ts";
 import { fetchReviewedHeads, fetchTimeline, githubJson, planRound, readyAt, roundLimitReasons } from "./rounds.ts";
-import { env, eventPullRequest, git, type Fingerprint, type Verdict } from "./verdict.ts";
+import { env, eventPullRequest, git, type Verdict } from "./verdict.ts";
 
-const WORKFLOW_PATH = ".github/workflows/bonk-pr.yml";
+const WORKFLOW_FILE = "bonk-pr.yml";
 /** Bonk's job in that workflow. It has no `name:`, so the jobs API lists it by its id. */
 const JOB_NAME = "bonk";
 const REVIEW_STEP = "Run Bonk";
 const REPORT_FILE = "automerge-bonk-report.md";
-/** The prompt exactly as the prepare step gave it to Bonk; its hash is the fingerprint's `prompt`. */
-const PROMPT_FILE = "automerge-bonk-prompt.md";
 const VERDICT_FILE = "automerge-verdict-bonk.json";
 
 /**
@@ -31,7 +29,7 @@ const VERDICT_FILE = "automerge-verdict-bonk.json";
  * Adapted from workerd's auto-reviewer:
  * https://github.com/cloudflare/workerd/blob/4a92109c11b107f0fb6ceb097d5f60af9e07c910/.github/workflows/new-pr-review.yml#L29-L38
  */
-export function bonkPrompt(reviewMd: string, reportPath: string): string {
+function bonkPrompt(reviewMd: string, reportPath: string): string {
   return `Review this pull request. Follow the repository's review guidelines below, and read the
 AGENTS.md package guides they name for every directory the diff touches. The guidelines, and every
 AGENTS.md, CLAUDE.md, CONTEXT.md, REVIEW.md, CONTRIBUTING.md, opencode.json and opencode.jsonc and
@@ -53,17 +51,6 @@ in exactly the shape below. The file is outside the working tree, so writing it 
 ${REPORT_FORMAT}`;
 }
 
-/** The ask-bonk action SHA and opencode version a bonk-pr.yml revision pins, or why it pins none. */
-export function actionPins(workflow: string): { action: string; opencode: string } | { error: string } {
-  const actions = [...workflow.matchAll(/^\s*(?:-\s+)?uses:\s*Cloudflare-Studio\/ask-bonk\/github@([0-9a-f]{40})(?:\s|$)/gm)];
-  const versions = [...workflow.matchAll(/^\s*opencode_version:\s*["']?([0-9][\w.-]*)["']?\s*(?:#.*)?$/gm)];
-  if (actions.length !== 1 || versions.length !== 1) {
-    return { error: `${WORKFLOW_PATH} pins ${actions.length} ask-bonk actions and ${versions.length} opencode versions; ` +
-      "a verdict needs exactly one of each" };
-  }
-  return { action: actions[0][1], opencode: versions[0][1] };
-}
-
 export interface BonkInputs {
   headSha: string;
   baseSha: string;
@@ -76,7 +63,8 @@ export interface BonkInputs {
   round: number;
   /** The report file's text, or null when Bonk wrote none. */
   report: string | null;
-  fingerprint: Fingerprint;
+  /** The model input this run passed to Bonk. */
+  model: string;
 }
 
 /** An `error` verdict, which the gate treats as no verdict. Bonk always reviews the whole head. */
@@ -86,7 +74,7 @@ function errorVerdict(inputs: Omit<BonkInputs, "round" | "reviewedSha"> & { roun
     status: "error", holds: null,
     details: { review_text: inputs.report, reason, tokens: null, head_instruction_paths: [], skipped_paths: [], binary_files: [] },
     findings: [], needs_person: [], merge_confidence: null, round: inputs.round, review_from_sha: null,
-    fingerprint: inputs.fingerprint,
+    model: inputs.model,
   };
 }
 
@@ -109,25 +97,15 @@ export function buildBonkVerdict(inputs: BonkInputs): Verdict {
   };
 }
 
-function fetchCommits(repo: string, shas: string[]): void {
-  git(repo, ["fetch", "--no-tags", "--depth=1", "origin", ...shas]);
-}
-
 async function verdictFromJob(repo: string, temp: string, model: string,
   pr: ReturnType<typeof eventPullRequest>): Promise<Verdict> {
   const reportPath = join(temp, REPORT_FILE);
-  const promptPath = join(temp, PROMPT_FILE);
-  if (!existsSync(promptPath)) throw new Error("the prepare step left no prompt");
-  const workflowSha = env("GITHUB_WORKFLOW_SHA");
-  fetchCommits(repo, [pr.baseSha, workflowSha]);
-  const pins = actionPins(git(repo, ["show", `${workflowSha}:${WORKFLOW_PATH}`]));
-  if ("error" in pins) throw new Error(pins.error);
   const token = env("GITHUB_TOKEN");
   const repository = env("GITHUB_REPOSITORY");
   const getJson = (path: string) => githubJson(path, token);
   const reviewed = await fetchReviewedHeads({
     repository,
-    workflowFile: WORKFLOW_PATH.slice(WORKFLOW_PATH.lastIndexOf("/") + 1),
+    workflowFile: WORKFLOW_FILE,
     pullNumber: pr.number,
     headRef: pr.headRef,
     jobName: JOB_NAME,
@@ -142,13 +120,7 @@ async function verdictFromJob(repo: string, temp: string, model: string,
     reviewedSha: git(repo, ["rev-parse", "HEAD"]).trim(),
     round: planRound(pr.headSha, reviewed.filter(head => ready(head.reviewedAt)), () => false).round,
     report: existsSync(reportPath) ? readFileSync(reportPath, "utf8") : null,
-    fingerprint: {
-      model,
-      opencode: pins.opencode,
-      review_md: git(repo, ["rev-parse", `${pr.baseSha}:REVIEW.md`]).trim(),
-      prompt: createHash("sha256").update(readFileSync(promptPath)).digest("hex"),
-      action: pins.action,
-    },
+    model,
   });
 }
 
@@ -158,30 +130,28 @@ async function main(command: string | undefined): Promise<void> {
   const reportPath = join(temp, REPORT_FILE);
   if (command === "prepare") {
     const pr = eventPullRequest();
-    fetchCommits(repo, [pr.baseSha]);
+    git(repo, ["fetch", "--no-tags", "--depth=1", "origin", pr.baseSha]);
     const replaced = replaceInstructionFiles(repo, pr.headSha, pr.baseSha);
     console.log(`Replaced ${replaced.length} head instruction paths with the base's.`);
     rmSync(reportPath, { force: true });
     const delimiter = `EOF_${randomBytes(16).toString("hex")}`;
     const prompt = bonkPrompt(git(repo, ["show", `${pr.baseSha}:REVIEW.md`]), reportPath);
-    writeFileSync(join(temp, PROMPT_FILE), prompt);
     appendFileSync(env("GITHUB_OUTPUT"), `value<<${delimiter}\n${prompt}\n${delimiter}\n`);
     return;
   }
   if (command === "verdict") {
-    // The model input exactly as this run passed it to Bonk; an unset BONK_MODEL variable leaves
-    // only the provider prefix.
-    const model = process.env.BONK_MODEL ?? "";
+    // An unset BONK_MODEL variable leaves only the provider prefix, which names no model.
+    const input = process.env.BONK_MODEL ?? "";
+    const model = /^[\w-]+\/.+/.test(input) ? input : "";
     const pr = eventPullRequest();
     let verdict: Verdict;
     try {
-      if (!/^[\w-]+\/.+/.test(model)) throw new Error("BONK_MODEL is not set");
+      if (model === "") throw new Error("BONK_MODEL is not set");
       verdict = await verdictFromJob(repo, temp, model, pr);
     } catch (error) {
       // A named case: any input this verdict needs that cannot be read makes it an error verdict.
-      verdict = errorVerdict({ headSha: pr.headSha, baseSha: pr.baseSha, round: null, report: null,
-        fingerprint: { model, opencode: null, review_md: null, prompt: null, action: null } },
-      error instanceof Error ? error.message : String(error));
+      verdict = errorVerdict({ headSha: pr.headSha, baseSha: pr.baseSha, round: null, report: null, model },
+        error instanceof Error ? error.message : String(error));
     }
     writeFileSync(join(env("RUNNER_TEMP"), VERDICT_FILE), `${JSON.stringify(verdict, null, 2)}\n`);
     // The job's result stays Bonk's: an error verdict does not fail it. A head whose Bonk job

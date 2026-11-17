@@ -95,7 +95,7 @@ Report a failure in these areas at P1, or P0 for data loss or a security hole.
 `packages/workshop-backend/` and the public API in `packages/workshop-shared/src/api.ts` are the
 **kernel**. Maintainers read every line, so hold them to a higher bar than UI or gatekeeper code:
 
-- Every exported member of the `workshop-shared` public API needs a doc comment: types, consts and
+- Every exported member of the `workshop-shared` public API needs a doc comment — types, consts and
   functions, not just interfaces.
 - Reject a hand-written interface that mirrors an RPC interface plus an `as unknown as` cast. Derive
   from the real type instead, or rethink the design.
@@ -125,14 +125,14 @@ Report a failure in these areas at P1, or P0 for data loss or a security hole.
   prunes with `adminAuditRetentionDays` without `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
-- `cf-os api` sends `User-Agent: cf-os-api/<version>`. Except on a local instance
+- `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local instance
   (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
-  harness), the Workshop lets such a session act only as a deployment admin. A client can send any
-  User-Agent, so this is a speed bump, not authorization; the API's own checks are the boundary.
-  Flag code that grants anything by User-Agent, and any deployment config that sets
-  `WORKSHOP_ENVIRONMENT`.
-- `packages/bundled-blueprints/blueprints/`: a `blueprintId` is never edited after deploy. Installs
-  and promotion are keyed on it, so a rename orphans the old entry.
+  harness) the Workshop lets such a session act only as a deployment admin. That is a speed bump
+  against casual use: a client can send any User-Agent, so never rely on it for authorization; the
+  API's own checks are the boundary. Flag code that grants anything by User-Agent, and any
+  deployment config that sets `WORKSHOP_ENVIRONMENT`.
+- `packages/bundled-blueprints/blueprints/`: a `blueprintId` is never edited after deploy — installs and promotion are
+  keyed on it, so a rename orphans the old entry.
 
 ## Gatekeepers
 
@@ -215,7 +215,7 @@ A newly `true` action gets a new tag, never one that already has a `true` action
   a stub without being awaited. **Do not report unawaited RPC promises as floating promises.** Do
   flag an RPC promise put inside an object that a method returns: Workers RPC cannot serialize an
   `RpcPromise`.
-- A `useState` value that holds an `RpcStub` must be wrapped in an object. The setter would
+- A `useState` value that holds an `RpcStub` must be wrapped in an object — the setter would
   otherwise call the stub, since every stub is callable at runtime.
 - Dispose a Cap'n Web stub that the code gets from an RPC call and owns: `stub[Symbol.dispose]()`,
   a `using` declaration, or a `useEffect` cleanup that disposes the stub a component got. A stub
@@ -227,10 +227,10 @@ A newly `true` action gets a new tag, never one that already has a `true` action
 
 ## Build system (Vite+ tasks)
 
-These break silently, so they are worth flagging even when the diff looks fine:
+These break silently rather than loudly, so they are worth flagging even when the diff looks fine:
 
 - A cached `vp` task sees only a built-in environment. A build that reads an env var must *be* a
-  task declaring `env`, since `env`/`untrackedEnv` do not exist on a package.json script, and a
+  task declaring `env`, since `env`/`untrackedEnv` do not exist on a package.json script — and a
   sibling script duplicating a task's command gains nothing from that task's declaration.
 - `env` fingerprints the variable's value, not what it points at. A var naming a path outside the
   workspace needs `cache: false` instead (see `workshop-backend`'s `build`).
@@ -282,12 +282,12 @@ Report these at P2 in kernel files and at P3 in other files.
 Each item below covers only what it names. Its "still flag" part always wins.
 
 - Unawaited RPC promises used as arguments or stubs (see "Cap'n Web RPC").
-- Preview deployments skipped on fork PRs. GitHub withholds secrets from those runs by design.
+- Preview deployments skipped on fork PRs — GitHub withholds secrets from those runs by design.
 - `test:run` as a script name; a Vite+ task may not share a name with a package.json script, which
   is also why `pnpm --filter <pkg> build`/`test` do not work here.
 - oxlint warnings such as `no-shadow`, which are kept for incremental cleanup and do not block CI,
   and the absence of type-aware lint rules.
-- `"singleThreaded": true` in tsconfig, measured as both the fastest and smallest configuration.
+- `"singleThreaded": true` in tsconfig — measured as both the fastest and smallest configuration.
 - The lack of `baseUrl` in any tsconfig; TypeScript 7 removed the option.
 - Memory or CPU exhaustion in one call, on input that the caller of that call (the user's agent)
   chose: the call fails and the isolate restarts. Still flag memory that grows across calls (a cache

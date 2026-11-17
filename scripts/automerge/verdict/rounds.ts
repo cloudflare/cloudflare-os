@@ -3,7 +3,7 @@
 import { field, list, parseJson, type Json } from "./json.ts";
 
 /** The first round that reviews only the changes since the previous reviewed head. */
-export const DIFF_ONLY_ROUND = 3;
+const DIFF_ONLY_ROUND = 3;
 /** The first round that sends the pull request to a person. */
 export const ROUND_LIMIT = 4;
 
@@ -13,7 +13,7 @@ export function roundLimitReasons(round: number): string[] {
 }
 
 /** A head commit this reviewer reviewed, with when the review ran. */
-export interface ReviewedHead {
+interface ReviewedHead {
   sha: string;
   reviewedAt: string;
 }
@@ -61,7 +61,7 @@ export async function githubJson(path: string, token: string): Promise<Json> {
 const PER_PAGE = 100;
 
 /** Where the reviewer's past runs live, and which job in them is this reviewer's. */
-export interface RunQuery {
+interface RunQuery {
   repository: string;
   workflowFile: string;
   pullNumber: number;

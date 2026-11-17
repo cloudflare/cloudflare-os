@@ -5,7 +5,7 @@
 // error).
 
 /** A REVIEW.md severity. P0 and P1 block an automatic merge. */
-export type Severity = "P0" | "P1" | "P2" | "P3";
+type Severity = "P0" | "P1" | "P2" | "P3";
 
 /** One finding, as the producer contract carries it. */
 export interface Finding {
@@ -17,13 +17,13 @@ export interface Finding {
 }
 
 /** A review that followed the format. */
-export interface ParsedReview {
+interface ParsedReview {
   findings: Finding[];
   needsPerson: string[];
   mergeConfidence: number;
 }
 
-export type ParseResult = { ok: true; review: ParsedReview } | { ok: false; error: string };
+type ParseResult = { ok: true; review: ParsedReview } | { ok: false; error: string };
 
 /** The report shape every reviewer is asked for, and the only one {@link parseReview} accepts. */
 export const REPORT_FORMAT = `## Findings
