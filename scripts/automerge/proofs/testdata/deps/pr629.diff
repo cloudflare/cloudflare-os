@@ -1,0 +1,43 @@
+diff --git a/packages/gatekeeper-confluence/package.json b/packages/gatekeeper-confluence/package.json
+index 4866239c7..7d39a4913 100644
+--- a/packages/gatekeeper-confluence/package.json
++++ b/packages/gatekeeper-confluence/package.json
+@@ -18 +18 @@
+-    "node-html-parser": "^7.1.0"
++    "node-html-parser": "^9.0.4"
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 388784ac1..dd46532dc 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -189,2 +189,2 @@ importers:
+-        specifier: ^7.1.0
+-        version: 7.1.0
++        specifier: ^9.0.4
++        version: 9.0.4
+@@ -3929,0 +3930,4 @@ packages:
++  entities@8.1.0:
++    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
++    engines: {node: '>=20.19.0'}
++
+@@ -4168,4 +4171,0 @@ packages:
+-  he@1.2.0:
+-    resolution: {integrity: sha512-F/1DnUGPopORZi0ni+CvrCgHQ5FyEAHRLSApuYWMmrbSwoN2Mn/7k+Gl38gJnR7yyDZk6WLXwiGod1JOWNDKGw==}
+-    hasBin: true
+-
+@@ -4735,2 +4735,2 @@ packages:
+-  node-html-parser@7.1.0:
+-    resolution: {integrity: sha512-iJo8b2uYGT40Y8BTyy5ufL6IVbN8rbm/1QK2xffXU/1a/v3AAa0d1YAoqBNYqaS4R/HajkWIpIfdE6KcyFh1AQ==}
++  node-html-parser@9.0.4:
++    resolution: {integrity: sha512-reUSrZkF1rO7hEYe5mJwtbVcQ6mB5QrViCZH6Wv+iz3er/PA9Q50gol15dMLQRDfdli4VzqPMPR24HNRFgVKFw==}
+@@ -8129,0 +8130,2 @@ snapshots:
++  entities@8.1.0: {}
++
+@@ -8431,2 +8432,0 @@ snapshots:
+-  he@1.2.0: {}
+-
+@@ -9152 +9152 @@ snapshots:
+-  node-html-parser@7.1.0:
++  node-html-parser@9.0.4:
+@@ -9155 +9155 @@ snapshots:
+-      he: 1.2.0
++      entities: 8.1.0

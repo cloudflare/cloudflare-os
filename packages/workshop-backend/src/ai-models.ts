@@ -2,8 +2,9 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, ClassifierApi, ClassifierContext,
-  ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Model, ModelCost,
-  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction, Usage,
+  ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Message, Model,
+  ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  ToolCall, Usage,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext }
   from "@earendil-works/pi-ai";
@@ -569,7 +570,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
             ? { "cf-aig-metadata": JSON.stringify(args.gatewayMetadata) }
             : {}),
       };
-      const transcript = normalizeContext(context);
+      const transcript = normalizeContext(
+          {...context, messages: context.messages.map(wellFormedToolCalls)});
       const merged: SimpleStreamOptions = {
         // API defaults first, so an explicit per-call option can override them. A handle with a
         // reasoning level sends that level's options in their place. `thinking: false` replaces
@@ -755,6 +757,27 @@ function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | 
     })};
   });
   return signed ? {...payload, contents} : undefined;
+}
+
+// The message with every string in its tool calls' arguments well-formed, a lone surrogate
+// becoming U+FFFD. pi strips lone surrogates from the text it sends but not from tool-call
+// arguments, and a provider rejects a request holding one. A model can emit one in its arguments,
+// and every later request of the chat (compaction's too) resends them as stored.
+// TODO: remove once pi sanitizes tool-call arguments (earendil-works/pi#12014).
+function wellFormedToolCalls(message: Message): Message {
+  if (message.role !== "assistant") return message;
+  return {...message, content: message.content.map(block => block.type !== "toolCall" ? block
+      : {...block, arguments: toWellFormedJson(block.arguments) as ToolCall["arguments"]})};
+}
+
+// Arguments hold whatever JSON the model sent, not necessarily the tool's flat parameters: a call
+// that fails its tool's parameter check is stored, and resent, as the model made it.
+function toWellFormedJson(value: unknown): unknown {
+  if (typeof value === "string") return value.toWellFormed();
+  if (Array.isArray(value)) return value.map(toWellFormedJson);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(Object.entries(value)
+      .map(([key, item]) => [key.toWellFormed(), toWellFormedJson(item)]));
 }
 
 /**

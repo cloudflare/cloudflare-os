@@ -8,8 +8,8 @@ import { apiOrigin } from "../../src/pagerduty-env";
 import type { WireIncident } from "../../src/pagerduty-normalize";
 import type { PagerDutySubscribeOptions } from "../../src/types";
 import {
-  ALICE, BOB, DAVE, FakePagerDuty, OTHER_SERVICE, OTHER_TEAM, SERVICE, TEAM, failure, hooks, seedAccount, sub, unwrap,
-  type Binding, type FakeUser,
+  ALICE, BOB, DAVE, FakePagerDuty, OTHER_SERVICE, OTHER_TEAM, SERVICE, TEAM, accountStub, failure, hooks, seedAccount, sub,
+  unwrap, type Binding, type FakeUser,
 } from "./fake-pagerduty";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -28,12 +28,16 @@ afterEach(async () => {
 async function subscribe(pd: FakePagerDuty, binding: Binding, { steps = [], options, who = ALICE }:
                          { steps?: Step[]; options?: PagerDutySubscribeOptions; who?: FakeUser } = {}) {
   const { region, subdomain } = who.account;
-  const props = { userObjectId: await seedAccount(pd, who), region, subdomain, ...binding } as GatekeeperProps;
+  const userObjectId = await seedAccount(pd, who);
+  const props = { userObjectId, region, subdomain, ...binding } as GatekeeperProps;
   const hook = crypto.randomUUID();
   const description = unwrap(await hooks().subscribeHook(hook, crypto.randomUUID(), props, steps, options));
   unwrap(await hooks().enableHook(hook));
   enabled.push(hook);
-  return { description, read: () => hooks().readHook(hook), disable: () => hooks().disableHook(hook) };
+  return {
+    userObjectId, description,
+    read: () => hooks().readHook(hook), enable: () => hooks().enableHook(hook), disable: () => hooks().disableHook(hook),
+  };
 }
 
 const reference = (type: string, id: string, summary: string) =>
@@ -155,6 +159,22 @@ describe("PagerDuty event hooks", () => {
     expect(await deliver(webhookEvent("incident.resolved", incident))).toBe(204);
     await settled();
     expect((await hook.read()).firings).toBe(1);
+  });
+
+  it("drops a disconnected connection's hooks, and refuses to enable them again", async () => {
+    const pd = new FakePagerDuty().install();
+    const incident = pd.incident(SERVICE);
+    const alice = await subscribe(pd, { resourceKind: "account" });
+    const bob = await subscribe(pd, { resourceKind: "account" }, { who: BOB });
+
+    await accountStub(alice.userObjectId).revoke();
+    expect(await deliver(webhookEvent("incident.triggered", incident))).toBe(204);
+    await settled();
+
+    expect((await alice.read()).firings).toBe(0);
+    expect((await bob.read()).firings).toBe(1);
+    // As an enable the overseer was making when the connection went.
+    expect(failure(await alice.enable())).toBe("This PagerDuty account has been disconnected.");
   });
 
   it("fires only the hooks whose binding holds the incident", async () => {

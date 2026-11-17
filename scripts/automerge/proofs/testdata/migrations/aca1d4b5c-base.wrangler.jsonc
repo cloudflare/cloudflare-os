@@ -1,0 +1,22 @@
+{
+  "name": "workshop-backend",
+  "main": "src/server.ts",
+  "compatibility_date": "2025-07-01",
+  "compatibility_flags": ["experimental"],
+  "durable_objects": {
+    "bindings": [
+      {
+        // Wrangler doesn't currently think a DO class exists unless there's a binding to it. This
+        // is a bug -- it should use "migrations" instead.
+        "name": "DUMMY_TO_CONVINCE_WRANGLER_THE_CLASS_EXISTS",
+        "class_name": "UserAccount"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": [ "UserAccount" ]
+    }
+  ]
+}

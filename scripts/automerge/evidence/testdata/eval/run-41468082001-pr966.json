@@ -1,0 +1,617 @@
+{
+  "baselineSha": "91f4e707360a147ed01a69594e607d2b007dd718",
+  "candidateSha": "5fbf074bf5133940d5aaf826160f6c795d34f2e8",
+  "verdict": "unchanged",
+  "rows": [
+    {
+      "taskId": "change-calendar",
+      "model": "gpt-6-luna",
+      "reason": null,
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 250923.00215090002,
+        "meanModelTurns": 28.1,
+        "meanToolCalls": 33.2,
+        "meanToolErrors": 0.6,
+        "cacheHitRate": 0.9510184722233245,
+        "cacheBreakRate": 0.00009469485518175508,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 3
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 9,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 247037.23007899997,
+        "meanModelTurns": 30.4,
+        "meanToolCalls": 32.4,
+        "meanToolErrors": 0.6,
+        "cacheHitRate": 0.9551049000181006,
+        "cacheBreakRate": 0.0000923488941219929,
+        "failedChecks": [
+          {
+            "turn": 4,
+            "check": "names-the-booked-windows-the-new-rules-reject",
+            "evidence": "{\"reply\":\"mw-101 TOO_CLOSE\\nmw-103 TOO_CLOSE\\nmw-106 INVALID_RANGE\\nmw-107 TOO_CLOSE\\nmw-108 TOO_CLOSE\",\"stated\":[\"mw-101 TOO_CLOSE\",\"mw-103 TOO_CLOSE\",\"mw-106 INVALID_RANGE\",\"mw-107 TOO_CLOSE\",\"mw-108 TOO_CLOSE\"],\"expected\":[\"mw-106 INVALID_RANGE\",\"mw-107 TOO_CLOSE\",\"mw-108 TOO_CLOSE\"]}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 4
+          },
+          {
+            "tool": "readFile",
+            "message": "File does not exist.",
+            "count": 1
+          },
+          {
+            "tool": "describeBinding",
+            "message": "Gadget CHANGE_CALENDAR has no binding named \"CHANGE_CALENDAR\".",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 0.24745069172313755,
+      "cacheBreakPValue": 0.43587217735824546
+    },
+    {
+      "taskId": "chess",
+      "model": "gpt-6-luna",
+      "reason": null,
+      "baseline": {
+        "trials": 10,
+        "passed": 8,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 616580.5241423,
+        "meanModelTurns": 55.8,
+        "meanToolCalls": 58.3,
+        "meanToolErrors": 1.5,
+        "cacheHitRate": 0.9737059039697882,
+        "cacheBreakRate": 0.00006597569036597205,
+        "failedChecks": [
+          {
+            "turn": 2,
+            "check": "exports-pgn-the-oracle-replays-to-the-same-position",
+            "evidence": "{\"imported\":{\"exported\":\"1. e4 e5 2. Nf3 d6 3. Bc4 Bg4 4. Nc3 g6 5. Nxe5 Bxd1 6. Bxf7+ Ke7 7. Nd5# 1-0\",\"replayed\":[\"e4\",\"e5\",\"Nf3\",\"d6\",\"Bc4\",\"Bg4\",\"Nc3\",\"g6\",\"Nxe5\",\"Bxd1\",\"Bxf7+\",\"Ke7\",\"Nd5#\"],\"played\":[\"e4\",\"e5\",\"Nf3\",\"d6\",\"d4\",\"Bg4\",\"dxe5\",\"Bxf3\",\"Qxf3\",\"dxe5\",\"Bc4\",\"Nf6\",\"Qb3\",\"Qe7\",\"Nc3\",\"c6\",\"Bg5\",\"b5\",\"Nxb5\",\"cxb5\",\"Bxb5+\",\"Nbd7\",\"O-O-O\",\"Rd8\",\"Rxd7\",\"Rxd7\",\"Rd1\",\"Qe6\",\"Bxd7+\",\"Nxd7\",\"Qb8+\",\"Nxb8\",\"Rd8#\"]}}",
+            "trials": 2
+          },
+          {
+            "turn": 2,
+            "check": "imports-known-games-to-the-right-positions",
+            "evidence": "{\"operaGame\":{\"loaded\":{\"ok\":false,\"error\":\"INVALID_PGN\"},\"fen\":\"rn1q1bnr/ppp1kB1p/3p2p1/3NN3/4P3/8/PPPP1PPP/R1BbK2R b KQ - 2 7\",\"oracle\":\"1n1Rkb1r/p4ppp/4q3/4p1B1/4P3/8/PPP2PPP/2K5 b k - 1 17\"}}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          10,
+          8
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 9
+          },
+          {
+            "tool": "editFile",
+            "message": "CHESS has no file named \"CHESS\".",
+            "count": 3
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "readFile",
+            "message": "startLine 145 is past the end of the file, which has 133 lines.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 8,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 545166.1050407,
+        "meanModelTurns": 57.6,
+        "meanToolCalls": 57.1,
+        "meanToolErrors": 1.6,
+        "cacheHitRate": 0.9756105641669262,
+        "cacheBreakRate": 0.00007102017102746578,
+        "failedChecks": [
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-on-the-hard-positions",
+            "evidence": "{\"bothCastles\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1\",\"what\":\"after O-O\",\"gadget\":{\"ok\":true,\"fen\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R5KR b kq - 1 1\"},\"oracle\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R4RK1 b kq - 1 1\"},\"blackBothCastles\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1\",\"what\":\"after O-O\",\"gadget\":{\"ok\":true,\"fen\":\"r5kr/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQ - 1 2\"},\"oracle\":\"r4rk1/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQ - 1 2\"},\"castleThroughCheck\":{\"at\":\"4kr2/8/8/8/8/8/8/R3K2R w KQ - 0 1\",\"what\":\"after O-O-O\",\"gadget\":{\"ok\":true,\"fen\":\"4kr2/8/8/8/8/8/8/R1K4R b - - 1 1\"},\"oracle\":\"4kr2/8/8/8/8/8/8/2KR3R b - - 1 1\"},\"castleRightsPartlyLost\":{\"at\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w Kq - 0 1\",\"what\":\"after O-O\",\"gadget\":{\"ok\":true,\"fen\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R5KR b q - 1 1\"},\"oracle\":\"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R4RK1 b q - 1 1\"}}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "agrees-with-the-oracle-on-perft-positions",
+            "evidence": "{\"kiwipete\":{\"at\":\"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1\",\"what\":\"after O-O\",\"gadget\":{\"ok\":true,\"fen\":\"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R5KR b kq - 1 1\"},\"oracle\":\"r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R4RK1 b kq - 1 1\"}}",
+            "trials": 1
+          },
+          {
+            "turn": 3,
+            "check": "detects-threefold-repetition-and-the-fifty-move-rule",
+            "evidence": "\"ReferenceError: repetitionKey is not defined\"",
+            "trials": 1
+          },
+          {
+            "turn": 3,
+            "check": "counts-repetitions-from-an-imported-game",
+            "evidence": "\"ReferenceError: repetitionKey is not defined\"",
+            "trials": 1
+          },
+          {
+            "turn": 3,
+            "check": "still-refuses-invalid-fen",
+            "evidence": "\"ReferenceError: repetitionKey is not defined\"",
+            "trials": 1
+          },
+          {
+            "turn": 3,
+            "check": "rules-still-agree-with-the-oracle-after-draws",
+            "evidence": "\"ReferenceError: repetitionKey is not defined\"",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          9,
+          9
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 13
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 1
+          },
+          {
+            "tool": "executeCode",
+            "message": "Failed to start Worker:",
+            "count": 1
+          },
+          {
+            "tool": "editFile",
+            "message": "CHESS has no file named \"CHESS\".",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 0.7959362618805343,
+      "cacheBreakPValue": 0.12300547749464158
+    },
+    {
+      "taskId": "compaction",
+      "model": "claude-sonnet-5-5",
+      "reason": null,
+      "baseline": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 111208.08678700001,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9001055075014404,
+        "cacheBreakRate": 0.0208629647847111,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 141707.680628,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.8963734983053776,
+        "cacheBreakRate": 0.02089677848618419,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 1,
+      "cacheBreakPValue": 1
+    },
+    {
+      "taskId": "compaction",
+      "model": "gpt-6-luna",
+      "reason": null,
+      "baseline": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 102875.553426,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9260383127299107,
+        "cacheBreakRate": 0.007688392795264905,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 1,
+        "passed": 1,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 115019.534517,
+        "meanModelTurns": 43,
+        "meanToolCalls": 21,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.926068582049854,
+        "cacheBreakRate": 0.007679315632707439,
+        "failedChecks": [],
+        "turnsReached": [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 1,
+      "cacheBreakPValue": 1
+    },
+    {
+      "taskId": "incident-desk",
+      "model": "gpt-6-luna",
+      "reason": null,
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 262446.7573158,
+        "meanModelTurns": 34.7,
+        "meanToolCalls": 48.2,
+        "meanToolErrors": 1,
+        "cacheHitRate": 0.9619959483241479,
+        "cacheBreakRate": 0.00010217715153144449,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 7
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 9,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 231357.1383112,
+        "meanModelTurns": 32.2,
+        "meanToolCalls": 41.3,
+        "meanToolErrors": 0.9,
+        "cacheHitRate": 0.9637453686462752,
+        "cacheBreakRate": 0.00010991833279254923,
+        "failedChecks": [
+          {
+            "turn": 1,
+            "check": "opens-acknowledges-and-resolves-in-order",
+            "evidence": "{\"opened\":{\"ok\":false,\"error\":\"DUPLICATE_ID\"},\"duplicate\":{\"ok\":false,\"error\":\"DUPLICATE_ID\"},\"badSeverity\":{\"ok\":false,\"error\":\"INVALID_SEVERITY\"},\"early\":{\"ok\":false,\"error\":\"NOT_ACKNOWLEDGED\"},\"acked\":{\"ok\":true,\"owner\":\"alice\"},\"again\":{\"ok\":false,\"error\":\"ALREADY_ACKNOWLEDGED\",\"owner\":\"alice\"},\"notOwner\":{\"ok\":false,\"error\":\"NOT_OWNER\"},\"resolved\":{\"ok\":true},\"twice\":{\"ok\":false,\"error\":\"ALREADY_RESOLVED\"},\"lateAck\":{\"ok\":false,\"error\":\"ALREADY_RESOLVED\",\"owner\":null},\"unknown\":{\"ok\":false,\"error\":\"UNKNOWN_INCIDENT\",\"owner\":null},\"incident\":{\"id\":\"inc-1\",\"service\":\"api-gateway\",\"severity\":2,\"summary\":\"Incident inc-1\",\"status\":\"resolved\",\"owner\":\"alice\",\"openedAt\":\"2026-11-02T15:07:52.579Z\",\"acknowledgedAt\":\"2026-11-02T15:07:52.612Z\",\"resolvedAt\":\"2026-11-02T15:07:52.622Z\"}}",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "simultaneous-acknowledges-yield-exactly-one-owner",
+            "evidence": "\"Error: open(race-1) was refused: DUPLICATE_ID\"",
+            "trials": 1
+          },
+          {
+            "turn": 1,
+            "check": "simultaneous-opens-of-one-id-admit-exactly-one",
+            "evidence": "{\"results\":[{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"},{\"ok\":false,\"error\":\"DUPLICATE_ID\"}],\"incident\":{\"id\":\"race-open\",\"service\":\"dns\",\"severity\":1,\"summary\":\"attempt 0\",\"status\":\"open\",\"owner\":null,\"openedAt\":\"2026-11-02T15:07:52.645Z\",\"acknowledgedAt\":null,\"resolvedAt\":null}}",
+            "trials": 1
+          }
+        ],
+        "turnsReached": [
+          10,
+          9,
+          9
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Multiple matches were found. The text to match must be unique.",
+            "count": 6
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 2
+          },
+          {
+            "tool": "editFile",
+            "message": "INCIDENT_DESK has no file named \"INCIDENT_DESK\".",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 1,
+      "cacheBreakPValue": 0.08920955205784926
+    },
+    {
+      "taskId": "ticket-triage-agent",
+      "model": "gpt-6-luna",
+      "reason": null,
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 10138.3663911,
+        "meanModelTurns": 2,
+        "meanToolCalls": 2.7,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9655779447360976,
+        "cacheBreakRate": 0.0003804692454026633,
+        "failedChecks": [],
+        "turnsReached": [
+          10
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 9069.224712000001,
+        "meanModelTurns": 2,
+        "meanToolCalls": 2.8,
+        "meanToolErrors": 0,
+        "cacheHitRate": 0.9642866117197708,
+        "cacheBreakRate": 0.00038086049080221913,
+        "failedChecks": [],
+        "turnsReached": [
+          10
+        ],
+        "toolErrors": [],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 0.6836476217281171,
+      "cacheBreakPValue": null
+    },
+    {
+      "taskId": "worker-logs",
+      "model": "gpt-6-luna",
+      "reason": null,
+      "baseline": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 282584.661117,
+        "meanModelTurns": 23.6,
+        "meanToolCalls": 24.8,
+        "meanToolErrors": 0.5,
+        "cacheHitRate": 0.946769234336633,
+        "cacheBreakRate": 0.00011845341766937135,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 2
+          },
+          {
+            "tool": "grep",
+            "message": "Invalid regular expression: /const base|Promise.all|renderSummary|for (const id/: Unterminated group",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "candidate": {
+        "trials": 10,
+        "passed": 10,
+        "infrastructureTrials": 0,
+        "meanDurationMs": 264871.67517480004,
+        "meanModelTurns": 23.9,
+        "meanToolCalls": 25.7,
+        "meanToolErrors": 0.9,
+        "cacheHitRate": 0.9511333518334195,
+        "cacheBreakRate": 0.00011658277261515033,
+        "failedChecks": [],
+        "turnsReached": [
+          10,
+          10,
+          10
+        ],
+        "toolErrors": [
+          {
+            "tool": "editFile",
+            "message": "No matching text was found in the file.",
+            "count": 6
+          },
+          {
+            "tool": "editFile",
+            "message": "Validation failed for tool \"editFile\":",
+            "count": 2
+          },
+          {
+            "tool": "executeCode",
+            "message": "This step already made code changes, which take effect when the step ends. End this response and call executeCode again in your next step.",
+            "count": 1
+          }
+        ],
+        "infrastructureErrors": []
+      },
+      "pValue": 1,
+      "cacheHitPValue": 0.7959362618805343,
+      "cacheBreakPValue": 0.9117971811470263
+    }
+  ]
+}

@@ -58,6 +58,9 @@ vi.mock('@cloudflare/kumo', () => {
   return {
     Checkbox: ({ label }: { label: ReactNode }) => <label>{label}</label>,
     Dialog,
+    Tooltip: ({ children, content }: { children: ReactNode; content: ReactNode }) => (
+      <span>{children}<span role="tooltip">{content}</span></span>
+    ),
     useKumoToastManager: () => ({ add: toastAdd }),
   }
 })
@@ -262,9 +265,6 @@ function collaborator(
 const CREATED = new Date('2026-08-01T00:00:00Z')
 const BUILD_MEMBER = collaborator('bea@example.com', 'Bea', { role: 'build' }, [
   { type: 'user', sharer: CURRENT_USER.id, created: CREATED, role: 'build' },
-])
-const LEGACY_COLLABORATOR = collaborator('lee@example.com', 'Lee', { role: 'use', gadgetIds: 'all' }, [
-  { type: 'user', sharer: CURRENT_USER.id, created: CREATED, role: 'use' },
 ])
 // Holds the dialog's gadget (0) directly and another gadget (1) through a link.
 const GADGET_RECIPIENT = collaborator('gus@example.com', 'Gus', { role: 'use', gadgetIds: [0, 1] }, [
@@ -1330,11 +1330,13 @@ describe('ShareModal', () => {
       linkId: 'link-budget', note: 'Budget link', created: CREATED, createdBy: CURRENT_USER,
       role: 'use', gadgetId: 1,
     }
-    const LEGACY_LINK: ShareLinkInfo = {
-      linkId: 'link-legacy', note: 'Old link', created: CREATED, createdBy: CURRENT_USER, role: 'use',
+    // What a link to every gadget became once frozen to the gadgets its workspace then held.
+    const FROZEN_LINK: ShareLinkInfo = {
+      linkId: 'link-frozen', note: 'Old link', created: CREATED, createdBy: CURRENT_USER, role: 'use',
+      gadgets: [{ id: 0, title: 'Packing list' }, { id: 1, title: 'Budget tracker' }],
     }
-    const ALL_LINKS = [SHARE_LINK, ITINERARY_LINK, BUDGET_LINK, LEGACY_LINK]
-    const EVERYONE = [BUILD_MEMBER, LEGACY_COLLABORATOR, GADGET_RECIPIENT, OTHER_GADGET_RECIPIENT]
+    const ALL_LINKS = [SHARE_LINK, ITINERARY_LINK, BUDGET_LINK, FROZEN_LINK]
+    const EVERYONE = [BUILD_MEMBER, GADGET_RECIPIENT, OTHER_GADGET_RECIPIENT]
 
     it('creates a workspace link from the workspace dialog', async () => {
       const createShareLink = vi.fn<Overseer['createShareLink']>(
@@ -1364,7 +1366,7 @@ describe('ShareModal', () => {
       expect(rendered.textContent).toContain(`${GADGET_URL}#share=secret`)
     })
 
-    it('lists workspace members and legacy access, not gadget recipients, in the workspace dialog', async () => {
+    it('lists workspace members, not gadget recipients, in the workspace dialog', async () => {
       const rendered = await render(fakeOverseer({ collaborators: EVERYONE }))
 
       const people = sectionFor(rendered, 'people-heading')
@@ -1375,11 +1377,6 @@ describe('ShareModal', () => {
       expect(people.textContent).not.toContain('People in this workspace')
       expect(personRow(people, 'Gus')).toBeNull()
       expect(personRow(people, 'Hal')).toBeNull()
-      expect(personRow(people, 'Lee')).toBeNull()
-
-      const lee = personRow(sectionFor(rendered, 'legacy-heading'), 'Lee')
-      expect(lee?.textContent).toContain('All gadgets · Cannot edit')
-      expect(lee?.querySelector('button[aria-label="Remove Lee"]')).not.toBeNull()
       expect(rendered.textContent).not.toContain('Gus')
     })
 
@@ -1396,10 +1393,6 @@ describe('ShareModal', () => {
       expect(gus?.querySelector('button[aria-label="Remove Gus"]')).not.toBeNull()
       expect(personRow(people, 'Bea')).toBeNull()
       expect(personRow(people, 'Hal')).toBeNull()
-
-      const lee = personRow(sectionFor(rendered, 'legacy-heading'), 'Lee')
-      expect(lee?.textContent).toContain('All gadgets · Cannot edit')
-      expect(lee?.querySelector('button')).toBeNull()
     })
 
     it('removes only this gadget from a recipient in the gadget dialog', async () => {
@@ -1441,9 +1434,7 @@ describe('ShareModal', () => {
         fakeOverseer({ collaborators: EVERYONE }), fakeAuthenticatedApi({ searchUsers }))
 
       await typeDirectorySearch(rendered, 'x')
-      expect(searchUsers).toHaveBeenCalledWith('x', [
-        CURRENT_USER.id, 'bea@example.com', 'lee@example.com', 'gus@example.com',
-      ])
+      expect(searchUsers).toHaveBeenCalledWith('x', [CURRENT_USER.id, 'bea@example.com', 'gus@example.com'])
     })
 
     it('shows only the gadget’s own links in its dialog and copies them to the gadget', async () => {
@@ -1461,12 +1452,15 @@ describe('ShareModal', () => {
       expect(copyToClipboard).toHaveBeenCalledWith(`${GADGET_URL}#share=fresh`)
     })
 
-    it('lists and copies workspace and legacy links in the workspace dialog', async () => {
+    it('lists and copies workspace links and links to several gadgets in the workspace dialog', async () => {
       const rendered = await render(fakeOverseer({ shareLinks: ALL_LINKS }))
 
       const links = sectionFor(rendered, 'links-heading')
       expect(links.textContent).toContain('Team link')
       expect(links.textContent).toContain('Old link')
+      expect(links.textContent).toContain('2 gadgets · Cannot edit')
+      expect([...links.querySelectorAll('[role="tooltip"] li')].map(item => item.textContent))
+        .toEqual(['Packing list', 'Budget tracker'])
       expect(links.textContent).not.toContain('Itinerary link')
       expect(links.textContent).not.toContain('Budget link')
       expect(links.querySelector('button[aria-label="Copy Team link"]')).not.toBeNull()

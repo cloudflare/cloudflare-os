@@ -1,0 +1,921 @@
+{
+  "numTotalTestSuites": 15,
+  "numPassedTestSuites": 12,
+  "numFailedTestSuites": 3,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 63,
+  "numPassedTests": 59,
+  "numFailedTests": 4,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "snapshot": {
+    "added": 0,
+    "failure": false,
+    "filesAdded": 0,
+    "filesRemoved": 0,
+    "filesRemovedList": [],
+    "filesUnmatched": 0,
+    "filesUpdated": 0,
+    "matched": 0,
+    "total": 0,
+    "unchecked": 0,
+    "uncheckedKeysByFile": [],
+    "unmatched": 0,
+    "updated": 0,
+    "didUpdate": false
+  },
+  "startTime": 1793986866494,
+  "success": false,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons supports get and put",
+          "status": "passed",
+          "title": "supports get and put",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons supports subscriptions",
+          "status": "passed",
+          "title": "supports subscriptions",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons uses the property name as the storage key by default",
+          "status": "passed",
+          "title": "uses the property name as the storage key by default",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons reads and writes a legacy storage key",
+          "status": "passed",
+          "title": "reads and writes a legacy storage key",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons falls back to the default when the legacy key was never written",
+          "status": "passed",
+          "title": "falls back to the default when the legacy key was never written",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons notifies subscribers for a legacy storage key",
+          "status": "passed",
+          "title": "notifies subscribers for a legacy storage key",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons accepts null and undefined defaults with options, like bare defaults do",
+          "status": "passed",
+          "title": "accepts null and undefined defaults with options, like bare defaults do",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons rejects two singletons resolving to the same storage key",
+          "status": "passed",
+          "title": "rejects two singletons resolving to the same storage key",
+          "duration": 3,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons rejects a storage key containing a namespace delimiter",
+          "status": "passed",
+          "title": "rejects a storage key containing a namespace delimiter",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons types a bare default shaped like a schema as the object, not its defaultValue",
+          "status": "passed",
+          "title": "types a bare default shaped like a schema as the object, not its defaultValue",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "singletons"
+          ],
+          "fullName": "singletons types a union of schema and bare default distributively",
+          "status": "passed",
+          "title": "types a union of schema and bare default distributively",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "collections with a legacy storage name"
+          ],
+          "fullName": "collections with a legacy storage name stores records and indexes under the legacy prefix",
+          "status": "passed",
+          "title": "stores records and indexes under the legacy prefix",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "collections with a legacy storage name"
+          ],
+          "fullName": "collections with a legacy storage name rejects two collections resolving to the same storage name",
+          "status": "passed",
+          "title": "rejects two collections resolving to the same storage name",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "collections with a legacy storage name"
+          ],
+          "fullName": "collections with a legacy storage name rejects a storage name containing a namespace delimiter",
+          "status": "passed",
+          "title": "rejects a storage name containing a namespace delimiter",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with string primary key"
+          ],
+          "fullName": "basic collections with string primary key supports put",
+          "status": "passed",
+          "title": "supports put",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with string primary key"
+          ],
+          "fullName": "basic collections with string primary key stores with primary keys erased",
+          "status": "passed",
+          "title": "stores with primary keys erased",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with string primary key"
+          ],
+          "fullName": "basic collections with string primary key supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with string primary key"
+          ],
+          "fullName": "basic collections with string primary key supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 3,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with string primary key"
+          ],
+          "fullName": "basic collections with string primary key supports delete",
+          "status": "passed",
+          "title": "supports delete",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with integer primary key"
+          ],
+          "fullName": "basic collections with integer primary key supports put",
+          "status": "passed",
+          "title": "supports put",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with integer primary key"
+          ],
+          "fullName": "basic collections with integer primary key stores with keys encoded as sortable variable-length integers",
+          "status": "passed",
+          "title": "stores with keys encoded as sortable variable-length integers",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with integer primary key"
+          ],
+          "fullName": "basic collections with integer primary key supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 4,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with integer primary key"
+          ],
+          "fullName": "basic collections with integer primary key supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with integer primary key"
+          ],
+          "fullName": "basic collections with integer primary key supports delete",
+          "status": "passed",
+          "title": "supports delete",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with function primary key"
+          ],
+          "fullName": "basic collections with function primary key supports put",
+          "status": "passed",
+          "title": "supports put",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with function primary key"
+          ],
+          "fullName": "basic collections with function primary key stores with primary keys intact",
+          "status": "passed",
+          "title": "stores with primary keys intact",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "basic collections with function primary key"
+          ],
+          "fullName": "basic collections with function primary key supports various ops",
+          "status": "passed",
+          "title": "supports various ops",
+          "duration": 4,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "deleteRecord"
+          ],
+          "fullName": "deleteRecord deletes by a computed primary key without the caller deriving it",
+          "status": "passed",
+          "title": "deletes by a computed primary key without the caller deriving it",
+          "duration": 5,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "deleteRecord"
+          ],
+          "fullName": "deleteRecord deletes by a property primary key",
+          "status": "passed",
+          "title": "deletes by a property primary key",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "deleteRecord"
+          ],
+          "fullName": "deleteRecord reads only the primary key, unindexing the record as stored",
+          "status": "passed",
+          "title": "reads only the primary key, unindexing the record as stored",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "deleteRecord"
+          ],
+          "fullName": "deleteRecord notifies subscribers with the stored record",
+          "status": "passed",
+          "title": "notifies subscribers with the stored record",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by string"
+          ],
+          "fullName": "unique index by string supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by string"
+          ],
+          "fullName": "unique index by string supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by string"
+          ],
+          "fullName": "unique index by string supports delete",
+          "status": "passed",
+          "title": "supports delete",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by string"
+          ],
+          "fullName": "unique index by string supports updating a record to change the key",
+          "status": "passed",
+          "title": "supports updating a record to change the key",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by string"
+          ],
+          "fullName": "unique index by string throws on conflict",
+          "status": "passed",
+          "title": "throws on conflict",
+          "duration": 19,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by number"
+          ],
+          "fullName": "unique index by number supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by number"
+          ],
+          "fullName": "unique index by number supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by number"
+          ],
+          "fullName": "unique index by number supports delete",
+          "status": "passed",
+          "title": "supports delete",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by number"
+          ],
+          "fullName": "unique index by number supports updating a record to change the key",
+          "status": "passed",
+          "title": "supports updating a record to change the key",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by number"
+          ],
+          "fullName": "unique index by number throws on conflict",
+          "status": "passed",
+          "title": "throws on conflict",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by array"
+          ],
+          "fullName": "unique index by array supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by array"
+          ],
+          "fullName": "unique index by array supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 22,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by array"
+          ],
+          "fullName": "unique index by array supports delete",
+          "status": "passed",
+          "title": "supports delete",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by array"
+          ],
+          "fullName": "unique index by array supports updating a record to change the key",
+          "status": "passed",
+          "title": "supports updating a record to change the key",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index by array"
+          ],
+          "fullName": "unique index by array throws on conflict",
+          "status": "passed",
+          "title": "throws on conflict",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by number"
+          ],
+          "fullName": "non-unique index by number supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by number"
+          ],
+          "fullName": "non-unique index by number supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 3,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by number"
+          ],
+          "fullName": "non-unique index by number lists integer keys as keyString() encodes them",
+          "status": "failed",
+          "title": "lists integer keys as keyString() encodes them",
+          "duration": 27,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "failed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by number"
+          ],
+          "fullName": "non-unique index by number supports delete",
+          "status": "passed",
+          "title": "supports delete",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by array"
+          ],
+          "fullName": "non-unique index by array supports get",
+          "status": "passed",
+          "title": "supports get",
+          "duration": 4,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by array"
+          ],
+          "fullName": "non-unique index by array supports list",
+          "status": "passed",
+          "title": "supports list",
+          "duration": 4,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by array"
+          ],
+          "fullName": "non-unique index by array supports listKeys",
+          "status": "failed",
+          "title": "supports listKeys",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "failed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by array"
+          ],
+          "fullName": "non-unique index by array supports reading each group while iterating its keys",
+          "status": "failed",
+          "title": "supports reading each group while iterating its keys",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "failed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index by array"
+          ],
+          "fullName": "non-unique index by array supports delete",
+          "status": "failed",
+          "title": "supports delete",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "failed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index rebuild"
+          ],
+          "fullName": "non-unique index rebuild backfills an index declared after records were written",
+          "status": "passed",
+          "title": "backfills an index declared after records were written",
+          "duration": 7,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index rebuild"
+          ],
+          "fullName": "non-unique index rebuild backfills a multi-key index (array index function)",
+          "status": "passed",
+          "title": "backfills a multi-key index (array index function)",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index rebuild"
+          ],
+          "fullName": "non-unique index rebuild reclaims orphaned child rows and never reuses child-group ids",
+          "status": "passed",
+          "title": "reclaims orphaned child rows and never reuses child-group ids",
+          "duration": 3,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index rebuild"
+          ],
+          "fullName": "non-unique index rebuild discards stale entries for records changed behind the index's back",
+          "status": "passed",
+          "title": "discards stale entries for records changed behind the index's back",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index rebuild"
+          ],
+          "fullName": "unique index rebuild backfills an index declared after records were written",
+          "status": "passed",
+          "title": "backfills an index declared after records were written",
+          "duration": 2,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "unique index rebuild"
+          ],
+          "fullName": "unique index rebuild throws when two records derive the same key, leaving no partial index",
+          "status": "passed",
+          "title": "throws when two records derive the same key, leaving no partial index",
+          "duration": 0,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index ranged get"
+          ],
+          "fullName": "non-unique index ranged get ranges and pages within one group by primary key",
+          "status": "passed",
+          "title": "ranges and pages within one group by primary key",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        },
+        {
+          "ancestorTitles": [
+            "non-unique index ranged get"
+          ],
+          "fullName": "non-unique index ranged get pages a numeric-pk group descending with an exclusive end",
+          "status": "passed",
+          "title": "pages a numeric-pk group descending with an exclusive end",
+          "duration": 1,
+          "benchmarks": [],
+          "meta": {
+            "automergeBody": "passed"
+          },
+          "tags": []
+        }
+      ],
+      "startTime": 1793986867807,
+      "endTime": 1793986867967,
+      "status": "failed",
+      "name": "/workspace/packages/typed-storage/__tests__/index.test.ts"
+    }
+  ]
+}

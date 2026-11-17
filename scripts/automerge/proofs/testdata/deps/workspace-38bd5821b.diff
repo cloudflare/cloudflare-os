@@ -1,0 +1,15 @@
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index dbedd1fad..d99bfa8d8 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -10,0 +11,10 @@ overrides:
++  # minimumReleaseAge gates direct deps but not these two, so pin them to the last
++  # mature release (CI verifies every lockfile entry against the release-age policy):
++  # - @types/node arrives as an optional vite/vitest peer resolved to `latest`.
++  # - @lezer/markdown is a deep transitive of @codemirror/lang-markdown.
++  '@types/node': 26.1.0
++  '@lezer/markdown': 1.6.4
++
++# Reject dependency versions published within this many minutes (24h), matching the
++# CI supply-chain policy so local installs can't commit a too-fresh lockfile.
++minimumReleaseAge: 1440

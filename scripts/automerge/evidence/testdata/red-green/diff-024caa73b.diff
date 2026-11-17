@@ -1,0 +1,63 @@
+diff --git a/packages/typed-storage/__tests__/index.test.ts b/packages/typed-storage/__tests__/index.test.ts
+index d39c66702..71adab0d8 100644
+--- a/packages/typed-storage/__tests__/index.test.ts
++++ b/packages/typed-storage/__tests__/index.test.ts
+@@ -2,2 +2,2 @@ import { expect, expectTypeOf, it, describe } from "vitest"
+-import { createTypedStorage, collection, singleton, Singleton, SingletonSchema, UniqueIndex,
+-         NonUniqueIndex }
++import { createTypedStorage, collection, singleton, keyString, Singleton, SingletonSchema,
++         UniqueIndex, NonUniqueIndex }
+@@ -868,0 +869,4 @@ describe("non-unique index by number", () => {
++  it("lists integer keys as keyString() encodes them", () => {
++    expect([...index.listKeys()]).toStrictEqual([keyString(1), keyString(4), keyString(8)]);
++  });
++
+@@ -922,0 +927,25 @@ describe("non-unique index by array", () => {
++  it("supports listKeys", () => {
++    expect([...index.listKeys()]).toStrictEqual(["admin", "everyone", "interns"]);
++    expect([...index.listKeys({reverse: true})]).toStrictEqual(["interns", "everyone", "admin"]);
++    expect([...index.listKeys({prefix: "e"})]).toStrictEqual(["everyone"]);
++    expect([...index.listKeys({startAfter: "admin", limit: 1})]).toStrictEqual(["everyone"]);
++  });
++
++  it("supports reading each group while iterating its keys", () => {
++    let storage = createTypedStorage(makeMockStorage(), GROUP_SCHEMA);
++    for (let user of [BOB, DAVE, CAROL, ALICE]) {
++      storage.users.put(user);
++    }
++
++    let groups: [string, User[]][] = [];
++    for (let key of storage.users.byGroup.listKeys()) {
++      groups.push([key, [...storage.users.byGroup.get(key)]]);
++    }
++
++    expect(groups).toStrictEqual([
++      ["admin", [ALICE, CAROL]],
++      ["everyone", [ALICE, BOB, CAROL, DAVE]],
++      ["interns", [DAVE]],
++    ]);
++  });
++
+@@ -928,0 +958,2 @@ describe("non-unique index by array", () => {
++    // A key goes once its last record does.
++    expect([...index.listKeys()]).toStrictEqual(["everyone", "interns"]);
+diff --git a/packages/typed-storage/src/index.ts b/packages/typed-storage/src/index.ts
+index e7de1e29e..e35180189 100644
+--- a/packages/typed-storage/src/index.ts
++++ b/packages/typed-storage/src/index.ts
+@@ -82,0 +83,11 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
++
++  /**
++   * List the distinct keys at least one record is indexed under, in key order, without reading
++   * the records: string keys verbatim, integer keys as keyString() encodes them (the index can't
++   * tell at runtime that its keys are integers). `options` ranges and pages over the keys;
++   * `dedupe` does not apply.
++   *
++   * Keys are buffered before returning so callers can read groups while iterating without
++   * invalidating the key iterator.
++   */
++  listKeys(options?: ListOptions<Key>): Iterable<string>;
+@@ -686,0 +698,3 @@ function createCollection<
++      listKeys(options: ListOptions<Key> = {}): Iterable<string> {
++        return Array.from(idxKv.listKeys(options));
++      },
