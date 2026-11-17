@@ -126,3 +126,104 @@ it.concurrent("callable-agent calls land in order across a workspace restart", a
     expect(model.remainingSteps()).toBe(0);
   });
 });
+
+interface HandleCaller extends RpcTarget {
+  dispatch(document: string): Promise<void>;
+  chatToken(): Promise<string>;
+}
+
+// Keeps the SpawnedAgent in its own storage and reads it back for every call, so each call goes
+// through the persistent stub.
+const HANDLE_CALLER_SERVER = `import { DurableObject } from "cloudflare:workers";
+const TYPES = "interface TaskAgent {\\n  /** Process one document, in arrival order. */\\n  process(document: string): void;\\n}";
+export class Gadget extends DurableObject {
+  async spawned() {
+    let spawned = await this.ctx.storage.get("agent");
+    if (!spawned) {
+      spawned = await this.env.SPAWNER.spawnAgent("Handled task", { types: TYPES, mainType: "TaskAgent" });
+      await this.ctx.storage.put("agent", spawned);
+    }
+    return spawned;
+  }
+  async dispatch(document) {
+    let spawned = await this.spawned();
+    await spawned.getAgent().process(document);
+  }
+  async chatToken() {
+    let spawned = await this.spawned();
+    return await spawned.getChatToken();
+  }
+}
+`;
+
+it.concurrent("a stored SpawnedAgent names its chat and calls its agent across a restart", async () => {
+  const model = models.script([
+    { toolCalls: [
+      { id: "create-caller", name: "createGadget",
+        arguments: { title: "Handle caller", bindingName: "CALLER" } },
+      { id: "write-caller", name: "writeFile",
+        arguments: { workpiece: "CALLER", filename: "server.js", content: HANDLE_CALLER_SERVER } },
+    ] },
+    { text: "Built." },
+    { text: "first handled" },
+    { text: "second handled" },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+    usernamePrefix: "spawnedhandle",
+  });
+
+  expect((await session.runTurn("Build the caller.")).outcome).toEqual({ status: "completed" });
+  await session.acceptChanges();
+
+  let callerId!: number;
+  let spawnedId!: number;
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    const workpieces = new WorkpieceRecorder();
+    using workpiecesStub = stubFor(workpieces);
+    using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+    await workpieces.loaded;
+    const callerSummary = [...workpieces.summaries.values()]
+        .find(summary => summary.type === "gadget" && summary.title === "Handle caller");
+    if (callerSummary === undefined) throw new Error("The Handle caller gadget was not created");
+    callerId = callerSummary.id;
+
+    using spawner = await ws.newAgentSpawnerGatekeeper({
+      displayName: "Handle dispatcher",
+      modelId: SCRIPTED_MODEL_ID,
+      env: {},
+    });
+    using gadget = await ws.getGadget(callerId);
+    await gadget.bind("SPAWNER", await spawner.getId());
+    using caller = await gadget.connectToGadget() as RpcStub<HandleCaller>;
+
+    await caller.dispatch("first");
+    await waitFor("the spawned agent's first turn", async () => model.requests.length === 3 || null);
+    const chat = (await ws.listChats()).find(({ spawnerName }) => spawnerName === "Handle dispatcher");
+    if (chat === undefined) throw new Error("The spawned chat was not listed");
+    spawnedId = chat.id;
+    expect(chat.chatToken).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await caller.chatToken()).toBe(chat.chatToken);
+    await waitForIdleChat(ws, spawnedId);
+
+    await restartWorkspace(harness.url, ws);
+  });
+  await waitFor("the workspace restart", async () => session.connectionDrops > 0 ? true : null);
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    using gadget = await ws.getGadget(callerId);
+    using caller = await gadget.connectToGadget() as RpcStub<HandleCaller>;
+    await caller.dispatch("second");
+    await waitFor("the spawned agent's second turn", async () => model.requests.length === 4 || null);
+    await waitForIdleChat(ws, spawnedId);
+
+    const history = await loadAllChatHistory(
+        beforeSequence => ws.getChatHistory(spawnedId, beforeSequence));
+    expect(history.filter(message => message.type === "agentCallback")).toMatchObject([
+      { methodName: "process", argsSummary: expect.stringContaining("first") },
+      { methodName: "process", argsSummary: expect.stringContaining("second") },
+    ]);
+    expect(model.remainingSteps()).toBe(0);
+  });
+});

@@ -830,7 +830,19 @@ export default {
 
 \`gadget\` is not a global variable: pass it to whatever code needs to call the server.
 
-\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`. It is an RPC stub for whatever is running the UI, either the Workshop or a browser-mode export. Its methods are described under "Reporting the user's focus" below.
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`, an RPC stub for whatever is running the UI:
+
+\`\`\`ts
+interface GadgetHost {
+  // Shows the user the chat of an agent spawned with an agent spawner's spawnAgent().
+  // chatToken comes from SpawnedAgent.getChatToken().
+  openAgentChat(chatToken: string): Promise<void>;
+
+  // Tell the Workshop where the user is, and return them there: see "Reporting the user's focus".
+  reportFocus(focus: { anchor: string; label: string; context?: string } | null): void;
+  onNavigate(navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void>;
+}
+\`\`\`
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
@@ -856,7 +868,9 @@ client.js and server.js may import other .js files in the Gadget. Each file has 
 
 Note that Cap'n Web is a bidirectional object capability protocol, meaning, among other things, you can pass a function over RPC, in the params or results of another function. This actually passes the function "by reference": the receiving end actually receives an RPC stub, which can be used to call back over RPC to the original function. This, of course, causes the function to become async, even if the original was synchronous.
 
-Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes (perhaps due to activity of a different client). This technique should be used when implementing multiplayer collaboration.
+Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes.
+
+Use subscriptions for views of mutable server data, including single-user Gadgets: you may update that data with \`executeCode\` while the user is viewing it. A one-time read only displays the initial state. Subscribe with an initial snapshot, and notify subscribers after saving each mutation, so the view updates without a page reload. Closing and reopening a Gadget pane preserves its iframe and does not rerun client.js.
 
 When implementing such a subscription, it is important to call \`.dup()\` on the callback stub, in order to obtain a long-lived stub. Otherwise, the stub received as a parameter is implicitly disposed at the end of the function. You should also use \`onRpcBroken\` to monitor for client disconnects, like:
 

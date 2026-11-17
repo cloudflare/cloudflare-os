@@ -141,6 +141,9 @@ class ExportGadgetHost extends RpcTarget implements GadgetHost {
 
   // Never calls `navigate`, which Cap'n Web disposes when this returns.
   async onNavigate(_navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void> {}
+
+  // No chat sidebar to open it in.
+  async openAgentChat(_chatToken: string): Promise<void> {}
 }
 
 /**

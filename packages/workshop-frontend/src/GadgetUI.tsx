@@ -162,6 +162,7 @@ type HostEvents = {
   // Tells the gadget's author (and the agent, which sees the frame's console) why a call was
   // ignored.
   reportProblem(message: string): void
+  openAgentChat(chatToken: string): Promise<void>
 }
 
 // The Workshop as a gadget UI's host: one per frame. Gadget code is untrusted and the frontend has
@@ -196,6 +197,11 @@ class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
       return
     }
     await this.#events.onNavigate(navigate as RpcStub<Navigate>)
+  }
+
+  async openAgentChat(chatToken: string): Promise<void> {
+    if (typeof chatToken !== 'string') throw new TypeError('chatToken must be a string.')
+    await this.#events.openAgentChat(chatToken)
   }
 }
 
@@ -293,6 +299,10 @@ interface GadgetUIProps {
   // Reports whether the "No gadget UI yet" placeholder is showing: true only once a load has
   // confirmed the gadget has no UI, so a spinner or a not-yet-loaded view never counts.
   onNoUiChange?: (showsNoUi: boolean) => void
+  // Shows the user the chat the gadget names (GadgetHost.openAgentChat). Without it, the request
+  // does nothing. `signal` aborts once the frame's RPC session ends, so a request still in
+  // progress can be dropped rather than act for a view that's gone.
+  onOpenAgentChat?: (chatToken: string, signal: AbortSignal) => Promise<void>
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -304,7 +314,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, focus, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, focus, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
@@ -331,6 +341,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     reject: (reason: unknown) => void
   } | null>(null)
   const rpcSessionRef = useRef<any>(null)
+  // Aborted when rpcSessionRef's session ends, dropping the host requests it made.
+  const rpcSessionAbortRef = useRef<AbortController | null>(null)
   // Each module's path by its data: URL, for naming the file in errors the iframe forwards.
   const pathsByUrlRef = useRef(new Map<string, string>())
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
@@ -340,6 +352,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onConsoleLogRef.current = onConsoleLog
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
+  const onOpenAgentChatRef = useRef(onOpenAgentChat)
+  onOpenAgentChatRef.current = onOpenAgentChat
   const focusRef = useRef(focus)
   focusRef.current = focus
   // Null between frames, and until the frame's session opens.
@@ -385,7 +399,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     focusRef.current?.onFocusChange(null)
   }
 
-  const createHost = (frame: FrameFocus) => new WorkshopGadgetHost({
+  const createHost = (frame: FrameFocus, sessionSignal: AbortSignal) => new WorkshopGadgetHost({
     reportFocus: reported => {
       const current = focusRef.current
       if (frameFocusRef.current !== frame || !current) return
@@ -401,6 +415,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       if (anchor !== undefined) await sendNavigate(retained, anchor)
     },
     reportProblem: reportFocusProblem,
+    openAgentChat: async chatToken => {
+      await onOpenAgentChatRef.current?.(chatToken, sessionSignal)
+    },
   })
 
   const navigation = focus?.navigation
@@ -454,6 +471,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     gadgetStubRef.current = null
     rpcSessionRef.current?.[Symbol.dispose]?.()
     rpcSessionRef.current = null
+    rpcSessionAbortRef.current?.abort(reason)
+    rpcSessionAbortRef.current = null
   }
 
   const reloadIframe = (reason: unknown) => {
@@ -660,8 +679,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           })
           const frame: FrameFocus = { navigate: null }
           frameFocusRef.current = frame
+          const sessionAbort = new AbortController()
           rpcSessionRef.current = newMessagePortRpcSession(
-              port, new GadgetFrameRoot(forwardingTarget, createHost(frame), frameEvents))
+              port, new GadgetFrameRoot(forwardingTarget, createHost(frame, sessionAbort.signal), frameEvents))
+          rpcSessionRef.current.onRpcBroken((reason: unknown) => sessionAbort.abort(reason))
+          rpcSessionAbortRef.current = sessionAbort
         } catch (caught) {
           gadgetStub?.[Symbol.dispose]?.()
           port.close()
@@ -681,6 +703,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       resetConnection(new Error('Gadget RPC session was closed.'))
     }
   }, [])
+
+  // A new key or document replaces the frame, whose session lingers until the next handshake (or
+  // never comes, with no UI to show); its host requests mustn't outlive the frame.
+  const frameKey = `${reloadTrigger}:${iframeGeneration}`
+  useEffect(() => () => {
+    rpcSessionAbortRef.current?.abort(new Error('Gadget iframe was replaced.'))
+    rpcSessionAbortRef.current = null
+  }, [frameKey, sandboxedHtml])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
@@ -777,7 +807,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   return (
     <div style={{ height, width: '100%' }}>
       <iframe
-        key={`${reloadTrigger}:${iframeGeneration}`}
+        key={frameKey}
         ref={iframeRef}
         srcDoc={sandboxedHtml}
         style={{

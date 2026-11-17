@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
-import { validateRpc } from "capnweb-validate";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, ChatMessageOptions, MessageFocus, MAX_FOCUS_ANCHOR_LENGTH, MAX_FOCUS_LABEL_LENGTH, MAX_FOCUS_CONTEXT_LENGTH, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -75,7 +75,9 @@ import {
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
-import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
+import type {
+  AgentSpawnerBinding, CallableAgent, SpawnCallableOptions, SpawnedAgent,
+} from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
 import { reportIssue } from "@gadgets/observability/error-reporting";
 import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from "./analytics";
@@ -1782,6 +1784,15 @@ class OverseerImpl implements AgentHooks {
   // Whether the id names a live worktree record (a deleted workpiece is not a worktree here).
   isWorktree(id: WorkpieceId): boolean {
     return this.storage.gadgets.get(id)?.type === "worktree";
+  }
+
+  // Refuses a user's change to a gadget filed under a spawned agent's chat. Such a chat may hold
+  // changes only to worktrees, since its agent may modify nothing else (see
+  // assertMayModifyWorkpiece in agent.ts), and a gadget change there would be credited to it.
+  assertChatMayChangeGadget(chatId: number): void {
+    if (this.storage.chatContext.get(chatId)?.spawnerConfig) {
+      throw new Error("A spawned agent's chat can't hold changes to a gadget.");
+    }
   }
 
   // Facet name for the given gadget. The facet name is a storage key, so the default gadget
@@ -3558,6 +3569,9 @@ class OverseerImpl implements AgentHooks {
       : Promise<{generation: number, revision: number}> {
     this.getChatMetaOrThrow(chatId);  // fail fast
     this.#validateSubmissionShape(submission);
+    if (changedGadgets(submission.change).some(id => !this.isWorktree(id))) {
+      this.assertChatMayChangeGadget(chatId);
+    }
     this.#validateByteChanges(submission.change);
     let digest = await submissionDigest(submission);
 
@@ -4165,6 +4179,7 @@ class OverseerImpl implements AgentHooks {
         title: `Update from blueprint: ${metadata.title}`,
         started: timestamp,
         lastActive: timestamp,
+        chatToken: crypto.randomUUID(),
         ...(pin !== undefined ? {codeBase: {pins: [pin], generation: 0, revision: 0}} : {}),
       });
       this.materializeChatChanges(chatId, undefined, {author, blueprintMerges: [merge]});
@@ -7485,6 +7500,7 @@ class OverseerImpl implements AgentHooks {
         title: "New Chat",   // filled in later by AI
         started: timestamp,
         lastActive: timestamp,
+        chatToken: crypto.randomUUID(),
       };
       if (prepared.message !== undefined && userMeta.aiModel) {
         meta.activeAgent = userMeta.aiModel.profile;
@@ -11266,7 +11282,7 @@ class OverseerImpl implements AgentHooks {
 
   restore(params: OverseerRestoreParams)
       : Fetcher<DurableObject> | Fetcher<RestoreForgerEntrypoint> | Fetcher<Gatekeeper<any>> |
-        WorktreeReplicatorImpl {
+        WorktreeReplicatorImpl | SpawnedAgentImpl {
     switch (params.type) {
       case "worktreeReplicator":
         this.getWorktreeRecord(params.worktreeId);  // validate it exists
@@ -11297,6 +11313,15 @@ class OverseerImpl implements AgentHooks {
           throw new Error("This connection has been removed from the workspace.");
         }
         return this.#getGatekeeperFacetRaw(params.gatekeeperId);
+
+      case "spawnedAgent": {
+        let {type: _, ...agent} = params;
+        if (!this.storage.chatMeta.get(agent.chatId) ||
+            !this.storage.chatContext.get(agent.chatId)?.spawnerConfig) {
+          throw new Error("This agent's chat has been deleted.");
+        }
+        return new SpawnedAgentImpl(this, agent);
+      }
 
       default:
         throw new TypeError("Unknown restore params: " + JSON.stringify(params));
@@ -11342,7 +11367,11 @@ type OverseerRestoreParams = {
   // to itself stop restoring once the connection is removed.
   type: "gatekeeper";
   gatekeeperId: WorkpieceId;
-};
+} | ({
+  // A SpawnedAgent (see AgentSpawnerQueue.spawnAgentHandle). It restores while its chat exists,
+  // as the agent's CallableAgent goes on working after its spawner is deleted.
+  type: "spawnedAgent";
+} & SpawnedAgentRef);
 
 export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   private impl: OverseerImpl;
@@ -12378,6 +12407,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (!this.impl.storage.chatMeta.get(chatId)) {
         throw new Error(`No such chat: ${chatId}`);
       }
+      this.impl.assertChatMayChangeGadget(chatId);
       chatNames = this.impl.chatScopeNames(chatId);
     }
     if (bindingName === undefined) {
@@ -14179,6 +14209,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (!this.impl.storage.chatMeta.get(chatId)) {
       throw new Error(`No such chat: ${chatId}`);
     }
+    this.impl.assertChatMayChangeGadget(chatId);
     let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
     this.impl.bindWorkpiece(this.id, name, target, chatId);
     this.impl.addChatMessages(chatId, author, [{
@@ -14736,6 +14767,51 @@ interface AgentSpawnerQueue extends ApprovalQueue {
    */
   spawnCallableAgent(title: string, options: SpawnCallableOptions, creatorUserId?: string)
       : Promise<CallableAgent>;
+
+  /**
+   * Implements AgentSpawnerBinding.spawnAgent(): spawns as spawnCallableAgent() does, and returns
+   * a persistent stub to the agent's SpawnedAgent.
+   */
+  spawnAgentHandle(title: string, options: SpawnCallableOptions, creatorUserId?: string)
+      : Promise<SpawnedAgent>;
+}
+
+/**
+ * A chat spawned to implement an interface (see spawnCallable()), and who spawned it: everything
+ * its CallableAgent carries. The initiator isn't recorded on the chat, so whatever outlives the
+ * spawn call carries it.
+ */
+type SpawnedAgentRef = {
+  chatId: number;
+  initiatorUserId: string;
+  initiatorModelId: string | null;  // null when the spawner has no model
+};
+
+// A stub that delivers calls to a spawned chat thread, like the `self` magic object. Each call is
+// recorded by deliverAgentCallback(), which starts the agent when it is idle; with no model
+// configured, calls are still appended to the chat, for a human to pick up.
+function callableAgent(impl: OverseerImpl, agent: SpawnedAgentRef): CallableAgent {
+  return impl.ctx.exports.AgentSelfLoopback({props: {
+    overseerId: impl.ctx.id.toString(),
+    ...agent,
+  }}) as unknown as CallableAgent;
+}
+
+/** What a SpawnedAgent's persistent stub restores to (see OverseerRestoreParams). */
+@validateRpc()
+class SpawnedAgentImpl extends NativeRpcTarget implements SpawnedAgent {
+  constructor(private impl: OverseerImpl, private agent: SpawnedAgentRef) {
+    super();
+  }
+
+  getAgent(): CallableAgent {
+    return callableAgent(this.impl, this.agent);
+  }
+
+  getChatToken(): string {
+    // Every chat spawnAgent() creates has one.
+    return this.impl.getChatMetaOrThrow(this.agent.chatId).chatToken!;
+  }
 }
 
 @validateRpc()
@@ -14769,18 +14845,24 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
 
   async spawnCallableAgent(title: string, options: SpawnCallableOptions, creatorUserId?: string)
       : Promise<CallableAgent> {
+    return callableAgent(this.impl, await this.#createCallableChat(title, options, creatorUserId));
+  }
+
+  // Unvalidated: the generated validator would wrap the returned stub in a Proxy, which Workers RPC
+  // can't persist. Only AgentSpawnerBindingImpl calls this, with arguments it has validated.
+  @skipRpcValidation()
+  async spawnAgentHandle(title: string, options: SpawnCallableOptions, creatorUserId?: string)
+      : Promise<SpawnedAgent> {
+    let agent = await this.#createCallableChat(title, options, creatorUserId);
+    return await this.impl.ctx.restore(
+        {type: "spawnedAgent", ...agent} satisfies OverseerRestoreParams);
+  }
+
+  async #createCallableChat(title: string, options: SpawnCallableOptions,
+                            creatorUserId: string | undefined): Promise<SpawnedAgentRef> {
     let {chatId, initiatorUserId, modelId} =
         await this.#createSpawnedChat(title, creatorUserId, options);
-
-    // A stub that delivers calls to the new chat thread, like the `self` magic object. Each call
-    // is recorded by deliverAgentCallback(), which starts the agent when it is idle; with no
-    // model configured, calls are still appended to the chat, for a human to pick up.
-    return this.impl.ctx.exports.AgentSelfLoopback({props: {
-      overseerId: this.impl.ctx.id.toString(),
-      chatId,
-      initiatorUserId,
-      initiatorModelId: modelId,
-    }}) as unknown as CallableAgent;
+    return {chatId, initiatorUserId, initiatorModelId: modelId};
   }
 
   // The spawner's config and bindings, from its record.
@@ -14820,6 +14902,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       title,
       started: timestamp,
       lastActive: timestamp,
+      chatToken: crypto.randomUUID(),
       spawnerName: config.displayName,
       spawnerId: this.gatekeeperId,
     };
@@ -14869,7 +14952,7 @@ export class AgentSpawnerGatekeeper
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return AGENT_SPAWNER_BINDING_TYPES;
+    return agentApiText(AGENT_SPAWNER_BINDING_TYPES);
   }
 
   async getAutoApprovableActions() {
@@ -14936,6 +15019,13 @@ class AgentSpawnerBindingImpl extends RpcTarget {
           "interface.");
     }
     return this.queue.spawnCallableAgent(title, options, this.ctx.props.creatorUserId);
+  }
+
+  // Returns `any` so that the generated validator, which still checks the arguments, passes the
+  // persistent stub through: it would wrap a stub typed as SpawnedAgent in a Proxy, which Workers
+  // RPC can't persist.
+  async spawnAgent(title: string, options: SpawnCallableOptions): Promise<any> {
+    return this.queue.spawnAgentHandle(title, options, this.ctx.props.creatorUserId);
   }
 
   [Symbol.dispose]() {

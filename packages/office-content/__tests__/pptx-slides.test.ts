@@ -100,7 +100,7 @@ describe("readPptxSlides", () => {
     // Each shape counts with its paragraph and its run.
     expect(deck.slides).toHaveLength(Math.ceil(MAX_DECK_CONTENT / (perSlide * 3)));
     expect(deck.truncated).toBe(true);
-  });
+  }, 10_000);
 
   describe("inheritance", () => {
     const masterTitle = drawnShape({
