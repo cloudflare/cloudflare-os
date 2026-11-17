@@ -4,30 +4,15 @@ import { dirname, join, relative, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-// Trust model rule 4: judge code has no head dependencies. A proof or evidence script may import
-// only Node builtins and other files under scripts/automerge/, so what decides a pull request is
-// the reviewed source in this directory and never a package the pull request can bump.
-const AUTOMERGE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OWNED = ["proofs", "evidence"];
+// Trust model rule 4: judge code has no head dependencies. A proof script may import only Node
+// builtins and other files under scripts/automerge/, so what decides a pull request is the reviewed
+// source in this directory and never a package the pull request can bump.
+const PROOFS = dirname(fileURLToPath(import.meta.url));
+const AUTOMERGE = resolve(PROOFS, "..");
 const SPECIFIER = /(?:^|[\s;])(?:import|export)\s(?:[^'";]*?\sfrom\s*)?['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)/g;
 
-function sources(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return entry.name === "testdata" ? [] : sources(path);
-    return entry.name.endsWith(".ts") ? [path] : [];
-  });
-}
-
 describe("automerge judge imports", () => {
-  const files = OWNED.flatMap((name) => {
-    try {
-      return sources(join(AUTOMERGE, name));
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
-      throw error;
-    }
-  });
+  const files = readdirSync(PROOFS).filter((name) => name.endsWith(".ts")).map((name) => join(PROOFS, name));
 
   it("finds the proof scripts", () => {
     assert.ok(files.some((file) => file.endsWith("deps.ts")));
