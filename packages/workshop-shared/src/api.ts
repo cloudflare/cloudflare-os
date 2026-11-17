@@ -25,7 +25,7 @@
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
-import type { CodeChange } from "./code-change.js";
+import type { BytesRef, CodeChange } from "./code-change.js";
 import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -491,6 +491,8 @@ export type ObserverBindingNeed = {
   resourceTitle: string;
   /** Canonical resource URL, if known, for display. */
   resourceUrl?: string;
+  /** Stable vendor-scoped type ID from the binding; authoritative over URL-based scope selection. */
+  resourceTypeId?: string;
   /**
    * Set only when this binding was already configured but its chosen account failed verification on
    * this attempt (expired credentials, a revoked grant, an upstream outage, or a genuine denial).
@@ -995,14 +997,14 @@ export interface AuthenticatedApi extends RpcTarget {
    * sees the ticket (see docs/connect-handoff.md). A vendor that provisions its own account
    * (`description.autoProvisionsAccount`) needs no flow: see provisionAmbientAccount().
    *
-   * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
+   * `resourceTypeIds`, if given, limits the connection to the authorization needed for those
    * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
    * authorization for all of the vendor's resource types is requested. An empty array is meaningful
    * and distinct from omitting it: it requests no resource authorization at all, which is how a
    * caller connects an account for a non-resource purpose (e.g. billing) without asking the user to
    * grant data access it will never use.
    */
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart>;
+  connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart>;
 
   /**
    * Redeem a finished connect flow's handoff. Called by the Workshop's own /connect/handoff page
@@ -1019,7 +1021,7 @@ export interface AuthenticatedApi extends RpcTarget {
   completeConnectHandoff(ticket: string, nonce: string): Promise<void>;
 
   /**
-   * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
+   * Ensure the authorization for the listed grantable resource types (by stable vendor-scoped ID) is granted
    * on a connected account, expanding if needed. Returns a flow to open as a disowned popup, which
    * only the Workshop client that started it can complete (as for connectAccount()), to authorize
    * them, or null if nothing was needed. Completion is redeemed via completeConnectHandoff(); the
@@ -1027,7 +1029,7 @@ export interface AuthenticatedApi extends RpcTarget {
    * Returning null also re-reads the account's description, so a list of granted resource types
    * that was out of date is corrected and observable the same way.
    */
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
+  ensureAccountResources(accountId: number, resourceTypeIds: string[]): Promise<ConnectFlowStart | null>;
 
   /**
    * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
@@ -1069,24 +1071,24 @@ export interface AuthenticatedApi extends RpcTarget {
    * Get the UI used to choose a specific resource from a connected account.
    *
    * `accountId` is the user's connected account that provides this resource.
-   * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   * `resourceTypeId` is the stable vendor-scoped ID of the supported resource.
    *
    * Once the user has chosen in the frame, the Workshop asks its iframe for the resource URL
    * (ResourceConfiguratorIframe.collectResourceUrl()) and passes it to Overseer.newGatekeeper().
-   * A caller without the iframe makes that URL itself, in the form of `resourceUrlPattern`, the
+   * A caller without the iframe makes that URL itself, matching the type's current `urlPattern`, the
    * frame's `ui` helping only to look up what fills it.
    */
   startResourceConfigurator(
     accountId: number,
-    resourceUrlPattern: string,
+    resourceTypeId: string,
   ): Promise<ResourceConfiguratorFrame>;
 
   /**
-   * Get the UI in which the approver of a creation of the type `resourceUrlPattern` configures it
+   * Get the UI in which the approver of a creation of the type `resourceTypeId` configures it
    * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
    * frame's collectResourceUrl() gives CreationApproval.configuration.
    */
-  startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+  startCreationConfigurator(accountId: number, resourceTypeId: string)
       : Promise<GatekeeperUiFrame>;
 
   /**
@@ -1300,7 +1302,9 @@ export function isHexColor(value: unknown): value is string {
 
 /** A single gatekeeper resource type in the admin resource-config UI. */
 export type AdminResource = {
-  /** The resource's urlPattern, used as its stable identifier. */
+  /** Stable vendor-scoped type ID; older responses and unresolved legacy restrictions omit it. */
+  resourceTypeId?: string;
+  /** URL matching pattern, or the retained unmatched pattern of a legacy restriction. */
   urlPattern: string;
   title: string;
   description: string;
@@ -1831,11 +1835,11 @@ export interface AdminApi {
   setRestrictedWebFetchApprovals(enabled: boolean): Promise<void>;
 
   /**
-   * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
+   * Enable or disable a single gatekeeper resource type, keyed by vendor ID + stable resource type ID.
    * Soft enforcement: disabling hides the resource from the connect UI, the resource picker, and the
    * agent; it doesn't revoke a capability a gadget already holds.
    */
-  setResourceEnabled(vendorId: string, urlPattern: string, enabled: boolean): Promise<void>;
+  setResourceEnabled(vendorId: string, resourceTypeId: string, enabled: boolean): Promise<void>;
 
   /**
    * Set a gatekeeper's availability. For an auto-provisioning ("ambient") gatekeeper, `mode` is the
@@ -2732,7 +2736,8 @@ const SUGGESTED_MODEL_CATALOG = {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
     "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
     "claude-haiku-5-5": {name: "Claude Haiku 5.5", contextWindow: 1000000},
-    "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
+    "claude-fable-5-2": {name: "Claude Fable 5.2", contextWindow: 1000000},
+    "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000, hidden: true},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000, hidden: true},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000, hidden: true},
     "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000, hidden: true},
@@ -3030,15 +3035,55 @@ export type UiBundle = {
 //  url: string;
 
   /**
-   * Returns the raw JS code to execute in the Gadget iframe.
+   * A legacy UI's `client.js`: one module, which has no default export and imports only `data:`
+   * URLs. The page runs it with the `gadget` stub, `RpcTarget` and `RpcStub` as globals.
    * TODO: For now we just return the code but we should switch to serving over HTTP as described
    *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
    *   Cache API in the browser? Or some other local storage?
    */
   jsCode: string;
+} | {
+  /**
+   * `client.js`, the UI's entry, then every other module it reaches through its imports, each
+   * with its relative imports rewritten to the internal keys the page's import map resolves (see
+   * `ui-page.ts`). Anyone who can use the gadget receives these, so nothing only `server.js`
+   * imports is ever included.
+   *
+   * The page starts the UI by calling `main(gadget, host)` on `client.js`'s default export, where
+   * `host` is a `GadgetHost`, and sets no globals: the `gadget` stub reaches only code `main()`
+   * passes it to, and the modules import `RpcTarget` and `RpcStub` from "capnweb", which the page
+   * maps to the Cap'n Web its RPC session uses.
+   *
+   * That keeps the stub from code that isn't handed it, not from code trying to get it: the
+   * modules share one realm, where one can intercept what another passes around. Nor is the
+   * page's connection to the server reserved for its runtime. Any module can post the iframe's
+   * RPC handshake to the Workshop, and in a browser-mode export any module can replace the
+   * globals the export's RPC session runs through.
+   */
+  modules: UiModule[];
+};
 
-  // Other metadata could be placed here in the future, e.g. to specify what version of support
-  // libraries should be loaded.
+/**
+ * What the page running a gadget's UI offers it besides the gadget's server: the second argument
+ * of `main(gadget, host)` (see `UiBundle.modules`). The Workshop implements it for the live view,
+ * and browser-mode export implements it too, so each method also says what it does during an
+ * export, where there is no Workshop UI.
+ *
+ * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
+ * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
+ * proxies through the frame.
+ *
+ * It has no methods yet.
+ */
+export interface GadgetHost {}
+
+/** One module of a Gadget UI. */
+export type UiModule = {
+  /** The module's path in the gadget's file tree, with no `.` or `..` segments. */
+  path: string;
+
+  /** The module's code, with its relative imports rewritten. */
+  code: string;
 };
 
 /**
@@ -3090,18 +3135,18 @@ export type TreeNode =
 /**
  * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` carries
  * the file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
- * directory); `unreadable` means the entry exists but cannot be presented as text -- a symlink,
- * a submodule, or binary content (never a matter of size) -- and carries a descriptive,
- * path-flavored message suitable for display in place of the file.
+ * directory); `unreadable` means the entry exists but is not a regular file -- a symlink or a
+ * submodule -- and carries a descriptive, path-flavored message suitable for display in place
+ * of the file.
  *
- * `stream` is how a regular file over MAX_BUFFERED_BLOB_SIZE arrives instead of `text`: its raw
- * bytes, `byteLength` of them, as a stream. The server has not checked that they are text, so
- * the caller applies the same rules it would have (no NUL byte, valid UTF-8). The caller must
- * consume or cancel every stream it receives.
+ * `blob` names a regular file by its git blob instead of carrying its content: the caller reads
+ * the bytes with Overseer.readBlob(). It is how content that is not text arrives (a NUL byte, or
+ * invalid UTF-8), and how every file over MAX_BUFFERED_BLOB_SIZE arrives. The server has not
+ * checked that a file over that size is text, so the caller applies the same rules to its bytes.
  */
 export type FileAtCommit =
   | { kind: "text"; text: string }
-  | { kind: "stream"; byteLength: number; content: ReadableStream<Uint8Array> }
+  | { kind: "blob"; blob: BytesRef }
   | { kind: "absent" }
   | { kind: "unreadable"; message: string };
 
@@ -3115,8 +3160,8 @@ export const MAX_READ_FILES_PER_CALL = 64;
  * Text bytes after which Overseer.readFilesAtCommit() stops decoding and omits the remaining
  * requested paths from its response (the client re-requests them). Keeps one response well
  * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
- * file is always returned whole, however large, so every call makes progress. A `stream` entry's
- * bytes travel outside the response message, so they do not count toward this budget.
+ * file is always returned whole, however large, so every call makes progress. A `blob` entry
+ * carries no content, so it does not count toward this budget.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 
@@ -3141,6 +3186,12 @@ export type ActionLogEntry = {
    * source (e.g. webFetch tool).
    */
   gatekeeperId?: WorkpieceId;
+
+  /**
+   * The chat this entry was made from: the chat whose agent made it, or whose slash command or
+   * gadget code did. Absent for a hook firing and for gadget code running outside any chat.
+   */
+  chatId?: number;
 
   resourceTitle: string;
   resourceUrl?: string;
@@ -3382,8 +3433,9 @@ export interface Overseer extends RpcTarget {
    * the workspace's git store are pulled in one batch through the gatekeeper that provided the
    * commit; a pull failure fails the whole call, since it is transient or actionable rather than
    * a fact about any one file, whereas per-file conditions -- absent path, symlink, submodule,
-   * binary content -- are reported per entry (see FileAtCommit). A file of any size is read: one
-   * over MAX_BUFFERED_BLOB_SIZE (see `@gadgets/workshop-shared/gatekeeper`) as a `stream` entry.
+   * binary content -- are reported per entry (see FileAtCommit). No file is refused for its size:
+   * one over MAX_BUFFERED_BLOB_SIZE (see `@gadgets/workshop-shared/gatekeeper`) comes back as a
+   * `blob` entry, to read with readBlob().
    *
    * At most MAX_READ_FILES_PER_CALL paths per call. The server stops decoding once the
    * accumulated text exceeds READ_FILES_RESPONSE_BUDGET and omits the remaining paths from the
@@ -3772,6 +3824,13 @@ export interface Overseer extends RpcTarget {
       : Promise<GitOid>;
 
   /**
+   * Read a blob in this workspace's Git store, such as one a `blob` FileAtCommit or a chat's
+   * `setBytes` change names: the counterpart of uploadBlob(). Like readFilesAtCommit(), the read
+   * pulls a blob missing from the store through the gatekeeper that provided it.
+   */
+  readBlob(oid: GitOid): Promise<ReadableStream<Uint8Array>>;
+
+  /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
    * present in the message's ChatAttachmentRef. Images are inlined there, so this is normally used
    * only to download non-image attachments on demand.
@@ -4059,10 +4118,16 @@ export interface Overseer extends RpcTarget {
    * Anyone who redeems the link receives `grant`. The caller must be the owner or a "build"
    * collaborator.
    *
+   * With `default`, the link is the caller's *default* link for `grant`: each sharer has at
+   * most one live default link per grant, which the share dialog presents apart from the named
+   * links. If the caller already has one, this mints another key for it (as `newShareLinkKey`
+   * does) instead of creating a second, and returns that link's id. Otherwise it behaves as any
+   * other link, and revoking it leaves the caller with none until they create another.
+   *
    * A signed-in user redeems the key by passing it as `shareKey` to
    * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
    */
-  createShareLink(grant: CollaboratorGrant, note?: string)
+  createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }>;
 
   /**
@@ -4134,6 +4199,21 @@ export type AiChatMetadata = {
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
+
+  /**
+   * If this was started from an agent spawner, the spawner's id. `spawnerName` is the spawner's
+   * name when the chat started, so one spawner's runs can carry different names and two
+   * spawners' runs the same one; this tells them apart. Absent on chats spawned before it was
+   * recorded.
+   */
+  spawnerId?: WorkpieceId;
+
+  /**
+   * Present while the agent's turn is stopped on a decision only a user can make: an action it
+   * asked to wait for, a connection request, or a restricted web fetch, still pending. Derived
+   * server-side from the chat's log and delivered on metadata updates; never submitted by clients.
+   */
+  awaitingDecision?: true;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
@@ -4217,9 +4297,9 @@ export type ChatCodeBase = {
    * but the content carries over -- `prior` describes the closed stream, and in-flight
    * submissions are transformed onto the new generation (see submitCodeChange()). **Destructive**
    * (a revert, draft discard, or agent turn abort erased already-applied changes, or
-   * updateChatFromMainline() re-rooted pins): content other clients may have transformed against
-   * is gone, so they must discard local state and rebuild. Pin additions do *not* bump -- they
-   * only append changes.
+   * updateChatFromMainline() or an agent step re-rooted pins): content other clients may have
+   * transformed against is gone, so they must discard local state and rebuild. Pin additions do
+   * *not* bump -- they only append changes.
    */
   generation: number;
 
@@ -4327,6 +4407,10 @@ export type ChatGadgetPinState = ChatGadgetPin & {
    * that was merged; accepting then fast-forwards the head from here through the merge commit
    * (see Overseer.mergeChanges()). A revert puts back what the earliest update it covers
    * records the pin had before (see AiChatMessageBody.mainlineMerge).
+   *
+   * A worktree's is always its accepted commit (WorktreeSummary.pinBase). An agent step can
+   * re-root a worktree's pin at a commit of its own, holding the result of a command it ran
+   * there, which then differs from this; accepting commits the chat's content on this commit.
    */
   mergedCommit: string;
 };
@@ -4895,6 +4979,9 @@ export type AiChatMessageBody = {
    */
   resourceUrlPattern?: string;
 
+  /** Stable vendor-scoped type ID. Authoritative over the legacy pattern when present. */
+  resourceTypeId?: string;
+
   /** Why the agent wants this connection. Shown to the user to inform their decision. */
   reason: string;
 
@@ -5291,6 +5378,8 @@ export type AiToolCall = {
   toolName: "requestConnection";
   input: {
     vendorId: string;
+    /** Stable type ID from listConnectableResources; omitting it retains URL-based selection. */
+    resourceTypeId?: string;
     resourceUrl?: string;
     reason: string;
 
@@ -5312,11 +5401,21 @@ export type AiToolCall = {
   input: {
     vendorId: string;
 
-    /** `urlPattern` of the creatable resource type. */
-    resourceUrlPattern: string;
+    /** Stable ID of the creatable resource type, from listConnectableResources. */
+    resourceTypeId?: string;
+
+    /** Legacy persisted tool calls used the type's exact URL pattern instead. */
+    resourceUrlPattern?: string;
 
     /** Title of the new resource, e.g. a document's title. */
     title: string;
+
+    /**
+     * A configuration to suggest, for a type that describes one (see
+     * `SupportedResource.creationConfigurationDescription`): the approver's configurator opens on
+     * it, and they may choose otherwise. Refused for any other type.
+     */
+    configuration?: string;
 
     /** Name under which the resource appears in the chat's env (see validateBindingName()). */
     bindingName: string;
@@ -5894,7 +5993,8 @@ export type ApplyBlueprintResult = {
  * The WorkpieceSummary of a worktree: a checkout of an external git repository that an agent
  * works in (see AiChatMessageBody.createdWorktrees). It has no app and no bindings; the UI shows
  * only its code. Its three commits are the worktree's state as the chat sees it; the OT rows of
- * the chat's current epoch compose on `pinBase`.
+ * the chat's current epoch compose on the chat pin's `baseCommit`, which is `pinBase` unless an
+ * agent step re-rooted the pin (see ChatGadgetPinState.mergedCommit).
  */
 export type WorktreeSummary = {
   id: WorkpieceId;
@@ -5997,7 +6097,11 @@ export type GatekeeperCreationSpec = {
   type: "gatekeeper";
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
   resourceUrl?: string;    // absent until a resource created by createExternalResource exists
-  typeUrlPattern: string;  // URL pattern from the vendor's SupportedResource (not the specific URL)
+  /** Stable vendor-scoped type ID, absent on records created before stable IDs. */
+  resourceTypeId?: string;
+  typeUrlPattern: string;  // Matching/prefill snapshot and exact-match fallback for legacy records.
+  /** The configuration createExternalResource suggested (see its `configuration`). */
+  configuration?: string;
 } | {
   type: "aiModel";
   modelId: string;         // the user's configured model ID
@@ -6095,7 +6199,10 @@ export type BlueprintBinding = {
    */
   gatekeeperName: string;
 
-  /** URL pattern describing the type of resource this binding accepts. */
+  /** Stable vendor-scoped type ID. Authoritative when present, including after pattern changes. */
+  resourceTypeId?: string;
+
+  /** Matching hint; legacy bindings without an ID resolve only by exact current pattern. */
   typeUrlPattern: string;
 
   /** The specific resource URL from the source gadget (suggestion only). */
@@ -6331,7 +6438,8 @@ export interface GadgetClient extends WorkpieceClient {
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
    *
    * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
-   * agent with no code).
+   * agent with no code). Throws, naming the file and line, when the UI's imports break the rules
+   * for UI code.
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
@@ -6613,4 +6721,7 @@ export type ShareLinkInfo = {
    * be created, but it can still be copied and redeemed.
    */
   gadgets?: {id: WorkpieceId; title: string}[];
+
+  /** Whether this is its creator's default link for what it grants (see `createShareLink`). */
+  default?: true;
 };

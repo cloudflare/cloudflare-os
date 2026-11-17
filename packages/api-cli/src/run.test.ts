@@ -699,7 +699,7 @@ test("an --answer read from stdin shares the one stdin with the arguments", asyn
   const stdin = { ...noFiles, readStdin: async () => new TextEncoder().encode("[]") };
   const invocation = parseInvocation(realTable, ["open-workspace", "g", "get-metadata", "--answer", "ObserverConfigCallback.configure=-"]);
   assert.deepEqual((await decodeCalls(realTable, invocation, stdin)).answers.get("ObserverConfigCallback.configure"), []);
-  const both = parseInvocation(realTable, ["connect-account", "google", "--resource-url-patterns", "-", "--answer", "ObserverConfigCallback.configure=-"]);
+  const both = parseInvocation(realTable, ["connect-account", "google", "--resource-type-ids", "-", "--answer", "ObserverConfigCallback.configure=-"]);
   await assert.rejects(decodeCalls(realTable, both, stdin), (error: Error) =>
     error instanceof UsageError && error.message === "Only one argument can read stdin (-).");
 });

@@ -1579,7 +1579,7 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     expect(t.pulls).toHaveLength(2);
   });
 
-  it("reports binary content per file, and streams a large file's bytes", async () => {
+  it("names binary content and a large file by their blobs", async () => {
     let t = makeCache();
     let huge = new Uint8Array(9_000_000).fill(0x61);
     let hugeOid = gitObjectOid("blob", huge);
@@ -1604,17 +1604,12 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let commit = await t.cache.putFromGatekeeper(G1, "commit", commitPayload(tree, [], "mixed"));
     t.pulls.length = 0;
 
-    // Last, as the response budget stops at it.
-    let result = await t.cache.readFilesAtCommit(commit, ["text.txt", "binary.png", "huge.txt"]);
-    expect(result.slice(0, 2)).toStrictEqual([
+    expect(await t.cache.readFilesAtCommit(commit, ["text.txt", "binary.png", "huge.txt"]))
+        .toStrictEqual([
       ["text.txt", { kind: "text", text: "hello\n" }],
-      ["binary.png", { kind: "unreadable", message: "binary.png is not a text file" }],
+      ["binary.png", { kind: "blob", blob: { oid: binaryOid, byteLength: binary.byteLength } }],
+      ["huge.txt", { kind: "blob", blob: { oid: hugeOid, byteLength: huge.byteLength } }],
     ]);
-    let [path, file] = result[2];
-    expect(path).toBe("huge.txt");
-    if (file.kind !== "stream") throw new Error(`expected a stream, got ${file.kind}`);
-    expect(file.byteLength).toBe(huge.byteLength);
-    expect(sameBytes(await contentBytes(file.content), huge)).toBe(true);
     // One batch, no retry round trip.
     expect(t.pulls).toHaveLength(1);
     expect([...t.pulls[0].oids].toSorted())
@@ -1644,16 +1639,16 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     expect(t.pulls).toHaveLength(0);
   });
 
-  it("streams a file just over MAX_BUFFERED_BLOB_SIZE, outside the response budget",
+  it("names a file just over MAX_BUFFERED_BLOB_SIZE by its blob, outside the response budget",
       async () => {
     let t = makeCache();
     let exact = new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x62);
+    // Text, but over the limit, so it is not decoded.
     let over = new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x63);
-    over[0] = 0;  // not text, but streams carry bytes unchecked
     let exactOid = await storeLocal(t.storage, { type: "blob", payload: exact });
     let overOid = await storeLocal(t.storage, { type: "blob", payload: over });
     // Eight buffered files fill the budget exactly, so a ninth would be the last one answered;
-    // the streamed ones in between do not count.
+    // the named ones in between do not count.
     let entries = [
       ...Array.from({ length: 8 }, (_, i) => ({ mode: "100644" as const, name: `a${i}`, oid: exactOid })),
       ...Array.from({ length: 4 }, (_, i) => ({ mode: "100644" as const, name: `b${i}`, oid: overOid })),
@@ -1667,13 +1662,11 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let result = await t.cache.readFilesAtCommit(commit, names);
     expect(result.map(([path, file]) => [path, file.kind])).toStrictEqual([
       ...names.slice(0, 8).map(name => [name, "text"]),
-      ...names.slice(8, 12).map(name => [name, "stream"]),
+      ...names.slice(8, 12).map(name => [name, "blob"]),
       ["c", "text"],
     ]);
     for (let [, file] of result.slice(8, 12)) {
-      if (file.kind !== "stream") throw new Error("expected a stream");
-      expect(file.byteLength).toBe(over.length);
-      expect(sameBytes(await contentBytes(file.content), over)).toBe(true);
+      expect(file).toStrictEqual({ kind: "blob", blob: { oid: overOid, byteLength: over.length } });
     }
   });
 
@@ -2020,9 +2013,8 @@ describe("chunked blob storage", () => {
     let commit = await commitWithFile(t, "big.txt", oid);
     expect(await t.cache.readFileAtCommit(commit, "big.txt")).toBe(text);
     expect(await t.cache.readTextBlob(oid, undefined, "big.txt")).toBe(text);
-    let [[, file]] = await t.cache.readFilesAtCommit(commit, ["big.txt"]);
-    if (file.kind !== "stream") throw new Error(`expected a stream, got ${file.kind}`);
-    expect(sameBytes(await contentBytes(file.content), data)).toBe(true);
+    expect(await t.cache.readFilesAtCommit(commit, ["big.txt"]))
+        .toStrictEqual([["big.txt", { kind: "blob", blob: { oid, byteLength: data.length } }]]);
     expect(await t.cache.fileBytesAtCommit(commit, "big.txt"))
         .toEqual({ oid, byteLength: data.length });
     expect(t.pulls).toHaveLength(0);

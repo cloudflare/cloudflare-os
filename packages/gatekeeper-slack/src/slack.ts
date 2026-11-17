@@ -6,6 +6,7 @@ import {
   AccountDescription, SupportedResource, ResourceConfiguratorFrame, ActionKind, Cursor,
   GatekeeperUserVerifier, ObservationDescription,
   stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
+  requestedResourceUrlPatterns, resourceTypeUrlPattern, getGrantedResourceTypeIds,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -115,6 +116,7 @@ const IDENTITY_SCOPES = ["users:read"];
 
 // `https://*` denotes account-wide access; the configurator resolves the concrete workspace URL.
 const WORKSPACE_RESOURCE: SupportedResource = {
+  id: "workspace",
   urlPattern: "https://*",
   title: "Slack Workspace",
   description:
@@ -124,6 +126,7 @@ const WORKSPACE_RESOURCE: SupportedResource = {
 };
 
 const CONVERSATION_RESOURCE: SupportedResource = {
+  id: "conversation",
   urlPattern: "https://app.slack.com/client/:teamId/:conversationId",
   title: "Slack Conversation",
   description: "Read a single channel, direct message, or group DM.",
@@ -131,6 +134,7 @@ const CONVERSATION_RESOURCE: SupportedResource = {
 };
 
 const THREAD_RESOURCE: SupportedResource = {
+  id: "thread",
   urlPattern: "https://*.slack.com/archives/:conversationId/:messageId",
   title: "Slack Thread",
   description: "Read a single message thread and its replies.",
@@ -313,7 +317,8 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
                        options?: GatekeeperConnectOptions): Promise<{ url: string }> {
     let userObjectId = this.ctx.exports.UserAccount.newUniqueId();
     let initiationNonce = generateNonce();
-    let requestedScopes = resourceUrlPatternsToScopes(options?.resourceUrlPatterns);
+    let requestedScopes = resourceUrlPatternsToScopes(
+        requestedResourceUrlPatterns(options, SUPPORTED_RESOURCES));
     await this.ctx.exports.UserAccount.get(userObjectId)
         .setCallback(callback, initiationNonce, requestedScopes);
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
@@ -775,6 +780,7 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     let description = await this.#api().getAccountDescription(
         await userIdPromise, installation);
     description.grantedResourceUrlPatterns = await grantedPromise;
+    description.grantedResourceTypeIds = getGrantedResourceTypeIds(description, SUPPORTED_RESOURCES);
     return description;
   }
 
@@ -844,6 +850,7 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     if (resourceUrlPattern === WORKSPACE_RESOURCE.urlPattern) {
       return {
         iframeHtml: WORKSPACE_CONFIGURATOR_HTML,
@@ -877,7 +884,8 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     await this.#account().commitReconnect(stageId);
   }
 
-  async ensureResources(resourceUrlPatterns: string[]): Promise<{ url?: string }> {
+  async ensureResources(resourceTypeIds: string[]): Promise<{ url?: string }> {
+    let resourceUrlPatterns = resourceTypeIds.map(id => resourceTypeUrlPattern(SUPPORTED_RESOURCES, id));
     let account = this.#account();
     let granted = new Set(await account.getGrantedResourceUrlPatterns());
     if (resourceUrlPatterns.every(pattern => granted.has(pattern))) return {};

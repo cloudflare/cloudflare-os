@@ -130,7 +130,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
   await ws.deleteSelf();
 });
 
-it.concurrent("streams a large blob upload, verifying its declared length", async () => {
+it.concurrent("streams a large blob upload, verifying its declared length, and back", async () => {
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, username());
   using ws = await authenticated.newWorkspace();
@@ -154,6 +154,8 @@ it.concurrent("streams a large blob upload, verifying its declared length", asyn
   expect(oid).toBe(createHash("sha1")
     .update(`blob ${content.length}\0`).update(content).digest("hex"));
   expect(await ws.uploadBlob(content)).toBe(oid);
+  const read = new Uint8Array(await new Response(await ws.readBlob(oid)).arrayBuffer());
+  expect(Buffer.from(read).equals(content)).toBe(true);
 
   await expect(ws.uploadBlob({stream: streamOf(content), byteLength: content.length + 1}))
     .rejects.toThrow("smaller than its declared size");

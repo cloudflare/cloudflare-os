@@ -111,6 +111,19 @@ export class FixtureQueue extends RpcTarget {
   async getGitCache(): Promise<GitCache> {
     return new FixtureGitCache() as unknown as GitCache;
   }
+
+  /** The session never ends in this test. */
+  async requireLive(): Promise<void> {}
+
+  /** A handle whose watch never fires, since the session never ends. */
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  /** No code execution opened this session. */
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 /** Actions this gatekeeper can be asked to take. */

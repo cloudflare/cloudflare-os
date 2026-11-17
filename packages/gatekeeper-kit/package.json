@@ -23,6 +23,7 @@
     "./git-objects": "./src/git-objects.ts",
     "./git-pull-transfer": "./src/git-pull-transfer.ts",
     "./git-transport": "./src/git-transport.ts",
+    "./git-upload-pack": "./src/git-upload-pack.ts",
     "./hook-delivery-queue": "./src/hook-delivery-queue.ts",
     "./hook-registry": "./src/hook-registry.ts",
     "./http-errors": "./src/http-errors.ts",
@@ -44,7 +45,7 @@
     "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "diff": "catalog:",
-    "jose": "^6.2.13"
+    "jose": "^6.2.16"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "catalog:",

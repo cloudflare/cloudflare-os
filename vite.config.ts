@@ -149,11 +149,16 @@ export default defineConfig({
       {
         // `type-bundle.ts` strips exactly these imports before concatenating the imported
         // declarations into the same agent bundle, so they do resolve for the agent.
-        files: ['packages/gatekeeper-google/src/{docs,drive,sheets,slides}-types.d.ts'],
+        files: ['packages/gatekeeper-google/src/{docs,drive,drive-read,sheets,slides}-types.d.ts'],
         rules: {
           'gadgets/self-contained-agent-types': [
             'error',
-            { allow: ['./docs-read-types', './sheets-read-types', './slides-read-types'] },
+            {
+              allow: [
+                './comment-types', './docs-read-types', './docs-types', './drive-read-types',
+                './sheets-read-types', './sheets-types', './slides-read-types', './slides-types',
+              ],
+            },
           ],
         },
       },

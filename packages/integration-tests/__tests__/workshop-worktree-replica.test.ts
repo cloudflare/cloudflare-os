@@ -1,0 +1,88 @@
+import {afterAll, beforeAll, expect, it} from "vitest";
+import {loadAllChatHistory} from "../src/agent-session.js";
+import {startHarness, TEST_GATEKEEPER_BINDING, TEST_GATEKEEPER_DIR, TEST_VENDOR_ID,
+  type Harness} from "../src/harness.js";
+import {SCRIPTED_MODEL_ID, scriptedModelRouter} from "../src/mock-model.js";
+import {NetworkInterceptor} from "../src/network-interceptor.js";
+import {connect, nextUsernames, signUp, stubFor, waitFor, waitForIdleChat,
+  WorkpieceRecorder} from "../src/rpc-client.js";
+
+let harness: Harness;
+const models = scriptedModelRouter();
+const network = new NetworkInterceptor({handlers: [models.handler]});
+
+beforeAll(async () => {
+  network.install();
+  harness = await startHarness({
+    gatekeepers: [{binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR}],
+    enableGadgetExecution: true,
+  });
+});
+afterAll(async () => {
+  try {
+    await harness?.server.close();
+    expect(network.getUnmockedCalls()).toEqual([]);
+  } finally { network.uninstall(); }
+});
+
+it("passes a worktree from code mode to a gatekeeper, which fetches its commits with Git and later runs a command in it", async () => {
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, nextUsernames("replica")[0]!);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  using ws = await api.newWorkspace();
+  const workpieces = new WorkpieceRecorder();
+  using subscriber = stubFor(workpieces);
+  using _subscription = await ws.subscribeToWorkpieces(subscriber);
+  await workpieces.loaded;
+  using seed = ws.createGadget("Seed", undefined, "SEED");
+  const seedId = await seed.getId();
+  const baseCommit = await waitFor("the seed commit", async () => {
+    const summary = workpieces.summaries.get(seedId);
+    return summary?.type === "gadget" ? summary.commitId ?? null : null;
+  });
+  const model = models.script([
+    {toolCall: {id: "create", name: "createWorktree", arguments: {
+      title: "Repo", bindingName: "REPO", commitId: baseCommit,
+    }}},
+    {toolCall: {id: "mount", name: "executeCode", arguments: {code: `
+      export default async function(self, env) {
+        console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
+      }`}}},
+    // The new head is fetchable within the step that committed it, before the step is saved.
+    {toolCall: {id: "commit", name: "executeCode", arguments: {code: `
+      export default async function(self, env) {
+        await env.REPO.writeFile("committed.txt", "committed");
+        console.log("commit " + await env.REPO.commit("Commit a file"));
+        console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
+      }`}}},
+    {toolCall: {id: "fetch", name: "executeCode", arguments: {code: `
+      export default async function(self, env) {
+        console.log(await env.TEST_AMBIENT.mountWorktree(env.REPO));
+      }`}}},
+    // A later execution, which passes no worktree: the gatekeeper uses the one it kept.
+    {toolCall: {id: "command", name: "executeCode", arguments: {code: `
+      export default async function(self, env) {
+        console.log(await env.TEST_AMBIENT.runCommand("formatted.txt", "formatted\\n"));
+      }`}}},
+    {toolCall: {id: "read", name: "readFile", arguments: {workpiece: "REPO", filename: "formatted.txt"}}},
+    {text: "Done."},
+  ]);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  const chatId = await ws.newChat("Mount the worktree and fetch its commits.", SCRIPTED_MODEL_ID);
+  await waitFor("the model's final request", async () => model.requests.length === 7 || null);
+  await waitForIdleChat(ws, chatId);
+  const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  const outputs = history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
+    .filter(call => call.toolName === "executeCode").map(call => call.output);
+  const commit = /commit ([0-9a-f]{40})/.exec(outputs[1] ?? "")?.[1];
+  expect(commit).toBeDefined();
+  expect(outputs).toEqual([expect.stringContaining(`worktree pack received for ${baseCommit}`),
+    expect.stringContaining(`worktree pack received for ${commit}`),
+    expect.stringContaining(`worktree pack received for ${commit}`),
+    expect.stringContaining("submitted formatted.txt")]);
+  // The model, in its next step, read the command's file.
+  const read = (model.requests[6] as {messages: {role: string; tool_call_id?: string; content?: string}[]})
+    .messages.find(message => message.role === "tool" && message.tool_call_id === "read");
+  expect(read?.content).toContain("formatted");
+  expect(model.remainingSteps()).toBe(0);
+});

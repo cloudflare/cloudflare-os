@@ -8,7 +8,10 @@ import { makeOverseer, makeTestRoot } from "./action-test-harness";
 import ChatInterface from "./ChatInterface";
 
 const mock = vi.hoisted(() => ({unread: null as ReturnType<typeof useUnreadState>}));
-vi.mock("./features/notifications/UnreadStateBridge", () => ({useUnreadState: () => mock.unread}));
+vi.mock("./features/notifications/UnreadStateBridge", async importOriginal => ({
+  ...await importOriginal<typeof import("./features/notifications/UnreadStateBridge")>(),
+  useUnreadState: () => mock.unread,
+}));
 vi.mock("./AuthContext", () => ({
   useAuthenticatedApi: () => ({currentUser: null}),
   useOptionalAuthenticatedApi: () => null,

@@ -42,6 +42,7 @@ import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
+import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
 import WorkpiecePicker, {
@@ -478,7 +479,7 @@ export default function GadgetEditor() {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
   const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
@@ -669,7 +670,9 @@ export default function GadgetEditor() {
 
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
-  const [autoApproveReloadTrigger, setAutoApproveReloadTrigger] = useState(0)
+  // Shared by the chat and the Activity rule list, which can each change a rule the other is
+  // reading.
+  const autoApproval = useAutoApprovalChannel()
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
@@ -692,7 +695,9 @@ export default function GadgetEditor() {
   const [chatCount, setChatCount] = useState<number | null>(null)
   const [hasChatZero, setHasChatZero] = useState(false)
   const [_hasBindings, setHasBindings] = useState(false)
-  const [isAgentActive, setIsAgentActive] = useState(false)
+  const [agentActivity, setAgentActivity] = useState<{chatId: number | null; active: boolean}>({
+    chatId: null, active: false,
+  })
   // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
   const [anyChatProposedWorkpieces, setAnyChatProposedWorkpieces] =
     useState<readonly WorkpieceId[]>([])
@@ -734,6 +739,8 @@ export default function GadgetEditor() {
   const pinInitialChatSelection =
     singleInitialChat && !hasCommittedCode && !userNavigatedToList
   const effectiveSelectedChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
+  const isViewActive = agentActivity.chatId === effectiveSelectedChatId && agentActivity.active
+  const isAgentActive = effectiveSelectedChatId !== null && isViewActive
 
   // ── workpiece selection ──────────────────────────────────────────────────────
 
@@ -1122,9 +1129,13 @@ export default function GadgetEditor() {
     if (showsNoUi) showCodeIfNoUi()
   }, [showCodeIfNoUi])
 
-  const handleAgentActiveChange = useCallback((chatId: number, isActive: boolean) => {
+  const handleAgentActiveChange = useCallback((chatId: number | null, isActive: boolean) => {
     if (chatId !== selectedChatIdRef.current) return
-    setIsAgentActive(isActive)
+    setAgentActivity({chatId, active: isActive})
+    if (chatId === null) {
+      turnOutputRef.current = null
+      return
+    }
     if (isActive) {
       turnOutputRef.current = {
         chatId,
@@ -1997,8 +2008,10 @@ export default function GadgetEditor() {
       {/* ═══ BODY ═════════════════════════════════════════════════════════════ */}
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
 
-        {isAgentActive && (
+        {isViewActive && (
           <div
+            role="progressbar"
+            aria-label="Agent working"
             className="absolute left-0 z-10 h-0 max-md:!right-0 max-md:!top-0"
             style={{ top: simpleMode ? 0 : TABBAR_H, right: outputRailWidth }}
           >
@@ -2048,7 +2061,8 @@ export default function GadgetEditor() {
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
+                  autoApproval={autoApproval}
+                  onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
@@ -2215,8 +2229,7 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
-                  autoApproveReloadTrigger={autoApproveReloadTrigger}
+                  autoApproval={autoApproval}
                 />
               </div>
             )}
@@ -2383,6 +2396,8 @@ export default function GadgetEditor() {
               }}
               overseer={overseer.stub}
               publicApi={publicApi}
+              authenticatedApi={authenticatedApi}
+              userId={isCurrentUserConfirmed ? currentUser?.id : undefined}
               onClose={() => setBlueprintUpdateDialogOpen(false)}
               onProposed={chatId => {
                 setBlueprintUpdateDialogOpen(false)

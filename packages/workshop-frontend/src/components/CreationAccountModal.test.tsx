@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
-  ConnectedAccountsSubscriber, ConnectFlowStart, CreationApproval, Overseer,
+  ConnectedAccountsFilter, ConnectedAccountsSubscriber, ConnectFlowStart, CreationApproval, Overseer,
 } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
@@ -24,6 +24,8 @@ const testState = vi.hoisted(() => ({
   // The mounted configurator's access-request handler, and how many configurators have mounted.
   ensureResources: null as ((patterns: string[]) => Promise<boolean>) | null,
   mounts: 0,
+  // What the mounted configurator was opened on.
+  initialResource: null as { initialResourceUrl?: string; resourceUrlPattern?: string } | null,
 }))
 
 const { openConnectWindow } = vi.hoisted(() => ({
@@ -74,12 +76,18 @@ vi.mock('../ResourceConfiguratorHost', async () => {
     return null
   }
 
-  const ResourceConfiguratorHost = ({ frame, frameKey, loading, error, ...callbacks }: Callbacks & {
+  const ResourceConfiguratorHost = ({ frame, frameKey, loading, error, initialResourceUrl,
+    resourceUrlPattern, ...callbacks }: Callbacks & {
     frame: Frame | null
     frameKey: number | null
     loading: boolean
     error: string | null
+    initialResourceUrl?: string
+    resourceUrlPattern?: string
   }) => {
+    useEffect(() => {
+      if (frame) testState.initialResource = { initialResourceUrl, resourceUrlPattern }
+    }, [frame, initialResourceUrl, resourceUrlPattern])
     if (loading) return null
     if (error) return <p>{error}</p>
     if (!frame) return null
@@ -110,6 +118,8 @@ let starts: Start[] = []
 
 const ensureAccountResources =
   vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>()
+const connectAccount = vi.fn<(vendorId: string, patterns?: string[]) => Promise<ConnectFlowStart>>()
+const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>()
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
@@ -126,11 +136,16 @@ afterEach(() => {
   testState.subscriber = null
   testState.ensureResources = null
   testState.mounts = 0
+  testState.initialResource = null
   ensureAccountResources.mockReset()
+  connectAccount.mockReset()
+  provisionAmbientAccount.mockReset()
   openConnectWindow.mockReset()
 })
 
-async function renderModal() {
+async function renderModal(configuration?: string, {
+  autoProvisionsAccount = false, forcedAccount = false, resourceTypeId,
+}: { autoProvisionsAccount?: boolean; forcedAccount?: boolean; resourceTypeId?: string } = {}) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
     const frame = deferred<object>()
@@ -140,25 +155,30 @@ async function renderModal() {
   testState.authenticatedApi = {
     listGatekeeperVendors: async () => [{
       id: 'google',
-      description: { displayName: 'Google' },
-      supportedResources: [{ urlPattern: PATTERN, connectable: false, creatable: true,
-        creationConfigurator: true }],
+      description: { displayName: 'Google', autoProvisionsAccount },
+      supportedResources: [{ id: 'document', urlPattern: PATTERN, connectable: false, creatable: true,
+        creationConfigurator: !autoProvisionsAccount }],
     }],
-    subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+    subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber, filter?: ConnectedAccountsFilter) => {
       testState.subscriber = subscriber
-      subscriber.add(5, { uniqueName: 'work' } as AccountDescription, {} as VendorDescription, [],
-          true, 'google')
-      subscriber.add(6, { uniqueName: 'home' } as AccountDescription, {} as VendorDescription, [],
-          true, 'google')
+      if (!autoProvisionsAccount || (forcedAccount && filter?.includeForcedAutoProvisionedAccounts)) {
+        subscriber.add(5, { uniqueName: 'work' } as AccountDescription, {} as VendorDescription, [],
+            true, 'google')
+        subscriber.add(6, { uniqueName: 'home' } as AccountDescription, {} as VendorDescription, [],
+            true, 'google')
+      }
       subscriber.ready()
       return Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} })
     },
     startCreationConfigurator,
     ensureAccountResources,
+    connectAccount,
+    provisionAmbientAccount,
   }
   const overseer = {
     getGatekeeperById: async () => ({
-      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', typeUrlPattern: PATTERN }),
+      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', typeUrlPattern: PATTERN,
+        configuration, resourceTypeId }),
       [Symbol.dispose]: () => {},
     }),
   } as unknown as RpcStub<Overseer>
@@ -195,11 +215,80 @@ const accountButton = (name: string) => button(b => b.textContent?.startsWith(na
 const reportReady = () => act(() => testState.reportReady!(true))
 
 describe('CreationAccountModal', () => {
+  it('provisions an account without OAuth and lets the user approve the creation', async () => {
+    const { onChoose } = await renderModal(undefined, { autoProvisionsAccount: true })
+    expect(approveButton().disabled).toBe(true)
+    provisionAmbientAccount.mockImplementation(async () => {
+      await testState.subscriber!.add(9, { uniqueName: 'new account' } as AccountDescription,
+        {} as VendorDescription, [], true, 'google')
+    })
+
+    await act(async () => accountButton('Connect Google').click())
+
+    expect(provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('google')
+    expect(connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+    expect(approveButton().disabled).toBe(false)
+    expect(onChoose).not.toHaveBeenCalled()
+    await act(async () => approveButton().click())
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith({ accountId: 9 })
+  })
+
+  it('reports provisioning errors and lets the user retry without starting OAuth', async () => {
+    await renderModal(undefined, { autoProvisionsAccount: true })
+    provisionAmbientAccount.mockRejectedValueOnce(new Error('Service is disabled.'))
+    const connect = accountButton('Connect Google')
+
+    await act(async () => connect.click())
+
+    expect(testState.toasts).toEqual([
+      { title: 'Service is disabled.', variant: 'error' },
+    ])
+    expect(approveButton().disabled).toBe(true)
+    expect(connect.disabled).toBe(false)
+    await act(async () => connect.click())
+    expect(provisionAmbientAccount).toHaveBeenCalledTimes(2)
+    expect(connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+  })
+
+  it('still opens the account connection flow for an OAuth vendor', async () => {
+    const flow = { url: 'https://example.com/connect', nonce: 'test-nonce' }
+    connectAccount.mockResolvedValue(flow)
+    await renderModal()
+
+    await act(async () => accountButton('Use another Google account').click())
+
+    expect(connectAccount).toHaveBeenCalledExactlyOnceWith('google', undefined)
+    expect(openConnectWindow).toHaveBeenCalledExactlyOnceWith(flow, testState.authenticatedApi)
+    expect(provisionAmbientAccount).not.toHaveBeenCalled()
+  })
+
+  it('lets the user approve with an account already provisioned by the deployment', async () => {
+    const { onChoose } = await renderModal(undefined,
+      { autoProvisionsAccount: true, forcedAccount: true })
+
+    expect(approveButton().disabled).toBe(false)
+    await act(async () => approveButton().click())
+
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith({ accountId: 5 })
+    expect(provisionAmbientAccount).not.toHaveBeenCalled()
+    expect(connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+  })
+
+  it('does not approve an unknown saved type even when its old pattern still matches', async () => {
+    const { startCreationConfigurator, onChoose, onCancel } = await renderModal(undefined, { resourceTypeId: 'retired' })
+    expect(onCancel).toHaveBeenCalledOnce()
+    expect(onChoose).not.toHaveBeenCalled()
+    expect(startCreationConfigurator).not.toHaveBeenCalled()
+  })
+
   it('approves with the configuration from the selected account\'s configurator', async () => {
     const { startCreationConfigurator, onChoose } = await renderModal()
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, 'document')
     await act(async () => accountButton('home').click())
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document')
     await resolveStart(0)
     await resolveStart(1)
     reportReady()
@@ -207,6 +296,20 @@ describe('CreationAccountModal', () => {
     await act(async () => approveButton().click())
 
     expect(onChoose).toHaveBeenCalledWith({ accountId: 6, configuration: 'settings from frame-6' })
+  })
+
+  it.each([undefined, 'document'])('opens the suggested configuration with type ID %s', async resourceTypeId => {
+    const suggested = 'https://drive.google.com/drive/folders/team'
+    await renderModal(suggested, { resourceTypeId })
+    await resolveStart(0)
+    expect(testState.initialResource)
+      .toEqual({ initialResourceUrl: suggested, resourceUrlPattern: PATTERN })
+
+    await act(async () => accountButton('home').click())
+    testState.initialResource = null
+    await resolveStart(1)
+    expect(testState.initialResource)
+      .toEqual({ initialResourceUrl: suggested, resourceUrlPattern: PATTERN })
   })
 
   it('enables Approve only once the selected account\'s configurator reports ready', async () => {
@@ -336,7 +439,7 @@ describe('CreationAccountModal configurator access requests', () => {
     await resolveStart(0)
     await resolveStart(1)
 
-    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, 'document')
     await testState.ensureResources!([IMPORT_GRANT])
     expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(6, [IMPORT_GRANT])
   })
@@ -350,7 +453,7 @@ describe('CreationAccountModal configurator access requests', () => {
       { uniqueName: 'work', grantedResourceUrlPatterns: [IMPORT_GRANT] } as AccountDescription,
       {} as VendorDescription, [], true, 'google'))
 
-    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, PATTERN)
+    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, 'document')
     expect(starts[0].disposed).toBe(0)
     expect(testState.mounts).toBe(1)
     reportReady()

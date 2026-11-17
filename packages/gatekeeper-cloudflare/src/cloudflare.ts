@@ -5,6 +5,7 @@ import {
   GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription,
   SupportedResource, ResourceConfiguratorFrame, ResourceDescription, ApprovalQueue, ActionKind,
   GitCache, stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
+  resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -212,7 +213,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     const authOnly = options?.scopes === "auth";
     const scopes = authOnly
       ? AUTH_SCOPES
-      : persistentScopesForResources(options?.resourceUrlPatterns);
+      : persistentScopesForResources(requestedResourceUrlPatterns(options, OBSERVABILITY_RESOURCES));
     await this.ctx.exports.UserAccount.get(userObjectId)
         .setCallback(callback, initiationNonce, scopes, authOnly);
     return { url: `${getBaseUrl(this.env)}/${userObjectId.toString()}/${initiationNonce}` };
@@ -516,11 +517,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       account.getAccessToken().catch(() => null), account.getGrantedScopes(),
     ]);
     const identity = token ? await fetchIdentity(token) : null;
+    const grantedResourceUrlPatterns = grantedObservabilityResourcePatterns(grantedScopes);
     return {
       displayName: identity?.displayName,
       uniqueName: identity?.email,
       avatar: { url: CLOUDFLARE_LOGO_URL },
-      grantedResourceUrlPatterns: grantedObservabilityResourcePatterns(grantedScopes),
+      grantedResourceUrlPatterns,
+      grantedResourceTypeIds: getGrantedResourceTypeIds({ grantedResourceUrlPatterns }, OBSERVABILITY_RESOURCES),
     };
   }
 
@@ -532,6 +535,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {
+    resourceUrlPatterns = resourceUrlPatterns.map(value => resourceTypeUrlPattern(OBSERVABILITY_RESOURCES, value));
     const account = this.#account();
     const grantedPatterns = new Set(grantedObservabilityResourcePatterns(await account.getGrantedScopes()));
     if (resourceUrlPatterns.every(pattern => grantedPatterns.has(pattern))) return {};
@@ -564,6 +568,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const getToken = () => this.#account().getAccessToken();
     if (resourceUrlPattern === ACCOUNT_OBSERVABILITY_RESOURCE.urlPattern) {
       return {

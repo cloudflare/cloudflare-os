@@ -135,7 +135,8 @@ There is no binding to add. `run-dev-server.ts` binds every `packages/gatekeeper
 
 Add a resource selection UI for each connect card. A card is one resource type returned in `getSupportedResources()`, together with any types whose `groupedWith` names it. This will be used by users to select the specific resource.
 
-- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the `urlPattern` of a type on the card: the card's own type from the connect dialog, or a binding's own type from a blueprint. Return the card's configurator for every type on it.
+- Give each resource type a stable vendor-scoped `id`; never rename or reuse it when its URL pattern changes. `groupedWith` names that ID. See [resource type identity and compatibility](../../../docs/gatekeeper-resource-types.md).
+- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceTypeId)` with the ID of a type on the card: the card's own type from the connect dialog, or a binding's own type from a blueprint. Return the card's configurator for every type on it. `resourceTypeUrlPattern` accepts IDs and exact current patterns for older Workshop callers.
 - Return `iframeHtml` of the selection UI and `ui` for any RPCs that UI needs.
 - When the user selects "Add connection", Workshop asks the iframe for the selected resource URL.
 - Group types (`SupportedResource.groupedWith`) when they are one choice found in one place, such as a whole drive, a folder, a file, or a document in it. Each type is still granted separately, and a grouped card asks for the missing ones in one consent request, so a user connecting any type on the card is asked for every type on it; group types that need different authorization only when that is acceptable. The gatekeeper's `getGatekeeperClassFor` decides which type a returned URL is, while Workshop's grant check takes the first type in declaration order whose pattern matches it, so declare a narrower type before a broader one whose pattern also matches its URLs. A whole-instance `https://*` type is the exception: the check skips it and uses it only for a URL no other type on the card matches, so it can be declared anywhere.
@@ -182,6 +183,8 @@ When something already knows the exact resource — most importantly an AI agent
 
   The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards`/`HierarchyPicker` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
 
+  A creation configurator (`startCreationConfigurator`) is pre-filled from the configuration the agent suggested (`createExternalResource`'s `configuration`), paired with the pattern of the type being created. Set `creationConfigurationDescription` on the type to let the agent suggest one, naming what your configurator's `resourceUrl()` returns (Google: "the URL of the Google Drive folder to create it in"); without it the kernel refuses a suggestion. That URL is not one of the type's, so map it with `initialValuesFromResourceUrl`: the automatic mapping would read it as the resource being created. An agent picked it, so tell the approver while the choice is still the agent's.
+
 ### Step 7: STOP — Ask operator whether to proceed to phase 2
 
 The operator may prefer to implement phase 2 later, perhaps in a new context. Stop here and ask the operator whether to proceed.
@@ -203,6 +206,7 @@ It's critically important that you add `ApprovalQueue` to all API operations tha
 #### Action kinds and auto-approval
 
 The `autoApprovable` policy (when a verdict must be `false`, the exceptions, payload-dependent verdicts and tags) is [Action kinds and auto-approval](../../../REVIEW.md#action-kinds-and-auto-approval) in `REVIEW.md`, so reviews enforce the same text this skill follows. Apply it to every action you define.
+
 
 
 ### Caching

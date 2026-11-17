@@ -76,7 +76,7 @@ const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: st
 const ui = (gadgetId: WorkpieceId, text?: string): CodeContent =>
   new Map([[gadgetId, new Map(text === undefined ? [] : [["client.js", text]])]]);
 
-const MAINLINE_UI = "export default 'mainline';\n";
+const MAINLINE_UI = "document.title = 'mainline';\n";
 const USE_ONLY = "Unauthorized: this collaborator only has permission to use the gadget's UI.";
 
 const affectedAccess = (affected: AffectedCollaborator[]) => affected

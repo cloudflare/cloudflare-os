@@ -172,6 +172,73 @@ function recordNotifications() {
   return notifications;
 }
 
+describe("awaitingDecision on a chat's metadata", () => {
+  const delivered = (impl: Impl) => impl.chatMetaForClient(impl.storage.chatMeta.get(CHAT)!);
+
+  // What a metadata subscriber hears from now on: whether each delivery says the chat is waiting,
+  // and whether its agent is responding.
+  function listen(impl: Impl) {
+    const heard: {awaiting?: true, responding: boolean}[] = [];
+    impl.storage.chatMeta.subscribe({add() {}, remove() {}, update: (_, record) => {
+      const meta = impl.chatMetaForClient(record);
+      heard.push({awaiting: meta.awaitingDecision, responding: meta.activeAgent !== undefined});
+    }});
+    return heard;
+  }
+
+  async function openClient(s: Awaited<ReturnType<typeof scenario>>) {
+    return env.TEST_OVERSEER.get(s.stub.id).open(s.user.id.toString(), USER.id, new RpcStub(() => {}));
+  }
+
+  it("is absent with no request, and while the agent is responding", async () => {
+    for (const s of [await scenario(null), await scenario("connection", true)]) {
+      await s.visit(impl => { expect(delivered(impl).awaitingDecision).toBeUndefined(); });
+    }
+  });
+
+  it.each([["connection", false], ["action", false], ["connection", true], ["action", true]] as const)(
+      "reports a pending %s request until it is denied (legacy pause: %s)", async (kind, legacy) => {
+    const s = await scenario(kind);
+    let heard: ReturnType<typeof listen> = [];
+    await s.visit(impl => {
+      if (legacy) impl.storage.activeAgents.delete(CHAT);
+      expect(delivered(impl).awaitingDecision).toBe(true);
+      fakeGatekeeper(impl);
+      heard = listen(impl);
+    });
+    using client = await openClient(s);
+    await (kind === "connection" ? client.denyConnectionRequest("1:connection") : client.rejectAction(7));
+    // A denial resumes nothing, which is the write subscribers would otherwise hear it through.
+    expect(heard).toEqual([{awaiting: undefined, responding: false}]);
+  });
+
+  it("is not sent again when a turn ends with no decision", async () => {
+    const s = await scenario("connection");
+    await s.visit(impl => {
+      // As an ordinary turn's teardown leaves the chat, before it checks for a decision to resume.
+      impl.storage.activeAgents.delete(CHAT);
+      const heard = listen(impl);
+      impl.resumeAgentAfterDecision(CHAT);
+      expect(heard).toEqual([]);
+    });
+  });
+
+  it("is cleared when an approval resumes the turn", async () => {
+    const requests = inference(), s = await scenario("action");
+    let heard: ReturnType<typeof listen> = [];
+    await s.visit(impl => {
+      fakeGatekeeper(impl);
+      heard = listen(impl);
+    });
+    using client = await openClient(s);
+    await client.approveAction(7);
+    expect(heard).toContainEqual({awaiting: undefined, responding: true});
+    expect(heard.filter(({awaiting}) => awaiting)).toEqual([]);
+    await s.visit(impl => impl.waitForAllAgentsToComplete());
+    expect(requests()).toBe(1);
+  });
+});
+
 describe("decision handoff using the existing execution row", () => {
   it.each(["connection", "action"] as const)("recovers a committed %s decision, before or after teardown", async kind => {
     const requests = inference();
@@ -580,21 +647,47 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it("clears the lookup budget before running inference", async () => {
-    const s = await scenario(), gate = Promise.withResolvers<void>(), requests = inference(gate.promise);
-    await s.visit(async impl => {
-      const error = Object.assign(new Error("reset"), {durableObjectReset: true});
-      modelLookup(impl, vi.fn().mockRejectedValueOnce(error).mockRejectedValueOnce(error)
-        .mockResolvedValue({profile: USER, aiModel: MODEL}));
+  it("starts the resume budget afresh once the resumed turn persists a step", async () => {
+    const s = await scenario();
+    let staged = true;
+    const requests = inference(undefined, () => staged);
+    await expect(s.visit(async impl => {
+      // The first step persists; the second never finishes.
+      vi.spyOn(impl, "executeCodeMode").mockResolvedValueOnce("Done.").mockReturnValue(new Promise(() => {}));
+      impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, resumeAttempts: 3});
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await vi.waitFor(() => expect(requests()).toBe(2));
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during the second step");
+    })).rejects.toThrow(/Injected reset/);
+    staged = false;
+    await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(1);
-      const alarm = impl.runAlarmTasks();
-      await vi.waitFor(() => expect(requests()).toBe(1));
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBeUndefined();
-      gate.resolve();
-      await alarm;
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].map(m => m.type)).not.toContain("error");
     });
+    expect(requests()).toBe(3);
+  });
+
+  it("fails a turn that is reset four times before it persists a step", async () => {
+    const s = await scenario(), requests = inference(new Promise(() => {}));
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await expect(s.visit(async impl => {
+        if (attempt === 1) { decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT); }
+        await vi.waitFor(() => expect(requests()).toBe(attempt));
+        await impl.ctx.storage.sync();
+        impl.ctx.abort("Injected reset during resumed turn");
+      })).rejects.toThrow(/Injected reset/);
+    }
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
+        type: "error", message: expect.stringContaining("interrupted too many times"),
+      }));
+    });
+    expect(requests()).toBe(4);
   });
 
   it("Stop clears a retry handoff that no longer has a running task", async () => {

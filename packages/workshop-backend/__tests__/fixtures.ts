@@ -9,6 +9,7 @@ import type { CollaboratorAccess, Overseer } from "@gadgets/workshop-shared/api"
 import { OverseerDurableObject } from "../src/overseer.js";
 import { makeOverseerStorage, type ActionRecord } from "../src/storage-schema/overseer-storage.js";
 import { makeMockStorage } from "./mock-storage.js";
+import {SessionWatchers} from "../src/session-watchers";
 
 /**
  * The production schema over mock storage, so the action suites (auto-approval drain, pending
@@ -86,6 +87,7 @@ export async function openFakeOverseer(
     impl: {
       ownerId,
       assertGatekeeperUsable: () => {},
+      sessionWatchers: new SessionWatchers(),
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
       trackUnreadReader: () => {},

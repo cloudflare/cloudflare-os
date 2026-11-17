@@ -11,14 +11,35 @@ export type SelectedModel = { id: string; name?: string } | null;
 type ComposerModelSelectorProps = {
   models: readonly AiChatAuthorInfo[];
   selectedModel: SelectedModel;
+  /**
+   * True until the user's models and preferred model are known. With no model selected, a
+   * placeholder then stands in for the selector, since "No agent" would read as a choice.
+   */
+  loading?: boolean;
   onModelChange: (modelId: string | null) => void;
 };
 
 export const ComposerModelSelector = ({
   models,
   selectedModel,
+  loading = false,
   onModelChange,
 }: ComposerModelSelectorProps) => {
+  if (loading && selectedModel == null) {
+    return (
+      <span
+        role="status"
+        aria-label="Loading models"
+        className="inline-flex h-10 items-center gap-1.5 px-2 sm:h-8"
+      >
+        {/* The trigger's own box and caret, so only the label changes when the models arrive.
+            The bar stays hidden for the first 200ms, which a load on a healthy connection beats. */}
+        <span className="h-2 w-16 animate-pulse rounded-full bg-kumo-tint opacity-0 [animation-delay:200ms]" />
+        <CaretDown size={12} weight="bold" className="flex-shrink-0 text-kumo-inactive opacity-50" />
+      </span>
+    );
+  }
+
   const selectedModelLabel = selectedModel == null
     ? "No agent"
     : models.find((model) => model.id === selectedModel.id)?.name ??

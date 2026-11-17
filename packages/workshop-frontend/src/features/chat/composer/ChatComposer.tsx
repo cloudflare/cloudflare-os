@@ -1,3 +1,4 @@
+import { getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useState,
   useEffect,
@@ -84,6 +85,7 @@ export const ChatComposer = ({
   isAgentActive,
   models,
   selectedModel,
+  modelsLoading,
   onModelChange,
   pendingConsoleLogCount = 0,
   consoleLogPreview = "",
@@ -124,6 +126,8 @@ export const ChatComposer = ({
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
   selectedModel: SelectedModel;
+  /** True until `models` and the model a new chat starts on have loaded. */
+  modelsLoading?: boolean;
   onModelChange: (modelId: string | null) => void;
   pendingConsoleLogCount?: number;
   consoleLogPreview?: string;
@@ -778,7 +782,7 @@ export const ChatComposer = ({
               <CapsuleOverlay
                 url={activeUrl.text}
                 onSelectAccount={(accountId, vendorId, resource) => {
-                  void createCapsule({ accountId, vendorId, resourceUrlPattern: resource.urlPattern });
+                  void createCapsule({ accountId, vendorId, resourceUrlPattern: resource.urlPattern, resourceTypeId: getResourceTypeId(resource) });
                 }}
                 onRefine={refineUrl}
                 onDismiss={dismissUrl}
@@ -1007,6 +1011,7 @@ export const ChatComposer = ({
               <ComposerModelSelector
                 models={models}
                 selectedModel={selectedModel}
+                loading={modelsLoading}
                 onModelChange={onModelChange}
               />
               {isAgentActive && onStop && (
@@ -1061,6 +1066,7 @@ export const ChatComposer = ({
         onCreated={attachCreated}
         initialVendorId={attachModalPrefill?.resolution.vendorId}
         initialResourceUrl={attachModalPrefill?.url}
+        initialResourceTypeId={attachModalPrefill?.resolution.resourceTypeId}
         initialResourceUrlPattern={attachModalPrefill?.resolution.resourceUrlPattern}
         initialAccountId={attachModalPrefill?.resolution.accountId}
       />

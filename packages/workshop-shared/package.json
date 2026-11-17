@@ -15,6 +15,10 @@
       "types": "./src/gatekeeper.ts",
       "import": "./src/gatekeeper.ts"
     },
+    "./worktree-replica": {
+      "types": "./src/worktree-replica.ts",
+      "import": "./src/worktree-replica.ts"
+    },
     "./cloudflare-gatekeeper": {
       "types": "./src/cloudflare-gatekeeper.ts",
       "import": "./src/cloudflare-gatekeeper.ts"
@@ -38,6 +42,10 @@
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"
+    },
+    "./ui-page": {
+      "types": "./src/ui-page.ts",
+      "import": "./src/ui-page.ts"
     }
   },
   "scripts": {
@@ -50,7 +58,7 @@
     "@codemirror/state": "^6.7.6",
     "capnweb": "catalog:",
     "fast-diff": "^1.3.0",
-    "mdast-util-from-markdown": "^2.0.3"
+    "mdast-util-from-markdown": "^2.1.0"
   },
   "devDependencies": {
     "typescript": "catalog:"
