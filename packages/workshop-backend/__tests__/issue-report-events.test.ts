@@ -2,9 +2,14 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
-import type { IssueReportEvent } from "@gadgets/workshop-shared/admin-gatekeeper";
 import type {
-  AiChatAuthorInfo, AmbientGatekeeperMode, IssueReportPriority, IssueReportStatus,
+  IssueReportChange, IssueReportEvent,
+} from "@gadgets/workshop-shared/admin-gatekeeper";
+import {
+  ISSUE_REPORT_ERROR_CODES, MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_THREAD_ENTRIES,
+  getIssueReportErrorCode,
+  type AiChatAuthorInfo, type AmbientGatekeeperMode, type IssueReportPriority,
+  type IssueReportStatus,
 } from "@gadgets/workshop-shared/api";
 import { IssueReportsDurableObject } from "../src/issue-reports.js";
 import {
@@ -36,6 +41,11 @@ const EVENT_ID = expect.stringMatching(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]
 type Person = Pick<AiChatAuthorInfo, "id" | "name">;
 const ADA: Person = { id: "ada", name: "Ada" };
 const GRACE: Person = { id: "grace@example.test", name: "Grace (admin)" };
+const HEDY: Person = { id: "hedy@example.test", name: "Hedy (admin)" };
+// An image as a reporter's upload sends it, a stream: a PNG's signature and the start of its
+// first chunk.
+const IMAGE = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52];
+const imageStream = () => new Response(new Uint8Array(IMAGE)).body!;
 
 // The admin gatekeeper's stand-in (FakeAdminVendor in test-worker.ts), which the store reaches
 // through the same binding.
@@ -145,6 +155,16 @@ async function sent(): Promise<IssueReportEvent[][]> {
   return (await vendor.calls()).issueReportEvents.slice(sentBefore);
 }
 
+// Each event of `kind` the vendor has been sent since the test began, oldest first, as often as
+// it was sent.
+async function sentOf<K extends IssueReportEvent["kind"]>(kind: K)
+    : Promise<Extract<IssueReportEvent, { kind: K }>[]> {
+  return (await sent()).flat()
+      .filter((event): event is Extract<IssueReportEvent, { kind: K }> => event.kind === kind);
+}
+const ends = () => sentOf("investigationComplete");
+const changes = () => sentOf("changed");
+
 beforeEach(async () => {
   sentBefore = (await vendor.calls()).issueReportEvents.length;
 });
@@ -196,17 +216,14 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     clock.advance(HOUR_MS);
     await reports.setStatus(report.id, status);
     await reports.settled();
-    expect(await sent()).toStrictEqual([
-      [expect.objectContaining({ kind: "reported" })],
-      [{
-        kind: "investigationComplete", id: EVENT_ID, reportId: report.id, status,
-        at: new Date(Date.now()),
-      }],
-    ]);
+    expect(await ends()).toStrictEqual([{
+      kind: "investigationComplete", id: EVENT_ID, reportId: report.id, status,
+      at: new Date(Date.now()),
+    }]);
     expect(await reports.waiting()).toStrictEqual([]);
   });
 
-  it("sends nothing for a status that ends no investigation", async () => {
+  it("sends no end for a status that ends no investigation", async () => {
     let reports = store();
     let report = await reports.file();
     // A report that was never investigated.
@@ -217,11 +234,13 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     await reports.setStatus(report.id, "investigating");
     await reports.setStatus(report.id, "new");
     await reports.settled();
-    expect((await sent()).flat().map(event => event.kind)).toStrictEqual(["reported"]);
+    expect(await ends()).toStrictEqual([]);
     expect(await reports.waiting()).toStrictEqual([]);
-    // Each change of status is still in the thread.
+    // Each change of status is in the thread, and was told as a change.
+    let statuses = ["answered", "new", "investigating", "new"];
     expect((await reports.run(host => host.get(report.id))).entries.map(entry => entry.status))
-        .toStrictEqual(["answered", "new", "investigating", "new"]);
+        .toStrictEqual(statuses);
+    expect((await changes()).map(event => event.status)).toStrictEqual(statuses);
   });
 
   it("sends a second event, with an id of its own, when a report is investigated again",
@@ -232,12 +251,12 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
       await reports.setStatus(report.id, status);
       await reports.settled();
     }
-    let events = (await sent()).flat();
-    expect(events.slice(1)).toStrictEqual([
+    let events = await ends();
+    expect(events).toStrictEqual([
       expect.objectContaining({ kind: "investigationComplete", id: EVENT_ID, status: "answered" }),
       expect.objectContaining({ kind: "investigationComplete", id: EVENT_ID, status: "closed" }),
     ]);
-    expect(new Set(events.map(event => event.id)).size).toBe(3);
+    expect(events[1]!.id).not.toBe(events[0]!.id);
   });
 
   // The clock does not move: both ends are written with one time.
@@ -252,7 +271,8 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
       await reports.setStatus(report.id, status);
     }
     await reports.settled();
-    expect(await reports.waiting()).toStrictEqual([2, 3]);
+    // Four changes of status, two of which ended an investigation.
+    expect(await reports.waiting()).toStrictEqual([2, 3, 4, 5, 6, 7]);
     await vendor.answerEvents("take");
     await reports.alarm();
 
@@ -262,8 +282,9 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
       kind: "investigationComplete", reportId: report.id, status: "answered",
       at: new Date(Date.now()),
     };
-    expect(taken).toStrictEqual([{ ...end, id: EVENT_ID }, { ...end, id: EVENT_ID }]);
-    expect(taken[1]!.id).not.toBe(taken[0]!.id);
+    let ended = taken.filter(event => event.kind === "investigationComplete");
+    expect(ended).toStrictEqual([{ ...end, id: EVENT_ID }, { ...end, id: EVENT_ID }]);
+    expect(ended[1]!.id).not.toBe(ended[0]!.id);
     // Each call that was rejected carried the same events, under the same ids.
     expect(calls.length).toBeGreaterThan(1);
     for (let call of calls) expect(call).toStrictEqual(taken.slice(0, call.length));
@@ -284,7 +305,7 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     await vendor.answerEvents("take");
     await reports.alarm();
 
-    let [first, second, resent] = (await sent()).flat().slice(1);
+    let [first, second, resent] = await ends();
     expect(first).toMatchObject({ id: EVENT_ID, reportId: report.id, status: "answered" });
     expect(second).toMatchObject({ id: EVENT_ID, reportId: report.id, status: "answered" });
     expect(second!.id).not.toBe(first!.id);
@@ -299,7 +320,443 @@ describe("telling the admin gatekeeper of the end of an investigation", () => {
     await reports.run(host => host.reply(ADA, report.id, "Any news?"));
     await reports.settled();
     expect((await reports.run(host => host.get(report.id))).status).toBe("investigating");
-    expect((await sent()).flat().map(event => event.kind)).toStrictEqual(["reported"]);
+    expect(await ends()).toStrictEqual([]);
+    expect((await changes()).map(event => event.change)).toStrictEqual(["status", "reply"]);
+  });
+});
+
+describe("a change to a report", () => {
+  type Host = IssueReportsDurableObject;
+  type Caller = typeof PERSON | typeof AGENT;
+  const PERSON = { via: "api" } as const;
+  const AGENT = { via: "gatekeeper", agent: { workspaceId: "w".repeat(64), chatId: 1 } } as const;
+  const LINK = "https://example.com/issues/1";
+  const REPLY = "Any news?";
+
+  // A write that changes a report: what readies the report for it, the write itself, and what
+  // its event says the write was.
+  type Write = {
+    before?: (host: Host, id: string, caller: Caller) => Promise<unknown>;
+    write: (host: Host, id: string, caller: Caller) => Promise<unknown>;
+    change: IssueReportChange;
+    status?: IssueReportStatus;
+  };
+  // The writes an admin makes, in person or through the admin gatekeeper.
+  const ADMIN_WRITES: [string, Write][] = [
+    ["a change of status", {
+      write: (host, id, caller) => host.setStatus(GRACE, caller, id, "fixInProgress"),
+      change: "status", status: "fixInProgress",
+    }],
+    ["a public entry", {
+      write: (host, id, caller) => host.addEntry(GRACE, caller, id, "Try again now.", "public"),
+      change: "reply",
+    }],
+    ["an admins-only entry", {
+      write: (host, id, caller) => host.addEntry(GRACE, caller, id, "A cache key.", "admins"),
+      change: "note",
+    }],
+    ["a claim", {
+      write: (host, id, caller) => host.claim(GRACE, caller, id, false),
+      change: "assignment",
+    }],
+    ["a release", {
+      before: (host, id, caller) => host.claim(GRACE, caller, id, false),
+      write: (host, id, caller) => host.release(GRACE, caller, id),
+      change: "assignment",
+    }],
+  ];
+  // The writes that are a person's alone, and the one that is labelled by no caller.
+  const OTHER_WRITES: [string, Write][] = [
+    ["the reporter's reply", {
+      write: (host, id) => host.reply(ADA, id, REPLY),
+      change: "reply",
+    }],
+    ["the reporter's reply that reopens the report", {
+      before: (host, id) => host.setStatus(GRACE, PERSON, id, "answered"),
+      write: (host, id) => host.reply(ADA, id, REPLY),
+      change: "reply", status: "withAdmin",
+    }],
+    ["a take-over", {
+      before: (host, id) => host.claim(HEDY, PERSON, id, false),
+      write: (host, id) => host.claim(GRACE, PERSON, id, true),
+      change: "assignment",
+    }],
+    ["links that differ from the report's", {
+      write: (host, id) => host.setLinks(id, [LINK]),
+      change: "links",
+    }],
+  ];
+
+  // Files a report, makes `write` an hour later, and expects the one event that tells of it:
+  // toStrictEqual() takes no field it is not given, nor a `status` that is there and undefined.
+  async function expectOneEvent({ before, write, change, status }: Write, caller: Caller) {
+    let clock = fakeClock();
+    let reports = store();
+    let report = await reports.file();
+    await reports.run(host => before?.(host, report.id, caller));
+    await reports.settled();
+    let earlier = (await sent()).flat();
+    clock.advance(HOUR_MS);
+
+    await reports.run(host => write(host, report.id, caller));
+    await reports.settled();
+    let events = (await sent()).flat().slice(earlier.length);
+    expect(events).toStrictEqual([{
+      kind: "changed", id: EVENT_ID, reportId: report.id, change,
+      ...status !== undefined && { status }, at: new Date(Date.now()),
+    }]);
+    expect(earlier.map(event => event.id)).not.toContain(events[0]!.id);
+    expect(await reports.waiting()).toStrictEqual([]);
+  }
+
+  describe.each([
+    ["a person", PERSON], ["the admin gatekeeper", AGENT],
+  ] as [string, Caller][])("made by %s", (_name, caller) => {
+    it.each(ADMIN_WRITES)("sends one event for %s", (_write, write) =>
+        expectOneEvent(write, caller));
+  });
+
+  it.each(OTHER_WRITES)("sends one event for %s", (_write, write) =>
+      expectOneEvent(write, PERSON));
+
+  it("carries the status a write set, as admins read it", async () => {
+    let reports = store();
+    let report = await reports.file();
+    await reports.setStatus(report.id, "withAdmin");
+    // A move the reporter does not read: a line for the admins alone, and the true status.
+    await reports.setStatus(report.id, "fixSuggested");
+    await reports.setStatus(report.id, "answered");
+    // The reply that reopens the report, then one that reopens nothing.
+    await reports.run(host => host.reply(ADA, report.id, REPLY));
+    await reports.run(host => host.reply(ADA, report.id, REPLY));
+    await reports.settled();
+
+    expect((await reports.run(host => host.get(report.id))).entries[1])
+        .toMatchObject({ visibility: "admins", status: "fixSuggested" });
+    expect((await changes()).map(({ change, status }) => ({ change, status }))).toStrictEqual([
+      { change: "status", status: "withAdmin" },
+      { change: "status", status: "fixSuggested" },
+      { change: "status", status: "answered" },
+      { change: "reply", status: "withAdmin" },
+      { change: "reply", status: undefined },
+    ]);
+    expect((await changes()).at(-1)).not.toHaveProperty("status");
+  });
+
+  it("sends nothing for a write that changed nothing", async () => {
+    let reports = store();
+    let report = await reports.file();
+    let other = await reports.file();
+    await reports.run(async host => {
+      await host.claim(GRACE, PERSON, report.id, false);
+      await host.setLinks(report.id, [LINK]);
+    });
+    await reports.settled();
+    await reports.alarm();
+    let before = (await sent()).length;
+    let alarmAt = await reports.alarmAt();
+
+    await reports.run(async host => {
+      await host.setStatus(GRACE, PERSON, report.id, "new");
+      await host.setStatus(GRACE, AGENT, report.id, "new");
+      await host.claim(GRACE, PERSON, report.id, false);
+      await host.claim(GRACE, PERSON, report.id, true);
+      await host.claim(GRACE, AGENT, report.id, false);
+      await host.release(GRACE, PERSON, other.id);
+      await host.release(GRACE, AGENT, other.id);
+      await host.setLinks(report.id, [LINK]);
+      await host.setLinks(other.id, []);
+      host.markSeen("ada", report.id);
+    });
+    await reports.settled();
+    expect((await sent()).slice(before)).toStrictEqual([]);
+    expect(await reports.waiting()).toStrictEqual([]);
+    expect(await reports.alarmAt()).toBe(alarmAt);
+  });
+
+  it("sends nothing for a refused call", async () => {
+    let clock = fakeClock();
+    let reports = store();
+    let report = await reports.file();
+    let closed = await reports.file();
+    let full = await reports.file();
+    await reports.run(async host => {
+      await host.claim(HEDY, PERSON, report.id, false);
+      await host.setStatus(GRACE, PERSON, closed.id, "closed");
+      for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
+        await host.addEntry(GRACE, AGENT, full.id, "A note.", "admins");
+        await host.setStatus(GRACE, AGENT, full.id, i % 2 === 0 ? "answered" : "withAdmin");
+        if (i % 2 === 0) await host.claim(GRACE, AGENT, full.id, false);
+        else await host.release(GRACE, AGENT, full.id);
+      }
+      for (let i = 0; i < MAX_ISSUE_REPORT_REPLIES_PER_DAY; i++) {
+        await host.reply(ADA, report.id, REPLY);
+      }
+    });
+    await reports.settled();
+    await reports.alarm();
+    expect(await reports.waiting()).toStrictEqual([]);
+    let before = (await sent()).length;
+    let alarmAt = await reports.alarmAt();
+
+    let unknown = crypto.randomUUID();
+    let refused = async (call: (host: Host) => unknown) => {
+      try {
+        await reports.run(call);
+      } catch (error) {
+        return getIssueReportErrorCode(error) ?? (error as Error).name;
+      }
+      return "not refused";
+    };
+    let codes = ISSUE_REPORT_ERROR_CODES;
+    let calls: [string, (host: Host) => unknown][] = [
+      [codes.notFound, host => host.setStatus(GRACE, PERSON, unknown, "closed")],
+      [codes.notFound, host => host.addEntry(GRACE, PERSON, unknown, "A note.", "admins")],
+      [codes.notFound, host => host.claim(GRACE, PERSON, unknown, false)],
+      [codes.notFound, host => host.release(GRACE, PERSON, unknown)],
+      [codes.notFound, host => host.setLinks(unknown, [LINK])],
+      [codes.notFound, host => host.setLinks(unknown, [])],
+      // Another's report is none to a reporter.
+      [codes.notFound, host => host.reply(GRACE, report.id, REPLY)],
+      [codes.closed, host => host.reply(ADA, closed.id, REPLY)],
+      [codes.tooManyReplies, host => host.reply(ADA, full.id, REPLY)],
+      [codes.threadFull, host => host.addEntry(GRACE, AGENT, full.id, "A note.", "admins")],
+      [codes.threadFull, host => host.setStatus(GRACE, AGENT, full.id, "closed")],
+      [codes.threadFull, host => host.claim(GRACE, AGENT, full.id, false)],
+      [codes.assigned, host => host.claim(GRACE, PERSON, report.id, false)],
+      [codes.assigned, host => host.claim(GRACE, AGENT, report.id, false)],
+      [codes.assigned, host => host.release(GRACE, PERSON, report.id)],
+      // The take-over through the gatekeeper, and what is not a status, a text or a link.
+      ["TypeError", host => host.claim(GRACE, AGENT, report.id, true)],
+      ["TypeError", host => host.setStatus(GRACE, PERSON, report.id, "done" as IssueReportStatus)],
+      ["TypeError", host => host.addEntry(GRACE, PERSON, report.id, " ", "public")],
+      ["TypeError", host => host.addEntry(GRACE, { via: "web" } as never, report.id, "A note.",
+          "admins")],
+      ["TypeError", host => host.reply(ADA, report.id, " ")],
+      ["TypeError", host => host.setLinks(report.id, ["ftp://example.com/"])],
+    ];
+    for (let [code, call] of calls) expect(await refused(call)).toBe(code);
+    // The reporter's replies of the day are spent: a thread that is full refuses the next day's.
+    await reports.sql(
+        `INSERT INTO entries (report_seq, n, id, at, author_id, author_name, visibility, text)
+         SELECT r.seq, 1000 + value, 'reply-' || value, ?, 'ada', 'Ada', 'public', 'Reply.'
+         FROM reports r, json_each(?) WHERE r.id = ?`,
+        Date.now(), JSON.stringify(Array.from(
+            { length: MAX_ISSUE_REPORT_THREAD_ENTRIES - MAX_ISSUE_REPORT_REPLIES_PER_DAY },
+            (_, i) => i)), report.id);
+    clock.advance(DAY_MS);
+    expect(await refused(host => host.reply(ADA, report.id, REPLY))).toBe(codes.threadFull);
+
+    await reports.settled();
+    expect((await sent()).slice(before)).toStrictEqual([]);
+    expect(await reports.waiting()).toStrictEqual([]);
+    expect(await reports.alarmAt()).toBe(alarmAt);
+  });
+
+  it("sends nothing for an image or a grant, at filing or later", async () => {
+    let reports = store();
+    let report = await reports.file();
+    let grant = {
+      id: crypto.randomUUID(), scope: "account" as const,
+      expiresAt: new Date(Date.now() + 72 * HOUR_MS),
+    };
+    // What the reporter attaches with the report, right after it is filed.
+    await reports.run(async host => {
+      await host.addImage("ada", report.id, imageStream(), IMAGE.length);
+      host.noteGrant("ada", grant, report.id);
+    });
+    await reports.settled();
+    expect(await sent()).toStrictEqual([[expect.objectContaining({ kind: "reported" })]]);
+
+    // And what they attach later, to a report an admin has written to: the grant's end, a
+    // grant in its place and another image.
+    await reports.setStatus(report.id, "answered");
+    await reports.run(async host => {
+      host.noteGrant("ada", { ...grant, endedAt: new Date() });
+      host.noteGrant("ada", { ...grant, id: crypto.randomUUID() }, report.id);
+      await host.addImage("ada", report.id, imageStream(), IMAGE.length);
+    });
+    await reports.settled();
+    expect((await sent()).flat().map(event => event.kind)).toStrictEqual(["reported", "changed"]);
+    expect(await reports.waiting()).toStrictEqual([]);
+
+    // Each of them is in the report.
+    let stored = await reports.run(host => host.get(report.id));
+    expect(stored.images).toHaveLength(2);
+    expect(stored.grant?.id).not.toBe(grant.id);
+    await env.ISSUE_IMAGES.delete(stored.images.map(({ id }) => `${report.id}/${id}`));
+  });
+
+  it("sends both when a report leaves investigating, each with its own id, the end first",
+      async () => {
+    let clock = fakeClock();
+    let reports = store();
+    let report = await reports.file();
+    await reports.setStatus(report.id, "investigating");
+    await reports.settled();
+    let before = (await sent()).length;
+    clock.advance(HOUR_MS);
+    await reports.setStatus(report.id, "fixProposed");
+    await reports.settled();
+
+    let event = { reportId: report.id, status: "fixProposed", at: new Date(Date.now()) };
+    let [call, ...others] = (await sent()).slice(before);
+    expect(others).toStrictEqual([]);
+    expect(call).toStrictEqual([
+      { kind: "investigationComplete", id: EVENT_ID, ...event },
+      { kind: "changed", id: EVENT_ID, change: "status", ...event },
+    ]);
+    expect(call![1]!.id).not.toBe(call![0]!.id);
+
+    // An investigation that is put back ends none, and is a change.
+    await reports.setStatus(report.id, "investigating");
+    await reports.setStatus(report.id, "new");
+    await reports.settled();
+    expect(await ends()).toHaveLength(1);
+    expect((await changes()).map(({ status }) => status))
+        .toStrictEqual(["investigating", "fixProposed", "investigating", "new"]);
+  });
+
+  it("gives a report that was filed \"reported\" and no \"changed\"", async () => {
+    let reports = store();
+    let report = await reports.file("low");
+    await reports.settled();
+    await reports.alarm();
+    expect(await sent()).toStrictEqual([[{
+      kind: "reported", id: EVENT_ID, reportId: report.id, priority: "low", at: report.filedAt,
+    }]]);
+    expect(await reports.waiting()).toStrictEqual([]);
+  });
+
+  describe("lets the reporter reply when the gatekeeper cannot be told", () => {
+    it.each(["reject", "hang"] as const)(
+        "with a gatekeeper that answers \"%s\": the event waits, and the alarm offers it again " +
+        "under the same id", async answer => {
+      let clock = fakeClock();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      let reports = store();
+      let report = await reports.file();
+      await reports.settled();
+      await vendor.answerEvents(answer);
+
+      let entry = await reports.run(host => host.reply(ADA, report.id, REPLY));
+      expect(entry).toMatchObject({ visibility: "public", text: REPLY });
+      // The reply has returned, and the call that tells of it has not been taken.
+      await until(async () => (await sent()).length === 2);
+      if (answer === "hang") {
+        // The call is given up on: the clock is moved inside the store, where its timer fires.
+        await reports.run(() => clock.advance(EVENT_RETRY_MS));
+      }
+      await reports.settled();
+      expect(await reports.waiting()).toStrictEqual([2]);
+      let [id] = await reports.waitingIds();
+      expect((await sent())[1]).toStrictEqual([
+        { kind: "changed", id, reportId: report.id, change: "reply", at: entry.at },
+      ]);
+
+      await vendor.answerEvents("take");
+      await vendor.releaseEvents();
+      await reports.alarm();
+      expect((await sent()).at(-1)).toStrictEqual((await sent())[1]);
+      expect(await sent()).toHaveLength(3);
+      expect(await reports.waiting()).toStrictEqual([]);
+    });
+
+    it.each([
+      ["turned off", { mode: "disabled" }],
+      ["not bound", { bound: false }],
+    ] as [string, Partial<Deployment>][])(
+        "with a gatekeeper that is %s: nobody is told, and no event is kept",
+        async (_name, deployment) => {
+      let reports = store();
+      let report = await reports.file();
+      await reports.settled();
+      Object.assign(reports.on, deployment);
+
+      let entry = await reports.run(host => host.reply(ADA, report.id, REPLY));
+      expect(entry).toMatchObject({ visibility: "public", text: REPLY });
+      await reports.settled();
+      expect(await reports.waiting()).toStrictEqual([]);
+      await reports.alarm();
+      expect(await sent()).toHaveLength(1);
+      expect((await reports.run(host => host.getOwn("ada", report.id))).entries)
+          .toStrictEqual([entry]);
+    });
+  });
+
+  it("writes the event with the entry", async () => {
+    let reports = store();
+    let report = await reports.file();
+    await reports.settled();
+    // The delivery is held, so what the reply wrote is still there to be read.
+    await vendor.answerEvents("hang");
+    let entry = await reports.run(host => host.reply(ADA, report.id, REPLY));
+    let thread = async () => (await reports.run(host => host.getOwn("ada", report.id))).entries;
+    expect(await thread()).toStrictEqual([entry]);
+    expect(await reports.sql("SELECT seq, kind, report_id, label, status, at FROM events"))
+        .toStrictEqual([{
+          seq: 2, kind: "changed", report_id: report.id, label: "reply", status: null,
+          at: entry.at.getTime(),
+        }]);
+
+    // A refused reply left neither.
+    await expect(reports.run(host => host.reply(ADA, report.id, " "))).rejects.toThrow(TypeError);
+    await expect(reports.run(host => host.reply(GRACE, report.id, REPLY))).rejects.toThrow();
+    expect(await thread()).toStrictEqual([entry]);
+    expect(await reports.waiting()).toStrictEqual([2]);
+
+    await vendor.answerEvents("take");
+    await vendor.releaseEvents();
+    await reports.settled();
+  });
+});
+
+describe("a store whose events table has no status column", () => {
+  // The table as a store made without the column holds it.
+  const EVENTS_WITHOUT_STATUS = `CREATE TABLE events (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      report_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      at INTEGER NOT NULL
+    ) STRICT`;
+
+  it("gains the column when the store next starts, keeps each event that waited, and tells " +
+      "of a status set then", async () => {
+    let reports = store();
+    await reports.run((_host, state) => {
+      let db = state.storage.sql;
+      db.exec("DROP TABLE events");
+      db.exec(EVENTS_WITHOUT_STATUS);
+      db.exec(`INSERT INTO events (id, kind, report_id, label, at)
+               VALUES ('event-1', 'reported', 'r-old', 'low', 1000),
+                      ('event-2', 'investigationComplete', 'r-old', 'answered', 2000)`);
+    });
+
+    // The store is made again over the same storage, as its next start makes it.
+    let report = await reports.run(async (host, state) => {
+      let restarted = new IssueReportsDurableObject(state, host["env"]);
+      let column = state.storage.sql.exec(
+          `SELECT type, "notnull" FROM pragma_table_info('events') WHERE name = 'status'`)
+          .toArray();
+      expect(column).toStrictEqual([{ type: "TEXT", notnull: 0 }]);
+      let filed = await restarted.submit(ADA, { text: "It broke.", priority: "high" }, false);
+      await restarted.setStatus(GRACE, { via: "api" }, filed.id, "fixSuggested");
+      return filed;
+    });
+    await reports.settled();
+
+    expect((await sent()).flat()).toStrictEqual([
+      { kind: "reported", id: "event-1", reportId: "r-old", priority: "low", at: new Date(1000) },
+      { kind: "investigationComplete", id: "event-2", reportId: "r-old", status: "answered",
+        at: new Date(2000) },
+      { kind: "reported", id: EVENT_ID, reportId: report.id, priority: "high",
+        at: report.filedAt },
+      { kind: "changed", id: EVENT_ID, reportId: report.id, change: "status",
+        status: "fixSuggested", at: expect.any(Date) },
+    ]);
+    expect(await reports.waiting()).toStrictEqual([]);
   });
 });
 
@@ -347,7 +804,8 @@ describe("a delivery the admin gatekeeper does not take", () => {
     await expect(reports.setStatus(report.id, "closed")).resolves.toBeUndefined();
     await reports.settled();
     expect((await reports.run(host => host.get(report.id))).status).toBe("closed");
-    expect(await reports.waiting()).toStrictEqual([1, 2]);
+    // The report, its two changes of status and, before the second, the investigation's end.
+    expect(await reports.waiting()).toStrictEqual([1, 2, 3, 4]);
     // The log names how many events were not taken and why, and nothing of a report.
     let entries = logged.mock.calls.map(([entry]) => entry as Record<string, unknown>)
         .filter(entry => entry.event === "issue.reports.events.undelivered");
@@ -375,7 +833,7 @@ describe("a delivery the admin gatekeeper does not take", () => {
     await reports.setStatus(report.id, "investigating");
     await reports.setStatus(report.id, "answered");
     await reports.settled();
-    expect(await reports.waiting()).toStrictEqual([2]);
+    expect(await reports.waiting()).toStrictEqual([2, 3, 4]);
     expect(logged.mock.calls.map(([entry]) => entry as Record<string, unknown>)
         .filter(entry => entry.event === "issue.reports.events.dropped")
         .map(entry => entry.size)).toStrictEqual([1]);
@@ -383,7 +841,9 @@ describe("a delivery the admin gatekeeper does not take", () => {
     await vendor.answerEvents("take");
     await reports.alarm();
     expect((await sent()).at(-1)).toStrictEqual([
+      expect.objectContaining({ kind: "changed", status: "investigating" }),
       expect.objectContaining({ kind: "investigationComplete", status: "answered" }),
+      expect.objectContaining({ kind: "changed", status: "answered" }),
     ]);
   });
 
@@ -577,17 +1037,17 @@ describe("what arms the store's alarm for an event", () => {
     expect(await reports.alarmAt()).toBe(Date.now() + DAY_MS);
   });
 
-  it("moves a day-ahead alarm to within a minute of an investigation's end", async () => {
+  it("moves a day-ahead alarm to within a minute of a write to a report", async () => {
     let clock = fakeClock();
     let reports = store();
     let report = await reports.file();
     await reports.settled();
     await reports.alarm();
-    // A change of status that ends no investigation leaves the alarm where it is.
-    await reports.setStatus(report.id, "investigating");
+    // A write that changes nothing leaves the alarm where it is.
+    await reports.setStatus(report.id, "new");
     expect(await reports.alarmAt()).toBe(Date.now() + DAY_MS);
     clock.advance(HOUR_MS);
-    await reports.setStatus(report.id, "answered");
+    await reports.setStatus(report.id, "investigating");
     expect(await reports.alarmAt()).toBe(Date.now() + EVENT_RETRY_MS);
   });
 

@@ -4,9 +4,8 @@
 // delivery stub a facet mints.
 
 import { RpcStub, RpcTarget, WorkerEntrypoint, env, restore } from "cloudflare:workers";
-import type { IssueReportEvent } from "@gadgets/workshop-shared/admin-gatekeeper";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type { IssueReportHookParams } from "../../src/hooks.js";
+import type { IssueReportHookEvent, IssueReportHookParams } from "../../src/hooks.js";
 import { InstanceAdminGatekeeper } from "../../src/worker.js";
 
 // Named one by one: the pool finds a Worker's entrypoints by reading this module's source, and
@@ -130,7 +129,7 @@ type DeliveryProps = IssueReportHookParams & { facet: string };
  * the facet named in its props.
  */
 export class TestHookDelivery extends WorkerEntrypoint<Cloudflare.Env, DeliveryProps> {
-  deliver(callback: unknown, approvalQueue: unknown, event: IssueReportEvent): Promise<void> {
+  deliver(callback: unknown, approvalQueue: unknown, event: IssueReportHookEvent): Promise<void> {
     const { facet, ...params } = this.ctx.props;
     const gatekeeper = env.INSTANCE_ADMIN_GATEKEEPER.getByName(facet) as unknown as TestFacet;
     return gatekeeper.testDeliver(params, callback, approvalQueue, event);
@@ -143,7 +142,8 @@ export type TestFacet = {
   testRestoreThrough(facet: string): Promise<void>;
   /** Delivers through the target the facet's `[restore]()` returns for a hook's delivery stub. */
   testDeliver(
-    params: IssueReportHookParams, callback: unknown, approvalQueue: unknown, event: IssueReportEvent,
+    params: IssueReportHookParams, callback: unknown, approvalQueue: unknown,
+    event: IssueReportHookEvent,
   ): Promise<void>;
 };
 

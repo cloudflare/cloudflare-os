@@ -284,9 +284,9 @@ describe("who an issue report keeps", () => {
     let report = await run(reports => reports.submit(verbose, input(), false));
     // 200 replies, 100 a UTC day.
     for (let day = 0; day < 2; day++) {
-      await run(reports => {
+      await run(async reports => {
         for (let i = 0; i < MAX_ISSUE_REPORT_REPLIES_PER_DAY; i++) {
-          reports.reply(verbose, report.id, `Reply ${i}`);
+          await reports.reply(verbose, report.id, `Reply ${i}`);
         }
       });
       clock.nextDay();
@@ -402,9 +402,9 @@ describe("what a reporter has seen", () => {
       ids.push((await run(reports => reports.submit(ADA, input(), false))).id);
     }
     for (let id of ids.slice(0, 2)) {
-      await run(reports => {
-        reports.addEntry(GRACE, { via: "api" }, id, "First.", "public");
-        reports.addEntry(GRACE, { via: "api" }, id, "Second.", "public");
+      await run(async reports => {
+        await reports.addEntry(GRACE, { via: "api" }, id, "First.", "public");
+        await reports.addEntry(GRACE, { via: "api" }, id, "Second.", "public");
       });
     }
     expect(await run(reports => reports.unseenCount("ada"))).toBe(2);
@@ -539,9 +539,9 @@ describe("an issue report's thread", () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
     let full = ISSUE_REPORT_ERROR_CODES.threadFull;
-    let admins = (visibility: "public" | "admins", times: number) => run(reports => {
+    let admins = (visibility: "public" | "admins", times: number) => run(async reports => {
       for (let i = 0; i < times; i++) {
-        reports.addEntry(GRACE, { via: "api" }, report.id, "Entry.", visibility);
+        await reports.addEntry(GRACE, { via: "api" }, report.id, "Entry.", visibility);
       }
     });
 
@@ -552,8 +552,8 @@ describe("an issue report's thread", () => {
     await run(reports => reports.reply(ADA, report.id, "Reply 1."));
 
     // The reporter fills their side over two UTC days, 100 replies a day.
-    let replies = (times: number) => run(reports => {
-      for (let i = 0; i < times; i++) reports.reply(ADA, report.id, "Reply.");
+    let replies = (times: number) => run(async reports => {
+      for (let i = 0; i < times; i++) await reports.reply(ADA, report.id, "Reply.");
     });
     await replies(MAX_ISSUE_REPORT_REPLIES_PER_DAY - 1);
     clock.nextDay();
@@ -593,7 +593,7 @@ describe("an issue report's thread", () => {
       await reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
       await reports.setStatus(GRACE, { via: "api" }, report.id, "answered");
       for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
-        reports.addEntry(GRACE, { via: "api" }, report.id, "Answer.", "public");
+        await reports.addEntry(GRACE, { via: "api" }, report.id, "Answer.", "public");
       }
     });
     let entries = (await run(reports => reports.get(report.id))).entries;
@@ -649,9 +649,9 @@ describe("an issue report's thread", () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
     let agent = { via: "gatekeeper", agent: { workspaceId: "w".repeat(64), chatId: 1 } } as const;
-    await run(reports => {
+    await run(async reports => {
       for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
-        reports.addEntry(GRACE, agent, report.id, "An agent's.", visibility);
+        await reports.addEntry(GRACE, agent, report.id, "An agent's.", visibility);
       }
     });
     // Whichever workspace or chat the call came from.
@@ -662,9 +662,9 @@ describe("an issue report's thread", () => {
     }
 
     // The agent's entries took no place of a person's: the admins still write all of theirs.
-    await run(reports => {
+    await run(async reports => {
       for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
-        reports.addEntry(HEDY, { via: "api" }, report.id, "A person's.", visibility);
+        await reports.addEntry(HEDY, { via: "api" }, report.id, "A person's.", visibility);
       }
     });
     expect(await refusal(() => run(reports => reports.addEntry(
@@ -686,14 +686,14 @@ describe("an issue report's thread", () => {
     let first = await run(reports => reports.submit(ADA, input(), false));
     let second = await run(reports => reports.submit(ADA, input(), false));
     let bens = await run(reports => reports.submit(BEN, input(), false));
-    await run(reports => {
+    await run(async reports => {
       for (let i = 0; i < MAX_ISSUE_REPORT_REPLIES_PER_DAY - 1; i++) {
-        reports.reply(ADA, i % 2 === 0 ? first.id : second.id, "Reply.");
+        await reports.reply(ADA, i % 2 === 0 ? first.id : second.id, "Reply.");
       }
       // An admin's entries are not the reporter's replies, even written by the same account: the
       // 100th reply of the day still goes in after one.
-      reports.addEntry(ADA, { via: "api" }, bens.id, "As an admin.", "public");
-      reports.reply(ADA, second.id, "The 100th.");
+      await reports.addEntry(ADA, { via: "api" }, bens.id, "As an admin.", "public");
+      await reports.reply(ADA, second.id, "The 100th.");
     });
     for (let id of [first.id, second.id]) {
       expect(await refusal(() => run(reports => reports.reply(ADA, id, "One more."))))
@@ -843,9 +843,9 @@ describe("the fix statuses", () => {
     let { run } = store();
     let full = ISSUE_REPORT_ERROR_CODES.threadFull;
     let notes = (report: { id: string }, caller: { via: "api" } | typeof AGENT) =>
-        run(reports => {
+        run(async reports => {
           for (let i = 0; i < MAX_ISSUE_REPORT_THREAD_ENTRIES; i++) {
-            reports.addEntry(GRACE, caller, report.id, "A note.", "admins");
+            await reports.addEntry(GRACE, caller, report.id, "A note.", "admins");
           }
         });
     let adminsOnlyLines = async (report: { id: string }) =>
@@ -940,10 +940,10 @@ describe("the assignee", () => {
 
     clock.advance(1000);
     // However the second call arrived, and whether or not it would take the report over.
-    await run(reports => {
-      reports.claim(GRACE, { via: "cli" }, report.id, false);
-      reports.claim(GRACE, { via: "api" }, report.id, true);
-      reports.claim(GRACE, AGENT, report.id, false);
+    await run(async reports => {
+      await reports.claim(GRACE, { via: "cli" }, report.id, false);
+      await reports.claim(GRACE, { via: "api" }, report.id, true);
+      await reports.claim(GRACE, AGENT, report.id, false);
     });
     expect(await run(reports => reports.get(report.id))).toStrictEqual(held);
     expect(assignments(held)).toStrictEqual(["claimed"]);
@@ -1002,9 +1002,9 @@ describe("the assignee", () => {
     let { run, count } = store();
     let file = () => run(reports => reports.submit(ADA, input(), false));
     let [held, unheld, own] = [await file(), await file(), await file()];
-    await run(reports => {
-      reports.claim(HEDY, { via: "api" }, held.id, false);
-      reports.claim(GRACE, { via: "api" }, own.id, false);
+    await run(async reports => {
+      await reports.claim(HEDY, { via: "api" }, held.id, false);
+      await reports.claim(GRACE, { via: "api" }, own.id, false);
     });
     let before = await run(reports => reports.list({ limit: 10 }));
 
@@ -1080,9 +1080,9 @@ describe("the assignee", () => {
     let long: Person =
         { id: `${"l".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}@example.test`, name: "Lo" };
     await run(async reports => {
-      reports.claim(GRACE, { via: "api" }, a.id, false);
-      reports.claim(HEDY, { via: "api" }, b.id, false);
-      reports.claim(long, { via: "api" }, d.id, false);
+      await reports.claim(GRACE, { via: "api" }, a.id, false);
+      await reports.claim(HEDY, { via: "api" }, b.id, false);
+      await reports.claim(long, { via: "api" }, d.id, false);
       await reports.setStatus(GRACE, { via: "api" }, b.id, "investigating");
       await reports.setStatus(GRACE, { via: "api" }, c.id, "investigating");
     });
@@ -1119,10 +1119,10 @@ describe("the assignee", () => {
     let report = await run(reports => reports.submit(ADA, input(), false));
     await run(async reports => {
       await reports.setStatus(GRACE, { via: "api" }, report.id, "answered");
-      reports.claim(GRACE, { via: "cli" }, report.id, false);
-      reports.claim(HEDY, { via: "api" }, report.id, true);
-      reports.release(HEDY, AGENT, report.id);
-      reports.claim(GRACE, AGENT, report.id, false);
+      await reports.claim(GRACE, { via: "cli" }, report.id, false);
+      await reports.claim(HEDY, { via: "api" }, report.id, true);
+      await reports.release(HEDY, AGENT, report.id);
+      await reports.claim(GRACE, AGENT, report.id, false);
     });
 
     let read = await run(reports => reports.get(report.id));
@@ -1152,10 +1152,10 @@ describe("the assignee", () => {
     let { run } = store();
     let full = ISSUE_REPORT_ERROR_CODES.threadFull;
     let report = await run(reports => reports.submit(ADA, input(), false));
-    let pairs = (caller: { via: "api" } | typeof AGENT, count: number) => run(reports => {
+    let pairs = (caller: { via: "api" } | typeof AGENT, count: number) => run(async reports => {
       for (let i = 0; i < count; i++) {
-        reports.claim(GRACE, caller, report.id, false);
-        reports.release(GRACE, caller, report.id);
+        await reports.claim(GRACE, caller, report.id, false);
+        await reports.release(GRACE, caller, report.id);
       }
     });
     await pairs(AGENT, MAX_ISSUE_REPORT_THREAD_ENTRIES / 2);
@@ -1177,8 +1177,8 @@ describe("the assignee", () => {
     // A person's changes have no bound, and take no place of the gatekeeper's other kinds.
     await pairs({ via: "api" }, MAX_ISSUE_REPORT_THREAD_ENTRIES / 2 + 1);
     await run(async reports => {
-      reports.addEntry(GRACE, AGENT, report.id, "A note.", "admins");
-      reports.addEntry(GRACE, { via: "api" }, report.id, "A person's note.", "admins");
+      await reports.addEntry(GRACE, AGENT, report.id, "A note.", "admins");
+      await reports.addEntry(GRACE, { via: "api" }, report.id, "A person's note.", "admins");
       await reports.setStatus(GRACE, AGENT, report.id, "investigating");
     });
 
@@ -1197,10 +1197,10 @@ describe("the assignee", () => {
     await run(reports => reports.claim(GRACE, { via: "api" }, report.id, false));
     expect(await refusal(() => run(reports => reports.claim(HEDY, AGENT, report.id, false))))
         .toBe(ASSIGNED);
-    await run(reports => {
-      reports.claim(HEDY, { via: "cli" }, report.id, true);
-      reports.release(HEDY, { via: "cli" }, report.id);
-      reports.claim(GRACE, AGENT, report.id, false);
+    await run(async reports => {
+      await reports.claim(HEDY, { via: "cli" }, report.id, true);
+      await reports.release(HEDY, { via: "cli" }, report.id);
+      await reports.claim(GRACE, AGENT, report.id, false);
     });
     expect(assignments(await run(reports => reports.get(report.id))))
         .toStrictEqual(["claimed", "takenOver", "released", "claimed"]);
@@ -1288,10 +1288,10 @@ describe("the assignee", () => {
     for (let name of ADDED) expect(await columnNames()).not.toContain(name);
     expect(await sql(INDEX)).toStrictEqual([]);
 
-    let migrated = await run((_reports, state) => {
+    let migrated = await run(async (_reports, state) => {
       let restarted = restart(state);
       let kept = restarted.get("report-1");
-      restarted.claim(HEDY, { via: "cli" }, "report-1", false);
+      await restarted.claim(HEDY, { via: "cli" }, "report-1", false);
       return { kept, held: restarted.get("report-1"), own: restarted.getOwn("ada", "report-1") };
     });
     let columns = await sql(COLUMNS);
@@ -1460,11 +1460,12 @@ describe("a store whose entries table has no agent column", () => {
     expect((await sql<{ name: string }>(COLUMNS)).map(column => column.name))
         .not.toContain("agent");
 
-    let migrated = await run((_reports, state) => {
+    let migrated = await run(async (_reports, state) => {
       let restarted = restart(state);
       let entries = restarted.get(report.id).entries;
-      let added = restarted.addEntry(GRACE, { via: "gatekeeper", agent: { workspaceId: "w" } },
-          report.id, "Try again now.", "public");
+      let added = await restarted.addEntry(
+          GRACE, { via: "gatekeeper", agent: { workspaceId: "w" } }, report.id, "Try again now.",
+          "public");
       return { entries, added };
     });
     let columns = await sql(COLUMNS);
@@ -1972,8 +1973,8 @@ describe("listing issue reports", () => {
     let { run } = store();
     let report = await run(reports => reports.submit(ADA, input(), false));
     await run(async reports => {
-      reports.reply(ADA, report.id, "Any news?");
-      reports.addEntry(GRACE, { via: "api" }, report.id, "Looking.", "public");
+      await reports.reply(ADA, report.id, "Any news?");
+      await reports.addEntry(GRACE, { via: "api" }, report.id, "Looking.", "public");
       await reports.setStatus(GRACE, { via: "api" }, report.id, "investigating");
     });
     let own = await run(reports => reports.getOwn("ada", report.id));
@@ -1987,9 +1988,9 @@ describe("listing issue reports", () => {
 
     // The rule is how the entry was written, so it holds for an admin who filed the report.
     let graces = await run(reports => reports.submit(GRACE, input(), false));
-    await run(reports => {
-      reports.reply(GRACE, graces.id, "As the reporter.");
-      reports.addEntry(GRACE, { via: "cli" }, graces.id, "As an admin.", "public");
+    await run(async reports => {
+      await reports.reply(GRACE, graces.id, "As the reporter.");
+      await reports.addEntry(GRACE, { via: "cli" }, graces.id, "As an admin.", "public");
     });
     expect((await run(reports => reports.getOwn(GRACE.id, graces.id)))
         .entries.map(entry => entry.author))
@@ -2019,9 +2020,9 @@ describe("issue report retention", () => {
     let clock = fakeClock();
     let { run, sql, count } = store();
     let old = await run(reports => reports.submit(ADA, input(), false));
-    await run(reports => {
-      reports.reply(ADA, old.id, "Hello?");
-      reports.addEntry(GRACE, { via: "api" }, old.id, "A note.", "admins");
+    await run(async reports => {
+      await reports.reply(ADA, old.id, "Hello?");
+      await reports.addEntry(GRACE, { via: "api" }, old.id, "A note.", "admins");
     });
     clock.advance(2 * DAY_MS);
     let young = await run(reports => reports.submit(ADA, input(), false));

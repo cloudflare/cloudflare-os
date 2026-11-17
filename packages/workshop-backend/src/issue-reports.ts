@@ -15,7 +15,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import type {
-  AdminGatekeeperVendor, IssueReportEvent,
+  AdminGatekeeperVendor, IssueReportChange, IssueReportEvent,
 } from "@gadgets/workshop-shared/admin-gatekeeper";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -123,6 +123,7 @@ type EventRow = {
   kind: IssueReportEvent["kind"];
   report_id: string;
   label: string;
+  status: string | null;
   at: number;
 };
 
@@ -289,12 +290,19 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
 }
 
 // An event as the admin gatekeeper is sent it: a row's `label` is the priority of a report that
-// was filed, or the status an investigation ended with.
-function eventOf({ id, kind, report_id: reportId, label, at }: EventRow): IssueReportEvent {
+// was filed, the status an investigation ended with, or what a write to a report was, whose
+// `status` is then the status that write set.
+function eventOf({ id, kind, report_id: reportId, label, status, at }: EventRow)
+    : IssueReportEvent {
   let event = { id, reportId, at: new Date(at) };
-  return kind === "reported"
-      ? { kind, ...event, priority: label as IssueReportPriority }
-      : { kind, ...event, status: label as Exclude<IssueReportStatus, "new" | "investigating"> };
+  if (kind === "reported") return { kind, ...event, priority: label as IssueReportPriority };
+  if (kind === "investigationComplete") {
+    return { kind, ...event, status: label as Exclude<IssueReportStatus, "new" | "investigating"> };
+  }
+  return {
+    kind, ...event, change: label as IssueReportChange,
+    ...(status !== null && { status: status as IssueReportStatus }),
+  };
 }
 
 // Whether the deployment has turned the admin gatekeeper off: an admin disabled the connector,
@@ -378,7 +386,7 @@ function fewerBytesThanDeclared(): TypeError {
  *     byte_length INTEGER NOT NULL, started_at INTEGER NOT NULL, n INTEGER NOT NULL) STRICT;
  *   indexes (report_seq, n), (reporter_id), (state, started_at)
  *   events(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, kind TEXT NOT NULL,
- *     report_id TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
+ *     report_id TEXT NOT NULL, label TEXT NOT NULL, status TEXT, at INTEGER NOT NULL) STRICT;
  * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own, and its
  * `agent` is the AdminAgentOrigin, as JSON, of one written through the admin gatekeeper; a bare
  * change of status is an admins' entry with a status and no text, and a bare change of assignee
@@ -389,12 +397,14 @@ function fewerBytesThanDeclared(): TypeError {
  * read.
  *
  * `events` holds what the admin gatekeeper is still to be told (see IssueReportEvent): a report
- * that was filed, an investigation that ended. A row is written in one step with the change it
- * tells of and deleted once the gatekeeper has taken it; nothing else of a report leaves the
- * store this way, and nothing but the delivery reads the table. The event is known outside the
- * store by the row's random `id`: its `seq`, which counts the deployment's events, stays here.
- * On a deployment whose admin gatekeeper is not bound or is turned off the table is emptied
- * instead, so turning the gatekeeper on tells it of nothing that came before.
+ * that was filed, an investigation that ended, a write that changed a report. What the reporter
+ * attaches to a report (an image, a grant) is no such write, whenever it arrives. A row is
+ * written in one step with the change it tells of and deleted once the gatekeeper has taken it;
+ * nothing else of a report leaves the store this way, and nothing but the delivery reads the
+ * table. The event is known outside the store by the row's random `id`: its `seq`, which counts
+ * the deployment's events, stays here. On a deployment whose admin gatekeeper is not bound or
+ * is turned off the table is emptied instead, so turning the gatekeeper on tells it of nothing
+ * that came before.
  */
 export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   // The delivery of the waiting events that is under way, if one is: see #deliverEvents().
@@ -502,6 +512,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       kind TEXT NOT NULL,
       report_id TEXT NOT NULL,
       label TEXT NOT NULL,
+      status TEXT,
       at INTEGER NOT NULL
     ) STRICT`);
     // A store whose events table has no `id` column gains it here, as `entries` gains `agent`,
@@ -512,6 +523,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       for (let { seq } of sql.exec<{ seq: number }>("SELECT seq FROM events").toArray()) {
         sql.exec("UPDATE events SET id = ? WHERE seq = ?", crypto.randomUUID(), seq);
       }
+    }
+    // And `status` likewise: no event that waits in such a store tells of a status that was set.
+    if (sql.exec("SELECT 1 FROM pragma_table_info('events') WHERE name = 'status'")
+        .toArray().length === 0) {
+      sql.exec("ALTER TABLE events ADD COLUMN status TEXT");
     }
   }
 
@@ -556,8 +572,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       id, now, user.id, user.name, text, input.priority, workspaceId ?? null,
       ownsWorkspace && workspaceId !== undefined ? 1 : 0, JSON.stringify(context), now);
     this.#addEvent("reported", id, input.priority, now);
-    await this.#wakeForEvents();
-    this.ctx.waitUntil(this.#deliverEvents());
+    await this.#tellSoon();
     return ownReportOf(this.#report("r.id = ?", id)!);
   }
 
@@ -772,10 +787,12 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * entry then carries. Throws (TypeError) for a text that is not one; refused `notFound`,
    * `closed`, `threadFull` at MAX_ISSUE_REPORT_THREAD_ENTRIES replies in the report, and
    * `tooManyReplies` at MAX_ISSUE_REPORT_REPLIES_PER_DAY replies since UTC midnight over all the
-   * reporter's reports. The admins' entries count in neither.
+   * reporter's reports. The admins' entries count in neither. Tells the admin gatekeeper
+   * ("changed") in the step that adds the entry; nothing of the telling can refuse or delay the
+   * reply.
    */
-  reply(reporter: Pick<AiChatAuthorInfo, "id" | "name">, reportId: string, text: string)
-      : IssueReportEntry {
+  async reply(reporter: Pick<AiChatAuthorInfo, "id" | "name">, reportId: string, text: string)
+      : Promise<IssueReportEntry> {
     let user = namedUser(reporter);
     let body = writtenText(text);
     let report = this.#ownReport(user.id, reportId);
@@ -795,6 +812,8 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     let reopens = report.status === "answered" || report.status === "waitingOnReporter";
     let entry = this.#addEntry(report.seq, user, "public", null, body,
         reopens ? "withAdmin" : undefined);
+    this.#addEvent("changed", report.id, "reply", entry.at, reopens ? "withAdmin" : undefined);
+    await this.#tellSoon();
     return entryOf(entry, "reporter");
   }
 
@@ -989,24 +1008,27 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * or a visibility that is not one; refused `notFound`, and `threadFull` once the admins have
    * written MAX_ISSUE_REPORT_THREAD_ENTRIES entries of that visibility. The entries made through
    * the admin gatekeeper, which a rule can make with nobody deciding, have a bound of their own
-   * and take no place of a person's.
+   * and take no place of a person's. Tells the admin gatekeeper ("changed").
    */
-  addEntry(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+  async addEntry(admin: Pick<AiChatAuthorInfo, "id" | "name">,
       caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string,
-      text: string, visibility: IssueReportEntry["visibility"]): IssueReportEntry {
+      text: string, visibility: IssueReportEntry["visibility"]): Promise<IssueReportEntry> {
     let author = namedUser(admin);
     let label = adminCallerTerms(caller);
     let body = writtenText(text);
     if (visibility !== "public" && visibility !== "admins") {
       throw new TypeError("Invalid visibility.");
     }
-    let { seq } = this.#reportSeq(reportId);
+    let { seq, id } = this.#reportSeq(reportId);
     let written = this.#threadCount(
         seq, visibility === "public" ? "adminPublic" : "adminOnly", label.via === "gatekeeper");
     if (written >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
-    return entryOf(this.#addEntry(seq, author, visibility, label, body), "admins");
+    let row = this.#addEntry(seq, author, visibility, label, body);
+    this.#addEvent("changed", id, visibility === "public" ? "reply" : "note", row.at);
+    await this.#tellSoon();
+    return entryOf(row, "admins");
   }
 
   /**
@@ -1017,8 +1039,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * a call made through the admin gatekeeper, which a rule can make with nobody deciding, is,
    * once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of this report's status were made through it. It
    * leaves the report as seen as it was. A report that leaves "investigating" for any status but "new" has
-   * ended an investigation, which the admin gatekeeper is told ("investigationComplete"). Throws
-   * (TypeError) for a caller or a status that is not one; refused `notFound`.
+   * ended an investigation, which the admin gatekeeper is told ("investigationComplete"). Tells
+   * the admin gatekeeper ("changed"). Throws (TypeError) for a caller or a status that is not
+   * one; refused `notFound`.
    */
   async setStatus(admin: Pick<AiChatAuthorInfo, "id" | "name">,
       caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string,
@@ -1037,10 +1060,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     let visibility: IssueReportEntry["visibility"] =
         reads(report.status as IssueReportStatus) === reads(status) ? "admins" : "public";
     let { at } = this.#addEntry(report.seq, author, visibility, label, "", status);
-    if (report.status !== "investigating" || status === "new") return;
-    this.#addEvent("investigationComplete", report.id, status, at);
-    await this.#wakeForEvents();
-    this.ctx.waitUntil(this.#deliverEvents());
+    if (report.status === "investigating" && status !== "new") {
+      this.#addEvent("investigationComplete", report.id, status, at);
+    }
+    this.#addEvent("changed", report.id, "status", at, status);
+    await this.#tellSoon();
   }
 
   /**
@@ -1052,9 +1076,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * take-over through the gatekeeper; refused `notFound`, `assigned` for a report another
    * admin holds, and `threadFull` for a call made through the gatekeeper once
    * MAX_ISSUE_REPORT_THREAD_ENTRIES changes of this report's assignee were made through it.
+   * Tells the admin gatekeeper ("changed").
    */
-  claim(admin: Pick<AiChatAuthorInfo, "id" | "name">,
-      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string, takeOver: boolean): void {
+  async claim(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string, takeOver: boolean)
+      : Promise<void> {
     let holder = namedUser(admin);
     let label = adminCallerTerms(caller);
     if (label.via === "gatekeeper" && takeOver) {
@@ -1065,17 +1091,20 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (report.assignee_id !== null && !takeOver) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
     }
-    this.#assign(report.seq, holder, label, report.assignee_id === null ? "claimed" : "takenOver");
+    let { at } = this.#assign(
+        report.seq, holder, label, report.assignee_id === null ? "claimed" : "takenOver");
+    this.#addEvent("changed", report.id, "assignment", at);
+    await this.#tellSoon();
   }
 
   /**
    * Leaves a report `admin` holds with no assignee, entered in its thread as claim() enters a
    * claim. A report nobody holds is left as it is. Throws (TypeError) for a caller that is not
    * one; refused `notFound`, `assigned` for a report another admin holds, and `threadFull` as
-   * claim() is.
+   * claim() is. Tells the admin gatekeeper ("changed").
    */
-  release(admin: Pick<AiChatAuthorInfo, "id" | "name">,
-      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string): void {
+  async release(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string): Promise<void> {
     let holder = namedUser(admin);
     let label = adminCallerTerms(caller);
     let report = this.#reportSeq(reportId);
@@ -1083,7 +1112,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (report.assignee_id !== holder.id) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
     }
-    this.#assign(report.seq, holder, label, "released");
+    let { at } = this.#assign(report.seq, holder, label, "released");
+    this.#addEvent("changed", report.id, "assignment", at);
+    await this.#tellSoon();
   }
 
   // Enters a change of assignee in a report's thread, bounded for the admin gatekeeper as its
@@ -1097,13 +1128,18 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     return this.#addEntry(reportSeq, author, "admins", label, "", undefined, assignment);
   }
 
-  /** Replaces a report's links with `links` as reportLinks() keeps them. Throws (TypeError) for
+  /** Replaces a report's links with `links` as reportLinks() keeps them. Links the report
+   * already has change nothing. Tells the admin gatekeeper ("changed"). Throws (TypeError) for
    * links that are not ones; refused `notFound`. */
-  setLinks(reportId: string, links: string[]): void {
+  async setLinks(reportId: string, links: string[]): Promise<void> {
     let kept = JSON.stringify(reportLinks(links));
     let changed = this.ctx.storage.sql.exec(
-        "UPDATE reports SET links = ? WHERE id = ? RETURNING seq", kept, reportId).toArray();
-    if (changed.length === 0) throw notFound();
+        "UPDATE reports SET links = ? WHERE id = ? AND links <> ? RETURNING seq",
+        kept, reportId, kept).toArray();
+    // No row: the links are those the report has, or there is no such report.
+    if (changed.length === 0) return void this.#reportSeq(reportId);
+    this.#addEvent("changed", reportId, "links", Date.now());
+    await this.#tellSoon();
   }
 
   // --- Images ---
@@ -1205,20 +1241,29 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   // --- Events ---
 
   // Writes the row that tells the admin gatekeeper of a change. Called in the synchronous step
-  // that made the change, so the two are one write.
+  // that made the change, so the two are one write. `status`: the status a write to a report set.
   #addEvent(kind: IssueReportEvent["kind"], reportId: string,
-      label: IssueReportPriority | IssueReportStatus, at: number): void {
+      label: IssueReportPriority | IssueReportStatus | IssueReportChange, at: number,
+      status?: IssueReportStatus): void {
     this.ctx.storage.sql.exec(
-        "INSERT INTO events (id, kind, report_id, label, at) VALUES (?, ?, ?, ?, ?)",
-        crypto.randomUUID(), kind, reportId, label, at);
+        "INSERT INTO events (id, kind, report_id, label, status, at) VALUES (?, ?, ?, ?, ?, ?)",
+        crypto.randomUUID(), kind, reportId, label, status ?? null, at);
+  }
+
+  // Event rows were written in this step: sets the wake that outlives an eviction, and starts
+  // a delivery that nothing here waits for. Local storage only, so no caller is slowed or
+  // failed by the admin gatekeeper being slow, failing, off or not bound.
+  async #tellSoon(): Promise<void> {
+    await this.#wakeForEvents();
+    this.ctx.waitUntil(this.#deliverEvents());
   }
 
   // An event row is waiting: wake within EVENT_RETRY_MS, so that it outlives an object evicted
   // before its delivery settles. Only ever moves the alarm earlier. Its caller awaits nothing
   // between writing the row and this, so the row and the alarm are one write. What it costs:
-  // alarm()'s pass runs once more, a minute after each report filed and each investigation
-  // ended, even where the admin gatekeeper is off. The pass deletes only what is due, so an
-  // early run changes nothing.
+  // alarm()'s pass runs once more, a minute after each report filed and each write to one,
+  // even where the admin gatekeeper is off (the delivery then deletes the rows). The pass
+  // deletes only what is due, so an early run changes nothing.
   async #wakeForEvents(): Promise<void> {
     let retry = Date.now() + EVENT_RETRY_MS;
     let at = await this.ctx.storage.getAlarm();
@@ -1248,7 +1293,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     try {
       for (;;) {
         rows = sql.exec<EventRow>(
-          "SELECT seq, id, kind, report_id, label, at FROM events ORDER BY seq LIMIT ?",
+          "SELECT seq, id, kind, report_id, label, status, at FROM events ORDER BY seq LIMIT ?",
           EVENT_BATCH).toArray();
         if (rows.length === 0) return;
         let vendor = getAuthVendorBinding(this.env, ADMIN_GATEKEEPER_VENDOR_ID) as

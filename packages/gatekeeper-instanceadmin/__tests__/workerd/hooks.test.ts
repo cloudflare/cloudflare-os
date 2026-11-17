@@ -11,7 +11,9 @@ import type {
   HookController, HookDescription, HookInitiator, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { IssueReportHookDriver, type SentIssueReportEvent } from "../../src/hooks.js";
+import {
+  IssueReportHookDriver, type IssueReportHookEvent, type SentIssueReportEvent,
+} from "../../src/hooks.js";
 import { HOOK_CALLBACK_TIMEOUT_MS, SERVICES } from "../../src/surface.js";
 import { ROOT, type Session, recordingTarget, rejection } from "./fakes.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
@@ -110,12 +112,14 @@ async function subscribe(method: Subscribe, { enable = true } = {}) {
 const FILED_AT = new Date("2026-03-04T05:06:07.000Z");
 const ENDED_AT = new Date("2026-03-05T08:09:10.000Z");
 
-const reported = (reportId: string, priority: "low" | "medium" | "high" = "high"): IssueReportEvent =>
+const reported = (
+  reportId: string, priority: "low" | "medium" | "high" = "high",
+): IssueReportHookEvent =>
   ({ kind: "reported", id: crypto.randomUUID(), reportId, priority, at: FILED_AT });
 
 const ended = (
   reportId: string, status: "answered" | "waitingOnReporter" | "withAdmin" | "closed" = "answered",
-): IssueReportEvent =>
+): IssueReportHookEvent =>
   ({ kind: "investigationComplete", id: crypto.randomUUID(), reportId, status, at: ENDED_AT });
 
 /**

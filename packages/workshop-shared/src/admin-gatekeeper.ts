@@ -83,11 +83,35 @@ export interface AdminGatekeeper<Session> extends Gatekeeper<Session> {
 }
 
 /**
+ * What a write to an issue report was, on the event that tells of it (IssueReportEvent,
+ * "changed"):
+ *   - "status":     its status was set (AdminApi.setIssueReportStatus());
+ *   - "assignment": it was claimed, taken over or released;
+ *   - "reply":      a public entry was added to its thread, by its reporter or by an admin;
+ *   - "note":       an entry for admins alone was added to its thread;
+ *   - "links":      its links were replaced.
+ */
+export const ISSUE_REPORT_CHANGES = ["status", "assignment", "reply", "note", "links"] as const;
+
+/** One of ISSUE_REPORT_CHANGES. */
+export type IssueReportChange = typeof ISSUE_REPORT_CHANGES[number];
+
+/**
  * What the issue report store tells the admin gatekeeper: ids and labels, never a report's text,
  * reporter or thread. A subscriber reads the report through its own binding.
  *   - "reported": a report was filed. Its images, and the grant its reporter may give with
  *     it, are attached by later calls: a subscriber that reads at once may find neither yet.
  *   - "investigationComplete": an admin moved a report from "investigating" to `status`.
+ *   - "changed": a report was written to after it was filed, by an admin, by an agent or a
+ *     gadget acting for one, or by its reporter: one event for each write that changed it.
+ *     `change` says what the write was, and `status` is the status it set, as admins read it,
+ *     when it set one: on every "status", and on the reporter's "reply" that moved the report
+ *     to "withAdmin". A write that changed nothing (a status the report had, a claim by its
+ *     holder, links replaced by the same links) and a refused one send none. It carries
+ *     neither the text nor a name nor who made the write. What a reporter attaches to their
+ *     report (an image, a grant) is no write to it and sends none, whenever it arrives. A
+ *     report that leaves "investigating" sends this and "investigationComplete", two events
+ *     with an id each.
  * `id` is the event's own, and what a hook's subscriber tells events apart by: random, so that
  * it says nothing of how many events the deployment has had, the same each time the event is
  * sent, and never another event's. `at` would not do: a report's investigation can end twice
@@ -101,6 +125,14 @@ export type IssueReportEvent =
     reportId: string;
     status: Exclude<IssueReportStatus, "new" | "investigating">;
     at: Date;
+  }
+  | {
+    kind: "changed";
+    id: string;
+    reportId: string;
+    change: IssueReportChange;
+    status?: IssueReportStatus;
+    at: Date;
   };
 
 /** The admin gatekeeper's vendor entrypoint, as the Workshop's issue report store calls it. */
@@ -109,6 +141,9 @@ export interface AdminGatekeeperVendor extends GatekeeperVendor {
    * Take `events`, oldest first, for the hooks subscribed to them. Resolving means every event
    * is stored for delivery (or has no subscriber): the store then forgets them. A rejection
    * makes the store send them again, so an event can arrive more than once, with the same `id`.
+   * The store sends one call's events again until all are taken, so the gatekeeper takes and
+   * drops an event whose kind or label it does not know (one a store released after it sends)
+   * rather than reject the call, which would hold back every event behind it.
    */
   issueReportEvents(events: IssueReportEvent[]): Promise<void>;
 }
