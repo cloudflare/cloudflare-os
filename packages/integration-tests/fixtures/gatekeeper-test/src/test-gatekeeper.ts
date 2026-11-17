@@ -27,7 +27,7 @@ import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/co
 import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
-  Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
+  Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, GitCache, HookController,
   HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
   ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -63,6 +63,13 @@ interface TestThing {
   mountWorktree(worktree: unknown): Promise<string>;
   /** Runs a command in the kept worktree that leaves it holding just \`path\`, with \`text\`. */
   runCommand(path: string, text: string): Promise<string>;
+  /**
+   * Stands for a git remote: gives the workspace the remote's one commit, a root commit holding
+   * \`README.md\`, and returns its ID. Commits made on top of it can be pushed with \`push()\`.
+   */
+  seedRepository(): Promise<string>;
+  /** Queues a push of \`commitId\` and its history to the test repository, for approval. */
+  push(commitId: string): Promise<void>;
   /** Binds a hook the integration test fires through \`/control/fire-hook\`. */
   watch(key: string, callback: ValueHook): Promise<void>;
   /** Binds a hook the integration test delivers through \`/control/queue-hook\`. */
@@ -212,6 +219,31 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     const state = this.getActionState(label);
     state.pending = state.pending.filter(action => action.id !== id);
     this.ctx.storage.kv.put(`actions:${label}`, state);
+    this.ctx.storage.kv.delete(`push:${label}:${id}`);
+  }
+
+  /** Takes the next action id for a push, which applyAction() sends instead of setting a value. */
+  stagePush(label: string): number {
+    const state = this.getActionState(label);
+    const id = state.nextId++;
+    this.ctx.storage.kv.put(`actions:${label}`, state);
+    this.ctx.storage.kv.put(`push:${label}:${id}`, true);
+    return id;
+  }
+
+  isPush(label: string, id: number): boolean {
+    return this.ctx.storage.kv.get<boolean>(`push:${label}:${id}`) ?? false;
+  }
+
+  /** Applies push `id`: `oids` are the objects of the pack the Overseer built for it. */
+  recordPush(label: string, id: number, oids: string[]): void {
+    this.ctx.storage.kv.delete(`push:${label}:${id}`);
+    this.ctx.storage.kv.put(`pushed:${label}`, oids);
+  }
+
+  /** The objects the last applied push of `label` sent, or null when none has been applied. */
+  getPushedObjects(label: string): string[] | null {
+    return this.ctx.storage.kv.get<string[]>(`pushed:${label}`) ?? null;
   }
 
   applyAction(label: string, id: number): void {
@@ -746,7 +778,7 @@ export class TestVerifier
  * A live session against a Test Thing, opened via `GatekeeperClient.openSession()`. `readValue()`
  * records an observation (optionally `containsRestrictedData`); `writeValue()` submits a
  * `set-value` action whose `autoApprovable` verdict (false unless the caller opts in) and warnings
- * the caller chooses.
+ * the caller chooses. `seedRepository()` and `push()` make the connection stand for a git remote.
  */
 export interface TestSession {
   /**
@@ -765,6 +797,18 @@ export interface TestSession {
   mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
   /** Runs a command in the worktree mountWorktree() kept, in a later execution. */
   runCommand(path: string, text: string): Promise<string>;
+  /**
+   * Stands for a git remote: puts a root commit holding one text file in the workspace's git
+   * cache, which proves this connection's remote has it, and returns its oid, the same on every
+   * run. A push's ancestry has to end on such a commit.
+   */
+  seedRepository(): Promise<string>;
+  /**
+   * Submits a push of `commitId` as an action a rule may approve (kind `test.push`), so a test
+   * can enable the rule and see whether the push still waits. Applying it records the objects of
+   * the pack the Overseer builds, which `/control/pushed-objects` returns.
+   */
+  push(commitId: string): Promise<void>;
   watch(key: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Binds a hook kept in a `HookRegistry`, which `/control/queue-hook` delivers to by `name`. */
   subscribe(name: string, callback: RpcStub<ValueHook>): Promise<void>;
@@ -846,6 +890,33 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     return this.state.runCommand(this.approvalQueue, path, text);
   }
 
+  async seedRepository(): Promise<string> {
+    using cache = await this.approvalQueue.getGitCache();
+    const encoder = new TextEncoder();
+    const blob = await cache.put("blob", encoder.encode("A repository that exists only for tests.\n"));
+    const tree = await cache.put("tree", concat([encoder.encode("100644 README.md\0"), hexBytes(blob)]));
+    const identity = `Test Remote <remote@${VENDOR_HOST}> 1700000000 +0000`;
+    return await cache.put("commit", encoder.encode(
+        `tree ${tree}\nauthor ${identity}\ncommitter ${identity}\n\nSeed the test repository\n`));
+  }
+
+  async push(commitId: string): Promise<void> {
+    const id = await this.state.stagePush(this.label);
+    try {
+      await this.approvalQueue.submitAction(id, {
+        title: "Push to the test repository",
+        description: `Push commit \`${commitId}\` and its history to the test repository.`,
+        implementsRevert: false,
+        pushedCommits: [commitId],
+        actionKind: PUSH_ACTION_KIND,
+        autoApprovable: true,
+      });
+    } catch (error) {
+      await this.state.discardAction(this.label, id);
+      throw error;
+    }
+  }
+
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {
     await this.approvalQueue.bindHook(
         // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
@@ -873,6 +944,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 }
 
 const SET_VALUE_ACTION_KIND: ActionKind = { tag: "set-value", label: "Set value" };
+const PUSH_ACTION_KIND: ActionKind = { tag: "test.push", label: "Pushes" };
 
 /** Polls rather than parks a promise: the release arrives on another request to TestControl. */
 async function waitForApplyRelease(state: DurableObjectStub<TestControl>, label: string) {
@@ -954,6 +1026,7 @@ export class TestGatekeeper
     return TYPES_CODE;
   }
 
+  /** Pushes are left out: a rule for them is made on a held push, as "Always approve" makes one. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return [SET_VALUE_ACTION_KIND];
   }
@@ -998,7 +1071,7 @@ export class TestGatekeeper
         { resourceUrl: this.ctx.props.resourceUrl, type: "remove", id });
   }
 
-  async applyAction(action: number): Promise<void> {
+  async applyAction(action: number, cache: RpcStub<GitCache>): Promise<void> {
     if (this.ctx.props.simulated) throw new Error("This test thing has not been created yet.");
     const state = control(this.ctx.exports);
     const { label } = this.ctx.props;
@@ -1008,7 +1081,13 @@ export class TestGatekeeper
       if (held) await waitForApplyRelease(state, label);
       const failure = await state.takeApplyFailure(label);
       if (failure !== null) throw new Error(failure);
-      await state.applyAction(label, action);
+      if (await state.isPush(label, action)) {
+        // What a remote would receive: the pack the Overseer builds for this action, read back
+        // object by object.
+        await state.recordPush(label, action, await cache.consumePack(await cache.buildPack()));
+      } else {
+        await state.applyAction(label, action);
+      }
     } finally {
       await state.recordApplySettled(label);
     }
@@ -1220,6 +1299,14 @@ export default {
         value: state.value,
         applyCount: state.applyCount,
       });
+    }
+
+    // The objects the last applied push of `label` sent, null when none has been applied.
+    // Body: {"label": "..."} -> {"oids": string[] | null}
+    if (url.pathname === "/control/pushed-objects" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      return Response.json({ oids: await control(ctx.exports).getPushedObjects(label) });
     }
 
     // Body: {"label": "..."} -> {"configurations": (string | null)[]}, one per applyCreation().
