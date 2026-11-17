@@ -5429,6 +5429,27 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 export const PUSH_REVIEW_PAGE_SIZE = 100;
 
 /**
+ * The most objects one Overseer.getPushReview() call reads from the workspace's git store to
+ * list a review, and with MAX_PUSH_REVIEW_WALK_BYTES the most bytes of them: the commits and
+ * directories the push sends, those of their parents that they are compared with, and each
+ * file sent, for its size. Every call lists the review from its start, the commits oldest
+ * first, so it reads a whole chain of them before it lists the first entry, whatever the page
+ * holds: this bounds that work, counting what yields no entry too. A call that runs out says
+ * so (PushReview.truncated). No push within the bounds of a workspace that holds restricted
+ * data (see MAX_RESTRICTED_PUSH_COMMITS in `@gadgets/workshop-shared/gatekeeper`) sends or
+ * names as many objects.
+ */
+export const MAX_PUSH_REVIEW_WALK_OBJECTS = 50_000;
+
+/**
+ * The most bytes of objects one Overseer.getPushReview() call reads to list a review (see
+ * MAX_PUSH_REVIEW_WALK_OBJECTS): four times the budget a page ends on, so that a review of
+ * several full pages can be listed. An object's size is known only once it is read, so a call
+ * inflates at most this and one object more, and parses at most this.
+ */
+export const MAX_PUSH_REVIEW_WALK_BYTES = 4 * READ_FILES_RESPONSE_BUDGET;
+
+/**
  * The largest `cursor` Overseer.getPushReview() accepts. Every call lists the review again from
  * its start, and a few objects can list without end (a directory that names the one below it
  * twice at every level), so this bounds the entries one call passes over. A review with more
@@ -5547,6 +5568,16 @@ export type PushReview = {
    * an empty directory the push sends where a parent's directory was not in the store.
    */
   next?: number;
+
+  /**
+   * Present when the call read as much as one call may (MAX_PUSH_REVIEW_WALK_OBJECTS,
+   * MAX_PUSH_REVIEW_WALK_BYTES) before it had listed a whole page: `entries` holds what it
+   * listed from `cursor` until then, if anything, and `next` is absent. Every call starts
+   * over, so none lists further: the push is too large to review whole, and what `next` says
+   * of a last page does not hold for this one. A workspace that holds restricted data queues
+   * no push whose review is cut short.
+   */
+  truncated?: true;
 
   /**
    * How many objects the push sends in all: commits, trees and blobs. Zero when the remote
@@ -6060,9 +6091,11 @@ export interface Overseer extends RpcTarget {
    *
    * At most PUSH_REVIEW_PAGE_SIZE entries per call, and fewer once what they hold and what
    * was read to describe them passes READ_FILES_RESPONSE_BUDGET (the first entry of a page is
-   * always returned); pass the previous page's `next` as `cursor` for the following page. File
-   * content is not included: read it with readFilesAtCommit(), or readBlob() for an object
-   * listed by id. The read never pulls from a connection.
+   * always returned); pass the previous page's `next` as `cursor` for the following page. A
+   * call reads no more of the store than MAX_PUSH_REVIEW_WALK_OBJECTS allows, and a push too
+   * large to list within that comes back `truncated`. File content is not included: read it
+   * with readFilesAtCommit(), or readBlob() for an object listed by id. The read never pulls
+   * from a connection.
    *
    * This is how an approver reads a push before approving it. approveAction() does not check
    * that it was read.

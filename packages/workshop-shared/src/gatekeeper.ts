@@ -1695,10 +1695,12 @@ export type ObservationDescription = {
    *   sends is the target of a symbolic link, and no commit adds or changes a submodule entry;
    *   each path a commit changes can be compared with every parent of that commit, the parent
    *   and its directories on the way to the path being in the store too; every object it sends
-   *   is a commit of the push or sits at a path of one; and it stays within
+   *   is a commit of the push or sits at a path of one; it stays within
    *   `MAX_RESTRICTED_PUSH_COMMITS`, `MAX_RESTRICTED_PUSH_FILES`, `MAX_RESTRICTED_PUSH_PATHS` and
-   *   `MAX_RESTRICTED_PUSH_TEXT_SIZE`. Any other push is refused, queuing nothing, with an error
-   *   naming what failed. An accepted push waits for a person, who reads its commits through
+   *   `MAX_RESTRICTED_PUSH_TEXT_SIZE`; and one call can list its review whole
+   *   (`MAX_PUSH_REVIEW_WALK_OBJECTS` in `@gadgets/workshop-shared/api`), which only what its
+   *   parents' directories hold can prevent. Any other push is refused, queuing nothing, with an
+   *   error naming what failed. An accepted push waits for a person, who reads its commits through
    *   `Overseer.getPushReview()` (see `@gadgets/workshop-shared/api`). A push that was already
    *   waiting when the workspace first read restricted data is not judged again: what it sends
    *   was fixed before that read. The kernel does not restrict which connections may be acted
