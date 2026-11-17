@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type {
-  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig, UserNotification,
+  AiChatAuthorInfo, AiModelConfig, UserNotification,
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -30,8 +30,10 @@ interface OverseerInternals {
     };
   };
   storage: {
-    chatMeta: { put(meta: AiChatMetadata): void };
-    chats: { put(message: AiChatMessage): void };
+    chatMeta: OverseerDurableObject["impl"]["storage"]["chatMeta"];
+    chats: OverseerDurableObject["impl"]["storage"]["chats"];
+    chatContext: OverseerDurableObject["impl"]["storage"]["chatContext"];
+    activeAgents: OverseerDurableObject["impl"]["storage"]["activeAgents"];
     gatekeepers: { put(record: object): void };
     actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
@@ -171,6 +173,7 @@ interface TurnOptions {
   // Who starts the turn: the owner by default, or a gadget, as for a spawned agent.
   initiator?: AiChatAuthorInfo;
   spawned?: boolean;
+  runtime?: { maxDurationMs: number, deadline?: number };
 }
 
 // Seeds a chat whose owner asked something, then starts a turn from a request that stays open
@@ -180,6 +183,7 @@ function startTurn(responses: (() => Response)[], {
   usageLimited = false,
   initiator = OWNER,
   spawned = false,
+  runtime,
 }: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
   let notifications: [string, UserNotification][] = [];
@@ -212,6 +216,12 @@ function startTurn(responses: (() => Response)[], {
     impl.storage.chats.put({
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
       author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
+    });
+    if (runtime) impl.storage.chatContext.put({
+      chatId: CHAT_ID, bindings: {},
+      spawnerConfig: { displayName: "Timed agent", modelId: MODEL.id, env: {},
+        maxDurationMs: runtime.maxDurationMs },
+      ...(runtime.deadline === undefined ? {} : { agentDeadline: runtime.deadline }),
     });
     impl.startAgent(CHAT_ID, { profile: MODEL, config }, initiator, INITIATOR_USER_ID);
     await impl.waitForAllAgentsToComplete();
@@ -453,6 +463,51 @@ describe("agent tracing", () => {
       ["tool_approval testvendor", { "cloudflare.agents.tool.approval.state": "approved" }],
     ]);
     for (let span of approvals) expect(JSON.stringify(span.attributes)).not.toContain(SECRET);
+  });
+});
+
+describe("spawned agent time limits", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([undefined, 300_000])("aborts a running model using its persisted deadline (%s)", async remaining => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let now = Date.now();
+    let duration = 900_000;
+    let turn = startTurn([() => { throw new Error("The aborted request must not finish."); }], {
+      runtime: { maxDurationMs: duration,
+        ...(remaining === undefined ? {} : { deadline: now + remaining }) },
+    });
+    await turn.requested;
+    let deadline = now + (remaining ?? duration);
+    await inOverseer(turn.workspace, impl => {
+      expect(impl.storage.chatContext.get(CHAT_ID)?.agentDeadline).toBe(deadline);
+    });
+    await vi.advanceTimersByTimeAsync((remaining ?? duration) - 1);
+    await inOverseer(turn.workspace, impl => {
+      expect(impl.storage.activeAgents.get(CHAT_ID)).toBeDefined();
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await turn.session;
+    await inOverseer(turn.workspace, async impl => {
+      expect(impl.storage.activeAgents.get(CHAT_ID)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT_ID)?.activeAgent).toBeUndefined();
+      expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
+        type: "error", code: "time_limit",
+      }));
+      // A later turn (including Retry or an approval callback) gets no fresh budget.
+      let meta = impl.storage.chatMeta.get(CHAT_ID)!;
+      meta.activeAgent = MODEL;
+      impl.storage.chatMeta.put(meta);
+      impl.startAgent(CHAT_ID, { profile: MODEL, config: {
+        provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL,
+      } }, OWNER, OWNER_USER_ID);
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.chatContext.get(CHAT_ID)?.agentDeadline).toBe(deadline);
+      expect(impl.storage.activeAgents.get(CHAT_ID)).toBeUndefined();
+    });
   });
 });
 

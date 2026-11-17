@@ -554,6 +554,36 @@ describe("durable agent calls", () => {
     expect(callbackNames(impl)).toEqual([["legacy", undefined], ["legacy", "legacy_ARGS"]]);
   }));
 
+  it("reads current spawner settings and the configured model's name without exposing credentials", () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    let binding = await spawnerBinding(impl, { ...SPAWNER_CONFIG, maxDurationMs: 900_000 });
+    expect(await binding.getConfiguration()).toEqual({
+      modelId: "m", modelName: MODEL.name, maxDurationMs: 900_000,
+    });
+    let [record] = [...impl.storage.gatekeepers.list()];
+    record.creationSpec.config.maxDurationMs = undefined;
+    impl.storage.gatekeepers.put(record);
+    expect(await binding.getConfiguration()).toEqual({
+      modelId: "m", modelName: MODEL.name, maxDurationMs: null,
+    });
+    expect([...impl.storage.chatMeta.list()]).toEqual([]);
+  }));
+
+  it("keeps the configured ID and budget visible when the model is unavailable", () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    fakeUsers(impl);
+    let binding = await spawnerBinding(impl, { ...SPAWNER_CONFIG, maxDurationMs: 300_000 });
+    impl.users.get = () => ({ getChatContext: async () => { throw new Error("Model disabled"); } });
+    expect(await binding.getConfiguration()).toEqual({ modelId: "m", modelName: null, maxDurationMs: 300_000 });
+  }));
+
+  it("does not substitute the preferred model for a spawner without a model", () => freshImpl(async impl => {
+    impl.ownerId = OWNER_USER_ID;
+    let binding = await spawnerBinding(impl, { ...SPAWNER_CONFIG, modelId: null });
+    expect(await binding.getConfiguration()).toEqual({ modelId: null, modelName: null, maxDurationMs: null });
+  }));
+
   it("spawnCallable(title, prompt) is refused with the migration message",
       () => freshImpl(async impl => {
     impl.ownerId = OWNER_USER_ID;
@@ -763,6 +793,29 @@ describe("durable agent calls", () => {
           .toEqual(["error", "queuedBehind"]);
       expect(impl.storage.chatMeta.get(CHAT_ID).activeAgent).toBeUndefined();
       expect([...impl.storage.activeAgents.list()]).toEqual([]);
+    });
+  });
+
+  it("does not resume an investigation past its deadline after a DO restart", async () => {
+    let name = `agent-calls-expired-${++doCounter}`;
+    let deadline = Date.now() - 1;
+    await withImpl(name, async impl => {
+      seedChat(impl);
+      let userId = impl.users.newUniqueId().toString();
+      impl.storage.ownerId.put(userId);
+      impl.ownerId = userId;
+      impl.storage.chatMeta.put({ ...impl.storage.chatMeta.get(CHAT_ID), activeAgent: MODEL });
+      impl.storage.chatContext.put({ chatId: CHAT_ID, bindings: {}, agentDeadline: deadline,
+        spawnerConfig: { displayName: "Investigator", modelId: MODEL.id, env: {}, maxDurationMs: 900_000 } });
+      impl.storage.activeAgents.put({ chatId: CHAT_ID, initiatorUserId: userId,
+        modelId: MODEL.id, initiator: OWNER, callbackInitiated: false });
+    });
+    await abortAllDurableObjects();
+    await withImpl(name, async impl => {
+      await waitFor(() => !impl.storage.chatMeta.get(CHAT_ID)?.activeAgent);
+      expect(messages(impl)).toContainEqual(expect.objectContaining({ type: "error", code: "time_limit" }));
+      expect([...impl.storage.activeAgents.list()]).toEqual([]);
+      expect(impl.storage.chatContext.get(CHAT_ID).agentDeadline).toBe(deadline);
     });
   });
 });

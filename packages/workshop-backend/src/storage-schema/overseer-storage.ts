@@ -678,6 +678,9 @@ export type AiChatAgentContext = {
    */
   spawnerConfig?: AgentSpawnerConfig | LegacyAgentSpawnerConfig;
 
+  /** Absolute wall-clock deadline, fixed on a time-limited spawned chat's first turn. */
+  agentDeadline?: number;
+
   /**
    * If present, this chat was spawned with `spawnCallable()`, and these are the TypeScript
    * declarations of the interface the agent implements, frozen at spawn time like

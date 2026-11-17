@@ -92,7 +92,7 @@ import {
 import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
 import type {
-  AgentSpawnerBinding, CallableAgent, SpawnCallableOptions, SpawnedAgent,
+  AgentSpawnerBinding, AgentSpawnerConfiguration, CallableAgent, SpawnCallableOptions, SpawnedAgent,
 } from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
 import { reportIssue } from "@gadgets/observability/error-reporting";
@@ -568,6 +568,12 @@ const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 // that budget is exhausted; agent resumes have their own per-execution budget below.
 const ALARM_MAX_RETRIES = 6;
 const AGENT_RESUME_MAX_ATTEMPTS = 4;
+
+class AgentTimeLimitError extends Error {
+  constructor() {
+    super("The agent reached its time limit.");
+  }
+}
 
 // The agent-authored records Overseer.waitForAgent() returns (see there).
 const WAIT_FOR_AGENT_RESULT_TYPES =
@@ -1708,6 +1714,13 @@ class OverseerImpl implements AgentHooks {
       this.#finishAgentTurn(record.chatId);
       return;
     }
+    using _deadline = this.#limitAgentRuntime(record.chatId, liveChat);
+    if (liveChat.cancelController.signal.aborted) {
+      this.postAgentErrorMessage(record.chatId, meta!.activeAgent!,
+          "The agent reached its time limit.", "time_limit");
+      finish();
+      return;
+    }
     if ((record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS) {
       this.logger.error("agent resume budget exhausted", {
         event: "agent.resume.exhausted", chatId: record.chatId,
@@ -1755,7 +1768,15 @@ class OverseerImpl implements AgentHooks {
       await preparation;
     }
     if (!owns()) return;
-    if (liveChat.cancelController.signal.aborted) { finish(); return; }
+    if (liveChat.cancelController.signal.aborted) {
+      let reason = liveChat.cancelController.signal.reason;
+      if (reason instanceof AgentTimeLimitError) {
+        this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
+            reason.message, "time_limit");
+      }
+      finish();
+      return;
+    }
     if (failure && shouldRetryAfterReset(failure) && resumeAttempts < AGENT_RESUME_MAX_ATTEMPTS) {
       this.#resumeErrors.set(record.chatId, failure);
       this.#unregisterRunningAgent(record.chatId, true);
@@ -8087,7 +8108,7 @@ class OverseerImpl implements AgentHooks {
 
   // Stops the chat's running agent. Its queued steers are dropped: the client that stops puts them
   // in its draft (see Overseer.stopAgent).
-  cancelAgent(chatId: number) {
+  cancelAgent(chatId: number, reason: Error = new Error("User requested to stop agent.")) {
     let meta = this.storage.chatMeta.get(chatId);
     if (meta?.queuedSteers) {
       delete meta.queuedSteers;
@@ -8100,10 +8121,12 @@ class OverseerImpl implements AgentHooks {
     this.#resumeErrors.delete(chatId);
     let author = this.storage.chatMeta.get(chatId)?.activeAgent ?? this.#decisionWait(chatId)?.agent;
     if (author) this.addChatMessages(chatId, author,
-        [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+        [{type: "agentNudge", text: reason instanceof AgentTimeLimitError
+          ? "The agent reached its time limit. Do not continue this task."
+          : "The user stopped this turn. Wait for a new request."}]);
     let ctx = this.#liveChats.get(chatId);
     if (ctx) {
-      ctx.cancelController.abort(new Error("User requested to stop agent."));
+      ctx.cancelController.abort(reason);
     }
     // A retryable lookup has already released its task to the alarm, so no finally is left to
     // clear the busy marker. Stop must finish that handoff synchronously too.
@@ -8417,6 +8440,29 @@ class OverseerImpl implements AgentHooks {
         chatId, aiModel, initiator, initiatorUserId, callbackInitiated, liveChat));
   }
 
+  // One deadline for the spawned chat, not a fresh budget for each turn or DO instance. Stop
+  // revokes in-flight executeCode sessions as well as aborting the model request.
+  #limitAgentRuntime(chatId: number, liveChat: LiveChatContext): Disposable {
+    let context = this.getChatAgentContext(chatId);
+    let duration = context.spawnerConfig?.maxDurationMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (duration !== undefined) {
+      if (context.agentDeadline === undefined) {
+        context.agentDeadline = Date.now() + duration;
+        this.storage.chatContext.put(context);
+      }
+      let expire = () => {
+        if (this.#liveChats.get(chatId) === liveChat && !liveChat.cancelController.signal.aborted) {
+          this.cancelAgent(chatId, new AgentTimeLimitError());
+        }
+      };
+      let remaining = context.agentDeadline - Date.now();
+      if (remaining <= 0) expire();
+      else timer = setTimeout(expire, remaining);
+    }
+    return {[Symbol.dispose]: () => clearTimeout(timer)};
+  }
+
   async #runAgentTurnWithContext(chatId: number, aiModel: UserAiModelRecord,
                                  initiator: AiChatAuthorInfo,
                                  initiatorUserId: string,
@@ -8443,6 +8489,7 @@ class OverseerImpl implements AgentHooks {
     });
 
     try {
+      using _deadline = this.#limitAgentRuntime(chatId, liveChat);
       // The trace span covers the turn's setup and run, not the teardown below, which can start the
       // chat's next turn.
       await traceAgentTurn(this.getChatAgentContext(chatId), liveChat.cancelController.signal,
@@ -8513,15 +8560,16 @@ class OverseerImpl implements AgentHooks {
       });
     } catch (err: unknown) {
       if (!owns()) return;
-      // The turn threw the user's stop (see cancelAgent): it ended as asked, so it is not reported
-      // or logged as a failure, and the chat marks it as stopped. Any other error after Stop is a
-      // real failure and is reported as one.
+      // The turn threw its stop reason (user request or time limit): it is not reported or logged
+      // as a failure. Any other error after Stop is a real failure and is reported as one.
       if (err === liveChat.cancelController.signal.reason) {
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "stopped",
           durationMs: Date.now() - startedAt,
         });
-        failure = {message: "The user stopped the agent.", code: "stopped"};
+        failure = err instanceof AgentTimeLimitError
+          ? {message: err.message, code: "time_limit"}
+          : {message: "The user stopped the agent.", code: "stopped"};
         return;
       }
       // A failed model request surfaces as AgentTurnError (pi reports provider failures as data;
@@ -8595,7 +8643,9 @@ class OverseerImpl implements AgentHooks {
           if (meta && liveChat.cancelController.signal.aborted && this.#decisionWait(chatId)) {
             // A tool that was already in flight may have committed its card after Stop's boundary.
             this.addChatMessages(chatId, initiator,
-                [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+                [{type: "agentNudge", text: liveChat.cancelController.signal.reason instanceof AgentTimeLimitError
+                  ? "The agent reached its time limit. Do not continue this task."
+                  : "The user stopped this turn. Wait for a new request."}]);
           }
           let wait = this.#decisionWait(chatId);
           this.#unregisterRunningAgent(chatId,
@@ -12660,8 +12710,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
               private clientUserId: string,
               private isOwner: boolean,
               private notifyClosed: NativeRpcStub<() => void>,
-              // Ambient capsule reconciliation started during open(); listSlashCommands() waits for
-              // this so ambient providers are attached when possible.
+              // Ambient capsule reconciliation started during open(); listSlashCommands() and
+              // getAmbientGatekeeper() wait for this so ambient providers are attached when possible.
                private slashCommandsReady: Promise<void>) {
     super();
     this.#leaveSession = this.isOwner
@@ -13035,6 +13085,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         () => this.impl.updateChatFromMainline(chatId, author));
   }
 
+  async getAmbientGatekeeper(vendorId: string): Promise<GatekeeperClient<any> | null> {
+    let find = () => [...this.impl.storage.gatekeepers.list()].find(gk =>
+        gk.creationSpec?.type === "ambient" && gk.creationSpec.vendorId === vendorId)?.id;
+    // Opening started the reconcile; an account provisioned since then needs another one.
+    await this.slashCommandsReady;
+    let id = find();
+    if (id === undefined) {
+      await this.impl.ensureAmbientCapsules();
+      id = find();
+    }
+    return id === undefined ? null : await this.getGatekeeperById(id);
+  }
+
   async getGatekeeperById(id: number): Promise<GatekeeperClient<any>> {
     let gatekeeper = this.impl.storage.gatekeepers.get(id)?.id;
     if (gatekeeper === undefined) {
@@ -13108,6 +13171,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async newAgentSpawnerGatekeeper({env, ...config}: AgentSpawnerConfig)
       : Promise<GatekeeperClient<any>> {
+    if (config.maxDurationMs !== undefined &&
+        (!Number.isSafeInteger(config.maxDurationMs) || config.maxDurationMs < 1 ||
+         config.maxDurationMs > 86_400_000)) {
+      throw new TypeError("Agent time limit must be an integer from 1 through 86400000 milliseconds.");
+    }
     for (let [name, target] of Object.entries(env)) {
       this.impl.validateSpawnerBinding(name, target);
     }
@@ -14340,6 +14408,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async listPreApprovableActions(): Promise<PreApprovableAction[]> { this.#deny(); }
   async getGatekeeperById(_id: number): Promise<GatekeeperClient<any>> { this.#deny(); }
+  async getAmbientGatekeeper(_vendorId: string): Promise<GatekeeperClient<any> | null> {
+    this.#deny();
+  }
   async newGatekeeper(_accountId: number, _resourceUrl: string)
       : Promise<GatekeeperClient<any> | null> { this.#deny(); }
   async newAiModelGatekeeper(_modelId: string): Promise<GatekeeperClient<any>> { this.#deny(); }
@@ -15322,6 +15393,15 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
     }
     return record.creationSpec;
   }
+
+  async getBinding(name: string): Promise<GatekeeperClient<any> | null> {
+    let edge = this.#getRecord().bindings?.[name];
+    if (!edge || edge.pending || !this.impl.storage.gatekeepers.get(edge.target)) return null;
+    let facet = await this.impl.getGatekeeperFacet(edge.target);
+    this.impl.assertGatekeeperUsable(edge.target);
+    return new GatekeeperClientImpl(
+        this.impl, edge.target, facet, this.actorUserId, this.joinedAs);
+  }
 }
 
 // ObservationAuthorizer handed to a slash-command provider. Scoped to one Gatekeeper; observations
@@ -15525,6 +15605,9 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
  * from other gatekeepers, so it gets a plain queue and can't spawn.
  */
 interface AgentSpawnerQueue extends ApprovalQueue {
+  /** Read the spawner's settings, resolving its model name with the same owner as spawning. */
+  getSpawnerConfiguration(creatorUserId?: string): Promise<AgentSpawnerConfiguration>;
+
   /**
    * Implements AgentSpawnerBinding.spawn(), resolving the model from the account of
    * `creatorUserId` (see AgentSpawnerBindingProps): the agent starts at once on `prompt`.
@@ -15588,6 +15671,19 @@ class SpawnedAgentImpl extends NativeRpcTarget implements SpawnedAgent {
 
 @validateRpc()
 class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQueue {
+  async getSpawnerConfiguration(creatorUserId?: string): Promise<AgentSpawnerConfiguration> {
+    let {config} = this.#spawner();
+    let modelName: string | null = null;
+    let userId = creatorUserId ?? this.impl.ownerId;
+    if (config.modelId && userId) {
+      let user = this.impl.users.get(this.impl.users.idFromString(userId));
+      // A removed/disabled model must not hide the rest of the saved configuration.
+      let context = await user.getChatContext(config.modelId).catch(() => undefined);
+      modelName = context?.aiModel?.profile.name ?? null;
+    }
+    return {modelId: config.modelId, modelName, maxDurationMs: config.maxDurationMs ?? null};
+  }
+
   async spawnAgent(title: string, prompt: string, creatorUserId?: string): Promise<void> {
     let {chatId, meta, userMeta, author, initiatorUserId} =
         await this.#createSpawnedChat(title, creatorUserId);
@@ -15769,6 +15865,10 @@ class AgentSpawnerBindingImpl extends RpcTarget {
   constructor(private ctx: DurableObjectState<AgentSpawnerBindingProps>,
               private queue: NativeRpcStub<AgentSpawnerQueue>) {
     super();
+  }
+
+  getConfiguration(): Promise<AgentSpawnerConfiguration> {
+    return this.queue.getSpawnerConfiguration(this.ctx.props.creatorUserId);
   }
 
   async spawn(title: string, prompt: string): Promise<void> {

@@ -10,6 +10,9 @@ import type { RpcStub, RpcTarget } from "cloudflare:workers";
 
 /** Binding which spawns agents. */
 export interface AgentSpawnerBinding {
+  /** Read the current model and time budget without spawning an agent or exposing credentials. */
+  getConfiguration(): Promise<AgentSpawnerConfiguration>;
+
   /**
    * Spawn an agent to perform a task.
    *
@@ -74,6 +77,16 @@ export interface SpawnedAgent extends RpcTarget {
    */
   getChatToken(): string;
 }
+
+/** The non-secret settings of an agent spawner. */
+export type AgentSpawnerConfiguration = {
+  /** Configured model ID, or null when the spawner only creates chats. */
+  modelId: string | null;
+  /** Current display name, or null when the model is absent or unavailable. */
+  modelName: string | null;
+  /** Wall-clock budget for each spawned chat, or null for no time limit. */
+  maxDurationMs: number | null;
+};
 
 export type SpawnCallableOptions = {
   /**

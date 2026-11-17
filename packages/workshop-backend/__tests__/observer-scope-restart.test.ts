@@ -31,6 +31,51 @@ const USER_META = { profile: { type: "user", id: OWNER, name: "Owner" } as AiCha
 
 let doCounter = 0;
 
+describe("inspecting gatekeeper bindings", () => {
+  it("reads current accepted targets without exposing pending or missing bindings", () => withImpl(async impl => {
+    seedGatekeeper(impl, 1);
+    seedGatekeeper(impl, 2);
+    seedGatekeeper(impl, 3);
+    seedGadget(impl, 4);
+    let record = impl.storage.gatekeepers.get(1);
+    record.bindings = {
+      TELEMETRY: { target: 2 },
+      PENDING: { target: 3, pending: { chatId: 1 } },
+      DELETED: { target: 5 },
+      GADGET: { target: 4 },
+    };
+    impl.storage.gatekeepers.put(record);
+    let client = await openFakeOverseer({ gatekeepers: impl.storage.gatekeepers }, {
+      impl: { getGatekeeperFacet: async () => ({}) },
+    });
+    using connection = await client.getGatekeeperById(1);
+    using target = await connection.getBinding("TELEMETRY");
+    expect(await target?.getCreationSpec()).toMatchObject({ resourceUrl: "https://example.com/2" });
+    for (let name of ["PENDING", "DELETED", "GADGET", "ABSENT"])
+      expect(await connection.getBinding(name)).toBeNull();
+    record.bindings.TELEMETRY.target = 3;
+    impl.storage.gatekeepers.put(record);
+    using replacement = await connection.getBinding("TELEMETRY");
+    expect(await replacement?.getCreationSpec()).toMatchObject({ resourceUrl: "https://example.com/3" });
+  }));
+
+  it("refuses a target awaiting an access-scope restart", () => withImpl(async impl => {
+    seedGatekeeper(impl, 1);
+    seedGatekeeper(impl, 2);
+    let record = impl.storage.gatekeepers.get(1);
+    record.bindings = { TELEMETRY: { target: 2 } };
+    impl.storage.gatekeepers.put(record);
+    let client = await openFakeOverseer({ gatekeepers: impl.storage.gatekeepers }, {
+      impl: {
+        getGatekeeperFacet: async () => ({}),
+        assertGatekeeperUsable: (id: number) => { if (id === 2) throw new Error("restarting"); },
+      },
+    });
+    using connection = await client.getGatekeeperById(1);
+    await expect(connection.getBinding("TELEMETRY")).rejects.toThrow("restarting");
+  }));
+});
+
 async function withImpl(
     fn: (impl: any, restarts: string[], instance: OverseerDurableObject) => Promise<void>)
     : Promise<void> {
