@@ -164,6 +164,9 @@ transitions, an Effect lifecycle and cleanup, an accessible interaction, or a pu
 that can be tested independently. Keep code together when the child would mostly forward markup or
 would need the parent's refs, setters, and synchronization callbacks to function.
 
+Render an action's approve control with `ApproveControl` and decide it through `useResolveAction`,
+which is what makes a push in a restricted workspace offer its review in place of Approve.
+
 ## Kumo And Styling
 
 Use Kumo components and Kumo semantic design tokens by default. Check Kumo before creating a custom

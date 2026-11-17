@@ -54,6 +54,11 @@ the assignment can start an agent run (a GitLab Duo flow) that spends the namesp
 Each binding advertises through `getAutoApprovableActions()` only the kinds its session can submit
 that may be auto-approved, so `gitlab.mergeMergeRequest` never appears.
 
+The approval of a push, to any branch, offers **Review commits**, which lists the commits the push
+will send and each file they add, change or delete. In a workspace that has read restricted data a
+push is queued only when all of it reads as text (see
+[docs/observers.md](../../docs/observers.md) §6, item 4), and is approved from that review.
+
 ## CI status
 
 Bindings read CI; they do not act on it. Retrying, cancelling or starting jobs, and merging when

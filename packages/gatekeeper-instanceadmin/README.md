@@ -452,7 +452,8 @@ Workshop enforces what it enforces for restricted data everywhere:
   (see [What a rule applies under the mark](#what-a-rule-applies-under-the-mark)). A filed
   request and a reply, a report session's included, always wait there;
 - web fetches reach only the hosts the deployment trusts with such data;
-- a push is refused.
+- a push waits for a person, who reviews its commits, and is refused where they could not
+  read all it sends as text (`docs/observers.md` lists what that takes).
 
 **A report session's reads do not mark, and neither does a hook's delivery of what the
 reporter has**: a new report, or a public reply. A report session returns only what the
@@ -539,7 +540,7 @@ marked or not.
 - both public replies: the binding's, which waits everywhere, and a report session's;
 - both requests;
 - every action of every other connection, which no rule applies there;
-- web fetches, and a push, which is refused.
+- web fetches, and a push, which waits for a person or is refused.
 
 A report session's reply is still the one way a reply reaches a reporter with no person in
 between, and only from a workspace that is not marked: one that has never read through the

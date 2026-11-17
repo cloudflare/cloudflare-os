@@ -42,7 +42,8 @@ gatekeeper's admins-only notes, status changes and assignments in a workspace on
 marked: see [admin-access.md](admin-access.md#through-an-agent)), the approver checking
 the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
-is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
+is accepted and flagged to the approver; a git push is accepted only when its approver can read
+everything it will send, and is otherwise refused (see §6, item 4). Its coverage rests on admission: nobody can open the workspace without being verified
 against the producing gatekeeper, and anything that widens what they must be verified against
 restarts every live session. An observation that also carries **`ownerInvitesOnly`** sets that
 flag on the workspace: from then on only direct grants from the owner count, so share links admit
@@ -832,8 +833,49 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    notes, status changes and assignments in a workspace only its reads marked: see
    [admin-access.md](admin-access.md#through-an-agent)), the
    approver checking the action text for restricted data. An action whose description is not complete
-   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
-   pushes are refused.
+   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver. A git push
+   (`ActionDescription.pushedCommits`) is accepted only when its approver can read everything it
+   will send, and is otherwise refused with an error naming what failed, queuing nothing. The
+   rules are those of `ObservationDescription.containsRestrictedData`, enforced by
+   `assertPushReadable` in `packages/workshop-backend/src/git-cache.ts`:
+   - every object the push sends is in the workspace's git store, and is what the commit or
+     directory naming it says it is (a commit's tree a tree, a directory's entry a tree or a blob
+     as its mode says);
+   - each commit and each file it sends is UTF-8 text with no NUL, of at most 1 MiB
+     (`MAX_BUFFERED_BLOB_SIZE`);
+   - each directory it sends is in the form git writes: every entry name valid UTF-8, a single
+     path segment, present once, in order;
+   - no file it sends is the target of a symbolic link (a link to content the remote already has
+     sends nothing and is accepted), and no commit adds or changes a submodule entry;
+   - each path a commit changes can be compared with every parent of that commit: the parent and
+     its directories on the way to the path are in the store too (an agent that meets this
+     refusal reads that directory at the parent commit and pushes again);
+   - every object it sends is a commit of the push or sits at a path of one;
+   - it stays within `MAX_RESTRICTED_PUSH_COMMITS` (20 commits), `MAX_RESTRICTED_PUSH_FILES`
+     (50 files), `MAX_RESTRICTED_PUSH_PATHS` (500 paths at which its commits differ from their
+     parents, a merge's path counting once for each parent it is compared with) and
+     `MAX_RESTRICTED_PUSH_TEXT_SIZE` (2 MiB of text, in which a changed file, the listing of each
+     directory on the way to it and each changed path written in full, as UTF-8, count whole).
+
+   What is judged is the set of objects the Overseer marked for the push when it was queued,
+   which is exactly what the gatekeeper sends on approval, not a diff. An accepted push always
+   waits for a person: no auto-approval rule applies in restricted mode. The Workshop shows the
+   push through `Overseer.getPushReview()`: each commit's raw text, the paths each commit adds,
+   changes or deletes against its parents, and any object no path accounts for; in a restricted
+   workspace Approve is offered only inside that review. There Approve is enabled once every
+   commit and every file the review shows as text has loaded; it does not track what the
+   approver opened. The review wraps every line, draws spaces, tabs and characters that are hard
+   to see, and lists every path the push names, an empty directory included. A push that was
+   already waiting when the workspace first read restricted data is not judged again (what it
+   sends was fixed before that read): its review says which of its files are not shown as text,
+   and Approve does not wait for those. A later push stacked on it would send the same objects,
+   so it is refused wherever they fail a rule, until the waiting push has been applied. A
+   waiting push too large for the Workshop to load by itself is not loaded whole unasked: the
+   approver loads it page by page and its files on request, and Approve is enabled once every
+   page and every file the review shows as text has loaded. The review is the Workshop's
+   surface, as the restricted notice is: `approveAction()` called through the API approves a
+   push whether or not anyone opened its review.
+
    Verification is held to what each collaborator opened, because `ensureObserver` can never
    verify beyond it: a `use` collaborator can't be covered for a gatekeeper their gadget doesn't
    reach (one it doesn't bind, no enabled hook feeds, and none of its agent spawners
