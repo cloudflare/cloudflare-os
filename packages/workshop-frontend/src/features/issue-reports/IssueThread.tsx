@@ -10,20 +10,34 @@ const When = ({ at }: { at: Date }) => (
   <time dateTime={at.toISOString()} className="text-xs text-kumo-subtle">{formatFullTimestamp(at)}</time>
 )
 
-// The workspace and the chat an agent's entry came from, worded as the Audit tab words them.
+// The workspace and the chat an agent's entry came from, worded as the Audit tab words them, and
+// the way into that chat. An entry the workspace tied to no chat links to nothing. The link grants
+// nothing: an admin who is not a member of that workspace is refused by it as anyone is.
 const AgentOrigin = ({ agent }: { agent: AdminAgentOrigin }) => (
-  <dl className="flex flex-wrap gap-x-3 text-xs text-kumo-subtle">
-    <div className="flex min-w-0 gap-x-1">
-      <dt>From workspace</dt>
-      <dd className="break-all font-mono">{agent.workspaceId}</dd>
-    </div>
-    {agent.chatId !== undefined && (
-      <div className="flex gap-x-1">
-        <dt>From chat</dt>
-        <dd>{agent.chatId}</dd>
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 text-xs">
+    <dl className="flex min-w-0 flex-wrap gap-x-3 text-kumo-subtle">
+      <div className="flex min-w-0 gap-x-1">
+        <dt>From workspace</dt>
+        <dd className="break-all font-mono">{agent.workspaceId}</dd>
       </div>
+      {agent.chatId !== undefined && (
+        <div className="flex gap-x-1">
+          <dt>From chat</dt>
+          <dd>{agent.chatId}</dd>
+        </div>
+      )}
+    </dl>
+    {agent.chatId !== undefined && (
+      <Link
+        to="/workspace/$id"
+        params={{ id: agent.workspaceId }}
+        search={{ chat: agent.chatId, showChat: true }}
+        className="text-kumo-brand hover:underline"
+      >
+        Open chat
+      </Link>
     )}
-  </dl>
+  </div>
 )
 
 // One entry of the thread. Its author is shown by name alone and the row is keyed by the entry's
@@ -87,11 +101,12 @@ const Entry = ({ entry, forAdmins }: { entry: IssueReportEntry; forAdmins: boole
  *
  * Read by the admins, an entry for admins alone is marked "Admins only" and set apart from those
  * the reporter reads, an admin's entry made through the CLI says so, an agent's says which
- * workspace and chat it came from, a status is named as the admins read it, and the workspace is
- * not linked: it is the reporter's to open, not theirs. The admins' thread holds two kinds of
- * line the reporter's never receives: a change of assignee, one quiet line naming who took, took
- * over or released the report, and a change of status that leaves what the reporter reads as it
- * was, which says it is not shown to the reporter.
+ * workspace and chat it came from, with a link that opens that chat, a status is named as the
+ * admins read it, and the workspace the report was filed in is not linked: it is the reporter's
+ * to open, not theirs. The admins' thread holds two kinds of line the reporter's never receives:
+ * a change of assignee, one quiet line naming who took, took over or released the report, and a
+ * change of status that leaves what the reporter reads as it was, which says it is not shown to
+ * the reporter.
  */
 export const IssueThread = ({ report, entries, readImage, forAdmins = false, children }: {
   report: IssueReport

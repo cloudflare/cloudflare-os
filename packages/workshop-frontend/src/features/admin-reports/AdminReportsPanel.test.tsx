@@ -289,6 +289,9 @@ const thread = () => [...detail()!.querySelectorAll('ol[aria-label="Thread"] > l
 // Where a thread entry says it came from, as pairs of term and value.
 const origin = (entry: Element) => [...entry.querySelectorAll('dl > div')].map((pair) =>
   [pair.querySelector('dt')?.textContent, pair.querySelector('dd')?.textContent])
+// The way from a thread entry into the chat it came from, as the href it holds.
+const openChat = (entry: Element) => [...entry.querySelectorAll('a')]
+  .find((link) => link.textContent === 'Open chat')?.getAttribute('href')
 // Whether the list is what the panel shows: an open report takes its place.
 const listShown = () => !heading('Issue reports')!.closest('[hidden]')
 // A card of the open report, by its heading.
@@ -1072,6 +1075,52 @@ describe('an open report', () => {
     expect(origin(statusLine)).toEqual([['From workspace', 'ws-triage']])
   })
 
+  it('links an agent’s entry to its chat, and one tied to no chat to nothing', async () => {
+    await renderPanel(fakeAdmin([report('r-1', { status: 'answered', entries: [
+      adminEntry('e-1', 'Which browser are you using?'),
+      adminEntry('e-2', 'Looks like the export worker.', {
+        visibility: 'admins', via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 },
+      }),
+      adminEntry('e-3', '', { status: 'answered', via: 'gatekeeper', agent: { workspaceId: 'ws-triage' } }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    const [person, note, statusLine] = thread()
+    expect(openChat(note)).toBe('/workspace/ws-triage?chat=4&showChat=true')
+    // The link stands beside the terms, not among them, and is the entry's only one.
+    expect(note.querySelector('dl a')).toBeNull()
+    expect(note.querySelectorAll('a')).toHaveLength(1)
+    expect(statusLine.querySelector('a')).toBeNull()
+    expect(person.querySelector('a')).toBeNull()
+  })
+
+  it('links a status line an agent set from a chat', async () => {
+    const at = new Date('2026-10-12T10:05:00Z')
+    const agent = { workspaceId: 'ws-board', chatId: 2 }
+    await renderPanel(fakeAdmin([report('r-1', { status: 'answered', entries: [
+      adminEntry('e-1', '', { status: 'answered', via: 'gatekeeper', agent, at }),
+      adminEntry('e-2', '', { visibility: 'admins', assignment: 'released', via: 'gatekeeper', agent, at }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    const [statusLine, assignmentLine] = thread()
+    expect(statusLine.textContent).toBe(
+      `Agent, for Grace Admin, set the status to Answered${formatFullTimestamp(at)}From workspacews-boardFrom chat2Open chat`)
+    expect(openChat(statusLine)).toBe('/workspace/ws-board?chat=2&showChat=true')
+    expect(assignmentLine.textContent).toBe(
+      `Agent, for Grace Admin, released this report${formatFullTimestamp(at)}From workspacews-boardFrom chat2Open chat`)
+    expect(openChat(assignmentLine)).toBe('/workspace/ws-board?chat=2&showChat=true')
+  })
+
+  it('links an entry of the first chat', async () => {
+    await renderPanel(fakeAdmin([report('r-1', { entries: [
+      adminEntry('e-1', 'Looks like the export worker.', {
+        visibility: 'admins', via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 0 },
+      }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    expect(origin(thread()[0])).toEqual([['From workspace', 'ws-triage'], ['From chat', '0']])
+    expect(openChat(thread()[0])).toBe('/workspace/ws-triage?chat=0&showChat=true')
+  })
+
   it('sets the status, which adds a line naming the admin who set it, and shows it in the list', async () => {
     const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]))
     await click(rowLink('r-1'))
@@ -1223,7 +1272,7 @@ describe('the admins’ lines in the thread', () => {
       `Grace Admin took this report${when}`,
       `Hal Admin took this report overvia the CLI${when}`,
       `Hal Admin released this report${when}`,
-      `Agent, for Grace Admin, took this report${when}From workspacews-boardFrom chat2`,
+      `Agent, for Grace Admin, took this report${when}From workspacews-boardFrom chat2Open chat`,
     ])
     expect(thread().every((entry) => entry.querySelector('p') === null)).toBe(true)
   })

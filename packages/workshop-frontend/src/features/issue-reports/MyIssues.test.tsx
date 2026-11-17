@@ -642,7 +642,7 @@ describe('an open report', () => {
       `Agent, for Grace Admin, set the status to Answered${formatFullTimestamp(new Date('2026-10-12T10:05:00Z'))}`)
   })
 
-  it('shows the reporter nothing of where an agent’s entry came from', async () => {
+  it('shows the reporter no origin and no link for an agent’s entry', async () => {
     // The server sends the reporter no origin. One that reached the page is not shown either.
     const agent = { workspaceId: 'ws-triage', chatId: 4 }
     await renderPage(fakeApi({ opened: [opened({
@@ -654,8 +654,10 @@ describe('an open report', () => {
     })] }), '/issues?report=r-1')
 
     expect(thread()).toHaveLength(2)
+    expect(thread()[0].textContent).toContain('Agent, for Grace Admin')
     expect(detail().querySelector('ol[aria-label="Thread"] dl')).toBeNull()
-    expect(text()).not.toMatch(/ws-triage|From workspace|From chat/)
+    expect(detail().querySelector('ol[aria-label="Thread"] a')).toBeNull()
+    expect(text()).not.toMatch(/ws-triage|From workspace|From chat|Open chat/)
   })
 
   it('shows the status a written reply set beneath its text', async () => {
