@@ -150,6 +150,7 @@ async function mountAdminRules(
 ) {
   const enabled = new Set(stored)
   let latched = restricted
+  let exempt = true
   let catalogReads = 0
   const kinds = new Map([NOTE, REPLY].map(kind => [kind.tag, kind]))
   const overseer = {
@@ -163,7 +164,7 @@ async function mountAdminRules(
         vendorId: 'admin',
         actionKind,
         alreadyEnabled: enabled.has(actionKind.tag),
-        ruleApplies: !latched || actionKind === NOTE,
+        ruleApplies: !latched || (exempt && actionKind === NOTE),
       }))
     },
     listAutoApprovedActionKinds: async () =>
@@ -180,11 +181,17 @@ async function mountAdminRules(
   const container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
-  /** Renders the tab, with the kernel answering for the workspace as `restricted` says it is. */
-  const render = (nextRestricted: boolean) => {
+  /**
+   * Renders the tab, with the kernel answering for the workspace as `restricted` says it is and,
+   * under the latch, as `rulesApply` says: whether only the admin connection's reads marked it.
+   */
+  const render = (nextRestricted: boolean, rulesApply = true) => {
     latched = nextRestricted
+    exempt = rulesApply
     return act(async () => root!.render(
-      <Activity overseer={overseer} restricted={nextRestricted} view="auto" onViewChange={() => {}} />,
+      <Activity overseer={overseer} restricted={nextRestricted}
+        rulesApplyWhileRestricted={nextRestricted && rulesApply} view="auto"
+        onViewChange={() => {}} />,
     ))
   }
   await render(restricted)
@@ -270,6 +277,21 @@ describe('Activity auto-approval rules in a restricted workspace', () => {
     expect(panel.row(REPLY).text).toContain(WONT_APPLY)
     expect(panel.row(REPLY).disabled).toBe(true)
     expect(panel.row(NOTE).text).toContain('Waits for your approval')
+    expect(panel.row(NOTE).disabled).toBe(false)
+  })
+
+  it('reads what a rule applies again when another connection\'s restricted read ends it', async () => {
+    const panel = await mountAdminRules([NOTE.tag])
+    expect(panel.catalogReads).toBe(1)
+    expect(panel.row(NOTE).text).toContain('Applied without asking')
+
+    // The workspace's metadata says no rule applies anything any more.
+    await panel.render(true, false)
+
+    expect(panel.catalogReads).toBe(2)
+    expect(panel.row(NOTE).on).toBe(true)
+    expect(panel.row(NOTE).text).toContain(WONT_APPLY)
+    // Stored, so still revocable.
     expect(panel.row(NOTE).disabled).toBe(false)
   })
 })

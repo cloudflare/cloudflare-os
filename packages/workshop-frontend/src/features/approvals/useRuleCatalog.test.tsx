@@ -162,6 +162,33 @@ describe('useRuleCatalog', () => {
     expect(harness.current.ruleApplies(7, REPLY.tag)).toBe(false)
   })
 
+  it('answers no kind, at once and with no read, once the kernel says no rule applies', async () => {
+    // Another connection's restricted data was read: the kernel holds what a rule applied, and
+    // says so in the workspace's metadata.
+    const workspace = connection()
+    const want = { ...LATCHED, vendors: true, rulesApply: true }
+    const harness = await mount(workspace.overseer, want)
+    await workspace.land(0, adminCatalog([NOTE]))
+    expect(harness.current.ruleApplies(7, NOTE.tag)).toBe(true)
+
+    await harness.render(workspace.overseer, { ...want, rulesApply: false })
+
+    expect(harness.current.ruleApplies(7, NOTE.tag)).toBe(false)
+    expect(workspace.reads).toBe(1)
+    // The logos it read stay, and a re-read is not made to be told no.
+    expect(harness.current.vendorIdByGatekeeper.get(7)).toBe('admin')
+    await harness.reread()
+    expect(workspace.reads).toBe(1)
+  })
+
+  it('reads nothing under a latch the kernel says no rule applies under', async () => {
+    const workspace = connection()
+    const harness = await mount(workspace.overseer, { ...LATCHED, rulesApply: false })
+
+    expect(workspace.reads).toBe(0)
+    expect(harness.current.ruleApplies(7, NOTE.tag)).toBe(false)
+  })
+
   it('reads again on reread() under the latch, keeping the vendors and the answer meanwhile', async () => {
     const workspace = connection()
     const harness = await mount(workspace.overseer, { ...LATCHED, vendors: true })

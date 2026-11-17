@@ -233,8 +233,8 @@ describe('Activity rule offers in a restricted workspace', () => {
   })
 
   it('asks the kernel again once a request is decided by hand', async () => {
-    // A request still waiting with its rule on may be one the kernel stopped applying, after a
-    // read of another connection's restricted data. Nothing else tells this client.
+    // A request still waiting with its rule on may be one the kernel stopped applying before
+    // this client was told.
     const server = makeOverseer()
     const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () => [{
       gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
@@ -298,6 +298,36 @@ describe('Activity rule offers in a restricted workspace', () => {
 
     expect(listPreApprovableActions).toHaveBeenCalledTimes(2)
     expect(confirmation()).toBeNull()
+  })
+
+  it('stops offering a rule, and closes its confirmation, once the kernel says none applies',
+      async () => {
+    // Another connection's restricted data was read: the workspace's metadata says so, and
+    // nobody has to decide a request or reload to be told it needs review.
+    const server = makeOverseer()
+    const listPreApprovableActions = vi.fn<() => Promise<PreApprovableAction[]>>(async () => [{
+      gatekeeperId: 7, resourceTitle: 'This deployment', vendorId: 'admin',
+      actionKind: STATUS, alreadyEnabled: false, ruleApplies: true,
+    }])
+    Object.assign(server.overseer, { listPreApprovableActions })
+    const render = (rulesApply: boolean) => view.render(
+      <Activity overseer={server.overseer} restricted rulesApplyWhileRestricted={rulesApply}
+        view="review" onViewChange={() => {}} />,
+    )
+    await render(true)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [request(1, 'Close report 12', STATUS)] })
+    flushFrames()
+    await act(async () => {})
+    await act(async () => alwaysApproveButtons()[0].click())
+    expect(confirmation()).not.toBeNull()
+
+    await render(false)
+    await act(async () => {})
+
+    expect(confirmation()).toBeNull()
+    expect(alwaysApproveButtons()).toHaveLength(0)
+    expect(listPreApprovableActions).toHaveBeenCalledTimes(1)
   })
 
   it('closes a confirmation the latch overtook, without reading the catalog for it', async () => {

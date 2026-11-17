@@ -113,13 +113,17 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number, autoApproval?: AutoApprovalChannel } = {},
+  props: {
+    restricted?: boolean, rulesApplyWhileRestricted?: boolean, selectedChatId?: number,
+    autoApproval?: AutoApprovalChannel,
+  } = {},
 ) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
+      rulesApplyWhileRestricted={props.rulesApplyWhileRestricted}
       autoApproval={props.autoApproval}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
@@ -651,9 +655,9 @@ describe('rule offers in a restricted workspace', () => {
   })
 
   it('asks the kernel again once a request a rule covered is decided by hand', async () => {
-    // Another connection's restricted data was read since the catalog answered: the kernel holds
-    // what its rule applied, and nothing tells this client. The request stays decidable, and
-    // deciding it is the cue to every surface to read the answer again.
+    // The kernel stopped applying the rule since the catalog answered, and this client has not
+    // been told yet. The request stays decidable, and deciding it is a cue to every surface to
+    // read the answer again.
     const workspace = adminWorkspace()
     Object.assign(workspace.server.overseer as object, {
       listAutoApprovedActionKinds: async () => [{ gatekeeperId: 7, actionKind: NOTE }],
@@ -685,6 +689,35 @@ describe('rule offers in a restricted workspace', () => {
     expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(2)
     expect(document.body.textContent).not.toContain('Standing rule enabled.')
     expect(alwaysApproveButtons()).toHaveLength(0)
+  })
+
+  it('stops saying a rule is on for a request once the kernel says no rule applies', async () => {
+    // Another connection's restricted data was read since the catalog answered: the kernel
+    // holds what the rule applied and says so in the workspace's metadata, so the request reads
+    // as waiting for review before anyone decides it.
+    const workspace = adminWorkspace()
+    Object.assign(workspace.server.overseer as object, {
+      listAutoApprovedActionKinds: async () => [{ gatekeeperId: 7, actionKind: NOTE }],
+    })
+    const render = (rulesApplyWhileRestricted: boolean) => renderChat(workspace.server.overseer, {
+      restricted: true, rulesApplyWhileRestricted, selectedChatId: 1,
+    })
+    await render(true)
+    await workspace.server.resolveSubscription()
+    await workspace.server.resolvePendingQuery({ entries: [
+      request(1, 'Note the cause on report 12', NOTE),
+      request(2, 'Note the fix on report 12', NOTE),
+    ] })
+    await act(async () => {})
+    await openDisclosure('2 requests')
+    expect(document.body.textContent).toContain('Standing rule enabled.')
+
+    await render(false)
+    await act(async () => {})
+
+    expect(document.body.textContent).not.toContain('Standing rule enabled.')
+    expect(alwaysApproveButtons()).toHaveLength(0)
+    expect(workspace.listPreApprovableActions).toHaveBeenCalledTimes(1)
   })
 
   it('reports no decision made by hand where no latch is set', async () => {

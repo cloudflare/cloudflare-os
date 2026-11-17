@@ -14,6 +14,11 @@ export interface RuleCatalogWants {
   restricted: boolean
   /** Under the latch, a request a rule might still apply is on show (`mayApplyWhileRestricted`). */
   applies: boolean
+  /**
+   * `WorkspaceMetadata.rulesApplyWhileRestricted`, which the kernel sends when it changes. False
+   * is its word that no rule applies anything under the latch, whatever the catalog said.
+   */
+  rulesApply?: boolean
 }
 
 /** One read of the catalog. */
@@ -40,13 +45,15 @@ const UNREAD: Snapshot = {
  * now. The catalog starts every gatekeeper it lists and fails whole if one of them does, so
  * it is read only when asked: once per workspace connection for `vendors`, and under the
  * latch once more for `applies`, since what was read before the latch says nothing of it.
- * `reread()` forgets what was read under the latch: a later read of another connection's
- * restricted data ends what a rule applies, and nothing tells this client.
  *
- * So an answer can be stale. Until the next `reread()` a request the kernel has started to
- * hold still reads as covered by its rule, and it keeps the controls to decide it by hand. The
- * answer on show stays while its replacement is being read, so that a request does not flip
- * to uncovered and back; a replacement that cannot be read leaves no answer, and no kind
+ * A later read of another connection's restricted data ends what a rule applies there. The
+ * kernel says so in the workspace's metadata (`want.rulesApply`), and from then on no kind
+ * applies and nothing is read: a request the kernel has started to hold stops reading as
+ * covered by its rule without a reload.
+ *
+ * `reread()` forgets what was read under the latch, for whatever else changed it. The answer
+ * on show stays while its replacement is being read, so that a request does not flip to
+ * uncovered and back; a replacement that cannot be read leaves no answer, and no kind
  * applies.
  */
 export const useRuleCatalog = (overseer: RpcStub<Overseer> | null, want: RuleCatalogWants): {
@@ -61,7 +68,8 @@ export const useRuleCatalog = (overseer: RpcStub<Overseer> | null, want: RuleCat
   // `reread()` counts only under the latch: before it, the catalog says nothing that changes.
   const wanted = want.restricted ? asked : 0
   const current = read !== undefined && read.underLatch === want.restricted && read.asked === wanted
-  const asksApplies = want.restricted && want.applies
+  const ended = want.restricted && want.rulesApply === false
+  const asksApplies = want.restricted && want.applies && !ended
   const needsRead = overseer !== null &&
     ((want.vendors && read === undefined) || (asksApplies && !current))
 
@@ -91,7 +99,7 @@ export const useRuleCatalog = (overseer: RpcStub<Overseer> | null, want: RuleCat
   }, [overseer, needsRead, want.vendors, asksApplies, want.restricted, wanted])
 
   const underLatch = want.restricted
-  const applying = read?.underLatch ? read.applying : NO_KEYS
+  const applying = read?.underLatch && !ended ? read.applying : NO_KEYS
   const ruleApplies = useMemo(
     () => (gatekeeperId: number, tag: string) =>
       !underLatch || applying.has(`${gatekeeperId}:${tag}`),

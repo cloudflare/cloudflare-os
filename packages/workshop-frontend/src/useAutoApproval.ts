@@ -26,10 +26,14 @@ export function autoApprovalKey(entry: { gatekeeperId: number; actionKind: Actio
 
 /**
  * The Auto-approval tab's rows: the whole catalog, read while the tab is open, with the stored
- * rules. `restricted` is the workspace's restricted-data latch: the kernel's answer on what a
- * rule applies changes with it, so both are read again when it does.
+ * rules. `restricted` is the workspace's restricted-data latch and `rulesApply` the kernel's
+ * word on whether a rule still applies anything under it
+ * (`WorkspaceMetadata.rulesApplyWhileRestricted`): the kernel's answer on what a rule applies
+ * changes with either, so both lists are read again when one does.
  */
-export function useAutoApproval(overseer: RpcStub<Overseer> | null, restricted: boolean) {
+export function useAutoApproval(
+  overseer: RpcStub<Overseer> | null, restricted: boolean, rulesApply?: boolean,
+) {
   const toasts = useKumoToastManager()
   const [catalog, setCatalog] = useState<PreApprovableAction[]>([])
   const [rules, setRules] = useState<Array<{ gatekeeperId: number; actionKind: ActionKind }>>([])
@@ -76,12 +80,13 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null, restricted: 
     setIsLoading(false)
   }, [overseer])
 
-  // Also when the latch sets: what the catalog said a rule applies was said of the workspace
-  // before it.
+  // Also when the latch sets, and when another connection's restricted read ends what a rule
+  // applies under it: what the catalog said a rule applies was said of the workspace before.
+  const ended = restricted && rulesApply === false
   useEffect(() => {
     setIsLoading(true)
     void refresh()
-  }, [refresh, restricted])
+  }, [refresh, restricted, ended])
 
   const entries = useMemo((): AutoApprovalEntry[] => {
     const byKey = new Map<string, AutoApprovalEntry>()

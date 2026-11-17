@@ -34,6 +34,9 @@ interface ActivityProps {
   // approve" is offered for those kinds alone. A stored rule that applies nothing says so and
   // stays revocable.
   restricted?: boolean
+  // WorkspaceMetadata.rulesApplyWhileRestricted: once false, no rule applies anything under
+  // the latch, so no rule is offered and none reads as applying.
+  rulesApplyWhileRestricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
   // Shared with the chat: a rule changed here has to reach the tray's own list.
@@ -150,6 +153,7 @@ function ActivityNotice({ icon, title, description, children }: {
 export default function Activity({
   overseer,
   restricted,
+  rulesApplyWhileRestricted,
   view,
   onViewChange,
   autoApproval,
@@ -183,8 +187,8 @@ export default function Activity({
     return groups
   }, [history.entries])
 
-  // Under the latch a request decided by hand may be one whose rule the kernel stopped applying,
-  // and nothing else says so: have every surface read its answer again.
+  // Under the latch a request decided by hand may be one whose rule the kernel stopped applying
+  // before this client was told: have every surface read its answer again.
   const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessingActions,
     () => { if (restricted) autoApproval?.changed() })
 
@@ -214,6 +218,7 @@ export default function Activity({
     restricted: restricted === true,
     applies: restricted === true && view === 'review' &&
       pendingActions.some(record => record.type === 'action' && mayApplyWhileRestricted(record)),
+    rulesApply: rulesApplyWhileRestricted,
   }, setProcessingActions, autoApproval)
 
   const toggleExpanded = (id: number) => {
@@ -436,6 +441,7 @@ export default function Activity({
           <AutoApprovalPanel
             overseer={overseer}
             restricted={restricted}
+            rulesApplyWhileRestricted={rulesApplyWhileRestricted}
             reloadTrigger={autoApproval?.reloadTrigger}
             onChanged={autoApproval?.changed}
           />
@@ -473,17 +479,19 @@ export default function Activity({
 function AutoApprovalPanel({
   overseer,
   restricted,
+  rulesApplyWhileRestricted,
   reloadTrigger,
   onChanged,
 }: {
   overseer: RpcStub<Overseer>
   restricted?: boolean
+  rulesApplyWhileRestricted?: boolean
   reloadTrigger?: number
   /** Reports that a change made here has settled; see `AutoApprovalChannel`. */
   onChanged?: () => void
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } =
-    useAutoApproval(overseer, restricted === true)
+    useAutoApproval(overseer, restricted === true, rulesApplyWhileRestricted)
   const { authenticatedApi } = useAuthenticatedApi()
   const vendorBranding = useVendorBranding(authenticatedApi)
 
