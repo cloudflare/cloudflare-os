@@ -191,6 +191,18 @@ describe("compaction trigger", () => {
     expect(isCompactionTurn([message(0, user, "hi")])).toBe(false);
   });
 
+  it("still recognizes /compact behind its error and a Retry's boundary", () => {
+    let compact = record(1, user, {
+      type: "slashCommand", request: {id: {builtin: true, commandId: "compact"}, args: ""},
+    });
+    let error = record(2, agent, {type: "error", message: "The summary request failed."});
+    expect(isCompactionTurn([compact, error, record(3, user, {type: "agentNudge"})])).toBe(true);
+    // A nudge the model reads asks for something else, as does a new prompt after the error.
+    expect(isCompactionTurn([compact, error, record(3, user, {type: "agentNudge", text: "Go."})]))
+        .toBe(false);
+    expect(isCompactionTurn([compact, error, message(3, user, "hi")])).toBe(false);
+  });
+
   // Every one of these produces a `user` model message, so retained context can begin at it. A chat
   // driven only by callbacks would otherwise never find a cut point.
   it("treats callbacks, nudges and accepted connections as turn starts", () => {

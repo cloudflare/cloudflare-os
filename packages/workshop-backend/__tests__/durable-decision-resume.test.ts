@@ -558,6 +558,24 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(previous === "final response" ? 1 : 0); // Summary only, if compactable.
   });
 
+  it("Retry of a failed /compact compacts again", async () => {
+    const s = await scenario(null), requests = inference();
+    await s.visit(async impl => {
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "First"}]);
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "One."}]);
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Second"}]);
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Two."}]);
+      impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
+        request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+      impl.postAgentErrorMessage(CHAT, MODEL.profile, "The summary request failed.");
+      using client = await decisionClient(impl);
+      await client.retryAgent(CHAT, MODEL.profile.id);
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.getActiveChatCompaction(CHAT)?.summary).toBe("Done.");
+    });
+    expect(requests()).toBe(1);  // The summary; the model is not prompted.
+  });
+
   it("waits for both kinds of decision and consumes the handoff only once", async () => {
     const requests = inference(), s = await scenario("action");
     await s.visit(async impl => {

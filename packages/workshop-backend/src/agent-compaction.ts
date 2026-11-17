@@ -70,10 +70,12 @@ export function shouldCompactChat(contextTokens: number, inputBudget: number): b
 /**
  * True when the chat's newest message is `/compact`. Such a turn compacts and then ends instead of
  * prompting the model. Both the agent and the turn loop derive this from the log rather than
- * passing a flag, so a turn resumed after a restart still behaves the same.
+ * passing a flag, so a turn resumed after a restart still behaves the same. Errors and textless
+ * nudges after it don't count, so a Retry or Continue of a failed or stopped `/compact` reruns it.
  */
 export function isCompactionTurn(messages: AiChatMessage[]): boolean {
-  let last = messages.at(-1);
+  let last = messages.findLast(msg => msg.type !== "error" &&
+      !(msg.type === "agentNudge" && msg.text === undefined));
   return last?.type === "slashCommand" && last.request.id.builtin === true &&
       last.request.id.commandId === "compact";
 }
