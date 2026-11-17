@@ -8,7 +8,8 @@ import {
   type AdminAccessGrant, type AdminAccessRecord, type AdminAgentOrigin, type AdminIssueReport,
   type AdminIssueReportPage,
   type AdminIssueReportQuery, type AdminVia, type AiChatAuthorInfo, type IssueReport,
-  type IssueReportAuthor, type IssueReportContext, type IssueReportEntry, type IssueReportGrant,
+  type IssueReportAssignee, type IssueReportAssignment, type IssueReportAuthor,
+  type IssueReportContext, type IssueReportEntry, type IssueReportGrant,
   type IssueReportImage, type IssueReportInput, type IssueReportPriority, type IssueReportStatus,
   type NamedUser, type OwnIssueReport, type OwnIssueReportPage,
 } from "@gadgets/workshop-shared/api";
@@ -61,8 +62,8 @@ const EVENT_MAX_AGE_MS = DAY_MS;
 // A report with the copy of its grant, if it names one.
 const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter_name, r.text,
     r.priority, r.workspace_id, r.context, r.status, r.links, r.updated_at, r.last_admin_public,
-    r.seen, g.id AS grant_id, g.scope AS grant_scope, g.expires_at AS grant_expires_at,
-    g.ended_at AS grant_ended_at,
+    r.seen, r.assignee_id, r.assignee, g.id AS grant_id, g.scope AS grant_scope,
+    g.expires_at AS grant_expires_at, g.ended_at AS grant_ended_at,
     (SELECT json_group_array(
          json_object('id', i.id, 'type', i.type, 'byteLength', i.byte_length) ORDER BY i.n)
        FROM images i WHERE i.report_seq = r.seq AND i.state = 'stored') AS images
@@ -71,12 +72,14 @@ const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter
 // The kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart, and within a kind the
 // entries made through the admin gatekeeper apart from people's (see #threadCount()). A bare
 // change of status (an admins' entry with no text that sets a status, public or for admins
-// alone) is bounded only when it was made through the gatekeeper (see setStatus()).
+// alone) is bounded only when it was made through the gatekeeper (see setStatus()), and a bare
+// change of assignee likewise (see claim()).
 const THREAD_KINDS = {
   replies: "visibility = 'public' AND via IS NULL",
   adminPublic: "visibility = 'public' AND via IS NOT NULL AND text <> ''",
   adminOnly: "visibility = 'admins' AND text <> ''",
   status: "via IS NOT NULL AND text = '' AND status IS NOT NULL",
+  assignment: "assignment IS NOT NULL",
 } as const;
 
 type ReportRow = {
@@ -94,6 +97,8 @@ type ReportRow = {
   updated_at: number;
   last_admin_public: number;
   seen: number;
+  assignee_id: string | null;
+  assignee: string | null;
   grant_id: string | null;
   grant_scope: string | null;
   grant_expires_at: number | null;
@@ -132,6 +137,7 @@ type EntryRow = {
   agent: string | null;
   text: string;
   status: string | null;
+  assignment: string | null;
 };
 
 // What a grant is linked to a report by (see IssueReportsDurableObject.checkGrantLink()).
@@ -240,12 +246,19 @@ function ownReportOf(row: ReportRow): OwnIssueReport {
   };
 }
 
+// A report as admins read it: with its links, when its thread last grew and, when an admin holds
+// it, its assignee, none of which reportOf() or ownReportOf() takes.
 function adminReportOf(row: ReportRow): AdminIssueReport {
-  return {
+  let report: AdminIssueReport = {
     ...reportOf(row),
     links: JSON.parse(row.links) as string[],
     updatedAt: new Date(row.updated_at),
   };
+  if (row.assignee_id !== null) {
+    let held = JSON.parse(row.assignee!) as Omit<IssueReportAssignee, "id" | "at"> & { at: number };
+    report.assignee = { id: row.assignee_id, ...held, at: new Date(held.at) };
+  }
+  return report;
 }
 
 // An entry as `reader` reads it. The reporter reads an entry the admins wrote (its row has a
@@ -271,6 +284,7 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
     let status = row.status as IssueReportStatus;
     entry.status = reader === "reporter" ? issueReportStatusForReporter(status) : status;
   }
+  if (row.assignment !== null) entry.assignment = row.assignment as IssueReportAssignment;
   return entry;
 }
 
@@ -336,24 +350,26 @@ function fewerBytesThanDeclared(): TypeError {
  * session dropped is cleared away by the code that began it.
  *
  * Schema. A report's workspace is a column, for the filter, and the rest of where its reporter
- * was is JSON in `context`. `last_admin_public` is the `n` of the newest public entry an admin
- * wrote (0 for none) and `seen` the value it had when the reporter last marked the report seen,
- * so a report is unseen while the first is greater. `grant_id` names a row of `grants`, which
- * holds a row only while a report names it.
+ * was is JSON in `context`. Its assignee's id is a column too, for the filter and for deciding a
+ * claim, and the rest of the assignee (name, since when, how the claim arrived) is JSON in
+ * `assignee`; both are NULL while nobody holds the report. `last_admin_public` is the `n` of
+ * the newest public entry an admin wrote (0 for none) and `seen` the value it had when the
+ * reporter last marked the report seen, so a report is unseen while the first is greater.
+ * `grant_id` names a row of `grants`, which holds a row only while a report names it.
  *   reports(seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
  *     filed_at INTEGER NOT NULL, reporter_id TEXT NOT NULL, reporter_name TEXT NOT NULL,
  *     text TEXT NOT NULL, priority TEXT NOT NULL, workspace_id TEXT,
  *     owns_workspace INTEGER NOT NULL, context TEXT NOT NULL CHECK (json_valid(context)),
  *     status TEXT NOT NULL, links TEXT NOT NULL CHECK (json_valid(links)), grant_id TEXT,
- *     updated_at INTEGER NOT NULL, last_admin_public INTEGER NOT NULL, seen INTEGER NOT NULL)
- *     STRICT;
+ *     updated_at INTEGER NOT NULL, last_admin_public INTEGER NOT NULL, seen INTEGER NOT NULL,
+ *     assignee_id TEXT, assignee TEXT CHECK (assignee IS NULL OR json_valid(assignee))) STRICT;
  *   indexes (reporter_id, seq), (status, seq), (priority, seq), (workspace_id, seq), (filed_at),
- *     (grant_id) WHERE grant_id IS NOT NULL
+ *     (grant_id) WHERE grant_id IS NOT NULL, (assignee_id, seq)
  *   entries(report_seq INTEGER NOT NULL, n INTEGER NOT NULL, id TEXT NOT NULL,
  *     at INTEGER NOT NULL, author_id TEXT NOT NULL, author_name TEXT NOT NULL,
  *     visibility TEXT NOT NULL CHECK (visibility IN ('public', 'admins')), via TEXT,
  *     agent TEXT CHECK (agent IS NULL OR json_valid(agent)),
- *     text TEXT NOT NULL, status TEXT, PRIMARY KEY (report_seq, n)) STRICT;
+ *     text TEXT NOT NULL, status TEXT, assignment TEXT, PRIMARY KEY (report_seq, n)) STRICT;
  *   index (author_id, at)
  *   grants(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, scope TEXT NOT NULL, workspace_id TEXT,
  *     expires_at INTEGER NOT NULL, ended_at INTEGER) STRICT;
@@ -365,10 +381,12 @@ function fewerBytesThanDeclared(): TypeError {
  *     report_id TEXT NOT NULL, label TEXT NOT NULL, at INTEGER NOT NULL) STRICT;
  * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own, and its
  * `agent` is the AdminAgentOrigin, as JSON, of one written through the admin gatekeeper; a bare
- * change of status is an admins' entry with a status and no text. An image is 'pending' from its
- * upload's reservation, when `started_at` and `n` (its place among its report's images) are set
- * and `byte_length` is the length its sender declared, until its object is in the bucket; only
- * a 'stored' image has a `type`, and only a 'stored' image is listed or read.
+ * change of status is an admins' entry with a status and no text, and a bare change of assignee
+ * is an admins-only entry whose text is '' and whose `assignment` says which. An image is
+ * 'pending' from its upload's reservation, when `started_at` and `n` (its place among its
+ * report's images) are set and `byte_length` is the length its sender declared, until its object
+ * is in the bucket; only a 'stored' image has a `type`, and only a 'stored' image is listed or
+ * read.
  *
  * `events` holds what the admin gatekeeper is still to be told (see IssueReportEvent): a report
  * that was filed, an investigation that ended. A row is written in one step with the change it
@@ -401,7 +419,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       grant_id TEXT,
       updated_at INTEGER NOT NULL,
       last_admin_public INTEGER NOT NULL,
-      seen INTEGER NOT NULL
+      seen INTEGER NOT NULL,
+      assignee_id TEXT,
+      assignee TEXT CHECK (assignee IS NULL OR json_valid(assignee))
     ) STRICT`);
     sql.exec("CREATE INDEX IF NOT EXISTS reports_reporter ON reports (reporter_id, seq)");
     sql.exec("CREATE INDEX IF NOT EXISTS reports_status ON reports (status, seq)");
@@ -412,6 +432,16 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     // deleted; few reports name one, so the index holds only those.
     sql.exec(`CREATE INDEX IF NOT EXISTS reports_grant ON reports (grant_id)
         WHERE grant_id IS NOT NULL`);
+    // A store whose reports table has no assignee columns gains them here, as `entries` gains
+    // `agent`.
+    if (sql.exec("SELECT 1 FROM pragma_table_info('reports') WHERE name = 'assignee_id'")
+        .toArray().length === 0) {
+      sql.exec("ALTER TABLE reports ADD COLUMN assignee_id TEXT");
+      sql.exec(`ALTER TABLE reports ADD COLUMN assignee TEXT
+          CHECK (assignee IS NULL OR json_valid(assignee))`);
+    }
+    // The admins' list is filtered by who holds a report, or by nobody.
+    sql.exec("CREATE INDEX IF NOT EXISTS reports_assignee ON reports (assignee_id, seq)");
     sql.exec(`CREATE TABLE IF NOT EXISTS entries (
       report_seq INTEGER NOT NULL,
       n INTEGER NOT NULL,
@@ -424,6 +454,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       agent TEXT CHECK (agent IS NULL OR json_valid(agent)),
       text TEXT NOT NULL,
       status TEXT,
+      assignment TEXT,
       PRIMARY KEY (report_seq, n)
     ) STRICT`);
     // A store whose entries table has no `agent` column gains it here: CREATE TABLE IF NOT EXISTS
@@ -432,6 +463,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
         .toArray().length === 0) {
       sql.exec(
           "ALTER TABLE entries ADD COLUMN agent TEXT CHECK (agent IS NULL OR json_valid(agent))");
+    }
+    // And `assignment`, likewise.
+    if (sql.exec("SELECT 1 FROM pragma_table_info('entries') WHERE name = 'assignment'")
+        .toArray().length === 0) {
+      sql.exec("ALTER TABLE entries ADD COLUMN assignment TEXT");
     }
     // The reporter's replies of a day are counted across all their reports.
     sql.exec("CREATE INDEX IF NOT EXISTS entries_author ON entries (author_id, at)");
@@ -888,11 +924,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   // --- The admins ---
 
   /** One page of reports, newest first, filtered as `query` says; `limit` is validated by the
-   * caller. Throws for a malformed cursor or a filter over 1000 characters. The reporter filter
-   * takes an id as a report shows it or whole. */
+   * caller. Throws for a malformed cursor or a filter over 1000 characters. The reporter and
+   * assignee filters take an id as a report shows it or whole. */
   list(query: Omit<AdminIssueReportQuery, "limit"> & { limit: number }): AdminIssueReportPage {
     let limit = adminListLimit(query.limit);
-    for (let filter of [query.reporter, query.workspace]) {
+    for (let filter of [query.reporter, query.workspace, query.assignee]) {
       if (filter !== undefined && filter.length > MAX_FILTER_LENGTH) {
         throw new TypeError(`Report filters must be at most ${MAX_FILTER_LENGTH} characters.`);
       }
@@ -915,6 +951,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       where.push("r.workspace_id = ?");
       params.push(query.workspace);
     }
+    if (query.assignee !== undefined) {
+      where.push("r.assignee_id = ?");
+      params.push(auditOwnerId(query.assignee));
+    }
+    if (query.unassigned) where.push("r.assignee_id IS NULL");
     let before: number | undefined;
     if (query.cursor !== undefined) {
       before = /^[0-9]+$/.test(query.cursor) ? Number(query.cursor) : NaN;
@@ -1000,6 +1041,60 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     this.#addEvent("investigationComplete", report.id, status, at);
     await this.#wakeForEvents();
     this.ctx.waitUntil(this.#deliverEvents());
+  }
+
+  /**
+   * Makes `admin` the assignee of a report, entered in its thread as a line for admins alone
+   * that names them and is labelled as `caller` (see addEntry()). It changes no status. A
+   * report `admin` already holds is left as it is. Another admin's is taken only with
+   * `takeOver`, which a call made through the admin gatekeeper may not set: only a person
+   * takes a report from a person. Throws (TypeError) for a caller that is not one and for a
+   * take-over through the gatekeeper; refused `notFound`, `assigned` for a report another
+   * admin holds, and `threadFull` for a call made through the gatekeeper once
+   * MAX_ISSUE_REPORT_THREAD_ENTRIES changes of this report's assignee were made through it.
+   */
+  claim(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string, takeOver: boolean): void {
+    let holder = namedUser(admin);
+    let label = adminCallerTerms(caller);
+    if (label.via === "gatekeeper" && takeOver) {
+      throw new TypeError("Only a person takes an issue report over.");
+    }
+    let report = this.#reportSeq(reportId);
+    if (report.assignee_id === holder.id) return;
+    if (report.assignee_id !== null && !takeOver) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
+    }
+    this.#assign(report.seq, holder, label, report.assignee_id === null ? "claimed" : "takenOver");
+  }
+
+  /**
+   * Leaves a report `admin` holds with no assignee, entered in its thread as claim() enters a
+   * claim. A report nobody holds is left as it is. Throws (TypeError) for a caller that is not
+   * one; refused `notFound`, `assigned` for a report another admin holds, and `threadFull` as
+   * claim() is.
+   */
+  release(admin: Pick<AiChatAuthorInfo, "id" | "name">,
+      caller: Pick<AdminAccessRecord, "via" | "agent">, reportId: string): void {
+    let holder = namedUser(admin);
+    let label = adminCallerTerms(caller);
+    let report = this.#reportSeq(reportId);
+    if (report.assignee_id === null) return;
+    if (report.assignee_id !== holder.id) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
+    }
+    this.#assign(report.seq, holder, label, "released");
+  }
+
+  // Enters a change of assignee in a report's thread, bounded for the admin gatekeeper as its
+  // changes of status are (see setStatus()).
+  #assign(reportSeq: number, author: NamedUser, label: Pick<AdminAccessRecord, "via" | "agent">,
+      assignment: IssueReportAssignment): EntryRow {
+    if (label.via === "gatekeeper" &&
+        this.#threadCount(reportSeq, "assignment", true) >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
+    }
+    return this.#addEntry(reportSeq, author, "admins", label, "", undefined, assignment);
   }
 
   /** Replaces a report's links with `links` as reportLinks() keeps them. Throws (TypeError) for
@@ -1333,9 +1428,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
 
   // What the admins' writes and their read of an image need of a report; `notFound` for an id
   // that names none.
-  #reportSeq(reportId: string): { seq: number; id: string; status: string } {
-    let [row] = this.ctx.storage.sql.exec<{ seq: number; id: string; status: string }>(
-        "SELECT seq, id, status FROM reports WHERE id = ?", reportId).toArray();
+  #reportSeq(reportId: string): Pick<ReportRow, "seq" | "id" | "status" | "assignee_id"> {
+    let [row] = this.ctx.storage.sql.exec<Pick<ReportRow, "seq" | "id" | "status" | "assignee_id">>(
+        "SELECT seq, id, status, assignee_id FROM reports WHERE id = ?", reportId).toArray();
     if (row === undefined) throw notFound();
     return row;
   }
@@ -1360,8 +1455,8 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   #entries(reportSeq: number, reader: "reporter" | "admins"): IssueReportEntry[] {
     let visible = reader === "reporter" ? "AND visibility = 'public'" : "";
     return this.ctx.storage.sql.exec<EntryRow>(
-      `SELECT n, id, at, author_id, author_name, visibility, via, agent, text, status FROM entries
-       WHERE report_seq = ? ${visible} ORDER BY n`, reportSeq).toArray()
+      `SELECT n, id, at, author_id, author_name, visibility, via, agent, text, status, assignment
+       FROM entries WHERE report_seq = ? ${visible} ORDER BY n`, reportSeq).toArray()
         .map(row => entryOf(row, reader));
   }
 
@@ -1375,19 +1470,21 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Adds an entry to a report's thread, in one step with what it changes of the report: when its
-  // thread last grew; its status, when the entry sets one; and, for a public entry an admin wrote
-  // (a `via` and a text), `last_admin_public`, which makes the report unseen. A bare change of
-  // status has no text, so it does not. `label` is an admin's checked label (adminCallerTerms()),
-  // or null for the reporter's own entry. Returns the entry's row.
+  // thread last grew; its status, when the entry sets one; its assignee, when the entry changes
+  // it; and, for a public entry an admin wrote (a `via` and a text), `last_admin_public`, which
+  // makes the report unseen. A bare change of status has no text, so it does not. `label` is an
+  // admin's checked label (adminCallerTerms()), or null for the reporter's own entry. Returns the
+  // entry's row.
   #addEntry(reportSeq: number, author: NamedUser, visibility: IssueReportEntry["visibility"],
       label: Pick<AdminAccessRecord, "via" | "agent"> | null, text: string,
-      status?: IssueReportStatus): EntryRow {
+      status?: IssueReportStatus, assignment?: IssueReportAssignment): EntryRow {
     let sql = this.ctx.storage.sql;
     let via = label?.via ?? null;
     let row: EntryRow = {
       n: 0, id: crypto.randomUUID(), at: Date.now(), author_id: author.id,
       author_name: author.name, visibility, via,
       agent: label?.agent ? JSON.stringify(label.agent) : null, text, status: status ?? null,
+      assignment: assignment ?? null,
     };
     this.ctx.storage.transactionSync(() => {
       row.n = sql.exec<{ n: number }>(
@@ -1395,16 +1492,24 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
         reportSeq).one().n;
       sql.exec(
         `INSERT INTO entries (report_seq, n, id, at, author_id, author_name, visibility, via,
-           agent, text, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           agent, text, status, assignment)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         reportSeq, row.n, row.id, row.at, row.author_id, row.author_name, row.visibility,
-        row.via, row.agent, row.text, row.status);
+        row.via, row.agent, row.text, row.status, row.assignment);
       let answers = via !== null && visibility === "public" && text !== "";
       sql.exec(
         `UPDATE reports SET updated_at = ?, status = COALESCE(?, status),
            last_admin_public = CASE WHEN ? THEN ? ELSE last_admin_public END
          WHERE seq = ?`,
         row.at, row.status, answers ? 1 : 0, row.n, reportSeq);
+      if (assignment !== undefined) {
+        // The entry is the change of assignee: its author holds the report from now, or nobody.
+        let held = assignment === "released" ? null : JSON.stringify({
+          name: author.name, at: row.at, via, ...(label?.agent && { agent: label.agent }),
+        });
+        sql.exec("UPDATE reports SET assignee_id = ?, assignee = ? WHERE seq = ?",
+            held === null ? null : author.id, held, reportSeq);
+      }
     });
     return row;
   }

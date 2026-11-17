@@ -2148,10 +2148,11 @@ export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
  * approveWorkspaceWrite() and endWorkspaceGrant() as AdminWriteRecords. The rest change no
  * setting and are not recorded: the reads (getSettings, isBlueprintFeatured, getUpdateStatus,
  * listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats, getWorkspaceWrite,
- * listAdminPasskeys), the passkey challenges (beginAdminPasskeyEnrolment,
+ * listAdminPasskeys, whoami), the passkey challenges (beginAdminPasskeyEnrolment,
  * beginAdminPasskeyRemoval, beginWorkspaceWriteApproval), the gateway tests, checkForUpdates, and
  * the issue report methods (listIssueReports, getIssueReport, addIssueReportEntry,
- * setIssueReportStatus, setIssueReportLinks, readIssueReportImage): a report is written to
+ * setIssueReportStatus, claimIssueReport, releaseIssueReport, setIssueReportLinks,
+ * readIssueReportImage): a report is written to
  * admins, and its thread is its own record of who did what, when and how.
  * A call that is not recorded can still leave a record that is not its own: getWorkspaceWrite()
  * and beginWorkspaceWriteApproval(), like every write-request method, first end the requests that
@@ -2925,11 +2926,12 @@ export const MAX_ISSUE_REPORTS_PER_DAY = 20;
 /** The most entries of each of three kinds one issue report's thread holds: the reporter's
  * replies, the admins' public entries, and the admins-only ones. Each kind is counted apart, so
  * that a reporter who fills their side cannot stop the admins answering, and a full thread
- * tells a reporter nothing of the admins' notes. A bare change of status is not counted, so a
- * full thread can always be closed. What is written through the admin gatekeeper, which a
+ * tells a reporter nothing of the admins' notes. A person's bare change of status or of
+ * assignee is not counted, so a full thread can always be closed and its report taken. What is written through the admin gatekeeper, which a
  * workspace's rule can do with no person deciding, is counted apart from what people write: its
- * public entries, its admins-only ones and its changes of status are three more kinds, each
- * bounded like the others, so that an agent can fill no part of a thread that people write in. */
+ * public entries, its admins-only ones, its changes of status and its changes of assignee are
+ * four more kinds, each bounded like the others, so that an agent can fill no part of a thread
+ * that people write in. */
 export const MAX_ISSUE_REPORT_THREAD_ENTRIES = 200;
 
 /** The most replies one user may write in the threads of their issue reports in a UTC day. */
@@ -2969,6 +2971,7 @@ export const ISSUE_REPORT_ERROR_CODES = {
   tooManyReports: "ISSUE_REPORT_TOO_MANY",
   tooManyReplies: "ISSUE_REPORT_TOO_MANY_REPLIES",
   threadFull: "ISSUE_REPORT_THREAD_FULL",
+  assigned: "ISSUE_REPORT_ASSIGNED",
   tooManyImages: "ISSUE_REPORT_TOO_MANY_IMAGES",
   imageTooLarge: "ISSUE_REPORT_IMAGE_TOO_LARGE",
   imageNotRecognised: "ISSUE_REPORT_IMAGE_NOT_RECOGNISED",
@@ -2990,6 +2993,7 @@ const issueReportErrors = codedErrorFamily<IssueReportErrorCode>({
   [ISSUE_REPORT_ERROR_CODES.tooManyReplies]:
       "You have replied to issue reports too many times today. Try again tomorrow.",
   [ISSUE_REPORT_ERROR_CODES.threadFull]: "This issue report's thread is full.",
+  [ISSUE_REPORT_ERROR_CODES.assigned]: "Another admin holds this issue report.",
   [ISSUE_REPORT_ERROR_CODES.tooManyImages]:
       `An issue report holds at most ${MAX_ISSUE_REPORT_IMAGES} images.`,
   [ISSUE_REPORT_ERROR_CODES.imageTooLarge]:
@@ -3076,9 +3080,49 @@ export type IssueReportGrant = {
 };
 
 /**
- * One entry of an issue report's thread: a written entry (a reply or a note), or a bare change
- * of status. A reporter writes and reads "public" entries only. Admins write and read both
- * kinds; an "admins" entry never reaches the reporter, through any method or count.
+ * How a thread entry changed its report's assignee (IssueReportEntry.assignment):
+ *   - "claimed":   its author took a report nobody held;
+ *   - "takenOver": its author took a report another admin held;
+ *   - "released":  its author gave up a report they held.
+ */
+export type IssueReportAssignment = "claimed" | "takenOver" | "released";
+
+/**
+ * The deployment admin who holds an issue report: the one who said they are dealing with it. A
+ * report has at most one, and only by that admin's own call (AdminApi.claimIssueReport()):
+ * nobody assigns another person. For admins alone: it is in nothing a reporter reads. Holding a
+ * report changes no status and no status needs a holder. An assignee who is no longer a
+ * deployment admin stays the assignee until an admin takes the report over.
+ */
+export type IssueReportAssignee = {
+  /** Their profile id, as NamedUser keeps one: the id an entry they wrote carries as its
+   * author's, and the id AdminApi.whoami() returns to them. */
+  id: string;
+  /** Their display name when they took the report. */
+  name: string;
+  /** Since when they hold it. */
+  at: Date;
+  /** How their claim reached the deployment (see AdminVia): "gatekeeper" for one an agent or a
+   * gadget made for them. */
+  via: AdminVia;
+  /** For a claim made through the admin gatekeeper: where it came from (see AdminAgentOrigin).
+   * Present exactly when `via` is "gatekeeper". */
+  agent?: AdminAgentOrigin;
+};
+
+/** Options for AdminApi.claimIssueReport(). */
+export type IssueReportClaimOptions = {
+  /** Take the report from the admin who holds it. Only a person does: a call made through the
+   * admin gatekeeper is refused with it set, so that no agent and no gadget takes a report
+   * from a person. A client sets it after asking, naming the holder. */
+  takeOver?: boolean;
+};
+
+/**
+ * One entry of an issue report's thread: a written entry (a reply or a note), a bare change of
+ * status, or a bare change of assignee. A reporter writes and reads "public" entries only.
+ * Admins write and read both kinds; an "admins" entry never reaches the reporter, through any
+ * method or count.
  *
  * A bare change of status is a line with no text that names the admin who made it (`author`).
  * It is "public" when it changes the status the reporter reads, and "admins" when it does not:
@@ -3105,12 +3149,16 @@ export type IssueReportEntry = {
    * came from (see AdminAgentOrigin), as admins read it. Never returned to the reporter, who
    * reads `via` alone. */
   agent?: AdminAgentOrigin;
-  /** Its text: at most MAX_ISSUE_REPORT_TEXT_LENGTH characters; "" for a bare change of status. */
+  /** Its text: at most MAX_ISSUE_REPORT_TEXT_LENGTH characters; "" for a bare change of status
+   * or of assignee. */
   text: string;
   /** The status this entry set, when it set one: an admin's change of status, or "withAdmin" on
    * the reporter's reply that reopened the report. As its reader reads it: the reporter never
    * reads "fixSuggested" or "fixInProgress" here. */
   status?: IssueReportStatus;
+  /** How this entry changed the report's assignee, when it did: a line with no text, for admins
+   * alone, whose `author` is the admin who claimed, took over or released the report. */
+  assignment?: IssueReportAssignment;
 };
 
 /** One issue report, as its reporter and the admins list it. */
@@ -3148,6 +3196,8 @@ export type AdminIssueReport = IssueReport & {
   /** The links admins attached (a ticket, a pull request): http or https URLs. Never shown to
    * the reporter. */
   links: string[];
+  /** The admin who holds it, if one does. Never shown to the reporter. */
+  assignee?: IssueReportAssignee;
   /** When its thread last grew, or it was filed. */
   updatedAt: Date;
 };
@@ -3174,6 +3224,11 @@ export type AdminIssueReportQuery = {
   reporter?: string;
   /** Only reports naming this workspace. At most 1000 characters. */
   workspace?: string;
+  /** Only reports this admin holds, by the id a report shows (IssueReportAssignee.id). At most
+   * 1000 characters. */
+  assignee?: string;
+  /** Only reports nobody holds. With `assignee` it matches nothing: the filters combine. */
+  unassigned?: boolean;
   /** The previous page's `nextCursor`; absent for the first page. */
   cursor?: string;
   /** The page size: a whole number from 1 to ADMIN_LIST_MAX_LIMIT, ADMIN_LIST_DEFAULT_LIMIT when
@@ -3785,6 +3840,13 @@ export interface AdminApi {
   // recorded in the admin audit log: a report is written to admins, and its thread is its own
   // record of who did what, when and how.
 
+  /** The calling admin as issue reports name them: the `id` a thread entry they wrote carries
+   * as its author's and a report they hold as its assignee's, with their display name as it
+   * is now. What code compares an assignee or an author with to tell its own admin from
+   * another. Through the admin gatekeeper it is the workspace's owner, in whose name
+   * everything written through that connection is. */
+  whoami(): Promise<NamedUser>;
+
   /** One page of the deployment's issue reports, newest first, filtered as `options` says.
    * Rejects what listAdminAudit() rejects. */
   listIssueReports(options?: AdminIssueReportQuery): Promise<AdminIssueReportPage>;
@@ -3809,6 +3871,22 @@ export interface AdminApi {
    * `notFound`, and `threadFull` for a call made through the admin gatekeeper once
    * MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the report's status were made through it. */
   setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void>;
+
+  /** Claim an issue report: make the caller its assignee (see IssueReportAssignee). Entered in
+   * its thread as a line only admins read, which names the caller. It changes no status. A
+   * report the caller already holds is left as it is. Refused `notFound`, and `assigned` when
+   * another admin holds the report, unless `options.takeOver` is set, which takes it from
+   * them. A call made through the admin gatekeeper is refused with `takeOver` set, and
+   * `threadFull` once MAX_ISSUE_REPORT_THREAD_ENTRIES changes of the report's assignee were
+   * made through it. */
+  claimIssueReport(reportId: string, options?: IssueReportClaimOptions): Promise<void>;
+
+  /** Release an issue report the caller holds, which then has no assignee. Entered in its
+   * thread as a line only admins read. It changes no status. A report nobody holds is left as
+   * it is. Refused `notFound`; `assigned` when another admin holds the report, who alone
+   * releases it (an admin who is to hold it instead takes it over); and `threadFull` as
+   * claimIssueReport() is. */
+  releaseIssueReport(reportId: string): Promise<void>;
 
   /** Replace the links attached to an issue report: at most MAX_ISSUE_REPORT_LINKS, each an http
    * or https URL of at most MAX_ISSUE_REPORT_LINK_LENGTH characters. Each is kept as the URL the

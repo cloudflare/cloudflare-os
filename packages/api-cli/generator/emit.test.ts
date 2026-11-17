@@ -218,14 +218,15 @@ test("grants, content reads and issue reports are commands where their methods a
     ["grant-admin-access", "list-admin-grants", "renew-admin-access", "revoke-admin-access"]);
   assert.deepEqual(commands("AuthenticatedApi", /account-admin-/),
     ["get-account-admin-grant", "grant-account-admin-access", "revoke-account-admin-access"]);
-  // The reporter's eight commands, and the admins' six with the retention setting and the end of an approval's grant.
+  // The reporter's eight commands, and the admins' eight with the retention setting and the end of an approval's grant.
   assert.deepEqual(commands("AuthenticatedApi", /issue-report/), [
     "add-issue-report-image", "get-issue-report", "get-unseen-issue-report-count", "list-issue-reports", "mark-issue-report-seen",
     "read-issue-report-image", "reply-to-issue-report", "submit-issue-report",
   ]);
   assert.deepEqual(commands("AdminApi", /issue-report|grant/), [
-    "add-issue-report-entry", "end-workspace-grant", "get-issue-report", "list-issue-reports", "read-issue-report-image",
-    "set-issue-report-links", "set-issue-report-retention-days", "set-issue-report-status",
+    "add-issue-report-entry", "claim-issue-report", "end-workspace-grant", "get-issue-report", "list-issue-reports",
+    "read-issue-report-image", "release-issue-report", "set-issue-report-links", "set-issue-report-retention-days",
+    "set-issue-report-status",
   ]);
   // The five content reads on an admin's view of a workspace.
   assert.deepEqual(commands("AdminWorkspaceView", /^read-|^get-chat$/),
