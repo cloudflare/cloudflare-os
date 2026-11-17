@@ -32,6 +32,8 @@ export type SetUpConnectionDialogProps = {
   resource?: string
   /** Why the agent asked for it, in its own words. */
   reason?: string
+  /** Goes back to choosing what to connect, where that was chosen before this. */
+  onBack?: () => void
   /** The user's accounts on the service; none given, they are still being read. */
   accounts?: SetUpConnectionAccount[]
   selectedAccountId?: number
@@ -65,7 +67,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * of the service's waits for it, saying so, and can open it again.
  */
 export const SetUpConnectionDialog = ({
-  open, onOpenChange, name, logoUrl, color, title, accept = { label: 'Connect', pending: 'Connecting…' }, noAccount, resource, reason,
+  open, onOpenChange, name, logoUrl, color, title, accept = { label: 'Connect', pending: 'Connecting…' }, noAccount, resource, reason, onBack,
   accounts, selectedAccountId, onSelectAccount, onConnectAccount, onReconnect, onGrant, configurator, ready, onAccept,
 }: SetUpConnectionDialogProps) => {
   const [pending, setPending] = useState<Step | 'accept'>()
@@ -143,6 +145,7 @@ export const SetUpConnectionDialog = ({
       <footer className="flex flex-col gap-3 p-6">
         {problem && <Banner title={problem} />}
         <div className="flex items-center justify-end gap-2">
+          {onBack && <Button variant="ghost" className="me-auto" disabled={pending === 'accept'} onClick={onBack}>Back</Button>}
           <Dialog.Close render={(props) => <Button {...props} disabled={pending === 'accept'}>Cancel</Button>} />
           {none ? (
             <Button variant="primary" disabled={pending !== undefined} onClick={() => void run('connect', onConnectAccount)} className="min-w-0 shrink">

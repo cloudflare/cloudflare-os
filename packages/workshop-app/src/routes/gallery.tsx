@@ -38,7 +38,7 @@ import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
-import { SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
+import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
@@ -354,6 +354,7 @@ function Gallery() {
       <TemplateStorePreview />
       <ConnectionsPreview />
       <SetUpConnectionPreview />
+      <AddConnectionPreview />
       <SettingsPreview />
       <HeaderPreview />
       <ShellPreview />

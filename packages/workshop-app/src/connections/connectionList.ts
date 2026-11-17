@@ -1,6 +1,6 @@
 import { createElement } from 'react'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
-import type { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import { matchesResourceUrlPattern, type AccountDescription, type SupportedResource, type VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import type { ArrangedGroup, ListFilter, ListOrder } from '@/components/listView'
 import type { ListViewSpec } from '@/hooks/useListView'
 import { primaryCategory, SERVICE_CATEGORIES, serviceCategories } from './serviceCategories'
@@ -128,6 +128,26 @@ export const groupedKinds = (resources: readonly SupportedResource[], urlPattern
  */
 export const newAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, before: ReadonlySet<number>) =>
   accounts.find((account) => account.vendorId === vendorId && !before.has(account.id))
+
+/**
+ * A service's kinds of resource a group each, as it shows them (`SupportedResource.groupedWith`):
+ * Google Drive, with a folder, a file and a Doc in it, which one form chooses among. In the order
+ * of each group's first kind, each led by the kind it is named after.
+ */
+export const resourceGroups = (resources: readonly SupportedResource[]) => {
+  const groups = new Map<string, SupportedResource[]>()
+  for (const resource of resources) {
+    const members = groups.get(leadOf(resource))
+    if (members) members.push(resource)
+    else groups.set(leadOf(resource), [resource])
+  }
+  return Array.from(groups, ([lead, members]) => ({ lead: members.find(({ urlPattern }) => urlPattern === lead) ?? members[0]!, members }))
+}
+
+/** The kind among `resources` that `url` is: one of its own before any web page (`https://*`). */
+export const resourceOfUrl = (resources: readonly SupportedResource[], url: string) =>
+  resources.find(({ urlPattern }) => urlPattern !== 'https://*' && matchesResourceUrlPattern(urlPattern, url))
+  ?? resources.find(({ urlPattern }) => urlPattern === 'https://*')
 
 /**
  * The account to create a resource of `typeUrlPattern` in without asking: the user's only one on

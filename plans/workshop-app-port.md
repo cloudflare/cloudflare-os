@@ -14,7 +14,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 1. Accepting a connection request (Set up on the card). **Done.**
 2. Approving an action that creates a resource (`ChatSession.approveAction` TODO). **Done.**
 3. Keeping or discarding changes that can't be kept automatically. **Done.**
-4. Composer slash commands and skills **(done, in a chat)**; connection lines.
+4. Composer slash commands, skills and connection lines. **Done** (skills in a new chat: step 8).
 5. Inline views and file previews (Office, worktrees).
 6. Sharing.
 7. Gadget settings and the Code tab.
@@ -37,6 +37,7 @@ agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnrea
 | A new chat's composer offers no skills until it is in a workspace | the composer's commands are the workspace's (`listSlashCommands`); the Library's skills are example data until step 8 | none |
 | The composer has no model row in its + menu | user decision (model in settings only) | none |
 | Skills are titled as the scaffold titles them ("Meeting Brief") | its `humanizeSkillName` | none |
+| Add a connection, and a pasted link, offer every kind of resource, not only connectable ones | as above, no `connectable` | `connectable` on `SupportedResource` |
 | Setting up a connection offers every kind of resource, not only connectable ones | the scaffold's `SupportedResource` has no `connectable` | `connectable` on `SupportedResource` |
 | Live Google Docs/Sheets/Slides previews cut | user decision | previews API |
 | Approvals tray cut | user decision; nothing to approve without previews | none |

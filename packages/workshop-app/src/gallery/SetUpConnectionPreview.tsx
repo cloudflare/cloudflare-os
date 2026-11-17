@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
+import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { SetUpAgentDialog } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
 import { Button } from '@/components/Button'
@@ -75,6 +77,86 @@ export const SetUpConnectionPreview = () => {
         initialModel="sonnet"
         onSetUp={(setup) => later(undefined).then(() => setSaid(`Set up ${setup.name}, thinking with ${setup.modelId}.`))}
       />
+    </Section>
+  )
+}
+
+const CHOICES: ConnectionChoice[] = [
+  { key: 'repo', service: { name: 'GitHub', logoUrl: GITHUB.logoUrl }, title: 'Repository', description: 'Code, issues and pull requests', connected: true },
+  { key: 'sheet', service: { name: 'Google' }, title: 'Spreadsheet', description: 'A Google Sheets file', connected: true },
+  { key: 'doc', service: { name: 'Google' }, title: 'Document', description: 'A Google Docs file', connected: true },
+  { key: 'page', service: { name: 'Notion' }, title: 'Page', description: 'A page and what is under it', connected: false },
+  { key: 'team', service: { name: 'Linear' }, title: 'Team', description: 'A team’s issues and cycles', connected: false },
+]
+
+/** Adding a connection to a draft from the + menu, and one made from a link pasted into it. */
+export const AddConnectionPreview = () => {
+  const composer = useRef<ComposerHandle>(null)
+  const [choosing, setChoosing] = useState(false)
+  const [chosen, setChosen] = useState<ConnectionChoice>()
+  const [ready, setReady] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [said, setSaid] = useState('Open + and choose Add a new connection, or paste a Google Doc’s link.')
+  const close = (next: boolean) => {
+    setChoosing(next)
+    if (!next) setChosen(undefined)
+  }
+
+  return (
+    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a new connection: what kind, found by typing, your services first; then which, in the service’s form, or Back to the list; then it sits above the draft, to go with the message, and is refused beside a skill; a pasted Google Doc link connects by itself, connecting, then named in the words, or says why not, with “missing” in it)">
+      <Button onClick={() => { setLoading(false); setChoosing(true) }}>Add a connection</Button>
+      <Button onClick={() => { setLoading(true); setChoosing(true) }}>While services are read</Button>
+      <div className="w-full">
+        <Composer
+          ref={composer}
+          onSend={(text, _files, command, connections) => {
+            setSaid(`Sent “${text}”${connections?.length ? ` with ${connections.map(({ title }) => title).join(' and ')}` : ''}${command ? ` using ${command.title}` : ''}.`)
+            return true
+          }}
+          addActions={{ onAddConnection: () => setChoosing(true) }}
+          onPasteLinks={(urls) => {
+            for (const url of urls.filter((each) => each.includes('docs.google.com/document'))) {
+              const key = `link:${url}`
+              const service = { name: 'Google' }
+              composer.current?.addConnection({ key, title: 'Google Doc', kind: 'Google Doc', service, pending: true })
+              setTimeout(() => {
+                if (url.includes('missing')) {
+                  composer.current?.addConnection({ key, title: 'Google Doc', kind: 'Google Doc', service, problem: 'Couldn’t connect it: Requested entity was not found.' })
+                  return
+                }
+                composer.current?.addConnection({ key, title: 'Q3 plan', kind: 'Google Doc', service })
+                composer.current?.replaceInDraft(url, 'Q3 plan')
+              }, 900)
+            }
+          }}
+          commands={[{ key: 'brief', name: 'meeting-brief', title: 'Meeting Brief', description: 'Before a meeting, gather who is coming.', kind: 'skill' }]}
+        />
+      </div>
+      <p role="status" className="w-full text-sm text-kumo-subtle">{said}</p>
+      <AddConnectionDialog open={choosing && !chosen} onOpenChange={close} to="this chat" choices={loading ? undefined : CHOICES} onChoose={setChosen} />
+      {chosen && (
+        <SetUpConnectionDialog
+          open={choosing}
+          onOpenChange={close}
+          name={chosen.service.name}
+          logoUrl={chosen.service.logoUrl}
+          resource={chosen.title}
+          onBack={() => setChosen(undefined)}
+          accounts={chosen.connected ? [{ id: 1, name: chosen.service.name === 'GitHub' ? 'octocat' : 'ada@example.com' }] : []}
+          selectedAccountId={1}
+          onSelectAccount={() => {}}
+          onConnectAccount={() => later(true)}
+          onReconnect={() => later(true)}
+          configurator={<FakeForm onReady={setReady} />}
+          ready={ready}
+          onAccept={async () => {
+            await later(true)
+            composer.current?.addConnection({ key: `${chosen.key}-${Date.now()}`, title: chosen.key === 'repo' ? 'cloudflare/gadgets' : 'Q3 forecast', kind: chosen.title, service: chosen.service })
+            close(false)
+            return true
+          }}
+        />
+      )}
     </Section>
   )
 }

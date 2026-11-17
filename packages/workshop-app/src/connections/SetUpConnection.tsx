@@ -155,6 +155,8 @@ export type ConnectResourceProps = Making & {
   resource?: string
   /** Why the agent asked for it. */
   reason?: string
+  /** Goes back to choosing what to connect, where that was chosen before this. */
+  onBack?: () => void
 }
 
 /**
@@ -165,7 +167,7 @@ export type ConnectResourceProps = Making & {
  * kind has one (`SupportedResource.creationConfigurator`).
  */
 export const ConnectResource = ({
-  open, onOpenChange, vendorId, name, logoUrl, resourceUrlPattern: pattern, resourceUrl, resource, reason, onConnect, create,
+  open, onOpenChange, vendorId, name, logoUrl, resourceUrlPattern: pattern, resourceUrl, resource, reason, onBack, onConnect, create,
 }: ConnectResourceProps) => {
   const { api, reconnecting } = useApi()
   const connection = useConnectionNotice()
@@ -243,6 +245,7 @@ export const ConnectResource = ({
       noAccount={create && `Connect your ${name} account first. It’s created there.`}
       resource={resource}
       reason={reason}
+      onBack={onBack}
       accounts={accounts?.map((account) => ({
         id: account.id,
         name: accountLabel(account.description) ?? account.vendor.displayName,

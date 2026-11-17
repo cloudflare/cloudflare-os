@@ -3,6 +3,8 @@ import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
+import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -23,6 +25,8 @@ import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
+import { withCapsules } from './capsules'
+import { useLinkConnections } from './useLinkConnections'
 import { useChatSession } from './useChatSession'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 
@@ -80,6 +84,19 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
+  // Add a connection is open; and the connections made for the draft, by their line's key.
+  const [adding, setAdding] = useState(false)
+  const added = useRef(new Map<string, AddedConnection>())
+  // One made from the menu: the chat has it once the message goes with it. Stable, as it uses
+  // only refs, so that the dialog is not drawn again for each word of a reply.
+  const [onAdded] = useState(() => async (made: AddedConnection) => {
+    const key = `gatekeeper:${made.gatekeeperId}`
+    added.current.set(key, made)
+    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+  })
+  // Making a connection in the workspace is building in it, which those who only use it cannot.
+  const builds = workspace !== undefined && workspace.role !== 'use'
+  const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
@@ -143,7 +160,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   }, [items, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
-  const sendMessage = async (text: string, files: File[], command?: ComposerCommand) => {
+  const sendMessage = async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
@@ -167,7 +184,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       setProblem(missingCommand(command))
       return false
     }
-    const sent = await actions.send(request ?? words, model.id, files)
+    // The connections after the words, each where its capsule shows it.
+    const given = connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
+    const { text: written, capsules } = withCapsules(words, given)
+    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined)
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
@@ -187,6 +207,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           ref={composer}
           onSend={sendMessage}
           commands={commands.commands}
+          onPasteLinks={pasteLinks}
+          addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
           stop={chat.status === 'ready' && chat.agentActive ? {
             waiting: chat.waiting,
             onStop: () => {
@@ -263,6 +285,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             ? <MessageBubble role="error">{chat.message}</MessageBubble>
             : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
+      )}
+      {/* Only while it is open, as what it lists is read afresh for it. */}
+      {adding && (
+        <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
       )}
     </ChatLayout>
   )

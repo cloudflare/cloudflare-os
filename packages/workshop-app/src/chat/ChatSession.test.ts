@@ -1116,6 +1116,18 @@ describe('ChatSession', () => {
       expect(ready(session).sendError).toBe('Skills can be used once the agent has finished.')
     })
 
+    it('gives the chat the connections that go with a message, and holds them back while the agent works', async () => {
+      const capsules = [{ position: 6, length: 3, gatekeeperId: 4, description: { url: 'https://docs.google.com/d/1', title: 'Q3', snippet: '', suggestedBindingName: 'Q3', tsType: 'Doc' } }]
+      const idle = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      expect(await (await started(idle)).send('about [0]', 'model-1', [], capsules)).toBe(true)
+      expect(idle.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, 'about [0]', 'model-1', capsules, undefined)
+
+      const working = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
+      const session = await started(working)
+      expect(await session.send('about [0]', 'model-1', [], capsules)).toBe(false)
+      expect(ready(session).sendError).toBe('Connections can be added once the agent has finished.')
+    })
+
     it('holds files back while the agent works, which only plain text can steer', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
       const session = await started(fake)
