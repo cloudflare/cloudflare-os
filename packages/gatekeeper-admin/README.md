@@ -167,11 +167,13 @@ action, whoever approved it is an admin too.
 
 Every call through a lend passes `restrictAdminApi()` first, which checks, in this order: that
 the lend has not ended or run out, that the owner is still a deployment admin, that the session
-is still live, that the deployment has not turned the gatekeeper off, and that the kind table
-allows the method under this lend. Then `AdminApiImpl` validates, checks and records the call as
-it does for any admin. The first three are checked again once the off switch has been read and
-once the call has settled, so a call that spans the lend's end returns nothing, and a view it
-returned is let go.
+is still live, that the deployment has not turned the gatekeeper off, that the kind table
+allows the method under this lend, and last, with nothing awaited between it and the call, that
+a rule which approved the action still applies it (see
+[What a rule applies under the mark](#what-a-rule-applies-under-the-mark)). Then `AdminApiImpl`
+validates, checks and records the call as it does for any admin. The first three are checked
+again once the off switch has been read and once the call has settled, so a call that spans the
+lend's end returns nothing, and a view it returned is let go.
 
 The bounds:
 
@@ -404,7 +406,10 @@ error with no code) leaves an outcome nobody knows, which is never run again: a 
 the report's thread or the audit log, and rejects the action. Either way the Workshop keeps the
 action pending until a person rejects it, with nothing on its card that says it failed:
 approving it again answers with the same failure and calls nothing, and a rule's drain stops at
-it each time, so the connection's later actions wait behind it (see [Limits](#limits)). A
+it each time, so the connection's later actions wait behind it (see [Limits](#limits)). Two
+coded refusals fail nothing and leave the action as it was, to be applied later: an owner who
+is no longer a deployment admin (`notAdmin`), and a rule that no longer applies the action in
+a workspace that holds restricted data (`needsPerson`), which a person can then approve. A
 status is claimed like the rest:
 set again after someone had changed the report's status, it would undo their change, with a
 second status line and a second end of an investigation.
@@ -516,16 +521,19 @@ between, and only from a workspace that is not marked: one that has read and rec
 through this connection, and read no other connection's restricted data.
 
 **The order.** The latch, and whose reads set it, are written in one step before a read is
-forwarded. `ruleApplies()` is then read three times: when an action is queued, which decides
-whether the agent's turn pauses for a decision; before each apply; and by the lend itself,
-where the power is handed over.
+forwarded. `ruleApplies()` is then read four times: when an action is queued, which decides
+whether the agent's turn pauses for a decision; before each apply; by the lend itself, where
+the power is handed over; and by the lend once more as it makes the action's call, in the
+step that sends the write, since this Worker is called and calls back in between. A call
+refused there is refused `needsPerson` with nothing done, and this Worker leaves its action
+pending, neither failed nor of unknown outcome, so a person can still approve it.
 
 - A reply drafted, or a session opened, before the first read waits for a person after it.
 - A note queued before the first read is applied by its rule after it, once nothing ahead of
   it waits.
 - An action judged eligible when it was queued waits for a person if another vendor's
-  restricted read lands before it is applied. The agent's turn did not pause for it, and runs
-  on.
+  restricted read lands before its write is sent. The agent's turn did not pause for it, and
+  runs on.
 
 **What the Workshop tells its clients.** The catalog of kinds a rule can be turned on for
 (`Overseer.listPreApprovableActions()`) lists this gatekeeper's connection though no gadget
@@ -1013,8 +1021,8 @@ the schema when it is stale and building the configurator frame.
   reads where that differs; an assignment's card, one kind for a claim and a release; the
   verdicts, and what splits the two replies and the two requests; the Worker declaring nothing
   of the exception under the mark, on an action or among the kinds it offers a rule for; what
-  is refused before anything is queued; an action that fails to apply, is lent nothing or is
-  under way.
+  is refused before anything is queued; an action that fails to apply, is left pending by a
+  refusal that did nothing, is lent nothing or is under way.
 - `__tests__/workerd/report-session.test.ts`: the allowlist; a session that can name no other
   report; its reply's card; its view, opened for the level in force and refused by the
   workspace's own answer; what its reads record, each with the mark and the binding's
@@ -1034,10 +1042,12 @@ the schema when it is stale and building the configurator frame.
 
 The kernel's side is in `packages/workshop-backend/__tests__/`: `admin-agent-kinds.test.ts` (the
 two tables), `admin-agent.test.ts` (`restrictAdminApi()`, an assignment's one call of its two
-methods, and a view behind it), `admin-agent-lend.test.ts` (the lend, what it records,
+methods, a view behind it, and the question it asks last of an action a rule approved),
+`admin-agent-lend.test.ts` (the lend, what it records,
 `whoami()` naming the owner, a claim applied as the owner and a take-over refused, restricted
 data and what a rule applies under the mark, with another vendor's restricted read before the
-admin connection's, after it and between an action's submission and its apply, a workspace
+admin connection's, after it, between an action's submission and its apply and in each of
+the two waits between the lend and the write, a workspace
 marked before it kept track of whose reads marked it and another vendor's action under a
 note's tag, the catalog, who is lent, the insiders of a content request, a spawned chat),
 `auto-approval.test.ts` (`ruleApplies()`, each of its three conditions failing alone, and the

@@ -663,6 +663,9 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
  * access are refused with while the level in force is below "content". `gatekeeperOff` refuses a
  * call through the Admin API lent to the admin gatekeeper, and that lend itself, while the
  * deployment has turned that gatekeeper off: the call reached nothing.
+ * `needsPerson` is no refusal of AdminApi's: it is what the call of an action a rule approved is
+ * refused with, before it reaches AdminApi, once the workspace that lent it holds restricted data
+ * under which a rule no longer applies the action (see AdminGatekeeper.applyAdminAction()).
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -675,6 +678,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   grantRequired: "ADMIN_GRANT_REQUIRED",
   writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
   gatekeeperOff: "ADMIN_GATEKEEPER_OFF",
+  needsPerson: "ADMIN_ACTION_NEEDS_PERSON",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -701,6 +705,8 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "Admin writes to workspaces are turned off on this deployment. Only its " +
       "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
   [ADMIN_ACCESS_ERROR_CODES.gatekeeperOff]: "Gatekeeper is disabled.",
+  [ADMIN_ACCESS_ERROR_CODES.needsPerson]:
+      "This workspace holds restricted data: this action waits for a person.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */

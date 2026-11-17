@@ -566,6 +566,7 @@ describe("an action that fails to apply", () => {
     for (const [what, code] of [
       ["an owner who is no longer an admin", ADMIN_ACCESS_ERROR_CODES.notAdmin],
       ["the gatekeeper turned off after the lend", ADMIN_ACCESS_ERROR_CODES.gatekeeperOff],
+      ["a rule that no longer applies it", ADMIN_ACCESS_ERROR_CODES.needsPerson],
     ] as const) {
       it(`${kind}: ${what} leaves it pending`, async () => {
         const { gatekeeper, id } = await queued(candidate);
