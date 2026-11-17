@@ -1,8 +1,12 @@
-import { deflateSync, inflateSync } from "node:zlib";
-import { describe, expect, it, vi } from "vitest";
+import { constants, deflateSync, inflateSync } from "node:zlib";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PngLayout } from "../src/pdf-images";
 import { ImageDataError, pngFromDeflated, pngFromSamples } from "../src/pdf-png";
 import { byteStream } from "./workers-ai-fixture";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 /** A PNG's header fields, its image data inflated, and whether every chunk's checksum holds. */
 async function readPng(png: ReadableStream<Uint8Array>) {
@@ -115,10 +119,11 @@ describe("pngFromDeflated", () => {
     }
   });
 
-  // Node inflates on another thread, so under load a turn can pass before it answers, and the
-  // bytes held apart are then fed in too soon. workerd, where this runs, answers at once: the
-  // workerd tests pin this without a retry.
-  it("takes plain rows that are whole, whatever a line end makes of the data after them", { retry: 3 }, async () => {
+  // Node inflates on another thread, so a turn can pass before it answers, and the bytes held
+  // apart are then fed in too soon. workerd, where this runs, answers at once, as the stream
+  // this is read through here does; the workerd tests pin it against workerd's own.
+  it("takes plain rows that are whole, whatever a line end makes of the data after them", async () => {
+    vi.stubGlobal("DecompressionStream", EagerInflate);
     let size = { width: 100, height: 300 };
     let layout: PngLayout = { colorType: 0, bitDepth: 8, rowBytes: 100, filtered: false };
     // Samples that deflate, and ones that do not and so end right before the data's checksum.
@@ -293,11 +298,41 @@ class EagerDeflate {
 }
 
 /**
- * Reads a page's PNG piece by piece, holding the samples it draws to a step at each: none for
- * a PNG nobody reads, a step for the first of the image data, and a step more for a later read
- * at most. `whole` says that a step is fed in whole whatever is read, which an eager stream does.
+ * A decompression stream as workerd's are: it takes every write at once and gives what the
+ * write inflates to before the write is over, fails a write that holds a byte past the data's
+ * end and gives nothing of it, and fails at its end when the data's has not come.
  */
-async function readByStep(whole: boolean) {
+class EagerInflate {
+  readable: ReadableStream<Uint8Array>;
+  writable: WritableStream<Uint8Array>;
+  constructor() {
+    let fed = Buffer.alloc(0), given = 0;
+    let whole = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        let data = Buffer.concat([fed, chunk]);
+        // All that the data so far inflates to, and how much of it was the deflated data's:
+        // with `info`, Node answers with its engine too, which its types do not say.
+        let { buffer, engine } = inflateSync(data, { finishFlush: constants.Z_SYNC_FLUSH, info: true }) as
+          unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+        if (engine.bytesWritten < data.byteLength) throw new TypeError("Trailing bytes after end of compressed data");
+        fed = data;
+        controller.enqueue(new Uint8Array(buffer.subarray(given)));
+        given = buffer.byteLength;
+      },
+      // Throws when the data has not ended.
+      flush() { inflateSync(fed); },
+    }, { highWaterMark: Infinity }, { highWaterMark: Infinity });
+    this.readable = whole.readable;
+    this.writable = whole.writable;
+  }
+}
+
+/**
+ * Reads a page's PNG piece by piece, holding the samples it draws to a step at each: none for
+ * a PNG nobody reads, a step for the first of the image data, which a stream that takes every
+ * write at once is fed whole, and a step more for a later read at most.
+ */
+async function readByStep() {
   let samples = noise(PAGE.width * PAGE.height);
   // Pieces of ten rows, of which a step ends inside one.
   let chunk = 10_000;
@@ -316,7 +351,7 @@ async function readByStep(whole: boolean) {
   pieces.push((await reader.read()).value!);
   expect(String.fromCharCode(...pieces[2]!.subarray(4, 8))).toBe("IDAT");
   await settled(source.state);
-  expect(source.state.given).toBeGreaterThan(whole ? STEP - chunk : 0);
+  expect(source.state.given).toBeGreaterThan(STEP - chunk);
   expect(source.state.given).toBeLessThanOrEqual(STEP + chunk);
   // From there on a read takes a step more at most.
   for (;;) {
@@ -426,19 +461,12 @@ describe("pngFromSamples", () => {
     expect(source.state.given).toBeLessThan(samples.byteLength / 2);
   });
 
-  // Node deflates on another thread, so under load a turn can pass before it answers, and a
-  // second step is then fed in for one read.
-  it("reads the samples a step at a time, and only as the PNG is read", { retry: 3 }, async () => {
-    await readByStep(false);
-  });
-
-  it("reads the samples a step at a time when every write is taken at once, as workerd takes them", async () => {
+  // Node deflates on another thread, so a turn can pass before it answers, and a second step
+  // is then fed in for one read. workerd answers at once, as the stream this is read through
+  // here does; the workerd tests pin it against workerd's own.
+  it("reads the samples a step at a time, and only as the PNG is read", async () => {
     vi.stubGlobal("CompressionStream", EagerDeflate);
-    try {
-      await readByStep(true);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    await readByStep();
   });
 
   it("passes on the samples' own failure as it is", async () => {

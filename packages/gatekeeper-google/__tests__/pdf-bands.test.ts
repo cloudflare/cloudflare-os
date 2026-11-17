@@ -1221,6 +1221,7 @@ describe("readBands", () => {
     }
 
     it("gives up every call in flight when its signal aborts, and waits for all of them", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       let ended = { count: 0 };
       let states = [{ reads: 0, cancelled: false }, { reads: 0, cancelled: false }];
       let request = new AbortController();
@@ -1233,15 +1234,18 @@ describe("readBands", () => {
       ], request.signal, limiter.of(0));
       let settled = false;
       void run.done.catch(() => undefined).finally(() => { settled = true; });
-      await tick();
+      await settle();
       expect(run.asks).toHaveLength(4);
       let reason = new Error("The text was cancelled.");
       request.abort(reason);
       expect(run.asks.every(ask => ask.signal.aborted && ask.signal.reason === reason)).toBe(true);
       expect(states.every(state => state.cancelled)).toBe(true);
-      // Not before the slowest of the four has ended.
-      await tick(25);
-      expect(settled).toBe(false);
+      // Not before the slowest of the four has ended, 40 ms after the abort.
+      await settle();
+      await vi.advanceTimersByTimeAsync(39);
+      await settle();
+      expect([ended.count, settled]).toEqual([3, false]);
+      await vi.advanceTimersByTimeAsync(1);
       await expect(run.done).rejects.toBe(reason);
       expect(ended.count).toBe(4);
       expect(run.flight.now).toBe(0);
@@ -1276,6 +1280,7 @@ describe("readBands", () => {
     });
 
     it("gives up the other calls when a band fails for good, and waits for them before failing with it", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       let ended = { count: 0 };
       let state = { reads: 0, cancelled: false };
       let gate = deferred();
@@ -1286,12 +1291,16 @@ describe("readBands", () => {
       ]);
       let settled = false;
       void run.done.catch(() => undefined).finally(() => { settled = true; });
-      await tick();
+      await settle();
       gate.resolve();
-      await tick(15);
-      expect(settled).toBe(false);
+      await settle();
       expect(run.asks.every(ask => ask.signal.aborted)).toBe(true);
       expect(state.cancelled).toBe(true);
+      // Not before the slowest of the three given up has ended, 30 ms after the failure.
+      await vi.advanceTimersByTimeAsync(29);
+      await settle();
+      expect([ended.count, settled]).toEqual([2, false]);
+      await vi.advanceTimersByTimeAsync(1);
       await expect(run.done).rejects.toBe(refused);
       expect(ended.count).toBe(3);
       // Every band was asked for at once, and the last two had answered.
@@ -1332,9 +1341,10 @@ describe("readBands", () => {
       let ended = { count: 0 };
       let state = { reads: 0, cancelled: false };
       let refused = refusal({ httpStatus: 400 });
-      // A call that does not heed its signal, answered once the other band has failed.
+      // A call that does not heed its signal, answered once the other band has failed, which
+      // is when the signal aborts.
       let late: Reply = async signal => {
-        await tick(10);
+        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
         return stalled(ended, 0, state)(signal);
       };
       let run = reading(page([5, 5]), [[late], [fails(refused)]]);

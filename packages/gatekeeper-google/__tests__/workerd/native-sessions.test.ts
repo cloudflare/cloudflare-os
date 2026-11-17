@@ -23,7 +23,7 @@ import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
 import type { PngLayout } from "../../src/pdf-images";
-import { pngFromDeflated } from "../../src/pdf-png";
+import { pngFromDeflated, pngFromSamples } from "../../src/pdf-png";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
@@ -1150,6 +1150,83 @@ describe("a deflated page image wrapped as a PNG on workerd", () => {
             .toEqual(Uint8Array.of(0, ...samples.subarray(row * 100, row * 100 + 100)));
         }
       }
+    }
+  });
+});
+
+// A drawn band is deflated by workerd's own compression stream, which a Node test stands in for
+// with a stream of its own.
+describe("rows of samples wrapped as a PNG on workerd", () => {
+  const SIZE = { width: 1024, height: 2048 };
+  const GREY: PngLayout = { colorType: 0, bitDepth: 8, rowBytes: 1024, filtered: false };
+  /** Bytes of rows deflated in one step, and bytes of samples handed over at a time. */
+  const STEP = 256 * 1024, PIECE = 10_000;
+
+  /** Waits until `state` has stood still for a while: what was being fed in has all been. */
+  async function settled(state: { taken: number }) {
+    for (let before = -1; before !== state.taken;) {
+      before = state.taken;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+  }
+
+  it("reads the samples a step at a time, and only as the PNG is read", async () => {
+    // Samples that do not deflate, so that every step of them makes image data to read.
+    const samples = new Uint8Array(SIZE.width * SIZE.height);
+    for (let i = 0, x = 88172645; i < samples.byteLength; i++) {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      samples[i] = x;
+    }
+    const state = { taken: 0 };
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (state.taken >= samples.byteLength) return controller.close();
+        controller.enqueue(samples.slice(state.taken, state.taken + PIECE));
+        state.taken = Math.min(samples.byteLength, state.taken + PIECE);
+      },
+    }, { highWaterMark: 0 });
+    const reader = pngFromSamples(source, SIZE, GREY, 64 << 20).getReader();
+    // Nothing is read for a PNG nobody reads, nor for its signature and header.
+    await settled(state);
+    expect(state.taken).toBe(0);
+    const pieces = [(await reader.read()).value!, (await reader.read()).value!];
+    await settled(state);
+    expect(state.taken).toBe(0);
+    // The first of the image data takes one step of rows, with the piece of samples the step
+    // ended in, and no more follows while nothing is read.
+    pieces.push((await reader.read()).value!);
+    await settled(state);
+    expect(state.taken).toBeGreaterThan(STEP - PIECE);
+    expect(state.taken).toBeLessThanOrEqual(STEP + PIECE);
+    // From there on a read takes a step more at most.
+    for (;;) {
+      const before = state.taken;
+      const piece = await reader.read();
+      if (piece.done) break;
+      pieces.push(piece.value);
+      if (state.taken === before) continue;
+      await settled(state);
+      expect(state.taken - before).toBeLessThanOrEqual(STEP + PIECE);
+    }
+    expect(state.taken).toBe(samples.byteLength);
+
+    // Read to its end, it is the whole image: each row behind its filter byte.
+    const bytes = new Uint8Array(await new Blob(pieces).arrayBuffer());
+    const view = new DataView(bytes.buffer);
+    const data: Uint8Array[] = [];
+    for (let at = 8; at < bytes.byteLength; at += 12 + view.getUint32(at)) {
+      if (String.fromCharCode(...bytes.subarray(at + 4, at + 8)) === "IDAT") {
+        data.push(bytes.subarray(at + 8, at + 8 + view.getUint32(at)));
+      }
+    }
+    const rows = new Uint8Array(await new Response(
+      new Blob(data).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer());
+    expect(rows.byteLength).toBe(SIZE.height * 1025);
+    for (let row = 0; row < SIZE.height; row += 97) {
+      expect(rows.subarray(row * 1025, row * 1025 + 1025))
+        .toEqual(Uint8Array.of(0, ...samples.subarray(row * 1024, row * 1024 + 1024)));
     }
   });
 });
