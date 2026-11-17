@@ -1,5 +1,5 @@
 import { newMessagePortRpcSession, RpcTarget } from 'capnweb'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { createRateLimitedCapability } from './rateLimitedCapability'
 
 class Backend extends RpcTarget {
@@ -26,4 +26,21 @@ it("forwards a binding's methods, but none of its stub's own members", async () 
   // dup() would hand the frame the stub itself, outside the limits.
   expect(limited.capability.dup).toBeUndefined()
   expect(limited.capability.onRpcBroken).toBeUndefined()
+})
+
+it.each(['reject', 'throttle'] as const)('rejects queued and later calls after %s disposal', async (onRateLimit) => {
+  const pending = Promise.withResolvers<string>()
+  const ping = vi.fn<() => Promise<string>>(() => pending.promise)
+  const limited = createRateLimitedCapability({ ping }, {
+    maxConcurrency: 1, maxCallsPerMinute: 10, maxPendingCalls: 4, onRateLimit, label: 'Test',
+  })
+  const running = limited.capability.ping()
+  const queued = limited.capability.ping()
+  await Promise.resolve()
+  limited.dispose()
+  pending.resolve('pong')
+  expect(await running).toBe('pong')
+  await expect(queued).rejects.toThrow('Test connection changed.')
+  await expect(limited.capability.ping()).rejects.toThrow('Test connection changed.')
+  expect(ping).toHaveBeenCalledTimes(1)
 })
