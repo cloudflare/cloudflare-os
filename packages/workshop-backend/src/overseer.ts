@@ -135,7 +135,9 @@ import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule, ruleApplies } from "./auto-approval";
+import {
+  AutoApprovalDrainer, autoApprovalRule, guardRuleExemption, ruleApplies,
+} from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -1947,6 +1949,7 @@ class OverseerImpl implements AgentHooks {
     migrateToMultiGadget(this);
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
+    guardRuleExemption(this.storage);
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
