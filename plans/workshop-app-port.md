@@ -20,7 +20,9 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 7. Gadget settings and the Code tab. **Done.** View code shows the code in the pane, with its history as diffs (CodeMirror).
 8. Real blueprints behind Templates, real skills behind `SkillStore`. **Done.**
 9. Automations, read only. **Done.**
-10. ⌘K search **(done)** and right-click menus.
+10. ⌘K search **(done)** and right-click menus (**deferred**, see below).
+
+Deferred, wanted later: right-click menus on library rows and cards, skills and templates, each the same as a ⋯ menu the item would gain (Open, Open in new tab, Copy link, Share…, Remove from Library, Delete gadget…), as the prototype has. Main only has a gadget's right-click Delete; the scaffold's lists have no per-item menu yet, so this is a design addition for Balint to agree, not a port.
 
 Waiting on a merge of main into the scaffold (its base, Oct 27, predates them): inline-view
 agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnreadThreads`).
