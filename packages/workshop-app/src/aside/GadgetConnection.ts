@@ -339,7 +339,7 @@ export class GadgetConnection {
       if (!current()) return
       this.#retryDelay = 0
       if (!bundle) this.#unlink()
-      this.#publish({ ui: bundle ? { status: 'ready', page: gadgetPage(bundle.jsCode), load } : { status: 'none' } })
+      this.#publish({ ui: bundle ? { status: 'ready', page: gadgetPage(bundle), load } : { status: 'none' } })
     } catch (error) {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return

@@ -15,6 +15,5 @@ export const workspaceMembers = (owner: AiChatAuthorInfo, collaborators: readonl
   { profile: owner, role: 'owner' },
   ...collaborators
     .filter(({ profile }) => profile.id !== owner.id)
-    // A collaborator with no role was added before roles, when everyone could build.
-    .map(({ profile, role }) => ({ profile, role: role ?? 'build' })),
+    .map(({ profile, access }) => ({ profile, role: access.role })),
 ]

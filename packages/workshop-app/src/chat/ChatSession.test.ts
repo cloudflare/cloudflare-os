@@ -77,7 +77,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     return Promise.resolve(actionsLease)
   })
   const sendChatMessage = vi.fn<Overseer['sendChatMessage']>(async () => {})
-  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.length}`)
+  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.byteLength}`)
   const asked = {
     retryAgent: vi.fn<Overseer['retryAgent']>(async () => {}),
     stopAgent: vi.fn<Overseer['stopAgent']>(async () => {}),
@@ -179,7 +179,7 @@ const log = (change: Partial<ActionLogEntry & { type: 'action' }> = {}): ActionL
   resourceTitle: 'Jira',
   createdAt: new Date(0),
   state: 'pending',
-  description: { title: 'Create issue', description: '', implementsRevert: false },
+  description: { title: 'Create issue', description: '', implementsRevert: false, autoApprovable: false },
   ...change,
 })
 
@@ -927,7 +927,7 @@ describe('ChatSession', () => {
 
     it('leaves the changes proposed when someone else is in the workspace', async () => {
       const { fake, endTurn } = await workingOn([changes(1)])
-      fake.listCollaborators.mockResolvedValue([{ profile: userAuthor, addedBy: [] }])
+      fake.listCollaborators.mockResolvedValue([{ profile: userAuthor, addedBy: [], access: { role: 'build' } }])
       await endTurn()
       expect(fake.mergeChanges).not.toHaveBeenCalled()
     })
@@ -978,7 +978,7 @@ describe('ChatSession', () => {
 
       await session.send('see these', 'model-1', files)
 
-      expect(fake.uploadBlob.mock.calls.map(([content]) => [...content])).toEqual([[1, 2, 3], [...new TextEncoder().encode('notes')], [0]])
+      expect(fake.uploadBlob.mock.calls.map(([content]) => [...(content as Uint8Array)])).toEqual([[1, 2, 3], [...new TextEncoder().encode('notes')], [0]])
       expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, 'see these', 'model-1', undefined, [
         { oid: 'oid-3', mimeType: 'image/png', name: 'chart.png' },
         { oid: 'oid-5', mimeType: 'text/plain', name: 'notes.txt' },

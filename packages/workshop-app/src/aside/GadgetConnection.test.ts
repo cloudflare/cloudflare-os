@@ -91,7 +91,9 @@ describe('GadgetConnection', () => {
     expect(overseer.getGadget).toHaveBeenCalledWith(41)
     expect(gadget.getUiBundle).toHaveBeenCalledWith(3)
     const ui = connection.getSnapshot().ui
-    expect(ui.status === 'ready' && ui.page).toContain(encodeURIComponent('render()'))
+    // The page's entry module is the UI's code, as a base64 data: URL.
+    const entry = ui.status === 'ready' ? /<script type="module" src="data:text\/javascript;base64,([^"]+)">/.exec(ui.page)?.[1] : undefined
+    expect(entry && atob(entry)).toContain('render()')
     connection.stop()
   })
 
