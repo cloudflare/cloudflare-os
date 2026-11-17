@@ -3,7 +3,9 @@
 // stored. Since it reaches nothing, a "use" viewer granted only the gadget's snapshot opens one
 // without observer verification; a viewer granted the gadget live gets no snapshot, only the live
 // gadget through verification. Writes stay on their own side of the copy, a refresh takes a new
-// one, and a copy is deleted with its session, its gadget, or the instance.
+// one, and a copy is deleted with its session, its gadget, or the instance. While the deployment
+// forbids snapshot sharing, nobody opens or refreshes a snapshot or makes a view grant, and the view
+// grants already made open again once it is allowed.
 //
 // Runs real gadget code, loaded from a real commit, inside a real OverseerDurableObject; a forged
 // UseOverseerInterface (openFakeOverseer) delegates to it, and gatekeeper facets and User DOs are
@@ -14,7 +16,9 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { GadgetSnapshotClient, Overseer, PermissionEdge } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
+import { serializeAdminConfig } from "../src/admin-config.js";
 import { openFakeOverseer } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
@@ -76,12 +80,19 @@ function workspace(): DurableObjectStub<OverseerDurableObject> {
   return env.TEST_OVERSEER.getByName(`gadget-snapshot-${++doCounter}`);
 }
 
+// The unit-test worker has no admin-config KV binding: the workspace reads `allowed` instead.
+function allowSnapshotSharing(impl: Impl, allowed: boolean): void {
+  let config = serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, snapshotSharingEnabled: allowed });
+  impl.env = { ...impl.env, BLUEPRINTS: { get: async () => config } as unknown as KVNamespace };
+}
+
 async function withImpl(stub: DurableObjectStub<OverseerDurableObject>,
                         fn: (impl: Impl) => Promise<void>): Promise<void> {
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     // (Bracket access reaches the private field with its real type.)
     let impl = instance["impl"];
     impl.ownerProfileId = OWNER;
+    allowSnapshotSharing(impl, true);
     await fn(impl);
   });
 }
@@ -119,12 +130,24 @@ function openViewer(impl: Impl): Promise<Overseer> {
         gadgetOpenMode: (...args: Parameters<Impl["gadgetOpenMode"]>) => impl.gadgetOpenMode(...args),
         authorizeGadget: (...args: Parameters<Impl["authorizeGadget"]>) => impl.authorizeGadget(...args),
         createGadgetSnapshot: (id: number) => impl.createGadgetSnapshot(id),
+        requireSnapshotSharing: () => impl.requireSnapshotSharing(),
         deleteGadgetSnapshot: (facetName: string) => impl.deleteGadgetSnapshot(facetName),
         requireGadgetSnapshot: (...args: Parameters<Impl["requireGadgetSnapshot"]>) =>
             impl.requireGadgetSnapshot(...args),
         getSnapshotFacet: (...args: Parameters<Impl["getSnapshotFacet"]>) =>
             impl.getSnapshotFacet(...args),
         getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
+      } });
+}
+
+// The owner's session, sharing through the real impl's sharing manager.
+function openOwner(impl: Impl): Promise<Overseer> {
+  return openFakeOverseer(
+      { gadgets: impl.storage.gadgets, gadgetSnapshots: impl.storage.gadgetSnapshots },
+      { role: "build", impl: {
+        getSharingManager: () => impl.getSharingManager(),
+        createGadgetSnapshot: (id: number) => impl.createGadgetSnapshot(id),
+        requireSnapshotSharing: () => impl.requireSnapshotSharing(),
       } });
 }
 
@@ -290,6 +313,43 @@ describe("gadget snapshots", () => {
     expect(await client.isViewOnly(GADGET_ID)).toBe(false);
     await expect(client.getGadgetSnapshot(GADGET_ID)).rejects.toThrow(`No such gadget: ${GADGET_ID}`);
     await expect(snapshot.refresh()).rejects.toThrow(`No such gadget: ${GADGET_ID}`);
+  }));
+
+  it("are refused everyone while the deployment forbids them, and open again once allowed", () =>
+      withImpl(workspace(), async impl => {
+    await seedGadget(impl, GADGET_ID);
+    using gadget = await impl.getGadgetFacet(GADGET_ID);
+    await gadget.write("note", "original");
+    using viewer = await openViewer(impl);
+    using owner = await openOwner(impl);
+    using snapshot = await viewer.getGadgetSnapshot(GADGET_ID);
+    let takenAt = await snapshot.getRefreshedAt();
+
+    allowSnapshotSharing(impl, false);
+    let refused = "Sharing gadget snapshots is disabled on this deployment by an administrator.";
+    await expect(viewer.getGadgetSnapshot(GADGET_ID)).rejects.toThrow(refused);
+    await expect(owner.getGadgetSnapshot(GADGET_ID)).rejects.toThrow(refused);
+    // An open snapshot keeps the copy it took, and takes no new one.
+    await expect(snapshot.refresh()).rejects.toThrow(refused);
+    expect(await snapshot.getRefreshedAt()).toEqual(takenAt);
+    expect(snapshotNames(impl)).toHaveLength(1);
+
+    // No view grant is made, nor is anyone narrowed to one: refused before anything is severed.
+    let view = { gadgetId: GADGET_ID, mode: "view" } as const;
+    let grants = impl.storage.collaborators.get(VIEWER);
+    await expect(owner.addCollaborator("someone", view)).rejects.toThrow(refused);
+    await expect(owner.createShareLink(view)).rejects.toThrow(refused);
+    await expect(owner.removeCollaborator(VIEWER, [], GADGET_ID, true)).rejects.toThrow(refused);
+    expect(impl.storage.collaborators.get(VIEWER)).toEqual(grants);
+    expect(Array.from(impl.storage.shareKeys.list())).toEqual([]);
+
+    // The view grant is kept, and opens what the gadget now holds once allowed again.
+    expect(await viewer.isViewOnly(GADGET_ID)).toBe(true);
+    await gadget.write("note", "later");
+    allowSnapshotSharing(impl, true);
+    using reopened = await viewer.getGadgetSnapshot(GADGET_ID);
+    using copy = await reopened.connectToGadget();
+    expect(await copy.read("note")).toBe("later");
   }));
 
   it("are deleted when disposed, and with their gadget", () => withImpl(workspace(), async impl => {

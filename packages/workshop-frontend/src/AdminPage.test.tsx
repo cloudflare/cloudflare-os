@@ -43,7 +43,8 @@ it.each([
       { urlPattern: retired, title: 'Unavailable resource type', description: 'Old restriction', enabled: false }],
   } satisfies AdminResourceVendor
   const settings: AdminSettingsView = {
-    signupsEnabled: true, userSearchEnabled: false, siteName: '', instanceInstructions: '',
+    signupsEnabled: true, userSearchEnabled: false, snapshotSharingEnabled: true, siteName: '',
+    instanceInstructions: '',
     announcement: '', banner: { text: '', color: 'neutral' }, accentColor: '', formats: [],
     restrictedWebFetchHosts: [], restrictedWebFetchApprovals: false,
     adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },

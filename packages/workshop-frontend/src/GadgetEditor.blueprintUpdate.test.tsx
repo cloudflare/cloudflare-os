@@ -12,6 +12,7 @@ import type {
   WorkpieceSummary,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
+import type * as ServerConfigModule from './ServerConfigContext'
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
 // chat into view (the one a blueprint update was proposed in, the one a notification opens, or
@@ -54,6 +55,8 @@ const mocks = vi.hoisted(() => {
     onOpenAgentChat: null as null | ((chatToken: string, signal: AbortSignal) => Promise<void>),
     // Reports the workspace's chats to the editor, as the chat pane does when its list changes.
     reportChats: null as null | ((chats: readonly AiChatMetadata[]) => void),
+    // Whether the deployment allows view-only sharing (ServerConfig.snapshotSharingEnabled).
+    snapshotSharingEnabled: true,
     // The workpieces the workspace's subscription delivers.
     workpieces: [] as WorkpieceSummary[],
     // What the chat pane, the code view, Connections and the gadget's UI were last rendered with.
@@ -142,6 +145,10 @@ vi.mock('./AuthContext', () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: mocks.authenticatedApi }),
 }))
 vi.mock('./RpcContext', () => ({ useConnectionLost: () => false, useRpcStub: () => ({}) }))
+vi.mock('./ServerConfigContext', async importOriginal => ({
+  ...await importOriginal<typeof ServerConfigModule>(),
+  useServerConfig: () => ({ snapshotSharingEnabled: mocks.snapshotSharingEnabled }),
+}))
 vi.mock('./useWorkspaceOpen', () => ({
   useWorkspaceOpen: () => mocks.workspace,
   observerOpenFailureMessage: () => null,
@@ -852,6 +859,20 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     await openEditor('desktop')
     expect(mocks.useView?.gadgetOpenFailure).not.toBeNull()
     expect(admissions).toHaveLength(0)
+  })
+
+  it('says a view-only gadget can’t open while the deployment forbids snapshots, asking nothing', async () => {
+    mocks.snapshotSharingEnabled = false
+    try {
+      viewOnly = new Set([GADGET.id])
+      mocks.search = { w: GADGET.id }
+      await openEditor('desktop')
+      expect(mocks.useView?.gadgetOpenFailure).toBe('Viewing gadget snapshots is turned off on this deployment.')
+      expect(snapshots).toHaveLength(0)
+      expect(admissions).toHaveLength(0)
+    } finally {
+      mocks.snapshotSharingEnabled = true
+    }
   })
 })
 

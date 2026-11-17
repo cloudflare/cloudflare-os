@@ -1499,6 +1499,8 @@ export type AdminSettingsView = {
   signupsEnabled: boolean;
   /** Whether users may search the user directory to find collaborators. */
   userSearchEnabled: boolean;
+  /** Whether gadgets may be shared to view only (see AdminApi.setSnapshotSharingEnabled). */
+  snapshotSharingEnabled: boolean;
   /**
    * How much of a workspace or of a user's account an admin may inspect (see
    * AdminApi.setAdminWorkspaceAccess): inspectWorkspace() and inspectUser() are refused while
@@ -1889,7 +1891,7 @@ export const ADMIN_SETTING_METHODS = [
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
   "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setGatewayProviderOrder",
-  "setGatewayModelOrder",
+  "setGatewayModelOrder", "setSnapshotSharingEnabled",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -2148,6 +2150,14 @@ export interface AdminApi {
    * either way, and this switch just controls user access.
    */
   setUserSearchEnabled(enabled: boolean): Promise<void>;
+
+  /**
+   * Allow or forbid sharing gadgets to view only, as static snapshots (see
+   * Overseer.getGadgetSnapshot()). While forbidden, view grants can't be made and no snapshot can
+   * be opened or refreshed, the owner's preview included; existing view grants are kept, and open
+   * again once it is allowed.
+   */
+  setSnapshotSharingEnabled(enabled: boolean): Promise<void>;
 
   /**
    * Set the site name shown next to the top-bar logo. Pass "" to reset to DEFAULT_SITE_NAME.
@@ -3203,6 +3213,12 @@ export type ServerConfig = {
    * only an exact username/email field.
    */
   userSearchEnabled: boolean;
+
+  /**
+   * Whether gadgets may be shared to view only, as static snapshots (see
+   * AdminApi.setSnapshotSharingEnabled). When false the share UI offers only live use.
+   */
+  snapshotSharingEnabled: boolean;
 
   /**
    * Site name shown next to the top-bar logo (admin-configurable). Empty falls back to
@@ -4431,7 +4447,8 @@ export interface Overseer extends RpcTarget {
    * network access. Because it can reach nothing the gadget can, opening one verifies nobody as an
    * observer. Writes stay in the copy, and the copy is discarded when the returned capability is
    * disposed (or the workspace restarts, or the gadget is deleted). Throws, like getGadget(), for a
-   * gadget the caller may not open.
+   * gadget the caller may not open, and for everyone while the deployment forbids snapshot sharing
+   * (see ServerConfig.snapshotSharingEnabled).
    */
   getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>>;
 
@@ -7671,7 +7688,8 @@ export interface GadgetSnapshotClient extends RpcTarget, Pick<GadgetClient,
   /**
    * Replace the snapshot with a new copy of the gadget's current state and code, discarding
    * anything written to the old copy, and return when the new copy was taken. Stubs returned by
-   * earlier connectToGadget() calls stop working; connect again.
+   * earlier connectToGadget() calls stop working; connect again. Throws, keeping the old copy,
+   * once the caller may no longer open the snapshot (see Overseer.getGadgetSnapshot()).
    */
   refresh(): Promise<Date>;
 }
@@ -7713,7 +7731,8 @@ export type CollaboratorRole = "build" | "use";
  * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
  * gadget's deployed UI. A gadget grant opens the live gadget, verifying its recipient as an observer
  * of what it reaches, and never its snapshot; with `mode: "view"`, it opens only a static snapshot
- * (see Overseer.getGadgetSnapshot()), verifying nothing.
+ * (see Overseer.getGadgetSnapshot()), verifying nothing. A view grant can't be made while the
+ * deployment forbids snapshot sharing (see ServerConfig.snapshotSharingEnabled).
  */
 export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId, mode?: "view"};
 

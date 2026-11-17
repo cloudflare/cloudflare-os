@@ -19,6 +19,7 @@ import {
 import { RpcStub, RpcTarget } from 'capnweb'
 import { useAuthenticatedApi } from './AuthContext'
 import { useConnectionLost, useRpcStub } from './RpcContext'
+import { useServerConfig } from './ServerConfigContext'
 import UserMenu from './components/UserMenu'
 import SiteLogo from './components/SiteLogo'
 
@@ -1478,10 +1479,13 @@ export default function GadgetEditor() {
   // - A use-only collaborator given only a gadget's snapshot opens that static snapshot, which
   //   verifies nothing, so it can't be refused for their accounts; nothing offers the live gadget.
   //   One given the gadget itself always opens it live, as above, and never its snapshot.
+  //   While the deployment forbids snapshots, a view-only gadget says so rather than asking the
+  //   server, which would refuse.
   const [gadgetOpenFailure, setGadgetOpenFailure] =
     useState<{ id: WorkpieceId; message: string } | null>(null)
   const [gadgetOpenAttempt, setGadgetOpenAttempt] = useState(0)
   const metadataLoaded = metadata !== null
+  const snapshotSharingEnabled = useServerConfig()?.snapshotSharingEnabled !== false
   useEffect(() => {
     if (!overseer || !metadataLoaded || selectedGadgetId === null) {
       setGadget(null)
@@ -1554,14 +1558,21 @@ export default function GadgetEditor() {
     // then a new share) while the collaborator holds the workspace open.
     overseer.stub.isViewOnly(selectedGadgetId).then(viewOnly => {
       if (abort.signal.aborted) return
-      if (viewOnly) openSnapshot()
+      if (viewOnly && !snapshotSharingEnabled) {
+        setGadget(null)
+        setGadgetOpenFailure({
+          id: selectedGadgetId,
+          message: 'Viewing gadget snapshots is turned off on this deployment.',
+        })
+      } else if (viewOnly) openSnapshot()
       else admitLive()
     }, fail)
     return () => {
       abort.abort()
       for (const release of releases) release()
     }
-  }, [overseer, metadataLoaded, selectedGadgetId, isUseOnly, createObserverConfigCallback, gadgetOpenAttempt])
+  }, [overseer, metadataLoaded, selectedGadgetId, isUseOnly, createObserverConfigCallback, gadgetOpenAttempt,
+    snapshotSharingEnabled])
 
   const refreshSnapshot = async () => {
     if (selectedGadget?.kind !== 'snapshot') return
