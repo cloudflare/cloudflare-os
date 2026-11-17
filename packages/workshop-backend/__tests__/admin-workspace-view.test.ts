@@ -1221,7 +1221,7 @@ describe("file listings", () => {
     let pulls = forbidPulls(ws, root.oid, "tree");
 
     await expect(view.listFiles(ws.gadgetId))
-        .rejects.toThrow(`git object ${root.oid} is not stored in this workspace`);
+        .rejects.toThrow(`The tree ${root.oid} is not in the workspace's git store.`);
     expect(pulls.pulled).toBe(false);
   }));
 
@@ -1262,7 +1262,7 @@ describe("chat reads", () => {
 
 // What a read throws for an id that names no stored commit, and for an object that is missing.
 const noStoredCommit = (oid: string) => `No commit ${oid} is stored in this workspace.`;
-const missingObject = (oid: string) => `git object ${oid} is not stored in this workspace`;
+const missingObject = (oid: string) => `${oid} is not in the workspace's git store.`;
 
 describe("history and stored commits", () => {
   it("read a commit's history, its files and what changed since its parent",

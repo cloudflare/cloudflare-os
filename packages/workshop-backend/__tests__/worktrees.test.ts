@@ -549,7 +549,7 @@ describe("the reader a fold takes for worktree edit bases", () => {
       impl.invalidateChatContent(1);
 
       await expect(impl.getCurrentChatContent(1, metaOf(impl), localReader(impl)))
-          .rejects.toThrow(`git object ${blob} is not stored in this workspace`);
+          .rejects.toThrow(`The blob ${blob} is not in the workspace's git store.`);
       expect(reached).toBe(0);
 
       // The failed fold cached nothing: the default one reads the base itself, through the

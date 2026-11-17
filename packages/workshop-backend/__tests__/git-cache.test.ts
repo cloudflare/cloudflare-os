@@ -2181,7 +2181,7 @@ async function thrownBy(read: () => unknown): Promise<string> {
 }
 
 // What a local-only read throws for an object the store does not hold.
-const notStored = (oid: GitOid) => `git object ${oid} is not stored in this workspace`;
+const notStored = (oid: GitOid) => `${oid} is not in the workspace's git store.`;
 
 describe("local-only reads", () => {
   // The fixture repo stored whole, every object attributed to G1, which could serve them again.
@@ -2210,7 +2210,7 @@ describe("local-only reads", () => {
     t.sources.set(G1, fixtureSource(t, G1));
     await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
     expect(() => t.cache.readLocalCommitTree(COMMIT_1))
-        .toThrow(`git object ${TREE_1} is not stored in this workspace`);
+        .toThrow(`The tree ${TREE_1} is not in the workspace's git store.`);
 
     // The trees stored, every blob still pullable from G1: a tree read needs none of them.
     for (let object of FIXTURE_OBJECTS.filter(o => o.type === "tree")) {

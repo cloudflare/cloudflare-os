@@ -1331,13 +1331,13 @@ export class WorkspaceGitCache {
    */
   readLocalCommitTree(commitOid: GitOid): TreeNode[] {
     let walk = (treeOid: GitOid): TreeNode[] =>
-        parseGitTree(this.#localObject(treeOid, "tree").payload, treeOid).map(entry => {
+        parseGitTree(this.#requireHeld(treeOid, "tree"), treeOid).map(entry => {
           let kind = MODE_KINDS[entry.mode];
           return kind === "dir"
               ? { name: entry.name, kind, children: walk(entry.oid) }
               : { name: entry.name, kind };
         });
-    return walk(parseGitCommitRefs(this.#localObject(commitOid, "commit").payload, commitOid).tree);
+    return walk(parseGitCommitRefs(this.#requireHeld(commitOid, "commit"), commitOid).tree);
   }
 
   /**
@@ -1353,7 +1353,7 @@ export class WorkspaceGitCache {
     if (entry === undefined || entry.mode === "40000") return undefined;
     if (entry.mode === "160000") throw new Error(submoduleMessage(path, entry.oid));
     if (entry.mode === "120000") throw new Error(`${path} is a symlink`);
-    return decodeBlobText(this.#localObject(entry.oid, "blob").payload, path);
+    return decodeBlobText(this.#requireHeld(entry.oid, "blob"), path);
   }
 
   /**
@@ -1378,8 +1378,8 @@ export class WorkspaceGitCache {
     let out = new Set<string>();
     if (aCommit === bCommit) return out;
     let treeOf = (oid: GitOid) =>
-        parseGitCommitRefs(this.#localObject(oid, "commit").payload, oid).tree;
-    await this.#diffTrees(oid => this.#localObject(oid, "tree"),
+        parseGitCommitRefs(this.#requireHeld(oid, "commit"), oid).tree;
+    await this.#diffTrees(oid => ({ type: "tree", payload: this.#requireHeld(oid, "tree") }),
                           treeOf(aCommit), aCommit, treeOf(bCommit), bCommit, "", out);
     return out;
   }
@@ -1391,25 +1391,15 @@ export class WorkspaceGitCache {
     let segments = splitTreePath(path);
     let name = segments.pop()!;
     let treeOid =
-        parseGitCommitRefs(this.#localObject(commitOid, "commit").payload, commitOid).tree;
+        parseGitCommitRefs(this.#requireHeld(commitOid, "commit"), commitOid).tree;
     let entryIn = (oid: GitOid, segment: string) =>
-        parseGitTree(this.#localObject(oid, "tree").payload, oid).find(e => e.name === segment);
+        parseGitTree(this.#requireHeld(oid, "tree"), oid).find(e => e.name === segment);
     for (let segment of segments) {
       let dir = entryIn(treeOid, segment);
       if (dir === undefined || dir.mode !== "40000") return undefined;
       treeOid = dir.oid;
     }
     return entryIn(treeOid, name);
-  }
-
-  // A locally-stored object of the expected type, for the reads that must never pull.
-  #localObject(oid: GitOid, type: GitObjectType): PackableObject {
-    let local = this.readLocalObject(oid);
-    if (local === undefined) throw new Error(`git object ${oid} is not stored in this workspace`);
-    if (local.type !== type) {
-      throw new Error(`git object ${oid} is a ${local.type}, but a ${type} was expected`);
-    }
-    return local;
   }
 
   /**
