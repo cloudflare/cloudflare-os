@@ -209,7 +209,8 @@ describe("Slack org installations", () => {
     let release = Promise.withResolvers<void>();
     let checks = 0;
     vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-      if (input.includes("auth.test")) {
+      // Each access proof starts with the first page of app-granted workspaces.
+      if (input.includes("auth.teams.list") && !input.includes("cursor=")) {
         checks++;
         started.resolve();
         await release.promise;
@@ -516,5 +517,53 @@ describe("Slack org installations", () => {
     let error = new SlackApiError("team_access_not_granted", 200);
     expect(error.isAccessError).toBe(true);
     expect(error.isAuthError).toBe(false);
+  });
+});
+
+describe("Slack external users", () => {
+  const users: Record<string, Record<string, unknown>> = {
+    WSELF: { team_id: "TONE", enterprise_user: { enterprise_id: "EORG", teams: ["TONE"] } },
+    WCOLLEAGUE: { team_id: "TTWO", enterprise_user: { enterprise_id: "EORG" } },
+    UPARTNER: { team_id: "TPARTNER" },
+    WPARTNER: { team_id: "TPARTNERONE", enterprise_user: { enterprise_id: "EPARTNER" } },
+    UUNKNOWN: {},
+  };
+
+  function mockUsers(auth: Record<string, unknown>) {
+    mockSlack();
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      let url = new URL(input);
+      switch (url.pathname.split("/").pop()) {
+        case "auth.test": return Response.json({ ok: true, user_id: "WSELF", ...auth });
+        case "users.info": {
+          let id = url.searchParams.get("user")!;
+          return Response.json({ ok: true, user: { id, name: id, ...users[id] } });
+        }
+        case "conversations.history": return Response.json({ ok: true, messages: [
+          { ts: "123.000002", user: "UPARTNER" }, { ts: "123.000001", user: "WSELF" }] });
+      }
+      return fetchSlack(input, init);
+    });
+  }
+
+  it.each([
+    [{ team_id: "EORG", enterprise_id: "EORG", is_enterprise_install: true },
+      { WCOLLEAGUE: false, UPARTNER: true, WPARTNER: true, UUNKNOWN: undefined }],
+    [{ team_id: "TONE", enterprise_id: "EORG" },
+      { WCOLLEAGUE: false, UPARTNER: true, WPARTNER: true, UUNKNOWN: undefined }],
+    [{ team_id: "TONE" }, { WCOLLEAGUE: true, UPARTNER: true }],
+  ])("compares each user's organization with the account's (%o)", async (auth, expected) => {
+    mockUsers(auth);
+    let client = api();
+    for (let [id, isExternal] of Object.entries(expected)) {
+      expect((await client.getUser(id)).isExternal, id).toBe(isExternal);
+    }
+  });
+
+  it("marks message authors", async () => {
+    mockUsers({ team_id: "TONE", enterprise_id: "EORG" });
+    let page = await api().listHistory("CONE", undefined, 10);
+    expect(page.items.map(message => message.author?.isExternal)).toEqual([true, false]);
   });
 });

@@ -19,6 +19,10 @@ export type SlackUser = {
   /** Whether Slack identifies this as a bot or built-in system user; false does not guarantee a
    *  human. */
   isBot: boolean;
+  /** Whether the user belongs to a different Slack organization than the connected account, such
+   *  as someone from another company in a Slack Connect channel. Members of other workspaces in the
+   *  same Enterprise organization are not external. Absent when Slack doesn't say. */
+  isExternal?: boolean;
 };
 
 /** An emoji reaction on a message. `name` is the emoji short name (without colons), e.g. "thumbsup". */
