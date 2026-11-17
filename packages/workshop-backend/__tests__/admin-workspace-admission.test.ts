@@ -25,6 +25,7 @@ import {
   type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage.js";
 import {
   ADMIN, NOT_ADMIN, OTHER_ADMIN, adminWorkspace, type AdminWorkspace, type FakeAdminFacet,
   type FakeAdminSessionStub,
@@ -558,6 +559,41 @@ describe("whose reads marked a workspace as holding restricted data", () => {
     await observe(ws, WHOLE_BINDING);
     expect(mark(ws)).toEqual({ restricted: true, adminOnly: false });
   }));
+
+  it.each([
+    { title: "is kept across a restart of the workspace's object", older: false },
+    { title: "ends at the next start of the workspace's object once a version of the code " +
+        "that does not keep it took an action id", older: true },
+  ])("$title", async ({ older }) => {
+    let workspaceId = "";
+    await withWorkspace(async ws => {
+      workspaceId = ws.id;
+      let { storage } = ws.impl;
+      let otherId = await otherConnection(ws);
+      await observe(ws, WHOLE_BINDING);
+      // Each way the workspace takes an action id is counted: an observation, a queued action.
+      await observe(ws, {}, otherId);
+      await queueAction(ws, 1, "issueReportStatus");
+      expect(storage.adminRestrictedDataAsOf.get()).toBe(storage.nextActionId.get());
+      expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+
+      if (!older) return;
+      // The older version: the same storage, taking an id as it does for another vendor's
+      // restricted observation, and leaving what it does not know of as it found it.
+      let old = makeOverseerStorage(ws.state.storage);
+      old.containsRestrictedData.put(true);
+      old.nextActionId.put(old.nextActionId.get() + 1);
+      expect(mark(ws)).toEqual({ restricted: true, adminOnly: true });
+    });
+
+    let stub = env.TEST_OVERSEER.get(env.TEST_OVERSEER.idFromString(workspaceId));
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let { storage } = (instance as unknown as { impl: any }).impl;
+      expect(storage.containsRestrictedData.get()).toBe(true);
+      expect(storage.adminRestrictedDataOnly.get()).toBe(!older);
+    });
+  });
 
   it("is not kept when the observation's record cannot be written",
       () => withWorkspace(async ws => {

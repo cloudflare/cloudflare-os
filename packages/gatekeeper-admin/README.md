@@ -498,6 +498,12 @@ In a marked one it applies an action only when all three of these hold
    are this connection's. So a workspace that also holds another vendor's
    restricted data, which other admins could not already read, is not exempt, whichever read
    came first; nor is one marked before workspaces kept track of whose reads marked them.
+   Nor, after a rollback, is one that a version of the Workshop from before they did wrote
+   to: it marks for any connection's read and leaves the value as it found it. Every
+   observation takes an action id, so while the value is true the Workshop keeps beside it
+   the count of ids as it last left it (`storage.adminRestrictedDataAsOf`), and a
+   workspace's object that starts to find another count ends the exemption, for good
+   (`guardRuleExemption()`).
 
 **Why those three kinds.** While the third condition holds, what the workspace holds is what
 deployment admins can already read, and admins are who reads a note and a change of assignee.
@@ -931,6 +937,11 @@ found elsewhere:
   [What a Worker that keeps everything could do](#what-a-worker-that-keeps-everything-could-do)).
   A note, a status or an assignment a rule applies under the mark is held the same way, and
   no further.
+- **A rollback ends the exemption under the mark in every workspace the older version wrote
+  to**, whatever it wrote: an action id it took for an ordinary action counts as one taken
+  for another vendor's restricted read, since the count cannot tell them apart. Such a
+  workspace waits for a person from then on, as one marked before the rule existed does (see
+  [What a rule applies under the mark](#what-a-rule-applies-under-the-mark)).
 - **"Report changed" tells every subscribed admin gadget that a report was written to and which
   kind of write it was, never its text or who made it.** A subscriber that writes on every
   event loops until the per-report bounds on what is written through the gatekeeper
@@ -1050,9 +1061,10 @@ admin connection's, after it, between an action's submission and its apply and i
 the two waits between the lend and the write, a workspace
 marked before it kept track of whose reads marked it and another vendor's action under a
 note's tag, the catalog, who is lent, the insiders of a content request, a spawned chat),
-`auto-approval.test.ts` (`ruleApplies()`, each of its three conditions failing alone, and the
-drain under the mark), `admin-workspace-admission.test.ts` (the admission rule, with and after
-the connection, and whose reads marked a workspace),
+`auto-approval.test.ts` (`ruleApplies()`, each of its three conditions failing alone, the
+drain under the mark, and `guardRuleExemption()` against a writer that keeps no count),
+`admin-workspace-admission.test.ts` (the admission rule, with and after the connection, whose
+reads marked a workspace, and the exemption across a restart with and without such a writer),
 `issue-report-events.test.ts` (the store's events), `issue-reports.test.ts` (the statuses each
 reader gets, and the assignee), `provisioning-policy.test.ts` and
 `user-ambient-accounts.test.ts` (the mode and who holds the account).

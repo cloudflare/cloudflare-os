@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule, ruleApplies,
+  AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule,
+  guardRuleExemption, ruleApplies,
 } from "../src/auto-approval.js";
 import type { ActionRecord, StoredActionDescription }
     from "../src/storage-schema/overseer-storage.js";
@@ -450,6 +451,78 @@ describe("ruleApplies", () => {
   it("refuses a connection that has no record", () => {
     let storage = makeAdminMarkedStorage();
     expect(ruleApplies(storage, GK + 1, tagOf("issueReportNote"))).toBe(false);
+  });
+});
+
+describe("guardRuleExemption", () => {
+  const NOTE = tagOf("issueReportNote");
+
+  // The workspace's storage as its object finds it when it starts: guarded, as the constructor
+  // guards it.
+  function start(disk: DurableObjectStorage) {
+    let storage = makeStorage(disk);
+    guardRuleExemption(storage);
+    return storage;
+  }
+
+  // What authorizeObservation() writes for a restricted observation of the admin connection
+  // that sets the latch: the singleton, the latch and the id the observation takes.
+  function markThroughAdmin(storage: AutoApprovalStorage) {
+    putConnection(storage, ADMIN_GATEKEEPER_VENDOR_ID);
+    storage.adminRestrictedDataOnly.put(true);
+    storage.containsRestrictedData.put(true);
+    takeId(storage);
+  }
+
+  function takeId(storage: AutoApprovalStorage) {
+    storage.nextActionId.put(storage.nextActionId.get() + 1);
+  }
+
+  it("keeps the exemption across restarts while this code takes every action id", () => {
+    let disk = makeMockStorage();
+    let storage = start(disk);
+    // Ids taken before the mark, as in any workspace's life.
+    takeId(storage);
+    markThroughAdmin(storage);
+    takeId(storage);
+    takeId(storage);
+
+    let restarted = start(disk);
+    expect(ruleApplies(restarted, GK, NOTE)).toBe(true);
+    takeId(restarted);
+    expect(ruleApplies(start(disk), GK, NOTE)).toBe(true);
+  });
+
+  it.each([
+    ["another connection's restricted observation", true],
+    ["anything else that takes an action id", false],
+  ])("ends the exemption once a version that does not keep it wrote %s", (_what, restricted) => {
+    let disk = makeMockStorage();
+    markThroughAdmin(start(disk));
+
+    // The older version: the same storage with no guard, which sets the latch, takes an id and
+    // leaves the singleton as it found it.
+    let older = makeStorage(disk);
+    if (restricted) older.containsRestrictedData.put(true);
+    takeId(older);
+    expect(older.adminRestrictedDataOnly.get()).toBe(true);
+
+    let upgraded = start(disk);
+    expect(upgraded.adminRestrictedDataOnly.get()).toBe(false);
+    expect(ruleApplies(upgraded, GK, NOTE)).toBe(false);
+    // Nothing restores it: not the ids this code takes next, nor another start.
+    takeId(upgraded);
+    expect(ruleApplies(start(disk), GK, NOTE)).toBe(false);
+  });
+
+  it("leaves a workspace that was never exempt as it is", () => {
+    let disk = makeMockStorage();
+    let storage = start(disk);
+    takeId(storage);
+    takeId(makeStorage(disk));
+    let restarted = start(disk);
+    expect(restarted.adminRestrictedDataOnly.get()).toBe(false);
+    expect(ruleApplies(restarted, GK, "edit")).toBe(true);
   });
 });
 

@@ -26,6 +26,32 @@ export interface AutoApprovalStorage {
   containsRestrictedData: Singleton<boolean>;
   /** Whether only the admin gatekeeper's observations set the latch (see makeOverseerStorage). */
   adminRestrictedDataOnly: Singleton<boolean>;
+  /** `nextActionId` as last taken while that held (see makeOverseerStorage). */
+  adminRestrictedDataAsOf: Singleton<number>;
+  /** The id the next action or observation takes. */
+  nextActionId: Singleton<number>;
+}
+
+/**
+ * Ends the exemption `adminRestrictedDataOnly` records where a version of this code that does
+ * not keep it has written to the workspace since, as one deployed again after a rollback
+ * does: it sets the latch for any connection's restricted observation and leaves the
+ * singleton true. Every observation takes an action id, so while the exemption holds each id
+ * taken is mirrored in `adminRestrictedDataAsOf`, and an id taken by code that keeps no
+ * mirror leaves the two apart. Called once as the workspace's object starts, before anything
+ * reads ruleApplies(). It ends the exemption for any id such a version took, an observation's
+ * or not, and nothing restores it.
+ */
+export function guardRuleExemption(storage: AutoApprovalStorage): void {
+  if (storage.adminRestrictedDataOnly.get() &&
+      storage.adminRestrictedDataAsOf.get() !== storage.nextActionId.get()) {
+    storage.adminRestrictedDataOnly.put(false);
+  }
+  storage.nextActionId.subscribe({
+    update: next => {
+      if (storage.adminRestrictedDataOnly.get()) storage.adminRestrictedDataAsOf.put(next);
+    },
+  });
 }
 
 /**

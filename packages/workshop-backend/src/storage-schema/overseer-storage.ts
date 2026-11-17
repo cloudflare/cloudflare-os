@@ -1446,14 +1446,24 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // True while every observation that set `containsRestrictedData` was made through a
       // connection of the admin gatekeeper (isAdminGatekeeper(): the whole binding or a session
       // limited to one report). One value for the workspace, not one per connection, written
-      // only by authorizeObservation() in the transaction that sets the latch: true only when
+      // by authorizeObservation() in the transaction that sets the latch: true only when
       // the latch is set for the first time by such an observation; false, for good, once any
       // other connection's observation carries the flag; never turned true in a workspace
-      // already latched, so one latched before this singleton existed has it false. While true,
+      // already latched, so one latched before this singleton existed has it false. Its one
+      // other writer ends it where a version of this code that does not keep it has written
+      // to the workspace (see `adminRestrictedDataAsOf`). While true,
       // what the workspace holds is what deployment admins can already read, and a rule may
       // apply the admin gatekeeper's kinds that ADMIN_AGENT_ACTIONS marks
       // `autoApprovableWhileRestricted` (see ruleApplies() in auto-approval.ts).
       adminRestrictedDataOnly: singleton(false),
+
+      // What `nextActionId` was when this code last took an action id while
+      // `adminRestrictedDataOnly` was true. Every observation takes one, so a version of this
+      // code that does not keep that singleton, deployed again after a rollback, leaves the two
+      // apart when it writes here: it may have set the latch for another connection's
+      // observation and left the singleton true. guardRuleExemption() (auto-approval.ts) keeps
+      // this in step and ends the exemption where the two differ.
+      adminRestrictedDataAsOf: singleton(0),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
       // its `ObservationDescription`. Share links stop working and only the owner can add

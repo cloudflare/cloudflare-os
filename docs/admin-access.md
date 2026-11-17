@@ -1006,6 +1006,11 @@ Everything else waits for a person there:
   makes such a workspace exempt again.
 - **Every action of a workspace marked before workspaces kept track of whose reads marked
   them.**
+- **Every action of a marked workspace that a version of the Workshop from before then wrote
+  to afterwards**, as after a rollback. It marks for any connection's read without ending the
+  exemption, so the kernel counts the action ids it takes while the exemption holds (every
+  observation takes one) and ends the exemption, for good, in a workspace that starts with
+  another count.
 - **Every action of any other connection.** No rule applies one in a marked workspace.
 
 Web fetches are held and a push is refused as in any marked workspace. The exception is the
@@ -1752,12 +1757,14 @@ The admin gatekeeper adds these, in the same directory (its own suites are liste
   conditions failing alone; `autoApprovalRule()` following it; and the drain under the mark,
   which applies a note, a status and an assignment in order, stops at a scoped reply, applies
   nothing of another vendor's connection, and holds an action judged eligible once another
-  vendor's read ended the exemption.
+  vendor's read ended the exemption; and `guardRuleExemption()`, which keeps the exemption
+  across restarts and ends it once a writer that keeps no count took an action id.
 - `admin-workspace-admission.test.ts`: the admission rule at each gate, for a workspace with the
   connection, for one that had it and read nothing, and for one that read through it, a
   non-admin kept in the sharing list included. It also covers whose reads marked a workspace:
   the admin connection's alone when it set the mark first, never once another vendor set it
-  first or marked it later, and never in a workspace marked before that was kept.
+  first or marked it later, never in a workspace marked before that was kept, and no longer
+  after a restart that finds an action id an older version took.
 - `provisioning-policy.test.ts` and `user-ambient-accounts.test.ts`: the gatekeeper's mode,
   Disabled until an admin chooses, and its account offered, provisioned and listed for
   deployment admins alone, in each mode.
