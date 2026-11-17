@@ -14,7 +14,7 @@ import {
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import {
-  DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
   OFFICE_IMPORT_GRANT, SUPPORTED_RESOURCES,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
@@ -153,7 +153,7 @@ describe("Google resource configurators", () => {
           ],
         },
       });
-      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true, "create");
 
       await expect(creating.listFolders("folder:root", "", null)).resolves.toEqual({
         nodes: [
@@ -180,7 +180,7 @@ describe("Google resource configurators", () => {
         "/files/notes": { id: "notes", name: "Notes", mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false },
         "/files/archive": { ...folder("archive", "Archive", ["0AMyRoot"]), capabilities: { canListChildren: true, canAddChildren: false } },
       });
-      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true, "create");
       const pasted = async (id: string) =>
         (await creating.listFolders("folder:root", `https://drive.google.com/drive/folders/${id}`, null)).nodes;
 
@@ -1064,13 +1064,41 @@ it.each(SUPPORTED_RESOURCES.filter(resource => resource.creatable))(
     let { user } = await storedAccount([]);
     let byPattern = await user.startCreationConfigurator(resource.urlPattern);
     try {
-      let byId = await user.startCreationConfigurator(resource.id!);
+      let byId = await user.startCreationConfigurator(resource.id!, "save");
       try {
         expect(byId.iframeHtml).toBe(byPattern.iframeHtml);
+        let purposes = [byPattern, byId].map(frame => (frame.ui as unknown as CreationLocationConfiguratorUI).purpose());
+        await expect(Promise.all(purposes)).resolves.toEqual(["create", "save"]);
       } finally { byId.ui[Symbol.dispose](); }
     } finally { byPattern.ui[Symbol.dispose](); }
   },
 );
+
+it("saves a file to a stored account's Drive with the created-files grant alone", async () => {
+  const DOCX = GOOGLE_DOC_RESOURCE.savableFrom![0];
+  let file = () => new Blob(["PK"]).stream();
+  let uploads: Request[] = [];
+  let session = "https://www.googleapis.com/upload/drive/v3/files?upload_id=session-1";
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    if (new URL(input).pathname === "/drive/v3/about") return Response.json({});
+    uploads.push(new Request(input, init));
+    return input === session
+      ? Response.json({ id: "new-1", mimeType: GOOGLE_DOC_MIME_TYPE })
+      : new Response(null, { headers: { Location: session } });
+  }));
+  let folder = "https://drive.google.com/drive/folders/root";
+
+  let { user } = await storedAccount([CREATED_FILES_GRANT]);
+  await expect(user.saveFile(GOOGLE_DOC_RESOURCE.id!, folder, "Plan", DOCX, file()))
+    .resolves.toEqual({ url: "https://docs.google.com/document/d/new-1/edit" });
+  expect(uploads.map(({ method, url, headers }) => [method, new URL(url).pathname, headers.get("Authorization")]))
+    .toEqual([["POST", "/upload/drive/v3/files", "Bearer access-token"], ["PUT", "/upload/drive/v3/files", null]]);
+
+  let without = await storedAccount([GOOGLE_DOC_RESOURCE.urlPattern]);
+  await expect(without.user.saveFile(GOOGLE_DOC_RESOURCE.id!, folder, "Plan", DOCX, file()))
+    .rejects.toThrow(/hasn't let this app save files to its Drive/);
+  expect(uploads).toHaveLength(2);
+});
 
 describe("the Office import grant on a stored account", () => {
   it("is kept by the account, so asking for it again needs no consent, but is never described", async () => {

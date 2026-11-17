@@ -7,7 +7,7 @@ import { findResourceType } from "@gadgets/workshop-shared/gatekeeper";
  * can change without renaming a type. Legacy grants resolve only by exact known patterns.
  */
 
-import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import type { AvatarImage, SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarAvailabilityMode } from "./calendar-types";
 import { validateChatSpaceId, validateChatThreadId } from "./chat-api";
 import { validateGmailLabelName, validateGmailQueryForGrouping } from "./gmail-validate";
@@ -46,6 +46,16 @@ const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
 const CREATION_FOLDER = "the URL of the Google Drive folder to create it in";
 
 /**
+ * A resource type's icon: a page in the product's colour with `mark` cut out of it. A stand-in
+ * drawn here, not Google's own mark.
+ */
+const fileIcon = (color: string, mark: string): AvatarImage => ({
+  url: `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="${color}" fill-rule="evenodd" ` +
+    `d="M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z${mark}"/></svg>`)}`,
+});
+
+/**
  * A single Google Doc. On the Drive card, whose picker binds a native file as its editable type;
  * Workshop asks for the card's types together, though their scopes differ.
  */
@@ -53,11 +63,13 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   id: "document",
   urlPattern: "https://docs.google.com/document/d/:docId/*",
   title: "Google Doc",
+  icon: fileIcon("#4285f4", "M8 11h8v1.5H8zm0 3h8v1.5H8zm0 3h5v1.5H8z"),
   description: "Read, edit and comment on documents you choose.",
   grantable: true,
   creatable: true,
   creationConfigurator: true,
   creationConfigurationDescription: CREATION_FOLDER,
+  savableFrom: ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
   groupedWith: "drive",
 };
 
@@ -69,6 +81,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   id: "spreadsheet",
   urlPattern: "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
   title: "Google Spreadsheet",
+  icon: fileIcon("#0f9d58", "M8 11h3.25v2.5H8zm4.75 0H16v2.5h-3.25zM8 15h3.25v2.5H8zm4.75 0H16v2.5h-3.25z"),
   description:
     "Read the values and formatting of a spreadsheet you choose, and change its values, tabs, " +
     "rows, columns, and formatting, with your approval.",
@@ -76,6 +89,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   creatable: true,
   creationConfigurator: true,
   creationConfigurationDescription: CREATION_FOLDER,
+  savableFrom: ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
   groupedWith: "drive",
 };
 
@@ -84,6 +98,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   id: "presentation",
   urlPattern: "https://docs.google.com/presentation/d/:presentationId/*",
   title: "Google Slides Presentation",
+  icon: fileIcon("#f4b400", "M8 11.5h8V17H8z"),
   description:
     "Read a presentation you choose, its slides, layouts, masters, and formatting, and, with " +
     "your approval, edit its text and design, copy, move, or delete slides, and change its " +
@@ -92,6 +107,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   creatable: true,
   creationConfigurator: true,
   creationConfigurationDescription: CREATION_FOLDER,
+  savableFrom: ["application/vnd.openxmlformats-officedocument.presentationml.presentation"],
   groupedWith: "drive",
 };
 
