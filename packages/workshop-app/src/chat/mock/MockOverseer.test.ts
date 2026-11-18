@@ -17,13 +17,15 @@ const subscribed = (overseer: MockOverseer) => {
   const messages: AiChatMessage[] = []
   const metadata: AiChatMetadata[] = []
   const stream: AiChatStreamEvent[] = []
+  const deleted: number[] = []
   void overseer.subscribeToChat({
     streamGeneration: () => {},
     message: (message) => void messages.push(message),
     metadata: (chat) => void metadata.push(chat),
     stream: (_chatId, event) => void stream.push(event),
+    deleted: (chatId) => void deleted.push(chatId),
   })
-  return { messages, metadata, stream }
+  return { messages, metadata, stream, deleted }
 }
 
 describe('MockOverseer', () => {
@@ -119,5 +121,30 @@ describe('MockOverseer', () => {
     expect((await shared.overseer.listCollaborators()).map(({ profile }) => profile.name)).toEqual(['Ada Lovelace', 'Alan Turing'])
     await shared.session.api.dismissSharedWorkspace('mock')
     expect(await shared.session.api.listWorkspaces()).toEqual([])
+  })
+
+  it('deletes the chat, which its subscribers hear of and the workspace no longer lists', async () => {
+    const overseer = new MockOverseer(scenario({ history: history([user('hi')]) }))
+    const seen = subscribed(overseer)
+    const chatUpdated = vi.fn<(workspaceId: string, chatId: number, chat: unknown) => Promise<void>>(async () => {})
+    void overseer.subscribeToReadState('mock', { updated: async () => {}, chatUpdated })
+
+    await overseer.deleteChat(0)
+
+    expect(seen.deleted).toEqual([0])
+    expect(chatUpdated).toHaveBeenCalledWith('mock', 0, null, expect.anything())
+    expect(await overseer.listChats()).toEqual([])
+  })
+
+  it('keeps the viewer’s notifications for the chat as they choose them, and tells their read state', async () => {
+    const overseer = new MockOverseer(scenario({}))
+    const updated = vi.fn<(state: { chats: unknown[] }) => Promise<void>>(async () => {})
+    const chatUpdated = vi.fn<(workspaceId: string, chatId: number, chat: unknown) => Promise<void>>(async () => {})
+    void overseer.subscribeToReadState('mock', { updated, chatUpdated })
+    expect(updated).toHaveBeenCalledWith(expect.objectContaining({ chats: [expect.objectContaining({ chatId: 0, notificationsEnabled: true })] }))
+
+    await overseer.setChatNotificationsEnabled(0, false)
+
+    expect(chatUpdated).toHaveBeenCalledWith('mock', 0, expect.objectContaining({ notificationsEnabled: false, notificationsEnabledOverride: false }), expect.anything())
   })
 })

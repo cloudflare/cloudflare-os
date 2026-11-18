@@ -7,6 +7,7 @@ import type {
   AiChatMetadata,
   AiChatSubscriber,
   ChatAttachmentHandle,
+  ChatReadState,
   ChatAttachmentRef,
   CollaboratorInfo,
   CommitInfo,
@@ -14,6 +15,7 @@ import type {
   PresenceSubscriber,
   SlashCommandRequest,
   TreeNode,
+  UnreadStateSubscriber,
   WorkpiecesSubscriber,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
@@ -33,7 +35,8 @@ const CHAT_ID = 0
 /** The one workspace there is, which the fake API lists. */
 export const MOCK_WORKSPACE_ID = 'mock'
 
-type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream'>
+type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'>
+type ReadStateEvents = Pick<UnreadStateSubscriber, 'updated' | 'chatUpdated'>
 type ActionEvents = Pick<ActionsSubscriber, 'entry'>
 type ActionMessage = Extract<AiChatMessage, { type: 'action' }>
 
@@ -98,6 +101,13 @@ const GADGET_HISTORY: Array<{ message: string; minutesAgo: number; files: Record
 const gadgetCommit = (id: number, at: number) => `g${at}${String(id).padStart(38, '0')}`
 const gadgetAt = (commitId: string) => (commitId.startsWith('g') ? GADGET_HISTORY[Number(commitId[1])] : undefined)
 
+// The totals of a read state in which there is nothing unread.
+const NOTHING_UNREAD = (workspaceId: string) => ({
+  unreadChatCount: 0,
+  unreadMessageCount: 0,
+  workspace: { workspaceId, unreadChatCount: 0, unreadMessageCount: 0 },
+})
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 // Made up, and only told apart here. Not `crypto.randomUUID()`, which a page that is not served
 // securely does not have, such as the dev server opened from a phone by its address.
@@ -117,6 +127,11 @@ export class MockOverseer {
   #messages: AiChatMessage[]
   #metadata: AiChatMetadata
   #chatSubscribers = new Set<ChatEvents>()
+  // The chat was deleted: it is listed no more, and nothing more happens in it.
+  #deleted = false
+  // The viewer's notifications for the chat, as they chose them, and who hears of them, by workspace.
+  #notifications: Pick<ChatReadState, 'notificationsEnabled' | 'notificationsEnabledOverride'> = { notificationsEnabled: true }
+  #readStateSubscribers = new Map<ReadStateEvents, string>()
   #actionSubscribers = new Set<ActionEvents>()
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
@@ -325,7 +340,38 @@ export class MockOverseer {
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
-    return [this.#metadata]
+    return this.#deleted ? [] : [this.#metadata]
+  }
+
+  /** Deletes the chat, which everyone subscribed hears of, as the server tells them. */
+  async deleteChat(chatId: number) {
+    if (chatId !== CHAT_ID || this.#deleted) return
+    this.#deleted = true
+    this.player.pause()
+    this.#chatSubscribers.forEach((subscriber) => subscriber.deleted(CHAT_ID))
+    this.#readStateSubscribers.forEach((workspaceId, subscriber) => void subscriber.chatUpdated(workspaceId, CHAT_ID, null, NOTHING_UNREAD(workspaceId)))
+  }
+
+  /**
+   * The viewer's read state for the chat, as a subscription scoped to `workspaceId` gives it: all
+   * of it read, with their notifications as they chose them.
+   */
+  subscribeToReadState(workspaceId: string, subscriber: ReadStateEvents) {
+    this.#readStateSubscribers.set(subscriber, workspaceId)
+    void subscriber.updated({ unreadChatCount: 0, unreadMessageCount: 0, workspaces: [], chats: this.#deleted ? [] : [this.#readState(workspaceId)] })
+    return lease(() => this.#readStateSubscribers.delete(subscriber))
+  }
+
+  async setChatNotificationsEnabled(chatId: number, enabled: boolean) {
+    if (chatId !== CHAT_ID || this.#deleted) throw new Error('This chat is no longer available.')
+    this.#notifications = { notificationsEnabled: enabled, notificationsEnabledOverride: enabled }
+    this.#readStateSubscribers.forEach((workspaceId, subscriber) =>
+      void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), NOTHING_UNREAD(workspaceId)))
+  }
+
+  #readState(workspaceId: string): ChatReadState {
+    const last = this.#messages.at(-1)?.sequence ?? -1
+    return { workspaceId, chatId: CHAT_ID, unreadMessageCount: 0, readThroughSequence: last, ...this.#notifications }
   }
 
   async getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage> {

@@ -219,6 +219,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
         <ChatPane
           {...CHAT}
           onOpenWorkspace={openWorkspace}
+          onDeleted={openWorkspace}
           onOpenSettings={(tab) => {
             setSettingsTab(tab ?? 'library')
             setSettings(true)

@@ -247,6 +247,19 @@ for the visit, so that the others are seen another time. Choosing one writes it 
 in place of the draft (`ComposerHandle.fillDraft`), to be changed before it is sent; it is not
 sent. A chat started with a format has none, as each says what it makes.
 
+A chat's header ends in more (`ChatMoreMenu`), and so does its row in the workspace's Chats tab,
+which slides it out when pointed at, for whoever may build in the workspace: someone who can only
+use it has no chats of it. It turns the chat's notifications on or mutes them for the viewer, as
+the old app's menu did (`chat/ChatNotifications.ts`, plain and tested): what the workspace says of
+each chat comes from the viewer's read state scoped to it (`subscribeToUnreadState()`), and a chat
+it says nothing of goes by the default, which is off only in one that waits for the viewer to take
+part (`notificationsRequireParticipation`). A change shows at once and is put back if refused. It
+also deletes the chat, asked first in a `DeleteChatDialog`, as the question cannot grow out of a
+menu's item as a `ConfirmMenu`'s does. A deleted chat leaves its row at once; one that is open
+says so (`ChatSession`'s `deleted`, whoever deleted it), and the page goes to its workspace in
+its place in the history. The list is read once, so a chat someone else deletes stays in it until
+it is read again.
+
 ## The Workspaces page
 
 `/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the
