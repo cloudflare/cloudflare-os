@@ -973,6 +973,37 @@ async function chainOf(h: ReturnType<typeof harness>, ...tokens: string[]): Prom
   return (h.json.at(-1) as { chain: unknown[] }).chain;
 }
 
+test("--dry-run decodes an issue report, its image as a file and then its length, and both listings of reports", async (t) => {
+  const real = harness(t, { table: realTable });
+  const report = { text: "The chart is blank", priority: "high", context: { workspaceId: "w1", chatId: 3 } };
+  assert.deepEqual(await chainOf(real, "submit-issue-report", JSON.stringify(report)), [{ method: "submitIssueReport", args: [report] }]);
+  await usageError(real.api("--dry-run", "submit-issue-report", '{"text": "x", "priority": "urgent"}'),
+    '<report>.priority must be "high" | "low" | "medium"; got "urgent".');
+
+  // The image is a file's path, sent as a stream, and after it the number of bytes the file holds.
+  writeFileSync(join(real.root, "shot.png"), "an image");
+  assert.deepEqual(await chainOf(real, "add-issue-report-image", "r1", "shot.png", "8"),
+    [{ method: "addIssueReportImage", args: ["r1", { $stream: "shot.png" }, 8] }]);
+  await usageError(real.api("--dry-run", "add-issue-report-image", "r1", "shot.png"),
+    "add-issue-report-image needs <byteLength>. Run `cf-os api add-issue-report-image r1 shot.png --help` for its arguments.");
+  // What a quoted "$(wc -c < shot.png)" passes on macOS, whose wc pads the number with blanks.
+  await usageError(real.api("--dry-run", "add-issue-report-image", "r1", "shot.png", "       8"),
+    '<byteLength> must be a number, in decimal (3, -2.5, 1e3); got "       8".');
+  await usageError(real.api("--dry-run", "add-issue-report-image", "r1", "missing.png", "8"),
+    "could not read missing.png: no such file (ENOENT).");
+
+  // The reporter's own reports page by a cursor, an option; the admins' are filtered and paged by one options object.
+  assert.deepEqual(realTable.nodes.AuthenticatedApi.commands["list-issue-reports"].returns,
+    { kind: "value", type: "OwnIssueReportPage = { nextCursor?: string; reports: OwnIssueReport[] }" });
+  assert.deepEqual(await chainOf(real, "list-issue-reports"), [{ method: "listIssueReports", args: [] }]);
+  assert.deepEqual(await chainOf(real, "list-issue-reports", "--cursor", "abc"), [{ method: "listIssueReports", args: ["abc"] }]);
+  await usageError(real.api("--dry-run", "list-issue-reports", "abc"),
+    'list-issue-reports returns a value, which ends the chain: nothing can follow it, but "abc" does.');
+  assert.deepEqual(await chainOf(real, "get-admin-api", "list-issue-reports", "--options", '{"limit": 1, "cursor": "abc"}'),
+    [{ method: "getAdminApi", args: [] }, { method: "listIssueReports", args: [{ limit: 1, cursor: "abc" }] }]);
+  assert.equal(real.server.opened, 0);
+});
+
 test("--dry-run decodes an admin's content reads on a view opened for content, and the request for a second admin's approval", async (t) => {
   const real = harness(t, { table: realTable });
   const view = ["get-admin-api", "inspect-workspace", "w1", "The owner asked for help", "--options", '{"access": "content"}'];
