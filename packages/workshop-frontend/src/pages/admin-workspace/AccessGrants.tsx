@@ -86,7 +86,7 @@ export const AccessGrants = ({ grants, onEnd }: {
       <p className="text-sm text-kumo-subtle">
         The owner’s grant for all of their workspaces is not listed here: a workspace asks for it
         only when a call needs content. An owner’s grant is not in the audit log either. This list
-        is where admins see it.
+        and the issue report it came with are where admins see it.
       </p>
 
       <EndGrantDialog

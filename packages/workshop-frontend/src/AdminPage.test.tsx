@@ -8,9 +8,13 @@ import type * as Kumo from '@cloudflare/kumo'
 import type * as Router from '@tanstack/react-router'
 import { type AdminApi, type AdminResourceVendor, type AdminSettingsView, type AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import type * as ServerConfigContext from './ServerConfigContext'
+import type * as AuditPanel from './features/admin-audit/AdminAuditPanel'
+import type * as ReportsPanel from './features/admin-reports/AdminReportsPanel'
 import type * as PendingApprovals from './features/admin-grants/PendingApprovalsCard'
 
 type CardProps = ComponentProps<typeof PendingApprovals.PendingApprovalsCard>
+type AuditPanelProps = ComponentProps<typeof AuditPanel.AdminAuditPanel>
+type ReportsPanelProps = ComponentProps<typeof ReportsPanel.AdminReportsPanel>
 
 const mocks = vi.hoisted(() => {
   // The AdminApi the page is handed. The pending approvals card is replaced below and calls
@@ -32,8 +36,9 @@ const mocks = vi.hoisted(() => {
     navigate: vi.fn<(to: unknown) => Promise<void>>(async () => {}),
     // What the page handed the pending approvals card, one entry for each time it rendered.
     cardProps: [] as unknown[],
-    // What the page last handed the audit panel.
-    panelProps: null as { onRefresh?: () => void } | null,
+    // What the page last handed the Audit panel and the Reports panel.
+    auditProps: undefined as unknown,
+    reportsProps: undefined as unknown,
   }
 })
 
@@ -69,9 +74,16 @@ vi.mock('./features/admin-grants/PendingApprovalsCard', () => ({
 }))
 
 vi.mock('./features/admin-audit/AdminAuditPanel', () => ({
-  AdminAuditPanel: (props: { onRefresh?: () => void }) => {
-    mocks.panelProps = props
+  AdminAuditPanel: (props: AuditPanelProps) => {
+    mocks.auditProps = props
     return <div data-testid="audit-panel" />
+  },
+}))
+
+vi.mock('./features/admin-reports/AdminReportsPanel', () => ({
+  AdminReportsPanel: (props: ReportsPanelProps) => {
+    mocks.reportsProps = props
+    return <div data-testid="reports-panel" />
   },
 }))
 
@@ -133,7 +145,8 @@ afterEach(() => {
   container?.remove()
   mocks.search = { tab: 'access' }
   mocks.cardProps.length = 0
-  mocks.panelProps = null
+  mocks.auditProps = undefined
+  mocks.reportsProps = undefined
   mocks.identity = { currentUser: { type: 'user', id: 'alice', name: 'Alice' }, isCurrentUserConfirmed: true }
   vi.clearAllMocks()
   vi.restoreAllMocks()
@@ -155,7 +168,7 @@ describe('AdminPage pending approvals', () => {
   it('lists the pending approvals again on the Audit tab\'s Refresh', async () => {
     mocks.search = { tab: 'audit' }
     await renderPage(settingsView())
-    act(() => mocks.panelProps!.onRefresh!())
+    act(() => (mocks.auditProps as AuditPanelProps).onRefresh!())
     expect(lastCardProps()).toMatchObject({ userId: 'alice', refreshes: 1 })
   })
 
@@ -227,4 +240,93 @@ it.each([
     vi.clearAllMocks()
     vi.unstubAllGlobals()
   }
+})
+
+const tabs = (page: HTMLElement) => [...page.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)
+const selectedTab = (page: HTMLElement) => page.querySelector('[role="tab"][aria-selected="true"]')?.textContent
+const reportsPanel = (page: HTMLElement) => page.querySelector('[data-testid="reports-panel"]')
+const reportsProps = () => mocks.reportsProps as ReportsPanelProps
+
+describe('AdminPage Reports tab', () => {
+  it('lists the tab after Audit and mounts its panel with the retention the settings carry', async () => {
+    mocks.search = { tab: 'reports' }
+
+    const page = await renderPage(settingsView({
+      issueReportRetentionDays: { effective: 120, chosen: 30, min: 120 },
+    }))
+
+    expect(tabs(page)).toEqual(['General', 'Gatekeepers', 'Formats', 'Models', 'Access', 'Audit', 'Reports'])
+    expect(selectedTab(page)).toBe('Reports')
+    expect(reportsPanel(page)).not.toBeNull()
+    expect(reportsProps().retention).toEqual({ effective: 120, chosen: 30, min: 120 })
+    // The page's own capability, not a second one minted for the panel.
+    expect(reportsProps().admin).toBe(mocks.admin)
+    expect(mocks.authenticatedApi.getAdminApi).toHaveBeenCalledTimes(1)
+  })
+
+  // A backend with no issue report store, which the router can serve this frontend beside.
+  it('has no tab, and shows General for a link to it, on a backend whose settings lack the retention', async () => {
+    mocks.search = { tab: 'reports' }
+    const { issueReportRetentionDays: _, ...older } = settingsView()
+
+    const page = await renderPage(older)
+
+    expect(tabs(page)).toEqual(['General', 'Gatekeepers', 'Formats', 'Models', 'Access', 'Audit'])
+    expect(selectedTab(page)).toBe('General')
+    expect(reportsPanel(page)).toBeNull()
+    expect(mocks.reportsProps).toBeUndefined()
+  })
+
+  it('keeps the panel to its tab', async () => {
+    mocks.search = { tab: 'audit' }
+
+    const page = await renderPage(settingsView())
+
+    expect(reportsPanel(page)).toBeNull()
+    expect(page.querySelector('[data-testid="audit-panel"]')).not.toBeNull()
+  })
+
+  it('hands the panel its filters and the open report from the URL, and no other tab’s filter', async () => {
+    mocks.search = {
+      tab: 'reports', status: 'withAdmin', priority: 'high', reporter: 'rita', workspace: 'ws-1', report: 'r-1',
+      admin: 'ada', kind: 'write',
+    }
+
+    await renderPage(settingsView())
+
+    expect(reportsProps().filter).toEqual({ status: 'withAdmin', priority: 'high', reporter: 'rita', workspace: 'ws-1' })
+    expect(reportsProps().reportId).toBe('r-1')
+  })
+
+  it('hands the Audit panel its own filters, and none of the Reports tab’s', async () => {
+    mocks.search = { tab: 'audit', admin: 'ada', kind: 'write', workspace: 'ws-1', status: 'new', report: 'r-1' }
+
+    await renderPage(settingsView())
+
+    expect((mocks.auditProps as AuditPanelProps).filter).toEqual({ admin: 'ada', kind: 'write', workspace: 'ws-1' })
+  })
+
+  it('writes a change of filter to the URL under the tab, in place, which closes the open report', async () => {
+    mocks.search = { tab: 'reports', status: 'new', report: 'r-1' }
+    await renderPage(settingsView())
+
+    act(() => reportsProps().onFilterChange({ priority: 'low' }))
+
+    expect(mocks.navigate.mock.calls).toEqual([[
+      { to: '/admin', search: { tab: 'reports', priority: 'low' }, replace: true },
+    ]])
+  })
+
+  it('re-reads the settings after the panel changed one, and hands it the retention then held', async () => {
+    mocks.search = { tab: 'reports' }
+    await renderPage(settingsView())
+    mocks.admin.getSettings.mockResolvedValue(settingsView({
+      issueReportRetentionDays: { effective: 180, chosen: 180, min: 90 },
+    }))
+
+    await act(async () => { await reportsProps().onSettingsChanged() })
+
+    expect(mocks.admin.getSettings).toHaveBeenCalledTimes(2)
+    expect(reportsProps().retention).toEqual({ effective: 180, chosen: 180, min: 90 })
+  })
 })

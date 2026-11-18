@@ -62,15 +62,17 @@ const Row = ({ label, children }: { label: string; children: ReactNode }) => (
  * content access. It never opens a view for content and shows none: content is read through the
  * API and the CLI. Every call it makes into the workspace is recorded in the audit log.
  */
-const AdminWorkspacePage = ({ workspaceId }: {
+const AdminWorkspacePage = ({ workspaceId, reportId }: {
   workspaceId: string
+  /** The issue report the admin came from, which the reason then starts as. */
+  reportId?: string
 }) => {
   const { authenticatedApi } = useAuthenticatedApi()
   const [load, setLoad] = useState<Load>({ status: 'loading' })
   // Read apart from the API, since only the content-request form needs it: settings that fail to
   // load leave the workspace and its grants within reach.
   const [access, setAccess] = useState<AdminAccessLoad>({ status: 'loading' })
-  const [reason, setReason] = useState('')
+  const [reason, setReason] = useState(reportId === undefined ? '' : `Issue report ${reportId}`)
   const [opening, setOpening] = useState(false)
   const [description, setDescription] = useState<AdminWorkspaceDescription | null>(null)
   const [problem, setProblem] = useState<string | null>(null)

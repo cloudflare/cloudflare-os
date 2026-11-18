@@ -16,3 +16,9 @@ export const ISSUE_STATUS_NAMES: Record<IssueReportStatus, string> = {
   withAdmin: 'With the admins',
   closed: 'Closed',
 }
+
+/** What each status of an issue report is called, as the admins read it. */
+export const ADMIN_ISSUE_STATUS_NAMES: Record<IssueReportStatus, string> = {
+  ...ISSUE_STATUS_NAMES,
+  waitingOnReporter: 'Waiting on the reporter',
+}
