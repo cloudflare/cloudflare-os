@@ -85,6 +85,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     rejectAction: vi.fn<Overseer['rejectAction']>(async () => {}),
     denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
     approveWebFetchRequest: vi.fn<Overseer['approveWebFetchRequest']>(async () => {}),
+    setAutoApprovedActionKind: vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {}),
     denyWebFetchRequest: vi.fn<Overseer['denyWebFetchRequest']>(async () => {}),
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
     disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
@@ -892,6 +893,16 @@ describe('ChatSession', () => {
 
       expect(fake.approveWebFetchRequest.mock.calls).toEqual([['fetch-1'], ['fetch-2']])
       expect(fake.denyWebFetchRequest).toHaveBeenCalledExactlyOnceWith('fetch-3')
+    })
+
+    it('approves a kind of action from now on', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(4, 'Chat', 1)]))
+      const session = await started(fake, 4)
+      const actionKind = { tag: 'jira.label', label: 'Label an issue' }
+
+      await session.alwaysApprove({ gatekeeperId: 7, actionKind })
+
+      expect(fake.setAutoApprovedActionKind).toHaveBeenCalledExactlyOnceWith(7, actionKind)
     })
 
     it('shows a new title at once, and puts the old one back when it is refused', async () => {

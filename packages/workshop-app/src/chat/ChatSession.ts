@@ -1,4 +1,5 @@
 import type { RpcStub } from 'capnweb'
+import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer, CapsuleSpecifier, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
@@ -97,6 +98,7 @@ type Calls =
   | 'rejectAction'
   | 'denyConnectionRequest'
   | 'approveWebFetchRequest'
+  | 'setAutoApprovedActionKind'
   | 'denyWebFetchRequest'
   | 'enableHook'
   | 'disableHook'
@@ -456,6 +458,13 @@ export class ChatSession {
   rejectAction = (actionId: number) => this.#ask((overseer) => overseer.rejectAction(actionId))
 
   denyConnection = (requestId: string) => this.#ask((overseer) => overseer.denyConnectionRequest(requestId))
+
+  /**
+   * Approves this kind of action on its connection from now on, in the whole workspace. Those
+   * waiting now are approved with it. Settings › Approvals lists it, to be switched off there.
+   */
+  alwaysApprove = ({ gatekeeperId, actionKind }: { gatekeeperId: number; actionKind: ActionKind }) =>
+    this.#ask((overseer) => overseer.setAutoApprovedActionKind(gatekeeperId, actionKind))
 
   /** Approves each of the agent's requests to fetch a page, one after another. */
   approveWebFetches = (requestIds: readonly string[]) => this.#ask(async (overseer) => {

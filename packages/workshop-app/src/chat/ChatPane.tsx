@@ -166,8 +166,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         return onApproveCreation({ ...action, creation }).catch((error: unknown) => setNotice(messageOf(error)))
       },
       onDeny: actions.rejectAction,
-      // TODO: confirm, then `Overseer.setAutoApprovedActionKind`, with the auto-approval settings.
-      onAlwaysApprove: onAlwaysApprove ?? unavailable('Standing approvals'),
+      onAlwaysApprove: onAlwaysApprove ?? actions.alwaysApprove,
       onHookEnabledChange: actions.setHookEnabled,
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
       onDenyConnection: actions.denyConnection,
