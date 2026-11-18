@@ -51,6 +51,21 @@ afterAll(async () => {
   }
 });
 
+/**
+ * Logs `username` in once the Workshop answers again. A redeploy restarts every Worker, ending
+ * every session open at the time. The session is disposed with `stack`.
+ */
+function logInAfresh(stack: DisposableStack, username: string)
+    : Promise<RpcStub<AuthenticatedApi>> {
+  return waitFor(`${username} to log in again`, async () => {
+    try {
+      return stack.use(await logIn(stack.use(connect(harness.url)), username));
+    } catch {
+      return null;
+    }
+  });
+}
+
 /** The newest record of the deployment-wide audit log of `kind`, if any. */
 async function newest(api: RpcStub<AdminApi>, kind: AdminAuditRecord["kind"])
     : Promise<AdminAuditRecord | undefined> {
@@ -66,6 +81,9 @@ it("holds the admins' choices within the deployment's defaults", async () => {
   const before = await newest(admin, "setting");
   // Not a level, so the setter refuses it as a value of the wrong type, whatever the bound.
   await expect(admin.setAdminWorkspaceAccess("full" as never)).rejects.toThrow(TypeError);
+  // A level, but above the cap an unset ADMIN_WORKSPACE_ACCESS_MAX gives.
+  await expect(admin.setAdminWorkspaceAccess("content"))
+      .rejects.toThrow(/ADMIN_WORKSPACE_ACCESS_MAX/);
   await expect(admin.setAdminAuditRetentionDays(89))
       .rejects.toThrow(/ADMIN_AUDIT_RETENTION_MIN_DAYS/);
   expect(await newest(admin, "setting")).toEqual(before);
@@ -120,25 +138,17 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
     };
   });
 
-  // The redeploy restarts every Worker, ending every session open at the time.
   using stack = new DisposableStack();
-  const logInAfresh = (username: string) => waitFor(`${username} to log in again`, async () => {
-    try {
-      return stack.use(await logIn(stack.use(connect(harness.url)), username));
-    } catch {
-      return null;
-    }
-  });
 
   // No session survives an ADMINS change, so the old view fails here because its session ended.
   // The per-call re-check that stops a live view once its admin is demoted is covered by the
   // Overseer's unit suite.
-  const demoted = await logInAfresh(DEMOTED_USERNAME);
+  const demoted = await logInAfresh(stack, DEMOTED_USERNAME);
   expect(await demoted.getAdminApi()).toBeNull();
   expect(await demoted.amIAdmin()).toBe(false);
   await expect(demotedView.describe()).rejects.toThrow();
 
-  const adminApi = await logInAfresh(ADMIN_USERNAME);
+  const adminApi = await logInAfresh(stack, ADMIN_USERNAME);
   const fresh = await adminApi.getAdminApi();
   if (fresh === null) throw new Error("The admin API was unavailable after the redeploy");
   stack.use(fresh);
@@ -166,4 +176,37 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
       .toEqual(["describe", "inspectWorkspace"]);
 
   await expectWritesOff(fresh);
+});
+
+it("lets an admin choose content once a redeploy raises the cap to it", async () => {
+  await harness.redeployWorkshop(config => {
+    config.vars = {
+      ...config.vars, ADMINS: [ADMIN_USERNAME], ADMIN_WORKSPACE_ACCESS_MAX: "content",
+    };
+  });
+
+  using stack = new DisposableStack();
+  const adminApi = await logInAfresh(stack, ADMIN_USERNAME);
+  const fresh = await adminApi.getAdminApi();
+  if (fresh === null) throw new Error("The admin API was unavailable after the redeploy");
+  stack.use(fresh);
+  const publicApi = stack.use(connect(harness.url));
+
+  // The cap alone grants nothing: content stays off until an admin picks it.
+  expect((await fresh.getSettings()).adminWorkspaceAccess)
+      .toEqual({ effective: "metadata", chosen: "metadata", max: "content" });
+  expect(await publicApi.getServerConfig()).not.toHaveProperty("adminContentGrants");
+
+  await fresh.setAdminWorkspaceAccess("content");
+  expect((await fresh.getSettings()).adminWorkspaceAccess)
+      .toEqual({ effective: "content", chosen: "content", max: "content" });
+  expect(await newest(fresh, "setting")).toMatchObject({
+    kind: "setting", admin: ADMIN_USERNAME, method: "setAdminWorkspaceAccess",
+    changes: [{ setting: "adminWorkspaceAccess", before: "metadata", after: "content" }],
+  });
+  // What a client that has not signed in reads of it: that a content grant can be given.
+  expect((await publicApi.getServerConfig()).adminContentGrants).toBe(true);
+
+  await fresh.setAdminWorkspaceAccess("metadata");
+  expect(await publicApi.getServerConfig()).not.toHaveProperty("adminContentGrants");
 });

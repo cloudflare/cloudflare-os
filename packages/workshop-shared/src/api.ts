@@ -681,7 +681,8 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
  * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls, and of
- * AdminApi.writeWorkspace().
+ * AdminApi.writeWorkspace(). `contentOff` is also what the grant methods are refused with while
+ * the level in force is below "content".
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -689,6 +690,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   accessOff: "ADMIN_WORKSPACE_ACCESS_OFF",
   viewExpired: "ADMIN_VIEW_EXPIRED",
   notAdmin: "ADMIN_NOT_ADMIN",
+  contentOff: "ADMIN_WORKSPACE_CONTENT_OFF",
   writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
 } as const;
 
@@ -704,6 +706,8 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
   [ADMIN_ACCESS_ERROR_CODES.viewExpired]: "This admin view has expired. Inspect again.",
   [ADMIN_ACCESS_ERROR_CODES.notAdmin]:
       "Only a deployment admin can inspect a workspace or a user, or change a workspace.",
+  [ADMIN_ACCESS_ERROR_CODES.contentOff]:
+      "Admin access to workspace content is turned off on this deployment.",
   [ADMIN_ACCESS_ERROR_CODES.writesOff]:
       "Admin writes to workspaces are turned off on this deployment. Only its " +
       "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
@@ -1562,9 +1566,9 @@ export type AdminSettingsView = {
      * is above `max`. */
     chosen: AdminWorkspaceAccess;
     /** The highest level the deployment allows, which its ADMIN_WORKSPACE_ACCESS_MAX environment
-     * variable sets: "metadata" while that is unset or blank, and "off" while it holds anything
-     * that is not a level, so a misconfiguration never grants access. Only a deployment config
-     * change can raise it. */
+     * variable sets: "metadata" while that is unset or blank, "content" only when it says so, and
+     * "off" while it holds anything that is not a level, so a misconfiguration never grants
+     * access. Only a deployment config change can raise it. */
     max: AdminWorkspaceAccess;
   };
   /**
@@ -1852,9 +1856,14 @@ export type AdminWorkspacePage = {
  *                 a gatekeeper says of a connected account (its display names, avatar and what
  *                 it grants) and the ids of the account's blueprints are withheld, and no
  *                 credential is returned.
- * No level shows what "metadata" withholds.
+ *   - "content":  what "metadata" withholds of a workspace too, but only under a live grant on
+ *                 that workspace (see AdminAccessGrant) and only through a view opened for
+ *                 content (AdminWorkspaceInspectOptions.access). Without a grant, "content"
+ *                 shows what "metadata" shows, and of a user's account it never shows more.
+ * No level shows content without a grant. A value that is not one of these, wherever it is stored
+ * or configured, reads as "off".
  */
-export const ADMIN_WORKSPACE_ACCESS_LEVELS = ["off", "metadata"] as const;
+export const ADMIN_WORKSPACE_ACCESS_LEVELS = ["off", "metadata", "content"] as const;
 
 /** One of ADMIN_WORKSPACE_ACCESS_LEVELS. */
 export type AdminWorkspaceAccess = typeof ADMIN_WORKSPACE_ACCESS_LEVELS[number];
@@ -2004,7 +2013,8 @@ export type AdminAccessRecord = {
   /** The reason the admin gave when opening the view. */
   reason: string;
   /** The deployment's access level when the call ran (AdminSettingsView.adminWorkspaceAccess
-   * .effective, as the call read it): "metadata", or "off" when the call was refused for that. */
+   * .effective, as the call read it): "metadata" or "content", or "off" when the call was refused
+   * for that. */
   access: AdminWorkspaceAccess;
   /** Present when the access level refused the call, which then read nothing: the code it was
    * refused with. */
@@ -2019,7 +2029,9 @@ export type AdminAccessRecord = {
  * they are a deployment admin themselves, who can read that log. A call the view itself stops
  * (expired, its admin no longer one, the account gone) is not recorded; a call the access level
  * refuses is, with `refused` set, as is a call whose read fails, and an open refused before it
- * reaches the account because the deployment's access level is "off".
+ * reaches the account because the deployment's access level is "off". Its `access` is "metadata"
+ * whatever level is in force above "off", since a view of an account answers with metadata alone,
+ * and the one refusal it carries is `accessOff`.
  */
 export type AdminUserAccessRecord = Pick<AdminAccessRecord,
     "at" | "admin" | "sessionId" | "via" | "reason" | "access" | "refused"> & {
@@ -2641,13 +2653,15 @@ export interface AdminApi {
   getAdminAuditStats(options?: AdminAuditStatsQuery): Promise<AdminAuditStats>;
 
   /**
-   * Set whether inspectWorkspace() and inspectUser() may show a workspace's and a user account's
-   * metadata (see ADMIN_WORKSPACE_ACCESS_LEVELS), DEFAULT_ADMIN_WORKSPACE_ACCESS by default.
-   * Throws for a value that is not a level, and for a level above the deployment's maximum
+   * Set how much of a workspace and of a user's account inspectWorkspace() and inspectUser() may
+   * show (see ADMIN_WORKSPACE_ACCESS_LEVELS), DEFAULT_ADMIN_WORKSPACE_ACCESS by default. Throws
+   * for a value that is not a level, and for a level above the deployment's maximum
    * (AdminSettingsView.adminWorkspaceAccess.max), which only its ADMIN_WORKSPACE_ACCESS_MAX
    * environment variable can raise. "off" reaches a view already minted, of either kind, from its
    * next call once the setting reaches it, within about a minute; a view still within its
-   * lifetime answers again once the level is back at "metadata".
+   * lifetime answers again once the level is no longer "off". Lowering it from "content"
+   * withholds content from the next call of a live view and refuses new grants, and grants
+   * already stored read nothing until it is "content" again.
    */
   setAdminWorkspaceAccess(access: AdminWorkspaceAccess): Promise<void>;
 
@@ -3368,6 +3382,14 @@ export type ServerConfig = {
    * notification setting.
    */
   webPushPublicKey?: string;
+
+  /**
+   * Present while a workspace's owner can give deployment admins a grant to read its content
+   * (see Overseer.grantAdminAccess()): the deployment's admin access level in force is "content".
+   * It says nothing else about the admin configuration. The server decides: a grant asked for
+   * while this is absent is refused.
+   */
+  adminContentGrants?: true;
 
   /**
    * The version id of the backend answering this connection, or undefined where it has none.

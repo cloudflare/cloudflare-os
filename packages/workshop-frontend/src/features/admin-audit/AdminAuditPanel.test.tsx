@@ -1118,22 +1118,35 @@ describe('AdminAuditPanel', () => {
       expect(help.slice(help.indexOf('Of a user’s account'), help.indexOf('Off refuses'))).toContain(part)
     })
 
-    it('offers Off and Metadata, in that order, and names no other level', async () => {
+    it('offers Off, Metadata and Content, in that order, and Content only where the deployment allows it', async () => {
       await render()
 
-      expect((await openOptions(accessSelect())).map((option) => option.textContent)).toEqual(['Off', 'Metadata'])
+      expect((await openOptions(accessSelect())).map((option) => option.textContent))
+        .toEqual(['Off', 'Metadata', 'Content'])
       expect(await enabledOptions(accessSelect())).toEqual(['Off', 'Metadata'])
       expect(card('Inspection access').textContent).not.toContain('Full')
-      // Metadata is the highest level, so the deployment's maximum limits nothing.
-      expect(card('Inspection access').textContent).not.toContain('ADMIN_WORKSPACE_ACCESS_MAX')
+
+      act(() => root.unmount())
+      root = createRoot(container)
+      await render(settingsWith({ access: { max: 'content' } }))
+      expect(await enabledOptions(accessSelect())).toEqual(['Off', 'Metadata', 'Content'])
     })
 
     it('leaves only Off when the deployment allows no inspection', async () => {
       await render(heldDown())
 
-      expect((await openOptions(accessSelect())).map((option) => option.textContent)).toEqual(['Off', 'Metadata'])
+      expect((await openOptions(accessSelect())).map((option) => option.textContent))
+        .toEqual(['Off', 'Metadata', 'Content'])
       expect(await enabledOptions(accessSelect())).toEqual(['Off'])
       expect(card('Inspection access').textContent).toContain('ADMIN_WORKSPACE_ACCESS_MAX allows no inspection')
+    })
+
+    it('sets Content where the deployment allows it', async () => {
+      const { setAdminWorkspaceAccess } = await render(settingsWith({ access: { max: 'content' } }))
+
+      await choose(accessSelect(), 'Content')
+
+      expect(setAdminWorkspaceAccess).toHaveBeenCalledExactlyOnceWith('content')
     })
 
     it('sets the level chosen, then re-reads the settings and the log', async () => {
