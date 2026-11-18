@@ -75,6 +75,7 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
     { day: '2026-10-21', count: 2 },
   ],
   topAdmins: [{ admin: 'admin', count: 4 }, { admin: 'second-admin', count: 1 }],
+  writes: 0,
   ...patch,
 })
 
@@ -802,7 +803,7 @@ describe('AdminAuditPanel', () => {
 
       expect(kindSelect().textContent).toBe('Any kind')
       expect((await openOptions(kindSelect())).map((option) => option.textContent))
-        .toEqual(['Any kind', 'Workspace access', 'User access', 'Setting change'])
+        .toEqual(['Any kind', 'Workspace access', 'User access', 'Workspace write', 'Setting change'])
       await choose(kindSelect(), 'Workspace access')
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'workspace' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'workspace' }))
@@ -817,6 +818,11 @@ describe('AdminAuditPanel', () => {
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'setting' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'setting' }))
       expect(kindSelect().textContent).toBe('Setting change')
+
+      await choose(kindSelect(), 'Workspace write')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'write' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'write' }))
+      expect(kindSelect().textContent).toBe('Workspace write')
 
       await choose(kindSelect(), 'Any kind')
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: undefined })
@@ -837,6 +843,19 @@ describe('AdminAuditPanel', () => {
       expect([...card('Activity log').querySelectorAll('thead th')].map((head) => head.firstChild?.textContent))
         .toEqual(['Expand', 'Time', 'Admin', 'Action', 'Kind', 'Target user'])
       expect(document.body.textContent).not.toMatch(/sensitivity|workspace metadata|content read/i)
+    })
+
+    it('filters by a write action picked in the Action filter', async () => {
+      const { listAdminAudit, onFilterChange } = await render()
+      const [, field] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+
+      await type(field, 'restartW')
+      const options = [...document.body.querySelectorAll('[role="option"]')]
+      expect(options.map((option) => option.textContent)).toEqual(['restartWorkspace'])
+      await act(async () => { options[0].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+
+      expect(onFilterChange).toHaveBeenLastCalledWith({ method: 'restartWorkspace' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ method: 'restartWorkspace' }))
     })
 
     it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {

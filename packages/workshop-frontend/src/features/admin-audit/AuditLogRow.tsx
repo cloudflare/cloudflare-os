@@ -189,7 +189,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
         <Table.Cell>
           <span className="flex flex-wrap items-center gap-1.5">
             <KindBadge kind={record.kind} />
-            {record.kind !== 'setting' && record.refused && (
+            {(record.kind === 'workspace' || record.kind === 'user') && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
           </span>
@@ -216,14 +216,16 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
       </Table.Row>
       <Table.Row id={detailsId} hidden={!expanded}>
         <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="bg-kumo-recessed">
-          {expanded && (record.kind !== 'setting'
+          {expanded && (record.kind === 'workspace' || record.kind === 'user'
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
-            : (
-              <div className="space-y-4">
-                <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
-                <SettingChanges changes={record.changes} />
-              </div>
-            ))}
+            : record.kind === 'write'
+              ? <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
+              : (
+                <div className="space-y-4">
+                  <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
+                  <SettingChanges changes={record.changes} />
+                </div>
+              ))}
         </Table.Cell>
       </Table.Row>
     </>

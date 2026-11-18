@@ -2076,10 +2076,12 @@ export type AdminSettingRecord = {
 
 /** One record of the deployment-wide admin audit log, kept for the deployment's retention
  * (AdminSettingsView.adminAuditRetentionDays). */
-export type AdminAuditRecord = AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord;
+export type AdminAuditRecord =
+    AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord | AdminWriteRecord;
 
 /** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "user" for access to a
- * user's account, "setting" for a change to the deployment's settings. */
+ * user's account, "setting" for a change to the deployment's settings, "write" for an admin's
+ * write to a workspace. */
 export type AdminAuditKind = AdminAuditRecord["kind"];
 
 /** Options for AdminApi.listAdminAudit(). The filters combine. */
@@ -2088,14 +2090,16 @@ export type AdminAuditQuery = {
   kind?: AdminAuditKind;
   /** Only this admin's records, by canonical user id. At most 1000 characters. */
   admin?: string;
-  /** Only records of calls to this method. AdminWorkspaceView and AdminUserView share three method
+  /** Only records of calls to this method or, for write records, of writes of this action (see
+   * AdminWriteRecord.method). AdminWorkspaceView and AdminUserView share three method
    * names, describe, listBlueprints and getDiagnostics: `kind` tells their records apart. */
   method?: AdminAuditRecord["method"];
-  /** Only records of access to this workspace. At most 1000 characters. */
+  /** Only records of access to, or a write to, this workspace. At most 1000 characters. */
   workspace?: string;
-  /** Only records of access to this user's data: to workspaces they own
-   * (AdminAccessRecord.workspaceOwner) and to their account (AdminUserAccessRecord.userId), by
-   * canonical user id, whole or as the records keep it. At most 1000 characters. */
+  /** Only records about this user's data: access to, or a write to, workspaces they own
+   * (AdminAccessRecord.workspaceOwner) and access to their account
+   * (AdminUserAccessRecord.userId), by canonical user id, whole or as the records keep it. At most
+   * 1000 characters. */
   owner?: string;
   /** Only records made at or after this time. */
   since?: Date;
@@ -2128,8 +2132,9 @@ export type AdminAuditStatsQuery = {
 
 /**
  * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
- * covers the records of the queried kind (every kind when none is given). A record older than the
- * retention is gone, so a window reaching past it counts nothing there.
+ * covers the records of the queried kind (every kind when none is given). Only AdminWriteRecords
+ * can be writes, so that count is zero for any other kind. A record older than the retention is
+ * gone, so a window reaching past it counts nothing there.
  */
 export type AdminAuditStats = {
   /** The window's length in UTC days, today included. */
@@ -2141,6 +2146,36 @@ export type AdminAuditStats = {
   byDay: { day: string; count: number }[];
   /** The admins with the most records in the window, most first (ties by id), at most 10. */
   topAdmins: { admin: string; count: number }[];
+  /** The writes to workspaces in the window: its AdminWriteRecords. */
+  writes: number;
+};
+
+/** What a deployment admin may do to a workspace: see AdminApi.writeWorkspace(), which says what
+ * each action does. */
+export const ADMIN_WRITE_ACTIONS = [
+  "stopAgent", "restartWorkspace",
+] as const;
+
+/** One of ADMIN_WRITE_ACTIONS. */
+export type AdminWriteAction = typeof ADMIN_WRITE_ACTIONS[number];
+
+/**
+ * One admin write to a workspace (AdminApi.writeWorkspace()), in the deployment-wide audit log.
+ * The workspace appends it before it changes anything, so that a write whose record cannot be
+ * written does not happen; its owner and title are the workspace's own then, kept as an
+ * AdminAccessRecord keeps them, and `reason` is the one the admin gave for the write. The record
+ * says the write was made, not what came of it: a write that then fails keeps its record, and
+ * shows as its caller's error. It is the write's only record: the workspace keeps none, and its
+ * members see only what the write did (a stopped turn, ended sessions), as a member's would look.
+ */
+export type AdminWriteRecord = Pick<AdminAccessRecord,
+    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
+    "args" | "reason"> & {
+  /** Distinguishes this from the other kinds of AdminAuditRecord. */
+  kind: "write";
+  /** The action. Named `method` as on the other records, so that AdminAuditQuery.method filters
+   * every kind. */
+  method: AdminWriteAction;
 };
 
 /**
@@ -2551,9 +2586,9 @@ export interface AdminApi {
 
   /**
    * One page of the deployment-wide admin audit log, newest first, filtered as `options` says. It
-   * holds access to workspaces and to users' accounts, and changes to settings. Rejects a `limit`
-   * that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a
-   * malformed `cursor`.
+   * holds access to workspaces and to users' accounts, changes to settings and writes to
+   * workspaces. Rejects a `limit` that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a
+   * filter over 1000 characters, and a malformed `cursor`.
    */
   listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
 
