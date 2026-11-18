@@ -62,10 +62,8 @@ describe("Google access token refresh", () => {
 
   // A refusal's message is logged, so it carries Google's code and none of what Google wrote.
   it("keeps Google's description and any other body out of a refusal's error", async () => {
-    const error = await refuse(
-      { error: "invalid_client", error_description: "client secret-123 is wrong" }, 401,
-    ).catch(value => value as Error);
-    expect(error.message).not.toContain("secret-123");
+    await expect(refuse({ error: "invalid_client", error_description: "client secret-123 is wrong" }, 401))
+      .rejects.toThrow(/^Failed to refresh access token \[http=401 error=invalid_client\]$/);
     vi.stubGlobal("fetch", vi.fn(async () => new Response("upstream said token=abc", { status: 503 })));
     await expect(getAccessToken("refresh-token", "client-id", "client-secret"))
       .rejects.toThrow(/^Failed to refresh access token \[http=503\]$/);
