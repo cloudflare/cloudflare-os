@@ -9,15 +9,23 @@ import { SkillStore } from './SkillStore'
 export const skillStore = new SkillStore()
 
 /**
- * The skills as far as they have been read, read over the backend connection there is: again over
- * a new one, with what was read before shown meanwhile.
+ * Has the skills read over the backend connection there is, without listening to them: for the
+ * app's frame, so that they are there by the time a composer's + menu is opened.
  */
-export const useSkillsState = () => {
+export const useReadSkills = () => {
   const { api, reconnecting } = useApi()
   // Over a lost connection it could only fail; the new connection's `api` reads them.
   useEffect(() => {
     if (!reconnecting) skillStore.connect(api)
   }, [api, reconnecting])
+}
+
+/**
+ * The skills as far as they have been read, read over the backend connection there is: again over
+ * a new one, with what was read before shown meanwhile.
+ */
+export const useSkillsState = () => {
+  useReadSkills()
   return useSyncExternalStore(skillStore.subscribe, skillStore.getSnapshot)
 }
 

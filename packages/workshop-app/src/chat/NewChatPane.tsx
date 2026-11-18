@@ -11,7 +11,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { StartLayout } from '@/layouts/StartLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { useSkills } from '@/skills/useSkills'
+import { useSkills, useSkillsState } from '@/skills/useSkills'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { withCapsules } from './capsules'
 import { orderCommands, skillCommandOf } from './slashCommands'
@@ -56,6 +56,8 @@ export type NewChatPaneProps = {
 export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const skills = useSkills()
+  // Until they are read, the + menu keeps their room.
+  const commandsLoading = useSkillsState().status === 'loading'
   const commands = useMemo(() => orderCommands(skills.map(skillCommandOf)), [skills])
   const refreshWorkspaces = useRefreshWorkspaces()
   const connection = useConnectionNotice()
@@ -113,7 +115,7 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} autoFocus />
+        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} autoFocus />
         {connectsIn !== undefined && <AddConnection workspaceId={connectsIn} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />}
       </StartLayout>
     )
@@ -132,7 +134,7 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
 
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={header} composer={<Composer ref={composer} onSend={send} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
+    <ChatLayout header={header} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
       {/* Spaced like the conversation this becomes. */}
       <div className="flex flex-col gap-2">
         {pending && (

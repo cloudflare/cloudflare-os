@@ -35,6 +35,7 @@ import { siteLogoUrl } from '@/rpc/siteLook'
 import { OnboardingGate } from '@/settings/OnboardingGate'
 import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/settingsSections'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
+import { useReadSkills } from '@/skills/useSkills'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
@@ -110,6 +111,8 @@ const AppFrame = () => {
   // Whether the deployment's own settings are listed after the user's.
   const admin = useIsAdmin()
   const asks = useWaitingAsks()
+  // Read ahead, so that a composer's + menu opens with them in it.
+  useReadSkills()
 
   const homePage = useMatch({ from: '/_app/', shouldThrow: false })
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
