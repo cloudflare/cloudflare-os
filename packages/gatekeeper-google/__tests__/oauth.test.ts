@@ -84,6 +84,13 @@ describe("Google access token refresh", () => {
 
 describe("Google user info", () => {
   // A JSON parse error quotes the body, and this one is logged when a grant's holder is recorded.
+  // Its reason phrase is the server's own words, so a failure gives its status alone.
+  it("gives a failure's status without its reason phrase", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 503, statusText: "token=abc" })));
+    await expect(getGoogleAccountProfile("access-token"))
+      .rejects.toThrow(/^Failed to fetch user info \[http=503\]$/);
+  });
+
   it("says a malformed answer was not JSON, without quoting it", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("sub=ada token=abc", { status: 200 })));
     await expect(getGoogleAccountProfile("access-token"))

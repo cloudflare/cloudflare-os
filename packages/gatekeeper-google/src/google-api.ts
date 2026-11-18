@@ -247,7 +247,7 @@ export async function getGoogleAccountProfile(
 
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
+    throw new Error(`Failed to fetch user info [http=${response.status}]`);
   }
 
   const data = await readJsonOr<Partial<GoogleAccountProfile>>(
@@ -278,10 +278,13 @@ export async function getGoogleAccountDescription(accessToken: string)
  * verified (`email_verified`). Returns null otherwise, so the Workshop never keys an account by an
  * unverified address.
  */
-/** Google's userinfo endpoint refused the token. */
+/**
+ * Google's userinfo endpoint refused the token. Its status alone: the reason phrase is the
+ * server's own words, and these errors are logged.
+ */
 export class GoogleUserInfoError extends Error {
-  constructor(readonly status: number, statusText: string) {
-    super(`Failed to fetch user info: ${status} ${statusText}`);
+  constructor(readonly status: number) {
+    super(`Failed to fetch user info [http=${status}]`);
   }
 }
 
@@ -296,7 +299,7 @@ export async function getGoogleVerifiedEmail(accessToken: string): Promise<strin
 
   if (!response.ok) {
     response.body?.cancel();
-    throw new GoogleUserInfoError(response.status, response.statusText);
+    throw new GoogleUserInfoError(response.status);
   }
 
   let data: any = await response.json();
