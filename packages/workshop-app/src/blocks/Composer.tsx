@@ -1,4 +1,4 @@
-import { useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react'
+import { useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
@@ -11,6 +11,7 @@ import { ComposerConnectionLines, type ComposerConnection } from './ComposerConn
 import { ComposerFormat } from './ComposerFormat'
 import { ComposerProblem } from './ComposerProblem'
 import { ComposerReply } from './ComposerReply'
+import { byRecentUse, readRecentCommands, recordCommandUse } from '@/prefs/recentCommands'
 import { leadingCommand, matchCommands, slashTokenAt, type SlashToken } from './slashCommands'
 import { useComposerAttachments } from './useComposerAttachments'
 import { useComposerAttachmentDrop } from './useComposerAttachmentDrop'
@@ -132,7 +133,11 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
   const canSend = !sending && !connecting && !filesRefused && !connectionsRefused &&
     (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || ready.length > 0 || !!format)
   const showSend = !stop || canSteer
-  const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(commands, slash.query) : []
+  // Those chosen last first: with many skills, the + menu's few, and the slash list's order among
+  // equally good matches, are those the user goes back to.
+  const [recent, setRecent] = useState(readRecentCommands)
+  const ordered = useMemo(() => byRecentUse(commands, recent), [commands, recent])
+  const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(ordered, slash.query) : []
   const picking = matches.length > 0
   const active = Math.min(highlighted, matches.length - 1)
   useImperativeHandle(ref, () => ({
@@ -184,6 +189,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
     }
     setSlash(undefined)
     setCommand(chosen)
+    recordCommandUse(chosen.name)
+    setRecent(readRecentCommands())
     field?.focus()
   }
 
@@ -432,7 +439,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
               anchorRef={formRef}
               inPlace={addMenuInPlace}
               {...addActions}
-              commands={sending ? undefined : { items: commands, onChoose: choose, onBrowse: browseCommands }}
+              commands={sending ? undefined : { items: ordered, onChoose: choose, onBrowse: browseCommands }}
               onUpload={() => fileInputRef.current?.click()}
             />
           </div>
