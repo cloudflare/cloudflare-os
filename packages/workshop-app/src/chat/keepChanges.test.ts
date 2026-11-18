@@ -14,8 +14,8 @@ describe('keepChangeLines', () => {
       bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }, { gadgetId: 9, name: 'SLACK', target: 31 }],
     }), titleOf)).toEqual([
       'Creates “Standup notes”',
-      'Connects “Tip Jar” to JIRA',
-      'Connects “Standup notes” to SLACK',
+      'Connects “Tip Jar” to a connection',
+      'Connects “Standup notes” to a connection',
     ])
   })
 
@@ -27,7 +27,12 @@ describe('keepChangeLines', () => {
 
   it('says “a gadget” for one it knows nothing of, and says a line once', () => {
     expect(keepChangeLines(ask({ bindings: [{ gadgetId: 4, name: 'JIRA', target: 30 }, { gadgetId: 4, name: 'JIRA', target: 30 }] }), titleOf))
-      .toEqual(['Connects a gadget to JIRA'])
+      .toEqual(['Connects a gadget to a connection'])
+  })
+
+  it('names what a binding reaches by its resource’s title where it is known', () => {
+    expect(keepChangeLines(ask({ bindings: [{ gadgetId: 3, name: 'TEST_DOC', target: 30 }] }), titleOf, (gadgetId, name) => (gadgetId === 3 && name === 'TEST_DOC' ? 'Q3 plan' : undefined)))
+      .toEqual(['Connects “Tip Jar” to “Q3 plan”'])
   })
 
   it('counts the files left with conflicts', () => {

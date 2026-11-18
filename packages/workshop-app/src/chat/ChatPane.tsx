@@ -26,6 +26,7 @@ import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
+import { bindingKey, useBindingTitles } from './useBindingTitles'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { slashRequestFor, missingCommand } from './slashCommands'
@@ -75,8 +76,12 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
   items.find((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)?.title
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
+const NO_BINDINGS: { gadgetId: number; name: string }[] = []
+
 export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
+  // What the bindings it waits to keep reach, by the names people know them by.
+  const keepBindings = useBindingTitles(workspaceId, chatId, chat.status === 'ready' ? chat.keep?.changes.bindings ?? NO_BINDINGS : NO_BINDINGS)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
   const connection = useConnectionNotice()
@@ -335,7 +340,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             {chat.keep && (
               <LiveRows.Row key="keep">
                 <KeepChangesCard
-                  changes={keepChangeLines(chat.keep, (gadgetId) => outputTitle([...chat.items, ...chat.pinned], gadgetId))}
+                  changes={keepChangeLines(chat.keep, (gadgetId) => outputTitle([...chat.items, ...chat.pinned], gadgetId), (gadgetId, name) => keepBindings.get(bindingKey(gadgetId, name)))}
                   reason={keepReason(chat.keep)}
                   onKeep={actions.keepChanges}
                   onDiscard={() => void actions.discardChanges()}

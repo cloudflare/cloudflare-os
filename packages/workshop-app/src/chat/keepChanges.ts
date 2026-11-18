@@ -7,9 +7,14 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
  * What a chat's waiting changes do, a line each, in the words of whoever is asked to keep them.
  * A gadget, a connection or an agent spawner is named by `titleOf`, a gadget else by the title the
  * changes gave it, else plainly; what is given is said by name ("Connects “Calculator” to “Joke”"),
- * or by the name its code reaches it by where it has none to go by ("Connects “Tip Jar” to JIRA").
+ * or by the title of the resource the binding reaches, else as "a connection".
  */
-export const keepChangeLines = ({ changes }: KeepAsk, titleOf: (gadgetId: number) => string | undefined): string[] => {
+export const keepChangeLines = (
+  { changes }: KeepAsk,
+  titleOf: (gadgetId: number) => string | undefined,
+  /** What a binding reaches, by the title people know it by, where it is known (`useBindingTitles`). */
+  resourceOf: (gadgetId: number, binding: string) => string | undefined = () => undefined,
+): string[] => {
   const created = new Map(changes.created.map(({ gadgetId, title }) => [gadgetId, title]))
   const name = (gadgetId: number) => {
     const title = titleOf(gadgetId) ?? created.get(gadgetId)
@@ -18,8 +23,9 @@ export const keepChangeLines = ({ changes }: KeepAsk, titleOf: (gadgetId: number
   const lines = [
     ...changes.created.map(({ gadgetId }) => `Creates ${name(gadgetId)}`),
     ...changes.bindings.map(({ gadgetId, name: binding, target }) => {
-      const reached = titleOf(target)
-      return `Connects ${name(gadgetId)} to ${reached ? quoted(reached) : binding}`
+      // The name the code reaches it by means nothing to most people, so it is never said.
+      const reached = titleOf(target) ?? resourceOf(gadgetId, binding)
+      return `Connects ${name(gadgetId)} to ${reached ? quoted(reached) : 'a connection'}`
     }),
     ...changes.updates.map(({ gadgetId }) => `Updates ${name(gadgetId)} to its template’s latest version`),
   ]
