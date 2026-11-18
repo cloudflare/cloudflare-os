@@ -47,6 +47,14 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
   const { api } = useApi()
   const { state } = useConnections()
   const [chosen, setChosen] = useState<Chosen>()
+  // Which of the two dialogs is open. What was chosen stays after going back or closing, so that
+  // its dialog closes as a dialog does rather than vanishing; each opening starts at choosing.
+  const [settingUp, setSettingUp] = useState(false)
+  const [wasOpen, setWasOpen] = useState(open)
+  if (open !== wasOpen) {
+    setWasOpen(open)
+    if (open) setSettingUp(false)
+  }
 
   const choices = useMemo((): Chosen[] | undefined => {
     if (state.status !== 'ready') return undefined
@@ -70,33 +78,31 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
       .toSorted((a, b) => a.service.name.localeCompare(b.service.name) || a.title.localeCompare(b.title))
   }, [state])
 
-  const close = (next: boolean) => {
-    onOpenChange(next)
-    if (!next) setChosen(undefined)
-  }
-
   return (
     <>
       <AddConnectionDialog
-        open={open && !chosen}
-        onOpenChange={close}
+        open={open && !settingUp}
+        onOpenChange={onOpenChange}
         to={to}
         choices={choices}
         problem={state.status === 'failed' ? `Couldn’t read your services: ${state.message}` : undefined}
-        onChoose={(choice) => setChosen(choices?.find(({ key }) => key === choice.key))}
+        onChoose={(choice) => {
+          setChosen(choices?.find(({ key }) => key === choice.key))
+          setSettingUp(true)
+        }}
       />
       {chosen && (
         <ConnectResource
           // Each kind starts its form afresh.
           key={chosen.key}
-          open={open}
-          onOpenChange={close}
+          open={open && settingUp}
+          onOpenChange={onOpenChange}
           vendorId={chosen.vendorId}
           name={chosen.service.name}
           logoUrl={chosen.service.logoUrl}
           resourceUrlPattern={chosen.urlPattern}
           resource={chosen.title}
-          onBack={() => setChosen(undefined)}
+          onBack={() => setSettingUp(false)}
           onConnect={async (accountId, resourceUrl) => {
             // Disposed by hand: `using` is not lowered for every browser this runs in.
             const overseer = api.openWorkspace(workspaceId)
