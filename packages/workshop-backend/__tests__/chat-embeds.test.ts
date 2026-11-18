@@ -119,6 +119,15 @@ describe("host-pinned answer files", () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it.each([false, true])("keeps pinning other references after an invalid inline view (streaming: %s)", async streaming => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    await snapshotChatEmbeds('<inline-html>\n<select><title>Display mode</title><option>Table</option></select>\n</inline-html>\n\n' +
+        '[CSV](worktree://OUTPUTS/report.csv)\n\n' +
+        '<inline-html>\n<img src="worktree://OUTPUTS/image.png">\n</inline-html>', snapshots, read, streaming);
+    expect(snapshots).toEqual({"worktree://OUTPUTS/report.csv": A, "worktree://OUTPUTS/image.png": A});
+  });
+
   it.each([
     ["a&amp;b.png", "a&b.png"],
     ["a&#38;b.png", "a&b.png"],

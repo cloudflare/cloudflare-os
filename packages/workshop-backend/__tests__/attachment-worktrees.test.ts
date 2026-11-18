@@ -40,6 +40,40 @@ const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName !== "observeUserChanges"
     ? [{toolName: message.toolName, content: message.content, isError: message.isError}] : []);
 describe("attachment worktree ingress", () => {
+  it("publishes EOF reference pins before tools run, persisting them with the completed step", () => inKernel(crypto.randomUUID(), async impl => {
+    const oid = impl.gitCache.writeBlob(new TextEncoder().encode("column\nvalue\n")).oid;
+    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Read this",
+        undefined, [{oid, name: "report.csv", mimeType: "text/csv"}]);
+    const source = 'worktree://ATTACHMENTS/report.csv';
+    const events: AiChatStreamEvent[] = [];
+    impl.emitChatStreamEvent = (_chatId, event) => events.push(event);
+    const release = Promise.withResolvers<void>();
+    const execute = vi.spyOn(impl, "executeCodeMode").mockImplementation(async () => {
+      await release.promise;
+      return "Done";
+    });
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    faux.setResponses([
+      fauxAssistantMessage([fauxText(`[Download][file]\n\n[file]: ${source}`),
+        fauxToolCall("executeCode", {code: "await slowOperation()"})], {stopReason: "toolUse"}),
+      fauxAssistantMessage(fauxText("Done")),
+    ]);
+    const running = runAgent(impl, {model: faux.getModel(), stream: faux.stream}, chatId,
+        AUTHOR, new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    try {
+      await vi.waitFor(() => expect(execute).toHaveBeenCalled());
+      expect(events.flatMap(event => event.type === "textDelta" && event.embeds ? [event.embeds] : []))
+          .toEqual([{[source]: oid}]);
+      expect([...impl.storage.chats.list()].some(message => message.type === "message" && message.embeds)).toBe(false);
+    } finally {
+      release.resolve();
+      await running;
+      execute.mockRestore();
+    }
+    expect([...impl.storage.chats.list()].flatMap(message =>
+        message.type === "message" && message.embeds ? [message.embeds] : [])).toEqual([{[source]: oid}]);
+  }));
+
   it.each(["image", "file"])("pins streamed %s references across edits/deletion and a DO reset", async kind => {
     const path = kind === "image" ? "image.png" : "output.zip";
     const name = crypto.randomUUID(), source = `worktree://OUTPUTS/${path}`;

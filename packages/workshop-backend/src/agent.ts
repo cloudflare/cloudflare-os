@@ -4344,6 +4344,15 @@ async function runAgentPass(
         break;
       }
 
+      case "message_end": {
+        const message = event.message;
+        if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") break;
+        const finalEmbeds = await snapshotEmbeds(message.content.filter(block => block.type === "text")
+            .map(block => block.text).join(""), false);
+        if (finalEmbeds) emitStreamEvent({type: "textDelta", delta: "", embeds: finalEmbeds});
+        break;
+      }
+
       case "tool_execution_end":
         // The one chokepoint that sees every failed call -- including schema-validation
         // failures, blocked calls, and aborts, which never reach the tool's own execute() -- so
@@ -4388,8 +4397,6 @@ async function runAgentPass(
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
           };
-          const finalEmbeds = await snapshotEmbeds(msg.message, false);
-          if (finalEmbeds) emitStreamEvent({type: "textDelta", delta: "", embeds: finalEmbeds});
           if (Object.keys(embeds).length) msg.embeds = embeds;
           let reasoning = message.content
               .flatMap(block =>

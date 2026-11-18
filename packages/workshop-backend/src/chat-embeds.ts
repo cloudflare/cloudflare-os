@@ -17,10 +17,15 @@ export async function snapshotChatEmbeds(
     } else {
       // HTMLRewriter preserves character references in attributes; decode once to match the
       // browser's getAttribute() before pinning the URL or resolving its path.
-      await new HTMLRewriter().on("img", {element(element) {
-        const src = element.getAttribute("src");
-        if (src !== null) sources.add(decodeHTMLAttribute(src));
-      }}).transform(new Response(part.html)).text();
+      try {
+        await new HTMLRewriter().on("img", {element(element) {
+          const src = element.getAttribute("src");
+          if (src !== null) sources.add(decodeHTMLAttribute(src));
+        }}).transform(new Response(part.html)).text();
+      } catch {
+        // HTMLRewriter rejects some malformed markup browsers tolerate. One bad view must
+        // not discard the answer or prevent pinning references in the other blocks.
+      }
     }
   }
   let added: ChatEmbeds | undefined;
