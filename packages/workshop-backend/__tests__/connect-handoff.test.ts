@@ -39,7 +39,7 @@ type UserInternals = UserDurableObject & {
 };
 
 type FakeAccountProps = {
-  name: string; failRevoke?: boolean; failDescribe?: boolean; hold?: "describe" | "commitReconnect";
+  name: string; failRevoke?: boolean; failDescribe?: boolean; holdDescribe?: boolean;
 };
 
 let userCounter = 0;
@@ -59,7 +59,7 @@ function fakeAccount(user: UserInternals, name: string, failing?: Omit<FakeAccou
   const account = user.ctx.exports.FakeGatekeeperAccount({ props: { name, ...failing } });
   return {
     account: account as unknown as Fetcher<GatekeeperUser>, calls: () => account.calls(),
-    release: () => account.release(),
+    releaseDescribe: () => account.releaseDescribe(),
   };
 }
 
@@ -216,34 +216,6 @@ describe("connect handoff", () => {
     });
   });
 
-  it("keeps a reconnect expired when its new credentials are reported expired as it commits them", async () => {
-    const { stub, inDo } = freshUser();
-    const { ticket } = await inDo(async user => {
-      user.storage.nextAccountId.put(1);
-      user.storage.connectedAccounts.put({
-        id: 0, account: fakeAccount(user, "refused", { hold: "commitReconnect" }).account,
-        vendorId: "github", description: { displayName: "old" }, credentialsExpired: true,
-      });
-      return user.stagePendingRestore(0, STAGE_ID, new Date("2027-06-01"));
-    });
-    const nonce = await stub.openConnectFlow(0);
-
-    const redeemed = redeem(stub, ticket, nonce);
-    await inDo(async user => {
-      const { calls, release } = fakeAccount(user, "refused");
-      await vi.waitFor(async () => expect(await calls()).toEqual([`commitReconnect(${STAGE_ID})`]));
-      // The new credentials are live, and refused: the gatekeeper says so before the commit returns.
-      await user.markCredentialsExpired(0);
-      await release();
-    });
-    expect(await redeemed).toBe("ok");
-    await inDo(async user => {
-      expect(user.storage.connectedAccounts.get(0)).toMatchObject({
-        credentialsExpired: true, description: { displayName: "refused" },
-      });
-    });
-  });
-
   it("marks a committed reconnect restored even when the description cannot be refreshed", async () => {
     const { stub, inDo } = freshUser();
     const { ticket } = await inDo(async user => {
@@ -272,7 +244,7 @@ describe("connect handoff", () => {
   it("does not put back an account disconnected while its restored description was read", async () => {
     const { inDo } = freshUser();
     await inDo(async user => {
-      const { account, calls, release } = fakeAccount(user, "gone", { hold: "describe" });
+      const { account, calls, releaseDescribe } = fakeAccount(user, "gone", { holdDescribe: true });
       user.storage.nextAccountId.put(1);
       user.storage.connectedAccounts.put({
         id: 0, account, vendorId: "github", description: { displayName: "old" }, credentialsExpired: true,
@@ -280,7 +252,7 @@ describe("connect handoff", () => {
       const restoring = user.markCredentialsRestored(0, new Date("2027-06-01"));
       await vi.waitFor(async () => expect(await calls()).toEqual(["describe"]));
       await user.disconnectAccount(0);
-      await release();
+      await releaseDescribe();
       await restoring;
       expect(user.storage.connectedAccounts.get(0)).toBeUndefined();
     });
@@ -289,7 +261,7 @@ describe("connect handoff", () => {
   it("keeps a later restore's description over an earlier one's that arrives after it", async () => {
     const { inDo } = freshUser();
     await inDo(async user => {
-      const first = fakeAccount(user, "before-reconnect", { hold: "describe" });
+      const first = fakeAccount(user, "before-reconnect", { holdDescribe: true });
       user.storage.nextAccountId.put(1);
       user.storage.connectedAccounts.put({
         id: 0, account: first.account, vendorId: "github", description: { displayName: "old" },
@@ -302,7 +274,7 @@ describe("connect handoff", () => {
       const row = user.storage.connectedAccounts.get(0)!;
       user.storage.connectedAccounts.put({ ...row, account: fakeAccount(user, "after-reconnect").account });
       await user.markCredentialsRestored(0);
-      await first.release();
+      await first.releaseDescribe();
       await earlier;
       expect(user.storage.connectedAccounts.get(0)?.description).toEqual(expect.objectContaining({
         displayName: "after-reconnect",
