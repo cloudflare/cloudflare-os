@@ -8,6 +8,7 @@ import { useChatLibrary } from '@/aside/useChatLibrary'
 import { gadgetsWaitingIn, waitingWords } from '@/workspaces/waitingWords'
 import { useAgentsWaiting } from '@/automations/AgentsWaitingContext'
 import { AgentsWaitingProvider } from '@/automations/AgentsWaitingProvider'
+import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar } from '@/blocks/Sidebar'
@@ -126,6 +127,10 @@ const AppFrame = () => {
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
   // The workspace that is open, whose title and the viewer's role in it are kept live.
   useLiveWorkspace(workspaceId ?? pageItem?.workspaceId)
+  // What waits on the user in the workspace they are in, kept up as it changes, so that the sidebar
+  // says so as soon as they answer it; its own page and an agent's keep it up already.
+  const agentPage = useMatch({ from: '/_app/workspace/$workspaceId/agent/$agentKey', shouldThrow: false })
+  const liveWaitingIn = workspacePage || agentPage ? undefined : workspaceId ?? pageItem?.workspaceId
 
   // Beside a chat, a chat that is still to be made, or a workspace's own page: which is named.
   const besideOf = chatPage ?? newChatPage ?? workspacePage
@@ -425,6 +430,8 @@ const AppFrame = () => {
         {pageItem ? asideElement : <Outlet />}
       </NarrowShell>
       {search}
+    {liveWaitingIn && <LiveWaiting key={liveWaitingIn} workspaceId={liveWaitingIn} />}
+      {liveWaitingIn && <LiveWaiting key={liveWaitingIn} workspaceId={liveWaitingIn} />}
       </>
     )
   }
@@ -449,4 +456,10 @@ const AppFrame = () => {
     {search}
     </>
   )
+}
+
+/** Keeps what waits on the user in a workspace up as it changes, for the sidebar (`useWorkspaceAgents` reports it). Draws nothing. */
+function LiveWaiting({ workspaceId }: { workspaceId: string }) {
+  useWorkspaceAgents(workspaceId)
+  return null
 }
