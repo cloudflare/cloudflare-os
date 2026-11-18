@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useLocation, useNavigate } from '@tanstack/react-router'
 import { validateAsideParam } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
 import { carryAside } from '@/aside/useAsideNavigation'
@@ -28,13 +28,15 @@ function NewChat() {
   const workspaces = useWorkspaces()
   const title = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
   const look = useWorkspaceLooks()[workspaceId]
+  // Started from a gadget's page, beside the gadget, it is greeted by the gadget's name.
+  const about = useLocation({ select: (location) => (open ? location.state.gadgetTitle : undefined) })
 
   return (
     <NewChatPane
       // Keyed, so a message being sent in one workspace is not shown in another's.
       key={workspaceId}
       // Greeted as on the home page, under the workspace it is in.
-      greeting={greeting(user.name)}
+      greeting={greeting(user.name, about)}
       header={(
         <ChatHeader
           workspace={title === undefined ? undefined : {

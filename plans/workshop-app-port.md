@@ -75,3 +75,4 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | A gadget's kind (app or doc) can't be changed, and it has no icon picker | `setKind` is ours | `setKind` |
 | Code is read only: nothing is edited beside a chat yet, and a chat's changes not yet kept don't show in View code | editing goes through `submitCodeChange` and the old app's OT client, still to port | none |
 | View code has no link to a file or its lines; the settings page's Code tab has the file only | the item's address has no place for them | none |
+| A gadget's page offers recent chats to carry on in, never the one it was made in, and "had it open" is this browser's (`lastShown`) | the backend doesn't record which chat made a gadget, or what was beside a chat | an origin chat on the gadget |

@@ -12,7 +12,9 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
 import { CopyLinkButton } from './CopyLinkButton'
 import { ExportSubmenu, type ExportSubmenuProps } from './ExportSubmenu'
+import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { SidePaneTitle } from './SidePaneTitle'
+import { WorkspaceCrumb, type WorkspaceCrumbProps } from './WorkspaceCrumb'
 
 export type SidePaneItem = {
   key: string
@@ -42,6 +44,10 @@ type Placement =
       /** Filling the window, for nothing but it: the step up. */
       fullScreen: boolean
       onFullScreenChange: (on: boolean) => void
+      /** The workspace it is in, which its header starts with, as a chat's does. */
+      workspace?: WorkspaceCrumbProps
+      /** The way to a chat with it beside it (`GadgetChatMenu`), for whoever builds where it is. */
+      chat?: Omit<GadgetChatMenuProps, 'title' | 'compact'>
     }
 
 export type SidePaneProps = Placement & {
@@ -96,7 +102,9 @@ const copyLink = (link: string) => void navigator.clipboard.writeText(link).catc
  * more that can be done with it (exporting it, updating a gadget whose template has a newer
  * version, and beside the page putting the pane away), and sharing it where it can be shared, its
  * link then copied from more, or else a link to it. Beside the page, the header starts with how many
- * things the page has to show, which opens to the list of them, then the name of the one shown.
+ * things the page has to show, which opens to the list of them, then the name of the one shown. As
+ * the page, it starts with the workspace it is in, and before the rest at its end is the way to a
+ * chat with it beside it.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
  * corners and a line along the top. The bar at its top pushes the header up out of the way, and
@@ -172,6 +180,7 @@ export const SidePane = (props: SidePaneProps) => {
               </DropdownMenu>
             </HeaderBubble>
           )}
+          {page?.workspace && !fullScreen && !narrow && <WorkspaceCrumb {...page.workspace} />}
           {active && (
             // Keyed, so that going to another swaps the bubble rather than renaming it.
             <HeaderBubble key={active.key} className="min-w-0">
@@ -186,6 +195,11 @@ export const SidePane = (props: SidePaneProps) => {
             {people.length > 0 && (
               <HeaderBubble className="me-1.5">
                 <AvatarStack people={people} aria-label="Also here" />
+              </HeaderBubble>
+            )}
+            {page?.chat && active && !fullScreen && (
+              <HeaderBubble key="chat">
+                <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
               </HeaderBubble>
             )}
             {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate))) && (

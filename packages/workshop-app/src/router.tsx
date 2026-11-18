@@ -45,7 +45,10 @@ declare module '@tanstack/react-router' {
     fromSkillList?: boolean
     /** This gadget's settings were opened from the gadget, so the way back to it goes back. */
     fromItem?: boolean
-    /** The title of the gadget whose settings are being opened, when the page that opened them knew it. */
+    /**
+     * The title of the gadget whose settings are being opened, when the page that opened them knew
+     * it, or of the gadget a new chat is started beside, which greets the user by it.
+     */
     gadgetTitle?: string
   }
 }

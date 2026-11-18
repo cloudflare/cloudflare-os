@@ -553,6 +553,23 @@ After the automations, the workspace's page lists the agents its gadgets call on
 among its chats (`spawnerName`), each opening its latest run. An agent that has not run is not
 known, and nothing says what calls on it or what it thinks with, until the backend lists them.
 
+## A gadget's own page
+
+A gadget's page (`/app/<id>`, the side pane as the page) says where it lives and leads to a chat
+with it, as using it with the agent (a slides gadget whose agent builds the deck with you) and
+carrying on building it both happen in a chat. For whoever builds in its workspace (not
+`role === 'use'`), its header starts with the workspace's `WorkspaceCrumb`, title shown, which goes
+to the workspace with the gadget beside it. At the far end, ahead of more, is Chat
+(`GadgetChatMenu`), the one labelled control: New chat (`/workspace/$id/new?open=`, greeted "what
+should we do with Slides?" through the `gadgetTitle` history state), then up to four of the
+workspace's chats to carry on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those
+that last had it beside them in this browser (`lastShown`) first and saying so, agents' runs left
+out. Opening one remembers it there. With no chats, Chat starts a new one at once. It is left out
+where Collapse already goes back beside the chat the page came from, and in full screen; on a
+phone it is its icon alone and the crumb gives way to the back arrow. The backend does not record
+which chat made a gadget, so nothing claims to know it. The design record is
+`plans/gadget-to-chat.md`; the gallery has it as "SidePane as a gadget's page".
+
 ## A gadget's settings
 
 A gadget's More menu, beside a chat or as its own page, has View code for whoever may build in
