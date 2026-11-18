@@ -11,6 +11,7 @@ import {
   isChunkedBlobRecord,
   type ChunkStore,
   type PendingBlob,
+  bytesStream, textByteStream, utf8ByteLength,
 } from "../src/git-chunked-blob";
 import { encodeLooseObject, gitObjectOid } from "../src/git-codec";
 import type { GitChunkedBlobRecord, GitObjectRecord } from "../src/storage-schema/overseer-storage";
@@ -422,5 +423,29 @@ describe("blobByteStream", () => {
       if (++pulls === 2) throw new Error("revoked");
     });
     await expect(drain(stream)).rejects.toThrow("revoked");
+  });
+});
+
+async function streamed(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+describe("text and byte streams", () => {
+  it("counts a string's UTF-8 length as TextEncoder writes it, lone surrogates included", () => {
+    for (let text of ["", "abc", "é", "€", "😀", "a\ud800b", "\udc00", "x😀".repeat(1000)]) {
+      expect(utf8ByteLength(text)).toBe(new TextEncoder().encode(text).byteLength);
+    }
+  });
+
+  it("streams a string's UTF-8 encoding in pieces, never splitting a surrogate pair", async () => {
+    // A pair across the 64 KiB piece boundary, and a long run after it.
+    let text = "a".repeat(64 * 1024 - 1) + "😀" + "é€".repeat(70_000);
+    expect(await streamed(textByteStream(text))).toEqual(new TextEncoder().encode(text));
+    expect(await streamed(textByteStream(""))).toEqual(new Uint8Array());
+  });
+
+  it("streams bytes as copied pieces", async () => {
+    let bytes = new Uint8Array(200_000).map((_, i) => i % 251);
+    expect(await streamed(bytesStream(bytes))).toEqual(bytes);
   });
 });

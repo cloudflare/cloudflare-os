@@ -669,20 +669,33 @@ it("opens a metadata view unless content is asked for, and takes no option or le
   expect((await admin.getSettings()).adminWorkspaceAccess).toEqual(adminWorkspaceAccess);
   expect(await newestRecord({ kind: "setting" })).toEqual(setting);
 
-  // A view has no method that reads content. Each of these names something the workspace holds,
-  // and none is recorded: there is no call to record.
-  const loose = view as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
-  const absent: [string, unknown[]][] = [
-    ["getChat", [chatId]],
-    ["readChatAttachment", [attachmentChatId, attachmentId]],
-    ["readFile", [gadgetId, "notes.txt"]],
-    ["readFileAtCommit", [head, "notes.txt"]],
-    ["readPendingFile", [draftChatId, gadgetId, "notes.txt"]],
+  // The view was not opened for content, so each content read is refused and the refusal
+  // recorded. Each names something the workspace holds; the refusal comes before any of it is
+  // touched.
+  const refused = ADMIN_ACCESS_ERROR_CODES.contentNotRequested;
+  const reads: [AdminAccessRecord["method"], AdminAccessRecord["args"], () => PromiseLike<unknown>][] = [
+    ["getChat", { chatId }, () => view.getChat(chatId)],
+    ["readChatAttachment", { chatId: attachmentChatId, id: attachmentId },
+     () => view.readChatAttachment(attachmentChatId, attachmentId)],
+    ["readFile", { gadgetId, path: "notes.txt" }, () => view.readFile(gadgetId, "notes.txt")],
+    ["readFileAtCommit", { commitId: head, path: "notes.txt" },
+     () => view.readFileAtCommit(head, "notes.txt")],
+    ["readPendingFile", { chatId: draftChatId, gadgetId, path: "notes.txt" },
+     () => view.readPendingFile(draftChatId, gadgetId, "notes.txt")],
   ];
-  for (const [method, args] of absent) {
-    await expect(loose[method]!(...args), method).rejects.toThrow();
+  for (const [method, , call] of reads) expect(await refusalOf(call()), method).toBe(refused);
+
+  // Exactly one record for each, in call order (the log lists the newest first).
+  const after = await workspaceRecords(id);
+  expect(after.slice(reads.length)).toEqual(logged);
+  const added = after.slice(0, reads.length).toReversed().map(accessRecord);
+  expect(added.map(record => [record.method, record.args])).toEqual(
+      reads.map(([method, args]) => [method, args]));
+  for (const record of added) {
+    expect(record).toMatchObject(
+        { refused, requested: "metadata", access: "metadata", exposed: "metadata" });
+    expect(record).not.toHaveProperty("grantId");
   }
-  expect(await workspaceRecords(id)).toEqual(logged);
 });
 
 it("records each call into a workspace", async () => {
