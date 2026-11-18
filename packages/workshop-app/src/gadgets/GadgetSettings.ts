@@ -254,18 +254,6 @@ export class GadgetSettings {
   }
 
   /**
-   * Gives its code one of the user's models, as `env.<name>`, kept at once: it is the user's own
-   * doing, not a chat's. Refused with an `InvalidBindingName`, asking nothing, as a rename is.
-   */
-  addModel = async (modelId: string, name: string) => {
-    const problem = bindingNameProblem(name, this.#listed().map((binding) => binding.name))
-    if (problem) throw new InvalidBindingName(problem)
-    const target = await this.#newModel(modelId)
-    await this.#with((gadget) => gadget.bind(name, target))
-    this.#readBindings(this.#run)
-  }
-
-  /**
    * Has a model binding reach another of the user's models under the same name, so its code goes
    * on as it was. There is no call to point a binding elsewhere, so a connection to the new model
    * replaces it, with the blueprint annotation it had; if that cannot be bound, the old one is put

@@ -210,18 +210,6 @@ describe('GadgetSettings', () => {
     await expect(refused).rejects.not.toBeInstanceOf(InvalidBindingName)
   })
 
-  it('adds a model under a name it can have, kept at once, refusing one it cannot without making anything', async () => {
-    const { settings, gadget, minted } = await readyWorkspace()
-    await expect(settings.addModel('sonnet', 'LLM')).rejects.toThrow(InvalidBindingName)
-    expect(minted).toEqual([])
-
-    await settings.addModel('sonnet', 'WRITER')
-    expect(minted.map(({ modelId }) => modelId)).toEqual(['sonnet'])
-    expect(minted[0].dispose).toHaveBeenCalled()
-    expect(gadget.bind).toHaveBeenCalledWith('WRITER', 41)
-    expect(gadget.listBindings).toHaveBeenCalledTimes(2)
-  })
-
   it('changes a model under the same name, keeping its annotation, and puts the old one back if the new cannot be bound', async () => {
     const { settings, gadget, minted } = await readyWorkspace()
     await settings.changeModel('LLM', 'haiku')

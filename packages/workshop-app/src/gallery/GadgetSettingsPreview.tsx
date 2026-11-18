@@ -190,12 +190,6 @@ export const GadgetSettingsPreview = () => {
               bindings={listed}
               services={SERVICES}
               models={{ models: MODEL_CHOICES, initial: 'sonnet' }}
-              onAddModel={async ({ modelId, name }) => {
-                await later()
-                const model = MODEL_CHOICES.find(({ id }) => id === modelId)!
-                setBindings((current) => [...current, { name, target: 50 + current.length, resourceTitle: model.name, kind: 'model', modelId }])
-                say(`added ${model.name} as env.${name}`)
-              }}
               onChangeModel={async (name, modelId) => {
                 await later()
                 setBindings((current) => current.map((binding) => (binding.name === name ? { ...binding, modelId } : binding)))

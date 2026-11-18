@@ -100,10 +100,6 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         }}
         models={models ?? {}}
         // Said in the dialog, which stays open under why. Over a lost connection nothing is tried.
-        onAddModel={async ({ modelId, name }) => {
-          if (connection?.blocked()) return false
-          await settings.addModel(modelId, name)
-        }}
         onChangeModel={async (name, modelId) => {
           if (connection?.blocked()) return false
           await settings.changeModel(name, modelId)

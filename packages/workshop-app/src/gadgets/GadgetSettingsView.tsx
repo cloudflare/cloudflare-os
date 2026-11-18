@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { CaretLeftIcon, PlusIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { ListGroup } from '@/blocks/ListGroup'
-import { ModelBindingDialog, type ModelBindingSetup, type ModelChoice } from '@/blocks/ModelBindingDialog'
+import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
@@ -76,9 +76,7 @@ export type GadgetSettingsViewProps = {
    * they are read. A model binding is named by its model's name as they know it, where it is one.
    */
   models?: { models?: readonly ModelChoice[]; initial?: string }
-  /** Gives its code one of the user's models, rejecting with why it could not; `false` where it was not tried. */
-  onAddModel: (setup: ModelBindingSetup) => Promise<boolean | void>
-  /** Has a model binding reach another of the user's models, as `onAddModel`. */
+  /** Has a model binding reach another of the user's models, rejecting with why it could not; `false` where it was not tried. */
   onChangeModel: (name: string, modelId: string) => Promise<boolean | void>
   /** Deletes it, for everyone it is shared with, asked for twice. */
   onDelete: () => void
@@ -98,7 +96,7 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onAddModel, onChangeModel, onDelete, onBack, onOpenWorkspace,
+  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace,
 }: GadgetSettingsViewProps) => {
   // What the model dialog was opened for, kept as it closes so that it does not change meanwhile.
   const [modelDialog, setModelDialog] = useState<{ open: boolean; changing?: string; initial?: string }>({ open: false })
@@ -181,13 +179,12 @@ export const GadgetSettingsView = ({
               <SettingsGroup
                 title="Connected to"
                 description="What its code can reach, by the name it knows each by. Click a name to change it."
-                action={<Button icon={PlusIcon} disabled={bindings.status !== 'ready'} onClick={() => setModelDialog({ open: true, initial: models?.initial })}>Add model</Button>}
                 plain
               >
                 {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
                 {bindings.status === 'failed' && <Message>{`Couldn’t load its connections: ${bindings.message}`}</Message>}
                 {bindings.status === 'ready' && (connections.length === 0
-                  ? <Message>Nothing yet. Ask the agent in a chat to connect it to a service, or add an AI model for its code to call.</Message>
+                  ? <Message>Nothing yet. Ask the agent in a chat to connect it to something.</Message>
                   : (
                       <ListGroup label="Connected to">
                         <ul className="flex flex-col">{connections.map(row)}</ul>
@@ -259,7 +256,7 @@ export const GadgetSettingsView = ({
         changing={modelDialog.changing}
         suggestName={(kind) => freeBindingName(MODEL_BINDING_NAMES[kind], taken)}
         nameProblem={(name) => bindingNameProblem(name, taken)}
-        onSubmit={({ modelId, name }) => (modelDialog.changing === undefined ? onAddModel({ modelId, name }) : onChangeModel(modelDialog.changing, modelId))}
+        onSubmit={({ modelId }) => onChangeModel(modelDialog.changing!, modelId)}
       />
     </PageLayout>
   )
