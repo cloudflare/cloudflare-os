@@ -720,6 +720,28 @@ export const createAdminAccessError = adminAccessErrors.create;
 export const getAdminAccessErrorCode = adminAccessErrors.getCode;
 
 /**
+ * Stable error codes attached to expected refusals of the grant methods (Overseer
+ * .renewAdminAccess() and revokeAdminAccess(), and AdminApi.endWorkspaceGrant()).
+ */
+export const ADMIN_GRANT_ERROR_CODES = {
+  notFound: "ADMIN_GRANT_NOT_FOUND",
+} as const;
+
+/** An expected refusal code from ADMIN_GRANT_ERROR_CODES. */
+export type AdminGrantErrorCode =
+    typeof ADMIN_GRANT_ERROR_CODES[keyof typeof ADMIN_GRANT_ERROR_CODES];
+
+const adminGrantErrors = codedErrorFamily<AdminGrantErrorCode>({
+  [ADMIN_GRANT_ERROR_CODES.notFound]: "No such grant.",
+});
+
+/** Creates an expected grant refusal with a machine-readable code. */
+export const createAdminGrantError = adminGrantErrors.create;
+
+/** Reads the machine-readable code from an expected grant refusal. */
+export const getAdminGrantErrorCode = adminGrantErrors.getCode;
+
+/**
  * The most characters of a display name or a workspace title the deployment directory keeps (see
  * AuthenticatedApi.searchUsers(), AdminApi.listUsers() and AdminApi.listWorkspaces()): it lists a
  * longer one as its first MAX_DIRECTORY_TEXT_LENGTH characters, since nothing else bounds either.
@@ -2192,6 +2214,87 @@ export type AdminAuditStats = {
   topAdmins: { admin: string; count: number }[];
   /** The writes to workspaces in the window: its AdminWriteRecords. */
   writes: number;
+};
+
+/** How long a grant lasts from when it is given or renewed, in seconds: 72 hours. */
+export const ADMIN_GRANT_LIFETIME_SECONDS = 72 * 60 * 60;
+
+/** The most grants one answer lists: AdminWorkspaceDescription.grants and
+ * Overseer.listAdminGrants(). An owner gives and ends grants without limit, so the answers are
+ * bounded instead: each returns the newest. */
+export const MAX_ADMIN_GRANTS_LISTED = 20;
+
+/** How long a workspace relies on a live account-wide grant its owner's account told it of, in
+ * seconds, counted from the moment it asked: a revocation of that grant is seen by content calls
+ * within this. An answer that there is none is not kept: the next content call asks again. */
+export const ADMIN_GRANT_ACCOUNT_CACHE_SECONDS = 60;
+
+/**
+ * A user as a record that admins read names them (a grant): their profile id
+ * and display name, and nothing else of their profile. Each is at most
+ * MAX_ADMIN_AUDIT_ARG_LENGTH characters, since neither has a bound of its own and such records
+ * are returned many at a time: a longer name is cut, its last character replaced with "…", and a
+ * longer id is kept as the admin audit log keeps a workspace owner's (see
+ * AdminAccessRecord.workspaceOwner), so that two long ids sharing a start stay apart.
+ */
+export type NamedUser = {
+  /** The user's profile id (AiChatAuthorInfo.id), bounded as above. */
+  id: string;
+  /** Their display name when the record was written, bounded as above. */
+  name: string;
+};
+
+/** What a grant lets admins read. One level today; a field so that another needs no migration. */
+export const ADMIN_GRANT_LEVELS = ["content"] as const;
+
+/** One of ADMIN_GRANT_LEVELS. */
+export type AdminGrantLevel = typeof ADMIN_GRANT_LEVELS[number];
+
+/**
+ * One grant: what makes a workspace's content readable by deployment admins, for
+ * ADMIN_GRANT_LIFETIME_SECONDS. It comes from the workspace's owner (source "owner": for one
+ * workspace, stored in that workspace, or for all of the owner's workspaces, stored once in their
+ * account). A second admin's approval of a request (source "admins": for one workspace) is to
+ * come.
+ *
+ * A grant is live while its level is "content", it is not revoked and it has not expired. A
+ * workspace can hold several live grants, and a content call needs any one. A grant never widens
+ * the deployment's access level: while the level in force is below "content" a live grant reads
+ * nothing.
+ *
+ * An owner's grant is the owner's own record: giving, renewing and ending one writes nothing to
+ * the admin audit log, which records what admins do (a call made under a grant carries the
+ * grant's id there). An ended grant is kept for at least as long as the admin audit log keeps its
+ * records, and deleted when its workspace or account next handles grants after that; every grant
+ * of a workspace is deleted with it.
+ */
+export type AdminAccessGrant = {
+  /** Random and opaque. On the audit record of every call made under the grant. */
+  id: string;
+  /** What it lets admins read. */
+  level: AdminGrantLevel;
+  /** Who gave it: the workspace's owner, or a second admin's approval. */
+  source: "owner" | "admins";
+  /** What it covers: the one workspace it is stored in, or ("account", source "owner" only) every
+   * workspace its giver owns, those made after it was given included. */
+  scope: "workspace" | "account";
+  /** The owner, or the approving admin. */
+  grantedBy: NamedUser;
+  /** For "admins": the admin who asked, by canonical user id. Never the approver. */
+  requestedBy?: string;
+  /** For "admins": the request it was approved through. */
+  requestId?: string;
+  /** For "admins": why, as the requester gave it. */
+  reason?: string;
+  /** When it was given. */
+  grantedAt: Date;
+  /** When it stops being live unless revoked sooner: ADMIN_GRANT_LIFETIME_SECONDS after it was
+   * given or last renewed. */
+  expiresAt: Date;
+  /** When it was ended early. Set once, never cleared. */
+  revokedAt?: Date;
+  /** Who ended it early: the owner, or an admin. Set with `revokedAt`. */
+  revokedBy?: NamedUser;
 };
 
 /** What a deployment admin may do to a workspace: see AdminApi.writeWorkspace(), which says what
@@ -4596,6 +4699,39 @@ export interface Overseer extends RpcTarget {
    * TODO: Implement undelete, maybe using PITR...
    */
   deleteSelf(): Promise<void>;
+
+  /**
+   * Let deployment admins read this workspace's content for ADMIN_GRANT_LIFETIME_SECONDS: stores
+   * a grant (see AdminAccessGrant) and returns it. Only the workspace's owner may. Admins read
+   * content only through a view they open for it, and every call they make under the grant is
+   * recorded with the grant's id in the deployment's admin audit log.
+   *
+   * Refused `contentOff` (ADMIN_ACCESS_ERROR_CODES) while the deployment does not allow content
+   * to be read (see ServerConfig.adminContentGrants).
+   */
+  grantAdminAccess(): Promise<AdminAccessGrant>;
+
+  /**
+   * Move the end of a live grant the owner gave to ADMIN_GRANT_LIFETIME_SECONDS from now, any
+   * number of times. Only the workspace's owner may. Refused `notFound`
+   * (ADMIN_GRANT_ERROR_CODES) for an id that names no live grant of the owner's on this
+   * workspace, and `contentOff` as grantAdminAccess() is.
+   */
+  renewAdminAccess(grantId: string): Promise<AdminAccessGrant>;
+
+  /**
+   * End a grant the owner gave, now: the next content call finds it ended. Only the workspace's
+   * owner may. Works whatever the deployment's level. Ending an ended grant changes nothing.
+   * Refused `notFound` (ADMIN_GRANT_ERROR_CODES) for an id that names no grant of the owner's on
+   * this workspace.
+   */
+  revokeAdminAccess(grantId: string): Promise<void>;
+
+  /** The grants the owner gave on this workspace: the live ones, newest first, then the ended
+   * ones still kept, newest first, MAX_ADMIN_GRANTS_LISTED at most in all (ending a live one
+   * makes room for the next). Only the workspace's owner may. The account-wide grant is not
+   * among them (see AuthenticatedApi.getAccountAdminGrant()). */
+  listAdminGrants(): Promise<AdminAccessGrant[]>;
 
   /**
    * Subscribe to the workspace's workpiece list, which lists its gadgets, each by ID and title.
