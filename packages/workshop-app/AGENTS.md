@@ -553,6 +553,23 @@ After the automations, the workspace's page lists the agents its gadgets call on
 among its chats (`spawnerName`), each opening its latest run. An agent that has not run is not
 known, and nothing says what calls on it or what it thinks with, until the backend lists them.
 
+## A gadget's own page
+
+A gadget's page (`/app/<id>`, the side pane as the page) says where it lives and leads to a chat
+with it, as using it with the agent (a slides gadget whose agent builds the deck with you) and
+carrying on building it both happen in a chat. For whoever builds in its workspace (not
+`role === 'use'`), its header starts with the workspace's `WorkspaceCrumb`, title shown, which goes
+to the workspace with the gadget beside it. At the far end, ahead of more, is Chat
+(`GadgetChatMenu`), the one labelled control: New chat (`/workspace/$id/new?open=`, greeted "what
+should we do with Slides?" through the `gadgetTitle` history state), then up to four of the
+workspace's chats to carry on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those
+that last had it beside them in this browser (`lastShown`) first and saying so, agents' runs left
+out. Opening one remembers it there. With no chats, Chat starts a new one at once. It is left out
+where Collapse already goes back beside the chat the page came from, and in full screen; on a
+phone it is its icon alone and the crumb gives way to the back arrow. The backend does not record
+which chat made a gadget, so nothing claims to know it. The design record is
+`plans/gadget-to-chat.md`; the gallery has it as "SidePane as a gadget's page".
+
 ## A gadget's settings
 
 A gadget's More menu, beside a chat or as its own page, has View code for whoever may build in
@@ -670,8 +687,9 @@ list once chosen; who has access is read with the page, for its header.
 A workspace is shared to join it, and a gadget to use, alone (`ShareWorkspaceDialog`, whose
 target is a `ShareTarget`). The words are for people who have never shared software: a workspace's
 people are Members and its link lets anyone with it join; a gadget's people and link Can use it,
-and the line for the workspace's members Can edit it, as changing a gadget is editing it. A gadget's Share… (in its pane's more
-menu) shares that gadget: its people are those who use it, under one line for everyone who can
+and the line for the workspace's members Can edit it, as changing a gadget is editing it. A
+gadget's Share (a button in its pane's header, where Copy link is otherwise) shares that gadget:
+its people are those who use it, under one line for everyone who can
 edit the workspace, and the dialog can share all of the workspace instead. Its page's header has
 who has access, which goes to the members, and Share, for whoever may
 (`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever can edit until its data
@@ -759,8 +777,9 @@ The card (`SidePane`) is a header, then what is shown on a tinted surface that f
 card out to its sides and bottom, with rounded top corners and a line along its top only. With more
 than one thing open the header starts with their count, which opens to the list of them and the way
 to close them all. Then the name of the one shown, which grows a button when pointed at that closes
-it (`SidePaneTitle`). At its far end: who else has the workspace open, more (reload, close), a link
-to copy, full screen, and the arrow. The bar at the top of the surface, in the middle, pushes the
+it (`SidePaneTitle`). At its far end: who else has the workspace open, more (reload, close), Share
+where the one shown can be shared, its link then copied from more, or else a link to copy, full
+screen, and the arrow. The bar at the top of the surface, in the middle, pushes the
 header up out of the way and pulls it back down (`Grabber`); clicking it does the same. Its bar is
 the divider's pill, always out and staying put: it grows, darkens and springs as the pill does when
 taken hold of (`pill.ts` holds what the two share).

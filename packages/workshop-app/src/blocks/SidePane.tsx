@@ -2,7 +2,7 @@ import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, t
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   AppWindowIcon, ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, UserPlusIcon,
+  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, LinkIcon, UserPlusIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -12,7 +12,9 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
 import { CopyLinkButton } from './CopyLinkButton'
 import { ExportSubmenu, type ExportSubmenuProps } from './ExportSubmenu'
+import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { SidePaneTitle } from './SidePaneTitle'
+import { WorkspaceCrumb, type WorkspaceCrumbProps } from './WorkspaceCrumb'
 
 export type SidePaneItem = {
   key: string
@@ -42,6 +44,10 @@ type Placement =
       /** Filling the window, for nothing but it: the step up. */
       fullScreen: boolean
       onFullScreenChange: (on: boolean) => void
+      /** The workspace it is in, which its header starts with, as a chat's does. */
+      workspace?: WorkspaceCrumbProps
+      /** The way to a chat with it beside it (`GadgetChatMenu`), for whoever builds where it is. */
+      chat?: Omit<GadgetChatMenuProps, 'title' | 'compact'>
     }
 
 export type SidePaneProps = Placement & {
@@ -63,7 +69,7 @@ export type SidePaneProps = Placement & {
   onViewCode?: () => void
   /** Its code is shown in its place (`onViewCode`), which the title says, with the way back. */
   viewingCode?: boolean
-  /** Shares the one shown with people, for whoever may. */
+  /** Shares the one shown with people, for whoever may, from a button of its own in place of the link's. */
   onShare?: () => void
   /** Updates the one shown, a gadget, from the newer version its template has, for whoever may. */
   onUpdate?: () => void
@@ -84,16 +90,21 @@ const CORNER = 24
 // Pulled this far out of where it was, the header goes the rest of the way when let go.
 const COMMITS_AT = 0.2
 
+// Refused without permission, and missing on a page not served securely: nothing is copied.
+const copyLink = (link: string) => void navigator.clipboard.writeText(link).catch(() => {})
+
 /**
  * A file or an output: a header, then what it shows on a surface of its own.
  *
  * It grows in steps, and the end of its header has the step up, with the step down in the same
  * place: beside the page it expands to take the page's place; expanded, it collapses back and
  * fills the window; filling the window, it goes back. Before those are who else is looking at it,
- * more that can be done with it (exporting it, sharing it, updating a gadget whose template has a
- * newer version, and beside the page putting the pane away), and a link to it. Beside the page, the
- * header starts with how many things the page has to show, which opens to the list of them, then
- * the name of the one shown.
+ * more that can be done with it (exporting it, updating a gadget whose template has a newer
+ * version, and beside the page putting the pane away), and sharing it where it can be shared, its
+ * link then copied from more, or else a link to it. Beside the page, the header starts with how many
+ * things the page has to show, which opens to the list of them, then the name of the one shown. As
+ * the page, it starts with the workspace it is in, and before the rest at its end is the way to a
+ * chat with it beside it.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
  * corners and a line along the top. The bar at its top pushes the header up out of the way, and
@@ -169,6 +180,7 @@ export const SidePane = (props: SidePaneProps) => {
               </DropdownMenu>
             </HeaderBubble>
           )}
+          {page?.workspace && !fullScreen && !narrow && <WorkspaceCrumb {...page.workspace} />}
           {active && (
             // Keyed, so that going to another swaps the bubble rather than renaming it.
             <HeaderBubble key={active.key} className="min-w-0">
@@ -185,13 +197,18 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || onShare || onUpdate))) && (
+            {page?.chat && active && !fullScreen && (
+              <HeaderBubble key="chat">
+                <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
+              </HeaderBubble>
+            )}
+            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate))) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {exports && <ExportSubmenu {...exports} />}
-                  {onShare && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
+                  {onShare && link && <DropdownMenu.Item icon={LinkIcon} onSelect={() => copyLink(link)}>Copy link</DropdownMenu.Item>}
                   {onViewCode && (viewingCode
                     ? <DropdownMenu.Item icon={AppWindowIcon} onSelect={onViewCode}>Back to {active?.title ?? 'it'}</DropdownMenu.Item>
                     : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>)}
@@ -206,8 +223,14 @@ export const SidePane = (props: SidePaneProps) => {
                 </DropdownMenu>
               </HeaderBubble>
             )}
-            {active && link && (
-              <HeaderBubble>
+            {/* Keyed, so that the one button swaps for the other. */}
+            {active && onShare && (
+              <HeaderBubble key="share">
+                <Button icon={UserPlusIcon} aria-label="Share" title="Share" onClick={onShare} />
+              </HeaderBubble>
+            )}
+            {active && link && !onShare && (
+              <HeaderBubble key="copy-link">
                 <CopyLinkButton link={link} title={active.title} />
               </HeaderBubble>
             )}

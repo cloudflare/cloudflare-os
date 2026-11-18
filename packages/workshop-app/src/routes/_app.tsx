@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { asideItemFor, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
-import { lastShown } from '@/aside/lastShown'
+import { lastShown, rememberShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
@@ -174,6 +174,8 @@ const AppFrame = () => {
     const item = asideItemFor(pageWorkspaceId, ref, fromChat, known)
     const open = formatAsideRef(ref)
     const expandedHere = router.state.location.state.fromChat === true
+    // Collapse goes back beside the chat it came from, so no other chat is offered.
+    const backToChat = !narrow && (expandedHere || fromChat !== undefined)
     asideElement = (
       <AsidePane
         placement="page"
@@ -192,6 +194,14 @@ const AppFrame = () => {
           : fromChat !== undefined
             ? () => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: fromChat }, search: { open } })
             : undefined}
+        // It stays beside the workspace's page, as it would going there from a chat.
+        onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageWorkspaceId }, search: { open: carryAside(open, { workspaceId: pageWorkspaceId }) } })}
+        onOpenChat={backToChat ? undefined : (toChat) => {
+          rememberShown(pageWorkspaceId, toChat.id, open)
+          void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: toChat.id }, search: { open }, state: { chatTitle: toChat.title } })
+        }}
+        onNewChat={backToChat ? undefined : (gadgetTitle) =>
+          navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId: pageWorkspaceId }, search: { open }, state: { gadgetTitle } })}
       />
     )
   } else if (besideOf && named) {

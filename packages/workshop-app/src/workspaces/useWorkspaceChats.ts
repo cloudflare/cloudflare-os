@@ -7,27 +7,30 @@ export type WorkspaceChatsState =
   | { status: 'ready'; chats: AiChatMetadata[] }
   | { status: 'failed'; message: string }
 
+const LOADING: WorkspaceChatsState = { status: 'loading' }
+
 /**
- * The chats in one workspace, most recently active first, loaded once when mounted. The state is
- * not reset when `workspaceId` changes, so give the calling component a `key` of the id.
+ * The chats in one workspace, most recently active first, loaded once for each workspace it is
+ * given. Given none, nothing is loaded and it stays loading. One workspace's chats are never
+ * returned for another's while that one loads.
  */
-export const useWorkspaceChats = (workspaceId: string): WorkspaceChatsState => {
+export const useWorkspaceChats = (workspaceId: string | undefined): WorkspaceChatsState => {
   const { api, reconnecting } = useApi()
-  const [state, setState] = useState<WorkspaceChatsState>({ status: 'loading' })
+  const [loaded, setLoaded] = useState<{ workspaceId: string; state: WorkspaceChatsState }>()
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
-    if (reconnecting) return
+    if (reconnecting || workspaceId === undefined) return
     let cancelled = false
     const overseer = api.openWorkspace(workspaceId)
     overseer.listChats().then(
       (chats) => {
         if (cancelled) return
         const byRecentActivity = chats.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime())
-        setState({ status: 'ready', chats: byRecentActivity })
+        setLoaded({ workspaceId, state: { status: 'ready', chats: byRecentActivity } })
       },
       (error) => {
-        if (!cancelled) setState({ status: 'failed', message: error instanceof Error ? error.message : String(error) })
+        if (!cancelled) setLoaded({ workspaceId, state: { status: 'failed', message: error instanceof Error ? error.message : String(error) } })
       },
     )
     return () => {
@@ -36,5 +39,5 @@ export const useWorkspaceChats = (workspaceId: string): WorkspaceChatsState => {
     }
   }, [api, reconnecting, workspaceId])
 
-  return state
+  return loaded !== undefined && loaded.workspaceId === workspaceId ? loaded.state : LOADING
 }

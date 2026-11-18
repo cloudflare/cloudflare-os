@@ -32,6 +32,7 @@ import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ChatMenuPreview } from '@/gallery/ChatMenuPreview'
 import { CodePreview } from '@/gallery/CodePreview'
 import { ExportPreview } from '@/gallery/ExportPreview'
+import { GadgetPagePreview } from '@/gallery/GadgetPagePreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
@@ -376,6 +377,7 @@ function Gallery() {
       <HeaderPreview />
       <AutomationsPreview />
       <ShellPreview />
+      <GadgetPagePreview />
       <Section title="Sidebar, expanded and collapsed to a rail: as it was, with the pages as icons beside the logo, kept to compare, then as it is, with them as rows under the list (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
         <div className="flex gap-4">
           {(['icons', 'rows'] as const).flatMap((layout) => [false, true].map((collapsed) => (

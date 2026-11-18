@@ -16,9 +16,15 @@ import { UpdateFromTemplate } from '@/gadgets/UpdateFromTemplate'
 import { useBlueprintInfo } from '@/gadgets/useGadgetSettings'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { formatActivity } from '@/workspaces/formatActivity'
+import { useWorkspaceChats } from '@/workspaces/useWorkspaceChats'
+import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
+import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { asideItemIcon } from './asideItemIcon'
 import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
+import { itemChats } from './itemChats'
+import { lastShown } from './lastShown'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
 import { SINCE_MADE, useWorktree } from './useWorktree'
@@ -62,6 +68,14 @@ export type AsidePaneProps = {
       fullScreen: boolean
       /** Back beside the chat it was expanded from, when it was. */
       onCollapse?: () => void
+      /** Goes to the workspace it is in, from the crumb its header starts with. */
+      onOpenWorkspace?: () => void
+      /**
+       * Goes to a chat in its workspace with it beside it, and `onNewChat` starts one there, greeted
+       * by its name. Left out where there is a way back to a chat already, which leaves out Chat.
+       */
+      onOpenChat?: (chat: { id: number; title?: string }) => void
+      onNewChat?: (title: string) => void
     }
 )
 
@@ -179,6 +193,32 @@ export const AsidePane = (props: AsidePaneProps) => {
     />
   )
   const hasUpdate = update && templateUpdateStatus(follows, template) === 'available'
+  // As its own page, a gadget names the workspace it is in and leads to a chat there with it
+  // beside it, for whoever builds there: someone given it alone to use has no chats in it.
+  const ownPage = props.placement === 'page' ? props : undefined
+  const looks = useWorkspaceLooks()
+  const home = ownPage && readsCode ? listed : undefined
+  const chatsWith = home && ownPage?.onOpenChat && ownPage.onNewChat ? { onOpenChat: ownPage.onOpenChat, onNewChat: ownPage.onNewChat } : undefined
+  const workspaceChats = useWorkspaceChats(chatsWith && home?.id)
+  const chats = home && workspaceChats.status !== 'loading'
+    // Where they could not be read, there are none to offer, and Chat starts a new one.
+    ? itemChats(workspaceChats.status === 'ready' ? workspaceChats.chats : [], home.id, item.key, lastShown)
+    : undefined
+  const pageParts = home && {
+    workspace: ownPage?.onOpenWorkspace && {
+      id: home.id,
+      title: home.title || 'Workspace',
+      label: workspaceLabel(home.title),
+      look: looks[home.id],
+      expanded: true,
+      onOpen: ownPage.onOpenWorkspace,
+    },
+    chat: chatsWith && {
+      chats: chats?.map(({ chatId, title: chatTitle, at, showing }) => ({ key: String(chatId), title: chatTitle, time: formatActivity(at), showing })),
+      onOpenChat: (key: string) => chatsWith.onOpenChat({ id: Number(key), title: chats?.find(({ chatId }) => String(chatId) === key)?.title }),
+      onNewChat: () => chatsWith.onNewChat(title),
+    },
+  }
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
@@ -210,7 +250,7 @@ export const AsidePane = (props: AsidePaneProps) => {
       {update}
     </SidePane>
   ) : (
-    <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
+    <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
       {exports.status && <PaneStatus {...exports.status} />}
       {share}
