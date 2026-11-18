@@ -3,7 +3,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_CHAT_ATTACHMENT_BYTES } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -2381,6 +2381,17 @@ async function runAgentPass(
                     ? `; workspace file env.${agentContext.scratch.bindingName}/` +
                       attachment.workspacePath
                     : "";
+                if (attachment.size > MAX_INLINE_CHAT_ATTACHMENT_BYTES) {
+                  // Never read: it would be held whole on every replay only to be left out.
+                  return [{
+                    type: "text",
+                    text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
+                        `${attachment.size} bytes, too large to inline. ` + (workspaceLocation
+                            ? "Read the workspace file in pieces: readFile with startLine and " +
+                              "lineCount, or grep, for text, and byte-aware tools otherwise.]"
+                            : "It is not in the workspace yet, so its contents are unavailable.]"),
+                  }];
+                }
                 let data: Uint8Array;
                 try {
                   data = await hooks.getChatAttachmentData(chatId, attachment.id);

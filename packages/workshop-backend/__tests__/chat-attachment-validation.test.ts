@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  assertChatAttachmentSize,
   canInlineChatAttachmentImage,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
@@ -83,14 +82,6 @@ describe("canInlineChatAttachmentImage", () => {
       expect(canInlineChatAttachmentImage(mimeType, bytes, 2000)).toBe(allowed);
     },
   );
-});
-
-describe("assertChatAttachmentSize", () => {
-  it("enforces the per-file byte limit of 4 MiB", () => {
-    assertChatAttachmentSize(4 * 1024 * 1024);
-    expect(() => assertChatAttachmentSize(4 * 1024 * 1024 + 1))
-      .toThrow("Chat attachment is too large.");
-  });
 });
 
 describe("validateChatAttachmentUpload", () => {

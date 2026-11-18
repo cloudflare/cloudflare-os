@@ -8,6 +8,7 @@ import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Api, 
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
+import {MAX_CHAT_ATTACHMENT_TOTAL_BYTES} from "@gadgets/workshop-shared/api";
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
   TEST_USER: DurableObjectNamespace<UserDurableObject>;
@@ -692,9 +693,15 @@ describe("scratch worktree attachment ingress", () => {
     await expect(impl.newChat(user, {profile: USER}, "Missing blob", undefined,
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]))
       .rejects.toThrow("Unknown Git blob");
-    const tooBig = await impl.gitCache.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
-    // Refused by its size alone: none of its chunks is read.
-    const record = impl.storage.gitObjects.get(tooBig.oid)!;
+  }));
+
+  it("takes an upload too large to inline as a workspace file, never reading it whole", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    // Over MAX_CODE_CHANGE_SIZE too, so not even its workspace projection reads it.
+    const bytes = new Uint8Array(9 * 1024 * 1024);
+    bytes.set(new TextEncoder().encode("%PDF-1.7"));
+    const blob = await impl.gitCache.writeBlob(bytes);
+    const record = impl.storage.gitObjects.get(blob.oid)!;
     if (!("chunks" in record)) throw new Error("expected a chunked blob");
     const chunks = new Set(record.chunks.map(chunk => chunk.oid));
     const get = impl.storage.gitObjects.get.bind(impl.storage.gitObjects);
@@ -703,9 +710,29 @@ describe("scratch worktree attachment ingress", () => {
       if (chunks.has(oid)) chunkReads++;
       return get(oid);
     };
-    await expect(impl.newChat(user, {profile: USER}, "Too large", undefined,
-      [{oid: tooBig.oid, mimeType: "application/octet-stream"}]))
+    const upload = {oid: blob.oid, mimeType: "application/pdf", name: "report.pdf"};
+    const chatId = await impl.newChat(user, {profile: USER}, "Read this", undefined, [upload]);
+    const [request] = await scriptedTurn(impl, chatId, [], "anthropic-messages");
+    // Only its signature was read, from its first chunk.
+    expect(chunkReads).toBe(1);
+    const text = JSON.stringify(request);
+    expect(text).toContain("workspace file env.SCRATCH/report.pdf");
+    expect(text).toContain(`${bytes.byteLength} bytes, too large to inline`);
+    expect(request.flatMap(message => Array.isArray(message.content)
+      ? message.content.filter(part => part.type === "image") : [])).toEqual([]);
+    const tree = impl.storage.gadgets.get(impl.getChatAgentContext(chatId).scratch!.worktreeId)!;
+    if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
+    expect(await impl.gitCache.fileBytesAtCommit(tree.baseCommit, "report.pdf")).toEqual(blob);
+
+    // The message's attachments are bounded together, by their sizes alone.
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Within the limit", undefined,
+      Array.from({length: 5}, () => ({oid: blob.oid, mimeType: "application/octet-stream"})));
+    // All zeros, so its chunks are among those counted.
+    const big = await impl.gitCache.writeBlob(new Uint8Array(MAX_CHAT_ATTACHMENT_TOTAL_BYTES / 4 + 1));
+    chunkReads = 0;
+    await expect(impl.sendChatMessage(user, {profile: USER}, chatId, "Too much", undefined,
+      Array.from({length: 4}, () => ({oid: big.oid, mimeType: "application/octet-stream"}))))
       .rejects.toThrow("too large");
-    expect(chunkReads).toBe(0);
+    expect(chunkReads).toBe(4);
   }));
 });

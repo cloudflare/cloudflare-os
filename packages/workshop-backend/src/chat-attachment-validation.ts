@@ -1,10 +1,15 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
 import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
-// A conservative per-file size that model APIs generally accept; providers' own limits vary by
-// API and model, and some may be lower. Mirrored by the frontend's MAX_CHAT_ATTACHMENT_BYTES
-// (prepareChatAttachment.ts).
-const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+/**
+ * The largest attachment sent to a model as an image or document, or to a client inside its
+ * message. It is the smallest per-file size the model APIs we support accept; anything larger is
+ * only a workspace file, since a request a provider rejects cannot be rolled back out of the chat.
+ */
+export const MAX_INLINE_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+
+/** How many leading bytes of an upload `validateChatAttachmentUpload()` inspects. */
+export const CHAT_ATTACHMENT_SIGNATURE_BYTES = 12;
 
 const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ["image/jpeg", [0xFF, 0xD8, 0xFF]],
@@ -34,20 +39,15 @@ function sanitizeChatAttachmentName(name: string | undefined): string | undefine
   return result || undefined;
 }
 
-/** Bound uploaded bytes independently of a model's supported input formats. */
-export function assertChatAttachmentSize(byteLength: number): void {
-  if (byteLength > MAX_CHAT_ATTACHMENT_BYTES) {
-    throw new Error("Chat attachment is too large.");
-  }
-}
-
-/** Normalize and validate an upload's metadata and bytes before attaching it to a message. */
+/**
+ * Normalize and validate an upload's metadata and signature before attaching it to a message.
+ * `content` need only hold the upload's first CHAT_ATTACHMENT_SIGNATURE_BYTES bytes.
+ */
 export function validateChatAttachmentUpload<T extends {
   mimeType: string; content: Uint8Array; name?: string;
 }>(attachment: T): T {
   attachment.name = sanitizeChatAttachmentName(attachment.name);
   attachment.mimeType = sanitizeChatAttachmentMimeType(attachment.mimeType);
-  assertChatAttachmentSize(attachment.content.byteLength);
 
   let signature = CONTENT_SIGNATURES.get(attachment.mimeType);
   if (signature) {

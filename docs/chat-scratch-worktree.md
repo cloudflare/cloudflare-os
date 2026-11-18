@@ -5,7 +5,8 @@ MIME type or the selected model's input support. Images, PDFs, archives, spreads
 unknown formats, empty binary files, and invalid UTF-8 are supported. Upload preparation
 preserves the original bytes, including images; it does not resize or transcode them.
 This intentionally removes the old image-only path that accepted source images up to 25 MiB
-and resized them to fit: source images, like every other upload, must now fit the 4 MiB limit.
+and resized them to fit: a source image over 4 MiB, like any other upload that large, is a
+workspace file only.
 The scratch worktree is created on the first upload and reused for later uploads, plans,
 and other agent working files.
 
@@ -69,8 +70,11 @@ workspace-only on every model replay; no resize/transcode changes their original
 When the replay contains more than 20 candidate images/documents, image edges are conservatively
 limited to 2000 pixels, including images attached in earlier turns. Originals remain unchanged.
 New images are read from the same immutable blob for previews; there
-is no separate payload copy in attachment records. Existing limits remain: 4 MiB per file,
-5 MiB and five files per message.
+is no separate payload copy in attachment records. A message takes five files of 100 MiB in
+total. An upload is streamed into the Git store and read from it in ranges, so its size is not
+bounded by memory; only a file of at most 4 MiB is sent to a model as an image or document, or
+to a client inside its message, and a larger one is read by the agent in pieces and downloaded
+as a stream.
 
 Filename allocation reserves existing base and pending root names, including directories.
 Prior names are read from chat-scoped message metadata, never from a workspace-wide payload

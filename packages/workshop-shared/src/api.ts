@@ -6081,6 +6081,12 @@ export type AlwaysAvailableResource = {
 };
 
 /**
+ * The most bytes one chat message's attachments may total. Nothing in the server needs it: it
+ * keeps an upload within what an agent can do something useful with.
+ */
+export const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 100 * 1024 * 1024;
+
+/**
  * A previously uploaded blob to attach to a chat message, with display/model-input metadata.
  * The blob must be present in this workspace's Git store. Attachment limits and MIME signatures
  * are checked when sending. The ID-only variant accepts legacy staged uploads.

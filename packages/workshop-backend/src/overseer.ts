@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, MAX_CHAT_ATTACHMENT_TOTAL_BYTES, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
@@ -112,7 +112,8 @@ import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForT
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
-  assertChatAttachmentSize,
+  CHAT_ATTACHMENT_SIGNATURE_BYTES,
+  MAX_INLINE_CHAT_ATTACHMENT_BYTES,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
@@ -480,7 +481,6 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
 }
 
 const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 
 const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
   ["text/csv", ".csv"],
@@ -6241,7 +6241,8 @@ class OverseerImpl implements AgentHooks {
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
-      if (!isAllowedChatAttachmentImageMimeType(a.mimeType)) {
+      if (!isAllowedChatAttachmentImageMimeType(a.mimeType) ||
+          a.size > MAX_INLINE_CHAT_ATTACHMENT_BYTES) {
         return a;
       }
       let content = this.storage.chatAttachmentContent.get(a.id);
@@ -6313,6 +6314,12 @@ class OverseerImpl implements AgentHooks {
 
     let files = new Map<string, FileContent>();
     for (let attachment of attachments) {
+      if (attachment.oid !== undefined && attachment.size > MAX_CODE_CHANGE_SIZE) {
+        // Too large for a text OT whatever it holds, so the blob is named without being read.
+        attachment.workspacePath = this.#attachmentWorkspaceFilename(attachment, used);
+        files.set(attachment.workspacePath, {oid: attachment.oid, byteLength: attachment.size});
+        continue;
+      }
       const data = attachment.oid !== undefined
         ? this.gitCache.readBlob(attachment.oid)
         : this.storage.chatAttachmentContent.get(attachment.id)?.data;
@@ -6518,15 +6525,13 @@ class OverseerImpl implements AgentHooks {
     for (let attachment of attachments) {
       if ("oid" in attachment) {
         const reader = this.gitCache.openBlobRef(attachment.oid, undefined);
-        assertChatAttachmentSize(reader.size);
-        const content = reader.read(0, reader.size);
         const upload = validateChatAttachmentUpload({
           mimeType: attachment.mimeType, name: attachment.name,
-          content,
+          content: reader.read(0, Math.min(reader.size, CHAT_ATTACHMENT_SIGNATURE_BYTES)),
         });
-        total += content.byteLength;
+        total += reader.size;
         result.push({id: crypto.randomUUID(), oid: attachment.oid,
-          mimeType: upload.mimeType, name: upload.name, size: content.byteLength});
+          mimeType: upload.mimeType, name: upload.name, size: reader.size});
         continue;
       }
       let id = validateChatAttachmentId(attachment.id);
@@ -6538,7 +6543,6 @@ class OverseerImpl implements AgentHooks {
       }
       let data = content.data;
       if (data === undefined) throw new Error("Staged chat attachment has no content.");
-      assertChatAttachmentSize(data.byteLength);
       total += data.byteLength;
       result.push({
         id,
