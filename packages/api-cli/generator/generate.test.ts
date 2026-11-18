@@ -1,7 +1,7 @@
 // The CLI's generated files and `pnpm api-schema:generate`: the script renders them with api-schema's
-// own files and the gatekeeper app UIs', so every generation writes them, and the ones on disk (which
-// the `test` task and `test:run` generate first) are what it renders. Scratch files go under the OS
-// temp directory.
+// own files (the admin gatekeeper's schema among them) and the gatekeeper app UIs', so every
+// generation writes them, and the ones on disk (which the `test` task and `test:run` generate first)
+// are what it renders. Scratch files go under the OS temp directory.
 
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,14 +9,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { findGatekeeperApps, GATEKEEPER_APPS_DIR, renderApiSchema } from "../../api-schema/scripts/generate.ts";
+import { findGatekeeperApps, GATEKEEPER_APPS_DIR, INPUTS_PATH, renderApiSchema } from "../../api-schema/scripts/generate.ts";
 import { renderAgentTypes, type Schema } from "./emit.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 const CLI_FILES = ["packages/api-cli/generated/commands.ts", "packages/api-cli/generated/agent-types.ts"];
+/** The admin gatekeeper's schema: rendered in the same generation, and read by nothing in the CLI. */
+const ADMIN_FILE = "packages/api-schema/generated/admin-api.schema.json";
+/** The kind table that says which AdminApi methods that schema leaves out. */
+const ADMIN_KINDS = "packages/workshop-shared/src/admin-agent.ts";
 
 /** A generated schema, by its path from the repository root. */
 const read = (path: string) => JSON.parse(readFileSync(join(ROOT, path), "utf8")) as Schema;
+
+/** The names of AdminApi's methods in the generated schema at `path`. */
+const adminMethods = (path: string) => read(path).services.AdminApi!.methods.map((method) => method.name);
 
 test("pnpm api-schema:generate renders the CLI's files, and the files on disk are what it renders", () => {
   // generateApiSchema writes exactly these files, and --if-stale regenerates when one differs from
@@ -25,12 +32,27 @@ test("pnpm api-schema:generate renders the CLI's files, and the files on disk ar
   const apps = findGatekeeperApps().map((app) => ({ ...app, schema: read(`${GATEKEEPER_APPS_DIR}/${app.vendor}.schema.json`) }));
   const files = renderApiSchema(schema, apps);
   const paths = files.map((file) => file.path);
-  for (const path of ["packages/api-schema/generated/workshop-api.schema.json", ...CLI_FILES]) {
+  for (const path of ["packages/api-schema/generated/workshop-api.schema.json", ADMIN_FILE, ...CLI_FILES]) {
     assert.ok(paths.includes(path), path);
   }
-  for (const path of CLI_FILES) {
+  for (const path of [ADMIN_FILE, ...CLI_FILES]) {
     assert.equal(files.find((file) => file.path === path)!.contents, readFileSync(join(ROOT, path), "utf8"), path);
   }
+});
+
+test("the admin gatekeeper's schema is regenerated with the rest, and when a method's kind changes", () => {
+  // --if-stale compares what this record holds: a file it wrote, and a file it read.
+  const { inputs, outputs } = JSON.parse(readFileSync(join(ROOT, INPUTS_PATH), "utf8")) as Record<"inputs" | "outputs", Record<string, string>>;
+  assert.ok(Object.hasOwn(outputs, ADMIN_FILE), ADMIN_FILE);
+  assert.ok(Object.hasOwn(inputs, ADMIN_KINDS), ADMIN_KINDS);
+});
+
+test("the CLI's admin commands come from the whole schema, with the methods the admin gatekeeper's leaves out", () => {
+  const kept = adminMethods(ADMIN_FILE);
+  const left = adminMethods("packages/api-schema/generated/workshop-api.schema.json").filter((name) => !kept.includes(name));
+  assert.ok(left.includes("setSiteName") && left.includes("checkForUpdates"), left.join(" "));
+  const commands = readFileSync(join(ROOT, CLI_FILES[0]!), "utf8");
+  for (const command of ["set-site-name", "check-for-updates"]) assert.ok(commands.includes(`"${command}"`), command);
 });
 
 test("agent-types.ts holds the agent declarations, whole, per service and per gatekeeper app UI, each text line for line", async (t) => {

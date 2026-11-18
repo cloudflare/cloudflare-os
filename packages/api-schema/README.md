@@ -72,7 +72,8 @@ shape's `propertyDocs`, and `tags`, which `capnweb-schema/1` added to `/0`: a re
 in it is edited by hand.
 
 The last column is who each is for. `pnpm cf-os api` renders its command table from the schema
-and copies the agent declarations; nothing else reads these files yet.
+and copies the agent declarations, and the admin gatekeeper bundles `admin-api.schema.json`;
+nothing else reads these files yet.
 
 | File | What it is | Meant for |
 | --- | --- | --- |
@@ -81,6 +82,7 @@ and copies the agent declarations; nothing else reads these files yet.
 | `workshop-api.fragments.json` | The same declarations split per service, each fragment readable on its own, other services referred to by name. | Agents that fetch one service at a time instead of the whole surface. Shaped like the answer a live introspection method would give ([capnweb#177](https://github.com/cloudflare/capnweb/issues/177)), but rendered from `AuthenticatedApi`'s point of view, so a shape's name or position can differ from what one stub alone would report, and without the credential methods, which such a method would list unless it left them out too. It is also copied into `packages/api-cli/generated/agent-types.ts`, for `cf-os api types <service>`. |
 | `gatekeeper-apps/<vendor>.schema.json` | The capnweb-schema of one gatekeeper's app UI: the interface its `src/app-api.ts` exports as `AppApi`, as the entry ([Gatekeeper app UIs](#gatekeeper-app-uis)). | `pnpm cf-os api`, whose command table holds it, prefixed `<vendor>:`, as the nodes `get-gatekeeper-app <vendor> ui` goes on to. |
 | `gatekeeper-apps/<vendor>.d.ts` | That interface as declarations, with what it reaches. | Agents writing code against the app UI. It is also copied into `packages/api-cli/generated/agent-types.ts`, for `cf-os api types <vendor>`. |
+| `admin-api.schema.json` | The capnweb-schema of what a holder of an `AdminApi` stub reaches (`subsetSchema()`, [below](#serving-one-capability-from-its-schema)): `AdminApi` as the entry, less the methods kept from a deployment admin's agent, the views it opens, and the named types they use, each method with its true parameters and result. | The admin gatekeeper (`packages/gatekeeper-instanceadmin`), which bundles it, checks at load that it is what it relies on, builds its sessions and its agent's declarations from it (`emitDeclarations()`, at load) and checks each call's arguments against it. `pnpm cf-os api` does not read it: its admin commands come from the whole schema. |
 | `workshop-api.tools.json` | **Experimental.** One tool per method callable from `AuthenticatedApi`, each with a JSON Schema for its arguments and result, `continuesOn` where the result is a capability, and the method's `deprecated` and `mutates` where it has them. A parameter's, a named type's and an object property's doc is its schema's `description`, `deprecated: true` beside it when it is deprecated. | A base for MCP and tool search; its shape may change. |
 
 The declarations use the web platform's globals (`ReadableStream`), as a Worker has them, and
@@ -94,6 +96,13 @@ service's property is a `readonly` member, which a holder reads as it would a me
 Every doc the schema keeps is a JSDoc block on what it documents, a named type's on its
 `export type` and an object property's on the property, and its tags (`@deprecated`, `@mutates`
 and those in `tags`) appear in the JSDoc.
+
+What the agent declarations omit is a convenience to a holder of an `AuthenticatedApi` stub, which
+the server does not enforce. What an admin's agent may do through the admin gatekeeper is decided
+elsewhere, by the kind of each `AdminApi` method in `ADMIN_AGENT_KINDS`
+(`packages/workshop-shared/src/admin-agent.ts`): `admin-api.schema.json` leaves out the methods
+that table classifies `"omitted"`, a change of kind regenerates it, and a generation fails, naming
+the method, when the table and `AdminApi` do not name the same methods.
 
 ## Gatekeeper app UIs
 
@@ -121,8 +130,9 @@ Whatever reads the generated files generates them first, with
 `node packages/api-schema/scripts/generate.ts --if-stale`: the `@gadgets/api-schema#generate` task,
 which `@gadgets/api-cli`'s `build` and `test` and the integration tests depend on (so `pnpm build`,
 `pnpm lint` and `pnpm test` run it), the CLI's and the integration tests' direct `test:run`, and the
-`cf-os` bin (`pnpm cf-os`). A change to `packages/workshop-shared/src/api.ts`, to a gatekeeper app UI's
-interface or to its `src/app-api.ts` needs no step of its own, and nothing to commit.
+`cf-os` bin (`pnpm cf-os`). A change to `packages/workshop-shared/src/api.ts`, to the kind table in
+`packages/workshop-shared/src/admin-agent.ts`, to a gatekeeper app UI's interface or to its
+`src/app-api.ts` needs no step of its own, and nothing to commit.
 
 Each generation writes this directory and `packages/api-cli/generated/`, `pnpm cf-os api`'s command
 table and its copy of the agent declarations, removes the `gatekeeper-apps/` files of a gatekeeper
@@ -180,6 +190,7 @@ of that service rather than the whole API, and has no implementation to validate
 
 `scripts/generate.ts` is the only product-specific file: it names `api.ts` and its tsconfig, the
 entry `PublicApi`, the constant `SERVICE_SALT`, the agent root `AuthenticatedApi` and the
-credential methods an agent never calls, and finds the gatekeeper app UIs by their
+credential methods an agent never calls, the admin gatekeeper's root `AdminApi` and the kind table
+whose omitted methods its schema leaves out, and finds the gatekeeper app UIs by their
 `src/app-api.ts`. It also renders the CLI's files, through `packages/api-cli/generator/emit.ts`,
 and it is still the only part that writes to disk.
