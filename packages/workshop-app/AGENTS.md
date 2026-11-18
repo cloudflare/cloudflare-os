@@ -668,8 +668,8 @@ beside the page), and its members, the owner first. The chats and the library lo
 list once chosen; who has access is read with the page, for its header.
 
 A workspace is shared to edit everything in it, and a gadget to use, alone
-(`ShareWorkspaceDialog`, whose target is a `ShareTarget`). A gadget's Share… (in its pane's more
-menu) shares that gadget: its people are those who use it, under one line for everyone who can
+(`ShareWorkspaceDialog`, whose target is a `ShareTarget`). A gadget's Share (a button in its pane's
+header, where Copy link is otherwise) shares that gadget: its people are those who use it, under one line for everyone who can
 edit the workspace, and the dialog can share all of the workspace instead. Its page's header has
 who has access, which goes to the members, and Share, for whoever may
 (`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever can edit until its data
@@ -757,8 +757,9 @@ The card (`SidePane`) is a header, then what is shown on a tinted surface that f
 card out to its sides and bottom, with rounded top corners and a line along its top only. With more
 than one thing open the header starts with their count, which opens to the list of them and the way
 to close them all. Then the name of the one shown, which grows a button when pointed at that closes
-it (`SidePaneTitle`). At its far end: who else has the workspace open, more (reload, close), a link
-to copy, full screen, and the arrow. The bar at the top of the surface, in the middle, pushes the
+it (`SidePaneTitle`). At its far end: who else has the workspace open, more (reload, close), Share
+where the one shown can be shared, its link then copied from more, or else a link to copy, full
+screen, and the arrow. The bar at the top of the surface, in the middle, pushes the
 header up out of the way and pulls it back down (`Grabber`); clicking it does the same. Its bar is
 the divider's pill, always out and staying put: it grows, darkens and springs as the pill does when
 taken hold of (`pill.ts` holds what the two share).
