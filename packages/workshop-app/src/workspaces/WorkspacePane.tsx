@@ -20,6 +20,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useNow } from '@/hooks/useNow'
 import { PageLayout } from '@/layouts/PageLayout'
+import { useUnread } from '@/notifications/UnreadContext'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
@@ -108,9 +109,20 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const openRun = (run: { chatId: number; title: string }) => onOpenChat({ id: run.chatId, title: run.title })
 
   const renameWorkspace = useRenameWorkspace()
-  // Why the last new title was not kept.
+  // Why the last new title was not kept, or the workspace was not marked read.
   const [renameProblem, setRenameProblem] = useState<string>()
   const connection = useConnectionNotice()
+  const unread = useUnread()
+  // Its marks clear as the account says they have.
+  const markRead = unread?.totals.workspaces.has(workspaceId)
+    ? () => {
+        setRenameProblem(undefined)
+        if (connection?.blocked()) return
+        unread.markWorkspaceRead(workspaceId).catch((error: unknown) => {
+          setRenameProblem(`Couldn’t mark the workspace read: ${error instanceof Error ? error.message : String(error)}`)
+        })
+      }
+    : undefined
   const rename = (next: string) => {
     setRenameProblem(undefined)
     if (connection?.blocked()) return
@@ -126,12 +138,13 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           {/* As a chat's header is: the crumb, then what else can be done with it. */}
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
             {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
-            {removal && (
+            {(removal || markRead) && (
               <HeaderBubble className="shrink-0">
                 <WorkspaceMoreMenu
                   title={title || 'Workspace'}
                   triggerVariant="secondary"
-                  removal={{
+                  onMarkRead={markRead}
+                  removal={removal && {
                     kind: removal,
                     onSelect: () => removing.ask({ id: workspaceId, title: title ?? '', removal, others: standing ? people.length - 1 : undefined }),
                   }}

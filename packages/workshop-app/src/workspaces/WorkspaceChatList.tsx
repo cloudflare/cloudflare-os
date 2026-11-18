@@ -16,8 +16,9 @@ export type WorkspaceChatListProps = {
   /** A chat's address, for its row to link to so that it can be opened in another tab. */
   chatHref?: (chatId: number) => string
   /**
-   * The viewer may build in the workspace, and so change its chats: their own notifications, and
-   * deleting one, which a row's more offers. Not someone who can only use it.
+   * The viewer may build in the workspace, and so change its chats: what of each is unread to them,
+   * their own notifications, and deleting one, which a row's more offers. Not someone who can only
+   * use it, who has no read state.
    */
   builds?: boolean
 }
@@ -26,8 +27,8 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 /**
  * A workspace's chats, most recently active first, grouped by when: those people started, as its
- * agents' runs are listed under each agent, on the Agents tab. A chat deleted from here leaves
- * the list once it is gone.
+ * agents' runs are listed under each agent, on the Agents tab. Each is marked while it has anything
+ * the viewer has not read. A chat deleted from here leaves the list once it is gone.
  */
 export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false }: WorkspaceChatListProps) => {
   const chats = useWorkspaceChats(workspaceId)
@@ -37,7 +38,7 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
   // The chat being asked about, kept as the dialog closes so that it does not change as it goes.
   const [deleting, setDeleting] = useState<{ id: number; title: string; open: boolean }>()
   const [deleted, setDeleted] = useState<ReadonlySet<number>>(new Set())
-  // Why the last change to a chat's notifications was not made.
+  // Why the last change to a chat's notifications or read state was not made.
   const [problem, setProblem] = useState<string>()
   const listed = chats.status === 'ready' ? chats.chats.filter((chat) => !deleted.has(chat.id) && !isAgentRun(chat)) : []
   const groups = groupByTime(listed.map((chat) => ({ value: chat, at: chat.lastActive })))
@@ -46,6 +47,12 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
     setProblem(undefined)
     if (connection?.blocked()) return
     notifications.setEnabled(chatId, enabled).catch((error: unknown) => setProblem(`Couldn’t change the chat’s notifications: ${messageOf(error)}`))
+  }
+  // What it comes to shows once the workspace says so.
+  const setRead = (chatId: number, read: boolean) => {
+    setProblem(undefined)
+    if (connection?.blocked()) return
+    notifications.setRead(chatId, read).catch((error: unknown) => setProblem(`Couldn’t mark the chat ${read ? 'read' : 'unread'}: ${messageOf(error)}`))
   }
   const confirmDelete = async () => {
     if (!deleting || connection?.blocked()) return
@@ -64,16 +71,20 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
         <ListGroup key={key} label={label}>
           {entries.map(({ value: chat, time }) => {
             const title = chat.title || 'Untitled chat'
+            const row = notifications.rows.get(chat.id)
+            const unread = builds ? row?.unreadMessageCount ?? 0 : 0
             return (
               <ChatListItem
                 key={chat.id}
                 title={title}
                 time={time}
+                unread={unread}
                 href={chatHref?.(chat.id)}
                 onSelect={() => onOpenChat({ id: chat.id, title: chat.title })}
                 more={builds ? {
+                  read: { unread: unread > 0, onChange: (read) => setRead(chat.id, read) },
                   notifications: {
-                    choices: notificationChoices(notificationsOf(notifications.rows.get(chat.id), chat.notificationsRequireParticipation === true)),
+                    choices: notificationChoices(notificationsOf(row, chat.notificationsRequireParticipation === true)),
                     onChange: (enabled) => setNotifications(chat.id, enabled),
                   },
                   onDelete: () => setDeleting({ id: chat.id, title, open: true }),

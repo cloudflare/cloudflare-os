@@ -7,7 +7,7 @@ import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAside
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { useAgentsWaiting } from '@/automations/AgentsWaitingContext'
 import { AgentsWaitingProvider } from '@/automations/AgentsWaitingProvider'
-import { ConnectionIsland } from '@/blocks/ConnectionIsland'
+import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
@@ -15,6 +15,10 @@ import { useWaitingAsks, WaitingAsksProvider } from '@/gadgets/WaitingAsksProvid
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
+import { useUnread } from '@/notifications/UnreadContext'
+import { UnreadProvider } from '@/notifications/UnreadProvider'
+import { useBrowserPushSync } from '@/notifications/useBrowserPush'
+import { useTaskNotices } from '@/notifications/useTaskNotices'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useApi } from '@/rpc/ApiContext'
 import { signOut } from '@/rpc/signOut'
@@ -33,6 +37,7 @@ import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
+import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { AppSearch } from './-AppSearch'
@@ -48,13 +53,15 @@ export const Route = createFileRoute('/_app')({
             {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
             <ShareLinkGate>
               <WorkspacesProvider>
-                <AgentsWaitingProvider>
-                  <ChatSessionsProvider>
-                    <WaitingAsksProvider>
-                      <AppFrame />
-                    </WaitingAsksProvider>
-                  </ChatSessionsProvider>
-                </AgentsWaitingProvider>
+                <UnreadProvider>
+                  <AgentsWaitingProvider>
+                    <ChatSessionsProvider>
+                      <WaitingAsksProvider>
+                        <AppFrame />
+                      </WaitingAsksProvider>
+                    </ChatSessionsProvider>
+                  </AgentsWaitingProvider>
+                </UnreadProvider>
               </WorkspacesProvider>
             </ShareLinkGate>
           </OnboardingGate>
@@ -88,6 +95,7 @@ const AppFrame = () => {
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
+  const unread = useUnread()
   const looks = useWorkspaceLooks()
   const waiting = useAgentsWaiting()
   const navigate = useNavigate()
@@ -118,6 +126,8 @@ const AppFrame = () => {
   const inSettings = settingsPage !== undefined || skillPage !== undefined
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
+  // The workspace that is open, whose title and the viewer's role in it are kept live.
+  useLiveWorkspace(workspaceId ?? pageItem?.workspaceId)
 
   // Beside a chat, a chat that is still to be made, or a workspace's own page: which is named.
   const besideOf = chatPage ?? newChatPage ?? workspacePage
@@ -258,7 +268,8 @@ const AppFrame = () => {
     asideElement = <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={hideEmpty} narrow={narrow} />
   }
 
-  // Each workspace is listed by its title and when it was last active, or what waits on the user in it.
+  // Each workspace is listed by its title and when it was last active, or what waits on the user
+  // in it, and marked while it has anything unread.
   const workspaces =
     workspacesState.status === 'ready'
       ? workspacesState.workspaces.map(({ id, title, lastActive }) => ({
@@ -268,6 +279,7 @@ const AppFrame = () => {
           workspaceLook: looks[id],
           subtitle: formatActivity(lastActive),
           attention: agentsWaitingWords(waiting.get(id) ?? 0),
+          unread: unread?.totals.workspaces.has(id),
           href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
         }))
       : []
@@ -354,12 +366,30 @@ const AppFrame = () => {
       collapsed={collapsed}
     />
   )
+  // A task's notification shows while the connection has nothing to say, and one for the chat
+  // on screen does not show at all.
+  const { notice: taskNotice, dismiss: dismissNotice } = useTaskNotices((inWorkspace, inChat) =>
+    chatPage?.params.workspaceId === inWorkspace && chatPage.params.chatId === inChat)
+  const island: ConnectionIslandState | undefined = connectionState.status !== 'hidden'
+    ? connectionState
+    : taskNotice && {
+        status: 'notified',
+        kind: taskNotice.kind === 'taskCompleted' ? 'finished' : 'approval',
+        title: taskNotice.chatTitle,
+        onOpen: () => {
+          dismissNotice(taskNotice.id)
+          leaveSidebar()
+          void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: taskNotice.workspaceId, chatId: taskNotice.chatId }, state: { chatTitle: taskNotice.chatTitle } })
+        },
+      }
   const status = (
     <ConnectionIsland
-      state={connectionState.status === 'hidden' ? undefined : connectionState}
-      onDismiss={connection.dismiss}
+      state={island}
+      onDismiss={connectionState.status !== 'hidden' || !taskNotice ? connection.dismiss : () => dismissNotice(taskNotice.id)}
     />
   )
+  // A browser notification clicked opens its chat in the tab last used.
+  useBrowserPushSync((path) => void router.navigate({ href: path }))
   // Had back from the edge: what was last shown beside the page, or what was made last. Before
   // the library has been read, the pane opens empty until it has.
   const openAside = besideRef && besideKey && !named && !openedEmpty

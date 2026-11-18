@@ -1,6 +1,8 @@
+import { BrowserNotificationsRow } from '@/blocks/BrowserNotificationsRow'
 import { MutedWorkspaces } from '@/blocks/MutedWorkspaces'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
+import { useBrowserPushSetting } from '@/notifications/useBrowserPush'
 import { useSetWorkspaceMuted, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -10,12 +12,18 @@ import { SoonSelect, SoonSwitch } from './SoonControls'
 
 const UNTIL = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 
-/** What the user is told of, and where: this browser, and the workspaces that are kept quiet. */
+/**
+ * What the user is told of, and where: this browser, where the deployment and the browser can
+ * have it, and the workspaces that are kept quiet. While the Workshop is in view, a task is told
+ * of at the top of the window instead (`TaskNotices`).
+ */
 export const NotificationSettings = () => {
   const workspacesState = useWorkspaces()
   const looks = useWorkspaceLooks()
   const setMuted = useSetWorkspaceMuted()
   const { problem, attempt } = useAttempt()
+  const browser = useBrowserPushSetting()
+  const pushAttempt = useAttempt()
 
   const workspaces = workspacesState.status === 'ready' ? workspacesState.workspaces : []
   // A mute that has run out is no longer one.
@@ -25,14 +33,19 @@ export const NotificationSettings = () => {
 
   return (
     <>
-      <SettingsGroup title="Channels" soon>
-        <SettingRow title="Browser notifications" description="Get a notification in this browser when a task finishes or needs your approval while the Workshop isn’t in view.">
-          <SoonSwitch label="Browser notifications" />
-        </SettingRow>
-        <SettingRow title="Notification sound" description="Play a sound when a task finishes or needs your approval.">
+      <SettingsGroup title="Channels">
+        {browser.available && (
+          <BrowserNotificationsRow
+            state={browser.support === 'supported' || browser.support === 'unsupported' ? browser.status : browser.support}
+            pending={browser.pending}
+            problem={pushAttempt.problem}
+            onChange={(on) => void pushAttempt.attempt(on ? 'turn on browser notifications' : 'turn off browser notifications', () => browser.setOn(on))}
+          />
+        )}
+        <SettingRow title="Notification sound" description="Play a sound when a task finishes or needs your approval." soon>
           <SoonSwitch label="Notification sound" />
         </SettingRow>
-        <SettingRow title="Email digest" description="A summary of what happened while you were away.">
+        <SettingRow title="Email digest" description="A summary of what happened while you were away." soon>
           <SoonSelect label="Email digest" options={[{ id: 'never', label: 'Never' }, { id: 'daily', label: 'Daily' }, { id: 'weekly', label: 'Weekly' }]} />
         </SettingRow>
       </SettingsGroup>

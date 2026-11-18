@@ -2,6 +2,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/components/workspaceLook'
+import { UnreadDot } from './UnreadDot'
 
 export type WorkspaceListItemProps = {
   /** Identifies the row to the sidebar's shared highlight. */
@@ -58,6 +59,6 @@ export const WorkspaceListItem = ({
     </span>
     {attention
       ? <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-warning" />
-      : unread && <span role="img" aria-label="Unread" className="size-2 shrink-0 rounded-full bg-kumo-brand" />}
+      : unread && <UnreadDot />}
   </LinkButton>
 )

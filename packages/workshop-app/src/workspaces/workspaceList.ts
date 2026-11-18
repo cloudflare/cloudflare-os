@@ -34,8 +34,10 @@ const ORDERS: WorkspaceOrder[] = [
   { id: 'name', label: 'Name', at: ({ lastActive }) => lastActive, arrange: (workspaces, enough) => groupByName(workspaces, workspaceTitle, enough) },
 ]
 
-const FILTERS: ListFilter<Workspace>[] = [
+// Those with anything unread (by id), as far as the account has said.
+const filtersFor = (unread: ReadonlySet<string>): ListFilter<Workspace>[] => [
   { id: 'starred', label: 'Starred', test: ({ pinned }) => pinned === true },
+  { id: 'unread', label: 'Unread', test: ({ id }) => unread.has(id) },
   // Whose it is: a workspace with an owner is somebody else's.
   { id: 'mine', label: 'Mine', facet: 'owner', test: ({ owner }) => owner === undefined },
   { id: 'shared', label: 'Shared with me', facet: 'owner', test: ({ owner }) => owner !== undefined },
@@ -76,12 +78,18 @@ const memberFilters = (workspaces: Workspace[], memberships: ReadonlyMap<string,
 }
 
 /**
- * How the Workspaces page can be ordered, narrowed and searched: by title, by whose it is, and by
- * who has access to it, as far as `memberships` knows (by workspace id).
+ * How the Workspaces page can be ordered, narrowed and searched: by title, by whether anything in
+ * it is unread (`unread`, the ids of those that have), by whose it is, and by who has access to it,
+ * as far as `memberships` knows (by workspace id).
  */
-export const workspaceList = (workspaces: Workspace[], memberships: ReadonlyMap<string, WorkspaceMember[]>, viewerId: string): ListViewSpec<Workspace, WorkspaceOrder> => ({
+export const workspaceList = (
+  workspaces: Workspace[],
+  memberships: ReadonlyMap<string, WorkspaceMember[]>,
+  viewerId: string,
+  unread: ReadonlySet<string> = new Set(),
+): ListViewSpec<Workspace, WorkspaceOrder> => ({
   orders: ORDERS,
-  filters: [...FILTERS, ...memberFilters(workspaces, memberships, viewerId)],
+  filters: [...filtersFor(unread), ...memberFilters(workspaces, memberships, viewerId)],
   facetMenus: { member: 'Members' },
   searchText: (workspace) =>
     [workspaceTitle(workspace), workspace.owner?.name, ...(memberships.get(workspace.id) ?? []).map(({ profile }) => profile.name)].filter(Boolean).join(' '),

@@ -8,8 +8,9 @@ const validateTab = (value: unknown): WorkspaceTab | undefined =>
 
 /**
  * One workspace: its chats, or with `?tab=`, its agents, what it has made, what runs in it by
- * itself or who has access to it, and what is shown beside it (`?open=`, see `asideItems`), which the frame lays out
- * (`_app`).
+ * itself or who has access to it, and what is shown beside it (`?open=`, see `asideItems`), which
+ * the frame lays out (`_app`). The old app's `?chat=`, which a notification opens, goes to that
+ * chat's own page before this (`legacyTarget`).
  */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/')({
   validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab; open?: string } => ({

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FolderIcon } from '@phosphor-icons/react'
+import { ChecksIcon, FolderIcon } from '@phosphor-icons/react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { ListToolbar } from '@/blocks/ListToolbar'
 import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
@@ -14,6 +14,7 @@ import { useListView } from '@/hooks/useListView'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
 import { readStarOrder, writeStarOrder } from '@/prefs/starOrder'
+import { useUnread } from '@/notifications/UnreadContext'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useSetWorkspacePinned, useWorkspaces } from './WorkspacesContext'
@@ -37,15 +38,16 @@ export type WorkspacesPaneProps = {
 /**
  * All the user's workspaces: the starred ones first, in the order the user put them in (the latest
  * starred first until then), then the rest in the order chosen (most recently active first, until
- * another is), grouped as that order groups them. Over them, the list's controls: a search, rows
- * or cards, the order, filters, and the way to start a new one.
+ * another is), grouped as that order groups them, each marked while it has anything unread. Over
+ * them, the list's controls: a search, rows or cards, the order, filters (unread among them), the
+ * way to mark everything read while anything is unread, and the way to start a new one.
  */
 export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace }: WorkspacesPaneProps) => {
   const workspaces = useWorkspaces()
   const setPinned = useSetWorkspacePinned()
   const connection = useConnectionNotice()
   const [starOrder, setStarOrder] = useState(readStarOrder)
-  // Why the last star or unstar did not hold.
+  // Why the last star or unstar did not hold, or what was not marked read.
   const [starProblem, setStarProblem] = useState<string>()
   useDocumentTitle('Workspaces')
 
@@ -54,7 +56,9 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   const memberships = useWorkspaceMemberships(all)
   const looks = useWorkspaceLooks()
   const removing = useWorkspaceRemoval()
-  const list = useListView('workspaces', workspaceList(all, memberships, user.id))
+  const unread = useUnread()
+  const unreadIds = new Set(unread?.totals.workspaces.keys())
+  const list = useListView('workspaces', workspaceList(all, memberships, user.id, unreadIds))
   // Every starred one's place is kept, whichever of them the search and the filters leave.
   const starredIds = orderStarred(all.filter(({ pinned }) => pinned), starOrder).map(({ id }) => id)
   const shown = list.narrow(all)
@@ -83,6 +87,15 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     })
   }
 
+  // The marks clear as the account says they have.
+  const markRead = (what: string, mark: () => Promise<void>) => {
+    setStarProblem(undefined)
+    if (connection?.blocked()) return
+    mark().catch((error: unknown) => {
+      setStarProblem(`Couldn’t mark ${what} read: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
   // Only with all of the starred there: putting some of them in order would lose the others' places.
   const reorderStarred = list.narrowed ? undefined : keepOrder
   // What a row and a card are both given.
@@ -94,6 +107,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     starred: workspace.pinned === true,
     onStarredChange: (on: boolean) => star(workspace.id, on),
     href: workspaceHref?.(workspace.id),
+    unread: unread && unreadIds.has(workspace.id) ? { onMarkRead: () => markRead('the workspace', () => unread.markWorkspaceRead(workspace.id)) } : undefined,
     removal: {
       kind: removalOf(workspace),
       onSelect: () => {
@@ -111,7 +125,15 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
       noun="workspaces"
       {...list.controls}
       at={narrow ? 'bottom' : 'top'}
-      action={<Button variant="primary" onClick={onNewWorkspace}>New</Button>}
+      action={(
+        <span className="flex gap-2">
+          {/* While anything is unread, which the Unread filter narrows to. */}
+          {unread && unread.totals.total > 0 && (
+            <Button icon={ChecksIcon} aria-label="Mark all read" title="Mark all read" onClick={() => markRead('everything', unread.markAllRead)} />
+          )}
+          <Button variant="primary" onClick={onNewWorkspace}>New</Button>
+        </span>
+      )}
     />
   )
 

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AddCollectionDialog } from '@/blocks/AddCollectionDialog'
 import { ApprovalRules, type ApprovalRule } from '@/blocks/ApprovalRules'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
+import { BrowserNotificationsRow } from '@/blocks/BrowserNotificationsRow'
 import { FilePreviewCard } from '@/blocks/FilePreviewCard'
 import { FileEditor } from '@/blocks/FileEditor'
 import { ListToolbar } from '@/blocks/ListToolbar'
@@ -74,6 +75,8 @@ export const SettingsPreview = () => {
   const [picture, setPicture] = useState<string>()
   const [rules, setRules] = useState(RULES)
   const [quiet, setQuiet] = useState(['design'])
+  const [browserOn, setBrowserOn] = useState(false)
+  const [browserPending, setBrowserPending] = useState(false)
   const [addingSkill, setAddingSkill] = useState(false)
   const [addingToCollection, setAddingToCollection] = useState(false)
   const [makingCollection, setMakingCollection] = useState(false)
@@ -251,6 +254,27 @@ export const SettingsPreview = () => {
             onEnabledChange={(id, enabled) => setRules((current) => current.map((rule) => (rule.id === id ? { ...rule, enabled } : rule)))}
           />
           <ApprovalRules title="With none yet" soon rules={[]} onAdd={(about) => say(`added “${about}”`)} onRemove={() => {}} onEnabledChange={() => {}} />
+        </div>
+      </Section>
+      <Section title="BrowserNotificationsRow: this browser’s notifications off, then switched on (which asks the browser, held meanwhile); while it is being read; blocked by the browser; on an iPhone, whose notifications come from the app, with no switch; and where switching failed, under why">
+        <div className="flex w-full max-w-3xl flex-col gap-12">
+          <SettingsGroup title="Channels">
+            <BrowserNotificationsRow
+              state={browserOn ? 'on' : 'off'}
+              pending={browserPending}
+              onChange={(next) => {
+                setBrowserPending(true)
+                setTimeout(() => {
+                  setBrowserPending(false)
+                  setBrowserOn(next)
+                }, 800)
+              }}
+            />
+            <BrowserNotificationsRow state="loading" onChange={() => {}} />
+            <BrowserNotificationsRow state="blocked" onChange={() => {}} />
+            <BrowserNotificationsRow state="appleMobile" onChange={() => {}} />
+            <BrowserNotificationsRow state="off" problem="Couldn’t turn on browser notifications: the service couldn’t be reached." onChange={() => {}} />
+          </SettingsGroup>
         </div>
       </Section>
       <Section title="MutedWorkspaces: one muted until a time (mute another, which is until it is unmuted and says nothing of when), with the way to mute another across from the title, which opens in place to those that could be, under a field to find one by; point at one to unmute it; while they load; when they could not be read; and with none muted and something that could not be done">

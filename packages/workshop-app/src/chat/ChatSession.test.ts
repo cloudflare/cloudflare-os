@@ -60,6 +60,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
   // Only its disposer matters to the session.
   const lease = { [Symbol.dispose]: leaseDispose } as unknown as RpcStub<{}>
   const actionsLease = { [Symbol.dispose]: actionsLeaseDispose } as unknown as RpcStub<{}>
+  const viewDispose = vi.fn<() => void>()
 
   const listChats = vi.fn<() => Promise<AiChatMetadata[]>>(() => chats)
   const getChatHistory = vi.fn<Overseer['getChatHistory']>(
@@ -96,6 +97,8 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
     getChatAttachmentContent: vi.fn<Overseer['getChatAttachmentContent']>(async (_chatId, id) => new TextEncoder().encode(id)),
+    markChatRead: vi.fn<Overseer['markChatRead']>(async () => {}),
+    viewChat: vi.fn<Overseer['viewChat']>(async () => ({ [Symbol.dispose]: viewDispose }) as unknown as RpcStub<{}>),
   }
 
   const broken = new Set<(error: unknown) => void>()
@@ -122,6 +125,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     dispose,
     leaseDispose,
     actionsLeaseDispose,
+    viewDispose,
     /** What the server calls with chat activity. */
     server: () => subscriber!,
     /** What the server calls when an action's record changes. */
@@ -556,6 +560,88 @@ describe('ChatSession', () => {
       fake.server().message(userMessage(0, 'too late'))
 
       expect(session.getSnapshot()).toBe(before)
+    })
+  })
+
+  describe('read state', () => {
+    it('marks the chat read through its latest message once, and again only when another arrives', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'go'), agentMessage(1, 'done')) })
+      const session = await started(fake)
+      session.markRead()
+      session.markRead()
+      expect(fake.markChatRead.mock.calls).toEqual([[0, 1]])
+      fake.server().message(agentMessage(2, 'more'))
+      session.markRead()
+      expect(fake.markChatRead.mock.calls).toEqual([[0, 1], [0, 2]])
+    })
+
+    it('marks it read again once it is come back to, as it may have been marked unread meanwhile', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(agentMessage(1, 'done')) })
+      const session = await started(fake)
+      const leave = session.view()
+      session.markRead()
+      leave()
+      session.markRead()
+      session.view()
+      session.markRead()
+      expect(fake.markChatRead.mock.calls).toEqual([[0, 1], [0, 1]])
+    })
+
+    it('says it again with the next try when the account refused it', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(agentMessage(1, 'done')) })
+      fake.markChatRead.mockRejectedValueOnce(new Error('unavailable'))
+      const session = await started(fake)
+      session.markRead()
+      await flush()
+      session.markRead()
+      expect(fake.markChatRead).toHaveBeenCalledTimes(2)
+    })
+
+    it('says nothing over a connection that is down', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(agentMessage(1, 'done')) })
+      const session = await started(fake, 0, { connection: down() })
+      session.markRead()
+      expect(fake.markChatRead).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('shown', () => {
+    it('holds one lease while anyone shows it, once it has loaded, and lets go of it after the last', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = new ChatSession(() => fake.overseer, 0)
+      const first = session.view()
+      const second = session.view()
+      expect(fake.viewChat).not.toHaveBeenCalled()
+      session.start()
+      await settled(session)
+      expect(fake.viewChat).toHaveBeenCalledExactlyOnceWith(0)
+
+      first()
+      first()
+      await flush()
+      expect(fake.viewDispose).not.toHaveBeenCalled()
+      second()
+      await flush()
+      expect(fake.viewDispose).toHaveBeenCalledOnce()
+    })
+
+    it('holds it again over a new connection to the workspace, letting go of the old one', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = await started(fake)
+      session.view()
+      session.reconnect()
+      await flush()
+      expect(fake.viewDispose).toHaveBeenCalledOnce()
+      await vi.waitFor(() => expect(fake.viewChat).toHaveBeenCalledTimes(2))
+    })
+
+    it('lets go of it when the session stops', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = await started(fake)
+      session.view()
+      session.stop()
+      await flush()
+      expect(fake.viewDispose).toHaveBeenCalledOnce()
     })
   })
 

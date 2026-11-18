@@ -45,6 +45,8 @@ src/
                 one agent's page (`AgentPane`)
   gadgets/      One gadget's settings page (`GadgetSettingsPane`): what it is bound to, its code,
                 and what can be done to it
+  notifications/ What is unread (`UnreadSummary`), the notices of the viewer's tasks
+                (`TaskNotices`), and this browser's notifications (`browserPush.ts`)
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -52,7 +54,7 @@ src/
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`, `automations/`, `gadgets/`) are the only code that talks to the
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `connections/`, `settings/`, `skills/`, `automations/`, `gadgets/`, `notifications/`) are the only code that talks to the
 backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
@@ -291,6 +293,32 @@ menu's item as a `ConfirmMenu`'s does. A deleted chat leaves its row at once; on
 says so (`ChatSession`'s `deleted`, whoever deleted it), and the page goes to its workspace in
 its place in the history. The list is read once, so a chat someone else deletes stays in it until
 it is read again.
+
+## Unread, and being told
+
+What is unread is the account's (`notifications/UnreadSummary.ts`, plain and tested, over
+`subscribeToUnreadState('summary')`): a workspace with anything unread has a dot (`UnreadDot`) in
+the sidebar and on the Workspaces page, which can be narrowed to them (Unread) and has Mark all
+read beside New, and each workspace's ⋯ marks it read. A chat's own count comes with its
+notifications row (`ChatNotifications`), as a dot on its row, and its ⋯ marks it read or unread.
+Only for whoever may build in the workspace: `markChatRead()` and `viewChat()` are refused to
+someone who can only use it. While a chat is on screen `ChatSession.view()` holds `viewChat()`,
+and each message that arrives while the tab is in view is marked read (`markRead()`); coming back
+to the chat reads it, even if it was marked unread meanwhile.
+
+The account tells an open tab in view of the viewer's tasks (`notifications/TaskNotices.ts`, plain
+and tested): the island at the top says a task is done or needs their approval, with Open to its
+chat, unless that chat is on screen, and is put away after a while. A tab out of view is not
+subscribed, so the account pushes it to the user's devices instead: this browser's, once turned on
+in the Notification settings (`notifications/browserPush.ts`, the old app's, sharing its service
+worker `public/sw.js` and its subscription). Its links are the old app's
+(`/workspace/<id>?chat=<n>`), which the workspace's route sends on to the chat. The workspace's
+mute and each chat's setting are the backend's to apply.
+
+A workspace's title, the viewer's role in it, its owner and its sharing rules follow
+`subscribeToMetadata()` while it or one of its chats is open
+(`workspaces/LiveWorkspace.ts`, plain and tested), changed in the list through
+`useUpdateWorkspace()`.
 
 ## The Workspaces page
 

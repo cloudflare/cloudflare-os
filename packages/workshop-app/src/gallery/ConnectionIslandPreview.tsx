@@ -6,7 +6,7 @@ import { Button } from '@/components/Button'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'
 import { Section } from './Section'
 
-type Shown = 'hidden' | 'reconnecting' | 'long' | 'offline' | 'reconnected'
+type Shown = 'hidden' | 'reconnecting' | 'long' | 'offline' | 'reconnected' | 'finished' | 'approval' | 'long-title'
 
 const TABS: Array<{ value: Shown; label: string }> = [
   { value: 'hidden', label: 'Hidden' },
@@ -14,7 +14,12 @@ const TABS: Array<{ value: Shown; label: string }> = [
   { value: 'long', label: 'A long while' },
   { value: 'offline', label: 'Offline' },
   { value: 'reconnected', label: 'Reconnected' },
+  { value: 'finished', label: 'Task done' },
+  { value: 'approval', label: 'Needs approval' },
+  { value: 'long-title', label: 'A long title' },
 ]
+
+const opened = () => {}
 
 const stateOf = (shown: Shown, alarms: number): ConnectionIslandState | undefined => {
   switch (shown) {
@@ -22,6 +27,12 @@ const stateOf = (shown: Shown, alarms: number): ConnectionIslandState | undefine
       return undefined
     case 'reconnected':
       return { status: 'reconnected' }
+    case 'finished':
+      return { status: 'notified', kind: 'finished', title: 'Weekly report', onOpen: opened }
+    case 'approval':
+      return { status: 'notified', kind: 'approval', title: 'Invoices', onOpen: opened }
+    case 'long-title':
+      return { status: 'notified', kind: 'finished', title: 'Create a new slideshow about the history of Paris', onOpen: opened }
     default:
       return { status: 'reconnecting', alarms, long: shown === 'long', offline: shown === 'offline' }
   }
@@ -45,7 +56,7 @@ export const ConnectionIslandPreview = () => {
 
   return (
     <>
-      <Section title="ConnectionIsland (each state, from the tabs: thinking from the start while it reconnects or sad once it can’t, shaken by an alarm, and happy once back; from Hidden it opens out of the top edge of the box, and goes back into it)">
+      <Section title="ConnectionIsland (each state, from the tabs: thinking from the start while it reconnects or sad once it can’t, shaken by an alarm, and happy once back; a task of the viewer’s done, happy, or waiting for their approval, with Open to its chat, a long title giving way; from Hidden it opens out of the top edge of the box, and goes back into it)">
         <div className="flex flex-wrap items-center gap-4">
           <Tabs size="sm" value={shown} onValueChange={(value) => {
               setShown(value as Shown)

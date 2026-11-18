@@ -35,8 +35,8 @@ export const WorkspaceRemovalPreview = () => {
   const props = shown ? CASES[shown] : undefined
   return (
     <>
-      <Section title="WorkspaceMoreMenu (a workspace’s more: from a list, open in a new tab and copy its link, then delete it as its owner; on its page, only that; and for one shared with the viewer, removing it from their list instead)">
-        <WorkspaceMoreMenu title="Q3 platform review" href="#q3" removal={{ kind: 'delete', onSelect: () => ask('shared') }} />
+      <Section title="WorkspaceMoreMenu (a workspace’s more: Mark as read while anything in it is unread; from a list, open in a new tab and copy its link, then delete it as its owner; on its page, only that; and for one shared with the viewer, removing it from their list instead)">
+        <WorkspaceMoreMenu title="Q3 platform review" href="#q3" onMarkRead={() => {}} removal={{ kind: 'delete', onSelect: () => ask('shared') }} />
         <WorkspaceMoreMenu title="Q3 platform review" triggerVariant="secondary" removal={{ kind: 'delete', onSelect: () => ask('shared') }} />
         <WorkspaceMoreMenu title="Hiring plan" href="#hiring" removal={{ kind: 'dismiss', onSelect: () => ask('dismiss') }} />
       </Section>

@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
 import { useApi } from '@/rpc/ApiContext'
+import { sameLiveFields, type LiveWorkspaceFields } from './LiveWorkspace'
 import { WorkspaceLooks } from './WorkspaceLooks'
 import { WorkspaceMemberships } from './WorkspaceMemberships'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
@@ -9,7 +10,8 @@ import { removeWorkspace } from './workspaceRemoval'
 
 /**
  * Loads the user's workspaces when mounted, and again on `refresh()`. The list has no live updates
- * to subscribe to, so whoever changes it asks for a reload.
+ * to subscribe to, so whoever changes it asks for a reload; the workspace that is open says what
+ * changes of it (`useLiveWorkspace`), which `update` shows.
  */
 export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   const { api, reconnecting } = useApi()
@@ -83,5 +85,14 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     setState((current) => (current.status === 'ready' ? { ...current, workspaces: current.workspaces.filter((workspace) => workspace.id !== id) } : current))
   }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setMuted, remove, memberships, looks }}>{children}</WorkspacesContext>
+  // Stable, for the subscription that calls it. What it says again unchanged changes nothing.
+  const [update] = useState(() => (id: string, fields: LiveWorkspaceFields) =>
+    setState((current) => {
+      if (current.status !== 'ready') return current
+      const known = current.workspaces.find((workspace) => workspace.id === id)
+      if (!known || sameLiveFields(known, fields)) return current
+      return { ...current, workspaces: current.workspaces.map((workspace) => (workspace === known ? { ...workspace, ...fields } : workspace)) }
+    }))
+
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setMuted, remove, update, memberships, looks }}>{children}</WorkspacesContext>
 }

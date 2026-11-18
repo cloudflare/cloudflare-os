@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { animate, AnimatePresence, motion, useMotionValue, usePresence, useReducedMotion, type MotionStyle, type PanInfo } from 'motion/react'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
 import { ShimmerText } from '@/components/ShimmerText'
@@ -16,6 +17,11 @@ export type ConnectionIslandState =
       offline: boolean
     }
   | { status: 'reconnected' }
+  /**
+   * One of the viewer's tasks finished, or waits for their approval, in the chat of this title,
+   * which `onOpen` goes to. Only while the connection has nothing to say.
+   */
+  | { status: 'notified'; kind: 'finished' | 'approval'; title: string; onOpen: () => void }
 
 export type ConnectionIslandProps = {
   /** What there is to say; left out, it goes. */
@@ -67,11 +73,12 @@ const INSTANT = { duration: 0 } as const
 
 /**
  * Over the top of the window, in the middle: that the connection to the backend is being made
- * again, then that it is back. It opens the way a menu does (`ConnectionIsland.css`), out of a
+ * again, then that it is back, or else that one of the viewer's tasks finished or waits for their
+ * approval, with the way to its chat. It opens the way a menu does (`ConnectionIsland.css`), out of a
  * point at the top edge of the window and along a curve, its contents feathered at the moving
  * edges, scaled up and brought into focus, and closes back into it. The mascot is shaken by each
  * alarm, then thinks while it reconnects and is sad once it is offline or cannot reach the server,
- * and happy once the connection is back. A swipe up flings it away sooner; pulled any other way,
+ * and happy once the connection is back, or a task is done. A swipe up flings it away sooner; pulled any other way,
  * it gives a little and springs back.
  */
 export const ConnectionIsland = ({ state, onDismiss }: ConnectionIslandProps) => (
@@ -132,10 +139,12 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
     return () => observer.disconnect()
   }, [width, reduced])
 
-  const label = state.status === 'reconnected' ? 'Reconnected'
-    : state.offline ? 'You’re offline'
-      : state.long ? 'Can’t reach the server'
-        : 'Reconnecting…'
+  const label = state.status === 'notified' ? `${state.title}\n${state.kind}`
+    : state.status === 'reconnected' ? 'Reconnected'
+      : state.offline ? 'You’re offline'
+        : state.long ? 'Can’t reach the server'
+          : 'Reconnecting…'
+  const notified = state.status === 'notified' ? state : undefined
 
   const geometry = {
     '--island-from-x': `${target / 2}px`,
@@ -192,7 +201,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
           surface springs to another wording's width, the mascot moves only with its edge, and the
           wording is uncovered or covered by it.
         */}
-        <div ref={content} className="connection-island-items absolute top-0 left-0 flex h-11 w-max items-center gap-2 ps-2.5 pe-5 text-base font-medium">
+        <div ref={content} className={cn('connection-island-items absolute top-0 left-0 flex h-11 w-max items-center gap-2 ps-2.5 text-base font-medium', notified ? 'pe-2' : 'pe-5')}>
           {/* Its drawing has room around it: at 32px wide the cloud itself is some 25px tall. */}
           <Mascot emotion={emotion} color="island" onShake={knock} className="w-8 shrink-0" />
           {/* Each wording blurs in over the last, in the same place, which leaves out of the way. */}
@@ -205,10 +214,31 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
               transition={reduced ? INSTANT : { duration: 0.2 }}
               className="whitespace-nowrap"
             >
-              {/* Swept while it is trying, as the mascot thinks; still once it cannot. */}
-              <ShimmerText active={state.status === 'reconnecting' && !state.long && !state.offline}>{label}</ShimmerText>
+              {notified
+                ? (
+                    <span className="flex items-center">
+                      {/* A long title gives way, so that what happened is always said. */}
+                      <span className="max-w-48 truncate">{notified.title || 'A chat'}</span>
+                      &nbsp;{notified.kind === 'finished' ? 'is done' : 'needs your approval'}
+                    </span>
+                  )
+                : (
+                    // Swept while it is trying, as the mascot thinks; still once it cannot.
+                    <ShimmerText active={state.status === 'reconnecting' && !state.long && !state.offline}>{label}</ShimmerText>
+                  )}
             </motion.span>
           </AnimatePresence>
+          {notified && (
+            <button
+              type="button"
+              onClick={notified.onOpen}
+              // A press on it is not the start of a swipe.
+              onPointerDownCapture={(event) => event.stopPropagation()}
+              className="h-7 shrink-0 cursor-pointer rounded-full bg-(--text-color-kumo-inverse) px-3 text-sm font-medium text-(--color-island) outline-none hover:opacity-85 focus-visible:ring-2 focus-visible:ring-kumo-focus"
+            >
+              Open
+            </button>
+          )}
         </div>
       </div>
     </motion.div>
@@ -217,7 +247,8 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
 
 /**
  * Thinking from the start while it reconnects, or sad once it is offline or cannot reach the
- * server, and shaken by each alarm meanwhile; happy once the connection is back.
+ * server, and shaken by each alarm meanwhile; happy once the connection is back, or a task is
+ * done, and waiting on one that asks for the viewer's approval.
  */
 const useEmotion = (state: ConnectionIslandState): MascotEmotion => {
   const alarms = state.status === 'reconnecting' ? state.alarms : 0
@@ -230,6 +261,7 @@ const useEmotion = (state: ConnectionIslandState): MascotEmotion => {
     const timer = setTimeout(() => setSettled(alarms), SHAKE_FOR)
     return () => clearTimeout(timer)
   }, [alarms])
+  if (state.status === 'notified') return state.kind === 'finished' ? 'happy' : 'idle'
   if (state.status === 'reconnected') return 'happy'
   if (alarms !== settled) return 'error'
   return state.offline || state.long ? 'sad' : 'thinking'

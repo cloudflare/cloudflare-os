@@ -146,6 +146,23 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
+
+  // Shown, the workspace keeps the model's cache of the chat warm and tells the viewer of what is
+  // new in it (`ChatSession.view`), for as long as it is on screen. Before marking it read below,
+  // as coming to it starts over what was marked.
+  useEffect(() => {
+    if (builds) return actions.view()
+  }, [actions, builds])
+  // What is on screen has been read: each message that arrives while the tab is in view, and
+  // what came while it was away once it is back.
+  const latestRow = items?.at(-1)?.id
+  useEffect(() => {
+    if (!builds) return
+    const markIfShown = () => document.visibilityState === 'visible' && actions.markRead()
+    markIfShown()
+    document.addEventListener('visibilitychange', markIfShown)
+    return () => document.removeEventListener('visibilitychange', markIfShown)
+  }, [actions, builds, latestRow])
   const commands = useChatCommands(actions.listCommands, chat.status === 'ready')
   useOpenNewOutputs(chat.status === 'ready' ? chat : undefined, onOpenOutput)
 
@@ -257,6 +274,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     if (connection?.blocked()) return
     notifications.setEnabled(chatId, enabled).catch((error: unknown) => setNotice(`Couldn’t change the chat’s notifications: ${messageOf(error)}`))
   })
+  // Marked unread, it stays so until another message arrives or the chat is come back to.
+  const changeRead = useHandler((read: boolean) => {
+    setNotice(undefined)
+    if (connection?.blocked()) return
+    notifications.setRead(chatId, read).catch((error: unknown) => setNotice(`Couldn’t mark the chat ${read ? 'read' : 'unread'}: ${messageOf(error)}`))
+  })
+  const unread = (notificationsRow?.unreadMessageCount ?? 0) > 0
   const hasSettings = onOpenSettings !== undefined
   const workspaceTitle = workspace?.title
   const header = useMemo(() => (workspaceTitle !== undefined || title) && (
@@ -267,6 +291,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
       automations={automations > 0 && hasSettings ? { count: automations, onOpen: () => openSettings('automations') } : undefined}
       more={builds && ready ? {
+        read: { unread, onChange: changeRead },
         notifications: {
           choices: notificationChoices(notificationsOf(notificationsRow, requireParticipation)),
           onChange: changeNotifications,
@@ -274,7 +299,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         onDelete: () => setDeleting(true),
       } : undefined}
     />
-  ), [workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, notificationsRow, requireParticipation, changeNotifications])
+  ), [workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, unread, changeRead, notificationsRow, requireParticipation, changeNotifications])
 
   const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
   const hasPasteLinks = pasteLinks !== undefined
