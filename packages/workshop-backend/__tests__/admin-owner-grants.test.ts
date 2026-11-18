@@ -521,29 +521,37 @@ describe("listing grants", () => {
 });
 
 describe("an owner grant that ended longer ago than the retention", () => {
-  it("is deleted by the owner's next call, whichever it is", () => withWorkspace(async ws => {
+  it("is deleted by the owner's next grant or renewal, and left by an end", () => withWorkspace(async ws => {
     let longAgo = new Date(Date.now() - RETENTION * DAY_MS - HOUR_MS);
     let live = put(ws, grantOf());
+    let old = () => [
+      put(ws, grantOf({ expiresAt: longAgo })),
+      put(ws, grantOf({ revokedAt: longAgo, revokedBy: namedUser(OWNER) })),
+    ];
     await asOwner(ws, async client => {
-      // The listing is never called: each of the other three deletes on its own.
-      for (let call of [
-        () => client.grantAdminAccess(), () => client.renewAdminAccess(live.id),
-        () => client.revokeAdminAccess(live.id),
-      ]) {
-        let gone = [
-          put(ws, grantOf({ expiresAt: longAgo })),
-          put(ws, grantOf({ revokedAt: longAgo, revokedBy: namedUser(OWNER) })),
-        ];
+      // The listing is never called: each of the other two deletes on its own.
+      for (let call of [() => client.grantAdminAccess(), () => client.renewAdminAccess(live.id)]) {
+        let gone = old();
         for (let grant of gone) expect(raw(ws, grant.id)).toBeDefined();
 
         await call();
         for (let grant of gone) expect(raw(ws, grant.id)).toBeUndefined();
       }
+      // An end reads no retention, so that nothing can fail it, and deletes nothing.
+      let kept = old();
+      await client.revokeAdminAccess(live.id);
+      for (let grant of kept) expect(raw(ws, grant.id)).toBeDefined();
     });
-    // What is left: the grant the first call gave, and the one the last call ended.
-    expect(storedGrants(ws)).toHaveLength(2);
-    expect(ws.impl.liveAdminGrants()).toMatchObject([{ source: "owner", scope: "workspace" }]);
     expect(raw(ws, live.id)).toMatchObject({ revokedBy: namedUser(OWNER) });
+  }));
+
+  it("does not stop the owner ending a grant while the deployment's settings cannot be read",
+      () => withWorkspace(async ws => {
+    let live = put(ws, grantOf());
+    ws.kvGet = async () => { throw new Error("KV is down"); };
+    await asOwner(ws, client => client.revokeAdminAccess(live.id));
+    expect(raw(ws, live.id)).toMatchObject({ revokedBy: namedUser(OWNER) });
+    expect(ws.impl.liveAdminGrants()).toStrictEqual([]);
   }));
 });
 
@@ -597,9 +605,12 @@ describe("what the grant methods leave alone", () => {
     let longEnded = put(ws, approvalGrantOf({
       revokedAt: new Date(Date.now() - 2 * RETENTION * DAY_MS), revokedBy: ADMIN,
     }));
-    let kept = () => [raw(ws, live.id), raw(ws, longEnded.id)];
+    // One that ran out an hour ago, which nothing recorded.
+    let ranOut = put(ws, approvalGrantOf({ expiresAt: new Date(Date.now() - HOUR_MS) }));
+    let kept = () => [raw(ws, live.id), raw(ws, longEnded.id), raw(ws, ranOut.id)];
     let before = kept();
-    expect(before).toStrictEqual([{ ...live, id: null }, { ...longEnded, id: null }]);
+    expect(before).toStrictEqual(
+        [{ ...live, id: null }, { ...longEnded, id: null }, { ...ranOut, id: null }]);
 
     await asOwner(ws, async client => {
       let audit = await auditRecords();
@@ -612,7 +623,7 @@ describe("what the grant methods leave alone", () => {
       let own = await client.grantAdminAccess();
       expect(kept()).toStrictEqual(before);
 
-      for (let grant of [live, longEnded]) {
+      for (let grant of [live, longEnded, ranOut]) {
         expect(await refusalOf(client.renewAdminAccess(grant.id))).toStrictEqual(renewNothing);
         expect(kept()).toStrictEqual(before);
         expect(await refusalOf(client.revokeAdminAccess(grant.id))).toStrictEqual(revokeNothing);
@@ -629,7 +640,7 @@ describe("what the grant methods leave alone", () => {
     });
 
     expect(ws.impl.liveAdminGrants()).toStrictEqual([live]);
-    expect(storedGrants(ws)).toHaveLength(3);
+    expect(storedGrants(ws)).toHaveLength(4);
   }));
 
   it("delete an approval's long-ended grant only when no source is named",
@@ -656,21 +667,20 @@ describe("a workspace that is deleted", () => {
       // Each call is held at its read of the settings, then finds the workspace deleted.
       let config = held<string | null>();
       ws.kvGet = () => config.promise;
+      // An end reads no settings, so it is not among them.
       let calls = [
-        client.grantAdminAccess(), client.renewAdminAccess(live.id),
-        client.revokeAdminAccess(live.id), client.listAdminGrants(),
+        client.grantAdminAccess(), client.renewAdminAccess(live.id), client.listAdminGrants(),
       ].map(call => call.then(value => ({ value }), error => ({ error })));
       await settle();
 
       ws.impl.beginDeletion(new Set());
       config.release(JSON.stringify(ws.config));
-      let [granted, renewed, revoked, listed] = await Promise.all(calls);
+      let [granted, renewed, listed] = await Promise.all(calls);
 
       expect(getAdminGrantErrorCode((granted as { error: unknown }).error))
           .toBe(ADMIN_GRANT_ERROR_CODES.notFound);
       expect(getAdminGrantErrorCode((renewed as { error: unknown }).error))
           .toBe(ADMIN_GRANT_ERROR_CODES.notFound);
-      expect(revoked).toStrictEqual({ value: undefined });
       expect(listed).toStrictEqual({ value: [] });
       expect(storedGrants(ws)).toStrictEqual([live]);
     });

@@ -681,8 +681,8 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
  * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls, and of
- * AdminApi.writeWorkspace(). `contentOff` is also what the grant methods are refused with while
- * the level in force is below "content".
+ * AdminApi.writeWorkspace(). `contentOff` is also what the grant methods and a request for content
+ * access are refused with while the level in force is below "content".
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -728,11 +728,22 @@ export const createAdminAccessError = adminAccessErrors.create;
 export const getAdminAccessErrorCode = adminAccessErrors.getCode;
 
 /**
- * Stable error codes attached to expected refusals of the grant methods (Overseer
- * .renewAdminAccess() and revokeAdminAccess(), and AdminApi.endWorkspaceGrant()).
+ * Stable error codes attached to expected refusals of the grant methods: Overseer
+ * .renewAdminAccess() and revokeAdminAccess(), and AdminApi's content access requests
+ * (requestContentAccess(), getContentAccessRequest(), approveContentAccess(),
+ * denyContentAccess()) and endWorkspaceGrant(). A caller who is no longer a deployment admin, and
+ * a workspace id that names no workspace, are refused with ADMIN_ACCESS_ERROR_CODES' `notAdmin`
+ * and `workspaceNotFound`, and a level in force below "content" with its `contentOff`.
  */
 export const ADMIN_GRANT_ERROR_CODES = {
   notFound: "ADMIN_GRANT_NOT_FOUND",
+  requestNotFound: "ADMIN_GRANT_REQUEST_NOT_FOUND",
+  requestNotPending: "ADMIN_GRANT_REQUEST_NOT_PENDING",
+  requestPending: "ADMIN_GRANT_REQUEST_PENDING",
+  tooManyRequests: "ADMIN_GRANT_TOO_MANY_REQUESTS",
+  workspaceUnlisted: "ADMIN_GRANT_WORKSPACE_UNLISTED",
+  workspaceChanged: "ADMIN_GRANT_WORKSPACE_CHANGED",
+  secondAdminRequired: "ADMIN_GRANT_SECOND_ADMIN_REQUIRED",
 } as const;
 
 /** An expected refusal code from ADMIN_GRANT_ERROR_CODES. */
@@ -741,6 +752,23 @@ export type AdminGrantErrorCode =
 
 const adminGrantErrors = codedErrorFamily<AdminGrantErrorCode>({
   [ADMIN_GRANT_ERROR_CODES.notFound]: "No such grant.",
+  [ADMIN_GRANT_ERROR_CODES.requestNotFound]: "No such content access request.",
+  [ADMIN_GRANT_ERROR_CODES.requestNotPending]:
+      "This content access request is no longer pending: it was approved, denied or has expired.",
+  [ADMIN_GRANT_ERROR_CODES.requestPending]:
+      "A request to read this workspace's content is already pending. Another admin can approve " +
+      "or deny it.",
+  [ADMIN_GRANT_ERROR_CODES.tooManyRequests]:
+      "Too many content access requests are pending. Deny some, or wait for them to expire.",
+  [ADMIN_GRANT_ERROR_CODES.workspaceUnlisted]:
+      "The deployment directory lists no such workspace, so its content cannot be requested: the " +
+      "request must show the workspace's owner. A workspace is listed once one of its members " +
+      "has opened it.",
+  [ADMIN_GRANT_ERROR_CODES.workspaceChanged]:
+      "This workspace no longer belongs to the owner the request named, so no grant was given. " +
+      "Request it again.",
+  [ADMIN_GRANT_ERROR_CODES.secondAdminRequired]:
+      "This request must be approved by an admin other than the one who made it.",
 });
 
 /** Creates an expected grant refusal with a machine-readable code. */
@@ -2006,10 +2034,12 @@ export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
  * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord,
- * inspectUser() as an AdminUserAccessRecord, and writeWorkspace() as an AdminWriteRecord. The rest
- * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
- * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats), the gateway
- * tests, and checkForUpdates.
+ * inspectUser() as an AdminUserAccessRecord, writeWorkspace() as an AdminWriteRecord, and
+ * requestContentAccess(), approveContentAccess(), denyContentAccess() and endWorkspaceGrant() as
+ * AdminGrantRecords. The rest change no setting and are not recorded: the reads (getSettings,
+ * isBlueprintFeatured, getUpdateStatus, listUsers, listWorkspaces, listAdminAudit,
+ * getAdminAuditStats, listContentAccessRequests, getContentAccessRequest), the gateway tests, and
+ * checkForUpdates.
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2207,11 +2237,13 @@ export type AdminSettingRecord = {
 /** One record of the deployment-wide admin audit log, kept for the deployment's retention
  * (AdminSettingsView.adminAuditRetentionDays). */
 export type AdminAuditRecord =
-    AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord | AdminWriteRecord;
+    AdminAccessRecord | AdminUserAccessRecord | AdminSettingRecord | AdminWriteRecord |
+    AdminGrantRecord;
 
 /** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "user" for access to a
  * user's account, "setting" for a change to the deployment's settings, "write" for an admin's
- * write to a workspace. */
+ * write to a workspace, "grant" for a step of admins' access to a workspace's content without its
+ * owner. */
 export type AdminAuditKind = AdminAuditRecord["kind"];
 
 /** Options for AdminApi.listAdminAudit(). The filters combine. */
@@ -2236,6 +2268,10 @@ export type AdminAuditQuery = {
    * other call into a workspace, and every call into a user's account, which answers with
    * metadata alone. No setting or write record matches. */
   exposed?: AdminAccessExposure;
+  /** When true, only the "requestContentAccess" records (AdminGrantRecord) of requests still
+   * pending, as AdminApi.listContentAccessRequests() lists them: the ones an admin can approve or
+   * deny. */
+  pending?: boolean;
   /** Only records made at or after this time. */
   since?: Date;
   /** The previous page's `nextCursor`; absent for the first page. */
@@ -2327,8 +2363,8 @@ export type AdminGrantLevel = typeof ADMIN_GRANT_LEVELS[number];
  * One grant: what makes a workspace's content readable by deployment admins, for
  * ADMIN_GRANT_LIFETIME_SECONDS. It comes from the workspace's owner (source "owner": for one
  * workspace, stored in that workspace, or for all of the owner's workspaces, stored once in their
- * account). A second admin's approval of a request (source "admins": for one workspace) is to
- * come.
+ * account) or from a second admin who approved another admin's request (source "admins": for one
+ * workspace; see AdminApi.requestContentAccess()).
  *
  * A grant is live while its level is "content", it is not revoked and it has not expired. A
  * workspace can hold several live grants, and a content call needs any one. A grant never widens
@@ -2355,7 +2391,7 @@ export type AdminAccessGrant = {
   grantedBy: NamedUser;
   /** For "admins": the admin who asked, by canonical user id. Never the approver. */
   requestedBy?: string;
-  /** For "admins": the write request it was approved through (AdminWriteRequest.id). */
+  /** For "admins": the request it was approved through (AdminContentRequest.id). */
   requestId?: string;
   /** For "admins": why, as the requester gave it. */
   reason?: string;
@@ -2407,6 +2443,110 @@ export type AdminWriteRecord = Pick<AdminAccessRecord,
   /** The action. Named `method` as on the other records, so that AdminAuditQuery.method filters
    * every kind. */
   method: AdminWriteAction;
+};
+
+/** How long a request to read a workspace's content without its owner stays pending, in seconds:
+ * a day. */
+export const ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS = 24 * 60 * 60;
+
+/** The most requests to read a workspace's content that may be pending at once, across the
+ * deployment. A workspace has at most one pending. */
+export const MAX_PENDING_CONTENT_REQUESTS = 50;
+
+/**
+ * Where a request to read a workspace's content stands:
+ *   - "pending":  waiting for an admin other than its requester to approve it, or for any admin to
+ *                 deny it;
+ *   - "approved": a second admin approved it, and the workspace was asked for the grant, which
+ *                 `grantId` names once the workspace has given it;
+ *   - "failed":   it was approved, and the workspace gave no grant (`error`), or its answer never
+ *                 arrived;
+ *   - "denied":   an admin denied it;
+ *   - "expired":  nobody approved or denied it before `expiresAt`, or its requester stopped being a
+ *                 deployment admin first (`error`).
+ * A request leaves "pending" once, and gives at most one grant.
+ */
+export type AdminContentRequestState = "pending" | "approved" | "failed" | "denied" | "expired";
+
+/** A request to read a workspace's content without its owner's grant, as the AdminApi content
+ * access methods return it. */
+export type AdminContentRequest = {
+  /** Opaque. Names the request in its audit records and on the grant it gives. */
+  id: string;
+  /** The workspace whose content it asks for. */
+  workspaceId: string;
+  /** The workspace's title as the deployment directory listed it when the request was made, cut
+   * as an audit record cuts it (see AdminAccessRecord.workspaceTitle); "" for an untitled one.
+   * The request never reads the workspace. */
+  workspaceTitle: string;
+  /** The workspace's owner as the deployment directory listed them then, by canonical user id,
+   * kept as an audit record keeps it (see AdminAccessRecord.workspaceOwner). Never empty: a
+   * workspace the directory does not list cannot be requested. A grant is given only while the
+   * workspace still has this owner. */
+  workspaceOwner: string;
+  /** Why, as the requester gave it. It stays in the admins' log: the workspace's owner is not
+   * told. */
+  reason: string;
+  /** The admin who made the request, by canonical user id. */
+  requestedBy: string;
+  /** How the requester's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** When it was made. */
+  requestedAt: Date;
+  /** When it stops being approvable: ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS after it was made. */
+  expiresAt: Date;
+  /** Where it stands (see AdminContentRequestState). */
+  state: AdminContentRequestState;
+  /** The admin who approved or denied it, once one has. */
+  resolvedBy?: string;
+  /** When it left "pending". */
+  resolvedAt?: Date;
+  /** The grant it gave (AdminAccessGrant.id), once the workspace has given it. */
+  grantId?: string;
+  /** Why it failed, or why it expired before `expiresAt`, cut to MAX_ADMIN_AUDIT_ARG_LENGTH
+   * characters. */
+  error?: string;
+};
+
+/** The AdminApi methods an AdminGrantRecord records. */
+export const ADMIN_GRANT_METHODS = [
+  "requestContentAccess", "approveContentAccess", "denyContentAccess", "endWorkspaceGrant",
+] as const satisfies readonly (keyof AdminApi)[];
+
+/** One of ADMIN_GRANT_METHODS. */
+export type AdminGrantMethod = typeof ADMIN_GRANT_METHODS[number];
+
+/**
+ * One step of admins' access to a workspace's content without its owner, in the deployment-wide
+ * audit log: a request (requestContentAccess()), its denial (denyContentAccess()), its approval
+ * (approveContentAccess()), which gives the grant, or the early end of that grant
+ * (endWorkspaceGrant()). Each is appended before its step takes effect: the request and the denial
+ * by AdminSettings, which holds the requests, before it stores them, with the workspace's title and
+ * owner as the request keeps them; the approval and the ending by the workspace, before it stores
+ * or ends the grant, with its own. A step whose record cannot be written is not taken. A request
+ * that runs out records nothing. Nothing of any step is shown in the workspace.
+ */
+export type AdminGrantRecord = Pick<AdminAccessRecord,
+    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
+    "reason"> & {
+  /** Distinguishes this from the other kinds of AdminAuditRecord. */
+  kind: "grant";
+  /** The step. */
+  method: AdminGrantMethod;
+  /** The request (AdminContentRequest.id). `reason` is the requester's on every step. */
+  requestId: string;
+  /** The admin who made the request. */
+  requestedBy: string;
+  /** For "approveContentAccess" and "endWorkspaceGrant": the grant the approval gives or the
+   * admin ended (AdminAccessGrant.id), which is the `grantId` of every AdminAccessRecord made
+   * under it. */
+  grantId?: string;
+  /** For "endWorkspaceGrant": why, as the admin who ended the grant gave it. */
+  endReason?: string;
+  /** For "approveContentAccess": the workspace's live grant from an earlier approval, which this
+   * one replaces, ending it as ended by its approver (AdminAccessGrant.id). Absent when there was
+   * none. */
+  replacedGrantId?: string;
 };
 
 /**
@@ -2875,6 +3015,74 @@ export interface AdminApi {
    */
   writeWorkspace(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
                  reason: string): Promise<void>;
+
+  // --- Content access without the owner ---
+  //
+  // A request to read a workspace's content without its owner's grant, approved by a second
+  // admin. Not a write: ADMIN_WORKSPACE_WRITES does not bound it, the level in force does, and
+  // below "content" every method but listContentAccessRequests(), getContentAccessRequest(),
+  // denyContentAccess() and endWorkspaceGrant() is refused `contentOff`
+  // (ADMIN_ACCESS_ERROR_CODES), so that what is pending can still be seen and ended. Each method
+  // re-checks that the caller is still a deployment admin (`notAdmin`). Nothing of a request, its
+  // approval or the grant it gives is shown to the workspace's members: the reason stays in the
+  // admin audit log. Every admin sees every request: the panel's list of pending approvals is
+  // listContentAccessRequests().
+
+  /**
+   * Ask for a grant to read a workspace's content, for `reason` (required, as for
+   * inspectWorkspace()). Nothing in the workspace is read or changed: its title and owner are the
+   * deployment directory's. The request is recorded (an AdminGrantRecord) before it is stored, so
+   * a request whose record cannot be written is refused. It stays pending for
+   * ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, until an admin other than its requester approves it
+   * (approveContentAccess()) or any admin denies it.
+   *
+   * Refused `contentOff` while the level in force is below "content", `workspaceNotFound` for a
+   * malformed id, and (ADMIN_GRANT_ERROR_CODES) `workspaceUnlisted` for a workspace the directory
+   * does not list (see listWorkspaces()), `requestPending` while a request for the same workspace
+   * is pending, and `tooManyRequests` while MAX_PENDING_CONTENT_REQUESTS are pending.
+   */
+  requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest>;
+
+  /** Every content access request still kept: the pending ones first, the soonest to expire
+   * first, then those resolved within the last day, the latest first. A request that has run out
+   * is "expired" by the time it is listed. */
+  listContentAccessRequests(): Promise<AdminContentRequest[]>;
+
+  /** One content access request, by id, for a day after it is resolved. Refused
+   * `requestNotFound` (ADMIN_GRANT_ERROR_CODES). */
+  getContentAccessRequest(requestId: string): Promise<AdminContentRequest>;
+
+  /**
+   * Approve a pending request that a different admin made, and have the workspace store the grant
+   * it asks for: source "admins", for ADMIN_GRANT_LIFETIME_SECONDS. It replaces the live grant of
+   * that source there, if any, which the approval's record names (AdminGrantRecord.replacedGrantId)
+   * and which ends as ended by the caller. Refused (ADMIN_GRANT_ERROR_CODES)
+   * `secondAdminRequired` for the request's own requester, which leaves it pending,
+   * `requestNotFound` and `requestNotPending`, and `contentOff` below "content". Once claimed,
+   * the request is "approved" and leaves "pending" for good. The workspace then checks again that
+   * the requester and the caller are admins and not one admin, the level, and that it still has
+   * the owner the request named (`workspaceChanged`), records the approval (an AdminGrantRecord
+   * naming the grant) and only then stores the grant. Resolves the request as it then stands:
+   * "approved" with its `grantId`, or "failed" with the workspace's refusal. Nothing is entered in
+   * the workspace's action log.
+   */
+  approveContentAccess(requestId: string): Promise<AdminContentRequest>;
+
+  /** Deny a pending request, recorded (an AdminGrantRecord) before it is stored as denied. Any
+   * admin may deny one, its requester included, at any level. Refused `requestNotFound` and
+   * `requestNotPending` (ADMIN_GRANT_ERROR_CODES). */
+  denyContentAccess(requestId: string): Promise<void>;
+
+  /**
+   * End a grant with source "admins" on a workspace, now, for `reason` (required, as for
+   * inspectWorkspace()). Recorded (an AdminGrantRecord naming the request the grant was approved
+   * through, with the caller and the reason) before the grant is ended: an ending whose record
+   * cannot be written is refused. Works at any level: it only takes access away. An owner's grant
+   * is the owner's to end. Refused `notAdmin`, `workspaceNotFound`, and `notFound`
+   * (ADMIN_GRANT_ERROR_CODES) for an id that names no live grant with source "admins" on that
+   * workspace.
+   */
+  endWorkspaceGrant(workspaceId: string, grantId: string, reason: string): Promise<void>;
 }
 
 /** A workspace as AdminWorkspaceView.describe() presents it. */
@@ -2892,12 +3100,11 @@ export type AdminWorkspaceDescription = Pick<WorkspaceMetadata,
   /** What this view was opened for (AdminWorkspaceInspectOptions.access). */
   access: AdminViewAccess;
   /** The live grants stored in this workspace, from either source: who gave each and until
-   * when. MAX_ADMIN_GRANTS_LISTED at most: those a second admin approved come first, newest
-   * first, since only an admin can end one and each took a second admin's approval, so they are
-   * few;
-   * then the owner's, newest first, as far as the bound allows. A workspace can hold more owner
-   * grants than are listed, and any one lets content be read. The owner's account-wide grant is
-   * not among them: the workspace asks for it only when a call needs content. */
+   * when. MAX_ADMIN_GRANTS_LISTED at most: the one a second admin approved comes first, since
+   * approving another ends it (see AdminApi.approveContentAccess()); then the owner's, newest
+   * first, as far as the bound allows. A workspace can hold more
+   * owner grants than are listed, and any one lets content be read. The owner's account-wide grant
+   * is not among them: the workspace asks for it only when a call needs content. */
   grants: AdminAccessGrant[];
   /** When this view stops working. */
   expiresAt: Date;

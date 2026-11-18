@@ -872,7 +872,7 @@ describe('AdminAuditPanel', () => {
 
       expect(kindSelect().textContent).toBe('Any kind')
       expect((await openOptions(kindSelect())).map((option) => option.textContent))
-        .toEqual(['Any kind', 'Workspace access', 'User access', 'Workspace write', 'Setting change'])
+        .toEqual(['Any kind', 'Workspace access', 'User access', 'Workspace write', 'Content grant', 'Setting change'])
       await choose(kindSelect(), 'Workspace access')
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'workspace' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'workspace' }))

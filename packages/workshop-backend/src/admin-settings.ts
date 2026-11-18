@@ -1,9 +1,10 @@
-import { ADMIN_ACCESS_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
 import { validateRpc } from 'capnweb-validate';
 import { createWorkshopLogger } from "./observability";
+import { isDoResetError, retryOnDoReset } from "./do-retry.js";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
 import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, isResourceDisabled, unresolvedResourceRestrictions } from './admin-config.js';
@@ -19,8 +20,8 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
-import { isDeploymentAdmin } from './auth/config.js';
+import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 import { type DeployServiceInstall, NO_ANSWER, type VersionAnswer, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
@@ -86,6 +87,26 @@ function testFailureMessage(text: string, apiToken: string | undefined): string 
   return text.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
+// Throws `notAdmin` unless `admin` is a deployment admin in `env`. AdminApiImpl asks it of the
+// session Worker's environment before it calls AdminSettings, which asks it again of its own: a
+// session can outlive the config its Worker started with.
+function requireAdmin(env: Cloudflare.Env, admin: string): void {
+  if (!isDeploymentAdmin(env, admin)) {
+    throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+  }
+}
+
+// How long a content access request stays stored, and readable, after it is resolved.
+const RESOLVED_CONTENT_REQUEST_KEPT_MS = 24 * 60 * 60 * 1000;
+
+// How long an approved content access request waits for its workspace's grant: far longer than
+// giving one takes. A request still waiting then is failed, its outcome unknown.
+const CONTENT_REQUEST_SETTLE_MS = 15 * 60 * 1000;
+
+// What such a request fails with.
+const GRANT_ANSWER_LOST =
+    "The workspace's answer never arrived, so whether it gave the grant is unknown.";
+
 /**
  * Deployment-wide admin settings singleton.
  *
@@ -112,6 +133,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // read/record/write so a concurrent call can never act on a bit another has since changed, which
   // would make its change unrecorded.
   private featuredMutationTail = Promise.resolve();
+  // Every transition of a content access request reads the request, may record the step in the
+  // audit log, which awaits, and then stores the new state. Serialize them, so that two never
+  // interleave across that await: a denial racing an approval would otherwise leave one request
+  // both denied and granted.
+  private contentRequestTail = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -615,6 +641,191 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           `${MAX_ADMIN_AUDIT_RETENTION_DAYS}.`);
     }
     await this.#mutateAdminConfig(actor, config => ({ ...config, adminAuditRetentionDays: days }));
+  }
+
+  // --- Requests to read a workspace's content without its owner ---
+  //
+  // A request is stored while it is pending and for a day after it is resolved. A request and a
+  // denial are each recorded in the deployment-wide audit log before they are stored, so that a
+  // step whose record cannot be written is not taken. An approval is claimed here, recorded by the
+  // workspace before it stores the grant (see OverseerDurableObject.grantAdminContent()), and the
+  // grant's id is stored here once the workspace has given it. A request that runs out records
+  // nothing: no admin did anything. Nothing here reads or changes the workspace a request names.
+  // There is no alarm: every method sweeps (see #sweepContentRequests()) before it reads one.
+
+  // Runs `run` once everything queued before it has finished, whether that succeeded or threw
+  // (see contentRequestTail). Every method below is one such run, and nothing inside one queues
+  // another.
+  #serializeContentRequests<T>(run: () => Promise<T>): Promise<T> {
+    let result = this.contentRequestTail.then(run);
+    this.contentRequestTail = result.then(() => {}, () => {});
+    return result;
+  }
+
+  // The request stored under `id`. Ids are crypto.randomUUID()s, so a string of any other length
+  // names none, and is never used as a storage key.
+  #storedContentRequest(id: string): AdminContentRequest {
+    let request = id.length === 36 ? this.storage.contentAccessRequests.get(id) : undefined;
+    if (!request) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotFound);
+    return request;
+  }
+
+  // Appends `actor`'s step `method` of `request` to the deployment-wide audit log. Throws when it
+  // cannot be appended, which refuses the step.
+  async #recordContentRequest(request: AdminContentRequest, method: AdminGrantMethod,
+                              actor: AdminGrantActor): Promise<void> {
+    let { id, workspaceId, workspaceOwner, workspaceTitle, reason, requestedBy } = request;
+    await this.audits.getByName("").append({
+      kind: "grant", at: new Date(), ...actor, workspaceId, workspaceOwner, workspaceTitle, reason,
+      method, requestId: id, requestedBy,
+    }, adminAccessPolicy(await this.committedAdminConfig(), this.env).retentionDays);
+  }
+
+  // Goes through the stored requests and, with nothing awaited, ends a pending one that has run
+  // out ("expired": at its `expiresAt`, or sooner, with an `error`, once its requester is no
+  // longer a deployment admin), fails an approved one whose workspace never gave its grant within
+  // CONTENT_REQUEST_SETTLE_MS (the session that carried the approval was lost; the request is
+  // never approved again), and forgets any other a day after it was resolved.
+  #sweepContentRequests(): void {
+    let now = Date.now();
+    for (let request of this.storage.contentAccessRequests.list()) {
+      let resolvedAt = request.resolvedAt?.getTime() ?? 0;
+      if (request.state === "pending") {
+        let overdue = request.expiresAt.getTime() <= now;
+        if (!overdue && isDeploymentAdmin(this.env, request.requestedBy)) continue;
+        this.storage.contentAccessRequests.put({
+          ...request, state: "expired",
+          resolvedAt: new Date(Math.min(now, request.expiresAt.getTime())),
+          ...(!overdue && { error: "Its requester is no longer a deployment admin." }),
+        });
+      } else if (request.state === "approved" && request.grantId === undefined) {
+        if (resolvedAt + CONTENT_REQUEST_SETTLE_MS > now) continue;
+        this.storage.contentAccessRequests.put({
+          ...request, state: "failed", error: GRANT_ANSWER_LOST,
+        });
+      } else if (resolvedAt + RESOLVED_CONTENT_REQUEST_KEPT_MS <= now) {
+        this.storage.contentAccessRequests.delete(request.id);
+      }
+    }
+  }
+
+  /** Records the request, then stores it (state "pending"). Refused, recording nothing,
+   * `requestPending` while the workspace has a pending request and `tooManyRequests` while
+   * MAX_PENDING_CONTENT_REQUESTS are pending. */
+  requestContentAccess(request: AdminContentRequest, actor: AdminGrantActor): Promise<void> {
+    return this.#serializeContentRequests(async () => {
+      requireAdmin(this.env, actor.admin);
+      this.#sweepContentRequests();
+      let pending = [...this.storage.contentAccessRequests.list()].filter(
+          stored => stored.state === "pending");
+      if (pending.some(stored => stored.workspaceId === request.workspaceId)) {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestPending);
+      }
+      if (pending.length >= MAX_PENDING_CONTENT_REQUESTS) {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.tooManyRequests);
+      }
+      await this.#recordContentRequest(request, "requestContentAccess", actor);
+      this.storage.contentAccessRequests.put(request);
+    });
+  }
+
+  /** Every stored request, as AdminApi.listContentAccessRequests() lists them: the pending ones
+   * first, the soonest to expire first, then the rest, the latest resolved first. */
+  listContentAccessRequests(): Promise<AdminContentRequest[]> {
+    return this.#serializeContentRequests(async () => {
+      this.#sweepContentRequests();
+      let at = (request: AdminContentRequest) => request.state === "pending"
+          ? request.expiresAt.getTime() : -(request.resolvedAt?.getTime() ?? 0);
+      return [...this.storage.contentAccessRequests.list()].toSorted((a, b) =>
+          Number(b.state === "pending") - Number(a.state === "pending") || at(a) - at(b));
+    });
+  }
+
+  /** The request stored under `id`, swept first so that one past its expiry is never read as
+   * pending. */
+  getContentAccessRequest(id: string): Promise<AdminContentRequest> {
+    return this.#serializeContentRequests(async () => {
+      this.#sweepContentRequests();
+      return this.#storedContentRequest(id);
+    });
+  }
+
+  /**
+   * Claims the pending request `id` for `actor`'s approval: "pending" becomes "approved", once.
+   * Refused `requestNotPending` for a request that has left "pending", an overdue one included,
+   * `secondAdminRequired` for its requester (see sameDeploymentAdmin()), which leaves it pending,
+   * and `contentOff` while the level in force is below "content". Not recorded: the workspace
+   * records the approval before it stores the grant. Returns the request.
+   */
+  claimContentAccess(id: string, actor: AdminGrantActor): Promise<AdminContentRequest> {
+    return this.#serializeContentRequests(async () => {
+      requireAdmin(this.env, actor.admin);
+      this.#sweepContentRequests();
+      let request = this.#storedContentRequest(id);
+      if (request.state !== "pending") {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotPending);
+      }
+      if (sameDeploymentAdmin(actor.admin, request.requestedBy)) {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.secondAdminRequired);
+      }
+      if (adminAccessPolicy(await this.committedAdminConfig(), this.env).access !== "content") {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+      }
+      // Read again: the config read awaited. The tail holds every other transition back, so
+      // nothing but a request running out can have changed it.
+      request = this.#storedContentRequest(id);
+      if (request.state !== "pending" || Date.now() >= request.expiresAt.getTime()) {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotPending);
+      }
+      let approved: AdminContentRequest =
+          { ...request, state: "approved", resolvedBy: actor.admin, resolvedAt: new Date() };
+      this.storage.contentAccessRequests.put(approved);
+      return approved;
+    });
+  }
+
+  /** Stores what the workspace answered to the claimed request `id`: the grant it gave, or why it
+   * gave none ("failed"). A request already settled, by an earlier call or by the sweep, is
+   * returned as it is, except that a grant the workspace confirmed replaces the sweep's "answer
+   * lost": the claim stays spent, and the grant it gave is the one recorded. Returns the request. */
+  settleContentAccess(id: string, result: { grantId: string } | { error: string })
+      : Promise<AdminContentRequest> {
+    return this.#serializeContentRequests(async () => {
+      let request = this.#storedContentRequest(id);
+      let lost = request.state === "failed" && request.error === GRANT_ANSWER_LOST;
+      if (lost && "grantId" in result) {
+        let { error: _lost, ...claimed } = request;
+        let confirmed: AdminContentRequest =
+            { ...claimed, state: "approved", grantId: result.grantId };
+        this.storage.contentAccessRequests.put(confirmed);
+        return confirmed;
+      }
+      if (request.state !== "approved" || request.grantId !== undefined) return request;
+      let settled: AdminContentRequest = "grantId" in result
+          ? { ...request, grantId: result.grantId }
+          : { ...request, state: "failed",
+              error: cutAdminAuditText(result.error, MAX_ADMIN_AUDIT_ARG_LENGTH) };
+      this.storage.contentAccessRequests.put(settled);
+      return settled;
+    });
+  }
+
+  /** Records that `actor` denied the pending request `id`, then stores it as denied. Refused
+   * `requestNotPending` for a request that has left "pending", an overdue one included. */
+  denyContentAccess(id: string, actor: AdminGrantActor): Promise<void> {
+    return this.#serializeContentRequests(async () => {
+      requireAdmin(this.env, actor.admin);
+      this.#sweepContentRequests();
+      let request = this.#storedContentRequest(id);
+      if (request.state !== "pending") {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.requestNotPending);
+      }
+      await this.#recordContentRequest(request, "denyContentAccess", actor);
+      // Under the tail nothing else can have moved the request while its record was appended, so
+      // it is not read again.
+      this.storage.contentAccessRequests.put(
+          { ...request, state: "denied", resolvedBy: actor.admin, resolvedAt: new Date() });
+    });
   }
 
   // --- Standard output formats ---
@@ -1291,15 +1502,15 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 // exceptions. inspectWorkspace() and inspectUser() re-check, as openForAdmin() and every call on
 // the view either mints do, since a view is what an admin holds that reads users' data.
 // writeWorkspace() re-checks admin status and the environment's switch (ADMIN_WORKSPACE_WRITES),
-// and the workspace checks both again in its own environment.
-// Setting by setting, this is a thin validation+forwarding facade over the AdminSettings DO —
-// fully user-independent — so a disabled gatekeeper/resource can't be re-enabled via a crafted
-// request, and the client never receives a stub to the DO's internal methods. Every setter's
-// change is recorded in the deployment's audit log before it takes effect (see
-// #mutateAdminConfig()). Covers branding, agent instructions, signups, gatekeeper
-// connector/resource availability, AI Gateway models, whether an update is available, the user and
-// workspace directory, admin access to workspaces and to users' accounts, and admin writes to
-// workspaces; authentication config stays env-var driven.
+// and the workspace checks both again in its own environment. The content access methods
+// re-check admin status on every call: a request opens a user's workspace. Setting by setting,
+// this is a thin validation+forwarding facade over the AdminSettings DO — fully user-independent —
+// so a disabled gatekeeper/resource can't be re-enabled via a crafted request, and the client
+// never receives a stub to the DO's internal methods. Every setter's change is recorded in the
+// deployment's audit log before it takes effect (see #mutateAdminConfig()). Covers branding, agent
+// instructions, signups, gatekeeper connector/resource availability, AI Gateway models, whether an
+// update is available, the user and workspace directory, admin access to workspaces and to users'
+// accounts, and admin writes to workspaces; authentication config stays env-var driven.
 @validateRpc()
 export class AdminApiImpl extends RpcTarget implements AdminApi {
   private admin: DurableObjectStub<AdminSettings>;
@@ -1314,10 +1525,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
    * client's User-Agent (AdminVia). The capability's audit `sessionId` is minted here, so there is
    * one per AuthenticatedApi.getAdminApi() call. Reaches the AdminSettings, UserDirectory,
    * AdminAudit, Overseer and User namespaces through `ctx.exports`, and reads ADMINS and the admin
-   * access bounds from `env`.
+   * access bounds from `env`. `ctx` is kept for its waitUntil(), under which an approved content
+   * access request is granted and settled even if its client hangs up (see
+   * approveContentAccess()).
    */
-  constructor(ctx: ExecutionContext, private env: Cloudflare.Env, private adminUserId: string,
-              private via: AdminVia) {
+  constructor(private ctx: ExecutionContext, private env: Cloudflare.Env,
+              private adminUserId: string, private via: AdminVia) {
     super();
     this.admin = ctx.exports.AdminSettings.getByName("");
     this.directories = ctx.exports.UserDirectoryDurableObject;
@@ -1667,9 +1880,15 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {
     let limit = adminListLimit(options.limit);
-    let { kind, admin, method, workspace, owner, exposed, since, cursor } = options;
+    let { kind, admin, method, workspace, owner, exposed, pending, since, cursor } = options;
+    let requestIds: string[] | undefined;
+    if (pending) {
+      requestIds = (await this.admin.listContentAccessRequests())
+          .filter(request => request.state === "pending").map(request => request.id);
+      if (requestIds.length === 0) return { records: [] };
+    }
     return await this.audits.getByName("").list(
-        { kind, admin, method, workspace, owner, exposed, since, cursor, limit },
+        { kind, admin, method, workspace, owner, exposed, requestIds, since, cursor, limit },
         await this.#retentionDays());
   }
 
@@ -1722,4 +1941,129 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       throw error;
     }
   }
+
+  // --- Content access without the owner ---
+
+  // Refuses a caller who is no longer a deployment admin.
+  #requireAdmin(): void {
+    requireAdmin(this.env, this.adminUserId);
+  }
+
+  // Who takes a step of a content access request through this capability, as its audit record
+  // says.
+  #grantActor(): AdminGrantActor {
+    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via };
+  }
+
+  async requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest> {
+    this.#requireAdmin();
+    reason = validateAdminAccessReason(reason);
+    let id: DurableObjectId;
+    try {
+      id = this.overseers.idFromString(workspaceId);
+    } catch {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    // Asked for only while content can be read: nothing is stored or recorded below "content".
+    // The approval and the workspace check the level again.
+    if (adminAccessPolicy(await this.admin.committedAdminConfig(), this.env).access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+
+    // The workspace is never reached: its title and owner are the directory's, as for an open
+    // refused before it reaches one. A request with no owner is not stored, since whoever approves
+    // it must see whose workspace it opens. That refuses a workspace nobody has opened since the
+    // directory began listing them, one the directory cannot be asked about, and one that does
+    // not exist, all alike.
+    let listing = await this.#directoryListing(id.toString());
+    if (!listing.ownerId) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.workspaceUnlisted);
+    let requestedAt = new Date();
+    let request: AdminContentRequest = {
+      id: crypto.randomUUID(), workspaceId: id.toString(),
+      workspaceTitle: cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH),
+      workspaceOwner: auditOwnerId(listing.ownerId), reason, requestedBy: this.adminUserId,
+      via: this.via, requestedAt,
+      expiresAt: new Date(requestedAt.getTime() + ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS * 1000),
+      state: "pending",
+    };
+    await this.admin.requestContentAccess(request, this.#grantActor());
+    return request;
+  }
+
+  async listContentAccessRequests(): Promise<AdminContentRequest[]> {
+    this.#requireAdmin();
+    return await this.admin.listContentAccessRequests();
+  }
+
+  async getContentAccessRequest(requestId: string): Promise<AdminContentRequest> {
+    this.#requireAdmin();
+    return await this.admin.getContentAccessRequest(requestId);
+  }
+
+  async approveContentAccess(requestId: string): Promise<AdminContentRequest> {
+    this.#requireAdmin();
+    let claimed = await this.admin.claimContentAccess(requestId, this.#grantActor());
+    // The claim has spent the request, so the grant is asked for and settled even if this client
+    // hangs up: the session's Worker is otherwise free to drop work nobody is waiting for.
+    let settled = this.#grantContent(claimed);
+    this.ctx.waitUntil(settled);
+    return await settled;
+  }
+
+  // Has the workspace give the grant a claimed request asks for, and stores what came of it. The
+  // one caller of OverseerDurableObject.grantAdminContent(), reached only once AdminSettings has
+  // claimed the request for an admin other than its requester. The workspace is asked once: a
+  // call whose answer is lost is failed by the next sweep, never asked again.
+  async #grantContent(request: AdminContentRequest): Promise<AdminContentRequest> {
+    let workspace = this.overseers.idFromString(request.workspaceId);
+    let result: { grantId: string } | { error: string };
+    try {
+      result = await this.overseers.get(workspace).grantAdminContent({
+        requestId: request.id, requestedBy: request.requestedBy, reason: request.reason,
+        workspaceOwner: request.workspaceOwner, ...this.#grantActor(),
+      });
+    } catch (error) {
+      await this.#dropIfMissing(workspace, error);
+      // A reset or a lost connection can reach this after the workspace committed the grant, so
+      // the outcome is unknown, as the sweep says of an answer that never came; anything else is
+      // the workspace's refusal.
+      let lost = isDoResetError(error);
+      logger.warn(lost ? "an approved content access request's answer was lost"
+          : "an approved content access request gave no grant", {
+        event: lost ? "admin.grant.answer_lost" : "admin.grant.failed", error,
+      });
+      result = { error: lost ? GRANT_ANSWER_LOST
+          : error instanceof Error ? error.message : String(error) };
+    }
+    // Idempotent, so it is asked again on a fresh stub when the first was reset, and the workspace
+    // is not: a grant it confirmed must not be lost to a reset of the store that records it.
+    return await retryOnDoReset(
+        () => this.ctx.exports.AdminSettings.getByName("").settleContentAccess(request.id, result),
+        logger);
+  }
+
+  async denyContentAccess(requestId: string): Promise<void> {
+    this.#requireAdmin();
+    await this.admin.denyContentAccess(requestId, this.#grantActor());
+  }
+
+  /** Asks only for an admin, whatever the access level: ending a grant only takes access away.
+   * Nothing is appended here: the workspace records the ending before it ends the grant. */
+  async endWorkspaceGrant(workspaceId: string, grantId: string, reason: string): Promise<void> {
+    this.#requireAdmin();
+    reason = validateAdminAccessReason(reason);
+    let id: DurableObjectId;
+    try {
+      id = this.overseers.idFromString(workspaceId);
+    } catch {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    try {
+      await this.overseers.get(id).endAdminGrant(this.#grantActor(), grantId, reason);
+    } catch (error) {
+      await this.#dropIfMissing(id, error);
+      throw error;
+    }
+  }
+
 }
