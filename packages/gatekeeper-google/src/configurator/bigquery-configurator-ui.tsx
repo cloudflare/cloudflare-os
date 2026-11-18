@@ -125,10 +125,12 @@ let suggestedFor: string | null = null;
  */
 let overrideFor: string | null = null;
 /**
- * The choice the picker let go of when the user opened a location or searched, which leaves
- * nothing chosen for a moment: a choice back in its data project keeps the query project it had.
+ * The choice the query project goes with: the pre-filled one, then each one the user makes. It
+ * outlasts a moment with nothing chosen, as while the user opens a location or searches, so a
+ * choice back in its data project keeps the query project, and a late answer about another choice
+ * fills nothing in.
  */
-let letGo: string | null = null;
+let choice: string | null = null;
 
 /** The data project of a pre-filled query project, while `target` is the choice it arrived with. */
 function overriddenProject(target: string | null | undefined): string | undefined {
@@ -170,6 +172,7 @@ export default {
     const target = idOf({ kind, projectId, datasetId, tableId });
     const prefilled = queryProject && queryProject !== projectId ? queryProject : null;
     // Recorded now, not when the lookup answers, so a choice made before then keeps it too.
+    choice = target;
     if (prefilled !== null) overrideFor = target;
     return { target, queryProject: prefilled };
   },
@@ -229,8 +232,9 @@ export default {
             const known = runsQueries.has(refOf(id)?.projectId ?? "");
             const item = toItem(node);
             lookedUp.set(id, item);
-            // Whether a pre-filled choice can be connected is known only now.
-            if (!known) {
+            // Whether a pre-filled choice can be connected is known only now, unless the user has
+            // since moved on to another choice, which this answer says nothing about.
+            if (!known && choice === id) {
               setValues({});
               if (queryProject === null) suggestQueryProject(context, id);
             }
@@ -239,16 +243,15 @@ export default {
           onChange={next => {
             // Opening a location or searching lets go of the choice; the query project waits for the next.
             if (next === null) {
-              letGo = target;
               setValues({ target: null });
               return;
             }
             // A query project stays while the choice moves within the data project it was picked
             // for: the one a shared project needs, or one a pre-filled choice arrived with.
-            const from = target ?? letGo;
-            const overridden = overriddenProject(from);
-            const held = sharedProject(from) ?? overridden;
+            const overridden = overriddenProject(choice);
+            const held = sharedProject(choice) ?? overridden;
             const keep = held !== undefined && refOf(next)?.projectId === held;
+            choice = next;
             if (!keep) {
               clearFields("queryProject");
               overrideFor = null;

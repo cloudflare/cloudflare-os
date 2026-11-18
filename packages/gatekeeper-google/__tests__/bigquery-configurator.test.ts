@@ -262,6 +262,40 @@ describe("the query project", () => {
     expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales/orders?queryProject=other");
   });
+
+  it("fills in nothing for a pre-filled choice whose lookup answers after the user moved to another project", async () => {
+    const frame = await open("https://bigquery.googleapis.com/theirs/events");
+    frame.ui.listProjects.mockResolvedValue([{ value: "mine", title: "mine" }]);
+    const lookup = Promise.withResolvers<BigQueryNode | null>();
+    frame.ui.getNode.mockReturnValueOnce(lookup.promise);
+    const loading = frame.load("dataset:theirs/events");
+    // Before the lookup answers, a search finds a dataset in a project that runs queries.
+    frame.picker().onChange(null, null);
+    frame.ui.listNodes.mockResolvedValueOnce({ nodes: [{ id: "dataset:yours/web", kind: "dataset", title: "web", runsQueries: true }] });
+    await frame.list("bigquery", "yours.web");
+    frame.picker().onChange("dataset:yours/web", null);
+    // The late answer says the pre-filled dataset was shared; it must not look for a query project
+    // to fill in here, where none is needed.
+    lookup.resolve(SHARED_DATASET);
+    await loading;
+    expect(frame.ui.listProjects).not.toHaveBeenCalled();
+    expect(frame.values()).toEqual({ target: "dataset:yours/web", queryProject: null });
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/yours/web");
+  });
+
+  it("still suggests a query project for a pre-filled shared choice the user only searched away from", async () => {
+    const frame = await open("https://bigquery.googleapis.com/theirs/events");
+    frame.ui.listProjects.mockResolvedValue([{ value: "mine", title: "mine" }]);
+    const lookup = Promise.withResolvers<BigQueryNode | null>();
+    frame.ui.getNode.mockReturnValueOnce(lookup.promise);
+    const loading = frame.load("dataset:theirs/events");
+    frame.picker().onChange(null, null);
+    lookup.resolve(SHARED_DATASET);
+    await loading;
+    await vi.waitFor(() => expect(frame.values().queryProject).toBe("mine"));
+    frame.picker().onChange("table:theirs/events/clicks", null);
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events/clicks?queryProject=mine");
+  });
 });
 
 describe("URLs", () => {
