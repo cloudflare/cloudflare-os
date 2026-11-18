@@ -34,6 +34,8 @@ function Settings() {
       // From the list, so the way back from the skill goes back to it, where it was.
       onOpenSkill={(skillId) => navigate({ to: '/skills/$skillId', params: { skillId }, state: { fromSkillList: true } })}
       skillHref={(skillId) => router.buildLocation({ to: '/skills/$skillId', params: { skillId } }).href}
+      onOpenCollection={(collectionId) => navigate({ to: '/skills/collections/$collectionId', params: { collectionId }, state: { fromSkillList: true } })}
+      collectionHref={(collectionId) => router.buildLocation({ to: '/skills/collections/$collectionId', params: { collectionId } }).href}
     />
   )
 }

@@ -9,7 +9,7 @@ import type { Skill } from './SkillStore'
 export const sourceLabel = ({ source }: Skill) => (source.kind === 'shared' ? `Shared by ${source.by}` : source.kind === 'organization' ? 'Organization' : undefined)
 
 /** Whose a skill is, as its row shows it: the user, called `userName`, whoever shared it with them, or the organization. */
-export const skillOwner = ({ source }: Skill, userName: string): SkillOwner =>
+export const skillOwner = ({ source }: Pick<Skill, 'source'>, userName: string): SkillOwner =>
   source.kind === 'organization' ? { kind: 'organization' } : source.kind === 'shared' ? { kind: 'person', name: source.by } : { kind: 'person', name: userName, you: true }
 
 /** The tags the skills have, each once, by name. */

@@ -13,9 +13,8 @@ import { useListView } from '@/hooks/useListView'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { formatActivity } from '@/workspaces/formatActivity'
-import { readUploadFiles } from './skillFiles'
 import { skillList, skillOwner, skillTags } from './skillList'
-import { prepareSkillUploads } from './skillUpload'
+import { uploadSkills } from './uploadSkills'
 import { skillStore, useSkillsState } from './useSkills'
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -31,7 +30,8 @@ export type SkillLibraryProps = {
  * chosen, all on one surface, under a search, the order, the filters and the way to add one. They are rows only: a skill is a name and a line
  * about it, which a card has nothing to add to. What a skill used to be collected in is a tag on
  * it, which the list can be grouped and narrowed by, and whose it is is a picture: theirs, or the
- * organization's mark. A row opens the skill's own page.
+ * organization's mark. A row opens the skill's own page. The collections themselves, which are
+ * what is shared, are listed under it (`SkillCollections`).
  *
  * One is added by writing it, or from files: each Markdown file chosen is a skill, and a folder
  * with a `SKILL.md` is one with everything in it (`prepareSkillUploads`). One added alone is
@@ -87,18 +87,11 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
     target.value = ''
     if (chosen.length === 0 || connection?.blocked()) return
     setProblem(undefined)
-    let candidates
     try {
-      candidates = prepareSkillUploads(await readUploadFiles(chosen))
-    } catch (error) {
-      return setProblem(`Couldn’t read what was chosen: ${messageOf(error)}`)
-    }
-    if (candidates.length === 0) return setProblem('No skills in what was chosen. A skill is a Markdown file, or a folder with a SKILL.md in it.')
-    try {
-      const ids = await skillStore.addUploads(candidates)
+      const ids = await uploadSkills(chosen)
       if (ids.length === 1) onOpenSkill(ids[0])
     } catch (error) {
-      setProblem(`Couldn’t add what was chosen: ${messageOf(error)}`)
+      setProblem(messageOf(error))
     }
   }
 

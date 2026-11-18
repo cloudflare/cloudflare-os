@@ -67,6 +67,8 @@ export type SkillPaneProps = {
   onBack: () => void
   /** It was renamed or filed under another tag, which moves it: it is `id` from then on. */
   onMoved: (id: string) => void
+  /** The collection it is kept in was opened, which is where it is shared. */
+  onOpenCollection?: (id: string) => void
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -94,8 +96,9 @@ const previewOf = (file: SkillFile) => {
  * opened from there or from the list of them, in a tab of its own between those and the settings
  * (`SkillFileView`), which is put away again by going to another tab. Files are added by uploading
  * them, and a folder of them by uploading it, which is how a file comes to be in one: a file is
- * listed by its path, folders and all. Only the user's own skills can be changed; the rest are read, and say whose they are
- * beside what they are filed under.
+ * listed by its path, folders and all. Only skills in a collection the user may edit can be
+ * changed; the rest are read, and say whose they are beside what they are filed under. Its
+ * settings lead to its collection, which is what is shared.
  *
  * A file with something typed in it that has not been saved keeps its tab, and what was typed,
  * whichever tab is showing, until it is saved or given up. The way back to the list asks first
@@ -104,7 +107,7 @@ const previewOf = (file: SkillFile) => {
  * It is kept in the user's Context Library (see `SkillStore`), and its files are read from there
  * once it is shown. What is changed is kept there, and said where it could not be.
  */
-export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpenFile, fileHref, onBack, onMoved }: SkillPaneProps) => {
+export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpenFile, fileHref, onBack, onMoved, onOpenCollection }: SkillPaneProps) => {
   const { state, skill, filesProblem } = useSkill(skillId)
   const connection = useConnectionNotice()
   const narrow = useNarrowScreen()
@@ -175,6 +178,9 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
   }
 
   const mine = skill.source.kind === 'mine'
+  // Changed by whoever may edit its collection: theirs, or one shared with them to edit.
+  const { editable } = skill
+  const collection = skillStore.collection(skill.collectionId)
   // None until they have been read, which the tabs that list them say.
   const skillFiles = skill.files ?? []
   const filesNote = skill.files === undefined && (
@@ -252,13 +258,13 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
           </span>
           {/* Its own heading and what is said under it, which whoever's it is can change where they are. */}
           <h1 className="flex max-w-full justify-center text-xl font-medium text-kumo-default">
-            {mine
+            {editable
               ? <EditableTitle value={skill.name} onRename={rename} aria-label="Skill name" placeholder="Untitled skill" className="text-center" />
               : <span className="px-2.5 py-1">{skill.name}</span>}
           </h1>
           {/* No wider than reads well, and broken where it reads best. */}
           <div className="flex w-full max-w-prose justify-center text-base text-kumo-subtle">
-            {mine
+            {editable
               ? (
                   <EditableTitle
                     multiline
@@ -308,7 +314,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
             <Tabs.Panel key={file.path} value={`file:${file.path}`}>
               <SkillFileView
                 file={file}
-                editable={mine}
+                editable={editable}
                 draft={drafts[file.path]}
                 onDraftChange={(draft) => setDraft(file.path, draft)}
                 onSave={(body) => {
@@ -329,7 +335,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                 searchExpanded
                 order={order}
                 // Files are added by whoever's the skill is.
-                action={mine
+                action={editable
                   ? (
                       // Files go in beside `SKILL.md`; a folder goes in under its own name, with the folders in it.
                       <DropdownMenu label="Upload" caret triggerVariant="primary" align="end" inPlace>
@@ -366,7 +372,7 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                         href={fileHref?.(file.path)}
                         onSelect={() => onOpenFile(file.path)}
                         onDownload={() => saveBytes(fileBytes(file), fileName(file.path))}
-                        onRemove={mine && !manifest ? () => void change('remove it', () => skillStore.removeFile(skill.id, file.path)) : undefined}
+                        onRemove={editable && !manifest ? () => void change('remove it', () => skillStore.removeFile(skill.id, file.path)) : undefined}
                       />
                     )
                   })}
@@ -394,11 +400,17 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
                   }}
                 />
               )}
+              {onOpenCollection && (
+                // Who has it is its collection's to say, which is where it is shared.
+                <SettingRow title="Collection" description={`It’s kept in ${collection?.title ?? 'a collection'}, and shared with whoever that is shared with.`}>
+                  <Button onClick={() => onOpenCollection(skill.collectionId)}>Open collection</Button>
+                </SettingRow>
+              )}
               <SettingRow title="Auto-use" soon description="Let the assistant load this skill on its own when your request matches what it’s for.">
                 <Switch aria-label="Auto-use" checked={skill.autoUse} onCheckedChange={(autoUse) => skillStore.setAutoUse(skill.id, autoUse)} />
               </SettingRow>
             </SettingsGroup>
-            {mine && (
+            {editable && (
               <SettingsGroup title="Danger zone">
                 <SettingRow title="Delete this skill" description="The skill and its files are deleted for good.">
                   <ConfirmMenu

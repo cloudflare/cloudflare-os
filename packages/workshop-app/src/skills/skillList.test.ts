@@ -9,6 +9,8 @@ const skill = (name: string, rest: Partial<Skill> = {}): Skill => ({
   id: name.toLowerCase(),
   name,
   description: `How to ${name.toLowerCase()}.`,
+  collectionId: 'collection',
+  editable: true,
   source: { kind: 'mine' },
   updated: daysAgo(1),
   autoUse: true,

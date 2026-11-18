@@ -54,7 +54,7 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | A gadget is shared to use, never only to view: no "Can view" and no "what people see" snapshot | main's grants are to edit the workspace or use a gadget | `viewOnly` grants, `sharedViewsAvailable`, `GadgetClient.openView`, `viewTakenAt` |
 | Someone with access can only be removed, not moved from Member to using a gadget (becoming a member is an invite) | there is no call to narrow access | a set-access call on the Overseer |
 | Someone who can only use a workspace doesn't see who else has access | `listCollaborators()` refuses them | `listCollaborators` for users |
-| Skills aren't shared from here, and no Share in the chat header | skill sharing needs the Context Library's own sharing; the scaffold's header has no menu slot | none |
+| No Share in the chat header; skills are shared by their collection (`plans/skill-collections.md`), but not with a workspace, and git-backed and organization collections are managed only in the Context Library's own app | the scaffold's header has no menu slot; the Context Library shares with accounts, not workspaces | a workspace grant in gatekeeper-context |
 | Only the viewer's own link is turned on and off; links others made, extra ones and their notes aren't shown | each sharer has one default link for what they share, which is all the dialog offers | none |
 | A gadget's settings have no "allow everything" or "ask again" for its permissions | not on the scaffold's `GadgetClient` | `setAutoApprove`, `disallowActionKind` |
 | A gadget's agents show among its bindings with their model, but without their runs, and it has no Automations tab | no `listAgentSpawners` | `listAgentSpawners` |

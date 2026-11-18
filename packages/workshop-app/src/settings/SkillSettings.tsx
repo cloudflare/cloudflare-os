@@ -1,16 +1,21 @@
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
+import { SkillCollections, type SkillCollectionsProps } from '@/skills/SkillCollections'
 import { SkillLibrary, type SkillLibraryProps } from '@/skills/SkillLibrary'
 import { SoonSwitch } from './SoonControls'
 
+export type SkillSettingsProps = SkillLibraryProps & SkillCollectionsProps
+
 /**
  * The skills the assistant loads when a task calls for them, listed as any list in the app is
- * (`SkillLibrary`), each opening as its own page, and how it goes about using them. None of it is
- * there yet.
+ * (`SkillLibrary`), each opening as its own page, then the collections they are kept and shared
+ * in (`SkillCollections`), each with a page of its own too, and how the assistant goes about using
+ * them, none of which is there yet.
  */
-export const SkillSettings = ({ onOpenSkill, skillHref }: SkillLibraryProps) => (
+export const SkillSettings = ({ onOpenSkill, skillHref, onOpenCollection, collectionHref }: SkillSettingsProps) => (
   <>
     <SkillLibrary onOpenSkill={onOpenSkill} skillHref={skillHref} />
+    <SkillCollections onOpenCollection={onOpenCollection} collectionHref={collectionHref} />
     <SettingsGroup title="Skill behavior" soon>
       <SettingRow title="Auto-load skills" description="Let the assistant load a skill when your request matches what it’s for.">
         <SoonSwitch label="Auto-load skills" on />
