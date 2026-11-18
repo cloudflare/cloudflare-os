@@ -168,6 +168,47 @@ it.each(['remove', 'replace'])('cancels an in-progress image download when the v
   expect(errors).toEqual([])
 })
 
+it.each(['pending', 'loaded'])('preserves a %s image when the view resets its pinned source', async phase => {
+  const source = 'worktree://OUTPUTS/image.png', trigger = 'worktree://OUTPUTS/trigger.png'
+  const reading = Promise.withResolvers<void>(), loaded = Promise.withResolvers<void>()
+  const pending = Promise.withResolvers<void>()
+  const sent: string[] = []
+  const readImage = vi.fn<NonNullable<UiBlockHostOptions['readImage']>>(async url => {
+    if (url === source) {
+      reading.resolve()
+      if (phase === 'pending') await pending.promise
+    } else await (phase === 'pending' ? reading.promise : loaded.promise)
+    return { oid: 'a'.repeat(40), stream: byteStream(png('cyan')) }
+  })
+  await openBlock(`<img id="target" src="${source}" onerror="agent.send('fallback')"
+      onload="agent.send('target:' + this.naturalWidth + ':' + this.src)">
+    <img src="${trigger}" onload="document.getElementById('target').src = '${source}'; agent.send('reset'); this.remove()">`, {
+    onMessageRequest: message => {
+      sent.push(message)
+      if (message.startsWith('target:')) loaded.resolve()
+    },
+    onResize: () => {}, onError: () => {}, readImage,
+  })
+  await expect.poll(() => sent.includes('reset')).toBe(true)
+  pending.resolve()
+  await expect.poll(() => sent.filter(message => message.startsWith('target:2:blob:')).length)
+    .toBe(phase === 'pending' ? 1 : 2)
+  expect(sent).not.toContain('fallback')
+  expect(readImage.mock.calls.filter(([url]) => url === source)).toHaveLength(1)
+})
+
+it('removes worktree sizing when the view switches an image to a data preview', async () => {
+  const preview = 'data:image/png;base64,' + btoa(String.fromCharCode(...png('red')))
+  const sent: string[] = []
+  await openBlock(`<img src="worktree://OUTPUTS/image.png" width="440" height="20" onload="
+    if (!this.dataset.preview) { this.dataset.preview = 'true'; this.src = '${preview}'; }
+    else { const r = this.getBoundingClientRect(); agent.send(r.width + 'x' + r.height + ':' + this.hasAttribute('data-blob-oid')); }">`, {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: async () => ({ oid: 'a'.repeat(40), stream: byteStream(png('cyan')) }),
+  })
+  await expect.poll(() => sent).toEqual(['440x20:false'])
+})
+
 it.each(['', '<?xml-stylesheet type="text/css" href="style.css"?>', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'])(
   'decodes SVG with prolog %s and keeps external HTTP images blocked by the sandbox', async doctype => {
   const source = 'worktree://REPO/image.svg'

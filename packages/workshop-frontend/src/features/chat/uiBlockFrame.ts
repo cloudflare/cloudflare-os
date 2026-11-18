@@ -194,9 +194,14 @@ const loadImage = async (image, state) => {
 };
 const scanImages = () => {
   for (const [image, state] of images) {
-    if (!image.isConnected || image.getAttribute("src") !== (state.url ?? null) && image.getAttribute("src") !== state.source) {
+    const source = image.getAttribute("src");
+    if (image.isConnected && source === state.source) {
+      if (state.url) image.src = state.url;
+      else image.removeAttribute("src");
+    } else if (!image.isConnected || source !== (state.url ?? null)) {
       if (state.url) URL.revokeObjectURL(state.url);
       images.delete(image);
+      delete image.dataset.blobOid;
       state.controller.abort();
       if (state.error) reportImageErrors();
     }
