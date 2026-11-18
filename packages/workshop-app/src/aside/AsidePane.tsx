@@ -172,6 +172,7 @@ export const AsidePane = (props: AsidePaneProps) => {
           >
             <GadgetCodeView
               workspaceId={gadget.workspaceId}
+              gadget={{ id: gadget.workpieceId, title, chatId: gadget.chatId }}
               commitId={snapshot.commitId}
               file={codeHere?.file}
               onShowFile={(file) => setCode({ key: item.key, open: true, file })}

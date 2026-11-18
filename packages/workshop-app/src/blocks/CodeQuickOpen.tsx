@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 import { MagnifyingGlassIcon } from '@phosphor-icons/react'
 import { motion, useReducedMotion } from 'motion/react'
 import { codeFileIcon } from './codeFileIcon'
+import { EditDot, type CodeTreeEntry } from './CodeFileTree'
 import { matchPaths } from './codeTree'
 
 export type CodeQuickOpenProps = {
@@ -9,6 +10,8 @@ export type CodeQuickOpenProps = {
   paths: readonly string[]
   /** The one shown, which is left to the end of what is offered: it is already open. */
   shown?: string
+  /** What unsaved edits did to each path they changed, which is marked. */
+  edits?: ReadonlyMap<string, NonNullable<CodeTreeEntry['edit']>>
   /** How many lines the one shown has, for going to a line in it with a colon. */
   lines?: number
   onOpen: (path: string) => void
@@ -32,7 +35,7 @@ const Marked = ({ text, indices, offset }: { text: string; indices: ReadonlySet<
  * open. A colon and a number goes to that line of the file shown instead. Over the code, within it:
  * it is part of the code, not the page.
  */
-export const CodeQuickOpen = ({ paths, shown, lines, onOpen, onGoToLine, onClose }: CodeQuickOpenProps) => {
+export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, onClose }: CodeQuickOpenProps) => {
   const [typed, setTyped] = useState('')
   const [active, setActive] = useState(0)
   const listId = useId()
@@ -141,6 +144,7 @@ export const CodeQuickOpen = ({ paths, shown, lines, onOpen, onGoToLine, onClose
                   <Marked text={file.path.slice(nameStart)} indices={marked} offset={nameStart} />
                 </span>
                 {folder && <span className="min-w-0 flex-1 truncate text-kumo-subtle"><Marked text={folder} indices={marked} offset={0} /></span>}
+                {edits?.has(file.path) && <EditDot edit={edits.get(file.path)!} />}
                 {file.path === shown && <span className="ms-auto shrink-0 text-xs text-kumo-subtle">Open</span>}
               </div>
             )

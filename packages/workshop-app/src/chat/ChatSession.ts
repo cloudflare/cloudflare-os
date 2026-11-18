@@ -60,6 +60,11 @@ export type ChatSnapshot =
       /** An assistant turn is running. */
       agentActive: boolean
       /**
+       * It proposes changes not kept yet (`AiChatMetadata.proposedChangeWorkpieces`), which keeping
+       * anything through it would keep too.
+       */
+      proposesChanges: boolean
+      /**
        * What was sent to the running agent that it has not read yet, oldest first, whoever sent
        * it. Stopping the agent drops these, for whoever stops it to put back in their draft.
        */
@@ -224,6 +229,8 @@ export class ChatSession {
   // is not connected to again.
   #deleted = false
   #agentActive = false
+  // It proposes changes not kept yet, as its metadata last said.
+  #proposes = false
   // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
   #liveMetadata = false
   #messages = new Map<number, AiChatMessage>()
@@ -635,6 +642,7 @@ export class ChatSession {
     this.#requiresParticipation = false
     this.#deleted = false
     this.#agentActive = false
+    this.#proposes = false
     this.#liveMetadata = false
     this.#messages = new Map()
     this.#feed = EMPTY_FEED
@@ -690,6 +698,7 @@ export class ChatSession {
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
       agentActive: this.#agentActive,
+      proposesChanges: this.#proposes,
       waiting: this.#waitingTexts(),
       pinned: this.#feed.pinned,
       sendError: this.#sendError,
@@ -839,7 +848,8 @@ export class ChatSession {
    */
   #askToKeep(ask: KeepAsk | undefined) {
     clearTimeout(this.#keepTimer)
-    if (!ask) {
+    // What was kept while this was worked out (edits saved through the chat keep at once) is not asked about.
+    if (!ask || this.#proposed === '') {
       if (this.#keep === undefined) return
       this.#keep = undefined
       return void this.#publishReady()
@@ -911,6 +921,7 @@ export class ChatSession {
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    this.#proposes = (chat.proposedChangeWorkpieces?.length ?? 0) > 0
     this.#requiresParticipation = chat.notificationsRequireParticipation === true
     this.#agentActive = chat.activeAgent !== undefined
     this.#compactedTo = chat.compactedTo
