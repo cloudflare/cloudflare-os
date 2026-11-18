@@ -60,6 +60,18 @@ describe("Google access token refresh", () => {
       .rejects.toThrow("Failed to refresh access token [http=401 error=invalid_client]");
   });
 
+  // A token endpoint's answer that is not JSON is not quoted either, refused or not.
+  it("says a malformed token answer was not JSON, without quoting it", async () => {
+    const malformed = (status: number) => vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      "{token=abc", { status, headers: { "Content-Type": "application/json" } })));
+    malformed(503);
+    await expect(getAccessToken("refresh-token", "client-id", "client-secret"))
+      .rejects.toThrow(/^Failed to refresh access token \[http=503\]$/);
+    malformed(200);
+    await expect(getAccessToken("refresh-token", "client-id", "client-secret"))
+      .rejects.toThrow(/^Google's token endpoint did not answer with JSON\.$/);
+  });
+
   // A refusal's message is logged, so it carries Google's code and none of what Google wrote.
   it("keeps Google's description and any other body out of a refusal's error", async () => {
     await expect(refuse({ error: "invalid_client", error_description: "client secret-123 is wrong" }, 401))

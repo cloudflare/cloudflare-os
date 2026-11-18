@@ -181,9 +181,9 @@ export async function getAccessToken(
     let isJson = contentType && contentType.startsWith("application/json");
 
     if (isJson) {
-      let body = await response.json<{
+      let body = await readJsonOr<{
         error?: string, error_description?: string, error_subtype?: unknown,
-      }>();
+      }>(response, `Failed to refresh access token [http=${response.status}]`);
       if (body.error === "invalid_grant") {
         let subtype = safeProviderCode(body.error_subtype);
         return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
@@ -202,10 +202,10 @@ export async function getAccessToken(
     throw new Error(`Failed to refresh access token [http=${response.status}]`);
   }
 
-  const data = await response.json() as {
+  const data = await readJsonOr<{
     access_token: string;
     expires_in: number;
-  };
+  }>(response, "Google's token endpoint did not answer with JSON.");
 
   return {
     ok: true,
@@ -225,6 +225,18 @@ export type GoogleAccountProfile = {
 };
 
 /** `signal` lets a caller that holds the credential mutex bound the round trip. */
+/**
+ * `response`'s JSON body, or a throw of `message` alone: a parse error can quote the body, and these
+ * errors are logged.
+ */
+async function readJsonOr<T>(response: Response, message: string): Promise<T> {
+  try {
+    return await response.json<T>();
+  } catch {
+    throw new Error(message);
+  }
+}
+
 export async function getGoogleAccountProfile(
     accessToken: string | AccessTokenProvider, signal?: AbortSignal): Promise<GoogleAccountProfile> {
   const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -238,13 +250,8 @@ export async function getGoogleAccountProfile(
     throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
   }
 
-  // A parse error can quote the body, which is not to be logged.
-  let data: Partial<GoogleAccountProfile>;
-  try {
-    data = await response.json();
-  } catch {
-    throw new Error("Google user info was not JSON.");
-  }
+  const data = await readJsonOr<Partial<GoogleAccountProfile>>(
+      response, "Google user info was not JSON.");
   if (!data.sub) throw new Error("Google user info did not include a stable account ID.");
   return data as GoogleAccountProfile;
 }
