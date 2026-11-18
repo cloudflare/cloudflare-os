@@ -536,6 +536,14 @@ describe("readBands", () => {
       expect(run.asks.filter(ask => ask.band === 1)).toHaveLength(2);
     });
 
+    it("is kept, and the page cut off, when the second says nothing", async () => {
+      let run = reading(page([5, 5]), [[says("as far as the limit", { truncated: true }), says("")], [says("below")]]);
+      expect(await run.done).toEqual({ text: "as far as the limit\nbelow", cutOff: true });
+      // A first answer that said nothing either leaves the band with the second's nothing, whole.
+      let empty = reading(page([5, 5]), [[says("", { truncated: true }), says("")], [says("below")]]);
+      expect(await empty.done).toEqual({ text: "below", cutOff: false });
+    });
+
     it("fails the page when the image's own stream fails at the second ask", async () => {
       let gone = new Error("The page's pixels are gone.");
       let run = reading(page([5]), [[says("as far as the limit", { truncated: true }), fails(gone)]]);
@@ -961,6 +969,17 @@ describe("readBands", () => {
       expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });
       expect(run.asks).toHaveLength(asks);
       expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: asks * SENT, asks, askedAgain: "truncated" }]);
+    });
+
+    it("keeps its first answer, cut off, when its halves say nothing, and their nothing when it said none", async () => {
+      let run = reading(tall([rowsOf(90, 9)]), [[CUT, says(""), says(""), says("never asked for")]]);
+      expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });
+      expect(run.asks).toHaveLength(3);
+      let empty = reading(tall([rowsOf(90, 9)]), [[says("", { truncated: true }), says(""), says("")]]);
+      expect(await empty.done).toEqual({ text: "", cutOff: false });
+      // One half that says something is the band's, with the other's nothing.
+      let half = reading(tall([rowsOf(90, 9)]), [[CUT, says(""), says("the bottom half")]]);
+      expect(await half.done).toEqual({ text: "the bottom half", cutOff: false });
     });
 
     it("fails the page when the image's own stream fails at a half", async () => {

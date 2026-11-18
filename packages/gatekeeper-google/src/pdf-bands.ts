@@ -153,14 +153,15 @@ type Asked = Answer | { failure: TranscriptionError; transient: boolean };
  * is not asked for again as it was: the model would answer the same. It is cut in two (see
  * {@link halves}) and each half that has ink is asked for, the top first. The halves' texts,
  * the top's on the lines before the bottom's, are then the band's, cut off when either did not
- * end whole. When a half's call fails, or neither half has ink, the first answer is kept, a
- * runaway as far as the first of what it repeated, and the page is cut off. A half's answer is
- * let repeat for longer before it is stopped, so that a table of equal rows, which the first
- * was stopped in, is read to its end. And once every band has an answer, a band whose answer is
- * short for its writing is cut in two likewise, and its halves' texts kept when they are longer
- * together. A band of fewer than {@link CUT_MIN_ROWS} rows is not cut but asked for once more
- * as it is: after an answer that did not end whole, a second that did is the band's, and after
- * a short one the longer of the two is.
+ * end whole. When a half's call fails, neither half has ink, or the halves say nothing where
+ * the first answer said something, the first answer is kept, a runaway as far as the first of
+ * what it repeated, and the page is cut off. A half's answer is let repeat for longer before
+ * it is stopped, so that a table of equal rows, which the first was stopped in, is read to its
+ * end. And once every band has an answer, a band whose answer is short for its writing is cut
+ * in two likewise, and its halves' texts kept when they are longer together. A band of fewer
+ * than {@link CUT_MIN_ROWS} rows is not cut but asked for once more
+ * as it is: after an answer that did not end whole, a second that did is the band's, unless it
+ * says nothing where the first said something, and after a short one the longer of the two is.
  *
  * When a band fails, or `signal` aborts, every other call that is running, waiting for a slot
  * or pausing is given up and waited for before this rejects, with the band's failure or the
@@ -281,7 +282,8 @@ export async function readBands(
     } else if (asked.ended === "whole") {
       return keep(read, asked);
     } else if (read.rendered.rows >= CUT_MIN_ROWS) {
-      return keep(read, await recut(read, asked.ended) ?? asked);
+      let halved = await recut(read, asked.ended);
+      return keep(read, halved && replaces(halved, asked) ? halved : asked);
     } else {
       why = asked.ended;
     }
@@ -290,7 +292,7 @@ export async function readBands(
       if ("failure" in asked) throw second.failure;
       keep(read, asked);
     } else {
-      keep(read, second.ended === "whole" || "failure" in asked ? second : asked);
+      keep(read, "failure" in asked || (second.ended === "whole" && replaces(second, asked)) ? second : asked);
     }
   };
   /** What is asked after a band's whole answer that is short. A failure leaves it its first. */
@@ -333,6 +335,14 @@ export async function readBands(
     text: reads.map(read => read.text).filter(text => text !== "").join("\n"),
     cutOff: reads.some(read => read.cutOff),
   };
+}
+
+/**
+ * Whether `second` may take the place of `first`, which did not end whole: not when it says
+ * nothing where `first` said something, since a band's text would then be dropped unsaid.
+ */
+function replaces(second: Answer, first: Answer): boolean {
+  return second.text !== "" || first.text === "";
 }
 
 /** Makes `answer` the one kept of `read`. */

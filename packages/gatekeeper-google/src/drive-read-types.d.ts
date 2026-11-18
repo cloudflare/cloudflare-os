@@ -324,8 +324,9 @@ export interface GoogleDriveReadSession {
    * images comes back as several pages, less any piece smaller than that. Pages stored as JPEG
    * are read so, and losslessly compressed (Flate) ones in plain grey or RGB. A larger PDF that
    * holds no image comes back empty with `transcribed` false. For a larger scan `readPdf()`
-   * fails, before transcribing anything, for a page, or a mask the size of one
-   * (where a scan stored in layers keeps its text), stored as fax or JBIG2; for a page stored
+   * fails, before transcribing anything, for a page stored as fax or JBIG2; for a mask the
+   * size of a page that holds one bit a pixel, however it is stored, beside its page images
+   * (where a scan stored in layers keeps its text); for a page stored
    * as JPEG 2000 or as any other kind of image, such as one with a palette or in CMYK; for a
    * page image that is over 12 MiB as stored, that would have to be uncompressed to over 128
    * MiB, or that is not where the file says it is; for more than 2,000 page images; for
