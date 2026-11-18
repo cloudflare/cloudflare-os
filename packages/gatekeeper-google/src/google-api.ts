@@ -224,7 +224,6 @@ export type GoogleAccountProfile = {
   picture?: string;
 };
 
-/** `signal` lets a caller that holds the credential mutex bound the round trip. */
 /**
  * `response`'s JSON body, or a throw of `message` alone: a parse error can quote the body, and these
  * errors are logged.
@@ -237,6 +236,7 @@ async function readJsonOr<T>(response: Response, message: string): Promise<T> {
   }
 }
 
+/** `signal` lets a caller that holds the credential mutex bound the round trip. */
 export async function getGoogleAccountProfile(
     accessToken: string | AccessTokenProvider, signal?: AbortSignal): Promise<GoogleAccountProfile> {
   const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
