@@ -1,7 +1,8 @@
-import { createContext, use, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, use, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Dialog as BaseDialog } from '@cloudflare/kumo/primitives/dialog'
 import { cn } from '@cloudflare/kumo/utils'
-import { pageMotion, type PageSize } from './dialogPageMotion'
+import { pageMotion } from './dialogPageMotion'
+import { SurfaceGlide } from './surfaceGlide'
 
 /** Which of a dialog's pages it shows: `depth` says which way it goes to another, deeper being forward. */
 export type DialogPage = { key: string; depth: number }
@@ -33,14 +34,12 @@ const PageContext = createContext<PageContextValue | undefined>(undefined)
 
 const FOCUSABLE = 'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
 
-const sizeOf = (element: HTMLElement): PageSize => ({ width: element.offsetWidth, height: element.offsetHeight })
-
 // One page, and what its own `Dialog` is told of it.
 const Page = ({ leaving, onClaim, children }: { leaving: boolean; onClaim: PageContextValue['claim']; children: ReactNode }) => {
   const value = useMemo(() => ({ leaving, claim: onClaim }), [leaving, onClaim])
   return (
     <PageContext value={value}>
-      <div data-dialog-page={leaving ? 'leaving' : 'current'} inert={leaving} className="flex min-h-0 flex-col">
+      <div data-dialog-page={leaving ? 'leaving' : 'current'} inert={leaving} className="flex min-h-0 grow flex-col">
         {children}
       </div>
     </PageContext>
@@ -96,45 +95,56 @@ const DialogSurface = ({ open, onOpenChange, wide, page, children }: DialogProps
     return claim
   }
 
-  // The surface's size as last laid out, and the size the arriving page was held at, which it
-  // leaves at should another be gone to before it has settled.
+  // The surface's width as last laid out, and that the arriving page was held at, which it leaves
+  // at should another be gone to before it has settled. Its height glides by itself.
   const popupRef = useRef<HTMLDivElement>(null)
-  const size = useRef<PageSize>(undefined)
-  const held = useRef<{ key: string; size: PageSize }>(undefined)
-  const observe = (popup: HTMLDivElement | null) => {
+  const glide = useRef<SurfaceGlide>(undefined)
+  const width = useRef<number>(undefined)
+  const held = useRef<{ key: string; width: number }>(undefined)
+  // The same function each render, so that the glide lasts as long as the surface does.
+  const observe = useCallback((popup: HTMLDivElement | null) => {
     popupRef.current = popup
-    if (!popup || !page) return
-    const observer = new ResizeObserver(() => { size.current = sizeOf(popup) })
+    if (!popup) return
+    const glides = new SurfaceGlide(popup)
+    glide.current = glides
+    const observer = new ResizeObserver(() => { width.current = popup.offsetWidth })
     observer.observe(popup)
-    return () => observer.disconnect()
-  }
+    return () => {
+      observer.disconnect()
+      glides.dispose()
+      if (glide.current === glides) glide.current = undefined
+    }
+  }, [])
 
   useLayoutEffect(() => {
     const popup = popupRef.current
     const incoming = popup?.querySelector<HTMLElement>(':scope > [data-dialog-page="current"]')
     const outgoing = popup?.querySelector<HTMLElement>(':scope > [data-dialog-page="leaving"]')
     if (!leaving) return
-    if (!popup || !incoming || !outgoing || !size.current) {
+    if (!popup || !incoming || !outgoing || !glide.current || width.current === undefined) {
       setLeaving(undefined)
       return
     }
-    const from = size.current
-    const left = held.current?.key === leaving.key ? held.current.size : from
-    // The leaving page out of the way, where it was and as big, so that the new one's size is the surface's.
+    const from = width.current
+    const leftWidth = held.current?.key === leaving.key ? held.current.width : from
+    const leftHeight = glide.current.heightOf(outgoing) ?? outgoing.offsetHeight
+    // The leaving page out of the flow, where it was and as big, at the top of the surface as the
+    // new one is: the surface's height glides from the one's to the other's (`SurfaceGlide`).
     Object.assign(outgoing.style, {
       position: 'absolute',
-      width: `${left.width}px`,
-      height: `${left.height}px`,
-      left: `calc(50% - ${left.width / 2}px)`,
-      top: `calc(50% - ${left.height / 2}px)`,
+      width: `${leftWidth}px`,
+      height: `${leftHeight}px`,
+      left: `calc(50% - ${leftWidth / 2}px)`,
+      top: '0px',
     })
-    const to = sizeOf(popup)
-    // Each page held where it is once settled, in the middle of the surface, which is cut to its
-    // rounded edge as it grows or shrinks around them: a frame fixed in a page is cut by that
-    // rather than by what scrolls it. The ring is drawn just outside it.
-    held.current = { key, size: to }
-    Object.assign(incoming.style, { position: 'relative', width: `${to.width}px`, height: `${to.height}px`, flexShrink: '0', alignSelf: 'center' })
-    Object.assign(popup.style, { justifyContent: 'center', clipPath: 'inset(-1px round calc(1.5rem + 1px))' })
+    // Each page as wide as once settled, in the middle of the surface, which is cut to its rounded
+    // edge as it widens or narrows around them: a frame fixed in a page is cut by that rather than
+    // by what scrolls it.
+    const to = popup.offsetWidth
+    held.current = { key, width: to }
+    Object.assign(incoming.style, { position: 'relative', width: `${to}px`, alignSelf: 'center' })
+    const uncut = glide.current.cut()
+    glide.current.refresh()
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
     const targets = { surface: popup, incoming, outgoing }
     const animations = pageMotion({ from, to, forward: leaving.forward, reduced }).map(({ target, keyframes, options }) => targets[target].animate(keyframes, options))
@@ -149,9 +159,9 @@ const DialogSurface = ({ open, onOpenChange, wide, page, children }: DialogProps
     return () => {
       current = false
       for (const animation of animations) animation.cancel()
-      Object.assign(popup.style, { justifyContent: '', clipPath: '' })
+      uncut()
       for (const element of [incoming, outgoing]) {
-        Object.assign(element.style, { position: '', width: '', height: '', left: '', top: '', flexShrink: '', alignSelf: '' })
+        Object.assign(element.style, { position: '', width: '', height: '', left: '', top: '', alignSelf: '' })
       }
     }
   }, [leaving, key])
@@ -163,7 +173,8 @@ const DialogSurface = ({ open, onOpenChange, wide, page, children }: DialogProps
         <BaseDialog.Backdrop forceRender className="fixed inset-0 z-50 bg-kumo-canvas/80 transition-opacity duration-150 data-ending-style:opacity-0 data-starting-style:opacity-0 motion-reduce:transition-none" />
         {/* A surface in it is a step less round than it is (`--surface-radius`), which whatever draws one there goes by.
             Centred by its margins rather than moved, so that what is fixed in it, such as a
-            configurator's frame (`ResourceConfiguratorFrame`), is placed by the window while it is still. */}
+            configurator's frame (`ResourceConfiguratorFrame`), is placed by the window while it is still.
+            Its height glides to what it holds (`SurfaceGlide`). */}
         <BaseDialog.Popup ref={observe} className={cn(
           '[--surface-radius:1rem] fixed inset-0 z-50 m-auto flex h-fit max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-3xl bg-kumo-base text-base text-kumo-default ring-1 ring-kumo-contrast/6 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none',
           wide && 'w-[min(40rem,calc(100vw-1.5rem))]',

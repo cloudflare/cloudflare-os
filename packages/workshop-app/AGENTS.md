@@ -449,13 +449,22 @@ what scrolls it (`connections/framePlacement.ts`, plain and tested), so that a m
 draws past the dialog as a select's would rather than being cut off, or scrolled to. So nothing it
 is in may be transformed while it shows: `Dialog` is centred by its margins, not translated. It
 never scrolls within itself, says it is opening until its form is drawn, which is kept out of sight
-until then, and its room grows to the form. The form's fields line up with the dialog's own.
+until then in about the room a form takes, and its room then takes the form's height at once, as
+the dialog glides to it. The form's fields line up with the dialog's own.
+
+A dialog's height glides to what it holds as that changes (`components/surfaceGlide.ts`, its step
+plain and tested): a burst of changes is one glide to the latest, taken over from where the last
+had got to, on the clock its pages keep, and at once with reduced motion. While it glides the
+surface is given its height, so the part that scrolls is shorter until it is tall enough and the
+foot stays at the surface's: give that part `grow` too, so that it is the part that gives up or
+takes up room. What is still coming keeps about the room it will take (`SetUpConnectionDialog`'s
+accounts, a configurator's form), so that the dialog does not shrink to a line on its way to it.
 
 A dialog that goes on to another, such as adding a connection (`AddConnection`: what kind, then
 the service's form, and Back), is one `Dialog` with pages (`page`, a key and how deep it is) rather
 than one put away for another, which would flicker the backdrop and fade one surface over the
-other. The surface stays and takes the new page's size about its middle, while each page stays
-where it is once settled: the leaving one fades as it slides a little toward where it goes, the new
+other. The surface stays and takes the new page's width about its middle, and glides to its
+height, while the leaving page fades as it slides a little toward where it goes, the new
 one comes from the other side a moment behind it, on one clock that eases out with no overshoot
 (`components/dialogPageMotion.ts`, plain and tested), and only fades with reduced motion. Nothing is
 transformed, so a configurator's frame goes along, cut to the surface. A `Dialog` within a page is

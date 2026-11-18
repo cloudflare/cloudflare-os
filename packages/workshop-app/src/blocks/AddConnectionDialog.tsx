@@ -54,7 +54,7 @@ const AddConnectionContent = ({ to, choices, problem, onChoose }: Omit<AddConnec
       <div className="px-6 pb-3">
         <TextField aria-label="Find a service" type="search" placeholder="Find a service" value={query} onValueChange={setQuery} autoFocus />
       </div>
-      <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pb-4">
+      <div className="flex min-h-0 grow flex-col gap-4 overflow-y-auto px-4 pb-4">
         {problem && <p role="alert" className="px-2 text-base/5 text-kumo-danger">{problem}</p>}
         {!problem && found === undefined && <p role="status" className="appears-late px-2 text-base text-kumo-subtle">Reading your services…</p>}
         {found?.length === 0 && (
