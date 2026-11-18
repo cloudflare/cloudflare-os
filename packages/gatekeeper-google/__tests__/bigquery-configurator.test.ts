@@ -29,8 +29,11 @@ const VIEW: BigQueryNode = {
 
 type Values = { target?: string | null; queryProject?: string | null };
 
-/** A fresh module, since it remembers which projects run queries at module level, and its frame. */
-async function open(initial: Values = {}) {
+/**
+ * A fresh module, since it remembers which projects run queries at module level, and its frame,
+ * seeded from `initial` or, as the runtime pre-fills a connection, from its resource URL.
+ */
+async function open(initial: Values | string = {}) {
   vi.resetModules();
   const spec = (await import("../src/configurator/bigquery-configurator-ui")).default as unknown as {
     initial: Values;
@@ -39,7 +42,10 @@ async function open(initial: Values = {}) {
     initialValuesFromResourceUrl(context: { resourceUrl: string; resourceUrlPattern: string; ui: unknown }): Values;
     render(context: unknown): unknown;
   };
-  let values: Values = { ...spec.initial, ...initial };
+  const seeded = typeof initial === "string"
+    ? spec.initialValuesFromResourceUrl({ resourceUrl: initial, resourceUrlPattern: "https://bigquery.googleapis.com/:projectId/*", ui: null })
+    : initial;
+  let values: Values = { ...spec.initial, ...seeded };
   const ui = {
     listNodes: vi.fn(async (): Promise<BigQueryNodePage> => ({ nodes: [] })),
     getNode: vi.fn(async (): Promise<BigQueryNode | null> => null),
@@ -172,7 +178,7 @@ describe("the query project", () => {
   });
 
   it("keeps a pre-filled query project in view for a project of the account's own, until cleared", async () => {
-    const frame = await open({ target: "dataset:mine/sales", queryProject: "other" });
+    const frame = await open("https://bigquery.googleapis.com/mine/sales?queryProject=other");
     frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", runsQueries: true });
     await frame.load("dataset:mine/sales");
     expect(frame.ready()).toBe(true);
@@ -200,7 +206,7 @@ describe("the query project", () => {
   });
 
   it("runs queries in the data project when the user asks to, after typing over a pre-filled query project", async () => {
-    const frame = await open({ target: "dataset:mine/sales", queryProject: "other" });
+    const frame = await open("https://bigquery.googleapis.com/mine/sales?queryProject=other");
     frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", runsQueries: true });
     await frame.load("dataset:mine/sales");
     frame.autocomplete().onChange(null);
@@ -214,7 +220,7 @@ describe("the query project", () => {
   });
 
   it("keeps a pre-filled query project while the choice moves within its data project, and drops it on leaving", async () => {
-    const frame = await open({ target: "project:mine", queryProject: "other" });
+    const frame = await open("https://bigquery.googleapis.com/mine/?queryProject=other");
     frame.ui.getNode.mockResolvedValueOnce({ ...MINE, runsQueries: true });
     await frame.load("project:mine");
     // Opening a dataset lets go of the project before the dataset, or a table in it, is chosen.
@@ -234,12 +240,27 @@ describe("the query project", () => {
   });
 
   it("holds a pre-filled choice back until the lookup says whether its project is the account's", async () => {
-    const frame = await open({ target: "dataset:theirs/events", queryProject: "mine" });
+    const frame = await open("https://bigquery.googleapis.com/theirs/events?queryProject=mine");
     expect(frame.ready()).toBe(false);
     frame.ui.getNode.mockResolvedValueOnce(SHARED_DATASET);
     await expect(frame.load("dataset:theirs/events")).resolves.toMatchObject({ id: "dataset:theirs/events", kind: "container" });
     expect(frame.setValues).toHaveBeenCalledWith({});
     expect(frame.ready()).toBe(true);
+  });
+
+  it("keeps a pre-filled query project for a choice made in its data project before the lookup answers", async () => {
+    const frame = await open("https://bigquery.googleapis.com/mine/sales?queryProject=other");
+    // Shown, but not yet ready, while the lookup is on its way.
+    expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
+    expect(frame.ready()).toBe(false);
+    // A search lets go of the choice, and finds a table in the same dataset.
+    frame.picker().onChange(null, null);
+    frame.ui.listNodes.mockResolvedValueOnce({ nodes: [{ id: "table:mine/sales/orders", kind: "table", title: "orders", runsQueries: true }] });
+    await frame.list("bigquery", "mine.sales.orders");
+    frame.picker().onChange("table:mine/sales/orders", null);
+    expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
+    expect(frame.ready()).toBe(true);
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales/orders?queryProject=other");
   });
 });
 

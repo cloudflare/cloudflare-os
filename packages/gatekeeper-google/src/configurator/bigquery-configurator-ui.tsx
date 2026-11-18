@@ -118,9 +118,10 @@ let onlyProject: Promise<string | null> | undefined;
  */
 let suggestedFor: string | null = null;
 /**
- * A pre-filled choice that arrived with a query project it did not need: the field stays in view,
- * while the choice stays in that data project, until the user clears it, so it does not vanish
- * mid-edit and narrowing the choice does not change where its queries are billed.
+ * A pre-filled choice that arrived with a query project, from the URL being read. Unless its project
+ * turns out to need one, the field stays in view while the choice stays in that data project, until
+ * the user clears it, so it does not vanish mid-edit and narrowing the choice does not change where
+ * its queries are billed.
  */
 let overrideFor: string | null = null;
 /**
@@ -166,10 +167,11 @@ export default {
     if (!projectId) return {};
     const kind = tableId ? "table" : datasetId ? "dataset" : "project";
     const queryProject = url.searchParams.get(QUERY_PROJECT_PARAM);
-    return {
-      target: idOf({ kind, projectId, datasetId, tableId }),
-      queryProject: queryProject && queryProject !== projectId ? queryProject : null,
-    };
+    const target = idOf({ kind, projectId, datasetId, tableId });
+    const prefilled = queryProject && queryProject !== projectId ? queryProject : null;
+    // Recorded now, not when the lookup answers, so a choice made before then keeps it too.
+    if (prefilled !== null) overrideFor = target;
+    return { target, queryProject: prefilled };
   },
 
   isReady({ values: { target, queryProject } }) {
@@ -231,7 +233,6 @@ export default {
             if (!known) {
               setValues({});
               if (queryProject === null) suggestQueryProject(context, id);
-              else if (runsQueries.get(refOf(id)?.projectId ?? "") === true) overrideFor = id;
             }
             return item;
           }}
