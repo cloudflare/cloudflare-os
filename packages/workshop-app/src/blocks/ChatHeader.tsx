@@ -23,14 +23,14 @@ export type ChatHeaderProps = {
   /** What the chat has set up to run by itself, while there is any: how many, and the way to them. */
   automations?: { count: number; onOpen: () => void }
   /** What else can be done with the chat (`ChatMoreMenu`), for whoever may do any of it. */
-  more?: Pick<ChatMoreMenuProps, 'notifications' | 'onDelete'>
+  more?: Pick<ChatMoreMenuProps, 'read' | 'notifications' | 'onDelete'>
 }
 
 /**
  * A chat's header: the way back to its workspace, then the chat's title, which opens its settings,
  * and while the chat has set something up to run by itself, a clock with how many, which opens
  * them. The clock is a bubble of its own, so it pops in as the first is set up. Last, once the
- * title is there, more: its notifications and deleting it.
+ * title is there, more: marking it unread, its notifications and deleting it.
  */
 export const ChatHeader = ({ workspace, title, onOpenSettings, automations, more }: ChatHeaderProps) => (
   <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
@@ -59,7 +59,7 @@ export const ChatHeader = ({ workspace, title, onOpenSettings, automations, more
         </Button>
       </HeaderBubble>
     )}
-    {title && more && (more.notifications?.choices.length || more.onDelete) && (
+    {title && more && (more.read || more.notifications?.choices.length || more.onDelete) && (
       <HeaderBubble className="shrink-0">
         <ChatMoreMenu title={title} {...more} triggerVariant="secondary" />
       </HeaderBubble>

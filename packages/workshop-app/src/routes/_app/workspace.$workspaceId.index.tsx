@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
+import { createFileRoute, redirect, useNavigate, useRouter } from '@tanstack/react-router'
 import { carriedOpen, validateAsideParam } from '@/aside/asideItems'
 import { asideFor, carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
 import { WORKSPACE_TABS, WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
@@ -6,16 +6,24 @@ import { WORKSPACE_TABS, WorkspacePane, type WorkspaceTab } from '@/workspaces/W
 const validateTab = (value: unknown): WorkspaceTab | undefined =>
   WORKSPACE_TABS.find((tab) => tab.value === value && value !== 'chats')?.value
 
+// A chat, as the old app's address names one (`?chat=`), which a notification still sends.
+const validateChat = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+
 /**
  * One workspace: its chats, or with `?tab=`, what it has made, what runs in it by itself or who has
  * access to it, and what is shown beside it (`?open=`, see `asideItems`), which the frame lays out
- * (`_app`).
+ * (`_app`). With the old app's `?chat=`, which a notification opens, it is that chat's own page.
  */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/')({
-  validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab; open?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab; open?: string; chat?: number } => ({
     tab: validateTab(search.tab),
     open: validateAsideParam(search.open),
+    chat: validateChat(search.chat),
   }),
+  beforeLoad: ({ params: { workspaceId }, search: { chat } }) => {
+    if (chat !== undefined) throw redirect({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId: chat }, replace: true })
+  },
   component: Workspace,
 })
 

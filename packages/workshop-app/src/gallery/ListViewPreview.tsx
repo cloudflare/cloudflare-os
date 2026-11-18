@@ -55,6 +55,8 @@ export const ListViewPreview = () => {
   const [now] = useState(() => Date.now())
   const [starred, setStarred] = useState(() => WORKSPACES.filter(({ pinned }) => pinned).map(({ id }) => id))
   const [under, setUnder] = useState(false)
+  // Those with anything unread, until they are marked read.
+  const [unread, setUnread] = useState<ReadonlySet<string>>(() => new Set(['jira', 'design']))
   const all: WorkspaceMetadataWithTimestamps[] = WORKSPACES.map(({ id, title, active, created, owner }) => ({
     id,
     title,
@@ -63,7 +65,7 @@ export const ListViewPreview = () => {
     lastActive: new Date(now - active * HOUR),
     created: new Date(now - created * HOUR),
   }))
-  const list = useListView('gallery', workspaceList(all, MEMBERSHIPS, me.id))
+  const list = useListView('gallery', workspaceList(all, MEMBERSHIPS, me.id, unread))
   const shown = list.narrow(all)
   const timeOf = (workspace: WorkspaceMetadataWithTimestamps) => formatActivity(list.order.at(workspace))
   const pinned = starred.flatMap((id) => shown.filter((workspace) => workspace.id === id))
@@ -82,11 +84,19 @@ export const ListViewPreview = () => {
     starred: workspace.pinned === true,
     onStarredChange: (on: boolean) => setStarred((current) => (on ? [workspace.id, ...current] : current.filter((other) => other !== workspace.id))),
     href: `#${workspace.id}`,
+    unread: unread.has(workspace.id)
+      ? {
+          onMarkRead: () => {
+            setUnread((current) => new Set([...current].filter((id) => id !== workspace.id)))
+            say(`marked ${workspaceTitle(workspace)} read`)
+          },
+        }
+      : undefined,
     onSelect: () => say(`open ${workspaceTitle(workspace)}`),
   })
 
   return (
-    <Section title="ListToolbar, SearchField, CardGrid, WorkspaceCard (a list's controls: the search opens out over the room when clicked or tabbed to, stays open while it has text, and Escape clears it, then puts it away; rows or cards, kept for next time as the order is; the order, which is also how the list is grouped: by when it was last active or made, or by name under letters; the filters, a dot on their button while any is on, with Mine and Shared with me as alternatives, and Members a menu of its own, with a field that finds one; and what the list offers to do, here a menu. A workspace shows the first three of those with access to it, the viewer alone when nobody else has, each saying how many there are and whose it is when pointed at; a card shows them smaller, beside its time. The starred stay first in every order, and are dragged, or moved with Alt and an arrow key, into another order, as rows or as cards, while nothing narrows them. On a narrow screen the controls are under the list, together in the middle, lifted by a shadow, and their menus open upwards)">
+    <Section title="ListToolbar, SearchField, CardGrid, WorkspaceCard (a list's controls: the search opens out over the room when clicked or tabbed to, stays open while it has text, and Escape clears it, then puts it away; rows or cards, kept for next time as the order is; the order, which is also how the list is grouped: by when it was last active or made, or by name under letters; the filters, a dot on their button while any is on, with Unread for those with anything unread, which a dot marks and their more menu marks read, Mine and Shared with me as alternatives, and Members a menu of its own, with a field that finds one; and what the list offers to do, here a menu. A workspace shows the first three of those with access to it, the viewer alone when nobody else has, each saying how many there are and whose it is when pointed at; a card shows them smaller, beside its time. The starred stay first in every order, and are dragged, or moved with Alt and an arrow key, into another order, as rows or as cards, while nothing narrows them. On a narrow screen the controls are under the list, together in the middle, lifted by a shadow, and their menus open upwards)">
       <Switch label="Controls under the list, as on a narrow screen" checked={under} onCheckedChange={setUnder} />
       <div className={cn('flex w-full gap-4', under ? 'flex-col-reverse' : 'flex-col')}>
         <ListToolbar

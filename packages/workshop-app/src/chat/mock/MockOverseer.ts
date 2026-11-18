@@ -132,6 +132,8 @@ export class MockOverseer {
   // The viewer's notifications for the chat, as they chose them, and who hears of them, by workspace.
   #notifications: Pick<ChatReadState, 'notificationsEnabled' | 'notificationsEnabledOverride'> = { notificationsEnabled: true }
   #readStateSubscribers = new Map<ReadStateEvents, string>()
+  // How many of the chat's messages the viewer has not read, which only marking it unread makes more than none.
+  #unread = 0
   #actionSubscribers = new Set<ActionEvents>()
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
@@ -398,8 +400,8 @@ export class MockOverseer {
   }
 
   /**
-   * The viewer's read state for the chat, as a subscription scoped to `workspaceId` gives it: all
-   * of it read, with their notifications as they chose them.
+   * The viewer's read state for the chat, as a subscription scoped to `workspaceId` gives it: read,
+   * unless it was marked unread since, with their notifications as they chose them.
    */
   subscribeToReadState(workspaceId: string, subscriber: ReadStateEvents) {
     this.#readStateSubscribers.set(subscriber, workspaceId)
@@ -414,9 +416,34 @@ export class MockOverseer {
       void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), NOTHING_UNREAD(workspaceId)))
   }
 
+  /** Read through what there is: the chat is on screen whenever this is asked. */
+  async markChatRead(chatId: number) {
+    if (chatId !== CHAT_ID || this.#unread === 0) return
+    this.#unread = 0
+    this.#publishReadState()
+  }
+
+  /** The latest message, unread again. */
+  async markChatUnread(chatId: number) {
+    if (chatId !== CHAT_ID || this.#unread > 0) return false
+    this.#unread = 1
+    this.#publishReadState()
+    return true
+  }
+
+  /** The workspace keeps no cache warm here. */
+  async viewChat() {
+    return { [Symbol.dispose]: () => {} }
+  }
+
+  #publishReadState() {
+    this.#readStateSubscribers.forEach((workspaceId, subscriber) =>
+      void subscriber.chatUpdated(workspaceId, CHAT_ID, this.#readState(workspaceId), NOTHING_UNREAD(workspaceId)))
+  }
+
   #readState(workspaceId: string): ChatReadState {
     const last = this.#messages.at(-1)?.sequence ?? -1
-    return { workspaceId, chatId: CHAT_ID, unreadMessageCount: 0, readThroughSequence: last, ...this.#notifications }
+    return { workspaceId, chatId: CHAT_ID, unreadMessageCount: this.#unread, readThroughSequence: last - this.#unread, ...this.#notifications }
   }
 
   async getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage> {

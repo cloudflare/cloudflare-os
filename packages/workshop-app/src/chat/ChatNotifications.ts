@@ -14,8 +14,11 @@ export type ChatNotificationState = {
 /** One way to change a chat's notifications, as a menu offers it. */
 export type NotificationChoice = { enabled: boolean; label: string }
 
-/** What the workspace says of a chat's notifications for the viewer, where it says anything. */
-export type ChatNotificationRow = Pick<ChatReadState, 'notificationsEnabled' | 'notificationsEnabledOverride'>
+/**
+ * What the workspace says of a chat's notifications for the viewer, where it says anything, and
+ * how many of its messages the viewer has not read (none where it says nothing).
+ */
+export type ChatNotificationRow = Pick<ChatReadState, 'notificationsEnabled' | 'notificationsEnabledOverride'> & Partial<Pick<ChatReadState, 'unreadMessageCount'>>
 
 /**
  * A chat's notifications for the viewer: what the workspace says of them, and otherwise the
@@ -67,16 +70,17 @@ class ReadStateListener extends RpcTarget implements UnreadStateSubscriber {
 export type NotificationsBackend = {
   /** Subscribes to the viewer's read state for the workspace's chats. */
   subscribe(listener: Parameters<RpcStub<AuthenticatedApi>['subscribeToUnreadState']>[1]): Promise<Disposable>
-  /** The workspace, to change a chat's notifications in; disposed once that is done. */
-  open(): Pick<Overseer, 'setChatNotificationsEnabled'> & Disposable
+  /** The workspace, to change a chat's notifications or read state in; disposed once that is done. */
+  open(): Pick<Overseer, 'setChatNotificationsEnabled' | 'markChatRead' | 'markChatUnread'> & Disposable
 }
 
 /** What is known of each of a workspace's chats' notifications for the viewer, by the chat's id. */
 export type ChatNotificationRows = ReadonlyMap<number, ChatNotificationRow>
 
 /**
- * The viewer's notifications for one workspace's chats, live (`subscribeToUnreadState()`, scoped to
- * the workspace), and the way to change one's. Observable through `subscribe`/`getSnapshot`.
+ * The viewer's notifications for one workspace's chats, and how much of each they have not read,
+ * live (`subscribeToUnreadState()`, scoped to the workspace), and the ways to change a chat's
+ * notifications and to mark it read or unread. Observable through `subscribe`/`getSnapshot`.
  *
  * A change shows at once and stays until what the workspace says next of that chat, which should
  * be the change; refused, it is put back. The subscription is the user's own, not the workspace's,
@@ -155,9 +159,22 @@ export class ChatNotifications {
     }
   }
 
+  /**
+   * Marks a chat read for the viewer, through its latest message, or its latest message unread.
+   * What it comes to shows once the workspace says so. Rejects with why it could not be.
+   */
+  setRead = async (chatId: number, read: boolean) => {
+    const overseer = this.backend.open()
+    try {
+      await (read ? overseer.markChatRead(chatId) : overseer.markChatUnread(chatId))
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+  }
+
   #publish() {
     const rows = new Map(this.#rows)
-    for (const [chatId, { enabled }] of this.#chosen) rows.set(chatId, { notificationsEnabled: enabled, notificationsEnabledOverride: enabled })
+    for (const [chatId, { enabled }] of this.#chosen) rows.set(chatId, { ...rows.get(chatId), notificationsEnabled: enabled, notificationsEnabledOverride: enabled })
     this.#snapshot = rows
     this.#listeners.forEach((listener) => listener())
   }

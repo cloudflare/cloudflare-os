@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
+import type { LiveWorkspaceFields } from './LiveWorkspace'
 import type { WorkspaceLooks } from './WorkspaceLooks'
 import type { WorkspaceMemberships } from './WorkspaceMemberships'
 
@@ -27,6 +28,8 @@ export type WorkspacesContextValue = {
    * list once the server has done it, as neither can be shown at once and undone.
    */
   remove: (id: string, removal: WorkspaceRemoval) => Promise<void>
+  /** What a workspace said of itself since the list was read (see `useLiveWorkspace`), shown in the list. */
+  update: (id: string, fields: LiveWorkspaceFields) => void
   /** Who has access to each workspace, as far as the workspaces have been asked. */
   memberships: WorkspaceMemberships
   /** How each workspace's icon is drawn, which is this device's to say. */
@@ -64,6 +67,9 @@ export const useSetWorkspaceMuted = (): WorkspacesContextValue['setMuted'] => us
  * list (`dismissSharedWorkspace`), dropping it from the list once done. Rejects with why.
  */
 export const useRemoveWorkspace = (): WorkspacesContextValue['remove'] => useWorkspacesContext().remove
+
+/** Shows what a workspace said of itself in the list (`useLiveWorkspace`). */
+export const useUpdateWorkspace = (): WorkspacesContextValue['update'] => useWorkspacesContext().update
 
 /** What is known of who has access to each workspace, kept from one page to the next (see `useWorkspaceMemberships`). */
 export const useMembershipsStore = (): WorkspaceMemberships => useWorkspacesContext().memberships

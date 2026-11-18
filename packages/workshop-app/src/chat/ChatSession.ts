@@ -103,6 +103,8 @@ type Calls =
   | 'mergeChanges'
   | 'updateChatFromMainline'
   | 'revertChanges'
+  | 'markChatRead'
+  | 'viewChat'
 
 /**
  * The part of a workspace's Overseer a session uses, and the lease that must be disposed. The
@@ -242,6 +244,11 @@ export class ChatSession {
   #outputFormats = new Map<string, OutputFormat>()
   // Files sent in the chat that were fetched, oldest first, by id.
   #attachments = new Map<string, Promise<Uint8Array>>()
+  // The latest message the account was told the viewer has read.
+  #markedRead = -1
+  // How many show the conversation (`view()`), and the workspace's word that it is shown while they do.
+  #viewers = 0
+  #viewLease: Promise<Disposable> | undefined
   // The steps since the last message with the step being written joined on, rebuilt only when
   // either changes.
   #work: WorkEntry[] | undefined
@@ -346,6 +353,7 @@ export class ChatSession {
   }
 
   #release() {
+    this.#releaseView()
     for (const lease of this.#leases.splice(0)) {
       void lease.then(
         (held) => held[Symbol.dispose](),
@@ -517,6 +525,58 @@ export class ChatSession {
       await (this.#earlier ?? this.loadEarlier())
       if (this.#nextBeforeSequence === before) return undefined
     }
+  }
+
+  /**
+   * Tells the account the viewer has read the chat through its latest message, which clears its
+   * unread marks. Said once for each message: asked again before another arrives, it does nothing.
+   * Only for whoever may build in the workspace: someone who can only use it has no read state.
+   */
+  markRead = () => {
+    const latest = Math.max(-1, ...this.#messages.keys())
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded || latest <= this.#markedRead || this.options.connection?.down) return
+    this.#markedRead = latest
+    Promise.resolve(overseer.markChatRead(this.chatId, latest)).catch(() => {
+      // Said again with the next message, or when the chat is next come back to.
+      if (this.#markedRead === latest) this.#markedRead = -1
+    })
+  }
+
+  /**
+   * Says the conversation is on screen until the function returned is called (`viewChat`). While
+   * anyone shows it, the workspace keeps the model's cache of it warm, so that the next message
+   * costs less and is answered sooner, and the viewer is told of what is new in it. Held again on
+   * each new connection to the workspace. Only for whoever may build in the workspace.
+   *
+   * Coming back to the chat is reading it, so the first `markRead` of each showing marks what is
+   * there, even what was marked unread meanwhile.
+   */
+  view = (): (() => void) => {
+    if (this.#viewers++ === 0) this.#markedRead = -1
+    this.#holdView()
+    let held = true
+    return () => {
+      if (!held) return
+      held = false
+      if (--this.#viewers === 0) this.#releaseView()
+    }
+  }
+
+  #holdView() {
+    const overseer = this.#overseer
+    if (this.#viewers === 0 || this.#viewLease || !overseer || !this.#loaded) return
+    const lease = Promise.resolve(overseer.viewChat(this.chatId))
+    this.#viewLease = lease
+    // Without it the chat is only not kept warm: nothing shown depends on it.
+    lease.catch(() => {
+      if (this.#viewLease === lease) this.#viewLease = undefined
+    })
+  }
+
+  #releaseView() {
+    void this.#viewLease?.then((held) => held[Symbol.dispose](), () => {})
+    this.#viewLease = undefined
   }
 
   /**
@@ -747,6 +807,7 @@ export class ChatSession {
       this.#rebuildFeed()
       this.#loaded = true
       this.#retryDelay = 0
+      this.#holdView()
       for (const apply of this.#early.splice(0)) apply()
       this.#publishReady()
     } catch (error) {

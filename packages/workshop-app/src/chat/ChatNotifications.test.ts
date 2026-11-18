@@ -22,14 +22,16 @@ const fakeBackend = () => {
   const leaseDispose = vi.fn<() => void>()
   const overseerDispose = vi.fn<() => void>()
   const setChatNotificationsEnabled = vi.fn<(chatId: number, enabled: boolean) => Promise<void>>(async () => {})
+  const markChatRead = vi.fn<(chatId: number, throughSequence?: number) => Promise<void>>(async () => {})
+  const markChatUnread = vi.fn<(chatId: number, fromSequence?: number) => Promise<boolean>>(async () => true)
   const backend: NotificationsBackend = {
     subscribe: (given) => {
       listener = given as unknown as UnreadStateSubscriber
       return Promise.resolve({ [Symbol.dispose]: leaseDispose })
     },
-    open: () => ({ setChatNotificationsEnabled, [Symbol.dispose]: overseerDispose }),
+    open: () => ({ setChatNotificationsEnabled, markChatRead, markChatUnread, [Symbol.dispose]: overseerDispose }),
   }
-  return { backend, server: () => listener!, leaseDispose, overseerDispose, setChatNotificationsEnabled }
+  return { backend, server: () => listener!, leaseDispose, overseerDispose, setChatNotificationsEnabled, markChatRead, markChatUnread }
 }
 
 const started = () => {
@@ -115,6 +117,34 @@ describe('ChatNotifications', () => {
     await expect(notifications.setEnabled(1, false)).rejects.toThrow('The chat is no longer available.')
 
     expect(notifications.getSnapshot().get(1)).toMatchObject({ notificationsEnabled: true })
+  })
+
+  it('keeps what of a chat is unread over a change to its notifications', async () => {
+    const { notifications, server } = started()
+    await server().updated({ unreadChatCount: 1, unreadMessageCount: 3, workspaces: [], chats: [row(1, { unreadMessageCount: 3 })] })
+
+    void notifications.setEnabled(1, false)
+
+    expect(notifications.getSnapshot().get(1)).toMatchObject({ notificationsEnabled: false, unreadMessageCount: 3 })
+  })
+
+  it('marks a chat read through its latest message, or its latest message unread, in the workspace it is in', async () => {
+    const { notifications, markChatRead, markChatUnread, overseerDispose } = started()
+
+    await notifications.setRead(1, true)
+    await notifications.setRead(2, false)
+
+    expect(markChatRead.mock.calls).toEqual([[1]])
+    expect(markChatUnread.mock.calls).toEqual([[2]])
+    expect(overseerDispose).toHaveBeenCalledTimes(2)
+  })
+
+  it('lets go of the workspace when marking a chat is refused, and says why', async () => {
+    const { notifications, markChatUnread, overseerDispose } = started()
+    markChatUnread.mockRejectedValueOnce(new Error('Not available in use-only sessions.'))
+
+    await expect(notifications.setRead(1, false)).rejects.toThrow('Not available in use-only sessions.')
+    expect(overseerDispose).toHaveBeenCalledOnce()
   })
 
   it('lets go of the subscription when stopped, and hears nothing from it after', async () => {

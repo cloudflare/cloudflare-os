@@ -3,8 +3,9 @@ import { useApi } from '@/rpc/ApiContext'
 import { ChatNotifications } from './ChatNotifications'
 
 /**
- * The viewer's notifications for a workspace's chats, live while `live`, and the way to change a
- * chat's. Not for a workspace the viewer can only use, whose chats are not theirs to change.
+ * The viewer's notifications for a workspace's chats and what of each is unread, live while
+ * `live`, and the ways to change a chat's or mark it read or unread. Not for a workspace the viewer
+ * can only use, whose chats are not theirs to change.
  */
 export const useChatNotifications = (workspaceId: string, live: boolean) => {
   const { api, reconnecting } = useApi()
@@ -20,5 +21,5 @@ export const useChatNotifications = (workspaceId: string, live: boolean) => {
     return () => notifications.stop()
   }, [notifications, live, reconnecting])
   const rows = useSyncExternalStore(notifications.subscribe, notifications.getSnapshot)
-  return { rows, setEnabled: notifications.setEnabled }
+  return { rows, setEnabled: notifications.setEnabled, setRead: notifications.setRead }
 }

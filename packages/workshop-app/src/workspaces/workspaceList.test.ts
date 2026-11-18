@@ -19,6 +19,11 @@ const memberOptions = spec.filters!.filter(({ facet }) => facet === 'member')
 const left = (...ids: string[]) =>
   narrowList(WORKSPACES, { query: '', searchText: spec.searchText, filters: spec.filters!.filter(({ id }) => ids.includes(id)) }).map(({ id }) => id)
 
+const unreadOnly = (unread: ReadonlySet<string>) => {
+  const filters = workspaceList(WORKSPACES, MEMBERSHIPS, 'me', unread).filters!.filter(({ id }) => id === 'unread')
+  return narrowList(WORKSPACES, { query: '', searchText: spec.searchText, filters }).map(({ id }) => id)
+}
+
 describe('workspaceList', () => {
   it('has a filter for nobody else, then one for each other person by name', () => {
     expect(memberOptions.map(({ id, label }) => [id, label])).toEqual([
@@ -39,5 +44,10 @@ describe('workspaceList', () => {
 
   it('finds a workspace by who has access to it', () => {
     expect(narrowList(WORKSPACES, { query: 'turing', searchText: spec.searchText, filters: [] }).map(({ id }) => id)).toEqual(['team'])
+  })
+
+  it('narrows to the workspaces with anything unread, and to none before the account has said', () => {
+    expect(unreadOnly(new Set(['team', 'alone']))).toEqual(['alone', 'team'])
+    expect(unreadOnly(new Set())).toEqual([])
   })
 })

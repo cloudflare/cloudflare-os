@@ -4,24 +4,28 @@ import { LinkButton } from '@/components/LinkButton'
 import { ChatMoreMenu, type ChatMoreMenuProps } from './ChatMoreMenu'
 import { RowAction } from './RowAction'
 import { LIST_ACTION } from './StarButton'
+import { UnreadDot } from './UnreadDot'
 
 export type ChatListItemProps = {
   title: string
   /** When it was last active, as the list it is in puts it. */
   time?: string
+  /** How many of its messages the viewer has not read, marked by a dot while there are any. */
+  unread?: number
   /** The chat's address, so that it can be opened in another tab. */
   href?: string
   onSelect: () => void
   /** What else can be done with the chat (`ChatMoreMenu`), for whoever may do any of it. */
-  more?: Pick<ChatMoreMenuProps, 'notifications' | 'onDelete'>
+  more?: Pick<ChatMoreMenuProps, 'read' | 'notifications' | 'onDelete'>
 }
 
 /**
- * One chat in a workspace's list of chats, on one line: its title, and when it was last active.
- * Pointed at, more slides out at the end, where there is anything in it for the viewer.
+ * One chat in a workspace's list of chats, on one line: its title, and when it was last active,
+ * after a dot while it has anything the viewer has not read. Pointed at, more slides out at the
+ * end, where there is anything in it for the viewer.
  */
-export const ChatListItem = ({ title, time, href, onSelect, more }: ChatListItemProps) => {
-  const hasMore = more !== undefined && (Boolean(more.notifications?.choices.length) || more.onDelete !== undefined)
+export const ChatListItem = ({ title, time, unread = 0, href, onSelect, more }: ChatListItemProps) => {
+  const hasMore = more !== undefined && (more.read !== undefined || Boolean(more.notifications?.choices.length) || more.onDelete !== undefined)
   return (
     <div className={cn('group relative flex items-center rounded-2xl hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5', hasMore && 'pr-1.5')}>
       <LinkButton
@@ -32,6 +36,7 @@ export const ChatListItem = ({ title, time, href, onSelect, more }: ChatListItem
       >
         <ChatCircleIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-default" />
         <span className="min-w-0 flex-1 truncate font-medium text-kumo-default">{title}</span>
+        {unread > 0 && <UnreadDot count={unread} />}
         {time && <span className="shrink-0 text-kumo-subtle">{time}</span>}
       </LinkButton>
       {hasMore && (
