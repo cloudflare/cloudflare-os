@@ -119,7 +119,8 @@ let onlyProject: Promise<string | null> | undefined;
 let suggestedFor: string | null = null;
 /**
  * A pre-filled choice that arrived with a query project it did not need: the field stays in view,
- * while that choice stands, until the user clears it, so it does not vanish mid-edit.
+ * while the choice stays in that data project, until the user clears it, so it does not vanish
+ * mid-edit and narrowing the choice does not change where its queries are billed.
  */
 let overrideFor: string | null = null;
 
@@ -214,13 +215,15 @@ export default {
             return item;
           }}
           onChange={next => {
-            // A choice in a project queries can run in needs no query project; the one picked for a
-            // shared project stays while the choice moves within it.
-            const nextShared = sharedProject(next);
-            const keep = nextShared !== undefined && nextShared === shared;
+            // A query project stays while the choice moves within the data project it was picked
+            // for: the one a shared project needs, or one a pre-filled choice arrived with.
+            const held = shared ?? override;
+            const keep = held !== undefined && next !== null && refOf(next)?.projectId === held;
             if (!keep) {
               clearFields("queryProject");
               overrideFor = null;
+            } else if (override !== undefined) {
+              overrideFor = next;
             } else if (suggestedFor !== null) {
               suggestedFor = next;
             }
