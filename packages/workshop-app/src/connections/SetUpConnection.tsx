@@ -304,14 +304,16 @@ export const ConnectResource = ({
         <p className="text-base/5 text-kumo-subtle">The agent didn’t say what kind of resource it wants. Ask it again.</p>
       ) : shown && 'problem' in shown ? (
         <p role="alert" className="text-base/5 text-kumo-danger">{shown.problem}</p>
-      ) : shown ? (
+      ) : (
+        // Mounted while the form is fetched too, so that what says it is opening stays until it is drawn.
         <ResourceConfiguratorFrame
-          key={shown.accountId}
-          frame={shown.frame}
+          key={accountId}
+          frame={shown?.frame}
+          opening={<p role="status" className="appears-late text-base text-kumo-subtle">Opening {name}’s form…</p>}
           initialResource={resourceUrl ? { resourceUrl, resourceUrlPattern: pattern } : undefined}
           acceptedResourceUrlPatterns={accepted}
           ensureResources={async (urlPatterns) => {
-            if (connection?.blocked()) return false
+            if (connection?.blocked() || !shown) return false
             const flow = await api.ensureAccountResources(shown.accountId, urlPatterns)
             if (flow) openConnectWindow(flow)
             return true
@@ -319,8 +321,6 @@ export const ConnectResource = ({
           onReady={setReady}
           onCollect={(next) => setCollect(next && { collect: next })}
         />
-      ) : (
-        <p role="status" className="appears-late text-base text-kumo-subtle">Opening {name}’s form…</p>
       )}
       ready={(save?.ready ?? true) && (formless || (ready && collect !== undefined))}
       onAccept={async () => {

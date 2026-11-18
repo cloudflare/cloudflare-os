@@ -17,7 +17,10 @@ export type ConfiguratorSetup = {
   acceptedResourceUrlPatterns: readonly string[]
   /** Asks for access to more resource types on the account; resolves to whether it was asked. */
   ensureResources?: (resourceUrlPatterns: string[]) => Promise<boolean>
-  /** Its form wants this much room (`layoutHeight`), and this much drawn (`height`, with a menu open). */
+  /**
+   * Its form wants this much room (`layoutHeight`), and this much drawn (`height`, with a menu
+   * open). Not called until the form is drawn, so the first call says it has been.
+   */
   onResize: (height: number, layoutHeight: number) => void
   /** Whether what is chosen in it can be connected. */
   onReady: (ready: boolean) => void
@@ -30,6 +33,8 @@ const MIN_HEIGHT = 80
 const MAX_HEIGHT = 4000
 const MAX_SCROLL = 1000
 const COLLECT_TIMEOUT = 5000
+// The runtime reports its margin alone, a few pixels, before its form is drawn.
+const UNDRAWN = 8
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 const height = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? clamp(Math.ceil(value), MIN_HEIGHT, MAX_HEIGHT) : undefined)
@@ -64,6 +69,7 @@ class Host extends RpcTarget implements ResourceConfiguratorHost {
   }
 
   resize(full: number, layout: number) {
+    if (typeof layout === 'number' && layout <= UNDRAWN) return
     const drawn = height(full)
     if (drawn !== undefined) this.setup().onResize(drawn, height(layout) ?? drawn)
   }
