@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, runInDurableObject } from "cloudflare:test";
+import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ISSUE_REPORT_ERROR_CODES, ISSUE_REPORT_PAGE_SIZE, MAX_ADMIN_AUDIT_ARG_LENGTH,
@@ -7,9 +8,13 @@ import {
   MAX_ISSUE_REPORT_LINK_LENGTH, MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_TEXT_LENGTH,
   MAX_ISSUE_REPORT_THREAD_ENTRIES, getIssueReportErrorCode,
   type AiChatAuthorInfo, type IssueReportErrorCode, type IssueReportGrant,
-  type IssueReportInput,
+  type IssueReportInput, type PublicApi,
 } from "@gadgets/workshop-shared/api";
+import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import { IssueReportsDurableObject } from "../src/issue-reports.js";
+import type { OverseerDurableObject } from "../src/overseer.js";
+import server from "../src/server.js";
+import type { UserDurableObject } from "../src/user.js";
 import {
   DEFAULT_ADMIN_CONFIG, type AdminConfig,
 } from "../src/storage-schema/admin-settings-storage.js";
@@ -20,6 +25,9 @@ import "./test-worker.js";
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_ISSUE_REPORTS: DurableObjectNamespace<IssueReportsDurableObject>;
+    TEST_USER: DurableObjectNamespace<UserDurableObject>;
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+    TEST_ADMIN_AUDIT: DurableObjectNamespace<AdminAuditDurableObject>;
     ISSUE_IMAGES: R2Bucket;
   }
 }
@@ -1206,5 +1214,245 @@ describe("issue report retention", () => {
     clock.advance(2 * DAY_MS);
     await run(reports => reports.alarm());
     expect(await count("reports")).toBe(0);
+  });
+});
+
+// The reporter's and the admins' methods over real sessions (AuthenticatedApi and AdminApi),
+// against the deployment's own store.
+describe("issue reports over a user's and an admin's session", () => {
+  const ORIGIN = "https://workshop.example";
+
+  // A PublicApi session on a deployment whose admins are `admins`. No admin config is stored
+  // for the session Worker: every read of it gets the defaults (signups open).
+  async function connect(admins: string[] = []): Promise<RpcStub<PublicApi>> {
+    // The first /api request installs the bundled blueprints, which needs storage this test
+    // lacks.
+    let ctx = createExecutionContext();
+    Object.defineProperty(ctx, "exports", { value: Object.create(ctx.exports, {
+      AdminSettings: { value: { getByName: () => ({
+        ensureBundledBlueprintsInstalled: async () => true,
+      }) } },
+    }) });
+    let deployment = { ...env, ADMINS: admins, BLUEPRINTS: { get: async () => null } };
+    let response = await server.fetch(
+        new Request(`${ORIGIN}/api`, { headers: { Upgrade: "websocket", Origin: ORIGIN } }),
+        deployment as unknown as Cloudflare.Env, ctx);
+    expect(response.status).toBe(101);
+    let socket = response.webSocket;
+    if (!socket) throw new TypeError("Expected a WebSocket response.");
+    socket.accept();
+    return newWebSocketRpcSession<PublicApi>(socket);
+  }
+
+  // A password account named `name`, and what authenticates as it.
+  async function account(name: string): Promise<{ username: string; token: string }> {
+    let username = `${name}${crypto.randomUUID().replaceAll("-", "")}`;
+    let secret = await env.TEST_USER.getByName(username)
+        .createAccount(username, name, new Uint8Array([1, 2, 3]));
+    return { username, token: `${username}:${secret}` };
+  }
+
+  // How many records the deployment's admin audit log holds.
+  async function auditCount(): Promise<number> {
+    return (await env.TEST_ADMIN_AUDIT.getByName("").list({ limit: 200 }, 90)).records.length;
+  }
+
+  it("files a report as the session's user and keeps it from everyone else", async () => {
+    let ada = await account("Ada");
+    let ben = await account("Ben");
+    using api = await connect();
+    using session = api.authenticate(ada.token);
+    using other = api.authenticate(ben.token);
+
+    let report = await session.submitIssueReport(input({ context: { appVersion: "1.2.3" } }));
+    expect(report).toStrictEqual({
+      id: expect.any(String), filedAt: expect.any(Date),
+      reporter: { id: ada.username, name: "Ada" },
+      text: "The export button does nothing.", priority: "medium",
+      context: { appVersion: "1.2.3" }, status: "new", images: [], unseen: false,
+    });
+    expect(await session.getIssueReport(report.id)).toStrictEqual({ ...report, entries: [] });
+    expect(await session.listIssueReports()).toStrictEqual({ reports: [report] });
+    expect(await session.getUnseenIssueReportCount()).toBe(0);
+
+    expect(await refusal(() => other.getIssueReport(report.id))).toBe(NOT_FOUND);
+    expect(await refusal(() => other.replyToIssueReport(report.id, "Mine too"))).toBe(NOT_FOUND);
+    expect(await refusal(() => other.markIssueReportSeen(report.id))).toBe(NOT_FOUND);
+    expect(await refusal(() => other.readIssueReportImage(report.id, "image"))).toBe(NOT_FOUND);
+    expect(await refusal(() => session.getIssueReport("no-such-report"))).toBe(NOT_FOUND);
+    expect(await other.listIssueReports()).toStrictEqual({ reports: [] });
+  });
+
+  it("refuses a report naming a workspace that is not one, and files nothing", async () => {
+    let ada = await account("Ada");
+    using api = await connect();
+    using session = api.authenticate(ada.token);
+    let unknown = env.TEST_OVERSEER.newUniqueId().toString();
+    for (let workspaceId of ["not-a-workspace-id", unknown]) {
+      expect(await refusal(() => session.submitIssueReport(input({ context: { workspaceId } }))))
+          .toBe(ISSUE_REPORT_ERROR_CODES.contextNotFound);
+    }
+    expect(await session.listIssueReports()).toStrictEqual({ reports: [] });
+  });
+
+  it("files a report about a workspace on the workspace's word of who its reporter is",
+      async () => {
+    let ada = await account("Ada");
+    let ben = await account("Ben");
+    let cy = await account("Cy");
+    using api = await connect();
+    using session = api.authenticate(ada.token);
+    using collaborator = api.authenticate(ben.token);
+    using stranger = api.authenticate(cy.token);
+    using workspace = session.newWorkspace();
+    let { id: workspaceId } = await workspace.getMetadata();
+    expect(await workspace.addCollaborator(ben.username, "workspace")).not.toBeNull();
+    // What the store keeps of a report beside what it returns: the workspace, and whether the
+    // reporter owns it.
+    let kept = (reportId: string) => runInDurableObject(env.TEST_ISSUE_REPORTS.getByName(""),
+        (_reports, state) => state.storage.sql.exec(
+            "SELECT workspace_id, owns_workspace FROM reports WHERE id = ?", reportId).one());
+
+    // The workspace is kept as it names itself, however the client spelled its id.
+    let owners = await session.submitIssueReport(
+        input({ context: { workspaceId: workspaceId.toUpperCase() } }));
+    expect(workspaceId.toUpperCase()).not.toBe(workspaceId);
+    expect(owners.context).toStrictEqual({ workspaceId });
+    expect(await kept(owners.id)).toStrictEqual({ workspace_id: workspaceId, owns_workspace: 1 });
+    let collaborators = await collaborator.submitIssueReport(input({ context: { workspaceId } }));
+    expect(await kept(collaborators.id))
+        .toStrictEqual({ workspace_id: workspaceId, owns_workspace: 0 });
+
+    let refused = async (who: typeof session, context: IssueReportInput["context"]) =>
+        expect(await refusal(() => who.submitIssueReport(input({ context }))))
+            .toBe(ISSUE_REPORT_ERROR_CODES.contextNotFound);
+    await refused(stranger, { workspaceId });
+    await refused(session, { workspaceId, chatId: 999_999 });
+    await refused(session, { workspaceId, gadgetId: 999_999 });
+    await workspace.deleteSelf();
+    await refused(session, { workspaceId });
+
+    expect((await session.listIssueReports()).reports.map(report => report.id))
+        .toStrictEqual([owners.id]);
+    expect(await stranger.listIssueReports()).toStrictEqual({ reports: [] });
+  });
+
+  it("shows the reporter an admin's name and never their id, and records nothing in the audit log",
+      async () => {
+    let ada = await account("Ada");
+    let grace = await account("Grace");
+    using api = await connect([grace.username]);
+    using session = api.authenticate(ada.token);
+    using adminSession = api.authenticate(grace.token);
+    using admin = (await adminSession.getAdminApi())!;
+    let report = await session.submitIssueReport(input());
+    let audit = await auditCount();
+
+    await admin.addIssueReportEntry(report.id, "Internal: the data binding", "admins");
+    let reply = await admin.addIssueReportEntry(report.id, "Which chart?", "public");
+    await admin.setIssueReportStatus(report.id, "waitingOnReporter");
+    await admin.setIssueReportLinks(report.id, ["https://example.com/ticket/1"]);
+    expect((await admin.listIssueReports({ reporter: ada.username })).reports)
+        .toMatchObject([{ id: report.id, links: ["https://example.com/ticket/1"] }]);
+
+    expect(await session.getUnseenIssueReportCount()).toBe(1);
+    let own = await session.getIssueReport(report.id);
+    expect(own.entries).toStrictEqual([
+      { id: reply.id, at: expect.any(Date), author: { name: "Grace" }, visibility: "public",
+        via: "api", text: "Which chart?" },
+      { id: expect.any(String), at: expect.any(Date), author: { name: "Grace" },
+        visibility: "public", via: "api", text: "", status: "waitingOnReporter" },
+    ]);
+    let json = JSON.stringify(own);
+    expect(json).not.toContain(grace.username);
+    expect(json).not.toContain("Internal");
+    expect(json).not.toContain("example.com");
+
+    await session.markIssueReportSeen(report.id);
+    expect(await session.getUnseenIssueReportCount()).toBe(0);
+    expect(await session.replyToIssueReport(report.id, "The revenue one"))
+        .toMatchObject({ author: { id: ada.username, name: "Ada" }, status: "withAdmin" });
+
+    let whole = await admin.getIssueReport(report.id);
+    expect(whole.status).toBe("withAdmin");
+    expect(whole.entries.map(entry => [entry.author.id, entry.visibility, entry.text]))
+        .toStrictEqual([
+          [grace.username, "admins", "Internal: the data binding"],
+          [grace.username, "public", "Which chart?"],
+          [grace.username, "public", ""],
+          [ada.username, "public", "The revenue one"],
+        ]);
+    expect(await auditCount()).toBe(audit);
+  });
+
+  it("hands an image's stream to the store and back, to its reporter and to admins alone",
+      async () => {
+    let ada = await account("Ada");
+    let ben = await account("Ben");
+    let grace = await account("Grace");
+    using api = await connect([grace.username]);
+    using session = api.authenticate(ada.token);
+    using other = api.authenticate(ben.token);
+    using adminSession = api.authenticate(grace.token);
+    using admin = (await adminSession.getAdminApi())!;
+    let report = await session.submitIssueReport(input());
+    // A PNG's signature, then bytes that tell a reordering or a cut.
+    let bytes = Uint8Array.from({ length: 5000 }, (_, i) =>
+        [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A][i] ?? i % 251);
+    let streamOf = (chunk: Uint8Array) => new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    let read = async (stream: ReadableStream<Uint8Array>) =>
+        new Uint8Array(await new Response(stream).arrayBuffer());
+
+    let image = await session.addIssueReportImage(report.id, streamOf(bytes), bytes.length);
+    expect(image).toStrictEqual(
+        { id: expect.any(String), type: "image/png", byteLength: bytes.length });
+    expect((await session.getIssueReport(report.id)).images).toStrictEqual([image]);
+    expect(await read(await session.readIssueReportImage(report.id, image.id)))
+        .toStrictEqual(bytes);
+    expect(await read(await admin.readIssueReportImage(report.id, image.id)))
+        .toStrictEqual(bytes);
+
+    expect(await refusal(() => other.readIssueReportImage(report.id, image.id))).toBe(NOT_FOUND);
+    expect(await refusal(() =>
+        other.addIssueReportImage(report.id, streamOf(bytes), bytes.length))).toBe(NOT_FOUND);
+    expect(await refusal(() => admin.readIssueReportImage(report.id, "no-such-image")))
+        .toBe(NOT_FOUND);
+    expect(await refusal(() => session.addIssueReportImage(
+        report.id, streamOf(new TextEncoder().encode("<svg xmlns='http://www.w3.org/2000/svg'/>")),
+        41))).toBe(ISSUE_REPORT_ERROR_CODES.imageNotRecognised);
+    expect((await session.getIssueReport(report.id)).images).toStrictEqual([image]);
+  });
+
+  it("pages the reporter's reports, fifty at a time", async () => {
+    let ada = await account("Ada");
+    let clock = fakeClock();
+    // More than a day's bound lets through, so over three days.
+    let filed: string[] = [];
+    await runInDurableObject(env.TEST_ISSUE_REPORTS.getByName(""), async reports => {
+      for (let day of [20, 20, ISSUE_REPORT_PAGE_SIZE + 1 - 40]) {
+        for (let i = 0; i < day; i++) {
+          clock.advance(1000);
+          filed.push((await reports.submit({ id: ada.username, name: "Ada" }, input(), false)).id);
+        }
+        clock.nextDay();
+      }
+    });
+    // The session reads the real clock: a faked Date does not cross it.
+    vi.useRealTimers();
+    using api = await connect();
+    using session = api.authenticate(ada.token);
+    let first = await session.listIssueReports();
+    expect(first.reports.map(report => report.id))
+        .toStrictEqual(filed.toReversed().slice(0, ISSUE_REPORT_PAGE_SIZE));
+    expect(first.nextCursor).toEqual(expect.any(String));
+    let last = await session.listIssueReports(first.nextCursor);
+    expect(last.reports.map(report => report.id)).toStrictEqual([filed[0]]);
+    expect(last.nextCursor).toBeUndefined();
+    await expect(session.listIssueReports("not-a-cursor")).rejects.toThrow(TypeError);
   });
 });

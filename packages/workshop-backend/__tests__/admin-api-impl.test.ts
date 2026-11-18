@@ -63,6 +63,7 @@ function deployment(options: {
     UserDirectoryDurableObject: namespace("directory"),
     AdminAuditDurableObject: namespace("audit"),
     UserDurableObject: namespace("user"),
+    IssueReportsDurableObject: namespace("report"),
     OverseerDurableObject: {
       idFromString: (id: string) => {
         calls.push({ target: "overseers", method: "idFromString", args: [id] });
@@ -1016,5 +1017,104 @@ describe("AdminApiImpl.endWorkspaceGrant", () => {
     if (!dropped) {
       expect(getAdminGrantErrorCode(refusal)).toBe(ADMIN_GRANT_ERROR_CODES.notFound);
     }
+  });
+});
+
+describe("AdminApiImpl issue reports", () => {
+  const PROFILE = { type: "user", id: ADMIN, name: "Ada Admin", commitEmail: "ada@example.test" };
+  const IMAGE = new ReadableStream<Uint8Array>();
+
+  // What the issue report store answers each method with.
+  const answers = {
+    list: { reports: [{ id: "report" }], nextCursor: "next" },
+    get: { id: "report", entries: [] },
+    addEntry: { id: "entry" },
+    setStatus: undefined,
+    setLinks: undefined,
+    readImage: IMAGE,
+  };
+  const reportDeployment = (whoamiIfExists: () => unknown = () => PROFILE) => deployment({
+    handlers: {
+      user: { whoamiIfExists },
+      report: Object.fromEntries(
+          Object.entries(answers).map(([method, answer]) => [method, () => answer])),
+    },
+  });
+
+  // Each AdminApi method, the store method it reaches, and what it hands it.
+  const methods: [string, (api: AdminApiImpl) => Promise<unknown>, keyof typeof answers,
+      unknown[]][] = [
+    ["listIssueReports", api => api.listIssueReports({ status: "new", limit: 3 }), "list",
+      [{ status: "new", priority: undefined, reporter: undefined, workspace: undefined,
+         cursor: undefined, limit: 3 }]],
+    ["getIssueReport", api => api.getIssueReport("report"), "get", ["report"]],
+    ["addIssueReportEntry", api => api.addIssueReportEntry("report", "Which chart?", "public"),
+      "addEntry", [PROFILE, "cli", "report", "Which chart?", "public"]],
+    ["setIssueReportStatus", api => api.setIssueReportStatus("report", "closed"), "setStatus",
+      [PROFILE, "cli", "report", "closed"]],
+    ["setIssueReportLinks", api => api.setIssueReportLinks("report", ["https://example.com/1"]),
+      "setLinks", ["report", ["https://example.com/1"]]],
+    ["readIssueReportImage", api => api.readIssueReportImage("report", "image"), "readImage",
+      ["report", "image"]],
+  ];
+
+  it("forwards each method to the store, and appends nothing to the audit log", async () => {
+    const { mint, calls, callsTo } = reportDeployment();
+    const api = mint();
+    for (let [name, invoke, method, args] of methods) {
+      calls.length = 0;
+      expect(await invoke(api), name).toBe(answers[method]);
+      expect(callsTo("report", method), name).toStrictEqual([{ target: "report", method, args }]);
+      // The deployment-wide store, and nothing but the caller's own profile beside it.
+      expect(callsTo("reports", "getByName"), name)
+          .toStrictEqual([{ target: "reports", method: "getByName", args: [""] }]);
+      expect(calls.filter(call => !["report", "reports", "user", "users"].includes(call.target)),
+          name).toStrictEqual([]);
+    }
+  });
+
+  it("writes in a thread as the caller's own account names them, with how they reached it",
+      async () => {
+    const { mint, callsTo } = reportDeployment(() => null);
+    const api = mint(ADMIN, "api");
+    await api.addIssueReportEntry("report", "A note", "admins");
+    await api.setIssueReportStatus("report", "investigating");
+    // An admin whose account has no profile is named by their id.
+    const byId = { type: "user", id: ADMIN, name: ADMIN };
+    expect(callsTo("users", "getByName").map(call => call.args)).toStrictEqual([[ADMIN], [ADMIN]]);
+    expect(callsTo("report", "addEntry")[0].args)
+        .toStrictEqual([byId, "api", "report", "A note", "admins"]);
+    expect(callsTo("report", "setStatus")[0].args)
+        .toStrictEqual([byId, "api", "report", "investigating"]);
+  });
+
+  it("lists with the default page size, the query passed field by field",
+      async () => {
+    const { mint, callsTo } = reportDeployment();
+    const api = mint();
+    await api.listIssueReports();
+    await api.listIssueReports({
+      status: "closed", priority: "low", reporter: "ada", workspace: "w1", cursor: "c",
+    });
+    expect(callsTo("report", "list").map(call => call.args[0])).toStrictEqual([
+      { status: undefined, priority: undefined, reporter: undefined, workspace: undefined,
+        cursor: undefined, limit: 50 },
+      { status: "closed", priority: "low", reporter: "ada", workspace: "w1", cursor: "c",
+        limit: 50 },
+    ]);
+    for (let limit of [0, 1.5, 201]) {
+      expect(await rejection(api.listIssueReports({ limit }))).toBeInstanceOf(TypeError);
+    }
+    expect(callsTo("report", "list")).toHaveLength(2);
+  });
+
+  it("refuses each method to a caller who is no longer a deployment admin", async () => {
+    const { mint, calls } = reportDeployment();
+    const api = mint("former-admin@example.test");
+    for (let [name, invoke] of methods) {
+      expect(getAdminAccessErrorCode(await rejection(invoke(api))), name)
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    expect(calls).toStrictEqual([]);
   });
 });

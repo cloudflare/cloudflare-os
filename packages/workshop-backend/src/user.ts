@@ -21,6 +21,7 @@ import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import type { AdminSettings } from "./admin-settings.js";
+import type { IssueReportsDurableObject } from "./issue-reports.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
@@ -330,6 +331,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
+  // The deployment's issue reports, which show the grant their reporter gives with one.
+  private issueReports: DurableObjectNamespace<IssueReportsDurableObject>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
   // The current minute of notification-service calls: when it began, and the calls made in it.
   #notificationCallWindowStart = -Infinity;
@@ -380,6 +383,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       },
     });
     this.adminSettings = this.ctx.exports.AdminSettings;
+    this.issueReports = this.ctx.exports.IssueReportsDurableObject;
 
     this.vendors = buildGatekeeperVendorMap(env);
     if (this.#notificationChats.size) {
@@ -1482,6 +1486,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // One record, in this account alone, that lets deployment admins read the content of every
   // workspace the user owns. It is the user's own record: none of these methods writes to the
   // admin audit log, and nothing bounds how often the grant is given or renewed.
+  //
+  // A grant given with an issue report is shown by that report, from a copy the issue report
+  // store keeps: the account tells the store of the grant once it is stored, and of each change
+  // to it afterwards. The account's record is the authority; the copy is a display.
 
   /** The account-wide grant while isAdminGrantLive(), else null: what a workspace asks when an
    * admin's call needs content and its own storage holds no live grant. It reads one stored
@@ -1501,29 +1509,109 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return null;
   }
 
-  /** AuthenticatedApi.grantAccountAdminAccess(). A live grant is renewed under its id; an ended
-   * one is replaced by a fresh grant. */
-  async grantAccountAdminAccess(): Promise<AdminAccessGrant> {
+  // What the issue report store is told of `grant` (IssueReportsDurableObject.noteGrant()): with
+  // `reportId`, to link that report to it; without, to update the copy reports already show.
+  async #noteReportGrant(grant: AdminAccessGrant, reportId?: string): Promise<void> {
+    let { id, scope, expiresAt, revokedAt: endedAt } = grant;
+    await this.issueReports.getByName("").noteGrant(
+        this.storage.profile.get().id, { id, scope, expiresAt, endedAt }, reportId);
+  }
+
+  // Tells the reports `grant` was given with, if any, what the grant says now. The change is
+  // already stored, so a failure is logged and never thrown: the reports' copy stays behind
+  // until revokeAccountAdminAccess() is called again, or the ended grant is replaced.
+  async #syncReportGrant(grant: AdminAccessGrant): Promise<void> {
+    if (grant.reportId === undefined) return;
+    try {
+      await this.#noteReportGrant(grant);
+    } catch (error) {
+      logger.warn("failed to update an issue report's copy of its grant", {
+        event: "issue.report.grant.sync.failed", error,
+      });
+    }
+  }
+
+  /**
+   * AuthenticatedApi.grantAccountAdminAccess(). A live grant is renewed under its id; an ended
+   * one is replaced by a fresh grant, and tells the reports it was given with of its end once
+   * more first, since the account keeps one record and nothing could send that end afterwards.
+   *
+   * `reportId` links an issue report of the user's to the grant, which keeps the last report it
+   * was given with. The store is asked before anything is stored, so a report that could not
+   * show the grant refuses the call (`notFound`: one that names a workspace its reporter does
+   * not own among them, which the grant would not cover), and the link is made only once the
+   * grant is stored. If the link then fails, a grant this call gave is ended and the error is
+   * thrown; one it renewed stays renewed, since ending it would take away access given before,
+   * and goes back to the report it named before. A renewed grant that named none keeps this
+   * call's report: the store can have made the link and lost its answer, and only a grant that
+   * names a report tells the store of its changes. The reports that show the grant take its end
+   * or its later end: a call made meanwhile can have linked one to a grant this call gave.
+   */
+  async grantAccountAdminAccess(reportId?: string): Promise<AdminAccessGrant> {
     let policy = adminAccessPolicy(await readAdminConfig(this.env), this.env);
     if (policy.access !== "content") {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
     }
+    // Only the stored grant can tell its reports of its end, and an ended one is about to be
+    // replaced: a report whose copy missed the end is told here, and can then take the fresh one.
+    let last = this.storage.accountAdminGrant.get();
+    if (last && !isAdminGrantLive(last)) await this.#syncReportGrant(last);
+    let profile = this.storage.profile.get();
+    if (reportId !== undefined) {
+      let live = await this.liveAccountAdminGrant();
+      await this.issueReports.getByName("").checkGrantLink(
+          profile.id, reportId, { scope: "account", grantId: live?.id });
+    }
+    // Nothing is awaited from here until the grant is put.
     let stored = this.storage.accountAdminGrant.get();
-    let grant: AdminAccessGrant = stored && isAdminGrantLive(stored)
+    // The live grant with its later end, still naming the report it named before.
+    let renewed = stored && isAdminGrantLive(stored)
         ? {...stored, expiresAt: new Date(Date.now() + ADMIN_GRANT_LIFETIME_SECONDS * 1000)}
-        : newAdminGrant({source: "owner", scope: "account", grantedBy: this.storage.profile.get()});
+        : undefined;
+    let grant = renewed ?? newAdminGrant({source: "owner", scope: "account", grantedBy: profile});
+    if (reportId !== undefined) grant = {...grant, reportId};
     this.storage.accountAdminGrant.put(grant);
+    if (reportId === undefined) {
+      await this.#syncReportGrant(grant);
+      return grant;
+    }
+    try {
+      await this.#noteReportGrant(grant, reportId);
+    } catch (error) {
+      // The link failed, or was made and its answer lost. A grant this call gave is ended, so
+      // that the caller is never told the call failed while a grant it gave stays live. One it
+      // renewed stays renewed: it names the report it named before again, unless a later call
+      // linked another. One that named no report keeps this call's, so that a link the store
+      // did make still takes the grant's later changes; where it made none, those are updates
+      // of no row. Either way the reports that show the grant are told what it says: a later
+      // call can have linked one to a grant this call gave.
+      let kept = this.storage.accountAdminGrant.get();
+      if (kept?.id === grant.id && isAdminGrantLive(kept)) {
+        if (!renewed) {
+          kept = {...kept, revokedAt: new Date(), revokedBy: namedUser(profile)};
+        } else if (kept.reportId === reportId && renewed.reportId !== undefined) {
+          kept = {...renewed, expiresAt: kept.expiresAt};
+        }
+        this.storage.accountAdminGrant.put(kept);
+        await this.#syncReportGrant(kept);
+      }
+      throw error;
+    }
     return grant;
   }
 
   /** AuthenticatedApi.revokeAccountAdminAccess(). It reads no admin configuration, so a grant
-   * can be ended whatever the deployment's level. */
+   * can be ended whatever the deployment's level. With no live grant it stores nothing, and
+   * sends the end of the last one to the reports it was given with again: a report whose copy
+   * missed the end is put right by ending the grant again. */
   async revokeAccountAdminAccess(): Promise<void> {
     let grant = this.storage.accountAdminGrant.get();
-    if (!grant || !isAdminGrantLive(grant)) return;
-    this.storage.accountAdminGrant.put({
-      ...grant, revokedAt: new Date(), revokedBy: namedUser(this.storage.profile.get()),
-    });
+    if (!grant) return;
+    if (isAdminGrantLive(grant)) {
+      grant = {...grant, revokedAt: new Date(), revokedBy: namedUser(this.storage.profile.get())};
+      this.storage.accountAdminGrant.put(grant);
+    }
+    await this.#syncReportGrant(grant);
   }
 
   async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {

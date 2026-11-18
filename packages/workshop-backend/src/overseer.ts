@@ -4,15 +4,16 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_GRANT_ERROR_CODES,
-  ADMIN_GRANT_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_GRANTS_LISTED,
-  SNAPSHOT_SHARING_ERROR_CODES,
-  createAdminAccessError, createAdminGrantError, createSnapshotSharingError,
+  ADMIN_GRANT_LIFETIME_SECONDS, ISSUE_REPORT_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_GRANTS_LISTED, SNAPSHOT_SHARING_ERROR_CODES,
+  createAdminAccessError, createAdminGrantError, createIssueReportError,
+  createSnapshotSharingError,
   type AdminAccessExposure, type AdminAccessGrant, type AdminAccessRecord,
   type AdminAutoApproval, type AdminChatAttachment, type AdminChatState, type AdminFileContent,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
   type AdminWorkspaceMethod, type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs,
-  type AdminGrantRecord, type AdminWriteRecord,
+  type AdminGrantRecord, type AdminWriteRecord, type IssueReportContext,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -86,6 +87,7 @@ import {
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import type { IssueReportsDurableObject } from "./issue-reports";
 import {
   isAdminGrantLive, isAdminGrantPrunable, isLiveAccountGrant, newAdminGrant,
   newestAdminGrantFirst,
@@ -986,6 +988,10 @@ class OverseerImpl implements AgentHooks {
 
   /** The deployment-wide admin audit log; a field, like `users`, so tests can replace it. */
   adminAudits: DurableObjectNamespace<AdminAuditDurableObject>;
+
+  /** The deployment's issue reports, which show the grant an owner gives with one; a field, like
+   * `users`, so tests can replace it. */
+  issueReports: DurableObjectNamespace<IssueReportsDurableObject>;
 
   /** The deployment directory this workspace mirrors itself into; a field, like `users`, so tests
    * can replace it. */
@@ -1924,6 +1930,7 @@ class OverseerImpl implements AgentHooks {
     });
     this.users = this.ctx.exports.UserDurableObject;
     this.adminAudits = this.ctx.exports.AdminAuditDurableObject;
+    this.issueReports = this.ctx.exports.IssueReportsDurableObject;
     this.directories = this.ctx.exports.UserDirectoryDurableObject;
     this.ownerId = this.storage.deleting.get() ? undefined : this.storage.ownerId.get();
     this.observerLedger = new ObserverLedger(this);
@@ -12437,6 +12444,40 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Throws `contextNotFound` (ISSUE_REPORT_ERROR_CODES) unless user `userId` (a
+   * UserDurableObject id) owns this workspace or is a collaborator on it, and can open the chat
+   * and gadget `context` names: any chat and gadget for the owner and a "build" collaborator; no
+   * chat, and only a gadget shared with them, for a "use" collaborator. A workspace never
+   * initialised or since deleted is refused the same way, so a report cannot tell which
+   * workspaces exist. Resolves to whether the user is the workspace's owner, which the report
+   * keeps: an account-wide grant is linked only to a report naming a workspace its reporter owns.
+   *
+   * Binding-only, for AuthenticatedApi.submitIssueReport(). It opens no session, joins no
+   * presence, verifies no observer, starts nothing and writes nothing.
+   */
+  async issueReportContext(userId: string, context: Pick<IssueReportContext, "chatId" | "gadgetId">)
+      : Promise<{ owner: boolean }> {
+    let impl = this.impl;
+    let owner = userId === impl.ownerId;
+    // The owner opens everything here; anyone else, what their effective access gives them.
+    let access: CollaboratorAccess | undefined = owner ? {role: "build"} : undefined;
+    if (impl.ownerId && !owner) {
+      let profile = await impl.users.get(impl.users.idFromString(userId)).whoamiIfExists();
+      access = profile
+          ? (await impl.getSharingManager()).getEffectiveAccess(profile.id) : undefined;
+    }
+    let { chatId, gadgetId } = context;
+    // Read after the last await, so a workspace deleted meanwhile is refused too.
+    let opens = !!impl.ownerId && !!access &&
+        (chatId === undefined ||
+            (access.role === "build" && !!impl.storage.chatMeta.get(chatId))) &&
+        (gadgetId === undefined || (accessIncludesGadget(access, gadgetId) &&
+            impl.storage.gadgets.get(gadgetId)?.type === "gadget"));
+    if (!opens) throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.contextNotFound);
+    return { owner };
+  }
+
+  /**
    * Initialize this workspace's default gadget from the release of a blueprint that `metadata`
    * describes. Called by AuthenticatedApi.newWorkspaceFromBlueprint() after creating (and opening)
    * the DO, with the metadata it goes on to set up the gadget's bindings from: the blueprint may
@@ -13300,6 +13341,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // #ownerGrant()), and first deletes those of them that ended longer ago than the admin audit
   // log keeps its records. None changes the workspace's metadata, raises an event, adds to the
   // action log or writes an admin audit record: an owner's grant is the owner's own record.
+  //
+  // A grant given with an issue report is shown by that report, from a copy the issue report
+  // store keeps: the workspace tells the store of the grant once it is stored, and of each change
+  // to it afterwards. The workspace's record is the authority; the copy is a display.
 
   // Refuses anyone but the owner, then reads the deployment's policy.
   async #ownerGrantPolicy(): Promise<AdminAccessPolicy> {
@@ -13320,17 +13365,62 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return grant;
   }
 
-  async grantAdminAccess(): Promise<AdminAccessGrant> {
+  // What the issue report store is told of `grant` (IssueReportsDurableObject.noteGrant()): with
+  // `reportId`, to link that report to it; without, to update the copy a report already shows.
+  async #noteReportGrant(grant: AdminAccessGrant, reportId?: string): Promise<void> {
+    let { id, scope, expiresAt, revokedAt: endedAt } = grant;
+    await this.impl.issueReports.getByName("").noteGrant(await this.impl.getOwnerProfileId(),
+        { id, scope, expiresAt, endedAt, workspaceId: this.impl.ctx.id.toString() }, reportId);
+  }
+
+  // Tells the report `grant` was given with, if any, what the grant says now. The change is
+  // already stored, so a failure is logged and never thrown: the report's copy stays behind
+  // until revokeAdminAccess() is called again.
+  async #syncReportGrant(grant: AdminAccessGrant): Promise<void> {
+    if (grant.reportId === undefined) return;
+    try {
+      await this.#noteReportGrant(grant);
+    } catch (error) {
+      this.impl.logger.warn("failed to update an issue report's copy of its grant", {
+        event: "issue.report.grant.sync.failed", error,
+      });
+    }
+  }
+
+  async grantAdminAccess(options?: { reportId?: string }): Promise<AdminAccessGrant> {
     let policy = await this.#ownerGrantPolicy();
     let owner = await this.#getClientProfile();
-    // Nothing is awaited from here on: the workspace is still its owner's when the grant is put.
+    let reportId = options?.reportId;
+    // Asked before anything is stored, and only where a grant can be given: a report that could
+    // not show the grant refuses the call (`notFound`).
+    if (reportId !== undefined && policy.access === "content") {
+      await this.impl.issueReports.getByName("").checkGrantLink(
+          await this.impl.getOwnerProfileId(), reportId,
+          { scope: "workspace", workspaceId: this.impl.ctx.id.toString() });
+    }
+    // Nothing is awaited from here until the grant is put: the workspace is still its owner's.
     if (!this.impl.ownerId) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
     this.impl.pruneAdminGrants(policy.retentionDays, "owner");
     if (policy.access !== "content") {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
     }
-    let grant = newAdminGrant({source: "owner", scope: "workspace", grantedBy: owner});
+    let grant = newAdminGrant({source: "owner", scope: "workspace", grantedBy: owner, reportId});
     this.impl.storage.adminGrants.put(grant);
+    if (reportId === undefined) return grant;
+    try {
+      // The link is made only once the grant exists.
+      await this.#noteReportGrant(grant, reportId);
+    } catch (error) {
+      // The grant is ended: the caller is never told the call failed while a grant stays live.
+      // The store is told of the end, since it can have made the link and lost its answer.
+      let kept = this.impl.ownerId && this.impl.storage.adminGrants.get(grant.id);
+      if (kept && isAdminGrantLive(kept)) {
+        let ended = {...kept, revokedAt: new Date(), revokedBy: namedUser(owner)};
+        this.impl.storage.adminGrants.put(ended);
+        await this.#syncReportGrant(ended);
+      }
+      throw error;
+    }
     return grant;
   }
 
@@ -13345,6 +13435,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
     grant.expiresAt = new Date(Date.now() + ADMIN_GRANT_LIFETIME_SECONDS * 1000);
     this.impl.storage.adminGrants.put(grant);
+    await this.#syncReportGrant(grant);
     return grant;
   }
 
@@ -13357,10 +13448,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let owner = await this.#getClientProfile();
     if (!this.impl.ownerId) return;
     let grant = this.#ownerGrant(grantId);
-    if (!isAdminGrantLive(grant)) return;
-    grant.revokedAt = new Date();
-    grant.revokedBy = namedUser(owner);
-    this.impl.storage.adminGrants.put(grant);
+    if (isAdminGrantLive(grant)) {
+      grant.revokedAt = new Date();
+      grant.revokedBy = namedUser(owner);
+      this.impl.storage.adminGrants.put(grant);
+    }
+    // Sent for a grant that had ended already too: a report whose copy missed the end is put
+    // right by ending the grant again.
+    await this.#syncReportGrant(grant);
   }
 
   // The live ones come first, so that the owner sees a grant they can still end while there is
@@ -14696,7 +14791,9 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
-  async grantAdminAccess(): Promise<AdminAccessGrant> { this.#deny(); }
+  async grantAdminAccess(_options?: { reportId?: string }): Promise<AdminAccessGrant> {
+    this.#deny();
+  }
   async renewAdminAccess(_grantId: string): Promise<AdminAccessGrant> { this.#deny(); }
   async revokeAdminAccess(_grantId: string): Promise<void> { this.#deny(); }
   async listAdminGrants(): Promise<AdminAccessGrant[]> { this.#deny(); }
