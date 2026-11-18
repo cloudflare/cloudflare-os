@@ -26,7 +26,7 @@
 // Both concerns share a single attempt counter, so the worst case is a predictable `retries + 2`
 // requests: `retries` transient attempts plus one each for the 401 refresh and the 403 reload.
 
-import { GOOGLE_API_SOURCE, googleService, recordCall } from "./call-metrics";
+import { GOOGLE_API_SOURCE, googleOperation, googleService, recordCall } from "./call-metrics";
 
 /**
  * Options for requesting an access token.
@@ -62,7 +62,12 @@ export type FetchWithAuthRetryOptions = {
    * is still just a read (Drive's batch `files.get` envelope).
    */
   idempotent?: boolean;
-  /** What the request does, a literal, for the metrics. The HTTP method unless given. */
+  /**
+   * The request's name in the metrics, a literal. Left out, the name is read from the method and
+   * URL (`googleOperation`), and is the HTTP method alone where the URL is not one that can be
+   * read. Pass it only where the URL cannot say what the request does, as a token's exchange and
+   * its refresh share one URL.
+   */
   operation?: string;
 };
 
@@ -131,7 +136,7 @@ export async function fetchWithAuthRetry(
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
   let idempotent = method === "GET" || opts.idempotent === true;
-  let operation = opts.operation ?? method;
+  let operation = opts.operation ?? googleOperation(method, url);
   // A request can only be replayed if its body can be sent again. A string or byte-array body
   // (what the call sites use today) re-serializes fine; a stream is consumed by the first
   // attempt, so retrying it would send an empty or errored body. Nothing to replay is likewise

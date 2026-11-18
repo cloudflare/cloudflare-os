@@ -1909,7 +1909,7 @@ export class DriveApi {
           "Content-Type": `multipart/mixed; boundary=${boundary}`,
         },
         body,
-      }, getToken, { idempotent: true });
+      }, getToken, { operation: "files.get.batch", idempotent: true });
       if (!response.ok) throw await driveError(response);
 
       let placed = await parseBatchAccessParts(response, fileIds.length);

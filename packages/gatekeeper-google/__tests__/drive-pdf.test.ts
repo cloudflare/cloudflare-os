@@ -4043,7 +4043,7 @@ describe("pdfToText counting the calls made for a text", () => {
     let { readRange } = ranges(SCAN);
     // Each range is read by one request of Google's, counted as the Drive client counts its own.
     let request = {
-      source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "success" as const,
+      source: GOOGLE_API_SOURCE, service: "google-drive", operation: "files.get.media", outcome: "success" as const,
       httpStatus: 206,
     };
     let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, async range => {
@@ -4125,7 +4125,7 @@ describe("pdfToText counting the calls made for a text", () => {
     let result = await pdfToText(ocrAi().ai, undefined, byteStream(pdf.bytes).stream, async range => {
       for (let httpStatus = 500; httpStatus < 548; httpStatus++) {
         recordCall({
-          source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "error",
+          source: GOOGLE_API_SOURCE, service: "google-drive", operation: "files.get.media", outcome: "error",
           reason: "http", httpStatus,
         });
       }
@@ -4141,7 +4141,7 @@ describe("pdfToText counting the calls made for a text", () => {
 
   it("sums a request made only as a range is read, whether the model's request reads it or the renderer's call", async () => {
     let request = {
-      source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "success" as const,
+      source: GOOGLE_API_SOURCE, service: "google-drive", operation: "files.get.media", outcome: "success" as const,
       httpStatus: 206,
     };
     // As of a source that opens its file again partway: each piece of a range costs a request,

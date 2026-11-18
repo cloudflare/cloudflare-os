@@ -352,7 +352,7 @@ class WorkspaceEventsApi {
     for (let attempt = 0; !result.done; attempt++) {
       if (attempt === 5) throw new Error(`Google Workspace Events ${operation} did not finish in time.`);
       await new Promise(resolve => setTimeout(resolve, 500 * 2 ** attempt));
-      result = await this.#request<OperationRaw>(operation, `/${result.name}`);
+      result = await this.#request<OperationRaw>(operation, `/${result.name}`, {}, "operations.get");
     }
     if (!result.response) {
       throw new Error(`Google Workspace Events ${operation} failed [code=${result.error?.code ?? "unknown"}]`);
@@ -360,10 +360,14 @@ class WorkspaceEventsApi {
     return result.response;
   }
 
-  async #request<T>(operation: string, path: string, init: RequestInit = {}): Promise<T> {
+  // `counted` names a request in the metrics whose path Google made: a poll of a write, which
+  // fails under the write's name.
+  async #request<T>(
+    operation: string, path: string, init: RequestInit = {}, counted?: string,
+  ): Promise<T> {
     const response = await fetchWithAuthRetry(`${EVENTS_API_BASE}${path}`, {
       ...init, headers: { "Content-Type": "application/json" },
-    }, this.getAccessToken);
+    }, this.getAccessToken, counted === undefined ? {} : { operation: counted });
     if (!response.ok) await chatApiFailure(operation, response);
     return response.json<T>();
   }
