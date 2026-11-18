@@ -112,7 +112,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
 
   return (
     <>
-      <header className="flex items-start gap-3 p-6 pb-5">
+      <header className="flex items-start gap-3 p-6 pb-4">
         <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{gadget?.title ?? title}”</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">
@@ -124,7 +124,8 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
         <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-1">
+      {/* Room at its top for the field's focus ring, which its scrolling would otherwise cut off. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pt-1 pb-1">
         {snapshot.status === 'loading' && (
           // As tall as a short list, so that the dialog does not jump much once it is read.
           <p role="status" className="appears-late grid min-h-32 place-items-center text-base text-kumo-subtle">Loading who has access…</p>
