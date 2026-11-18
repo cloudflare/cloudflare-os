@@ -245,10 +245,11 @@ export type GmailPdfText = {
    * `transcribed` is too. A failure partway through errors the stream.
    *
    * A long PDF's text does not fit a model's context: do not print it or return it whole. To
-   * keep all of it, pass `text` to a worktree's `writeBytes(path, text)`, creating an empty
-   * worktree with `createWorktree` when you have none, and await it; then, from your next
-   * step on, read the file a window of lines at a time, or grep it: those tools refuse in the
-   * step a file was written in. `writeBytes()` reads the text to its end, so whatever pages a
+   * keep all of it, pass `text` to `writeBytes(path, text)` of a worktree that is no
+   * repository's checkout, where a later commit would take the file with it: create an empty
+   * one with `createWorktree` when you have none. Await the write; then, from your next step
+   * on, read the file a window of lines at a time, or grep it: those tools refuse in the step
+   * a file was written in. `writeBytes()` reads the text to its end, so whatever pages a
    * vision model reads for it are all read, and billed, however little of the file you then
    * read; when the text errors, `writeBytes()` fails and the file is left as it was. To read
    * only some pages, use a reader and cancel.

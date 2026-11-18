@@ -97,7 +97,8 @@ const PAGES_AHEAD = [
 
 /** What a PDF's types say of a text too long for a model's context: where to keep it, and what that costs. */
 const KEPT_IN_A_WORKTREE = [
-  "pass `text` to a worktree's `writeBytes(path, text)`",
+  "pass `text` to `writeBytes(path, text)` of a worktree that is no repository's checkout",
+  "create an empty one with `createWorktree` when you have none",
   "from your next step on, read the file a window of lines at a time, or grep it",
   "so whatever pages a vision model reads for it are all read, and billed, however little of the file you then read",
   "when the text errors, `writeBytes()` fails and the file is left as it was",
