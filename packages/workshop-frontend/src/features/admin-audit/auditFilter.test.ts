@@ -24,7 +24,9 @@ const workspaceRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRec
   method: 'describe',
   args: {},
   reason: 'Agent stuck',
+  requested: 'metadata',
   access: 'metadata',
+  exposed: 'metadata',
   ...patch,
 })
 

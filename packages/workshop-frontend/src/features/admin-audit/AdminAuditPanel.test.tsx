@@ -77,6 +77,7 @@ const testStats = (patch: Partial<AdminAuditStats> = {}): AdminAuditStats => ({
   ],
   topAdmins: [{ admin: 'admin', count: 4 }, { admin: 'second-admin', count: 1 }],
   writes: 0,
+  contentReads: 0,
   ...patch,
 })
 
@@ -97,7 +98,9 @@ const accessRecord = (patch: Partial<AdminAccessRecord> = {}): AdminAccessRecord
   method: 'getChatState',
   args: { chatId: 3 },
   reason: 'Ticket 42: agent stuck',
+  requested: 'metadata',
   access: 'off',
+  exposed: 'metadata',
   refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
   ...patch,
 })

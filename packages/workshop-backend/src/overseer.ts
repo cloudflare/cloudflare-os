@@ -3,14 +3,16 @@ import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-s
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_GRANT_LIFETIME_SECONDS,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_GRANTS_LISTED, SNAPSHOT_SHARING_ERROR_CODES,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_GRANT_ERROR_CODES,
+  ADMIN_GRANT_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_GRANTS_LISTED, SNAPSHOT_SHARING_ERROR_CODES,
   createAdminAccessError, createAdminGrantError, createSnapshotSharingError,
-  type AdminAccessGrant, type AdminAccessRecord, type AdminAutoApproval,
-  type AdminChatAttachment, type AdminChatState,
+  type AdminAccessExposure, type AdminAccessGrant, type AdminAccessRecord,
+  type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
-  type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
+  type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
+  type AdminWorkspaceMethod, type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs,
+  type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -69,16 +71,20 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminAccessPolicy, adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive,
-  auditOwnerId, cutAdminAuditText, namedUser, redactAdminAuditArgs, validateAdminAccessReason,
-  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
-  withholdCreationContent, withholdHookContent,
-  type AdminAccessPolicy, type AdminViewTerms,
+  ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCommitLogDepth,
+  adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId, blueprintHoldsContent,
+  chatHoldsContent, chatStateHoldsContent, commitHoldsContent, creationHoldsContent,
+  cutAdminAuditText, hookHoldsContent, namedUser, redactAdminAuditArgs,
+  validateAdminAccessReason, withholdActionContent, withholdBlueprintContent,
+  withholdChatContent, withholdChatStateContent, withholdCommitContent, withholdCreationContent,
+  withholdHookContent, workpieceHoldsContent,
+  type AdminAccessPolicy, type AdminWorkspaceViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
 import {
-  isAdminGrantLive, isAdminGrantPrunable, newAdminGrant, newestAdminGrantFirst,
+  isAdminGrantLive, isAdminGrantPrunable, isLiveAccountGrant, newAdminGrant,
+  newestAdminGrantFirst,
 } from "./admin-grants";
 import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
 import { isDeploymentAdmin } from "./auth/config";
@@ -1400,6 +1406,7 @@ class OverseerImpl implements AgentHooks {
       for (let userId of userIds) this.storage.pendingUserUpdates.put({userId, role: null});
     });
     this.ownerId = undefined;
+    this.#accountGrant = undefined;
     this.#userUpdatesRetryAt = 0;
     this.#updateAlarm();
   }
@@ -6867,11 +6874,60 @@ class OverseerImpl implements AgentHooks {
   }
 
   /** The stored grants that are live (isAdminGrantLive()), from either source, newest first.
-   * Synchronous, and it writes nothing. */
+   * Synchronous, and it writes nothing. All of them: contentGrant() takes its first, and an
+   * admin view's describe() lists the "admins" ones before the owner's, MAX_ADMIN_GRANTS_LISTED
+   * in all. */
   liveAdminGrants(): AdminAccessGrant[] {
     let now = Date.now();
     return [...this.storage.adminGrants.list()]
         .filter(grant => isAdminGrantLive(grant, now)).toSorted(newestAdminGrantFirst);
+  }
+
+  // The owner's account-wide grant as their account last gave it, with when the question was
+  // sent and the owner it was asked of (see contentGrant()). In memory only.
+  #accountGrant?: { at: number; ownerId: string; grant: AdminAccessGrant };
+
+  /**
+   * The grant an admin's content call runs under: the newest of liveAdminGrants(), else the
+   * owner's account-wide grant. A live answer from the owner's account is kept in memory, with
+   * the id of the owner it was asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
+   * the question was sent (the time is taken before the await, so the bound on a revocation does
+   * not grow by the round trip), and checked with isLiveAccountGrant() each time it is used. It
+   * is dropped when `ownerId` is no longer the owner it was asked of, and by beginDeletion(): a
+   * workspace id can live again under another owner in the same instance. An answer that there
+   * is none is not kept, so a grant given a moment later is found by the next call. A question
+   * that fails (the account object threw or could not be reached) is logged, never kept, and
+   * counts as no grant: this never throws. The only caller is AdminWorkspaceViewImpl, for a call
+   * that would return content: no member-facing path, listing or metadata call reaches it. It
+   * writes nothing.
+   */
+  async contentGrant(): Promise<AdminAccessGrant | undefined> {
+    let [stored] = this.liveAdminGrants();
+    if (stored) return stored;
+
+    let ownerId = this.ownerId;
+    let at = Date.now();
+    let kept = this.#accountGrant;
+    if (kept && kept.ownerId === ownerId && isLiveAccountGrant(kept.grant, at) &&
+        at - kept.at < ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000) {
+      return kept.grant;
+    }
+    this.#accountGrant = undefined;
+    // A workspace with no owner has no account to ask.
+    if (!ownerId) return undefined;
+    try {
+      let answer = await retryOnDoReset(
+          () => this.ownerUserDo().liveAccountAdminGrant(), this.logger);
+      // The account's word is not taken for the grant's liveness, scope or source.
+      if (!isLiveAccountGrant(answer)) return undefined;
+      this.#accountGrant = {at, ownerId, grant: answer};
+      return answer;
+    } catch (err) {
+      this.logger.warn("failed to ask the owner's account for an account-wide admin grant", {
+        event: "admin.grant.account.failed", error: err,
+      });
+      return undefined;
+    }
   }
 
   /**
@@ -12023,10 +12079,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * The open is the view's first call ("inspectWorkspace"): it passes the view's checks (a caller
    * no longer an admin is refused unrecorded), is recorded as refused and throws `accessOff` while
    * the deployment's level is "off", and is otherwise recorded in the deployment-wide log before
-   * the view is returned; a record that cannot be written refuses the open.
+   * the view is returned; a record that cannot be written refuses the open. A view is opened for
+   * content without a grant being looked for: each of its calls looks for one.
    */
-  async openForAdmin(adminId: string, reason: string, sessionId: string, terms: AdminViewTerms)
-      : Promise<AdminWorkspaceView> {
+  async openForAdmin(adminId: string, reason: string, sessionId: string,
+      terms: AdminWorkspaceViewTerms): Promise<AdminWorkspaceView> {
     if (!this.impl.ownerId) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
@@ -14535,21 +14592,22 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 // OverseerDurableObject.openForAdmin()). Deliberately not an Overseer: it holds no session, joins
 // no presence or fan-out, and never reads through a connection: its reads of trees, history and
 // a chat's pending paths never pull, and what a connection could tell it, it reads from the
-// workspace's own records instead. Beyond the workspace's storage it reads only the owner's
-// profile, from their account (describe() and listShareLinks()). Every method runs through
-// #call, which reads the call's answer and records the call in the deployment-wide log before
-// returning anything.
+// workspace's own records instead. Beyond the workspace's storage it asks only the owner's
+// account: for their profile (describe() and listShareLinks()), and, when a call that would
+// return content finds no live grant stored here, for their account-wide grant
+// (OverseerImpl.contentGrant()). Every method runs through #call, which reads the call's answer
+// and records the call in the deployment-wide log before returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
   #adminId: string;
   #reason: string;
   #sessionId: string;
-  #terms: AdminViewTerms;
+  #terms: AdminWorkspaceViewTerms;
   #ownerId: string;
 
   constructor(impl: OverseerImpl, adminId: string, reason: string, sessionId: string,
-              terms: AdminViewTerms, ownerId: string) {
+              terms: AdminWorkspaceViewTerms, ownerId: string) {
     super();
     this.#impl = impl;
     this.#adminId = adminId;
@@ -14562,7 +14620,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   // Mints a view, recording the open as its first call (see openForAdmin()). Static, so that
   // auditing stays off the view's RPC surface.
   static async open(impl: OverseerImpl, adminId: string, reason: string, sessionId: string,
-                    terms: AdminViewTerms, ownerId: string): Promise<AdminWorkspaceViewImpl> {
+                    terms: AdminWorkspaceViewTerms, ownerId: string)
+      : Promise<AdminWorkspaceViewImpl> {
     let view = new AdminWorkspaceViewImpl(impl, adminId, reason, sessionId, terms, ownerId);
     await view.#call(
         "inspectWorkspace", {expiresAt: terms.expiresAt.toISOString()}, () => undefined);
@@ -14586,22 +14645,50 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   // fails is recorded as an attempt, and the call fails with the read's error. The host is built
   // at each call, so its audit log and logger are the Overseer's at that call, and the environment
   // is read at each use within it.
+  //
+  // `read` is told whether the call may return content: only under a grant (see below), and
+  // otherwise it withholds what the "metadata" level withholds. `holdsContent` says whether the
+  // answer of a call made under a grant held any, which is what its record says it exposed.
   async #call<T>(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
-      read: () => T | Promise<T>): Promise<T> {
+      read: (content: boolean) => T | Promise<T>,
+      holdsContent: (answer: T) => boolean = () => false): Promise<T> {
     let impl = this.#impl;
+    // What the record says of the call beyond its arguments, as the call learns it. The level
+    // stays "off" for a call refused for that, which is recorded without its read having run.
+    let access: AdminWorkspaceAccess = "off";
+    let exposed: AdminAccessExposure = "metadata";
+    let grant: AdminAccessGrant | undefined;
     return adminViewCall({
       env: () => impl.env,
       audits: impl.adminAudits,
       logger: impl.logger,
       assertLive: () => this.#assertLive(),
-      recordOf: refused => this.#recordOf(method, args, refused),
-    }, read);
+      recordOf: refused => this.#recordOf(method, args, access, exposed, grant?.id, refused),
+    }, async level => {
+      access = level;
+      // A grant is looked for only by a call that could return content under one: a method whose
+      // answer can hold content, on a view opened for content, while the level in force is
+      // "content". So a metadata view, a method that answers with metadata alone and the open
+      // itself never ask the owner's account for a grant. The lookup never throws: when that
+      // account cannot answer, the call is answered and recorded as one with no grant.
+      if (ADMIN_METHOD_ANSWERS[method] === "mixed" && this.#terms.access === "content" &&
+          level === "content") {
+        grant = await impl.contentGrant();
+        // Checked again: the lookup may have awaited the owner's account.
+        this.#assertLive();
+      }
+      let answer = await read(grant !== undefined);
+      if (grant !== undefined && holdsContent(answer)) exposed = "content";
+      return answer;
+    });
   }
 
-  // The record of one call, as the deployment-wide log keeps it, as refused when `refused` names
-  // why. Synchronous: adminViewCall() builds and sends a record with nothing awaited since its
+  // The record of one call, as the deployment-wide log keeps it: the level in force when it ran,
+  // what its answer exposed, the grant it ran under when it had one, and why it was refused when
+  // it was. Synchronous: adminViewCall() builds and sends a record with nothing awaited since its
   // last check.
   #recordOf(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
+      access: AdminWorkspaceAccess, exposed: AdminAccessExposure, grantId?: string,
       refused?: AdminAccessRecord["refused"]): AdminAccessRecord {
     let impl = this.#impl;
     return {
@@ -14618,7 +14705,10 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       method,
       args: redactAdminAuditArgs(args),
       reason: this.#reason,
-      access: refused ? "off" : "metadata",
+      requested: this.#terms.access,
+      access,
+      exposed,
+      ...(grantId !== undefined ? {grantId} : {}),
       ...(refused ? {refused} : {}),
     };
   }
@@ -14648,17 +14738,17 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         (commit, path) => impl.gitCache.readLocalFileAtCommitIfExists(commit, path));
   }
 
-  // The owner's profile, from their account: the one thing a view reads beyond the workspace's
-  // storage (describe() and listShareLinks()).
+  // The owner's profile, from their account (describe() and listShareLinks()).
   #ownerProfile(): Promise<AiChatAuthorInfo> {
     return retryOnDoReset(() => this.#impl.ownerUserDo().whoami(), this.#impl.logger);
   }
 
   async describe(): Promise<AdminWorkspaceDescription> {
     let impl = this.#impl;
-    return this.#call("describe", {}, async () => {
+    return this.#call("describe", {}, async content => {
       let owner = await this.#ownerProfile();
       let collaborators = await (await impl.getSharingManager()).listCollaborators();
+      let live = impl.liveAdminGrants();
       return {
         id: impl.ctx.id.toString(),
         // Live data, not a record, so whole.
@@ -14669,25 +14759,34 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         defaultGadgetId: impl.defaultGadgetId,
         owner,
         workpieces: [...impl.storage.gadgets.list()]
-            .map(record => workpieceSummary(record, false)),
+            .map(record => workpieceSummary(record, content)),
         collaborators,
+        access: this.#terms.access,
+        // Who may read content is metadata, so every view lists the grants. The list is bounded
+        // because an owner's grants are not, and the "admins" ones come first so that the bound
+        // never hides one: only an admin can end it, and this is where an admin finds it.
+        grants: [
+          ...live.filter(grant => grant.source === "admins"),
+          ...live.filter(grant => grant.source === "owner"),
+        ].slice(0, MAX_ADMIN_GRANTS_LISTED),
         expiresAt: this.#terms.expiresAt,
       };
-    });
+    }, description => description.workpieces.some(workpieceHoldsContent));
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
     return this.#call("listChats", {},
-        () => [...this.#impl.storage.chatMeta.list({reverse: true})]
+        content => [...this.#impl.storage.chatMeta.list({reverse: true})]
             .map(meta => this.#impl.chatMetaForClient(meta))
-            .map(withholdChatContent));
+            .map(meta => content ? meta : withholdChatContent(meta)),
+        chats => chats.some(chatHoldsContent));
   }
 
   // Each part of the answer names the fields its type declares, since the stored records hold
   // more: a turn's and a queued call's hold their initiator's user id, and a queued call's its
   // raw arguments. Each storage listing is read to its end before the next starts.
   async getChatState(chatId: number): Promise<AdminChatState> {
-    return this.#call("getChatState", {chatId}, () => {
+    return this.#call("getChatState", {chatId}, content => {
       let storage = this.#impl.storage;
       let meta = this.#impl.getChatMetaOrThrow(chatId);
       let turn = storage.activeAgents.get(chatId);
@@ -14697,11 +14796,12 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         callId: call.callId,
         methodName: call.methodName,
         initiatorModelId: call.initiatorModelId,
+        argsSummary: call.argsSummary,
       }));
       let pendingActionIds = [...storage.actions.byHistoryFilter.get("pending")]
           .filter(({caller}) => "chatId" in caller && caller.chatId === chatId)
           .map(action => action.id);
-      return {
+      let state: AdminChatState = {
         turn: turn && {
           modelId: turn.modelId,
           initiator: turn.initiator,
@@ -14713,7 +14813,8 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         queuedCalls,
         pendingActionIds,
       };
-    });
+      return content ? state : withholdChatStateContent(state);
+    }, chatStateHoldsContent);
   }
 
   // The scan deleteChat() makes: a message's ChatAttachmentRef is the one record of an
@@ -14736,10 +14837,11 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       : Promise<ActionHistoryPage> {
     validateBeforeId(options?.beforeId);
     return this.#call("listActions", {beforeId: options?.beforeId, filter: options?.filter},
-        () => {
+        content => {
           let page = actionHistoryPage(this.#impl.storage, options);
-          return {...page, entries: page.entries.map(withholdActionContent)};
-        });
+          return content ? page : {...page, entries: page.entries.map(withholdActionContent)};
+        },
+        page => page.entries.some(actionHoldsContent));
   }
 
   async listFiles(gadgetId: WorkpieceId): Promise<TreeNode[]> {
@@ -14752,9 +14854,10 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
     let limit = adminCommitLogDepth(depth);
     return this.#call("getCommitLog", {fromCommit, depth},
-        () => this.#impl.gitCache
+        content => this.#impl.gitCache
             .readCommitLog(this.#storedCommit(fromCommit), {depth: limit, stopAtMissing: true})
-            .map(withholdCommitContent));
+            .map(commit => content ? commit : withholdCommitContent(commit)),
+        log => log.some(commitHoldsContent));
   }
 
   async listFilesAtCommit(commitId: string): Promise<TreeNode[]> {
@@ -14843,7 +14946,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   }
 
   async listGatekeepers(): Promise<AdminGatekeeperInfo[]> {
-    return this.#call("listGatekeepers", {}, () => {
+    return this.#call("listGatekeepers", {}, content => {
       let storage = this.#impl.storage;
       let gadgets = [...storage.gadgets.list()].filter(record => record.type === "gadget");
       let hooks = boundHookInfos(this.#impl);
@@ -14852,16 +14955,20 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         resourceTitle: record.resourceTitle,
         resourceUrl: record.resourceUrl,
         vendorId: gatekeeperVendorId(record),
-        creationSpec: record.creationSpec && withholdCreationContent(record.creationSpec),
+        creationSpec: record.creationSpec &&
+            (content ? record.creationSpec : withholdCreationContent(record.creationSpec)),
         createdBy: record.createdBy,
         bindings: gadgets.flatMap(gadget => Object.entries(gadget.bindings)
             .filter(([, edge]) => edge.target === record.id)
             .map(([name, edge]) => ({
               gadgetId: gadget.id, name, ...(edge.pending ? {chatId: edge.pending.chatId} : {}),
             }))),
-        hooks: hooks.filter(hook => hook.gatekeeperId === record.id).map(withholdHookContent),
+        hooks: hooks.filter(hook => hook.gatekeeperId === record.id)
+            .map(hook => content ? hook : withholdHookContent(hook)),
       }));
-    });
+    }, gatekeepers => gatekeepers.some(gatekeeper =>
+        (gatekeeper.creationSpec !== undefined && creationHoldsContent(gatekeeper.creationSpec)) ||
+        gatekeeper.hooks.some(hookHoldsContent)));
   }
 
   // Each entry names the fields its type declares, since a stored record also holds the observer
@@ -14909,7 +15016,9 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
     return this.#call("listBlueprints", {},
-        () => this.#impl.blueprintSummaries().map(withholdBlueprintContent));
+        content => this.#impl.blueprintSummaries()
+            .map(blueprint => content ? blueprint : withholdBlueprintContent(blueprint)),
+        blueprints => blueprints.some(blueprintHoldsContent));
   }
 
   async getDiagnostics(): Promise<AdminWorkspaceDiagnostics> {
