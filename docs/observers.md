@@ -829,11 +829,19 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    reachable) is the different case Step 5's scope test handles: the gatekeeper still knows the
    id, but the observer can no longer reach what it produces, so they are de-registered from it
    instead of blocking.
-8. **Removing a connection that read restricted data** — removal is not guarded by
-   `containsRestrictedData`. The record is what observer verification runs against, so removing a
-   producer drops the check for data that outlives it in chat history and storage. The intended
-   remedy is that a future connection-removal UI asks the owner to certify that no sensitive data
-   from that connection has been retained in the workspace, for any connection.
+8. **Removing a connection that read restricted data** — by design, `GatekeeperClient.remove()`
+   lets any `build` member delete a connection without owner approval, even when the workspace
+   has read restricted data from it. Deleting the connection removes its observer check, including
+   for data it supplied that remains in chat history or gadget storage. The
+   workspace share dialog offers it to whoever may invite, which is every `build` member unless
+   `ownerInvitesOnly` is set and then only the owner, on its Protected resources page for each
+   non-ambient connection listed there, behind a confirmation that says recipients will no longer
+   be verified against it and that its retained data becomes visible to everyone in the workspace.
+   The page lists what `listObserverRequirements()` returns, which is connections to a vendor:
+   never an AI-model connection or an agent spawner, and nothing at all while a legacy connection
+   makes that call fail.
+   When a user removes a connection, Workshop records its queued actions as rejected by that
+   user without asking the gatekeeper to reject them. They stay in action history but cannot be approved.
 
 ---
 

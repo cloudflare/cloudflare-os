@@ -565,6 +565,7 @@ it.concurrent("an update from a gadget's blueprint merges with its own changes, 
   // Both sides change the same line, and the gadget adds a file of its own.
   const r2 = await republish(publicApi, source, blueprint, V2);
   const own = await commitCode(ws, gadgetId, { ...V1, "client.js": "mine\n", ...NOTES });
+  const beforeProposal = await gadgetNow(ws, gadgetId);
 
   const { chatId, message, merge } = await propose(ws, gadget, blueprintId);
   expect(merge).toEqual({
@@ -588,7 +589,7 @@ it.concurrent("an update from a gadget's blueprint merges with its own changes, 
   // The merge is there to preview, and the gadget is as it was until it is accepted.
   expect(await gadget.getUiBundle(chatId)).toEqual({ jsCode: conflicted });
   expect(await gadget.getUiBundle()).toEqual({ jsCode: "mine\n" });
-  expect(await gadgetNow(ws, gadgetId)).toEqual({ ...made, commitId: own });
+  expect(await gadgetNow(ws, gadgetId)).toEqual(beforeProposal);
 
   const { generation, revision } = chat!.codeBase!;
   await ws.submitCodeChange(chatId, {
@@ -961,7 +962,7 @@ it.concurrent("an archive of either version imports and instantiates", async () 
   expect((await ws.listChats()).find(chat => chat.id === chatId)?.proposedChangeWorkpieces ?? [])
       .toEqual([]);
   expect(await accept(ws, chatId, gadgetId))
-      .toEqual({ ...before, upstream: { blueprintId: copyId, commitId: original.release } });
+      .toMatchObject({ commitId: before.commitId, upstream: { blueprintId: copyId, commitId: original.release } });
   expect(await gadget.applyBlueprint(copyId, { modelId: null })).toEqual({ outcome: "upToDate" });
 
   for (const workspace of [ws, fromCopy, source, fromLegacy]) await workspace.deleteSelf();

@@ -32,7 +32,10 @@ interface ConnectionsProps {
   // preview immediately, and becomes permanent only when the user accepts the chat's changes.
   chatId?: number
   authenticatedApi: RpcStub<AuthenticatedApi>
-  onConnectionsChange?: () => void
+  // Changes whenever this gadget's bindings or hooks may have changed, here or elsewhere: its
+  // restart version (see GadgetSummary.restartVersion) covers bindings, and the workspace's hook
+  // states cover a hook removed with a connection the gadget never bound.
+  reloadKey?: string
   isVisible?: boolean
   onHasGatekeepersChange?: (hasGatekeepers: boolean) => void
 }
@@ -41,7 +44,7 @@ interface ConnectionsProps {
  * Auto-approval rules live in Activity because they apply across the workspace, while this view is
  * scoped to one gadget.
  */
-export default function Connections({ overseer, gadget, chatId, authenticatedApi, onConnectionsChange, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
+export default function Connections({ overseer, gadget, chatId, authenticatedApi, reloadKey, isVisible, onHasGatekeepersChange }: ConnectionsProps) {
   const [bindings, setBindings] = useState<GadgetBindingInfo[]>([])
   // Identity of the gadget this tab is showing, needed to offer it to agent spawners.
   const [gadgetInfo, setGadgetInfo] = useState<{ id: WorkpieceId; title: string } | null>(null)
@@ -97,7 +100,6 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
       variant: 'success',
     })
     await loadGatekeepers()
-    onConnectionsChange?.()
   }
 
   const handleToggleHook = async (id: number, enabled: boolean) => {
@@ -147,7 +149,7 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
   // new gadget stub, so reconnects are still covered.
   useEffect(() => {
     loadGatekeepers()
-  }, [gadget, chatId])
+  }, [gadget, chatId, reloadKey])
 
   // Re-load when the tab becomes visible, so hooks enabled elsewhere (e.g. from the Activity log)
   // show up without a full page reload.
@@ -202,7 +204,6 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     try {
       await gadget.renameBinding(name, newName)
       await loadGatekeepers()
-      onConnectionsChange?.()
     } catch (err) {
       console.error('Failed to rename binding:', err)
       toasts.add({ title: 'Failed to update binding name', variant: 'error' })
@@ -221,7 +222,6 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
     try {
       await gadget.unbind(deleteTarget.name)
       await loadGatekeepers()
-      onConnectionsChange?.()
     } catch (err) {
       console.error('Failed to remove binding:', err)
       toasts.add({ title: 'Failed to remove connection', variant: 'error' })

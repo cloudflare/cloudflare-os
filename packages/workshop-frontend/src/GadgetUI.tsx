@@ -212,6 +212,8 @@ const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefi
 interface GadgetUIProps {
   gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
   height: string
+  // Changes whenever the gadget's code or bindings change, which replaces the view: the frame,
+  // its RPC session and the loaded bundle all start over.
   reloadTrigger?: number
   isVisible?: boolean
   chatId?: number
@@ -236,20 +238,20 @@ const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
 const RECONNECT_TIMEOUT_MS = 5_000
 
 export default function GadgetUI(props: GadgetUIProps) {
-  return <GadgetUISession key={props.chatId} {...props} />
+  // A new chat or reload starts a fresh session, so no frame mounts with the previous bundle while
+  // the next one loads. A replacement `gadget` stub alone (a reconnect) keeps the session.
+  return <GadgetUISession key={`${props.chatId}:${props.reloadTrigger}`} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
   const [error, setError] = useState<{ message: string; stub?: GadgetUIProps['gadget'] } | null>(null)
   const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
-  const [isInvalidated, setIsInvalidated] = useState(false)
   const [iframeGeneration, setIframeGeneration] = useState(0)
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const prevReloadTriggerRef = useRef(reloadTrigger)
   // Identifies the newest bundle load, so an older one can't write state after being superseded.
   const loadGenerationRef = useRef(0)
   // Bumped by the retry button to ask for a fresh load.
@@ -280,9 +282,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const onOpenAgentChatRef = useRef(onOpenAgentChat)
   onOpenAgentChatRef.current = onOpenAgentChat
 
-  // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
-  // result must not keep counting while the replacement load is pending.
-  const showsNoUi = hasLoaded && !isInvalidated && !loading && !error && !sandboxedHtml
+  const showsNoUi = hasLoaded && !loading && !error && !sandboxedHtml
   useEffect(() => {
     if (!showsNoUi) return
     onNoUiChangeRef.current?.(true)
@@ -371,31 +371,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     void reconnect()
   }, [gadget, chatId])
 
-  // Effect to handle reloadTrigger changes (code changes)
+  // Effect to load the UI bundle when the component first becomes visible
   useEffect(() => {
-    // Only react if reloadTrigger has actually changed from the previous value
-    if (reloadTrigger !== undefined && reloadTrigger !== prevReloadTriggerRef.current && reloadTrigger > 0) {
-      // Mark as invalidated but don't reload unless visible
-      setIsInvalidated(true)
-      // After a failed load the view is still invalidated, so the flag alone wouldn't reload it.
-      setRetryNonce(nonce => nonce + 1)
-      if (!isVisible) {
-        // If not visible, just clear the current state
-        setSandboxedHtml(null)
-        setHasLoaded(false)
-        setError(null)
-      }
-      // Update the ref to the current value
-      prevReloadTriggerRef.current = reloadTrigger
-    }
-  }, [reloadTrigger, isVisible])
-
-  // Effect to load UI bundle when component becomes visible for the first time or when invalidated
-  useEffect(() => {
-    // Only load if:
-    // 1. Component is visible AND
-    // 2. Either never loaded before OR invalidated due to code changes
-    if (!isVisible || (hasLoaded && !isInvalidated)) {
+    if (!isVisible || hasLoaded) {
       return
     }
 
@@ -431,7 +409,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         }
         // A failed load stays unloaded, so a replacement gadget client retries it.
         setHasLoaded(true)
-        setIsInvalidated(false)
       } catch (err) {
         if (!isCurrent()) return
         console.error('Failed to load UI bundle:', err)
@@ -455,7 +432,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     }
   // LSP reports an error here, but tsc does not.
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
-  }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, renderMode, retryNonce])
+  }, [gadget, isVisible, hasLoaded, chatId, renderMode, retryNonce])
 
   // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
   const frameEvents: FrameEvents = {
@@ -552,7 +529,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
   // A new key or document replaces the frame, whose session lingers until the next handshake (or
   // never comes, with no UI to show); its host requests mustn't outlive the frame.
-  const frameKey = `${reloadTrigger}:${iframeGeneration}`
+  const frameKey = iframeGeneration
   useEffect(() => () => {
     rpcSessionAbortRef.current?.abort(new Error('Gadget iframe was replaced.'))
     rpcSessionAbortRef.current = null
@@ -603,7 +580,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
               onClick={() => {
                 setError(null)
                 setHasLoaded(false)
-                setIsInvalidated(false)
                 setRetryNonce(n => n + 1)
               }}
             >
