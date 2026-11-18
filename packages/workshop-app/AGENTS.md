@@ -582,13 +582,14 @@ address, so in development it only finishes when that is this app's.
 
 ## The Settings page
 
-`/settings` (the user's own button in the sidebar) is one route, with `?section=` naming the part
+`/settings` (Settings in the menu the user's own button in the sidebar opens, which also has Sign
+out, done at once) is one route, with `?section=` naming the part
 that is showing (`settings/settingsSections.ts` has them, in order, with their names and icons).
 Where there is room for a sidebar, the parts are listed there in place of the app's own
 (`SettingsSidebar`, which `_app.tsx` swaps in for as long as the page is a settings one), and
 choosing one replaces the address, so that going back leaves the settings rather than going
 through their parts. On a narrow screen the list of the parts is the page (`SettingsMenu`), and a
-part is gone into from it. The user's button leaves the settings again: back to where they were
+part is gone into from it. The settings' own sidebar leaves them again: back to where they were
 opened from (`settingsOpenedHere`), or home.
 
 A part is a file in `settings/` (`ProfileSettings`, `ModelSettings`, …) made of the same blocks:

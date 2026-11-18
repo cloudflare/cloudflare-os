@@ -1,16 +1,26 @@
 import type { ReactNode } from 'react'
-import { CirclesFourIcon, FolderIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, GearIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon, SignOutIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
+import { DropdownMenu } from '@/components/DropdownMenu'
 import { LogoIcon } from '@/components/LogoIcon'
 import { Markdown } from '@/components/Markdown'
+import { ServiceLogo } from '@/components/ServiceLogo'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
 
 export type { SidebarWorkspace }
+
+/** A service as the connect button shows it. */
+export type SidebarConnection = {
+  name: string
+  logoUrl?: string
+  /** Its logo is much wider than it is tall, and is drawn a little larger for it. */
+  wide?: boolean
+}
 
 export type SidebarProps = {
   user: { name: string; avatarUrl?: string }
@@ -28,8 +38,8 @@ export type SidebarProps = {
   announcement?: string
   /** Shown in place of the list when there is nothing to list, e.g. "No workspaces yet." */
   notice?: string
-  /** Logos of the connected apps, shown in the connect button, which only `icons` has for now. */
-  connections?: ReactNode
+  /** The services whose logos the connect button shows beside its plus: those connected, or a few to start with. */
+  connections?: SidebarConnection[]
   /**
    * The library's page, and whether it is the one showing, with how many things the user's
    * gadgets ask that wait on them (`waiting`), which it marks.
@@ -42,18 +52,20 @@ export type SidebarProps = {
   /** The page listing what is connected and what could be, and whether it is the one showing. */
   connectionsPage?: { current: boolean; onOpen: () => void }
   /**
-   * The settings' page, which the user's own button goes to, and whether it is the one showing,
-   * when the button leaves it again. Where there is room for a sidebar beside the page,
-   * `SettingsSidebar` takes this one's place while the settings show.
+   * The settings' page, which the user's own menu has, and whether it is the one showing. Where
+   * there is room for a sidebar beside the page, `SettingsSidebar` takes this one's place while
+   * the settings show.
    */
   settingsPage?: { current: boolean; onOpen: () => void }
+  /** Signs the user out: the user's own menu has it after the settings, when given. */
+  onSignOut?: () => void
   /** Opens search, as ⌘K (Ctrl K) does anywhere. */
   onSearch?: () => void
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
   /**
    * Where the pages' buttons are. `rows`, as the app has them: under the list, each with its name,
-   * then connections and the user, which leaves the logo and search over it. `icons`, as it had
+   * then the user and connections side by side, which leaves the logo and search over it. `icons`, as it had
    * them: beside the logo, as icons, with the user and connections under the list. Kept to compare
    * the two, until one is chosen and the other removed.
    */
@@ -131,7 +143,7 @@ const NavRows = ({ children }: { children: ReactNode }) => {
 
 /**
  * The sidebar: the logo and the global buttons, the workspaces, and the user and connections. The
- * user's own button is the way to the settings, and out of them again.
+ * user's own button opens a menu of the settings and signing out.
  */
 export const Sidebar = ({
   user,
@@ -148,6 +160,7 @@ export const Sidebar = ({
   automationsPage,
   connectionsPage,
   settingsPage,
+  onSignOut,
   onSearch,
   collapsed = false,
   layout = 'rows',
@@ -201,13 +214,26 @@ export const Sidebar = ({
   )
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch} />
   const account = (
-    <Button
+    <DropdownMenu
       icon={<Avatar name={user.name} src={user.avatarUrl} />}
-      aria-label="Settings"
-      aria-current={settingsPage?.current ? 'page' : undefined}
-      onClick={settingsPage?.onOpen}
-      className="aria-[current=page]:bg-kumo-tint"
-    />
+      aria-label={`Account, ${user.name}`}
+      keepTrigger
+      side="top"
+      align="start"
+      triggerClassName={settingsPage?.current ? 'bg-kumo-tint' : undefined}
+      // About the sidebar's own width (248px, from 208), rather than as wide as two short words.
+      popupClassName="w-56 max-w-(--available-width)"
+    >
+      <DropdownMenu.Item icon={GearIcon} onSelect={settingsPage?.onOpen}>Settings</DropdownMenu.Item>
+      {onSignOut && <DropdownMenu.Item icon={SignOutIcon} onSelect={onSignOut}>Sign out</DropdownMenu.Item>}
+    </DropdownMenu>
+  )
+  const connect = (
+    <ConnectButton onConnect={connectionsPage?.onOpen} current={connectionsPage?.current}>
+      {connections && connections.length > 0
+        ? connections.map(({ name, logoUrl, wide }) => <ServiceLogo key={name} name={name} src={logoUrl} bare={wide ? 'wide' : true} />)
+        : undefined}
+    </ConnectButton>
   )
   const nav = (
     <WorkspaceNav
@@ -263,7 +289,7 @@ export const Sidebar = ({
         </header>
         {said}
         {nav}
-        <footer className="mt-0.5 -mb-1.5">
+        <footer className="mt-0.5">
           <NavRows>
             <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
             <NavRow
@@ -275,15 +301,12 @@ export const Sidebar = ({
               waiting={waiting}
             />
             <NavRow icon={<LightningIcon />} label="Automations" current={automationsPage?.current} onClick={automationsPage?.onOpen} />
-            <NavRow icon={<PuzzlePieceIcon />} label="Connections" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
-            <NavRow
-              icon={<Avatar name={user.name} src={user.avatarUrl} />}
-              label={user.name}
-              aria-label={`Settings, ${user.name}`}
-              current={settingsPage?.current}
-              onClick={settingsPage?.onOpen}
-            />
           </NavRows>
+          {/* The account is in from the edge as a row's circle is (`p-2`), so that it lines up with them; the connect button ends where the search button does, over it. */}
+          <div className="flex items-center justify-between pt-2 pl-2">
+            {account}
+            {connect}
+          </div>
         </footer>
       </div>
     )
@@ -306,7 +329,7 @@ export const Sidebar = ({
         </header>
         {nav}
         <footer className="mt-3 flex flex-col items-center gap-1">
-          <ConnectButton onConnect={connectionsPage?.onOpen} />
+          <ConnectButton onConnect={connectionsPage?.onOpen} current={connectionsPage?.current} />
           {account}
         </footer>
       </div>
@@ -326,7 +349,7 @@ export const Sidebar = ({
       {nav}
       <footer className="flex items-center justify-between">
         {account}
-        <ConnectButton onConnect={connectionsPage?.onOpen}>{connections}</ConnectButton>
+        {connect}
       </footer>
     </div>
   )

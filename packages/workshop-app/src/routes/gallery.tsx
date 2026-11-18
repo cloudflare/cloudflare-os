@@ -430,12 +430,13 @@ function Gallery() {
                   setSelectedWorkspace(id)
                   setSidebarPage(undefined)
                 }}
-                connections={[0, 1].map((logo) => <span key={logo} className="size-5 rounded-full bg-kumo-fill" />)}
+                connections={[{ name: 'Google' }, { name: 'Linear' }, { name: 'Cloudflare' }]}
                 library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
                 workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
                 connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
-                // The user's own button opens the settings and leaves them again.
-                settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage((current) => (current === 'settings' ? undefined : 'settings')) }}
+                // The user's own menu has the settings and signing out.
+                settingsPage={{ current: sidebarPage === 'settings', onOpen: () => setSidebarPage('settings') }}
+                onSignOut={() => {}}
                 collapsed={collapsed}
                 layout={layout}
               />

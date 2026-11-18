@@ -78,7 +78,7 @@ const PartGroup = ({ group, current, onSelect }: { group: SettingsNavGroup; curr
 /**
  * The sidebar while the settings show, in the app's own sidebar's place: the way back out where
  * the logo is, and the settings' parts under it, each group under its name. Nothing of the app's
- * own sidebar stays, the user's button included: the way out is the one at the top.
+ * own sidebar stays, the user's menu included: the way out is the one at the top.
  */
 export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed = false, onSignOut }: SettingsSidebarProps) => {
   const scrollRef = useRef<HTMLElement>(null)

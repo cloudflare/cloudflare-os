@@ -32,8 +32,8 @@ declare module '@tanstack/react-router' {
      */
     fromLibrary?: boolean
     /**
-     * This step opened the settings, from the user's own button in the sidebar, so the button
-     * leaves them by going back.
+     * This step opened the settings, from the user's own menu in the sidebar, so the settings'
+     * way out leaves them by going back.
      */
     settingsOpenedHere?: boolean
     /**

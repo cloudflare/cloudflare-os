@@ -44,6 +44,8 @@ import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ObserverAccessProvider } from '@/connections/ObserverAccessProvider'
+import { sidebarConnections } from '@/connections/sidebarConnections'
+import { useConnections } from '@/connections/useConnections'
 import { AppSearch } from './-AppSearch'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
@@ -78,9 +80,6 @@ export const Route = createFileRoute('/_app')({
   ),
 })
 
-// Placeholder logos until real connected apps are wired in.
-const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
-
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
 /**
@@ -110,6 +109,9 @@ const AppFrame = () => {
   // Whether the deployment's own settings are listed after the user's.
   const admin = useIsAdmin()
   const asks = useWaitingAsks()
+  // The logos on the sidebar's connect button, once the services are read.
+  const { state: connectionsState } = useConnections()
+  const connectionLogos = connectionsState.status === 'ready' ? sidebarConnections(connectionsState.connections) : undefined
   // Read ahead, so that a composer's + menu opens with them in it.
   useReadSkills()
 
@@ -300,8 +302,13 @@ const AppFrame = () => {
         ? 'No workspaces yet.'
         : undefined
 
-  // The user's own button opens the settings, and leaves them again: back to where they were
-  // opened from, or home when they were come to some other way.
+  // The user's own menu has the settings, which are only stayed in when already there.
+  const openSettingsPage = () => {
+    leaveSidebar()
+    if (!inSettings) void navigate({ to: '/settings', state: { settingsOpenedHere: true } })
+  }
+  // The settings' own sidebar leaves them again: back to where they were opened from, or home
+  // when they were come to some other way.
   const toggleSettings = () => {
     leaveSidebar()
     if (!inSettings) return void navigate({ to: '/settings', state: { settingsOpenedHere: true } })
@@ -345,7 +352,7 @@ const AppFrame = () => {
       logoUrl={siteLogoUrl(config)}
       announcement={config?.announcement?.trim() || undefined}
       notice={notice}
-      connections={placeholderLogos}
+      connections={connectionLogos}
       library={{
         current: [libraryPage, libraryItemPage, templatesPage, templatePage].some((match) => match !== undefined),
         waiting: asks.total,
@@ -375,7 +382,8 @@ const AppFrame = () => {
           void navigate({ to: '/connections' })
         },
       }}
-      settingsPage={{ current: inSettings, onOpen: toggleSettings }}
+      settingsPage={{ current: inSettings, onOpen: openSettingsPage }}
+      onSignOut={signOut}
       onSearch={() => {
         leaveSidebar()
         setSearching(true)
