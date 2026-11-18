@@ -676,6 +676,37 @@ describe("AdminAuditDurableObject's table rebuild", () => {
     await expectRebuilt([...TWO_KIND_SCHEMA, OWNER_INDEX]);
   });
 
+  it.each([
+    ["every record", "DELETE FROM admin_audit", [] as string[]],
+    ["the latest records", "DELETE FROM admin_audit WHERE seq > 3",
+        ["workspace", "setting", "workspace"]],
+  ])("numbers on from the highest seq issued when %s were pruned before the rebuild",
+      async (_pruned, prune, left) => {
+    let log = auditLog();
+    await runInDurableObject(log, (_instance, state) => {
+      replant(state.storage.sql, TWO_KIND_SCHEMA);
+    });
+    for (let record of [access(), setting(), access(), setting(), access()]) {
+      await log.append(record, RETENTION);
+    }
+    let { nextCursor } = await log.list({ limit: 2 }, RETENTION);
+    expect(nextCursor).toBe("4");
+    // As the retention deletes records, which leaves the table's count of issued seqs alone.
+    await sql(log, prune);
+
+    await runInDurableObject(log, (instance, state) => {
+      construct(instance, state);
+    });
+    await log.append(userAccess({ admin: "grace" }), RETENTION);
+    expect(await sql(log, "SELECT seq, kind FROM admin_audit ORDER BY seq DESC")).toEqual(
+        [{ seq: 6, kind: "user" }, ...left.map((kind, i) => ({ seq: 3 - i, kind }))]);
+    expect(await sql(log, "SELECT name, seq FROM sqlite_sequence"))
+        .toEqual([{ name: "admin_audit", seq: 6 }]);
+    // A cursor taken before the rebuild pages only what is older than it, never a later record.
+    let older = (await log.list({ limit: 50, cursor: nextCursor }, RETENTION)).records;
+    expect(older.map(record => record.kind)).toEqual(left);
+  });
+
   it("leaves a table of the current definition alone", async () => {
     let { log, listed } = await seededLog();
     let [seeded, constructed] = await runInDurableObject(log, (instance, state) => {

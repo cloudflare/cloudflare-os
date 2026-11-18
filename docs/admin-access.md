@@ -508,12 +508,11 @@ The store's table admits exactly these kinds, by a CHECK on its `kind` column, a
 column holds `'metadata'` for every access record, of either kind. SQLite cannot alter a CHECK, so
 a table whose stored definition differs from the current one is rebuilt once, when the log's
 Durable Object next starts: its rows are copied into a table of the current definition, each
-keeping its `seq`. AUTOINCREMENT's high-water mark is not carried, so a `seq` above the highest row
-copied (one whose row has since been deleted) can be handed out again, which only a list cursor
-held across the rebuild could notice. A rebuild that fails, as it does on a table of a later
-definition holding rows of a kind this CHECK refuses, rolls back whole: it leaves the stored table
-with its rows, is logged (`admin.audit.table.rebuild.failed`), and the log goes on appending the
-kinds that table admits.
+keeping its `seq`, and the table goes on numbering from the highest `seq` it ever issued, a pruned
+record's included, so a list cursor held across the rebuild stays valid. A rebuild that fails, as
+it does on a table of a later definition holding rows of a kind this CHECK refuses, rolls back
+whole: it leaves the stored table with its rows, is logged (`admin.audit.table.rebuild.failed`),
+and the log goes on appending the kinds that table admits.
 
 ### What the metadata level withholds
 
@@ -677,7 +676,8 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   of access to users' accounts are listed by kind and by a method name both views share, keep a
   long user id as a long owner is kept, and are counted. The table's rebuild: a table that knows
   no user records, one that indexes the workspace owner alone, a current one left alone, and a
-  later one kept, logged and still appended to.
+  later one kept, logged and still appended to; across it, the numbering goes on from the highest
+  sequence number issued, whatever was pruned.
 - `admin-api-impl.test.ts`: `AdminApiImpl`'s inspection path, opens refused while access is off (by
   the setting or by a cap), the setter's validator refusing a value that is not a level with a
   `TypeError`, listings and forwarding. For `inspectUser()`: the order of its checks, an empty

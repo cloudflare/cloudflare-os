@@ -85,17 +85,21 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     // SQLite cannot alter a CHECK, and a table created from another definition refuses records its
     // CHECKs do not know, so a table whose stored definition is not this one is copied into one
     // that is. Any change to TABLE that keeps the columns is carried this way; one that changes
-    // them needs its own copy statement. Each row keeps its seq, but AUTOINCREMENT's high-water
-    // mark is not carried, so a seq above the highest row copied (one whose row has since been
-    // deleted) can be handed out again, which only a list cursor held across the rebuild could
-    // notice. The copy is proportional to the log and runs once. The stored text before the
-    // parenthesis is not compared: a rename rewrites the name there, quoted.
+    // them needs its own copy statement. Each row keeps its seq, and the next seq follows the
+    // highest one the table ever issued, a pruned record's included, so a list cursor stays valid:
+    // no later record is numbered below it. The copy is proportional to the log and runs once.
+    // The stored text before the parenthesis is not compared: a rename rewrites the name there,
+    // quoted.
     let { sql: stored } = sql.exec<{ sql: string }>(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'admin_audit'").one();
     if (stored.slice(stored.indexOf("(")) !== TABLE) {
       try {
         ctx.storage.transactionSync(() => {
           sql.exec(`CREATE TABLE admin_audit_next ${TABLE}`);
+          // SQLite keeps the highest seq a table has issued in sqlite_sequence, and the copy alone
+          // would start that again from the highest row left.
+          sql.exec(`INSERT INTO sqlite_sequence (name, seq)
+              SELECT 'admin_audit_next', seq FROM sqlite_sequence WHERE name = 'admin_audit'`);
           sql.exec("INSERT INTO admin_audit_next SELECT * FROM admin_audit");
           sql.exec("DROP TABLE admin_audit");
           sql.exec("ALTER TABLE admin_audit_next RENAME TO admin_audit");
