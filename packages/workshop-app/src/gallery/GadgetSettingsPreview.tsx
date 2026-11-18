@@ -5,7 +5,8 @@ import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialo
 import { UpdateFromTemplateDialog, type UpdateFromTemplateOutcome, type UpdateTemplate } from '@/blocks/UpdateFromTemplateDialog'
 import { Button } from '@/components/Button'
 import { bindingNameProblem, freeBindingName, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from '@/gadgets/GadgetSettings'
-import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
+import { DEFAULT_GADGET_SETTINGS_TAB, GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
+import type { PublishState } from '@/library/publishState'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -127,13 +128,21 @@ const STATES = {
   failed: 'Failed',
 } as const
 
+const PUBLISH_STATES: { state: PublishState | undefined; label: string }[] = [
+  { state: 'unpublished', label: 'Not published' },
+  { state: 'changes', label: 'Published, with changes' },
+  { state: 'published', label: 'Published, up to date' },
+  { state: undefined, label: 'Publish state not read' },
+]
+
 /** A gadget's settings page and its blocks: what it is bound to. */
 export const GadgetSettingsPreview = () => {
   const { report, say, later } = useReport()
-  const [tab, setTab] = useState<GadgetSettingsTab>('connections')
+  const [tab, setTab] = useState<GadgetSettingsTab>(DEFAULT_GADGET_SETTINGS_TAB)
   const [title, setTitle] = useState('Tip jar')
   const [bindings, setBindings] = useState(BINDINGS)
   const [shownState, setShownState] = useState<keyof typeof STATES>('ready')
+  const [publishState, setPublishState] = useState<PublishState | undefined>('unpublished')
 
   const state: GadgetSettingsState = shownState === 'failed' ? { status: 'failed', message: 'The workspace didn’t answer.', onRetry: () => say('try again') }
     : shownState === 'noBindings' || shownState === 'bindingsFailed' ? { status: 'ready' }
@@ -164,11 +173,16 @@ export const GadgetSettingsPreview = () => {
       <Section title="UpdateFromTemplateDialog (proposing a gadget’s update from its template in a new chat: with a newer version, already up to date, unrelated and warned of first, one that can’t be merged, one that couldn’t be asked with the way to try again, its template gone, and while it is read)">
         <UpdatePreview />
       </Section>
-      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, where a model is added and changed, and one for where it is from, updating it from its template, and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
+      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for updating it from its template, publishing it as a template (or its changes since, once published), exporting it, and deleting it, which asks first, and one for what it is connected to, with its agents apart, where a model is added and changed; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(STATES).map(([key, label]) => (
               <Button key={key} variant={key === shownState ? 'primary' : 'secondary'} onClick={() => setShownState(key as keyof typeof STATES)}>{label}</Button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {PUBLISH_STATES.map(({ state: each, label }) => (
+              <Button key={label} variant={each === publishState ? 'primary' : 'secondary'} onClick={() => setPublishState(each)}>{label}</Button>
             ))}
           </div>
           {/* Wider than the gallery's column, as a page is. */}
@@ -178,8 +192,15 @@ export const GadgetSettingsPreview = () => {
               title={title}
               icon="appWindow"
               description="Counts tips for the team lunch, and shows everyone the total."
-              template="Tip jar"
               templateUpdate={{ status: 'available', onUpdate: () => say('update from the template') }}
+              publish={{ state: publishState, onPublish: () => say('opened Publish as template') }}
+              exports={{
+                choices: { status: 'ready', formats: [{ id: 'md', label: 'Markdown' }, { id: 'csv', label: 'CSV' }], saves: [{ key: 'doc', title: 'Google Doc' }] },
+                onOpen: () => {},
+                onExport: (id) => say(`exported as ${id}`),
+                onSave: (key) => say(`saved to ${key}`),
+                onUpdate: (key) => say(`updated ${key}`),
+              }}
               workspace={{ id: 'ws-1', title: 'Team lunch', label: 'TL' }}
               tab={tab}
               onTabChange={setTab}

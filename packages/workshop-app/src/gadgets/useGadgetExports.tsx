@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { ExportChoices as MenuChoices, ExportSubmenuProps } from '@/blocks/ExportSubmenu'
+import type { ExportChoices as MenuChoices, ExportItemsProps } from '@/blocks/ExportItems'
 import type { PaneStatusProps } from '@/blocks/PaneStatus'
 import { UpdateFileDialog } from '@/blocks/UpdateFileDialog'
 import { TextField } from '@/components/TextField'
@@ -33,8 +33,9 @@ const menuChoices = (choices: ExportChoices | undefined): MenuChoices | undefine
   }
 
 /**
- * A gadget's exports (`GadgetExports`), for the pane it is shown in: its More menu's Export
- * (`menu`), what became of the last one (`status`), and the dialogs a save asks with (`dialogs`).
+ * A gadget's exports (`GadgetExports`), for its settings: what it can be exported as (`menu`, for
+ * `ExportItems`), what became of the last one (`status`), and the dialogs a save asks with
+ * (`dialogs`).
  * Everyone it is shown to may export it, as the backend lets whoever can use it; only those who
  * may build in its workspace (`saves`) are offered saving it to their accounts, as in the old app.
  */
@@ -92,7 +93,7 @@ export const useGadgetExports = (gadget: AsideOutput | undefined, title: string,
     if (choice) setAsking({ exports, choice, update: update && choice.saved !== undefined, name: title, open: true })
   }
 
-  const menu: ExportSubmenuProps | undefined = exports && {
+  const menu: ExportItemsProps | undefined = exports && {
     choices: menuChoices(choices),
     onOpen: () => void exports.list(),
     exporting: activity?.kind === 'exporting' ? activity.format.id : undefined,

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { DotsThreeIcon } from '@phosphor-icons/react'
-import { ExportSubmenu, type ExportChoices } from '@/blocks/ExportSubmenu'
+import { FileArrowDownIcon } from '@phosphor-icons/react'
+import { ExportItems, type ExportChoices } from '@/blocks/ExportItems'
 import { PaneStatus, type PaneStatusProps } from '@/blocks/PaneStatus'
 import { SetUpConnectionDialog } from '@/blocks/SetUpConnectionDialog'
 import { UpdateFileDialog } from '@/blocks/UpdateFileDialog'
@@ -54,7 +54,7 @@ const FakeFolderForm = ({ onReady }: { onReady: (ready: boolean) => void }) => (
   </label>
 )
 
-/** Exporting a gadget from its pane's More menu, what became of it, and saving it to an account. */
+/** Exporting a gadget from its settings, what became of it, and saving it to an account. */
 export const ExportPreview = () => {
   const { report, say, later } = useReport()
   const [menu, setMenu] = useState<keyof typeof MENUS>('saves')
@@ -67,12 +67,12 @@ export const ExportPreview = () => {
 
   return (
     <>
-      <Section title="ExportSubmenu (the gadget pane’s More menu has Export, which opens to what it can be exported as, read each time it opens; each saves to the device when chosen, and while one exports the others wait. Then the kinds of file it can be saved as in the user’s accounts, with an update of the file the last such save made before its kind. Loading, a failure with Try again, which keeps the menu open, and a gadget with no exports are said in its place)">
+      <Section title="ExportItems (Export on a gadget’s settings opens to what it can be exported as, read each time it opens; each saves to the device when chosen, and while one exports the others wait. Then the kinds of file it can be saved as in the user’s accounts, with an update of the file the last such save made before its kind. Loading, a failure with Try again, which keeps the menu open, and a gadget with no exports are said in its place)">
         {Object.entries(MENUS).map(([key, label]) => (
           <Button key={key} variant={key === menu ? 'primary' : 'secondary'} onClick={() => setMenu(key as keyof typeof MENUS)}>{label}</Button>
         ))}
-        <DropdownMenu icon={DotsThreeIcon} aria-label="More for Q3 platform review" align="end">
-          <ExportSubmenu
+        <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
+          <ExportItems
             choices={choices}
             onOpen={() => setOpened((count) => count + 1)}
             exporting={menu === 'exporting' ? 'docx' : undefined}

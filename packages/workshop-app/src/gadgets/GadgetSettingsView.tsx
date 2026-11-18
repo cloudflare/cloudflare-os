@@ -1,23 +1,25 @@
-import { useState } from 'react'
-import { CaretLeftIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { useState, type ReactNode } from 'react'
+import { CaretLeftIcon, FileArrowDownIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
+import { ExportItems, type ExportItemsProps } from '@/blocks/ExportItems'
 import { ListGroup } from '@/blocks/ListGroup'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
+import { PaneStatus, type PaneStatusProps } from '@/blocks/PaneStatus'
 import { SettingRow } from '@/blocks/SettingRow'
-import { SettingsGroup } from '@/blocks/SettingsGroup'
+import { SettingsCard, SettingsGroup } from '@/blocks/SettingsGroup'
 import type { SaveOutcome } from '@/blocks/useEditedField'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
+import { DropdownMenu } from '@/components/DropdownMenu'
 import { EditableTitle } from '@/components/EditableTitle'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
-import { Tag } from '@/components/Tag'
-import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/components/workspaceLook'
 import { PageLayout } from '@/layouts/PageLayout'
+import type { PublishState } from '@/library/publishState'
 import { bindingNameProblem, freeBindingName, groupBindings, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from './GadgetSettings'
 import type { BindingService } from './useGadgetSettings'
 
@@ -25,9 +27,12 @@ import type { BindingService } from './useGadgetSettings'
 export type GadgetSettingsTab = 'connections' | 'settings'
 
 export const GADGET_SETTINGS_TABS: { value: GadgetSettingsTab; label: string }[] = [
-  { value: 'connections', label: 'Connections' },
   { value: 'settings', label: 'Settings' },
+  { value: 'connections', label: 'Connections' },
 ]
+
+/** The tab a gadget's settings start at, which an address leaves out. */
+export const DEFAULT_GADGET_SETTINGS_TAB: GadgetSettingsTab = 'settings'
 
 /** How far the gadget has got, as the page shows it. */
 export type GadgetSettingsState =
@@ -49,13 +54,20 @@ export type GadgetSettingsViewProps = {
   icon?: FormatIconName
   /** What its template says it is for. */
   description?: string
-  /** The template it was made from, by its title; `null` where it was built from scratch. */
-  template?: string | null
   /**
    * Updating it from its template, for a gadget that follows one: whether there is a newer version
    * of it, where that can be told, and the way to have it proposed.
    */
   templateUpdate?: { status?: 'available' | 'upToDate'; onUpdate: () => void }
+  /**
+   * Publishing it as a template, or its changes since to the one it was published as: where it
+   * stands, once that is read, and the way to the dialog that does it. Left out where it cannot be.
+   */
+  publish?: { state?: PublishState; onPublish: () => void }
+  /** What it can be exported as and saved to, as the More menu offers it (`ExportItems`). */
+  exports?: ExportItemsProps
+  /** What became of the last export, floated over the foot of the page. */
+  status?: PaneStatusProps
   /** The workspace it is in, which the header's crumb goes to. */
   workspace?: { id: string; title: string; label: string; look?: WorkspaceLook }
   tab: GadgetSettingsTab
@@ -82,8 +94,8 @@ export type GadgetSettingsViewProps = {
   onDelete: () => void
   /** Back to the gadget itself. */
   onBack: () => void
-  /** Goes to the page of the workspace it is in. */
-  onOpenWorkspace: () => void
+  /** Goes to the page of the workspace it is in, from the header's crumb. Without it, as in the side pane, there is no crumb. */
+  onOpenWorkspace?: () => void
   /** Goes to the page of an agent it starts, by its spawner's id. */
   onOpenAgent?: (spawnerId: number) => void
   /** Where an agent's page is, so that it can be opened in another tab. */
@@ -98,27 +110,34 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
  * connected to, with the agents it can start apart, where an AI model is added and changed, and its
- * settings, which are where it is from, updating it from its template, and deleting it. Only whoever may build in its workspace
+ * settings, which are updating it from its template, publishing it as one, exporting it, and
+ * deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention,
+  state, title, icon, description, templateUpdate, publish, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention,
 }: GadgetSettingsViewProps) => {
   // What the model dialog was opened for, kept as it closes so that it does not change meanwhile.
   const [modelDialog, setModelDialog] = useState<{ open: boolean; changing?: string; initial?: string }>({ open: false })
 
   const header = (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-      {workspace && <WorkspaceCrumb id={workspace.id} title={workspace.title} label={workspace.label} look={workspace.look} onOpen={onOpenWorkspace} />}
+      {workspace && onOpenWorkspace && <WorkspaceCrumb id={workspace.id} title={workspace.title} label={workspace.label} look={workspace.look} onOpen={onOpenWorkspace} />}
       <HeaderBubble>
-        <Button icon={CaretLeftIcon} onClick={onBack}>Back to gadget</Button>
+        <Button icon={CaretLeftIcon} onClick={onBack}>Back to app</Button>
       </HeaderBubble>
     </nav>
   )
+  const framed = (content: ReactNode) => (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <PageLayout header={header}>{content}</PageLayout>
+      {exported && <PaneStatus {...exported} />}
+    </div>
+  )
 
   if (state.status === 'denied' || state.status === 'gone' || state.status === 'failed' || state.status === 'shared') {
-    return (
-      <PageLayout header={header}>
+    return framed(
+      <>
         <div className="flex min-h-[60vh] flex-col">
           {state.status === 'denied' ? (
             <PaneNotice icon={WarningCircleIcon} title={`You don’t have access to ${title || 'this gadget'}`} description="Ask whoever shared it to add you to its workspace." />
@@ -131,11 +150,11 @@ export const GadgetSettingsView = ({
               icon={ShareNetworkIcon}
               title={`${title || 'This gadget'} was shared with you`}
               description="Its settings are for whoever builds in its workspace."
-              action={{ label: 'Back to gadget', onClick: onBack }}
+              action={{ label: 'Back to app', onClick: onBack }}
             />
           )}
         </div>
-      </PageLayout>
+      </>,
     )
   }
 
@@ -164,8 +183,8 @@ export const GadgetSettingsView = ({
     />
   )
 
-  return (
-    <PageLayout header={header}>
+  return framed(
+    <>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-1 pt-8 text-center">
           {/* What it is, as it is drawn wherever it is listed. */}
@@ -210,39 +229,45 @@ export const GadgetSettingsView = ({
                 </SettingsGroup>
               )}
             </Tabs.Panel>
-            <Tabs.Panel value="settings" className="flex flex-col gap-12">
-              <SettingsGroup title="Gadget details">
-                {workspace && (
-                  <SettingRow title="Workspace" description="Where it was made. Everyone who builds there can change it.">
-                    <span className="flex min-w-0 items-center gap-2 text-kumo-default">
-                      <WorkspaceIcon label={workspace.label} {...workspace.look} small />
-                      <span className="truncate">{workspace.title}</span>
-                    </span>
-                  </SettingRow>
-                )}
-                {template !== undefined && (
-                  <SettingRow
-                    title="Template"
-                    description={template === null ? 'It was built from scratch, not from a template.' : 'What it was made from, which it can take updates from.'}
-                  >
-                    {template === null ? undefined : <span className="truncate text-kumo-default">{template}</span>}
-                  </SettingRow>
-                )}
-                {templateUpdate && (
-                  <SettingRow
-                    title="Updates"
-                    description={templateUpdate.status === 'available'
-                      ? 'There’s a newer version of its template. The update opens in a new chat, where you can try it before accepting it.'
-                      : templateUpdate.status === 'upToDate'
-                        ? 'It has the latest version of its template.'
-                        : 'Its template may have a newer version. The update opens in a new chat, where you can try it before accepting it.'}
-                  >
-                    {templateUpdate.status === 'available' && <Tag className="shrink-0">Update available</Tag>}
-                    <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} disabled={templateUpdate.status === 'upToDate'} onClick={templateUpdate.onUpdate}>Update…</Button>
-                  </SettingRow>
-                )}
-              </SettingsGroup>
-              <SettingsGroup title="Danger zone">
+            <Tabs.Panel value="settings" className="flex flex-col gap-4">
+              {(templateUpdate || publish || exports) && (
+                <SettingsCard>
+                  {templateUpdate && (
+                    <SettingRow
+                      title="Updates"
+                      description={templateUpdate.status === 'available'
+                        ? 'There’s a newer version of its template. The update opens in a new chat, where you can try it before accepting it.'
+                        : templateUpdate.status === 'upToDate'
+                          ? 'It has the latest version of its template.'
+                          : 'Its template may have a newer version. The update opens in a new chat, where you can try it before accepting it.'}
+                    >
+                      {templateUpdate.status === 'upToDate'
+                        ? <span className="shrink-0 text-kumo-subtle">Up to date</span>
+                        : <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} onClick={templateUpdate.onUpdate}>Update…</Button>}
+                    </SettingRow>
+                  )}
+                  {publish && (
+                    <SettingRow
+                      title={publish.state === 'changes' ? 'Publish changes' : publish.state === 'published' ? 'Published as a template' : 'Publish as template'}
+                      description={publish.state === 'changes'
+                        ? 'It has changes since it was last published as a template. They go out as the template’s next version.'
+                        : publish.state === 'published'
+                          ? 'There’s nothing new to publish since it was last published as a template.'
+                          : 'Anyone you share a template with can make their own from it, connected to their own accounts.'}
+                    >
+                      <Button variant={publish.state === 'changes' ? 'primary' : 'secondary'} onClick={publish.onPublish}>Publish…</Button>
+                    </SettingRow>
+                  )}
+                  {exports && (
+                    <SettingRow title="Export" description="Save it to this device as a file, or to one of your accounts.">
+                      <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
+                        <ExportItems {...exports} />
+                      </DropdownMenu>
+                    </SettingRow>
+                  )}
+                </SettingsCard>
+              )}
+              <SettingsCard>
                 <SettingRow title="Delete this gadget" description="It goes for everyone it’s shared with. What it’s connected to stays in the workspace.">
                   <ConfirmMenu
                     label="Delete gadget"
@@ -252,7 +277,7 @@ export const GadgetSettingsView = ({
                     onConfirm={onDelete}
                   />
                 </SettingRow>
-              </SettingsGroup>
+              </SettingsCard>
             </Tabs.Panel>
           </Tabs>
         )}
@@ -268,6 +293,6 @@ export const GadgetSettingsView = ({
         nameProblem={(name) => bindingNameProblem(name, taken)}
         onSubmit={({ modelId }) => onChangeModel(modelDialog.changing!, modelId)}
       />
-    </PageLayout>
+    </>,
   )
 }

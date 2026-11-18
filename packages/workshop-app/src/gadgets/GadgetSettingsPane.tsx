@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { agentByKey, agentKeyOf, attentionWords } from '@/automations/agents'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { PublishTemplate } from '@/library/PublishTemplate'
+import { usePublishState } from '@/library/usePublishState'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
@@ -11,6 +13,7 @@ import { InvalidBindingName } from './GadgetSettings'
 import { templateUpdateStatus } from './templateUpdate'
 import { UpdateFromTemplate } from './UpdateFromTemplate'
 import { useBindableModels } from './useBindableModels'
+import { useGadgetExports } from './useGadgetExports'
 import { useBlueprintInfo, useGadgetSettings, useServices } from './useGadgetSettings'
 
 export type GadgetSettingsPaneProps = {
@@ -25,7 +28,11 @@ export type GadgetSettingsPaneProps = {
   /** It was deleted: go somewhere that still is. */
   onDeleted: () => void
   /** Goes to the page of the workspace it is in. */
-  onOpenWorkspace: () => void
+  onOpenWorkspace?: () => void
+  /** Names the browser's tab, as the page does. Left to whatever is beside, as the side pane's page is. */
+  namesTab?: boolean
+  /** The chat it is shown from, whose proposed changes an export of it includes. */
+  chatId?: number
   /** An update from its template was proposed in this chat, which is where it is tried: go there. */
   onUpdateProposed: (chatId: number) => void
   /** Goes to the page of an agent it starts, by its spawner's id. */
@@ -40,7 +47,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * bound to, the user's models its code can be given, its code as it was last kept, read once the Code tab is shown, and what its template
  * says of it, with whether it has a newer version to update it from (`UpdateFromTemplate`).
  */
-export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onUpdateProposed, onOpenAgent, agentHref }: GadgetSettingsPaneProps) => {
+export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, namesTab = true, chatId, onUpdateProposed, onOpenAgent, agentHref }: GadgetSettingsPaneProps) => {
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -57,7 +64,12 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   // waiting in a chat has none, and one built from scratch follows none.
   const follows = upstream?.blueprintId !== undefined && gadget?.commitId !== undefined ? { ...upstream, blueprintId: upstream.blueprintId } : undefined
   const [updating, setUpdating] = useState(false)
-  useDocumentTitle(title ? `Settings · ${title}` : 'Gadget settings')
+  // Not there until it is first asked for, as it reads the templates.
+  const [publishing, setPublishing] = useState<boolean>()
+  const publishState = usePublishState(workspaceId, publishing === true || tab !== 'settings')
+  // Only whoever builds in its workspace gets here, who may save it to their accounts too.
+  const exports = useGadgetExports(gadget && { workspaceId, workpieceId, type: 'gadget', chatId }, title ?? '', { saves: true })
+  useDocumentTitle(namesTab ? (title ? `Settings · ${title}` : 'App settings') : undefined)
   // Why the last thing asked for was not done.
   const [problem, setProblem] = useState<string>()
   // What its agents want of the user, as the workspace's Agents tab says it, by spawner.
@@ -88,10 +100,11 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         title={title}
         icon={gadget?.output?.icon}
         description={blueprint?.description}
-        // Where it came from is known only for a gadget that says; one built from scratch names no template.
-        template={gadget?.upstream ? (blueprintId ? blueprint?.title : null) : undefined}
         // The template gone, there is nothing to update it from.
         templateUpdate={follows && blueprint !== null ? { status: templateUpdateStatus(follows, blueprint), onUpdate: () => setUpdating(true) } : undefined}
+        publish={gadget && { state: publishState, onPublish: () => setPublishing(true) }}
+        exports={exports.menu}
+        status={exports.status}
         workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look }}
         tab={tab}
         onTabChange={onTabChange}
@@ -126,6 +139,10 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         agentAttention={agentAttention}
         agentHref={agentHref}
       />
+      {exports.dialogs}
+      {gadget && publishing !== undefined && (
+        <PublishTemplate gadget={{ workspaceId, workpieceId, title: title ?? '' }} open={publishing} onOpenChange={setPublishing} />
+      )}
       {follows && (
         <UpdateFromTemplate
           open={updating}
