@@ -1,18 +1,20 @@
 import { useState } from 'react'
-import { NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
-import { runsWantingAttention, type Agent } from '@/automations/agents'
+import { activityWords, runsWantingAttention, type Agent } from '@/automations/agents'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
+import { AgentMark } from '@/blocks/AgentMark'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceMoreMenu } from '@/blocks/WorkspaceMoreMenu'
 import { AvatarStack } from '@/components/AvatarStack'
-import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
+import { DropdownMenu } from '@/components/DropdownMenu'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
@@ -26,7 +28,7 @@ import { useApi } from '@/rpc/ApiContext'
 import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
-import { listed, shareStanding } from './sharingRules'
+import { shareStanding } from './sharingRules'
 import { useSharing } from './useSharing'
 import { useWorkspaceRemoval } from './useWorkspaceRemoval'
 import { WorkspaceChatList } from './WorkspaceChatList'
@@ -122,7 +124,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     const value = counts[each.value] ?? 0
     return value > 0 ? { ...each, count: { value, label: 'waiting on you' } } : each
   })
-  const banner = waitingBanner({ runs: waiting, failed: wanting, gadgets: gadgetsWaiting, chats: chatsWaiting?.size ?? 0 })
+  const attention = waitingOf({ runs: waiting, failed: wanting, gadgets: gadgetsWaiting, chats: chatsWaiting?.size ?? 0 })
   const openRun = (run: { chatId: number; title: string }) => onOpenChat({ id: run.chatId, title: run.title })
 
   const renameWorkspace = useRenameWorkspace()
@@ -214,18 +216,19 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               : <span className="px-2.5 py-1">{title || 'Workspace'}</span>}
           </h1>
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
+          {/* What waits on the viewer, or when it was last active: one line, always there, so that
+              what comes in as it is read, or a tab changed, moves nothing under it. */}
+          <div className="flex h-(--control-size) items-center justify-center">
+            {attention ? (
+              <WaitingPill
+                {...attention}
+                onOpen={({ to }) => ('run' in to ? openRun(to.run) : 'agent' in to ? onOpenAgent(to.agent) : onTabChange(to.tab))}
+              />
+            ) : workspace?.lastActive && (
+              <span className="appears text-sm text-kumo-subtle">Active {activityWords(workspace.lastActive, new Date(now))}</span>
+            )}
+          </div>
         </div>
-        {/* What waits on the viewer, over every tab but the one that lists it, which lists it first. */}
-        {banner && banner.tab !== tab && (
-          <Banner
-            tone={banner.tone}
-            title={banner.title}
-            description={banner.description}
-            action={banner.open
-              ? { label: 'Open run', onSelect: () => openRun(banner.open!) }
-              : { label: 'Review', onSelect: () => onTabChange(banner.tab) }}
-          />
-        )}
         <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
             <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} />
@@ -275,7 +278,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   )
 }
 
-type WaitingBannerOf = {
+type WaitingOf = {
   /** Its agents' runs waiting on the viewer, each with its agent. */
   runs: ReturnType<typeof runsWantingAttention>
   /** Those, and its agents whose latest run failed. */
@@ -284,66 +287,72 @@ type WaitingBannerOf = {
   chats: number
 }
 
+/** One thing, or one kind of thing, that waits on the viewer, and where it is seen to. */
+type WaitingEntry = {
+  key: string
+  kind: 'agent' | 'chat' | 'gadget'
+  label: string
+  to: { tab: WorkspaceTab } | { run: { chatId: number; title: string } } | { agent: Agent }
+}
+
+// An agent's runs among `runs`, as one entry each: one run opens by itself, several their agent's page.
+const agentEntries = (runs: WaitingOf['runs'], said: (count: number) => string): WaitingEntry[] => {
+  const byAgent = new Map<string, WaitingOf['runs']>()
+  for (const entry of runs) byAgent.set(entry.agent.key, [...(byAgent.get(entry.agent.key) ?? []), entry])
+  return [...byAgent.values()].map((own) => ({
+    key: `agent:${own[0]!.agent.key}`,
+    kind: 'agent',
+    label: `${own[0]!.agent.name} · ${said(own.length)}`,
+    to: own.length === 1 ? { run: own[0]!.run } : { agent: own[0]!.agent },
+  }))
+}
+
 /**
- * What a workspace's banner says of what waits on the viewer, where anything does, and the tab
- * that lists it, or the run to open where it is one: of one kind, it says which and why; of
- * several, how many, and of what. A failed run is said only where nothing waits.
+ * What waits on the viewer in a workspace, for the line under its title: how many, and each,
+ * where it is seen to: a run by itself, gadgets and chats on the tab that lists them. A failed run
+ * is said only where nothing waits.
  */
-const waitingBanner = ({ runs, failed, gadgets, chats }: WaitingBannerOf): {
-  tone: 'warning' | 'danger'
-  title: string
-  description: string
-  tab: WorkspaceTab
-  open?: { chatId: number; title: string }
-} | undefined => {
-  const kinds = [runs.length, gadgets, chats].filter((n) => n > 0).length
-  if (kinds > 1) {
-    const parts = [
-      runs.length > 0 && (runs.length === 1 ? 'an agent run' : `${runs.length} agent runs`),
-      gadgets > 0 && (gadgets === 1 ? 'a gadget' : `${gadgets} gadgets`),
-      chats > 0 && (chats === 1 ? 'a chat' : `${chats} chats`),
-    ].filter((part): part is string => typeof part === 'string')
-    const what = listed(parts)
-    return {
-      tone: 'warning',
-      title: `${runs.length + gadgets + chats} things are waiting on you`,
-      description: `${what.charAt(0).toUpperCase()}${what.slice(1)}.`,
-      tab: runs.length > 0 ? 'agents' : 'library',
-    }
-  }
-  if (gadgets > 0) {
-    return {
-      tone: 'warning',
-      title: gadgets === 1 ? 'A gadget is waiting on you' : `${gadgets} gadgets are waiting on you`,
-      description: gadgets === 1 ? 'Open it to answer what it asks.' : 'Open them to answer what they ask.',
-      tab: 'library',
-    }
-  }
-  if (chats > 0) {
-    return {
-      tone: 'warning',
-      title: chats === 1 ? 'A chat is waiting on you' : `${chats} chats are waiting on you`,
-      description: chats === 1 ? 'It stopped for your approval or a connection.' : 'They stopped for your approval or a connection.',
-      tab: 'chats',
-    }
-  }
-  if (runs.length > 0) {
-    return {
-      tone: 'warning',
-      title: runs.length === 1 ? `${runs[0].agent.name} is waiting on you` : `${runs.length} agent runs are waiting on you`,
-      description: runs.length === 1 ? 'Its run stopped for your approval or a connection.' : 'Their runs stopped for your approval or a connection.',
-      tab: 'agents',
-      ...(runs.length === 1 ? { open: runs[0].run } : {}),
-    }
-  }
+const waitingOf = ({ runs, failed, gadgets, chats }: WaitingOf): { tone: 'warning' | 'danger'; label: string; entries: WaitingEntry[] } | undefined => {
+  const entries: WaitingEntry[] = [
+    ...agentEntries(runs, (count) => (count === 1 ? 'a run' : `${count} runs`)),
+    ...(chats > 0 ? [{ key: 'chats', kind: 'chat' as const, label: chats === 1 ? 'A chat' : `${chats} chats`, to: { tab: 'chats' as const } }] : []),
+    ...(gadgets > 0 ? [{ key: 'gadgets', kind: 'gadget' as const, label: gadgets === 1 ? 'A gadget' : `${gadgets} gadgets`, to: { tab: 'library' as const } }] : []),
+  ]
+  const count = runs.length + chats + gadgets
+  if (count > 0) return { tone: 'warning', label: `${count} waiting on you`, entries }
   if (failed.length > 0) {
     return {
       tone: 'danger',
-      title: failed.length === 1 ? `${failed[0].agent.name}’s latest run failed` : `${failed.length} agents’ latest runs failed`,
-      description: 'Open the run to see what went wrong.',
-      tab: 'agents',
-      ...(failed.length === 1 ? { open: failed[0].run } : {}),
+      label: failed.length === 1 ? `${failed[0].agent.name}’s latest run failed` : `${failed.length} agents’ latest runs failed`,
+      entries: agentEntries(failed, () => 'latest run'),
     }
   }
   return undefined
+}
+
+// An agent, in a menu, as its own page draws it.
+const AgentGlyph = () => <AgentMark size="small" />
+
+/**
+ * What waits on the viewer, as a pill in the caution's colour (or a failure's): one thing opens at
+ * once; several open a menu of each, as the tabs that list them have them counted.
+ */
+const WaitingPill = ({ tone, label, entries, onOpen }: { tone: 'warning' | 'danger'; label: string; entries: WaitingEntry[]; onOpen: (entry: WaitingEntry) => void }) => {
+  const look = cn(
+    'appears rounded-full ps-2.5 text-sm font-normal',
+    tone === 'danger' ? 'bg-kumo-danger-tint text-kumo-danger not-data-disabled:hover:bg-kumo-danger/15' : 'bg-kumo-warning-tint text-kumo-default not-data-disabled:hover:bg-kumo-warning/20',
+  )
+  const dot = <span aria-hidden="true" className={cn('size-1.5 rounded-full', tone === 'danger' ? 'bg-kumo-danger' : 'bg-kumo-warning')} />
+  if (entries.length === 1) {
+    return <Button className={look} onClick={() => onOpen(entries[0]!)}><span className="flex items-center gap-2">{dot}{label}<CaretRightIcon aria-hidden="true" weight="bold" className="size-3 text-kumo-subtle" /></span></Button>
+  }
+  return (
+    <DropdownMenu label={<span className="flex items-center gap-2">{dot}{label}</span>} caret keepTrigger triggerClassName={look} triggerVariant="secondary" align="center">
+      {entries.map((entry) => (
+        <DropdownMenu.Item key={entry.key} icon={entry.kind === 'agent' ? AgentGlyph : entry.kind === 'chat' ? ChatCircleIcon : CirclesFourIcon} onSelect={() => onOpen(entry)}>
+          {entry.label}
+        </DropdownMenu.Item>
+      ))}
+    </DropdownMenu>
+  )
 }

@@ -22,26 +22,27 @@ export type WorkspaceCrumbProps = {
  * it back in. Going to another workspace swaps the crumb for that one's.
  */
 export const WorkspaceCrumb = ({ id, title, label, look, expanded = false, onOpen }: WorkspaceCrumbProps) => (
-  <HeaderBubble name={`workspace:${id}`} state={expanded}>
+  // Cut off where the header hasn't room for all of it, as beside a pane on a small laptop.
+  <HeaderBubble name={`workspace:${id}`} state={expanded} className="min-w-0">
     {(wasExpanded) => (
       <Button
         // The icon keeps the circle's square, so the title grows out to the side of it.
-        icon={<span className="grid size-(--control-size) place-items-center"><WorkspaceIcon label={label} {...look} small /></span>}
+        icon={<span className="grid size-(--control-size) shrink-0 place-items-center"><WorkspaceIcon label={label} {...look} small /></span>}
         aria-label={title}
         title={expanded ? undefined : title}
         onClick={onOpen}
-        className="gap-0 p-0"
+        className="min-w-0 shrink gap-0 p-0"
       >
         <span
           className={cn(
-            'grid transition-[grid-template-columns] duration-300 ease-out motion-reduce:transition-none',
+            'grid min-w-0 transition-[grid-template-columns] duration-300 ease-out motion-reduce:transition-none',
             expanded ? 'grid-cols-[1fr]' : 'grid-cols-[0fr]',
             // Where it starts from when it carries on from the crumb of the page before.
             wasExpanded !== undefined && (wasExpanded ? 'starting:grid-cols-[1fr]' : 'starting:grid-cols-[0fr]'),
           )}
         >
           <span className="min-w-0 overflow-hidden">
-            <span className="block pr-(--control-pad) pl-px">{title}</span>
+            <span className="block truncate pr-(--control-pad) pl-px">{title}</span>
           </span>
         </span>
       </Button>
