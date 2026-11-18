@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CodeBrowser, type CodeBrowserCommit, type CodeBrowserFile, type CodeBrowserProps } from '@/blocks/CodeBrowser'
+import { CodeBrowser, type CodeBrowserCommit, type CodeBrowserEditing, type CodeBrowserFile, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { Section } from './Section'
 
@@ -168,6 +168,40 @@ const LiveWorktree = () => {
   )
 }
 
+// The tip jar with edits not saved yet: client.js typed in, the README deleted, a file made.
+const DRAFTED: CodeBrowserFile[] = [
+  { path: 'client.js', role: 'What it shows', edit: 'changed', offers: { rename: true, duplicate: true, delete: true, restore: true, caution: 'Tip jar starts from it' } },
+  { path: 'server.ts', role: 'What it keeps and does', offers: { rename: true, duplicate: true, delete: true, restore: false } },
+  { path: 'README.md', role: 'What it is', edit: 'deleted', offers: { rename: false, duplicate: false, delete: 'It’s deleted until you save.', restore: true } },
+  { path: 'lib/protocol.ts', offers: { rename: true, duplicate: true, delete: true, restore: false } },
+  { path: 'lib/theme.css', edit: 'added', offers: { rename: true, duplicate: true, delete: true, restore: true } },
+]
+
+const editingAs = (extra: Partial<CodeBrowserEditing> = {}): CodeBrowserEditing => ({
+  check: (name) => (name === 'server.ts' ? { problem: 'There’s already a server.ts here.' } : name ? { path: name } : { none: true }),
+  onCreate: () => {},
+  onRename: () => {},
+  onDuplicate: async () => undefined,
+  onDelete: () => {},
+  onRestore: () => {},
+  onEdit: () => {},
+  changes: 3,
+  onSave: () => {},
+  onDiscard: () => {},
+  ...extra,
+})
+
+const Drafted = ({ editing, className = 'h-80' }: { editing: CodeBrowserEditing; className?: string }) => (
+  <Fixed
+    files={{ status: 'ready', files: DRAFTED }}
+    shown="client.js"
+    file={{ status: 'text', text: CLIENT.replace('[2, 5, 10]', '[2, 5, 10, 20]') }}
+    editing={editing}
+    note="Kept 12 min ago"
+    className={className}
+  />
+)
+
 const Fixed = (props: Omit<CodeBrowserProps, 'onShow'>) => <CodeBrowser frame="card" {...props} onShow={() => {}} onRetry={() => {}} />
 
 /** A gadget's code, and a worktree's. */
@@ -188,6 +222,17 @@ export const CodePreview = () => (
         <div className="h-[320px] overflow-hidden rounded-3xl bg-kumo-tint">
           <WorktreeView changes={{ status: 'loading' }} onCompare={() => {}} since="since" files={{ status: 'loading' }} onShow={() => {}} file={{ status: 'loading' }} />
         </div>
+      </div>
+    </Section>
+    <Section title="CodeBrowser, editing (typed in and its files made, renamed, copied, deleted and put back from the tree, as a draft each file of which is dotted, until it is saved or discarded by hand), then saving, saved, when someone changed what was edited meanwhile, when it could not be saved, and why it can’t be edited now">
+      <div className="grid w-full max-w-6xl gap-4">
+        <Drafted editing={editingAs()} className="h-[420px]" />
+        <Drafted editing={editingAs({ save: { status: 'saving' } })} />
+        <Drafted editing={editingAs({ changes: 0, save: { status: 'saved' } })} />
+        <Drafted editing={editingAs({ save: { status: 'conflict', message: 'Tip jar was changed while you were editing: client.js.', onSaveAnyway: () => {}, onDiscardMine: () => {} } })} />
+        <Drafted editing={editingAs({ save: { status: 'failed', message: 'The workspace didn’t answer.' } })} />
+        <Drafted editing={editingAs({ blocked: 'You can edit when the agent is done.' })} />
+        <Fixed files={{ status: 'ready', files: FILES }} shown="client.js" file={{ status: 'text', text: CLIENT }} editing={editingAs({ changes: 0, blocked: 'This chat has changes that aren’t kept yet. Keep or discard them in the chat to edit here.' })} note="Kept 12 min ago" className="h-80" />
       </div>
     </Section>
     <Section title="CodeBrowser, while reading, and when it could not be read, or there is no code yet">

@@ -47,15 +47,22 @@ export const codeFiles = (tree: readonly TreeNode[]): CodeFile[] => {
     for (const node of nodes) {
       const path = prefix + node.name
       if (node.kind === 'dir') walk(node.children, `${path}/`)
-      else {
-        const role = ROLES[stem(path) ?? '']
-        files.push(role ? { path, kind: node.kind, role } : { path, kind: node.kind })
-      }
+      else files.push(codeFileAt(path, node.kind))
     }
   }
   walk(tree, '')
-  return files.toSorted((a, b) => rank(a.path) - rank(b.path) || a.path.localeCompare(b.path))
+  return orderCodeFiles(files)
 }
+
+/** A file at `path`, with what it is to the gadget where it is one of the files every gadget has. */
+export const codeFileAt = (path: string, kind: CodeFile['kind'] = 'file'): CodeFile => {
+  const role = ROLES[stem(path) ?? '']
+  return role ? { path, kind, role } : { path, kind }
+}
+
+/** Files in the order the Code tab lists them (see `codeFiles`). */
+export const orderCodeFiles = <File extends { path: string }>(files: readonly File[]): File[] =>
+  files.toSorted((a, b) => rank(a.path) - rank(b.path) || a.path.localeCompare(b.path))
 
 /** The file shown first: the one asked for, if it is there, else the first listed. */
 export const shownFile = (files: readonly CodeFile[], asked: string | undefined) =>

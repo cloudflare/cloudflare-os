@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { ArrowCounterClockwiseIcon, PauseIcon, PlayIcon, SkipForwardIcon } from '@phosphor-icons/react'
+import { ArrowCounterClockwiseIcon, GitCommitIcon, PauseIcon, PlayIcon, SkipForwardIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { Tooltip } from '@/components/Tooltip'
@@ -23,10 +23,12 @@ export type MockControlsProps = {
   player: ScriptPlayer
   onSelectScenario: (id: string) => void
   onRestart: () => void
+  /** Someone else keeps a change to the gadget's code, for a save of edits to find. */
+  onKeepElsewhere?: () => void
 }
 
 /** The floating panel that picks a scripted chat and plays, pauses or steps through its script. */
-export const MockControls = ({ scenarios, scenario, player, onSelectScenario, onRestart }: MockControlsProps) => {
+export const MockControls = ({ scenarios, scenario, player, onSelectScenario, onRestart, onKeepElsewhere }: MockControlsProps) => {
   const { playing, position, total, waitingFor } = useSyncExternalStore(player.subscribe, player.getSnapshot)
   const done = position === total
   const status = done
@@ -44,6 +46,12 @@ export const MockControls = ({ scenarios, scenario, player, onSelectScenario, on
         {scenarios.map(({ id }) => (
           <DropdownMenu.Item key={id} onSelect={() => onSelectScenario(id)}>{id}</DropdownMenu.Item>
         ))}
+        {onKeepElsewhere && (
+          <>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item icon={GitCommitIcon} onSelect={onKeepElsewhere}>Someone else changes the gadget’s client.js</DropdownMenu.Item>
+          </>
+        )}
       </DropdownMenu>
       <Button variant="ghost" icon={ArrowCounterClockwiseIcon} aria-label="Restart scenario" title="Restart scenario" onClick={onRestart} />
       {playing

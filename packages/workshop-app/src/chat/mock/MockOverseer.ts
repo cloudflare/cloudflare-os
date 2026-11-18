@@ -9,6 +9,8 @@ import type {
   ChatAttachmentHandle,
   ChatReadState,
   ChatAttachmentRef,
+  ChatCodeBase,
+  CodeChangeSubmission,
   CollaboratorInfo,
   CommitInfo,
   FileAtCommit,
@@ -22,7 +24,7 @@ import type {
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, UI_CODE, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
-import { AGENT, changes, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
+import { AGENT, changes, merge, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
 
 // Who else has the workspace open, beside the viewer.
 const COLLABORATORS = [
@@ -78,6 +80,7 @@ export class Gadget extends DurableObject {
   }
 }
 `
+type KeptCode = { message: string; author: { name: string; email: string }; timestamp: Date; files: Record<string, string> }
 const GADGET_HISTORY: Array<{ message: string; minutesAgo: number; files: Record<string, string> }> = [
   { message: 'Make the gadget', minutesAgo: 60 * 26, files: {} },
   {
@@ -98,8 +101,13 @@ const GADGET_HISTORY: Array<{ message: string; minutesAgo: number; files: Record
     },
   },
 ]
-const gadgetCommit = (id: number, at: number) => `g${at}${String(id).padStart(38, '0')}`
-const gadgetAt = (commitId: string) => (commitId.startsWith('g') ? GADGET_HISTORY[Number(commitId[1])] : undefined)
+// A gadget's commit by how far along its history it is, and the gadget and place a commit names.
+const gadgetCommit = (id: number, at: number) => `g${String(at).padStart(3, '0')}${String(id).padStart(36, '0')}`
+const commitPlace = (commitId: string) =>
+  (/^g\d{39}$/.test(commitId) ? { id: Number(commitId.slice(4)), at: Number(commitId.slice(1, 4)) } : undefined)
+// What someone else kept meanwhile, for a save to find its draft's files changed under it.
+const OTHERS_CHANGE = { from: 'font-size: 28px', to: 'font-size: 32px' }
+const GRACE = { name: COLLABORATORS[0].name, email: COLLABORATORS[0].id }
 
 // The totals of a read state in which there is nothing unread.
 const NOTHING_UNREAD = (workspaceId: string) => ({
@@ -136,6 +144,11 @@ export class MockOverseer {
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
+  // What each gadget's code was kept as since its made-up history, by its id: saved edits, and
+  // what someone else kept.
+  #kept = new Map<number, KeptCode[]>()
+  // The chat's change to each gadget's code, not kept yet: its files as the change leaves them.
+  #proposed = new Map<number, Record<string, string>>()
   // Deleted, which no longer are, whatever their id.
   #removedGadgets = new Set<number>()
   #workpieceSubscribers = new Set<WorkpiecesSubscriber>()
@@ -229,7 +242,8 @@ export class MockOverseer {
     if (this.#removedGadgets.has(id)) throw new Error(`No gadget ${id}.`)
     let gadget = this.#gadgets.get(id)
     if (!gadget) {
-      this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp())))
+      const ui = () => this.#filesAt(this.#head(id))?.['client.js'] ?? UI_CODE
+      this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp(), ui)))
       for (const subscriber of this.#workpieceSubscribers) subscriber.entry(this.#gadgetSummary(id))
     }
     return gadget
@@ -237,7 +251,100 @@ export class MockOverseer {
 
   #gadgetSummary(id: number) {
     const upstream = this.#templateUpdate ? { upstream: { blueprintId: TEMPLATE.id, commitId: TEMPLATE_TAKEN } } : {}
-    return { id, type: 'gadget', title: this.#gadgets.get(id)?.title ?? 'Q3 platform review', commitId: gadgetCommit(id, GADGET_HISTORY.length - 1), ...upstream } as const
+    return { id, type: 'gadget', title: this.#gadgets.get(id)?.title ?? 'Q3 platform review', commitId: this.#head(id), ...upstream } as const
+  }
+
+  // Each time a gadget's code was kept, oldest first: the history every gadget has, then its own.
+  #history(id: number): KeptCode[] {
+    const author = { name: VIEWER.name, email: VIEWER.id }
+    const listed = GADGET_HISTORY.map(({ message, minutesAgo, files }) => ({ message, author, timestamp: new Date(Date.now() - minutesAgo * 60_000), files }))
+    return [...listed, ...(this.#kept.get(id) ?? [])]
+  }
+
+  #head(id: number) {
+    return gadgetCommit(id, this.#history(id).length - 1)
+  }
+
+  // A gadget's files at one of its commits.
+  #filesAt(commitId: string): Record<string, string> | undefined {
+    const place = commitPlace(commitId)
+    return place && this.#history(place.id)[place.at]?.files
+  }
+
+  // Keeps the gadget's code as `files`, which moves its head, as those listening to the workpieces hear.
+  #keep(id: number, code: Omit<KeptCode, 'timestamp'>) {
+    this.#kept.set(id, [...(this.#kept.get(id) ?? []), { ...code, timestamp: new Date() }])
+    for (const subscriber of this.#workpieceSubscribers) subscriber.entry(this.#gadgetSummary(id))
+  }
+
+  /**
+   * Someone else keeps a change to each gadget opened so far, from another chat: its title made
+   * bigger, in `client.js`, which a save of edits to that file then finds changed under it.
+   */
+  keepElsewhere() {
+    for (const id of this.#gadgets.keys()) {
+      const files = { ...this.#filesAt(this.#head(id)) }
+      if (files['client.js']) files['client.js'] = files['client.js'].replace(OTHERS_CHANGE.from, OTHERS_CHANGE.to)
+      this.#keep(id, { message: 'Accept changes from chat: Make the title bigger', author: GRACE, files })
+    }
+  }
+
+  /**
+   * One change to the chat's code, as edits are saved: whole files set or removed, each gadget
+   * pinned at its head by its first change, as the server checks.
+   */
+  async submitCodeChange(chatId: number, { generation, revision, pins, change }: CodeChangeSubmission) {
+    if (chatId !== CHAT_ID || this.#deleted) throw new Error(`No chat ${chatId}.`)
+    if (this.#metadata.activeAgent) throw new Error('The agent is working. Try again once it’s done.')
+    const base: ChatCodeBase = this.#metadata.codeBase ?? { pins: [], generation: 0, revision: 0 }
+    if (generation !== base.generation || revision !== base.revision) throw new Error('The chat’s changes moved on.')
+    const pinned = [...base.pins]
+    for (const [key, files] of Object.entries(change)) {
+      const id = Number(key)
+      let pin = pinned.find(({ gadgetId }) => gadgetId === id)
+      if (!pin) {
+        const declared = (pins ?? []).find(({ gadgetId }) => gadgetId === id)
+        if (declared?.baseCommit !== this.#head(id)) throw new Error(`Gadget ${id} isn’t pinned at its head.`)
+        pin = { ...declared, mergedCommit: declared.baseCommit }
+        pinned.push(pin)
+      }
+      const after = { ...(this.#proposed.get(id) ?? this.#filesAt(pin.baseCommit)) }
+      for (const [path, edit] of files) {
+        if ('remove' in edit) delete after[path]
+        else if ('set' in edit) after[path] = edit.set
+        else throw new Error('A scripted chat takes whole files only.')
+      }
+      this.#proposed.set(id, after)
+    }
+    this.#setMetadata({ codeBase: { ...base, pins: pinned, revision: revision + 1 }, proposedChangeWorkpieces: [...this.#proposed.keys()] })
+    return { generation, revision: revision + 1 }
+  }
+
+  /**
+   * Keeps what the chat proposes of code: stale where a gadget's head has moved past its pin, as
+   * the server refuses to merge then. The change is recorded in the chat as saved, then kept.
+   */
+  async mergeChanges(chatId: number) {
+    const base = this.#metadata.codeBase
+    if (chatId !== CHAT_ID || !base || this.#proposed.size === 0) return { outcome: 'merged' } as const
+    if (base.pins.some(({ gadgetId, mergedCommit }) => mergedCommit !== this.#head(gadgetId))) return { outcome: 'stale' } as const
+    for (const [id, files] of this.#proposed) this.#keep(id, { message: `Accept changes from chat: ${this.#metadata.title}`, author: { name: VIEWER.name, email: VIEWER.id }, files })
+    this.#proposed.clear()
+    this.#append(changes())
+    this.#append(merge())
+    this.#setMetadata({
+      codeBase: { pins: [], generation: base.generation + 1, revision: 0, epoch: this.#messages.at(-1)?.sequence },
+      proposedChangeWorkpieces: undefined,
+    })
+    return { outcome: 'merged' } as const
+  }
+
+  /** Throws away the chat's change to code not kept yet, as nothing else in a scripted chat is proposed. */
+  async revertChanges(chatId: number) {
+    const base = this.#metadata.codeBase
+    if (chatId !== CHAT_ID || !base) return
+    this.#proposed.clear()
+    this.#setMetadata({ codeBase: { pins: [], generation: base.generation + 1, revision: 0, epoch: base.epoch }, proposedChangeWorkpieces: undefined })
   }
 
   /** Gives the gadget another title, which those listening to the workpieces hear of. */
@@ -310,37 +417,36 @@ export class MockOverseer {
   }
 
   async listTree(commitId: string): Promise<TreeNode[]> {
-    const kept = gadgetAt(commitId)
-    if (kept) return treeOf(Object.keys(kept.files))
+    const kept = this.#filesAt(commitId)
+    if (kept) return treeOf(Object.keys(kept))
     const files = this.#worktreeFiles(commitId)
     if (!files) throw new Error(`No commit ${commitId}`)
     return treeOf(Object.keys(files))
   }
 
   async readFilesAtCommit(commitId: string, paths: string[]): Promise<Array<[string, FileAtCommit]>> {
-    const files = gadgetAt(commitId)?.files ?? this.#worktreeFiles(commitId) ?? {}
+    const files = this.#filesAt(commitId) ?? this.#worktreeFiles(commitId) ?? {}
     return paths.map((path) => [path, path in files ? { kind: 'text', text: files[path] } : { kind: 'absent' }])
   }
 
   async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
-    const [from, to] = [gadgetAt(fromCommit), gadgetAt(toCommit)]
+    const [from, to] = [this.#filesAt(fromCommit), this.#filesAt(toCommit)]
     if (from && to) {
-      const paths = new Set([...Object.keys(from.files), ...Object.keys(to.files)])
-      return [...paths].filter((path) => from.files[path] !== to.files[path])
+      const paths = new Set([...Object.keys(from), ...Object.keys(to)])
+      return [...paths].filter((path) => from[path] !== to[path])
     }
     return this.#worktreeAt(toCommit)?.changed ?? []
   }
 
   async getCommitLog(fromCommit: string): Promise<CommitInfo[]> {
-    if (gadgetAt(fromCommit)) {
-      const id = Number(fromCommit.slice(2))
-      const author = { name: VIEWER.name, email: VIEWER.id }
-      return GADGET_HISTORY.slice(0, Number(fromCommit[1]) + 1).map(({ message, minutesAgo }, at): CommitInfo => ({
-        oid: gadgetCommit(id, at),
-        parents: at === 0 ? [] : [gadgetCommit(id, at - 1)],
+    const place = commitPlace(fromCommit)
+    if (place) {
+      return this.#history(place.id).slice(0, place.at + 1).map(({ message, author, timestamp }, at): CommitInfo => ({
+        oid: gadgetCommit(place.id, at),
+        parents: at === 0 ? [] : [gadgetCommit(place.id, at - 1)],
         message: `${message}\n`,
         author,
-        timestamp: new Date(Date.now() - minutesAgo * 60_000),
+        timestamp,
       })).toReversed()
     }
     const id = Number(fromCommit.slice(1))

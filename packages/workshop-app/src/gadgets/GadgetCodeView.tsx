@@ -1,13 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { CommitInfo } from '@gadgets/workshop-shared/api'
 import { CodeBrowser, type CodeBrowserCommit, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import type { CodeLines } from '@/components/CodeEditor'
 import { formatActivity } from '@/workspaces/formatActivity'
 import type { CodeFile } from './gadgetCode'
+import { useCodeEditing } from './useCodeEditing'
 import { useCodeHistory, useGadgetCode, type CodeComparison } from './useGadgetCode'
 
 export type GadgetCodeViewProps = {
   workspaceId: string
+  /** The gadget, by its id and title, and the chat it is shown beside, where it is: what edits are saved through. */
+  gadget: { id: number; title: string; chatId?: number }
   /** The commit its code was last kept in: its head. Nothing is shown until it is known. */
   commitId: string | undefined
   /** The file asked for, as the page's address says; the first is shown without one. */
@@ -44,26 +47,36 @@ const keptWhen = (date: Date) => {
 /**
  * A gadget's code as it was last kept (`CodeBrowser`), and its history: each time a chat's changes
  * to it were kept, newest first, which opens to what changed then, compared with the time before.
- * The first commit, which a gadget is made with and has nothing in it, is left out.
+ * The first commit, which a gadget is made with and has nothing in it, is left out. The code as it
+ * is now is edited (`useCodeEditing`), as a draft saved through a chat.
  */
 export const GadgetCodeView = ({
-  workspaceId, commitId, file, onShowFile, lines, onLinesChange, linkTo, active = true, arrange, empty, frame, className,
+  workspaceId, gadget, commitId, file, onShowFile, lines, onLinesChange, linkTo, active = true, arrange, empty, frame, className,
 }: GadgetCodeViewProps) => {
   const [comparing, setComparing] = useState<string>()
   const history = useCodeHistory(workspaceId, commitId, active)
   const log = history.status === 'ready' ? history.commits : undefined
   const compared = log?.find(({ oid }) => oid === comparing)
   const comparison: CodeComparison | undefined = compared?.parents[0] ? { from: compared.parents[0], to: compared.oid } : undefined
-  const code = useGadgetCode({ workspaceId, commit: commitId, comparing: comparison, asked: file, active, arrange })
+  const edit = useCodeEditing({ workspaceId, gadget, commitId, comparing: comparison !== undefined })
+  // What the draft adds, deletes and changes is listed over what was given to list.
+  const drafted = edit.arrange
+  const listed = useCallback((files: CodeFile[]) => {
+    const given = arrange ? arrange(files) : files
+    return drafted ? drafted(given) : given
+  }, [arrange, drafted])
+  const code = useGadgetCode({ workspaceId, commit: commitId, comparing: comparison, asked: file, active, arrange: arrange || drafted ? listed : undefined })
   const commits = useMemo(() => log?.filter(({ parents }) => parents.length > 0).map(historyEntry), [log])
   const head = log?.[0]
+  const shown = edit.present(code.files, code.shown, code.file)
 
   return (
     <CodeBrowser
-      files={code.files}
+      files={shown.files}
       shown={code.shown}
       onShow={onShowFile}
-      file={code.file}
+      file={shown.file}
+      editing={edit.editing(shown.files, code.shown, code.file, onShowFile)}
       before={code.before}
       onRetry={code.retry}
       empty={empty ?? 'It has no code yet. Once a chat writes some and it’s kept, it shows here.'}

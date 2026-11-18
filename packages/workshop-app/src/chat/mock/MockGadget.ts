@@ -84,12 +84,12 @@ render(await gadget.getDocument())
 /**
  * A gadget in the fake workspace, whatever its id: a review's to-do list, which exports as a
  * checklist or a table (`MOCK_EXPORT_FORMATS`). `backUp` waits for a workspace that is restarting
- * to be back.
+ * to be back, and `ui` is its screen's code as it was last kept, which edits saved change.
  */
 export class MockGadget {
   #document: { title: string; tasks: Task[] }
 
-  constructor(title: string, private readonly backUp: () => Promise<void>) {
+  constructor(title: string, private readonly backUp: () => Promise<void>, private readonly ui: () => string = () => UI_CODE) {
     this.#document = {
       title,
       tasks: [
@@ -121,7 +121,7 @@ export class MockGadget {
       getUiBundle: async (): Promise<UiBundle | null> => {
         await reachable()
         await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
-        return { jsCode: UI_CODE }
+        return { jsCode: this.ui() }
       },
       getExportFormats: async () => {
         await reachable()
