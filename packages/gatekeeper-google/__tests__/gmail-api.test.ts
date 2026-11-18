@@ -1833,6 +1833,31 @@ describe("Gmail streamed attachment bytes", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("lets go of an answer that comes after the time is out, also when its body has failed by then", async () => {
+    vi.useFakeTimers();
+    const unheard: unknown[] = [];
+    const hear = (reason: unknown) => { unheard.push(reason); };
+    process.on("unhandledRejection", hear);
+    try {
+      // The answer a token reload held back: its body failed when the request was given up.
+      const failed = new ReadableStream<Uint8Array>({start: controller => controller.error(new Error("aborted"))});
+      let give!: (token: string) => void;
+      stubFetch([new Response(failed)]);
+      const slow = new GmailApi("me@example.com", () => new Promise<string>(resolve => { give = resolve; }));
+      const late = expect(slow.openAttachmentContent(detached(3))).rejects.toMatchObject({name: "TimeoutError"});
+      await vi.advanceTimersByTimeAsync(60_000);
+      await late;
+      give("token");
+      await vi.advanceTimersByTimeAsync(1000);
+      vi.useRealTimers();
+      // A rejection nothing handles is reported after the turn it was left unhandled in.
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(unheard).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", hear);
+    }
+  });
+
   it("does not time the body of an answer that has begun", async () => {
     vi.useFakeTimers();
     let release!: () => void;

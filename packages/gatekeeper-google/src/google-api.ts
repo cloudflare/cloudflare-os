@@ -2798,12 +2798,13 @@ export class GmailApi {
       let timer!: ReturnType<typeof setTimeout>;
       // The signal ends a request that was made. The wait for a token to make it with heeds no
       // signal, so the open itself is given up when the time is out, and an answer that comes
-      // after all is let go.
+      // after all is let go: its body may have failed with the signal already, which nothing
+      // is left to hear of.
       const late = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           const reason = new DOMException("Gmail did not answer in time.", "TimeoutError");
           begin.abort(reason);
-          void opening.then(answer => answer.body?.cancel(reason), () => undefined);
+          void opening.then(answer => answer.body?.cancel(reason)).catch(() => undefined);
           reject(reason);
         }, GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
       });
