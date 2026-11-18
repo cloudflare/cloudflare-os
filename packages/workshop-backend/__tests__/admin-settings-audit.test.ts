@@ -568,6 +568,50 @@ describe("AdminSettings admin access bounds", () => {
     expect((await config()).adminAuditRetentionDays).toBe(400);
   });
 
+  it("refuses an issue report retention below ISSUE_REPORT_RETENTION_MIN_DAYS", async () => {
+    const { inDo, appended, config, records } = adminSettings();
+    for (let days of [0, 30, 89, 90.5, 3651]) {
+      await expect(inDo(admin => admin.setIssueReportRetentionDays(days, ACTOR)))
+          .rejects.toThrow("ISSUE_REPORT_RETENTION_MIN_DAYS");
+    }
+    expect(appended).toEqual([]);
+    expect((await config()).issueReportRetentionDays).toBe(90);
+
+    // The change is recorded before it is stored, as every setting's is.
+    await inDo(admin => admin.setIssueReportRetentionDays(120, ACTOR));
+    expect((await config()).issueReportRetentionDays).toBe(120);
+    expect(records().map(record => record.changes)).toEqual(
+        [[{ setting: "issueReportRetentionDays", before: "90", after: "120" }]]);
+
+    // The audit log's floor does not bound it, and its own does.
+    await inDo(admin => admin.setIssueReportRetentionDays(100, ACTOR),
+        { more: { ADMIN_AUDIT_RETENTION_MIN_DAYS: "365" } });
+    expect((await config()).issueReportRetentionDays).toBe(100);
+    const raised = { more: { ISSUE_REPORT_RETENTION_MIN_DAYS: "365" } };
+    await expect(inDo(admin => admin.setIssueReportRetentionDays(200, ACTOR), raised))
+        .rejects.toThrow("from 365");
+    await inDo(admin => admin.setIssueReportRetentionDays(400, ACTOR), raised);
+    expect((await config()).issueReportRetentionDays).toBe(400);
+    // Neither change touched the audit log's retention.
+    expect((await config()).adminAuditRetentionDays).toBe(90);
+  });
+
+  it("reports the issue report retention enforced, chosen and bounded", async () => {
+    const { inDo } = adminSettings();
+    const settings = (more: object) => inDo(admin => admin.getSettings("admin"), { more });
+    expect((await settings({})).issueReportRetentionDays)
+        .toStrictEqual({ effective: 90, chosen: 90, min: 90 });
+    await inDo(admin => admin.setIssueReportRetentionDays(100, ACTOR));
+    expect((await settings({})).issueReportRetentionDays)
+        .toStrictEqual({ effective: 100, chosen: 100, min: 90 });
+    // Raising the floor keeps the admins' choice and enforces the floor; a lower floor lets the
+    // choice stand.
+    expect((await settings({ ISSUE_REPORT_RETENTION_MIN_DAYS: "180" })).issueReportRetentionDays)
+        .toStrictEqual({ effective: 180, chosen: 100, min: 180 });
+    expect((await settings({ ISSUE_REPORT_RETENTION_MIN_DAYS: "7" })).issueReportRetentionDays)
+        .toStrictEqual({ effective: 100, chosen: 100, min: 7 });
+  });
+
   it("reports the level and retention enforced, chosen and bounded", async () => {
     const { inDo, appended } = adminSettings();
     await inDo(admin => admin.setAdminAuditRetentionDays(100, ACTOR));

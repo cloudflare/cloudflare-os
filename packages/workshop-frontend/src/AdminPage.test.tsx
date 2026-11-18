@@ -92,6 +92,7 @@ const settingsView = (overrides: Partial<AdminSettingsView> = {}): AdminSettings
   snapshotSharingEnabled: true,
   adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
   adminAuditRetentionDays: { effective: 90, chosen: 90, min: 90 },
+  issueReportRetentionDays: { effective: 90, chosen: 90, min: 90 },
   siteName: 'Example OS',
   instanceInstructions: '',
   announcement: '',

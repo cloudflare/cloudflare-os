@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
+  DEFAULT_ISSUE_REPORT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
+  MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH,
+  MAX_ISSUE_REPORT_RETENTION_DAYS, getAdminAccessErrorCode,
   type ActionLogEntry, type AdminChatState, type AdminFileContent, type AdminWorkspaceAccess,
   type AiChatHistoryPage, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
   type CommitInfo, type GatekeeperCreationSpec, type WorkpieceSummary,
@@ -14,7 +15,8 @@ import {
   auditOwnerId, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
   chatStateHoldsContent, commitHoldsContent, creationHoldsContent, cutAdminAuditText,
   fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess,
-  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, namedUser, redactAdminAuditArgs,
+  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, namedUser,
+  redactAdminAuditArgs,
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent, withholdChatContent,
   withholdChatStateContent, withholdCommitContent, withholdCreationContent, withholdHookContent,
   workpieceHoldsContent,
@@ -115,6 +117,38 @@ describe("minAdminAuditRetentionDays", () => {
   });
 });
 
+describe("minIssueReportRetentionDays", () => {
+  it("defaults while unset or blank, and reads a positive whole number", () => {
+    expect(minIssueReportRetentionDays(envWith({}))).toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+    expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: " " })))
+        .toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+    expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: "120" })))
+        .toBe(120);
+    expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: 120 })))
+        .toBe(120);
+    expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: "7" }))).toBe(7);
+  });
+
+  it("defaults for anything else, and caps at the longest retention", () => {
+    for (let value of ["0", "-5", "1.5", "abc", 0, -5, 1.5]) {
+      expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: value })),
+          String(value)).toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+    }
+    expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: "5000" })))
+        .toBe(MAX_ISSUE_REPORT_RETENTION_DAYS);
+  });
+
+  it("reads its own variable, not the audit log's", () => {
+    let env = envWith({
+      ADMIN_AUDIT_RETENTION_MIN_DAYS: "7", ISSUE_REPORT_RETENTION_MIN_DAYS: "30",
+    });
+    expect(minAdminAuditRetentionDays(env)).toBe(7);
+    expect(minIssueReportRetentionDays(env)).toBe(30);
+    expect(minIssueReportRetentionDays(envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "7" })))
+        .toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+  });
+});
+
 function writes(value: unknown): boolean {
   return adminWorkspaceWritesEnabled(envWith({ ADMIN_WORKSPACE_WRITES: value }));
 }
@@ -125,6 +159,38 @@ function invalidReports(): () => Record<string, unknown>[] {
   return () => error.mock.calls.map(([entry]) => entry as Record<string, unknown>)
       .filter(entry => entry.event === "admin.access.config.invalid");
 }
+
+describe("a retention floor that is not a number of days", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is reported once per variable and value, by the variable's name and never the value", () => {
+    let reports = invalidReports();
+    let values = ["ninety", "forever", "3 months"];
+    let message = (name: string) =>
+        `${name} is not a positive whole number of days, so the default minimum retention applies`;
+    let messages = () => reports().map(report => report.message);
+
+    for (let value of [...values, ...values]) {
+      expect(minIssueReportRetentionDays(envWith({ ISSUE_REPORT_RETENTION_MIN_DAYS: value })),
+          value).toBe(DEFAULT_ISSUE_REPORT_RETENTION_DAYS);
+    }
+    let issueReports = values.map(() => message("ISSUE_REPORT_RETENTION_MIN_DAYS"));
+    expect(messages()).toEqual(issueReports);
+
+    // The same value on the audit log's floor is a misconfiguration of its own.
+    let auditReports = values.map(() => message("ADMIN_AUDIT_RETENTION_MIN_DAYS"));
+    for (let value of [...values, ...values]) {
+      expect(minAdminAuditRetentionDays(envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: value })),
+          value).toBe(DEFAULT_ADMIN_AUDIT_RETENTION_DAYS);
+    }
+    expect(messages()).toEqual([...issueReports, ...auditReports]);
+
+    let logged = JSON.stringify(reports());
+    for (let value of values) expect(logged, value).not.toContain(value);
+  });
+});
 
 describe("adminWorkspaceWritesEnabled", () => {
   afterEach(() => {
@@ -187,19 +253,30 @@ describe("adminAccessPolicy", () => {
   });
 
   it("holds the admins' choices within the environment's bounds", () => {
-    let metadata = { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: 30 } as const;
-    expect(adminAccessPolicy(metadata, envWith({})))
-        .toEqual({ access: "metadata", retentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS });
+    let metadata = {
+      adminWorkspaceAccess: "metadata", adminAuditRetentionDays: 30, issueReportRetentionDays: 20,
+    } as const;
+    expect(adminAccessPolicy(metadata, envWith({}))).toEqual({
+      access: "metadata", retentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+      issueReportRetentionDays: DEFAULT_ISSUE_REPORT_RETENTION_DAYS,
+    });
     expect(adminAccessPolicy(metadata, envWith({
       ADMIN_WORKSPACE_ACCESS_MAX: "metadata", ADMIN_AUDIT_RETENTION_MIN_DAYS: "7",
-    }))).toEqual({ access: "metadata", retentionDays: 30 });
+      ISSUE_REPORT_RETENTION_MIN_DAYS: "5",
+    }))).toEqual({ access: "metadata", retentionDays: 30, issueReportRetentionDays: 20 });
+    // Each floor holds its own retention up, and neither the other's.
+    expect(adminAccessPolicy(metadata, envWith({
+      ADMIN_AUDIT_RETENTION_MIN_DAYS: "7", ISSUE_REPORT_RETENTION_MIN_DAYS: "45",
+    }))).toEqual({ access: "metadata", retentionDays: 30, issueReportRetentionDays: 45 });
     for (let cap of ["off", "nope", "full"]) {
       expect(adminAccessPolicy(metadata, envWith({ ADMIN_WORKSPACE_ACCESS_MAX: cap })).access, cap)
           .toBe("off");
     }
-    expect(adminAccessPolicy({ adminWorkspaceAccess: "off", adminAuditRetentionDays: 400 },
-        envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "metadata" })))
-        .toEqual({ access: "off", retentionDays: 400 });
+    let off = {
+      adminWorkspaceAccess: "off", adminAuditRetentionDays: 400, issueReportRetentionDays: 500,
+    } as const;
+    expect(adminAccessPolicy(off, envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "metadata" })))
+        .toEqual({ access: "off", retentionDays: 400, issueReportRetentionDays: 500 });
   });
 
   // Content is in force only where the operator's cap and the admins' choice both say so.
@@ -215,7 +292,10 @@ describe("adminAccessPolicy", () => {
     ["full", "content", "off"],
   ])("with the cap %j and %j chosen, enforces %j", (cap, chosen, access) => {
     expect(adminAccessPolicy(
-        { adminWorkspaceAccess: chosen as never, adminAuditRetentionDays: 90 },
+        {
+          adminWorkspaceAccess: chosen as never, adminAuditRetentionDays: 90,
+          issueReportRetentionDays: 90,
+        },
         envWith({ ADMIN_WORKSPACE_ACCESS_MAX: cap })).access).toBe(access);
   });
 });
@@ -336,7 +416,8 @@ describe("view calls", () => {
   });
 
   it("refuses content to a view opened for metadata, then below the content level", () => {
-    let policy = (access: AdminWorkspaceAccess) => ({ access, retentionDays: 90 });
+    let policy = (access: AdminWorkspaceAccess) =>
+        ({ access, retentionDays: 90, issueReportRetentionDays: 90 });
     let { contentNotRequested, contentOff } = ADMIN_ACCESS_ERROR_CODES;
     // What the view was opened for is checked first, whatever the level in force.
     let forMetadata = { ...terms(), access: "metadata" } as const;

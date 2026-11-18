@@ -624,6 +624,8 @@ for (const gk of gatekeepers) {
     // `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` turns the dev admin's inspection off, and
     // `ADMIN_WORKSPACE_WRITES=on pnpm dev-server` lets the dev admin write to workspaces.
     "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS", "ADMIN_WORKSPACE_WRITES",
+    // The fewest days issue reports are kept (see packages/workshop-backend/src/env.d.ts).
+    "ISSUE_REPORT_RETENTION_MIN_DAYS",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).

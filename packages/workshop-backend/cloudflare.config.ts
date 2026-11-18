@@ -42,6 +42,8 @@ export default defineGadgetsWorker({
     BLUEPRINTS: bindings.kv(),
     AVATARS: bindings.kv(),
     BLUEPRINT_CONTENT: bindings.r2({ name: "gadgets-blueprint-content" }),
+    // The images of issue reports (issue-reports.ts), and nothing else.
+    ISSUE_IMAGES: bindings.r2({ name: "gadgets-issue-images" }),
     LOADER: bindings.workerLoader(),
 
     // This version's id, which the frontend compares with the one new requests reach, to notice a
@@ -80,4 +82,6 @@ export const migrations: DurableObjectMigration[] = [
   { tag: "v3", new_sqlite_classes: ["UserDirectoryDurableObject"] },
   // The deployment-wide admin audit log (admin-audit.ts).
   { tag: "v4", new_sqlite_classes: ["AdminAuditDurableObject"] },
+  // The deployment-wide store of issue reports (issue-reports.ts).
+  { tag: "v5", new_sqlite_classes: ["IssueReportsDurableObject"] },
 ];

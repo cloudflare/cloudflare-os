@@ -41,9 +41,9 @@ export function isLiveAccountGrant(answer: AdminAccessGrant | null | undefined,
  * gives it, so that no caller stores a profile. */
 export function newAdminGrant(
     fields: Pick<AdminAccessGrant,
-        "source" | "scope" | "requestedBy" | "requestId" | "reason"> &
+        "source" | "scope" | "requestedBy" | "requestId" | "reason" | "reportId"> &
         { id?: string; grantedBy: Pick<AiChatAuthorInfo, "id" | "name"> }): AdminAccessGrant {
-  let { source, scope, requestedBy, requestId, reason } = fields;
+  let { source, scope, requestedBy, requestId, reason, reportId } = fields;
   let now = Date.now();
   return {
     id: fields.id ?? crypto.randomUUID(),
@@ -54,6 +54,7 @@ export function newAdminGrant(
     ...requestedBy !== undefined && { requestedBy },
     ...requestId !== undefined && { requestId },
     ...reason !== undefined && { reason },
+    ...reportId !== undefined && { reportId },
     grantedAt: new Date(now),
     expiresAt: new Date(now + ADMIN_GRANT_LIFETIME_SECONDS * 1000),
   };

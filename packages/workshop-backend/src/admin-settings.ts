@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminIssueReport, AdminIssueReportPage, AdminIssueReportQuery, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, IssueReportEntry, IssueReportStatus, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -20,7 +20,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, validateAdminAccessReason } from './admin-access.js';
 import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -607,6 +607,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         chosen: config.adminAuditRetentionDays,
         min: minAdminAuditRetentionDays(this.env),
       },
+      issueReportRetentionDays: {
+        effective: policy.issueReportRetentionDays,
+        chosen: config.issueReportRetentionDays,
+        min: minIssueReportRetentionDays(this.env),
+      },
     };
   }
 
@@ -641,6 +646,21 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           `${MAX_ADMIN_AUDIT_RETENTION_DAYS}.`);
     }
     await this.#mutateAdminConfig(actor, config => ({ ...config, adminAuditRetentionDays: days }));
+  }
+
+  /**
+   * Set how many days admins choose to keep issue reports for, recording the change `actor`
+   * makes. Throws unless a whole number from the minimum ISSUE_REPORT_RETENTION_MIN_DAYS sets to
+   * MAX_ISSUE_REPORT_RETENTION_DAYS.
+   */
+  async setIssueReportRetentionDays(days: number, actor: AdminSettingActor): Promise<void> {
+    let min = minIssueReportRetentionDays(this.env);
+    if (!Number.isInteger(days) || days < min || days > MAX_ISSUE_REPORT_RETENTION_DAYS) {
+      throw new Error(`The issue report retention must be a whole number of days from ${min}, ` +
+          `the fewest this deployment's ISSUE_REPORT_RETENTION_MIN_DAYS allows, to ` +
+          `${MAX_ISSUE_REPORT_RETENTION_DAYS}.`);
+    }
+    await this.#mutateAdminConfig(actor, config => ({ ...config, issueReportRetentionDays: days }));
   }
 
   // --- Requests to read a workspace's content without its owner ---
@@ -1904,6 +1924,10 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setAdminAuditRetentionDays(days: number): Promise<void> {
     return this.admin.setAdminAuditRetentionDays(days, this.#actor("setAdminAuditRetentionDays"));
+  }
+
+  setIssueReportRetentionDays(days: number): Promise<void> {
+    return this.admin.setIssueReportRetentionDays(days, this.#actor("setIssueReportRetentionDays"));
   }
 
   /** The one caller of OverseerDurableObject.applyAdminWrite(), which validates the call, checks
