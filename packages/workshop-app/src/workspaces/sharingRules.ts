@@ -165,6 +165,36 @@ export const signInServices = (requirements: readonly ObserverBindingNeed[], ven
   return [...new Set(names)]
 }
 
+/** One of what a workspace reads that someone given it must be able to see with their own account. */
+export type ProtectedResource = {
+  key: number
+  title: string
+  url?: string
+  service: { name: string; logoUrl?: string; color?: string }
+}
+
+/**
+ * What someone given it must be able to see with their own account before they can open it, by
+ * name, in the order its connections were made: those of its connections that need a sign-in, as
+ * `signInServices` has them, each once. Undefined until the services are known.
+ */
+export const protectedResources = (requirements: readonly ObserverBindingNeed[], vendors: readonly GatekeeperVendorInfo[] | undefined): ProtectedResource[] | undefined => {
+  if (!vendors) return undefined
+  const byId = new Map(vendors.map((vendor) => [vendor.id.toLowerCase(), vendor.description]))
+  const seen = new Set<number>()
+  return requirements.flatMap(({ gatekeeperId, vendorId, resourceTitle, resourceUrl }) => {
+    const vendor = byId.get(vendorId.toLowerCase())
+    if (!vendor || vendor.autoProvisionsAccount || seen.has(gatekeeperId)) return []
+    seen.add(gatekeeperId)
+    return [{
+      key: gatekeeperId,
+      title: resourceTitle || vendor.displayName,
+      ...(resourceUrl ? { url: resourceUrl } : {}),
+      service: { name: vendor.displayName, logoUrl: vendor.logo?.url, color: vendor.color },
+    }]
+  })
+}
+
 /** Names as a sentence lists them: "Google", "Google and Slack", "Google, Slack and GitHub". */
 export const listed = (names: readonly string[]) =>
   names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`

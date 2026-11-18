@@ -84,7 +84,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
       return meta
     }),
     listCollaborators: () => later(() => structuredClone(people)),
-    listObserverRequirements: () => later(() => [{ gatekeeperId: 3, vendorId: 'google', resourceTitle: 'Q3 budget' }]),
+    listObserverRequirements: () => later(() => [{ gatekeeperId: 3, vendorId: 'google', resourceTitle: 'Q3 budget' }, { gatekeeperId: 4, vendorId: 'gitlab', resourceTitle: 'All repositories', resourceUrl: 'https://gitlab.com' }]),
     addCollaborator: (username: string, grant: CollaboratorGrant) => later(() => {
       const found = DIRECTORY.find(({ id }) => id === username.trim().toLowerCase())
       if (!found) return null
@@ -116,7 +116,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
   } satisfies SharingOverseer
   const api = {
     openWorkspace: () => overseer,
-    listGatekeeperVendors: () => later(() => [{ id: 'google', description: { displayName: 'Google Drive' }, supportedResources: [] }]),
+    listGatekeeperVendors: () => later(() => [{ id: 'google', description: { displayName: 'Google Drive', color: '#1a73e8' }, supportedResources: [] }, { id: 'gitlab', description: { displayName: 'GitLab', color: '#fc6d26' }, supportedResources: [] }]),
     searchUsers: (query: string, exclude: string[]) => later(() =>
       DIRECTORY.filter(({ id, name }) => !exclude.includes(id) && name.toLowerCase().includes(query.toLowerCase()))),
   }
@@ -230,9 +230,6 @@ const InvitePreview = () => {
         <ShareNote tone="success">Grace Hopper can now work on everything in Engineering Notes.</ShareNote>
         <ShareNote tone="info">Grace Hopper can already edit this workspace.</ShareNote>
         <ShareNote tone="success">Katherine Johnson can now use Launch checklist.</ShareNote>
-        <ShareNote tone="info" detail="If they can’t, give them access in Google Drive first.">
-          Anyone who joins confirms with their own Google Drive account that they can see what this workspace reads.
-        </ShareNote>
         <ShareNote tone="caution" detail="Anyone you invite can read it, and ask its agent about it.">This workspace has read restricted data</ShareNote>
       </Column>
     </Section>

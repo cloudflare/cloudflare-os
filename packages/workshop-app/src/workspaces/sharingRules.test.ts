@@ -23,6 +23,7 @@ import {
   type ShareTarget,
   shareKeyOf,
   shareStanding,
+  protectedResources,
   signInServices,
   withShareKey,
   workspaceOfPath,
@@ -184,5 +185,18 @@ describe('signInServices', () => {
   it('lists them as a sentence does', () => {
     expect(listed(['Google'])).toBe('Google')
     expect(listed(['Google', 'Slack', 'GitHub'])).toBe('Google, Slack and GitHub')
+  })
+})
+
+describe('protectedResources', () => {
+  const vendors = [vendor('google', 'Google'), vendor('scheduler', 'Scheduled Tasks', true)]
+
+  it('lists each connection that needs a sign-in once, by its title, with its service', () => {
+    expect(protectedResources([need(2, 'scheduler'), need(5, 'Google'), need(5, 'google'), { ...need(6, 'google'), resourceUrl: 'https://docs.google.com/d/1' }], vendors))
+      .toEqual([
+        { key: 5, title: 'Connection 5', service: { name: 'Google', logoUrl: undefined, color: undefined } },
+        { key: 6, title: 'Connection 6', url: 'https://docs.google.com/d/1', service: { name: 'Google', logoUrl: undefined, color: undefined } },
+      ])
+    expect(protectedResources([need(5, 'google')], undefined)).toBeUndefined()
   })
 })

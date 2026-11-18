@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BuildingsIcon, UsersThreeIcon, XIcon } from '@phosphor-icons/react'
+import { ArrowSquareOutIcon, BuildingsIcon, CaretLeftIcon, CaretRightIcon, LockSimpleIcon, UsersThreeIcon, XIcon } from '@phosphor-icons/react'
 import type { CollaboratorInfo } from '@gadgets/workshop-shared/api'
 import { resolveSiteName } from '@gadgets/workshop-shared/api'
 import { AccessMenu } from '@/blocks/AccessMenu'
@@ -12,10 +12,12 @@ import { ShareNote } from '@/blocks/ShareNote'
 import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { Dialog } from '@/components/Dialog'
+import { ServiceLogo } from '@/components/ServiceLogo'
+import { webUrl } from '@/components/webUrl'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useServerConfig } from '@/rpc/serverConfig'
-import { accessLabel, canChange, covers, inviteRefusal, listed, shareStanding, signInServices, type ShareTarget } from './sharingRules'
+import { accessLabel, canChange, covers, inviteRefusal, protectedResources, shareStanding, type ProtectedResource, type ShareTarget } from './sharingRules'
 import { useInvite } from './useInvite'
 import { useRemoval } from './useRemoval'
 import { useSharing } from './useSharing'
@@ -52,6 +54,8 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
   // Why the last change to the link did not go through.
   const [problem, setProblem] = useState<string>()
   const [linkPending, setLinkPending] = useState(false)
+  // Looking at what it reads that whoever it is shared with must see for themselves, in its place.
+  const [showingResources, setShowingResources] = useState(false)
 
   const ready = snapshot.status === 'ready' ? snapshot : undefined
   const title = ready?.metadata.title || knownTitle
@@ -88,7 +92,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
   const copied = linkOn ? link.url : page
   const feedbackId = `share-${workspaceId}-feedback`
   const removable = (person: CollaboratorInfo) => standing !== undefined && person.profile.id !== user.id && canChange(person, standing, user.id)
-  const needs = ready?.requirements && signInServices(ready.requirements, ready.vendors)
+  const resources = ready?.requirements && protectedResources(ready.requirements, ready.vendors)
   const linkGives = gadget ? 'Can use' : 'Can join'
   // As people are given it, so that the link reads as one more of them.
   const linkChoices = [
@@ -108,6 +112,11 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
         choices={{ options: linkChoices, value: linkOn ? 'on' : 'off', onChange: (value) => setLink(value === 'on') }}
       />
     )
+  }
+
+  const what = gadget?.title ?? title
+  if (showingResources && resources) {
+    return <ProtectedResources what={what} gadget={gadget !== undefined} resources={resources} onBack={() => setShowingResources(false)} />
   }
 
   return (
@@ -167,12 +176,6 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
                 This workspace has read restricted data
               </ShareNote>
             )}
-            {/* Said only once the services are known, and not at all when none asks. */}
-            {standing.canShare && needs && needs.length > 0 && (
-              <ShareNote tone="info" detail={`If they can’t, give them access in ${listed(needs)} first.`}>
-                Anyone who joins confirms with their own {listed(needs)} {needs.length === 1 ? 'account' : 'accounts'} that they can see what {gadget?.title ?? 'this workspace'} reads.
-              </ShareNote>
-            )}
             {problem && <Banner title="Couldn’t change your link" description={problem} />}
             {/* Someone who can only use it is not told who else can. */}
             {ready.metadata.role !== 'use' && (
@@ -219,10 +222,22 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
       </div>
 
       <footer className="flex items-center gap-2 p-6">
-        {/* Until its key is minted, a link that is on has nothing to copy that would let anyone in. */}
-        <CopyLinkButton link={copied ?? page} title={gadget?.title ?? title} labelled disabled={linkOn && copied === undefined} />
+        {/* Said only once the services are known, and not at all when nothing asks it. */}
+        {standing?.canShare && resources && resources.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowingResources(true)}
+            className="inline-flex h-(--control-size) min-w-0 items-center gap-1.5 rounded-full bg-kumo-info-tint px-(--control-pad) text-(length:--control-text) font-medium text-kumo-info hover:brightness-95 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
+          >
+            <LockSimpleIcon aria-hidden="true" weight="bold" className="size-[1.125em] shrink-0" />
+            <span className="truncate">Protected resources</span>
+            <span className="opacity-70">({resources.length})</span>
+            <CaretRightIcon aria-hidden="true" weight="bold" className="size-[0.875em] shrink-0" />
+          </button>
+        )}
         <span className="flex-1" />
-        <Dialog.Close render={(props) => <Button {...props} variant="primary">Done</Button>} />
+        {/* Until its key is minted, a link that is on has nothing to copy that would let anyone in. */}
+        <CopyLinkButton link={copied ?? page} title={what} labelled primary disabled={linkOn && copied === undefined} />
       </footer>
       {/* Within it, so that it is the one Escape and a click outside put away. */}
       {removal.dialog && <RemovalDialog {...removal.dialog} gadget={gadget?.title} />}
@@ -231,11 +246,53 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
 }
 
 /**
+ * What a workspace reads that someone it is shared with must be able to see with their own
+ * account, in the share dialog's place: each by its name, under its service's logo, linked where it
+ * has an address, which is what to give them access to first.
+ */
+const ProtectedResources = ({ what, gadget, resources, onBack }: { what: string; gadget: boolean; resources: ProtectedResource[]; onBack: () => void }) => (
+  <>
+    <header className="flex items-center gap-2 p-6 pb-2">
+      <Button variant="ghost" icon={<CaretLeftIcon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
+      <Dialog.Title className="min-w-0 flex-1 truncate text-lg font-medium text-kumo-default">Protected resources</Dialog.Title>
+      <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+    </header>
+    <div className="appears flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
+      <Dialog.Description className="text-base text-pretty text-kumo-subtle">
+        {gadget ? 'Anyone you add' : 'Anyone who joins'} must have their own access to these before they can open {what}. If they don’t, give them access there first.
+      </Dialog.Description>
+      <ListGroup label="Protected resources">
+        {resources.map(({ key, title, url, service }) => {
+          const href = webUrl(url)
+          const row = (
+            <>
+              <ServiceLogo name={service.name} src={service.logoUrl} color={service.color} small />
+              <span className="flex min-w-0 flex-1 flex-col leading-snug">
+                <span className="truncate font-medium text-kumo-default">{title}</span>
+                <span className="truncate text-kumo-subtle">{service.name}</span>
+              </span>
+            </>
+          )
+          return href ? (
+            <a key={key} href={href} target="_blank" rel="noreferrer noopener" className="group flex items-center gap-3 rounded-2xl p-3 text-base hover:bg-kumo-contrast/5">
+              {row}
+              <ArrowSquareOutIcon aria-label="Opens in a new tab" className="size-4 shrink-0 text-kumo-subtle opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-100" />
+            </a>
+          ) : (
+            <div key={key} className="flex items-center gap-3 rounded-2xl p-3 text-base">{row}</div>
+          )
+        })}
+      </ListGroup>
+    </div>
+  </>
+)
+
+/**
  * Who a workspace, or one of its gadgets, is shared with, and the way to share it with more, over
  * the page. A workspace's people can edit everything in it; a gadget's can use that gadget alone,
  * under whoever can edit the workspace. Whoever may share it invites people one at a time, by name or email, turns
  * their own link on or off, and takes access away from a person's row, having been told what that
- * does to whom. What its data asks of anyone it is shared with is said before they are invited.
+ * does to whom. What its data asks of anyone it is shared with, the resources they must see for themselves, is a page of its own, from its footer.
  */
 export const ShareWorkspaceDialog = ({ open, onOpenChange, gadget, ...props }: ShareWorkspaceDialogProps) => {
   const target: ShareTarget = gadget ? { kind: 'gadget', gadgetId: gadget.id, title: gadget.title } : { kind: 'workspace' }
