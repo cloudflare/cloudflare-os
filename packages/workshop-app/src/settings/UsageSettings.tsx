@@ -6,13 +6,11 @@ import { Button } from '@/components/Button'
 import { Select } from '@/components/Select'
 import { openConnectWindow } from '@/connections/connectHandoff'
 import { useApi } from '@/rpc/ApiContext'
+import { creditsUrl } from './credits'
 import { useAttempt } from './useAttempt'
 import { useUsage } from './useUsage'
 
 const RESETS = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
-
-// Where an account's AI Gateway credits are added to, as the old app's `creditsUrl.ts` has it.
-const creditsUrl = (accountId: string | undefined) => `https://dash.cloudflare.com/?to=/${accountId || ':account'}/ai/ai-gateway/credits`
 
 // Kept as a number of dollars, or as nothing for no limit.
 const LIMITS = [{ id: '', label: 'No limit' }, ...[10, 25, 50, 100].map((dollars) => ({ id: String(dollars), label: `$${dollars}` }))]
