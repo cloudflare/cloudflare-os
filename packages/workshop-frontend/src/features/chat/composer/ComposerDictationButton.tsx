@@ -5,6 +5,7 @@ import type { DictationStatus } from "./useComposerDictation";
 const announcements: Record<DictationStatus, string> = {
   idle: "",
   starting: "Starting voice typing…",
+  downloading: "Downloading the voice typing language pack…",
   listening: "Listening…",
   stopping: "Finishing voice typing…",
 };
@@ -28,7 +29,7 @@ export const ComposerDictationButton = ({ status, disabled, onToggle }: {
         disabled={disabled}
         aria-disabled={status === "stopping" || undefined}
         aria-label={label}
-        title={label}
+        title={status === "downloading" ? announcements.downloading : label}
         icon={
           <Microphone
             weight={active ? "fill" : "regular"}

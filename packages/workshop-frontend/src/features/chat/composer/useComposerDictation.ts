@@ -8,17 +8,27 @@ type RecognitionResultEvent = Event & {
 type Recognition = EventTarget & {
   continuous: boolean;
   interimResults: boolean;
+  lang: string;
   processLocally: boolean;
   start: () => void;
   stop: () => void;
   abort: () => void;
 };
 
+type LanguagePackOptions = { langs: string[]; processLocally: true };
+type RecognitionConstructor = {
+  new (): Recognition;
+  available?: (options: LanguagePackOptions) => Promise<"available" | "downloadable" | "downloading" | "unavailable">;
+  install?: (options: LanguagePackOptions) => Promise<boolean>;
+};
+
+const dictationLanguage = "en-US";
+
 const getLocalRecognitionConstructor = () => {
   if (typeof window === "undefined") return;
   const browser = window as Window & {
-    SpeechRecognition?: new () => Recognition;
-    webkitSpeechRecognition?: new () => Recognition;
+    SpeechRecognition?: RecognitionConstructor;
+    webkitSpeechRecognition?: RecognitionConstructor;
   };
   // Assigning an unknown property on a legacy recognizer would not prevent cloud processing.
   return [browser.SpeechRecognition, browser.webkitSpeechRecognition].find(
@@ -27,6 +37,7 @@ const getLocalRecognitionConstructor = () => {
 };
 
 const recognitionUnavailable = "Voice typing is unavailable. You can still type your message.";
+const downloadFailed = "Couldn’t download the voice typing language pack. Try again later.";
 
 const recognitionError = (error: string) => {
   switch (error) {
@@ -43,7 +54,7 @@ const recognitionError = (error: string) => {
   }
 };
 
-export type DictationStatus = "idle" | "starting" | "listening" | "stopping";
+export type DictationStatus = "idle" | "starting" | "downloading" | "listening" | "stopping";
 
 export const useComposerDictation = ({
   disabled,
@@ -62,7 +73,11 @@ export const useComposerDictation = ({
 }) => {
   const [status, setStatus] = useState<DictationStatus>("idle");
   const [interimText, setInterimText] = useState("");
-  const active = useRef<{ recognition: Recognition; listeners: AbortController } | null>(null);
+  const active = useRef<{
+    recognition: Recognition;
+    listeners: AbortController;
+    startRequested: boolean;
+  } | null>(null);
   const RecognitionConstructor = getLocalRecognitionConstructor();
 
   const release = () => {
@@ -73,7 +88,8 @@ export const useComposerDictation = ({
   };
 
   const abort = () => {
-    release()?.recognition.abort();
+    const session = release();
+    if (session?.startRequested) session.recognition.abort();
   };
 
   const reset = () => {
@@ -92,12 +108,17 @@ export const useComposerDictation = ({
     return abort;
   }, [disabled, chatKey, draftStorageKey, seedNonce]);
 
-  const toggle = () => {
+  const toggle = async () => {
     if (!RecognitionConstructor || disabled || status === "stopping") return;
-    if (active.current) {
+    const current = active.current;
+    if (current) {
+      if (!current.startRequested) {
+        finish();
+        return;
+      }
       // stop() lets the browser return its last words; abort() would discard them.
       setStatus("stopping");
-      active.current.recognition.stop();
+      current.recognition.stop();
       return;
     }
 
@@ -115,11 +136,13 @@ export const useComposerDictation = ({
     }
     const listeners = new AbortController();
     const { signal } = listeners;
-    active.current = { recognition, listeners };
+    const session = { recognition, listeners, startRequested: false };
+    active.current = session;
+    recognition.lang = dictationLanguage;
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.addEventListener("start", () => {
-      setStatus((current) => current === "starting" ? "listening" : current);
+      setStatus((previous) => previous === "starting" ? "listening" : previous);
     }, { signal });
     recognition.addEventListener("result", (event) => {
       const { resultIndex, results } = event as RecognitionResultEvent;
@@ -146,7 +169,39 @@ export const useComposerDictation = ({
     }, { signal });
 
     setStatus("starting");
+    if (RecognitionConstructor.available) {
+      const options: LanguagePackOptions = { langs: [recognition.lang], processLocally: true };
+      let setupError = recognitionUnavailable;
+      try {
+        const availability = await RecognitionConstructor.available(options);
+        if (signal.aborted) return;
+        if (availability === "unavailable") {
+          finish();
+          onError("Voice typing isn’t available for English (US) in this browser.");
+          return;
+        }
+        if (availability !== "available") {
+          setupError = downloadFailed;
+          setStatus("downloading");
+          const installed = await RecognitionConstructor.install?.(options);
+          if (signal.aborted) return;
+          if (!installed) {
+            finish();
+            onError(downloadFailed);
+            return;
+          }
+        }
+      } catch {
+        if (signal.aborted) return;
+        finish();
+        onError(setupError);
+        return;
+      }
+    }
+
+    setStatus("starting");
     try {
+      session.startRequested = true;
       recognition.start();
     } catch {
       finish();

@@ -76,6 +76,7 @@ class TestSpeechRecognition extends EventTarget {
   get processLocally() { return this.#processLocally; }
   set processLocally(value: boolean) { this.#processLocally = value; }
   interimResults = false;
+  lang = "";
   startedLocally = false;
   start = vi.fn<() => void>(() => {
     TestSpeechRecognition.current = this;
@@ -266,6 +267,41 @@ describe("ChatComposer", () => {
     }));
     expect(speech.start).toHaveBeenCalledOnce();
     expect(legacyStart).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("downloads on mic click without starting in a different chat (switched: %s)", async (switched) => {
+    const download = Promise.withResolvers<boolean>();
+    const started = vi.fn<() => void>();
+    class DownloadableRecognition extends TestSpeechRecognition {
+      static available = vi.fn<(options: { langs: string[]; processLocally: boolean }) => Promise<string>>()
+        .mockResolvedValue("downloadable");
+      static install = vi.fn<(options: { langs: string[]; processLocally: boolean }) => Promise<boolean>>()
+        .mockReturnValue(download.promise);
+
+      constructor() {
+        super();
+        this.addEventListener("start", () => started());
+      }
+    }
+    vi.stubGlobal("SpeechRecognition", DownloadableRecognition);
+    const textarea = await renderDictationComposer({ chatKey: 1 });
+    expect(DownloadableRecognition.install).not.toHaveBeenCalled();
+    await act(async () => voiceButton("Start")!.click());
+    const options = { langs: ["en-US"], processLocally: true };
+    expect(DownloadableRecognition.available).toHaveBeenCalledWith(options);
+    expect(DownloadableRecognition.install).toHaveBeenCalledWith(options);
+    expect(container!.textContent).toContain("Downloading the voice typing language pack");
+    expect(started).not.toHaveBeenCalled();
+
+    if (switched) await renderDictationComposer({ chatKey: 2 });
+    await act(async () => download.resolve(true));
+    expect(started).toHaveBeenCalledTimes(switched ? 0 : 1);
+    expect(voiceButton(switched ? "Start" : "Stop")).not.toBeNull();
+    if (!switched) {
+      const speech = TestSpeechRecognition.current;
+      await act(async () => speech.report(0, { text: "Build a dashboard", final: true }));
+    }
+    expect(textarea.value).toBe(switched ? "" : "Build a dashboard");
   });
 
   it("sends on Enter without clearing document changes made while sending", async () => {
