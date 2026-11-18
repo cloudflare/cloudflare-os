@@ -687,6 +687,32 @@ describe("Drive PDF reads", () => {
     expect(download.cancelled).toBe(true);
   });
 
+  it("refuses text converted from a download that was let go while more of it was waited for", async () => {
+    const download = { cancelled: false };
+    providerDownload = () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(PDF_BYTES); },
+      cancel() { download.cancelled = true; },
+    }));
+    // A conversion that answers on the file's first bytes, and lets the rest go while a read of
+    // it is waiting: that read then ends as one of a download that had ended does.
+    const convert: PdfConverter = async pdf => {
+      const reader = pdf.getReader();
+      await reader.read();
+      const waiting = reader.read();
+      await new Promise(resolve => setTimeout(resolve, 10));
+      await reader.cancel();
+      expect(await waiting).toEqual({ done: true, value: undefined });
+      return { text: new ReadableStream(), hasText: true, transcribed: false, rereads: false };
+    };
+    const { queue, session } = newSession(convert);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readPdf("pdf-1")))
+      .rejects.toThrow("Google Drive's file could not be converted from PDF.");
+    expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+    expect(download.cancelled).toBe(true);
+  });
+
   it("gives the converter the means to read the file again without being asked to, and takes no option", async () => {
     providerDownload = rangedDownload;
     const converter = scanConverter();

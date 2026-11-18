@@ -531,6 +531,37 @@ export async function pdfToText(
 }
 
 /**
+ * What `download` gives, as the PDF a conversion is sent, and whether it gave it to the end.
+ * What is checked once a conversion has answered must cover all that its text was converted
+ * from, so a text converted from less is to be refused. Being cancelled is not the end, though
+ * it ends a read in progress the way the end does. `read` asks `download` for its next piece.
+ */
+export function pdfUpload(
+  download: ReadableStreamDefaultReader<Uint8Array>,
+  read: () => Promise<ReadableStreamReadResult<Uint8Array>> = () => download.read(),
+): { pdf: ReadableStream<Uint8Array>; whole: () => boolean } {
+  let whole = false;
+  let cancelled = false;
+  let pdf = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let chunk = await read();
+      if (cancelled) return;
+      if (chunk.done) {
+        whole = true;
+        controller.close();
+      } else {
+        controller.enqueue(chunk.value);
+      }
+    },
+    cancel: reason => {
+      cancelled = true;
+      return download.cancel(reason);
+    },
+  }, { highWaterMark: 0 });
+  return { pdf, whole: () => whole };
+}
+
+/**
  * `pdf`, with each chunk shown to `onChunk` as it is read and `onEnd` called at its end, which
  * being cancelled is not. With `tally`, a request that reading `pdf` makes is summed into it,
  * whoever reads what is returned.

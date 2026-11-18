@@ -73,8 +73,8 @@ import {
   type DriveWriteTargetPayload, type QueuedWrite,
 } from "./drive-writes";
 import {
-  CONVERSION_FAILED, pdfConverter, releasedAtEnd, TranscriptionRefusal, type PdfConverter,
-  type PdfRangeReader, type PdfRead,
+  CONVERSION_FAILED, pdfConverter, pdfUpload, releasedAtEnd, TranscriptionRefusal,
+  type PdfConverter, type PdfRangeReader, type PdfRead,
 } from "./drive-pdf";
 import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
@@ -2813,24 +2813,13 @@ export class GoogleDriveSessionImpl extends RpcTarget
       })).getReader();
       // The checks after this fetch must cover everything the text is converted from, so a
       // conversion that answers before the download has ended is refused.
-      let downloaded = false;
-      let result = await convert(new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          let chunk = await download.read();
-          if (chunk.done) {
-            downloaded = true;
-            controller.close();
-          } else {
-            controller.enqueue(chunk.value);
-          }
-        },
-        cancel: reason => download.cancel(reason),
-      }, { highWaterMark: 0 }), readRange).catch((error: unknown) => {
+      let upload = pdfUpload(download);
+      let result = await convert(upload.pdf, readRange).catch((error: unknown) => {
         if (error instanceof TranscriptionRefusal) return { refusal: error };
         throw error;
       });
       if (!("refusal" in result)) converted = result;
-      if (!downloaded) {
+      if (!upload.whole()) {
         await download.cancel().catch(() => undefined);
         throw new Error(CONVERSION_FAILED);
       }

@@ -8,7 +8,7 @@ import {
 } from "@gadgets/pdf-renderer/api";
 import { GOOGLE_API_SOURCE, recordCall } from "../src/call-metrics";
 import {
-  pdfConverter, pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
+  pdfConverter, pdfToText, pdfUpload, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
   type PdfRangeReader,
 } from "../src/drive-pdf";
 import { REFUSED_PAUSE } from "../src/pdf-bands";
@@ -288,6 +288,61 @@ describe("pdfToText's streaming", () => {
     expect(result.hasText).toBe(true);
     await expect(read(result)).rejects.toThrow(CONVERSION_FAILED);
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: "google.drive.pdf.failed" }));
+  });
+});
+
+describe("pdfUpload", () => {
+  /** A download of `pieces` that then ends, or with `stalls` gives nothing more, and whether it was cancelled. */
+  function download(pieces: string[], stalls = false) {
+    let state = { cancelled: false };
+    let source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        let piece = pieces.shift();
+        if (piece !== undefined) return controller.enqueue(new TextEncoder().encode(piece));
+        if (stalls) return new Promise<void>(() => {});
+        controller.close();
+      },
+      cancel() { state.cancelled = true; },
+    }, { highWaterMark: 0 });
+    return { state, reader: source.getReader() };
+  }
+
+  it("says the download was sent whole only once it has been read to its end", async () => {
+    let { reader } = download(["%PDF", "-1.7"]);
+    let upload = pdfUpload(reader);
+    let sent = upload.pdf.getReader();
+    expect(new TextDecoder().decode((await sent.read()).value)).toBe("%PDF");
+    expect(new TextDecoder().decode((await sent.read()).value)).toBe("-1.7");
+    expect(upload.whole()).toBe(false);
+    expect(await sent.read()).toEqual({ done: true, value: undefined });
+    expect(upload.whole()).toBe(true);
+  });
+
+  it("does not take being cancelled for the download's end, with a read of it waiting or not", async () => {
+    for (let waiting of [false, true]) {
+      let { state, reader } = download(["%PDF"], true);
+      let upload = pdfUpload(reader);
+      let sent = upload.pdf.getReader();
+      await sent.read();
+      // A read that waits when the upload is cancelled ends as one of a download that ended does.
+      let read = waiting ? sent.read() : undefined;
+      await settled();
+      await sent.cancel();
+      if (read) expect(await read).toEqual({ done: true, value: undefined });
+      await settled();
+      expect([upload.whole(), state.cancelled]).toEqual([false, true]);
+    }
+  });
+
+  it("asks for each piece the way it is told to", async () => {
+    let { reader } = download(["%PDF"]);
+    let asked = 0;
+    let upload = pdfUpload(reader, () => {
+      asked++;
+      return reader.read();
+    });
+    await new Response(upload.pdf).arrayBuffer();
+    expect([asked, upload.whole()]).toEqual([2, true]);
   });
 });
 
