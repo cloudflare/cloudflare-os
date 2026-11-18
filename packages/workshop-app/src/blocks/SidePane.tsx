@@ -14,6 +14,7 @@ import { clampSize, resistSize } from '@/components/resizing'
 import { CopyLinkButton } from './CopyLinkButton'
 import { ExportSubmenu, type ExportSubmenuProps } from './ExportSubmenu'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
+import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
 import { SidePaneTitle } from './SidePaneTitle'
 import { WorkspaceCrumb, type WorkspaceCrumbProps } from './WorkspaceCrumb'
 
@@ -85,6 +86,8 @@ export type SidePaneProps = Placement & {
    * step up, and the step down is a back button at the start of the header.
    */
   narrow?: boolean
+  /** The agents the one shown, a gadget, starts, after its title (`AgentsBubble`). */
+  agents?: AgentsBubbleProps
   /** What is shown of the one shown. */
   children: ReactNode
 }
@@ -118,7 +121,7 @@ const copyLink = (link: string) => void navigator.clipboard.writeText(link).catc
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, onPublish, onRename, onDelete, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, onPublish, onRename, onDelete, agents, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
   // The one whose name is being typed where it is, so that another shown meanwhile is not.
@@ -203,6 +206,9 @@ export const SidePane = (props: SidePaneProps) => {
             </HeaderBubble>
           )}
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
+            {/* Something the one shown has, among what can be done with it rather than in the
+                path to it, where it would read as a step further in. */}
+            {active && agents && !viewingCode && <AgentsBubble {...agents} compact />}
             {people.length > 0 && (
               <HeaderBubble className="me-1.5">
                 <AvatarStack people={people} aria-label="Also here" />

@@ -40,6 +40,7 @@ import { useDeleteChat } from './useDeleteChat'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
 import { firstMessageOf } from './firstMessage'
+import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 
 export type ChatPaneProps = {
@@ -49,8 +50,10 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
-  /** Goes to the page of the agent whose run the chat is, by its key, where it is one. */
+  /** Goes to the page of the agent whose run the chat is, or that its gadgets start, by its key. */
   onOpenAgent?: (agentKey: string) => void
+  /** Goes to the workspace's Agents, for the several the chat's gadgets start. */
+  onOpenAgents?: () => void
   /** Opens the chat's settings, from its title, or at what it set up to run by itself, from the header's clock. */
   onOpenSettings?: (tab?: 'automations') => void
   /**
@@ -84,7 +87,7 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
 
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
   const keepBindings = useBindingTitles(workspaceId, chatId, chat.status === 'ready' ? chat.keep?.changes.bindings ?? NO_BINDINGS : NO_BINDINGS)
@@ -108,6 +111,16 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
   const automations = useMemo(() => hooksShownIn([...(items ?? []), ...(pinned ?? [])]).length, [items, pinned])
+  // The agents the chat's gadgets start, for the header, read again as each turn ends.
+  const gadgetIds = useMemo(() => (items ?? []).flatMap((item) => (item.kind === 'output' && item.type === 'gadget' ? [item.workpieceId] : [])), [items])
+  const turns = useRef(0)
+  const idle = chat.status === 'ready' && chat.activity === undefined
+  const lastIdle = useRef(idle)
+  if (idle !== lastIdle.current) {
+    lastIdle.current = idle
+    if (idle) turns.current += 1
+  }
+  const gadgetAgents = useGadgetAgents(workspaceId, chatId, gadgetIds, turns.current)
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
@@ -285,6 +298,12 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const agentKey = ready ? chat.agent?.key : undefined
   const agentName = ready ? chat.agent?.name : undefined
   const openAgent = useHandler(() => agentKey !== undefined && onOpenAgent?.(agentKey))
+  // A run's own agent is its crumb already.
+  const startsAgents = gadgetAgents.filter(({ key }) => key !== agentKey)
+  const agentNames = startsAgents.map(({ name }) => name).join('\n')
+  const firstAgentKey = startsAgents[0]?.key
+  const several = startsAgents.length > 1
+  const openStarted = useHandler(() => (several ? onOpenAgents?.() : firstAgentKey !== undefined && onOpenAgent?.(firstAgentKey)))
   const hasAgentPage = onOpenAgent !== undefined
   const changeNotifications = useHandler((enabled: boolean) => {
     setNotice(undefined)
@@ -307,6 +326,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       title={title}
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
       automations={automations > 0 && hasSettings ? { count: automations, onOpen: () => openSettings('automations') } : undefined}
+      agents={agentNames ? { names: agentNames.split('\n'), onOpen: openStarted } : undefined}
       more={builds && ready ? {
         read: { unread, onChange: changeRead },
         notifications: {
@@ -316,7 +336,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         onDelete: () => setDeleting(true),
       } : undefined}
     />
-  ), [workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, unread, changeRead, notificationsRow, requireParticipation, changeNotifications])
+  ), [agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, unread, changeRead, notificationsRow, requireParticipation, changeNotifications])
 
   const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
   const hasPasteLinks = pasteLinks !== undefined

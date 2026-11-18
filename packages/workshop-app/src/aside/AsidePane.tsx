@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useNavigate } from '@tanstack/react-router'
+import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { FileDashedIcon, LockSimpleIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
@@ -268,8 +270,18 @@ export const AsidePane = (props: AsidePaneProps) => {
       onNewChat: () => chatsWith.onNewChat(title),
     },
   }
+  // The agents it starts, beside its title, as it has kept them.
+  const gadgetAgents = useGadgetAgents(gadget?.workspaceId, undefined, gadget ? [gadget.workpieceId] : NO_GADGETS)
+  const navigate = useNavigate()
+  const agents = gadget && gadgetAgents.length > 0 ? {
+    names: gadgetAgents.map(({ name }) => name),
+    onOpen: () => void (gadgetAgents.length === 1
+      ? navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: gadget.workspaceId, agentKey: gadgetAgents[0]!.key } })
+      : navigate({ to: '/workspace/$workspaceId', params: { workspaceId: gadget.workspaceId }, search: { tab: 'agents' } })),
+  } : undefined
   const shared = {
     active: paneItem(item, title),
+    agents,
     people: snapshot.people,
     link,
     onReload: connection?.reload,
@@ -348,6 +360,8 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
     )}
   </SidePane>
 )
+
+const NO_GADGETS: number[] = []
 
 const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
   title: string
