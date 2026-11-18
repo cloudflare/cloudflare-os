@@ -828,16 +828,16 @@ export class UserAccount extends DurableObject<Env> {
 
   /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
   async commitReconnect(stageId: string): Promise<void> {
-    let kv = this.ctx.storage.kv;
-    let credentialsId = crypto.randomUUID();
     await this.#credentials.run(async () => {
       let staged = commitStagedCredentials<StagedGoogleCredentials>(
           this.ctx.storage.kv, Date.now(), stageId);
       if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+      let kv = this.ctx.storage.kv;
       // Whether this object is recorded, registry included, as holding its grant under the
       // credentials replaced here.
       let recorded = kv.get<string>(GRANT_CREDENTIALS_KEY) !== undefined &&
           kv.get<string>(GRANT_CREDENTIALS_KEY) === kv.get<string>("credentialsId");
+      let credentialsId = crypto.randomUUID();
       kv.put<string>("refreshToken", staged.refreshToken);
       kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
       kv.put<string>("credentialsId", credentialsId);
@@ -867,13 +867,6 @@ export class UserAccount extends DurableObject<Env> {
     });
     // Records the grant held now, unless the record still stands.
     await this.#holdGrant();
-    // Google refused the new credentials for good meanwhile, and the Workshop has been told: a
-    // reconnect that returned would have it record them as working, and it is told only once.
-    if (kv.get<string>("credentialsId") === credentialsId &&
-        kv.get<string>(REFRESH_REFUSED_KEY) !== undefined) {
-      throw this.#mintFailure?.error ?? new Error(
-          "Google refused the new credentials. Please re-authenticate.");
-    }
   }
 
   // How many recordings of this object as a grant holder are under way (see #holdGrant).

@@ -368,22 +368,6 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-adas"]);
   });
 
-  it("fails a reconnect whose new credentials Google refuses before it returns", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const google = fakeGoogle();
-    const {ada, grace} = googleAccounts();
-    const moved = await connection(google, "moved", ada);
-    // The reconnect waits on Google to say which account it signed in as, and the new credentials
-    // are refused meanwhile: the Workshop, told so, must not then hear that the reconnect worked.
-    google.profileHeld = true;
-    const reconnecting = reconnect(google, moved, "moved-again", grace, false);
-    await vi.waitFor(() => expect(google.profilesWaiting).toBe(1), {timeout: 5000});
-    google.refused.set("refresh-moved-again", null);
-    await expect(moved.refresh()).rejects.toThrow(/expired or been revoked/);
-    google.profileHeld = false;
-    await expect(reconnecting).rejects.toThrow(/expired or been revoked/);
-  });
-
   it("records a reconnect as another Google account at its next refresh when it could not at once", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
