@@ -433,6 +433,20 @@ const errors: Scenario = {
   ],
 }
 
+const outOfCredits: Scenario = {
+  id: 'out-of-credits',
+  title: 'Quarterly numbers',
+  description:
+    'Send a message: today’s free requests have run out, and the way on opens by itself. Connect ' +
+    'Cloudflare (its window stays empty: close it and come back), then choose an account, which has too ' +
+    'little on it, so what is left is to add credits. Put it away, and Continue opens it again.',
+  history: history([
+    user('What were our top three costs last quarter?'),
+    agent({ text: 'Compute at $41,200, storage at $18,900 and egress at $7,300. Compute grew 9% on the quarter before.' }),
+  ]),
+  script: when('onSend', turn({ message: error('You’ve used all of today’s free requests.', { code: 'usage_limit' }), delay: 600 })),
+}
+
 const sendRefused: Scenario = {
   id: 'send-refused',
   title: 'Incident summary',
@@ -640,6 +654,7 @@ export const SCENARIOS: Scenario[] = [
   output,
   worktree,
   errors,
+  outOfCredits,
   sendRefused,
   workspaceRestart,
   connectionLost,

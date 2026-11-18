@@ -48,6 +48,7 @@ import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SharingPreview } from '@/gallery/SharingPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
+import { OutOfCreditsPreview } from '@/gallery/OutOfCreditsPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
 export const Route = createFileRoute('/gallery')({
@@ -409,6 +410,7 @@ function Gallery() {
       <CardBlocksPreview />
       <CodePreview />
       <SystemBlocksPreview />
+      <OutOfCreditsPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">

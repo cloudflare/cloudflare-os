@@ -170,6 +170,13 @@ export type ArtefactItem = OutputItem | HookItem | ActionItem | ConnectionItem
 export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem
 
 /**
+ * The row that says the credits ran out, by its key, where the chat ends with one and the agent is
+ * not at work again: the one that offers Continue, which is what opens the way on.
+ */
+export const outOfCreditsAt = (items: readonly ChatItem[]): string | undefined =>
+  items.findLast((item): item is ErrorItem => item.kind === 'error' && item.recovery === 'continue' && item.usageLimit)?.key
+
+/**
  * Whether a row carries on from the one before it: a message from the same sender with nothing of
  * its own (a name) above its bubbles. Such messages are drawn as one run. Only the viewer's own
  * messages go unnamed, so only theirs run together.

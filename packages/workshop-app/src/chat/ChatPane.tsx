@@ -14,12 +14,13 @@ import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { OutOfCredits } from '@/settings/OutOfCredits'
 import { messageOf } from '@/settings/useAttempt'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
@@ -88,6 +89,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const restricted = workspace?.containsRestrictedData === true
+  // The way on once the credits ran out: opened by Continue, and by itself once for each time
+  // they ran out, by the row that says so, as the old app did. Put away, it stays away for that row.
+  const ranOut = items && outOfCreditsAt(items)
+  const [creditsShown, setCreditsShown] = useState<{ open: boolean; seen?: string }>({ open: false })
+  const outOfCredits = creditsShown.open || (ranOut !== undefined && ranOut !== creditsShown.seen)
   // Add a connection is open; and the connections made for the draft, by their line's key.
   const [adding, setAdding] = useState(false)
   const added = useRef(new Map<string, AddedConnection>())
@@ -134,8 +140,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
       onDenyConnection: actions.denyConnection,
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
-      // TODO: the add-credits flow.
-      onContinue: unavailable('Adding credits'),
+      onContinue: () => setCreditsShown((shown) => ({ ...shown, open: true })),
     }
   }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation])
 
@@ -292,6 +297,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
+      {/* Only while it is open, as what it says is read afresh for it. */}
+      {outOfCredits && <OutOfCredits onClose={() => setCreditsShown({ open: false, seen: ranOut })} />}
       {/* Only while it is open, as what it lists is read afresh for it. */}
       {adding && (
         <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />

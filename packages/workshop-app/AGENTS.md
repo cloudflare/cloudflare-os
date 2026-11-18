@@ -175,6 +175,16 @@ A draft is only let go of once its message has gone: `Composer`'s `onSend` resol
 did, and until then the draft, its files and what it replies to stay, dimmed and unsendable. One
 that did not go stays as it was, under why.
 
+A turn the free requests ran out for (an error with the code `usage_limit`) ends on a row that
+offers Continue rather than Retry, and the way on opens by itself, once for each time they ran
+out, as the old app's did (`OutOfCredits`, drawn by `OutOfCreditsDialog`, which Continue opens
+again): connect a Cloudflare account to bill, then choose which of its accounts where it has
+several, then add credits to it, in the old app's words, with when the free requests are back
+counting down (`settings/credits.ts`, plain and tested). It is mounted only while open, and reads
+the usage as it opens and each time the window is come back to (`useUsage`), as each step is
+taken in another window. It does not run the turn again: the next message does. The
+`out-of-credits` scenario plays every step, its connection made at once.
+
 What can be done with a message (reply, copy, details) shows beside it while it is pointed at, or
 reached by keyboard. A touch screen has nothing to point with, so there a tap on the message shows
 it, until the message or anything else is tapped again; a tap that is for something in the

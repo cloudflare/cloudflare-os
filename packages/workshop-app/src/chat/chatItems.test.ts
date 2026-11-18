@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMessage } from '@gadgets/workshop-shared/api'
-import { continuesRun, toChatFeed, type ChatFeed, type ChatItem } from './chatItems'
+import { continuesRun, outOfCreditsAt, toChatFeed, type ChatFeed, type ChatItem } from './chatItems'
 import recordedDevChat from './fixtures/dev-chat.json'
 import { readFixture } from './fixtures/readFixture'
 import { MockOverseer } from './mock/MockOverseer'
@@ -464,6 +464,15 @@ describe('toChatFeed', () => {
 
     it('offers Continue, not Retry, when the credits ran out', () => {
       expect(only(feed(error('Out of credits', { code: 'usage_limit' })), 'error')).toMatchObject([{ usageLimit: true, recovery: 'continue' }])
+    })
+
+    it('says the credits ran out only while the chat ends there and the agent is not at work', () => {
+      const ranOut = [user('go'), error('Out of credits', { code: 'usage_limit' })]
+      expect(outOfCreditsAt(feed(...ranOut).items)).toBe(only(feed(...ranOut), 'error')[0].key)
+      expect(outOfCreditsAt(toChatFeed(history(ranOut), { agentActive: true }).items)).toBeUndefined()
+      expect(outOfCreditsAt(feed(...ranOut, user('again')).items)).toBeUndefined()
+      // Any other error is retried instead.
+      expect(outOfCreditsAt(feed(user('go'), error('Overloaded')).items)).toBeUndefined()
     })
 
     it('leaves another model taking over to the messages’ details', () => {

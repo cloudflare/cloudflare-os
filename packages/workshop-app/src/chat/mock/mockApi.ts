@@ -1,6 +1,7 @@
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { ApiSession } from '@/rpc/ApiContext'
 import { exampleSkillsBackend } from '@/skills/MemorySkillsBackend'
+import { MockBilling } from './MockBilling'
 import { MockOverseer } from './MockOverseer'
 import { AGENT, VIEWER, type Scenario } from './scenario'
 
@@ -14,6 +15,7 @@ export const MOCK_WORKSPACE_ID = 'mock'
  */
 export const createMockApi = (scenario: Scenario): { session: ApiSession; overseer: MockOverseer } => {
   const overseer = new MockOverseer(scenario)
+  const billing = new MockBilling()
   const workspace: WorkspaceMetadataWithTimestamps = {
     id: MOCK_WORKSPACE_ID,
     title: scenario.title,
@@ -34,6 +36,15 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     ...exampleSkillsBackend().asApi(),
     // No services and no accounts: a pasted link stays as it was written.
     listGatekeeperVendors: async () => [],
+    // The free requests used up, for a chat that runs out of them; Cloudflare is the one service
+    // that can be connected, which it is at once.
+    getCloudflareUsage: async () => billing.usage(),
+    listCloudflareAccounts: async () => billing.accounts(),
+    selectCloudflareAccount: async (accountId: string) => billing.select(accountId),
+    connectAccount: async (vendorId: string) => {
+      if (vendorId !== 'cloudflare') throw new Error(`not mocked: connecting ${vendorId}`)
+      return billing.connect()
+    },
     subscribeConnectedAccounts: (subscriber: { ready: () => void }) => {
       subscriber.ready()
       return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
