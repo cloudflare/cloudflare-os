@@ -103,6 +103,17 @@ through logs and errors, then everything else.
   env-driven, like auth config, and the cap and the writes switch fail closed. Flag code that
   enforces `adminWorkspaceAccess`, or enforces or prunes with `adminAuditRetentionDays`, without
   `adminAccessPolicy()`.
+- The admin gatekeeper holds no power of its own: a workspace lends it its owner's Admin API, a
+  session at a time. Flag an `AdminApiImpl` made with `via: "gatekeeper"`, or that value set on a
+  record, anywhere but `OverseerImpl.lendAdminApi()`; anything of the Admin API handed to that
+  gatekeeper that is not behind `restrictAdminApi()`'s switch and a closed table of names; a path
+  that admits a non-owner, sends one a workspace's state or answers one from its sharing records
+  without asking `admitsNonOwner()`; and `adminReads` written anywhere but where the
+  restricted-data latch is set. The gatekeeper's own rules are in
+  `packages/gatekeeper-instanceadmin/README.md` (Reviewing a change here).
+- `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
+  config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
+  prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
 - Text a user or workspace member controls (display names, titles) enters the directory or the
