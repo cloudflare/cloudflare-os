@@ -52,7 +52,7 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | An output's card has no gadget colour | the prototype's gadget colours | none |
 | Setting up a connection offers every kind of resource, not only connectable ones | the scaffold's `SupportedResource` has no `connectable` | `connectable` on `SupportedResource` |
 | A gadget is shared to use, never only to view: no "Can view" and no "what people see" snapshot | main's grants are to edit the workspace or use a gadget | `viewOnly` grants, `sharedViewsAvailable`, `GadgetClient.openView`, `viewTakenAt` |
-| Someone with access can only be removed, not moved from Can edit to using a gadget (being let edit is an invite) | there is no call to narrow access | a set-access call on the Overseer |
+| Someone with access can only be removed, not moved from Member to using a gadget (becoming a member is an invite) | there is no call to narrow access | a set-access call on the Overseer |
 | Someone who can only use a workspace doesn't see who else has access | `listCollaborators()` refuses them | `listCollaborators` for users |
 | Skills aren't shared from here, and no Share in the chat header or on Library cards | skill sharing needs the Context Library's own sharing; the scaffold's header and cards have no menu slot | none |
 | Only the viewer's own link is turned on and off; links others made, extra ones and their notes aren't shown | each sharer has one default link for what they share, which is all the dialog offers | none |

@@ -10,7 +10,7 @@ import { workspaceMembers, type WorkspaceMember } from './workspaceMembers'
 
 const ROLE_LABELS: Record<WorkspaceMember['role'], string> = {
   owner: 'Owner',
-  build: 'Can edit',
+  build: 'Member',
   use: 'Can use',
 }
 
@@ -57,7 +57,7 @@ export const WorkspaceMemberList = ({ snapshot, session }: WorkspaceMemberListPr
             })}
             {onlyUses && <MemberListItem name={user.name} role="Can use" you />}
           </ListGroup>
-          {onlyUses && <p className="px-4 text-center text-base text-kumo-subtle">Only people who can edit it see who else has access.</p>}
+          {onlyUses && <p className="px-4 text-center text-base text-kumo-subtle">Only its members can see who else is here.</p>}
         </div>
       )}
       {removal.dialog && <RemovalDialog {...removal.dialog} />}

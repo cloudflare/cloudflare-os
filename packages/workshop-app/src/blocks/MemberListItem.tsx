@@ -5,7 +5,7 @@ import { Avatar } from '@/components/Avatar'
 export type MemberListItemProps = {
   /** Who, or which group of people: "Ada Lovelace", "Anyone in Cloudflare OS". */
   name: string
-  /** What they may do, as the list puts it: "Owner", "Can edit". */
+  /** What they may do, as the list puts it: "Owner", "Member". */
   role: string
   /** The member is the viewer. */
   you?: boolean

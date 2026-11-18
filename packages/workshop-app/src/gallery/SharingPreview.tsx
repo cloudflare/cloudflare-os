@@ -168,8 +168,8 @@ const DialogDemo = ({ setup }: { setup: keyof typeof SETUPS }) => {
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full max-w-lg flex-col gap-3">{children}</div>
 
 const LINK = [
-  { value: 'on', label: 'Can edit', hint: 'Anyone with your link works on everything in it' },
-  { value: 'off', label: 'No access', hint: 'Only people you add can open it' },
+  { value: 'on', label: 'Can join', hint: 'Anyone with the link can join' },
+  { value: 'off', label: 'No access', hint: 'Only people you add can join' },
 ] as const
 
 const RowsPreview = () => {
@@ -191,13 +191,13 @@ const RowsPreview = () => {
             <MemberListItem
               key={name}
               name={name}
-              role="Can edit"
+              role="Member"
               landed={landed === name}
-              access={<AccessMenu label="Can edit" of={name} remove={{ label: 'Remove from workspace', onRemove: () => setPeople(people.filter((one) => one !== name)) }} />}
+              access={<AccessMenu label="Member" of={name} remove={{ label: 'Remove from workspace', onRemove: () => setPeople(people.filter((one) => one !== name)) }} />}
             />
           ))}
           <MemberListItem name="Katherine Johnson" role="Uses 2 gadgets" />
-          <MemberListItem icon={UsersThreeIcon} name="Everyone who can edit Engineering Notes" detail="2 people" role="Can edit" />
+          <MemberListItem icon={UsersThreeIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
             icon={BuildingsIcon}
             name="Anyone in Cloudflare OS"

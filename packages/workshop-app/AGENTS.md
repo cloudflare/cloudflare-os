@@ -667,8 +667,10 @@ in place in the history): its chats, what it has made (the library's, as beside 
 beside the page), and its members, the owner first. The chats and the library load what they
 list once chosen; who has access is read with the page, for its header.
 
-A workspace is shared to edit everything in it, and a gadget to use, alone
-(`ShareWorkspaceDialog`, whose target is a `ShareTarget`). A gadget's Share… (in its pane's more
+A workspace is shared to join it, and a gadget to use, alone (`ShareWorkspaceDialog`, whose
+target is a `ShareTarget`). The words are for people who have never shared software: a workspace's
+people are Members and its link lets anyone with it join; a gadget's people and link Can use it,
+and the line for the workspace's members Can edit it, as changing a gadget is editing it. A gadget's Share… (in its pane's more
 menu) shares that gadget: its people are those who use it, under one line for everyone who can
 edit the workspace, and the dialog can share all of the workspace instead. Its page's header has
 who has access, which goes to the members, and Share, for whoever may
@@ -683,7 +685,7 @@ the page it was copied on, its key in the fragment, which `ShareLinkGate` redeem
 is shown. Turned off, whoever came in by it keeps what it gave them.
 
 A workspace goes from the user's list from its More menu (`WorkspaceMoreMenu`), on its page's
-header before New chat and on its row or card on the Workspaces page, which have it beside the
+header just after its crumb, as a chat's is after its title and on its row or card on the Workspaces page, which have it beside the
 star; the sidebar's rows have no menu. Its owner deletes it (`deleteSelf`), with everything in it
 and for everyone; someone it was shared with only removes it from their own list
 (`dismissSharedWorkspace`), keeping their access, so that opening it again brings it back. Which

@@ -49,9 +49,9 @@ export const grantOf = (target: ShareTarget): CollaboratorGrant => (target.kind 
 export const covers = (access: CollaboratorAccess, target: ShareTarget) =>
   access.role === 'build' || (target.kind === 'gadget' && access.gadgetIds.includes(target.gadgetId))
 
-/** What someone may do, in a few words: "Can edit", or the gadgets they can use. */
+/** What someone is, in a few words: a "Member", or someone who uses some of its gadgets. */
 export const accessLabel = (access: CollaboratorAccess) => {
-  if (access.role === 'build') return 'Can edit'
+  if (access.role === 'build') return 'Member'
   const count = access.gadgetIds.length
   return count === 1 ? 'Uses a gadget' : `Uses ${count} gadgets`
 }
@@ -74,7 +74,7 @@ export const inviteRefusal = (userId: string, target: ShareTarget, owner: AiChat
   if (sameId(owner.id, userId)) return `${owner.name} owns this workspace.`
   const existing = collaborators.find(({ profile }) => sameId(profile.id, userId))
   if (!existing || !covers(existing.access, target)) return undefined
-  if (existing.access.role === 'build') return `${existing.profile.name} can already edit this workspace.`
+  if (existing.access.role === 'build') return `${existing.profile.name} is already a member of this workspace.`
   return target.kind === 'gadget' ? `${existing.profile.name} can already use ${target.title}.` : undefined
 }
 

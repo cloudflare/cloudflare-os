@@ -41,7 +41,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 const said = (name: string, { left }: NonNullable<RemovalDialogProps['outcome']>, gadget: string | undefined) => {
   if (gadget) return left === 'unchanged' ? `Your own invitation goes. ${name} can still use ${gadget} some other way.` : `${name} will no longer be able to use ${gadget}.`
   if (left === 'nothing') return `${name} will lose access to this workspace and everything in it.`
-  if (left === 'use') return `${name} will no longer edit this workspace, but can still use some of its gadgets through someone else’s invitation.`
+  if (left === 'use') return `${name} will no longer be a member of this workspace, but can still use the gadgets someone else shared with them.`
   return `Your own invitation goes. ${name} still has access some other way.`
 }
 

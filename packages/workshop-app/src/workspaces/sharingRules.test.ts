@@ -69,7 +69,7 @@ describe('access', () => {
   })
 
   it('says what someone may do in a few words', () => {
-    expect(accessLabel(BUILD)).toBe('Can edit')
+    expect(accessLabel(BUILD)).toBe('Member')
     expect(accessLabel(uses(3))).toBe('Uses a gadget')
     expect(accessLabel(uses(3, 4))).toBe('Uses 2 gadgets')
   })
@@ -91,7 +91,7 @@ describe('inviteRefusal', () => {
 
   it('says why an invite would change nothing', () => {
     expect(inviteRefusal('ADA', WHOLE, ada, people)).toBe('Ada Lovelace owns this workspace.')
-    expect(inviteRefusal('grace', gadget(3), ada, people)).toBe('grace can already edit this workspace.')
+    expect(inviteRefusal('grace', gadget(3), ada, people)).toBe('grace is already a member of this workspace.')
     expect(inviteRefusal('alan', gadget(3), ada, people)).toBe('alan can already use Budget.')
   })
 

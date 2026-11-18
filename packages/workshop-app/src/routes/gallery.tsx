@@ -353,9 +353,9 @@ function Gallery() {
       <Section title="MemberListItem (the owner, the viewer, a collaborator who can only use it, one with no picture)">
         <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
           <MemberListItem name="Ada Lovelace" role="Owner" />
-          <MemberListItem name="Grace Hopper" you role="Can edit" />
+          <MemberListItem name="Grace Hopper" you role="Member" />
           <MemberListItem name="Alan Turing" role="Can use" />
-          <MemberListItem name="A collaborator with a much longer name than fits" role="Can edit" />
+          <MemberListItem name="A collaborator with a much longer name than fits" role="Member" />
         </div>
       </Section>
       <TabsPreview />

@@ -68,7 +68,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
   const invite = useInvite({
     session,
     refusal: (userId) => standing && inviteRefusal(userId, target, standing.owner, collaborators),
-    admitted: ({ profile }) => gadget ? `${profile.name} can now use ${gadget.title}.` : `${profile.name} can now work on everything in ${title}.`,
+    admitted: ({ profile }) => gadget ? `${profile.name} can now use ${gadget.title}.` : `${profile.name} is now a member of ${title}.`,
   })
   const search = useUserSearch(invite.value, config?.userSearchEnabled === true, [
     ...(standing ? [standing.owner.id] : []),
@@ -91,11 +91,11 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
   const feedbackId = `share-${workspaceId}-feedback`
   const removable = (person: CollaboratorInfo) => standing !== undefined && person.profile.id !== user.id && canChange(person, standing, user.id)
   const needs = ready?.requirements && signInServices(ready.requirements, ready.vendors)
-  const linkGives = gadget ? 'Can use' : 'Can edit'
+  const linkGives = gadget ? 'Can use' : 'Can join'
   // As people are given it, so that the link reads as one more of them.
   const linkChoices = [
-    { value: 'on' as const, label: linkGives, hint: gadget ? `Anyone with your link opens ${gadget.title}` : 'Anyone with your link works on everything in it' },
-    { value: 'off' as const, label: 'No access', hint: 'Only people you add can open it' },
+    { value: 'on' as const, label: linkGives, hint: gadget ? `Anyone with the link can use ${gadget.title}` : 'Anyone with the link can join' },
+    { value: 'off' as const, label: 'No access', hint: gadget ? 'Only people you add can use it' : 'Only people you add can join' },
   ]
 
   const linkAccess = () => {
@@ -119,13 +119,13 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{gadget?.title ?? title}”</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">
             {gadget
-              ? <>People you add can use {gadget.title}, and nothing else in {title}.</>
-              : 'People you add can work on everything in it with you.'}
+              ? <>People you add can use {gadget.title}, but won’t see its chats or anything else in {title}.</>
+              : 'People you add become members. They can see its chats, start their own, and use and change its gadgets.'}
             {gadget && onShareWorkspace && standing?.canShare && (
               <>
                 {' '}
                 <button type="button" onClick={onShareWorkspace} className="cursor-pointer rounded-sm font-medium text-kumo-default underline decoration-kumo-line underline-offset-3 outline-none hover:decoration-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-ring">
-                  Share all of {title} instead
+                  Share the whole workspace instead
                 </button>
               </>
             )}
@@ -190,7 +190,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
                 {gadget && editors.length > 0 && (
                   <MemberListItem
                     icon={UsersThreeIcon}
-                    name={`Everyone who can edit ${title}`}
+                    name={`Everyone in ${title}`}
                     detail={editors.length === 1 ? editors[0]!.profile.name : `${editors.length} people`}
                     role="Can edit"
                   />

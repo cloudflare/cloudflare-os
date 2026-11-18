@@ -3,7 +3,7 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 /** Something someone could be given, as a menu offers it. */
 export type AccessChoice<Value extends string> = {
   value: Value
-  /** What it is, as the trigger reads once chosen: "Can edit". */
+  /** What it is, as the trigger reads once chosen: "Can join". */
   label: string
   /** What it lets them do, under the label. */
   hint: string
