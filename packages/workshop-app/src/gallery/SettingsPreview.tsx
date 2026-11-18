@@ -27,7 +27,8 @@ import { settingsNavGroups } from '@/settings/settingsSections'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
-const GROUPS = settingsNavGroups()
+// An admin's, with the deployment's parts after their own.
+const GROUPS = settingsNavGroups(undefined, true)
 
 const WORKSPACES: MutableWorkspace[] = [
   { id: 'design', title: 'Design review', label: 'DR', look: { shape: 'folder', color: 'blue' } },

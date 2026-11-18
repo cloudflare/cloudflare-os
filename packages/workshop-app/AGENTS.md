@@ -514,6 +514,49 @@ rules that always ask and rules that allow without asking (`ApprovalRules`), in 
 precedence, which the groups' descriptions say. `useStandingApprovals` is kept, unused, for when a
 workspace has settings of its own.
 
+### Admin
+
+The deployment's own settings, main's Admin page, a tab to a part: an Admin group after the
+user's own (`ADMIN_GROUP` in `settingsSections.ts`, ids `admin-*`), listed only once the server
+says the user is an admin (`useIsAdmin`, `amIAdmin()` asked once a connection). Anyone else named
+one is shown their first part instead. The parts are in `settings/admin/`, one file each, with
+their pieces in a folder of the part's (`models/`, `formats/`, `audit/`, `updates/`).
+
+`AdminProvider`, round the settings page, holds the admin capability for the visit, so what an
+admin does there is one session in the audit log: the promise of `getAdminApi()`, never awaited,
+which calls are pipelined on (`AdminCapability`), disposed as the page goes or the connection is
+made again. A part reads the settings as it opens (`useAdminSettings`, `AdminSettingsStatus` for
+while they load or could not be read): a change is shown at once and made (`change`), and on a
+refusal they are read again, why being said over the part (`useAttempt`). What is written at
+length is saved or discarded by hand (`SettingText`), as Enter is a new line there.
+
+- General: the site name, the logo (`SiteLogoPicker`, made a PNG by `siteLogo.ts`, ported and
+  tested), the accent (`AccentColorMenu`; it is not applied to this app yet, which has its own
+  theme), the banner and its colour, the top-bar notice, agent instructions, and what an agent may
+  fetch once it has read restricted data (`RestrictedWebFetch`). This app shows none of the
+  notices or the branding yet, but for the site name on the sign-in page.
+- Services: a surface to a service, its kinds switched on and off under it; one made for each
+  person without connecting it is Off, Optional or On for everyone.
+- Formats: the blueprints promoted to be started by name (`FormatCard`), in order, each opening
+  to how it is presented; a field left empty or saying what the blueprint does follows it
+  (`formats/formatChanges.ts`, plain and tested).
+- Gateway models: main's Models tab, a line saying so outside AI Gateway mode. Each change is
+  made and the settings read again, one at a time; what else is done to a provider or a model
+  (Test, Settings…, moving it, Remove…) is in its more menu, so a row stays one line on a phone.
+- Access: sign-ups and finding people by name.
+- Audit: what admins did this week, the log a page at a time under a filter menu (`ListToolbar`'s
+  kind), which lasts for the visit as the address names only the part, and how far an admin may
+  inspect and how long records are kept. A backend older than the log says so
+  (`auditSettingsOf`).
+- Updates: the release, Check now and the way to the deploy flow, after the backend is told the
+  router's tag (`updates/probeRouterTag.ts`). A deployment the deploy flow did not install is not
+  updated from here, which is all that is said. `UpdateNotice` tells an admin of a newer release
+  in the home page's header, with a capability of its own, until it is closed, which hides it in
+  that browser for the deployment's snooze, under the old app's key (`updateNoticeDismissal.ts`).
+
+Inspecting a workspace or a user's account (`inspectWorkspace`, `inspectUser`) has no page, as
+main has none. The gallery draws every part over a fake capability (`gallery/adminPreview.ts`).
+
 ## Skills
 
 A skill is instructions the assistant loads when a task calls for them, with the files they refer

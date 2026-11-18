@@ -26,6 +26,11 @@ import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { workspaceColors, workspaceShapes, type WorkspaceLook } from '@/components/workspaceLook'
+import { AdminAuditPreview } from '@/gallery/AdminAuditPreview'
+import { AdminFormatsPreview } from '@/gallery/AdminFormatsPreview'
+import { AdminModelsPreview } from '@/gallery/AdminModelsPreview'
+import { AdminSettingsPreview } from '@/gallery/AdminSettingsPreview'
+import { AdminUpdatesPreview } from '@/gallery/AdminUpdatesPreview'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
@@ -374,6 +379,11 @@ function Gallery() {
       <SharingPreview />
       <WorkspaceRemovalPreview />
       <SettingsPreview />
+      <AdminSettingsPreview />
+      <AdminFormatsPreview />
+      <AdminModelsPreview />
+      <AdminAuditPreview />
+      <AdminUpdatesPreview />
       <SignInPreview />
       <SearchPreview />
       <HeaderPreview />
