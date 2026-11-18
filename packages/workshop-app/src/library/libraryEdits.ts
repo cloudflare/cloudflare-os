@@ -63,7 +63,7 @@ export const withEdits = (outputs: OutputSummary[], edits: LibraryEdits): Output
 export const withItemEdits = (items: AsideItem[], edits: LibraryEdits): AsideItem[] =>
   items.flatMap((item): AsideItem[] => {
     if (item.kind !== 'output') return [item]
-    const key = `${item.output.workspaceId}/${item.output.workpieceId}`
+    const key = outputKey(item.output)
     if (edits.deleted.has(key)) return []
     const renamed = edits.renamed.get(key)
     return renamed && (renamed.from || 'Untitled') === item.title ? [{ ...item, title: renamed.to }] : [item]

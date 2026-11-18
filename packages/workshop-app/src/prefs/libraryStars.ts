@@ -1,9 +1,6 @@
-import { stored } from './stored'
+import { stored, stringList } from './stored'
 
-const parse = (value: unknown): string[] | undefined =>
-  Array.isArray(value) && value.every((key) => typeof key === 'string') ? value : undefined
-
-const store = stored<string[]>('workshop-app:library-stars', parse, [])
+const store = stored<string[]>('workshop-app:library-stars', stringList, [])
 
 /**
  * What is starred in the library on this device, as the outputs' keys, in the order they were last

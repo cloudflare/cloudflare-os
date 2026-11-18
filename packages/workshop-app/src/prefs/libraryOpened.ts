@@ -1,4 +1,4 @@
-import { stored } from './stored'
+import { stored, stringList } from './stored'
 
 /** How many of the outputs opened last are remembered: more than Recent shows, for any deleted meanwhile. */
 export const OPENED_KEPT = 50
@@ -7,10 +7,7 @@ export const OPENED_KEPT = 50
 export const withOpened = (opened: readonly string[], key: string): string[] =>
   [key, ...opened.filter((other) => other !== key)].slice(0, OPENED_KEPT)
 
-const parse = (value: unknown): string[] | undefined =>
-  Array.isArray(value) && value.every((key) => typeof key === 'string') ? value : undefined
-
-const store = stored<string[]>('workshop-app:library-opened', parse, [])
+const store = stored<string[]>('workshop-app:library-opened', stringList, [])
 
 /**
  * What of the library was opened last on this device, as the outputs' keys, latest first: what the

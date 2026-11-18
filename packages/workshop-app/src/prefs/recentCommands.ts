@@ -1,10 +1,7 @@
-import { stored } from './stored'
+import { stored, stringList } from './stored'
 import { withOpened } from './libraryOpened'
 
-const parse = (value: unknown): string[] | undefined =>
-  Array.isArray(value) && value.every((name) => typeof name === 'string') ? value : undefined
-
-const store = stored<string[]>('workshop-app:recent-commands', parse, [])
+const store = stored<string[]>('workshop-app:recent-commands', stringList, [])
 
 /**
  * The skills and commands chosen in a composer last on this device, by name, latest first: what
