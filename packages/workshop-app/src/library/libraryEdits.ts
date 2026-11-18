@@ -1,4 +1,5 @@
 import type { CollaboratorRole, OutputSummary } from '@gadgets/workshop-shared/api'
+import type { AsideItem } from '@/aside/asideItems'
 import { titleAfter, type Renamed } from '@/gadgets/gadgetChanges'
 import { outputKey } from './libraryList'
 
@@ -52,4 +53,18 @@ export const withEdits = (outputs: OutputSummary[], edits: LibraryEdits): Output
     if (edits.deleted.has(key)) return []
     const title = titleAfter(output.title, edits.renamed.get(key))
     return title === output.title ? [output] : [{ ...output, title }]
+  })
+
+/**
+ * What a list of a workspace's items shows, after `edits`, as `withEdits` does for outputs: the
+ * deleted outputs left out, and each renamed under its new title while it is still read as the
+ * old one, which an untitled one is listed as "Untitled". Files are as they were.
+ */
+export const withItemEdits = (items: AsideItem[], edits: LibraryEdits): AsideItem[] =>
+  items.flatMap((item): AsideItem[] => {
+    if (item.kind !== 'output') return [item]
+    const key = `${item.output.workspaceId}/${item.output.workpieceId}`
+    if (edits.deleted.has(key)) return []
+    const renamed = edits.renamed.get(key)
+    return renamed && (renamed.from || 'Untitled') === item.title ? [{ ...item, title: renamed.to }] : [item]
   })

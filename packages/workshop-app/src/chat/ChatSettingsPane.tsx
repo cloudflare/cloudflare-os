@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CaretLeftIcon } from '@phosphor-icons/react'
+import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
 import { useChatLibrary } from '@/aside/useChatLibrary'
@@ -14,6 +15,8 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { withItemEdits } from '@/library/libraryEdits'
+import { useLibraryActions } from '@/library/useLibraryActions'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -44,6 +47,10 @@ export type ChatSettingsPaneProps = {
   onOpenItem: (item: AsideItem) => void
   /** Where an item opens, for its row to link to so that it can be opened in another tab. */
   itemHref?: (item: AsideItem) => string
+  /** An output's own page, which sharing it from its more menu lets people in to. */
+  outputHref?: (output: OutputSummary) => string
+  /** Goes to an output's settings, from its more menu. */
+  onOpenSettings?: (output: OutputSummary) => void
 }
 
 /**
@@ -51,7 +58,7 @@ export type ChatSettingsPaneProps = {
  * the chat (`useChatLibrary`), latest first, grouped by when; and what the chat set up to run by
  * itself, as the cards in its conversation show.
  */
-export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onOpenWorkspace, onOpenItem, itemHref }: ChatSettingsPaneProps) => {
+export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onOpenWorkspace, onOpenItem, itemHref, outputHref, onOpenSettings }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -70,7 +77,13 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
   useDocumentTitle(title ? `Settings · ${title}` : 'Chat settings')
 
   const library = useChatLibrary({ workspaceId, chatId })
-  const groups = groupByTime(library.items.map((item) => ({ value: item, at: item.at })))
+  // What is in the library has a more menu, as on the Library page; what is the chat's alone does not.
+  const { edits, actionsOf, problem: libraryProblem, dialogs } = useLibraryActions({ read: library.outputs, outputHref, onOpenSettings })
+  const moreOf = (item: AsideItem) => {
+    const output = item.kind === 'output' ? library.outputs.find((candidate) => candidate.workspaceId === workspaceId && candidate.workpieceId === item.output.workpieceId) : undefined
+    return output && actionsOf(output)
+  }
+  const groups = groupByTime(withItemEdits(library.items, edits).map((item) => ({ value: item, at: item.at })))
   // A hook does not say which chat set it up, so the chat's are those its cards show.
   const items = chat.status === 'ready' ? chat.items : undefined
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
@@ -106,6 +119,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
         {chat.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading the chat…</p>}
         <Tabs value={tab} onValueChange={onTabChange} tabs={CHAT_SETTINGS_TABS} aria-label="Chat" className="gap-6">
           <Tabs.Panel value="library" className="flex flex-col gap-8">
+            {libraryProblem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{libraryProblem}</p>}
             {chat.status === 'ready' && groups.length === 0 && !library.reading && !library.problem && (
               <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. What this workspace makes shows here.</p>
             )}
@@ -119,6 +133,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
                     time={time}
                     href={itemHref?.(item)}
                     onSelect={() => onOpenItem(item)}
+                    more={moreOf(item)}
                   />
                 ))}
               </ListGroup>
@@ -145,6 +160,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
           </Tabs.Panel>
         </Tabs>
       </div>
+      {dialogs}
     </PageLayout>
   )
 }
