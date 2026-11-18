@@ -181,6 +181,7 @@ export async function fetchWithAuthRetry(
       // and never once the caller's own signal has aborted it.
       if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
         await new Promise(resolve => setTimeout(resolve, backoffDelayMs(attempt, null)));
+        token = await getAccessToken();
         attempt++;
         continue;
       }
@@ -220,6 +221,9 @@ export async function fetchWithAuthRetry(
       let delay = backoffDelayMs(attempt, response.headers.get("Retry-After"));
       await response.body?.cancel();
       await new Promise(resolve => setTimeout(resolve, delay));
+      // Asked again, so that a provider that stops serving a connection disconnected meanwhile
+      // (see AccessTokenCache) stops its retries too.
+      token = await getAccessToken();
       attempt++;
       continue;
     }

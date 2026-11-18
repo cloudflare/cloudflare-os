@@ -155,6 +155,24 @@ describe("fetchWithAuthRetry", () => {
     expect(requests).toBe(2);
   });
 
+  // A connection disconnected while a request waits to be retried stops being served by its
+  // provider (see AccessTokenCache), so the retry must ask it again rather than reuse the token.
+  it("asks the provider again before a retry, and stops when it no longer serves", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", async () => {
+      requests++;
+      return new Response(null, { status: 503 });
+    });
+    let asked = 0;
+    let provider = async () => {
+      if (asked++ > 0) throw new Error("disconnected");
+      return "token";
+    };
+    await expect(fetchWithAuthRetry("https://www.googleapis.com/drive/v3/files/file-1", {}, provider))
+      .rejects.toThrow("disconnected");
+    expect(requests).toBe(1);
+  });
+
   it("does not replay a 401 when the provider cannot refresh its token", async () => {
     let requests = 0;
     vi.stubGlobal("fetch", async () => { requests++; return new Response(null, { status: 401 }); });
