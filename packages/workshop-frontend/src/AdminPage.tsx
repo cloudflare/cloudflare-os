@@ -4,6 +4,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Switch, Textarea, Input, Button, Tabs, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import { Eye, Hexagon, MagnifyingGlass, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
+import { ADMIN_GATEKEEPER_VENDOR_ID } from '@gadgets/workshop-shared/admin-agent'
 import { AdminApi, AdminFormat, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, DeploymentUpdateStatus, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
 import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
 import { cacheBustSiteLogoUrl, prepareSiteLogo } from './siteLogoUtils'
@@ -1070,10 +1071,12 @@ export default function AdminPage() {
               // Auto-provisioned ("ambient") gatekeepers use a three-state mode and have no resources.
               if (vendor.autoProvisions) {
                 const mode = vendor.ambientMode ?? 'optional'
+                // The admin gatekeeper's account is offered and provisioned to deployment admins only.
+                const adminsOnly = vendor.vendorId === ADMIN_GATEKEEPER_VENDOR_ID
                 const options: { value: AmbientGatekeeperMode; label: string; hint: string }[] = [
                   { value: 'disabled', label: 'Disabled', hint: 'Off for everyone' },
-                  { value: 'optional', label: 'Optional', hint: 'Users can add it themselves' },
-                  { value: 'enabled', label: 'Enabled', hint: 'On for everyone automatically' },
+                  { value: 'optional', label: 'Optional', hint: adminsOnly ? 'Deployment admins can add it themselves' : 'Users can add it themselves' },
+                  { value: 'enabled', label: 'Enabled', hint: adminsOnly ? 'On for every deployment admin automatically' : 'On for everyone automatically' },
                 ]
                 return (
                   <div key={vendor.vendorId}>
