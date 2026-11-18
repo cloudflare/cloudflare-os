@@ -66,14 +66,17 @@ can. Everything lives in `gatekeeper-google`, but for the `screen` option on the
 
 The group's Cloud Identity name (`groups/<id>`) is resolved on first use and persisted in the
 facet, so a group recreated under the same address is not silently trusted; a mismatch refuses
-reads until the owner reconnects.
+reads until the owner reconnects. A new binding to a recreated group shows nothing that arrived
+before Cloud Identity says the group was created (`createTime`), which is an earlier group's
+mail.
 
 ## Admission rule
 
 Each message is given a standing from its own headers (`groupStanding()`): `own`, `reply` or
 `none`. An `own` message is admitted wherever it is. A `reply` is admitted only while its thread
 holds an `own` message, so reading one alone (by ID, or as a hook's new message) reads its thread
-too. A message that carries any of `DRAFT`, `SPAM`, `TRASH` is `none`.
+too. A message that carries any of `DRAFT`, `SPAM`, `TRASH`, or that arrived before the group
+was created, is `none`.
 
 A message is `own` when one of these holds:
 
@@ -95,7 +98,10 @@ A message is `own` when one of these holds:
    - the topmost `Authentication-Results` (authserv-id `mx.google.com`) has `dmarc=pass` for
      the `From` domain, or `dkim=pass` from that domain (or a parent of it) with a signature that
      signs `From`, the test DMARC applies, which Gmail may not report behind an inbound gateway;
-   - and the `From` domain is exactly the domain of the group's address.
+   - the `From` domain is exactly the domain of the group's address;
+   - and it has no `List-ID`. A copy another list delivered is not a colleague's: a list on the
+     group's domain resends an outsider's mail under its own address, authenticated as the
+     domain's, so it is a `reply` at most.
 
 A message that meets the first two tests of 3 from any other `From` domain, a subdomain or
 another of the organization's domains included, is a `reply`, or `own` on a binding that takes
@@ -184,6 +190,10 @@ subresources. A whole-mailbox, label or search binding keeps refusing every obse
   is the group's: the group's own delivery of a reply, or the owner's or a colleague's
   reply-all. A hook does not fire again for it then. An organization with several domains has
   the same wait for colleagues on a domain other than the group's.
+- **An alias that used to be another group's.** An alias moved to this group brings the mail
+  that named it while it was the other group's, when a colleague sent it or the binding takes
+  outside mail: nothing in a message says which group an address was when it arrived. Mail the
+  other group delivered is not shown, since delivery is proved against the primary address.
 - **Nested groups are not followed.** Members through a nested group are refused (see
   Observers), which is narrower than Google Groups.
 - **Newer members read older mail.** For a group whose history is off or limited to managers, a
@@ -249,3 +259,7 @@ Still to check:
   better source.
 - That Gmail never threads a message into a conversation whose `Message-ID`s it doesn't cite,
   which the `reply` standing relies on.
+- What Google Groups does with a `List-ID` a message arrives with. The topmost is compared, and
+  the bounce address and the domain's signature already prove the delivery, so a second one
+  changes nothing today.
+- That Cloud Identity returns `createTime` for every group; a group without one can't be read.

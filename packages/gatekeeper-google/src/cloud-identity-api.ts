@@ -25,10 +25,12 @@ export type CloudIdentityGroup = {
   address: string;
   aliases: string[];
   displayName: string;
+  /** When it was created, in milliseconds since the epoch: nothing older can be its mail. */
+  createdAt: number;
 };
 
 /** A group as a listing names it, without its aliases. */
-export type CloudIdentityGroupSummary = Omit<CloudIdentityGroup, "aliases">;
+export type CloudIdentityGroupSummary = Omit<CloudIdentityGroup, "aliases" | "createdAt">;
 
 /** Cloud Identity refused, or the deployment has not enabled the API. Safe to show. */
 export class CloudIdentityApiError extends Error {
@@ -60,12 +62,14 @@ export class CloudIdentityApi {
   async getGroup(name: string): Promise<CloudIdentityGroup> {
     const group = await this.#get(new URL(`${BASE}/${validateGroupName(name)}`), "groups.get") as {
       name?: unknown; groupKey?: {id?: unknown}; additionalGroupKeys?: Array<{id?: unknown}>;
-      displayName?: unknown; labels?: Record<string, unknown>;
+      displayName?: unknown; labels?: Record<string, unknown>; createTime?: unknown;
     };
     if (validateGroupName(group.name) !== name) throw new Error("Cloud Identity returned a different group.");
     if (!group.labels || !(DISCUSSION_FORUM in group.labels)) {
       throw new Error("This Google Group has no mailbox.");
     }
+    const createdAt = typeof group.createTime === "string" ? Date.parse(group.createTime) : NaN;
+    if (!Number.isFinite(createdAt)) throw new Error("Cloud Identity didn't say when this group was created.");
     const address = groupAddress(group.groupKey?.id);
     const aliases = (group.additionalGroupKeys ?? []).map(key => groupAddress(key.id));
     return {
@@ -73,6 +77,7 @@ export class CloudIdentityApi {
       address,
       aliases,
       displayName: typeof group.displayName === "string" && group.displayName ? group.displayName : address,
+      createdAt,
     };
   }
 

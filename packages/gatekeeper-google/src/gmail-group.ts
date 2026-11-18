@@ -196,6 +196,9 @@ export class GmailGroupSessionImpl extends ApprovalQueueRpcTarget implements Gma
 
   async getGroupAddress(): Promise<EmailAddress> {
     const {address, displayName} = this.#ctx.group;
+    // The name is Cloud Identity's answer to the owner, not something the binding's URL says.
+    await this.#ctx.approvalQueue.authorizeObservation(observation(
+      `Read the name of ${address}`, "Read the group's address and name."));
     return displayName === address ? {address} : {address, name: displayName};
   }
 

@@ -103,6 +103,8 @@ type Backend = {
   members: Set<string>;
   /** The group's primary address as Cloud Identity reports it now. */
   groupAddress: string;
+  /** When Cloud Identity says the group was created. */
+  groupCreated: string;
   /** Requests made to Cloud Identity, and to Google's account endpoints. */
   identityRequests: number;
   accountRequests: number;
@@ -124,7 +126,7 @@ type Backend = {
 
 function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> = {}) {
   const backend: Backend = {
-    members: new Set(), groupAddress: GROUP, identityRequests: 0, accountRequests: 0,
+    members: new Set(), groupAddress: GROUP, groupCreated: "2020-01-01T00:00:00Z", identityRequests: 0, accountRequests: 0,
     extra: [], threads: new Map(), observerVerified: true, queries: [], attachmentReads: 0,
   };
   const mailbox = () => [...MAILBOX, ...backend.extra];
@@ -171,6 +173,7 @@ function harness(binding: Pick<GmailGatekeeperImplProps, "groupOutsideSenders"> 
         return json({
           name: GROUP_NAME, groupKey: {id: backend.groupAddress}, displayName: "Team",
           labels: {"cloudidentity.googleapis.com/groups.discussion_forum": ""},
+          createTime: backend.groupCreated,
         });
       }
       if (backend.membershipFailure) return json({error: {code: backend.membershipFailure}}, backend.membershipFailure);
@@ -367,6 +370,25 @@ describe("Gmail group binding", () => {
     expect(await gmail.describe()).toMatchObject({
       url: "https://groups.google.com/a/example.com/g/team?senders=anyone",
     });
+  });
+
+  it("shows nothing that arrived before the group was created, at an address an earlier group had", async () => {
+    const gmail = harness();
+    gmail.backend.groupCreated = "2026-05-01T00:00:00Z";
+    using session = await gmail.session();
+    const threads = await drain(await session.listThreads() as never);
+    expect(threads.map(thread => thread.id)).toEqual(["f2"]);
+    await expect(Promise.resolve(session.getMessage("a1"))).rejects.toThrow("This isn't one of the group's messages.");
+    expect(await gmail.screen("a1")).toBe(false);
+  });
+
+  it("reports the group before telling its name", async () => {
+    const gmail = harness();
+    using session = await gmail.session();
+    expect(await session.getGroupAddress()).toEqual({address: GROUP, name: "Team"});
+    expect(await gmail.observations()).toMatchObject([
+      {containsRestrictedData: true, subresources: [GROUP_SUBRESOURCE]},
+    ]);
   });
 
   it("reads an attachment only while its message is still the group's", async () => {

@@ -115,7 +115,7 @@ function mailNotice(context: Context) {
   </Notice>;
 }
 
-/** What the group's recent mail and settings say about connecting it. Only a group the account isn't in holds Connect back. */
+/** What the group's recent mail and settings say about connecting it. A group the account isn't in, or one that couldn't be checked, holds Connect back. */
 function groupNotices(context: Context, address: string) {
   const check = checkOf(context, address);
   if (check.state === "loading") return null;
@@ -155,8 +155,9 @@ export default {
   isReady({ values }) {
     const group = validGroup(values);
     if (!group || mailAccess?.state !== "ready" || !mailAccess.value) return false;
+    // Only once the group has been found and the account's own membership answered.
     const check = checks.get(checkKey(group, values));
-    return !(check?.state === "ready" && check.value.membership === "none");
+    return check?.state === "ready" && check.value.membership !== "none";
   },
 
   // Must mirror `parseGroupsUrl` and `groupResourceUrl` in resources.ts, which is what actually

@@ -847,7 +847,12 @@ export interface GmailGroupSession {
 
   /**
    * Call `hook` with each new message sent to the group. A message may arrive more than once or out
-   * of order, so key any work on `entry.info.id`.
+   * of order, so key any work on `entry.info.id`. The hook starts disabled, and nothing is
+   * delivered until the user enables it.
+   *
+   * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
+   * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
+   * binding, as "Persistent Stubs and `ctx.restore()`" in your instructions describes.
    */
   subscribeNewMessages(hook: RpcStub<GmailGroupMessageHook>): Promise<void>;
 }

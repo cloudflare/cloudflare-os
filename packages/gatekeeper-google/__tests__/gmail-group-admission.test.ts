@@ -4,7 +4,9 @@ import {
 } from "../src/gmail-group-admission";
 import type { GmailMessageFull } from "../src/google-api";
 
-const GROUP: GmailGroupIdentity = { address: "team@example.com", aliases: ["team-alias@example.com"] };
+const GROUP: GmailGroupIdentity = {
+  address: "team@example.com", aliases: ["team-alias@example.com"], createdAt: Date.parse("2020-01-01T00:00:00Z"),
+};
 const BOUNCE = "team+bncbdq6btefvucrbdu4wxlamgqexfx35cy@example.com";
 const SIGNATURE = "J1MSAw4BYwbhRuTjoELVtm2BX1xZDrrrPB2pXf/tzqVnVQLZEUYxhi/ICjUWU3QOY1";
 
@@ -243,6 +245,31 @@ describe("Gmail group admission: who may start a conversation", () => {
     expect(groupStanding(open, addressed("team@example.com",
       "mx.google.com; dmarc=fail header.from=example.org"))).toBe("none");
     expect(groupStanding(open, { ...outside("m1"), labelIds: ["SPAM"] })).toBe("none");
+  });
+
+  it("doesn't take another list's copy for a colleague's, though it is authenticated as the group's domain", () => {
+    // An outsider wrote to an outward-facing list on the same domain and named this group too: the
+    // list resent it under its own address, signed by the domain.
+    const relisted = message([
+      ["Return-Path", "<feedback+bncabc@example.com>"],
+      ["Authentication-Results",
+        "mx.google.com; dkim=pass header.i=@example.com header.b=J1MSAw4B; " +
+        "spf=pass smtp.mailfrom=feedback+bncabc@example.com; dmarc=pass header.from=example.com"],
+      ["DKIM-Signature", `v=1; d=example.com; s=s1; h=list-id:from:to:subject; b=${SIGNATURE}`],
+      ["From", "'Mallory' via Feedback <feedback@example.com>"],
+      ["To", "feedback@example.com"], ["Cc", "team@example.com"],
+      ["List-ID", "<feedback.example.com>"],
+    ]);
+    expect(groupStanding(GROUP, relisted)).toBe("reply");
+    expect(admittedGroupMessages(GROUP, [relisted])).toEqual([]);
+  });
+
+  it("takes nothing from before the group was created, when its address was another group's", () => {
+    const before = String(GROUP.createdAt - 1);
+    expect(groupStanding(GROUP, { ...delivered(), internalDate: before })).toBe("none");
+    expect(groupStanding(GROUP, { ...inside("m1"), internalDate: before })).toBe("none");
+    expect(groupStanding(GROUP, { ...delivered(), internalDate: String(GROUP.createdAt) })).toBe("own");
+    expect(groupStanding(GROUP, { ...delivered(), internalDate: "not a date" })).toBe("none");
   });
 
   it("counts a colleague only when the group's own domain is what was authenticated", () => {

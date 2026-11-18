@@ -1341,6 +1341,7 @@ describe("Google Group check", () => {
         return Response.json({
           name: "groups/0team", groupKey: { id: GROUP },
           labels: { "cloudidentity.googleapis.com/groups.discussion_forum": "" },
+          createTime: "2020-01-01T00:00:00Z",
         });
       }
       if (url.pathname === "/v1/groups/0team/memberships:lookup") {

@@ -125,7 +125,7 @@ function mockGmail(): MockGmail {
     if (url.hostname === "cloudidentity.googleapis.com") {
       if (url.pathname === "/v1/groups:lookup") return json({name: "groups/0team"});
       if (url.pathname === "/v1/groups/0team") {
-        return json({name: "groups/0team", groupKey: {id: GROUP}, labels: {
+        return json({name: "groups/0team", groupKey: {id: GROUP}, createTime: "2020-01-01T00:00:00Z", labels: {
           "cloudidentity.googleapis.com/groups.discussion_forum": "",
         }});
       }

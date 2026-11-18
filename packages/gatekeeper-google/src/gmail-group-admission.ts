@@ -24,6 +24,11 @@ export type GmailGroupIdentity = {
   /** Other addresses the group receives mail at. */
   aliases: readonly string[];
   /**
+   * When the group was created, in milliseconds since the epoch. Mail that arrived before is not
+   * its own: it went to an earlier group that had the same address.
+   */
+  createdAt: number;
+  /**
    * Whether the group takes mail from outside its own domain, as whoever connected it said. Then
    * authenticated mail from anywhere that names the group is the group's on its own: such a
    * group's own rules already let anyone write to it.
@@ -80,6 +85,8 @@ export function admittedGroupMessages(
 function standing(group: GmailGroupIdentity, message: GmailMessageFull): GroupStanding {
   const labels = message.labelIds ?? [];
   if (labels.some(label => UNADMITTED_LABELS.includes(label))) return "none";
+  // Also refuses a message whose arrival Gmail doesn't date.
+  if (!(Number(message.internalDate) >= group.createdAt)) return "none";
   const headers = message.payload?.headers ?? [];
   const info = parseGmailMessageMetadata(message);
   const addresses = new Set([group.address, ...group.aliases]);
@@ -100,7 +107,12 @@ function standing(group: GmailGroupIdentity, message: GmailMessageFull): GroupSt
   // group's own domain it is a colleague's; from anywhere else, anyone could have sent it to the
   // owner alone, so it counts only as part of a conversation that is already the group's, unless
   // the group takes outside mail, when the same sender could have written to it anyway.
-  return group.outsideSenders || domainOf(info.from.address) === domainOf(group.address) ? "own" : "reply";
+  if (group.outsideSenders) return "own";
+  // A copy some other list delivered is no colleague's, whatever its From: a list on the group's
+  // domain resends an outsider's mail under its own address, authenticated as the domain's.
+  const colleague = domainOf(info.from.address) === domainOf(group.address) &&
+    topmost(headers, "List-ID") === undefined;
+  return colleague ? "own" : "reply";
 }
 
 function domainOf(address: string): string {
