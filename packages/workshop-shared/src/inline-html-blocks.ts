@@ -29,8 +29,8 @@ export function markdownFileUrls(markdown: string, streaming = false): string[] 
   const visit = (node: typeof root | typeof root.children[number]) => {
     if (node.type === "footnoteDefinition") return;
     // A closing backtick arriving later can turn an apparent image into a code example.
-    // Defer paragraphs containing backticks until EOF rather than guessing their final syntax.
-    if (streaming && node.type === "paragraph" &&
+    // Defer inline-content blocks containing backticks until EOF rather than guessing their syntax.
+    if (streaming && (node.type === "paragraph" || node.type === "heading" || node.type === "tableCell") &&
         markdown.slice(node.position?.start.offset, node.position?.end.offset).includes("`")) return;
     if (node.type === "image" || node.type === "link") urls.push(node.url);
     if (node.type === "imageReference" || node.type === "linkReference") references.push(node.identifier);

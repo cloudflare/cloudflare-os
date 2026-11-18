@@ -201,10 +201,15 @@ describe("host-pinned answer files", () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["`", "``"])("does not pin an unfinished %s code example while streaming", async marker => {
+  it.each([
+    ["paragraph", "", "`"],
+    ["double-backtick paragraph", "", "``"],
+    ["heading", "# ", "`"],
+    ["table cell", "| Example |\n| --- |\n| ", "`"],
+  ])("does not pin an unfinished code example in a %s while streaming", async (_kind, prefix, marker) => {
     const snapshots: ChatEmbeds = {};
     const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
-    const example = marker + "![Example](worktree://OUTPUTS/image.png)";
+    const example = prefix + marker + "![Example](worktree://OUTPUTS/image.png)";
     await snapshotChatEmbeds(example, snapshots, read, true);
     expect(snapshots).toEqual({});
     expect(read).not.toHaveBeenCalled();
