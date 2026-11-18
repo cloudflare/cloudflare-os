@@ -36,6 +36,7 @@ export function AccountChooser({
   vendorId,
   vendorName,
   resourceTitle,
+  singleAccount = false,
   connecting,
   reconnectingAccountId,
   requiredResourceTypeIds,
@@ -50,6 +51,8 @@ export function AccountChooser({
   vendorId?: string
   vendorName: string
   resourceTitle?: string
+  /** A user holds at most one account of this vendor, so a listed one leaves no other to connect. */
+  singleAccount?: boolean
   connecting: boolean
   reconnectingAccountId: number | null
   requiredResourceTypeIds?: string[] | ((account: AccountOption) => string[])
@@ -142,7 +145,7 @@ export function AccountChooser({
           )
         })}
 
-        {(!isEmailMailbox || accounts.length === 0) && (
+        {((!isEmailMailbox && !singleAccount) || accounts.length === 0) && (
           <button
             type="button"
             onClick={onConnect}
