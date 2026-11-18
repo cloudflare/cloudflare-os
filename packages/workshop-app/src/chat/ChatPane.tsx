@@ -13,6 +13,7 @@ import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
 import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { useHandler } from '@/hooks/useHandler'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { OutOfCredits } from '@/settings/OutOfCredits'
@@ -196,7 +197,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   }, [items, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
-  const sendMessage = async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
+  const sendMessage = useHandler(async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
@@ -227,69 +228,101 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
-  }
+  })
+
+  // The header and the composer are drawn again only for what they show. The chat renders for
+  // every piece of a reply that streams in, and they are most of what it would draw again then.
+  const ready = chat.status === 'ready'
+  const notificationsRow = notifications.rows.get(chatId)
+  const requireParticipation = ready && chat.notificationsRequireParticipation
+  const openSettings = useHandler((tab?: 'automations') => onOpenSettings?.(tab))
+  const openWorkspace = useHandler(onOpenWorkspace)
+  const changeNotifications = useHandler((enabled: boolean) => {
+    setNotice(undefined)
+    if (connection?.blocked()) return
+    notifications.setEnabled(chatId, enabled).catch((error: unknown) => setNotice(`Couldn’t change the chat’s notifications: ${messageOf(error)}`))
+  })
+  const hasSettings = onOpenSettings !== undefined
+  const workspaceTitle = workspace?.title
+  const header = useMemo(() => (workspaceTitle !== undefined || title) && (
+    <ChatHeader
+      workspace={workspaceTitle !== undefined ? { id: workspaceId, title: workspaceTitle, label: workspaceLabel(workspaceTitle), look, onOpen: openWorkspace } : undefined}
+      title={title}
+      onOpenSettings={hasSettings ? () => openSettings() : undefined}
+      automations={automations > 0 && hasSettings ? { count: automations, onOpen: () => openSettings('automations') } : undefined}
+      more={builds && ready ? {
+        notifications: {
+          choices: notificationChoices(notificationsOf(notificationsRow, requireParticipation)),
+          onChange: changeNotifications,
+        },
+        onDelete: () => setDeleting(true),
+      } : undefined}
+    />
+  ), [workspaceTitle, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, notificationsRow, requireParticipation, changeNotifications])
+
+  const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
+  const hasPasteLinks = pasteLinks !== undefined
+  const stopAgent = useHandler(() => {
+    if (connection?.blocked()) return false
+    setProblem(undefined)
+    actions.dismissSendError()
+    return actions.stopAgent().catch((error: unknown) => {
+      setProblem(`The agent couldn’t be stopped: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
+    })
+  })
+  const dismissProblem = useHandler(() => {
+    setProblem(undefined)
+    actions.dismissSendError()
+  })
+  const showReplied = useHandler(() => {
+    if (reply) list.current?.scrollToMessage(reply.key)
+  })
+  const agentActive = ready && chat.agentActive
+  const waiting = ready ? chat.waiting : undefined
+  const composerCommands = commands.commands
+  const composerElement = useMemo(() => (
+    <Composer
+      ref={composer}
+      onSend={sendMessage}
+      commands={composerCommands}
+      onPasteLinks={hasPasteLinks ? onPasteLinks : undefined}
+      addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
+      stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
+      problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
+      reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
+    />
+  ), [sendMessage, composerCommands, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+
+  const confirmDelete = useHandler(async () => {
+    if (connection?.blocked()) return
+    await deleteChat(chatId)
+    leave()
+  })
+  const chatTitle = title || 'Untitled chat'
+  const deleteDialog = useMemo(() => (
+    <DeleteChatDialog open={deleting && !gone} onOpenChange={setDeleting} title={chatTitle} onConfirm={confirmDelete} />
+  ), [deleting, gone, chatTitle, confirmDelete])
+
+  const hasEarlier = ready && chat.hasEarlier
+  const loadingEarlier = ready && chat.loadingEarlier
+  const historyError = ready ? chat.historyError : undefined
+  const history = useMemo(
+    () => ({ hasMore: hasEarlier, loading: loadingEarlier, error: historyError, onLoadEarlier: actions.loadEarlier }),
+    [hasEarlier, loadingEarlier, historyError, actions.loadEarlier],
+  )
 
   return (
     <ChatLayout
-      header={(workspace || title) && (
-        <ChatHeader
-          workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look, onOpen: onOpenWorkspace }}
-          title={title}
-          onOpenSettings={onOpenSettings && (() => onOpenSettings())}
-          automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}
-          more={builds && chat.status === 'ready' ? {
-            notifications: {
-              choices: notificationChoices(notificationsOf(notifications.rows.get(chatId), chat.notificationsRequireParticipation)),
-              onChange: (enabled) => {
-                setNotice(undefined)
-                if (connection?.blocked()) return
-                notifications.setEnabled(chatId, enabled).catch((error: unknown) => setNotice(`Couldn’t change the chat’s notifications: ${messageOf(error)}`))
-              },
-            },
-            onDelete: () => setDeleting(true),
-          } : undefined}
-        />
-      )}
-      composer={(
-        <Composer
-          ref={composer}
-          onSend={sendMessage}
-          commands={commands.commands}
-          onPasteLinks={pasteLinks}
-          addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
-          stop={chat.status === 'ready' && chat.agentActive ? {
-            waiting: chat.waiting,
-            onStop: () => {
-              if (connection?.blocked()) return false
-              setProblem(undefined)
-              actions.dismissSendError()
-              return actions.stopAgent().catch((error: unknown) => {
-                setProblem(`The agent couldn’t be stopped: ${error instanceof Error ? error.message : String(error)}`)
-                throw error
-              })
-            },
-          } : undefined}
-          problem={sendProblem === undefined ? undefined : {
-            message: sendProblem,
-            onDismiss: () => {
-              setProblem(undefined)
-              actions.dismissSendError()
-            },
-          }}
-          reply={reply && {
-            quote: reply.quote,
-            onShow: () => list.current?.scrollToMessage(reply.key),
-            onCancel: () => setReply(undefined),
-          }}
-        />
-      )}
+      header={header}
+      composer={composerElement}
     >
       {chat.status === 'ready' && (
         <MessageList
           ref={list}
           messages={messages}
           streaming={chat.activity !== undefined}
-          history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: actions.loadEarlier }}
+          history={history}
         >
           {/* Under the conversation, so what an answer produced is never left behind by what is said
               after it. These come and go, each in a row that opens and closes around it. */}
@@ -342,16 +375,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       {adding && (
         <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
       )}
-      <DeleteChatDialog
-        open={deleting && !gone}
-        onOpenChange={setDeleting}
-        title={title || 'Untitled chat'}
-        onConfirm={async () => {
-          if (connection?.blocked()) return
-          await deleteChat(chatId)
-          leave()
-        }}
-      />
+      {deleteDialog}
     </ChatLayout>
   )
 }

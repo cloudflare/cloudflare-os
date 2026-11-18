@@ -1,4 +1,5 @@
-import ReactMarkdown, { type Components } from 'react-markdown'
+import type { ReactElement } from 'react'
+import renderMarkdown, { type Components, type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { isShownImage, markdownUrl } from './webUrl'
 
@@ -35,6 +36,25 @@ const COMPONENTS: Components = {
   },
 }
 
+const OPTIONS: Readonly<Options> = { remarkPlugins: [remarkGfm], skipHtml: true, urlTransform: markdownUrl, components: COMPONENTS }
+
+// What each text was drawn as, the most recently drawn last. Parsing is most of what drawing a
+// message costs, and the same text is drawn again and again: each time a reply streams past the
+// messages above it, and each time a long conversation's page scrolls back into view. React
+// elements are only a description, so one can be drawn in any number of places.
+const drawn = new Map<string, ReactElement>()
+const DRAWN_KEPT = 400
+
+const drawnOf = (text: string) => {
+  let element = drawn.get(text)
+  if (element) drawn.delete(text)
+  // `Markdown` uses no hooks, so it is called as the function it is, outside any render's state.
+  else element = renderMarkdown({ ...OPTIONS, children: text })
+  drawn.set(text, element)
+  if (drawn.size > DRAWN_KEPT) drawn.delete(drawn.keys().next().value!)
+  return element
+}
+
 /**
  * Renders Markdown (GitHub flavour), e.g. an assistant's reply, which may say anything: raw HTML is
  * not rendered, links only go to web and mail addresses, and images from elsewhere are links.
@@ -42,8 +62,6 @@ const COMPONENTS: Components = {
  */
 export const Markdown = ({ children, onTint = false }: { children: string; onTint?: boolean }) => (
   <div className={`${PROSE} ${onTint ? CODE_ON_TINT : CODE}`}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={markdownUrl} components={COMPONENTS}>
-      {children}
-    </ReactMarkdown>
+    {drawnOf(children)}
   </div>
 )

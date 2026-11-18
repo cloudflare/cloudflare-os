@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { memo, useEffect, useId, useLayoutEffect, useRef } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { DEFAULT_REACH, RAINDROPS, startMascotMotion, type MascotEmotion, type MascotMotion } from './mascotMotion'
 import { raindrop, sparkle } from './shapes'
@@ -66,8 +66,11 @@ const describe = (emotion: MascotEmotion) =>
  * happy and sad. It leans towards a pointer that comes near, or a finger on the screen near it,
  * stays still for people who ask for reduced motion, and rests while off screen. It is drawn in the colours of the viewer's own
  * messages: their fill for the body, their text colour for the sparkle and the face.
+ *
+ * Memoized: it is drawn by its motion, not by React, so its parent rendering again (a chat, for
+ * every piece of a reply) has nothing to change in it.
  */
-export const Mascot = ({ emotion, shown = true, interactive, color = 'contrast', reach = DEFAULT_REACH, onShake, className }: MascotProps) => {
+export const Mascot = memo(function Mascot({ emotion, shown = true, interactive, color = 'contrast', reach = DEFAULT_REACH, onShake, className }: MascotProps) {
   const frame = useRef<HTMLDivElement>(null)
   const motion = useRef<MascotMotion>(undefined)
   const interior = useId()
@@ -162,4 +165,4 @@ export const Mascot = ({ emotion, shown = true, interactive, color = 'contrast',
       </button>
     </div>
   )
-}
+})

@@ -668,6 +668,16 @@ export class ChatSession {
     this.#publish({ status: 'failed', message })
   }
 
+  // The same list while what waits is the same, so that what shows it is not drawn again for each
+  // piece of a reply that streams in.
+  #waiting: string[] = []
+  #waitingTexts() {
+    const texts = this.#steers.filter(({ unread }) => unread).map(({ text }) => text)
+    const same = texts.length === this.#waiting.length && texts.every((text, index) => text === this.#waiting[index])
+    if (!same) this.#waiting = texts
+    return this.#waiting
+  }
+
   #publishReady() {
     if (this.#deleted) return this.#publish(DELETED)
     if (this.#failure !== undefined) return this.#publish({ status: 'failed', message: this.#failure })
@@ -680,7 +690,7 @@ export class ChatSession {
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
       agentActive: this.#agentActive,
-      waiting: this.#steers.filter(({ unread }) => unread).map(({ text }) => text),
+      waiting: this.#waitingTexts(),
       pinned: this.#feed.pinned,
       sendError: this.#sendError,
       keep: this.#agentActive ? undefined : this.#keep,

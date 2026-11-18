@@ -601,8 +601,8 @@ the `output` scenario's document follows a template a version behind, whose upda
 in the scenario's own chat.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
-here (who has access, publishing it as a template, its automations, changing what it is drawn as)
-is not here yet.
+here (who has access, publishing it as a template, its automations, changing what it is drawn as,
+switching it to another template, and updating one whose template is not known) is not here yet.
 
 The More menu also has Export, for everyone it is shown to, as the backend lets whoever can use a
 gadget export it (`useGadgetExports`, over `GadgetExports`, plain and tested): it opens to what the
@@ -619,10 +619,6 @@ after asking (`UpdateFileDialog`). What became of an export floats over the foot
 (`PaneStatus`): under way, saved with the way to open it, or why it failed. The `output`
 scenario's gadget exports as Markdown and CSV, and fails as a PDF; the scripted chats offer no
 service to save to.
-
-here (who has access, publishing it as a template, its exports and automations, changing what it
-is drawn as, switching it to another template, and updating one whose template is not known) is
-not here yet.
 
 ## Lists
 

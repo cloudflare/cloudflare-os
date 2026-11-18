@@ -25,11 +25,20 @@ export const useMessageScroll = () => {
     // The floating header obscures the first strip of the scroller. Anchor the message the reader
     // can actually see, rather than a sliver of the previous row hidden behind that header.
     const visibleTop = top + (Number.parseFloat(getComputedStyle(scroll).getPropertyValue('--header-height')) || 0)
-    const visible = (selector: string) => [...content.querySelectorAll<HTMLElement>(selector)]
-      .find((element) => {
-        const rect = element.getBoundingClientRect()
-        return rect.bottom > visibleTop && rect.top < top + scroll.clientHeight
-      })
+    // The first that can be seen. They are one under another, so it is searched for by halves: a
+    // long conversation has hundreds, and this runs for every scroll event.
+    const visible = (selector: string) => {
+      const elements = content.querySelectorAll<HTMLElement>(selector)
+      let low = 0
+      let high = elements.length
+      while (low < high) {
+        const middle = (low + high) >> 1
+        if (elements[middle]!.getBoundingClientRect().bottom > visibleTop) high = middle
+        else low = middle + 1
+      }
+      const element = elements[low]
+      return element && element.getBoundingClientRect().top < top + scroll.clientHeight ? element : undefined
+    }
     // The page survives unmounting its rows. It is also the fallback when an updated message is
     // removed or when a fast scrollbar drag lands on a spacer that has not mounted its rows yet.
     const start = content.getBoundingClientRect().top
