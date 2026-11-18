@@ -1,4 +1,5 @@
 import type {
+  ActionHistoryPage,
   BoundHookInfo,
   ActionLogEntry,
   ActionsSubscriber,
@@ -143,6 +144,9 @@ export class MockOverseer {
   #actionSubscribers = new Set<ActionEvents>()
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
+  // What the gadget asks outside the chat, by id (`Scenario.gadgetAsks`).
+  #gadgetAsks: Scenario['gadgetAsks']
+  #outside = new Map<number, ActionLogEntry & { type: 'action' }>()
   #gadgets = new Map<number, MockGadget>()
   // What each gadget's code was kept as since its made-up history, by its id: saved edits, and
   // what someone else kept.
@@ -185,6 +189,8 @@ export class MockOverseer {
     this.#owner = scenario.owner
     this.#restricted = scenario.restricted === true
     this.#templateUpdate = scenario.templateUpdate ?? false
+    this.#gadgetAsks = scenario.gadgetAsks
+    for (const entry of scenario.gadgetAsks?.waiting ?? []) if (entry.type === 'action') this.#outside.set(entry.id, entry)
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#worktrees = scenario.worktrees ?? {}
@@ -231,12 +237,19 @@ export class MockOverseer {
           return (id: number) => ({
             ...this.#gadget(id).open(handle),
             // The agents it starts, which are all it is bound to here.
-            listBindings: async () => this.#agents.setups
-              .filter(({ gadget }) => gadget?.id === id)
-              .map(({ spawnerId, name: title, gadget }) => ({ name: gadget!.bindingName, target: spawnerId, resourceTitle: title })),
             applyBlueprint: (blueprintId: string) => this.#proposeUpdate(id, blueprintId, handle),
             setTitle: (title: string) => this.#renameGadget(id, title, handle),
             remove: () => this.#removeGadget(id, handle),
+            // The agents it starts, and the connection its asks go through.
+            listBindings: async () => {
+              if (handle.broken) throw handle.broken
+              return [
+                ...this.#agents.setups
+                  .filter(({ gadget }) => gadget?.id === id)
+                  .map(({ spawnerId, name: title, gadget }) => ({ name: gadget!.bindingName, target: spawnerId, resourceTitle: title })),
+                ...(this.#gadgetAsks ? [this.#gadgetAsks.connection] : []),
+              ]
+            },
           })
         }
         const value: unknown = Reflect.get(target, name, target)
@@ -263,7 +276,7 @@ export class MockOverseer {
     let gadget = this.#gadgets.get(id)
     if (!gadget) {
       const ui = () => this.#filesAt(this.#head(id))?.['client.js'] ?? UI_CODE
-      this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp(), ui)))
+      this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp(), ui, (task) => this.#ask(task))))
       for (const subscriber of this.#workpieceSubscribers) subscriber.entry(this.#gadgetSummary(id))
     }
     return gadget
@@ -514,12 +527,6 @@ export class MockOverseer {
     return [...(this.#deleted ? [] : [this.#metadata]), ...this.#agents.runs]
   }
 
-  /** The actions waiting: here, one for each of the agents' runs that has one. */
-  async listActions() {
-    const entries = (this.#agents.pending ?? []).map((chatId, index) =>
-      ({ id: 9000 + index, type: 'action', chatId, state: 'pending', resourceTitle: 'Mail', createdAt: new Date() }) as unknown as ActionLogEntry)
-    return { entries }
-  }
 
   /** Deletes the chat, which everyone subscribed hears of, as the server tells them. */
   async deleteChat(chatId: number) {
@@ -615,12 +622,24 @@ export class MockOverseer {
     this.player.fire('onSend')
   }
 
+  /**
+   * What waits outside the chat, which is all a gadget's asks are read from here; and one for each
+   * of the agents' runs that has one.
+   */
+  async listActions(): Promise<ActionHistoryPage> {
+    const runs = (this.#agents.pending ?? []).map((chatId, index) =>
+      ({ id: 9000 + index, type: 'action', chatId, state: 'pending', resourceTitle: 'Mail', createdAt: new Date() }) as unknown as ActionLogEntry)
+    return { entries: [...[...this.#outside.values()].filter(({ state }) => state === 'pending').toSorted((a, b) => b.id - a.id), ...runs] }
+  }
+
   async approveAction(id: number) {
+    if (this.#outside.has(id)) return this.#resolveOutside(id, { state: 'approved', resolvedBy: VIEWER })
     this.#resolve(id, { state: 'approved', resolvedBy: VIEWER })
     this.player.fire('onApprove')
   }
 
   async rejectAction(id: number) {
+    if (this.#outside.has(id)) return this.#resolveOutside(id, { state: 'rejected', resolvedBy: VIEWER })
     this.#resolve(id, { state: 'rejected', resolvedBy: VIEWER })
     this.player.fire('onDeny')
   }
@@ -631,6 +650,55 @@ export class MockOverseer {
     const pending = this.#messages.filter((message) => this.#autoApproves(message))
     for (const { actionId } of pending) this.#resolve(actionId, { state: 'approved', resolvedBy: VIEWER, autoApproved: true })
     if (pending.length) this.player.fire('onApprove')
+    for (const entry of this.#outside.values()) {
+      if (this.#ruleApplies(entry)) this.#resolveOutside(entry.id, { state: 'approved', resolvedBy: VIEWER, autoApproved: true })
+    }
+  }
+
+  async removeAutoApprovedActionKind(gatekeeperId: number, tag: string) {
+    this.#rules.delete(`${gatekeeperId}:${tag}`)
+  }
+
+  /**
+   * The gadget asks to write the task ticked off into the connection it is bound to, outside the
+   * chat, as it would used on its own page. A standing rule lets it through as it is made.
+   */
+  #ask(task: string) {
+    const asks = this.#gadgetAsks
+    if (!asks) return
+    const id = Math.max(1000, ...this.#outside.keys()) + 1
+    const entry: ActionLogEntry & { type: 'action' } = {
+      id,
+      type: 'action',
+      state: 'pending',
+      gatekeeperId: asks.connection.target,
+      resourceTitle: asks.connection.resourceTitle,
+      createdAt: new Date(),
+      description: {
+        title: `Append “${task}” to ${asks.connection.resourceTitle}`,
+        description: `Adds one line at the end of **${asks.connection.resourceTitle}**.`,
+        fields: [{ label: 'Text', kind: 'text', value: `Done: ${task}` }],
+        descriptionIsComplete: true,
+        implementsRevert: false,
+        autoApprovable: true,
+        actionKind: { tag: 'append', label: 'Append to document' },
+      },
+    }
+    this.#outside.set(id, entry)
+    this.#actionSubscribers.forEach((subscriber) => subscriber.entry(entry))
+    if (this.#ruleApplies(entry)) setTimeout(() => this.#resolveOutside(id, { state: 'approved', resolvedBy: VIEWER, autoApproved: true }), 300)
+  }
+
+  #ruleApplies({ state, gatekeeperId, description }: ActionLogEntry & { type: 'action' }) {
+    return state === 'pending' && description.autoApprovable && this.#rules.has(`${gatekeeperId}:${description.actionKind?.tag}`)
+  }
+
+  #resolveOutside(id: number, change: Pick<ActionLogEntry & { type: 'action' }, 'state' | 'resolvedBy' | 'autoApproved'>) {
+    const entry = this.#outside.get(id)
+    if (entry?.state !== 'pending') throw new Error(`Action is not pending: ${id}`)
+    const resolved = { ...entry, ...change, appliedAt: new Date() }
+    this.#outside.set(id, resolved)
+    this.#actionSubscribers.forEach((subscriber) => subscriber.entry(resolved))
   }
 
   /** The hooks the conversation's cards set up, each waking the scenarios' one gadget. */

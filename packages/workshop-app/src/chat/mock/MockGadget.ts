@@ -30,7 +30,7 @@ type Task = { text: string; done: boolean }
 
 /** The gadget's server side, which its page calls over the connection it asks for. */
 class MockGadgetServer extends RpcTarget {
-  constructor(private readonly document: { title: string; tasks: Task[] }) {
+  constructor(private readonly document: { title: string; tasks: Task[] }, private readonly onDone?: (task: string) => void) {
     super()
   }
 
@@ -41,6 +41,7 @@ class MockGadgetServer extends RpcTarget {
   toggle(index: number) {
     const task = this.document.tasks[index]
     if (task) task.done = !task.done
+    if (task?.done) this.onDone?.(task.text)
     return this.document
   }
 
@@ -85,11 +86,12 @@ render(await gadget.getDocument())
  * A gadget in the fake workspace, whatever its id: a review's to-do list, which exports as a
  * checklist or a table (`MOCK_EXPORT_FORMATS`). `backUp` waits for a workspace that is restarting
  * to be back, and `ui` is its screen's code as it was last kept, which edits saved change.
+ * `onDone` is told of each task ticked off, which a gadget connected to a document asks to note there.
  */
 export class MockGadget {
   #document: { title: string; tasks: Task[] }
 
-  constructor(title: string, private readonly backUp: () => Promise<void>, private readonly ui: () => string = () => UI_CODE) {
+  constructor(title: string, private readonly backUp: () => Promise<void>, private readonly ui: () => string = () => UI_CODE, private readonly onDone?: (task: string) => void) {
     this.#document = {
       title,
       tasks: [
@@ -142,7 +144,7 @@ export class MockGadget {
       },
       connectToGadget: () => pipelined((async () => {
         await reachable()
-        const server = new MockGadgetServer(this.#document)
+        const server = new MockGadgetServer(this.#document, this.onDone)
         return Object.assign(server, { onRpcBroken: (callback: (error: unknown) => void) => void handle.onBroken.add(callback) })
       })()),
       onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : void handle.onBroken.add(callback)),

@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
 import { DeleteGadgetDialog } from '@/blocks/DeleteGadgetDialog'
 import { useGadgetChanges } from '@/gadgets/useGadgetChanges'
+import { gadgetKey } from '@/gadgets/WaitingAsks'
+import { useRefreshedWaitingAsks, useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -38,6 +40,8 @@ export type LibraryPaneProps = {
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
+// How old what the gadgets ask may be when the page is come to before it is read again.
+const WAITING_MAX_AGE = 60_000
 
 /**
  * The Library page (`LibraryView`) over what it shows: everything made in the user's workspaces
@@ -58,6 +62,9 @@ export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpen
   useDocumentTitle('Library')
   const changes = useGadgetChanges()
   const connection = useConnectionNotice()
+  // What each asks of the user, read again as the page is come to.
+  useRefreshedWaitingAsks(WAITING_MAX_AGE)
+  const waiting = useWaitingAsks()
   const workspaces = useWorkspaces()
   const [edits, setEdits] = useState(NO_EDITS)
   // Why the last rename was not made.
@@ -131,6 +138,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpen
         looks={looks}
         me={{ name: user.name, avatarUrl }}
         actionsOf={actionsOf}
+        waitingOf={(output) => waiting.byGadget.get(gadgetKey(output.workspaceId, output.workpieceId)) ?? 0}
         problem={problem}
       />
       {deleting && (

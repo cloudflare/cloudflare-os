@@ -331,6 +331,12 @@ export type Scenario = {
    * end on an error, and those with an action of their own waiting have one.
    */
   agents?: { setups: AgentSetup[]; runs: AiChatMetadata[]; failed?: number[]; pending?: number[] }
+  /**
+   * What the chat's gadget asks outside any chat, as when it is used on its own page or by
+   * someone it was shared with: through the connection it is bound to, those waiting from the
+   * start, and one more each time one of its tasks is ticked off.
+   */
+  gadgetAsks?: { connection: { name: string; target: number; resourceTitle: string; vendorId?: string }; waiting: ActionLogEntry[] }
 }
 
 const CHUNK_DELAY = 45

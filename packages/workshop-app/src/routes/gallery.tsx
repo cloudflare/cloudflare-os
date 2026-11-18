@@ -38,6 +38,7 @@ import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ChatMenuPreview } from '@/gallery/ChatMenuPreview'
 import { CodePreview } from '@/gallery/CodePreview'
 import { ExportPreview } from '@/gallery/ExportPreview'
+import { GadgetAskPreview } from '@/gallery/GadgetAskPreview'
 import { GadgetPagePreview } from '@/gallery/GadgetPagePreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
@@ -377,6 +378,7 @@ function Gallery() {
       <AddConnectionPreview />
       <GadgetSettingsPreview />
       <ExportPreview />
+      <GadgetAskPreview />
       <SharingPreview />
       <WorkspaceRemovalPreview />
       <SettingsPreview />
@@ -405,7 +407,7 @@ function Gallery() {
                   setSidebarPage(undefined)
                 }}
                 connections={[0, 1].map((logo) => <span key={logo} className="size-5 rounded-full bg-kumo-fill" />)}
-                library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library') }}
+                library={{ current: sidebarPage === 'library', onOpen: () => setSidebarPage('library'), waiting: 3 }}
                 workspacesPage={{ current: sidebarPage === 'workspaces', onOpen: () => setSidebarPage('workspaces') }}
                 connectionsPage={{ current: sidebarPage === 'connections', onOpen: () => setSidebarPage('connections') }}
                 // The user's own button opens the settings and leaves them again.

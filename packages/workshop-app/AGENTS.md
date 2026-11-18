@@ -707,6 +707,20 @@ phone it is its icon alone and the crumb gives way to the back arrow. The backen
 which chat made a gadget, so nothing claims to know it. The design record is
 `plans/gadget-to-chat.md`; the gallery has it as "SidePane as a gadget's page".
 
+What a gadget asks to do through its connections is answered where the gadget is: beside a chat,
+as its page and in full screen, by `aside/GadgetAskDock.tsx` (UI `blocks/GadgetAsk.tsx`) over its
+foot, shown once something is asked. An ask counts as the gadget's when it came from one of its
+agents, or through one of its bindings' targets with no chat (`gadgets/askGroups.ts`, tested).
+Asks from the chat beside it are left to that chat's feed while it is in sight. The asks are
+grouped by kind and resource, named by the resource's title, with Don't allow, Only this time and
+Always allow (Undo for eight seconds). `gadgets/GadgetAsks.ts` (tested) keeps them live, holding
+arrivals back a second, as a rule may let them through. Asks waiting elsewhere are counted by
+`gadgets/WaitingAsks.ts` (tested): open gadgets report live, a sweep reads the workspaces one
+builds in. The count shows on the sidebar's Library row and as `WaitingBadge` on Library rows and
+cards. The mock scenario `gadget-asks` has three waiting, and ticking a task off asks again; the
+gallery has it as "GadgetAsk". The design record, with what the backend can't say, is
+`plans/gadget-approvals.md`.
+
 ## A gadget's settings
 
 A gadget's More menu, beside a chat or as its own page, has View code for whoever may build in

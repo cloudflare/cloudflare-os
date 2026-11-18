@@ -24,6 +24,7 @@ import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { asideItemIcon } from './asideItemIcon'
 import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
+import { GadgetAskDock } from './GadgetAskDock'
 import { itemChats } from './itemChats'
 import { lastShown } from './lastShown'
 import { useFilePreview, type FileState } from './useFilePreview'
@@ -151,6 +152,11 @@ export const AsidePane = (props: AsidePaneProps) => {
     return () => window.removeEventListener('keydown', pressed)
   }, [fullScreen, onFullScreenChange])
 
+  // Exported by whoever can use it, and saved to their accounts by whoever builds there.
+  const exports = useGadgetExports(gadget, title, { saves: readsCode })
+  // A refused rename over an export's progress, which goes on meanwhile.
+  const status = edits.status ?? exports.status
+
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.output.type === 'worktree' ? (
@@ -183,10 +189,20 @@ export const AsidePane = (props: AsidePaneProps) => {
           </motion.div>
         )}
       </AnimatePresence>
+      {gadget && (
+        <GadgetAskDock
+          key={item.key}
+          gadget={gadget}
+          title={title}
+          enabled={readsCode}
+          // On a narrow screen what is beside a chat covers it.
+          chatInSight={props.placement === 'beside' && !narrow}
+          restricted={listed?.containsRestrictedData === true}
+          raised={status !== undefined}
+        />
+      )}
     </>
   )
-  // Exported by whoever can use it, and saved to their accounts by whoever builds there.
-  const exports = useGadgetExports(gadget, title, { saves: readsCode })
   // A newer version of the template it follows, which its menu offers to update it to. Only a
   // gadget with code of its own takes one: one still waiting in a chat has none. Its settings
   // offer the update whether or not there is one.
@@ -233,8 +249,6 @@ export const AsidePane = (props: AsidePaneProps) => {
       onNewChat: () => chatsWith.onNewChat(title),
     },
   }
-  // A refused rename over an export's progress, which goes on meanwhile.
-  const status = edits.status ?? exports.status
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,

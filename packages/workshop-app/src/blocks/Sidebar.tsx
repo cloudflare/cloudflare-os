@@ -22,8 +22,11 @@ export type SidebarProps = {
   notice?: string
   /** Logos of the connected apps, shown in the connect button, which only `icons` has for now. */
   connections?: ReactNode
-  /** The library's page, and whether it is the one showing. */
-  library?: { current: boolean; onOpen: () => void }
+  /**
+   * The library's page, and whether it is the one showing, with how many things the user's
+   * gadgets ask that wait on them (`waiting`), which it marks.
+   */
+  library?: { current: boolean; onOpen: () => void; waiting?: number }
   /** The page listing every workspace, and whether it is the one showing. */
   workspacesPage?: { current: boolean; onOpen: () => void }
   /** The page listing what is connected and what could be, and whether it is the one showing. */
@@ -60,7 +63,19 @@ type NavRowProps = {
   'aria-label'?: string
   current?: boolean
   onClick?: () => void
+  /** How many wait on the user there, said at the end of the row. */
+  waiting?: number
 }
+
+/** What a page's button says of what waits there, as it is read out. */
+const waitingLabel = (label: string, waiting = 0) => (waiting > 0 ? `${label}, ${waiting} waiting on you` : undefined)
+
+/** How many wait, as a quiet count in the colour of something to look at. */
+const WaitingCount = ({ count, className }: { count: number; className?: string }) => (
+  <span aria-hidden="true" className={cn('grid h-5 min-w-5 place-items-center rounded-full bg-kumo-warning-tint px-1.5 text-xs/none font-medium text-kumo-default tabular-nums', className)}>
+    {count > 99 ? '99+' : count}
+  </span>
+)
 
 /**
  * A round button with its name beside it. The whole row is the button, filled while pointed at or
@@ -68,7 +83,7 @@ type NavRowProps = {
  * (`-m-1.5`), so that the circles stay in line with the buttons over the list. In `NavRows`, the
  * fill is the shared highlight's.
  */
-const NavRow = ({ icon, label, current, onClick, ...props }: NavRowProps) => (
+const NavRow = ({ icon, label, current, onClick, waiting = 0, ...props }: NavRowProps) => (
   <button
     type="button"
     data-nav-row=""
@@ -86,6 +101,7 @@ const NavRow = ({ icon, label, current, onClick, ...props }: NavRowProps) => (
       {icon}
     </span>
     <span className="min-w-0 flex-1 truncate">{label}</span>
+    {waiting > 0 && <WaitingCount count={waiting} />}
   </button>
 )
 
@@ -135,14 +151,18 @@ export const Sidebar = ({
       className="aria-[current=page]:bg-kumo-tint"
     />
   )
+  const waiting = library?.waiting ?? 0
   const libraryButton = (
-    <Button
-      icon={CirclesFourIcon}
-      aria-label="Library"
-      aria-current={library?.current ? 'page' : undefined}
-      onClick={library?.onOpen}
-      className="aria-[current=page]:bg-kumo-tint"
-    />
+    <span className="relative flex">
+      <Button
+        icon={CirclesFourIcon}
+        aria-label={waitingLabel('Library', waiting) ?? 'Library'}
+        aria-current={library?.current ? 'page' : undefined}
+        onClick={library?.onOpen}
+        className="aria-[current=page]:bg-kumo-tint"
+      />
+      {waiting > 0 && <WaitingCount count={waiting} className="pointer-events-none absolute -top-1 -right-1 ring-2 ring-kumo-canvas" />}
+    </span>
   )
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch} />
   const account = (
@@ -209,7 +229,14 @@ export const Sidebar = ({
         <footer className="mt-0.5 -mb-1.5">
           <NavRows>
             <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
-            <NavRow icon={<CirclesFourIcon />} label="Library" current={library?.current} onClick={library?.onOpen} />
+            <NavRow
+              icon={<CirclesFourIcon />}
+              label="Library"
+              aria-label={waitingLabel('Library', waiting)}
+              current={library?.current}
+              onClick={library?.onOpen}
+              waiting={waiting}
+            />
             <NavRow icon={<PuzzlePieceIcon />} label="Connections" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
             <NavRow
               icon={<Avatar name={user.name} src={user.avatarUrl} />}

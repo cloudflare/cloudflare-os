@@ -66,6 +66,10 @@ waiting (`awaitingDecision`) are done: agents as entities, `plans/agents.md`.
 | Template cards name their services without logos | scope | none |
 | Live Google Docs/Sheets/Slides previews cut | user decision | previews API |
 | Approvals tray cut | user decision; nothing to approve without previews | none |
+| A gadget's asks are tied to it by what it reaches, so two gadgets on one resource both show a chat-less ask, and none says who asked | `ActionLogEntry` has no gadget or initiator (`plans/gadget-approvals.md`) | `gadgetId` and an initiator on `ActionLogEntry` |
+| Asks waiting elsewhere are counted by opening each workspace one is a member of, which wakes it | no waiting count on `OutputSummary` | a waiting count there, or a subscription across workspaces |
+| Someone who only uses a gadget isn't told what their use waits on | use sessions get no action log | read-only own-pending for use sessions |
+| Always allow on a gadget's ask covers that resource for the whole workspace | rules are per gatekeeper | per-gadget rules |
 | Right-edge rail and "In this chat" pane cut | user decision | none |
 | Agent prompt changes cut | user decision | prompt text in the backend |
 | No model picker in the composer, only in settings | user decision, matches the scaffold's owner | none |
