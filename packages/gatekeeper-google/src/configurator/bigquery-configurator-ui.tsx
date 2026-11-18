@@ -130,7 +130,7 @@ let overrideFor: string | null = null;
 let letGo: string | null = null;
 
 /** The data project of a pre-filled query project, while `target` is the choice it arrived with. */
-function overriddenProject(target: string | null): string | undefined {
+function overriddenProject(target: string | null | undefined): string | undefined {
   return sharedProject(target) === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
 }
 
@@ -171,7 +171,11 @@ export default {
     // Until the picker's lookup of a pre-filled choice says whether queries can run in its project,
     // the form is not ready: a connection made before then might not be able to query.
     const runs = runsQueries.get(ref.projectId);
-    return runs === true || (runs === false && typeof queryProject === "string" && queryProject.length > 0);
+    const chosen = typeof queryProject === "string" && queryProject.length > 0;
+    // A pre-filled query project being typed over waits for its replacement: only clearing the
+    // field bills the data project instead.
+    if (runs === true) return chosen || overriddenProject(target) === undefined;
+    return runs === false && chosen;
   },
 
   resourceUrl({ values: { target, queryProject } }) {

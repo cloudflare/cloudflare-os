@@ -175,14 +175,19 @@ describe("the query project", () => {
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
     expect(frame.autocomplete()).toMatchObject({ value: "other", optional: true });
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales?queryProject=other");
-    // Typing over the choice abandons it without taking the field away; another can be picked.
+    // Typing over the choice abandons it without taking the field away, and the form waits for
+    // another to be picked; only clearing the field bills the data project instead.
     frame.autocomplete().onChange(null);
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
+    expect(frame.ready()).toBe(false);
     frame.autocomplete().onChange("third");
+    expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales?queryProject=third");
+    frame.autocomplete().onChange(null);
     frame.autocomplete().onClear();
     expect(frame.values()).toEqual({ target: "dataset:mine/sales", queryProject: null });
     expect(frame.fields()).toEqual(["What to connect"]);
+    expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales");
   });
 
