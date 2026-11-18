@@ -14,7 +14,7 @@ import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
-import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
+import { PREVIEW_FILES } from "./previews/files";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
@@ -52,7 +52,6 @@ import type {
 import {
   SHEETS_RENDERING_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "./type-bundle";
-import SHEETS_PREVIEW_CLIENT from "./previews/sheets/client.txt";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import SHEETS_RENDERING_TYPES_CODE from "./sheets-rendering-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
@@ -199,7 +198,7 @@ export class GoogleSheetsGatekeeperImpl
   }
 
   async getPreviewUi(): Promise<UiFile[]> {
-    return [{ path: "client.js", code: SHEETS_PREVIEW_CLIENT }, ...SHARED_PREVIEW_FILES];
+    return PREVIEW_FILES.sheets;
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
