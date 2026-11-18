@@ -238,7 +238,13 @@ export async function getGoogleAccountProfile(
     throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
   }
 
-  const data = await response.json() as Partial<GoogleAccountProfile>;
+  // A parse error can quote the body, which is not to be logged.
+  let data: Partial<GoogleAccountProfile>;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error("Google user info was not JSON.");
+  }
   if (!data.sub) throw new Error("Google user info did not include a stable account ID.");
   return data as GoogleAccountProfile;
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exchangeAuthCode, getAccessToken } from "../src/google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountProfile } from "../src/google-api";
 
 const OAUTH_REDIRECT_URI = "https://gatekeeper-google.gadgets-staging.workers.dev/oauth";
 
@@ -67,5 +67,14 @@ describe("Google access token refresh", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("upstream said token=abc", { status: 503 })));
     await expect(getAccessToken("refresh-token", "client-id", "client-secret"))
       .rejects.toThrow(/^Failed to refresh access token \[http=503\]$/);
+  });
+});
+
+describe("Google user info", () => {
+  // A JSON parse error quotes the body, and this one is logged when a grant's holder is recorded.
+  it("says a malformed answer was not JSON, without quoting it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("sub=ada token=abc", { status: 200 })));
+    await expect(getGoogleAccountProfile("access-token"))
+      .rejects.toThrow(/^Google user info was not JSON\.$/);
   });
 });
