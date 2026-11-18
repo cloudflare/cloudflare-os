@@ -1,4 +1,5 @@
 import { WarningCircleIcon } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { Button } from './Button'
 
 export type BannerProps = {
@@ -8,6 +9,11 @@ export type BannerProps = {
   description?: string
   /** The way to do that from here. */
   action?: { label: string; disabled?: boolean; onSelect: () => void }
+  /**
+   * What it is: something that went wrong (`danger`), or something waiting on the reader that
+   * nothing went wrong in (`warning`), in the colour of a caution, its writing the page's own.
+   */
+  tone?: 'danger' | 'warning'
 }
 
 /**
@@ -21,14 +27,17 @@ export type BannerProps = {
  * round as the app's buttons are. The icon and the title are level with the button's
  * middle, with what there is to do under the title.
  */
-export const Banner = ({ title, description, action }: BannerProps) => (
+export const Banner = ({ title, description, action, tone = 'danger' }: BannerProps) => (
   <div
-    role="alert"
+    role={tone === 'danger' ? 'alert' : 'status'}
     // As round as the app's other surfaces, or as what it is in says a surface in it is (a
     // dialog). The button is a size under the app's, as it is part of what the banner says.
-    className="flex items-start gap-3 rounded-[var(--surface-radius,1.5rem)] bg-kumo-danger-tint p-2 ps-4 text-base leading-snug text-kumo-danger [--banner-button:calc(var(--control-size)-0.25rem)]"
+    className={cn(
+      'flex items-start gap-3 rounded-[var(--surface-radius,1.5rem)] p-2 ps-4 text-base leading-snug [--banner-button:calc(var(--control-size)-0.25rem)]',
+      tone === 'danger' ? 'bg-kumo-danger-tint text-kumo-danger' : 'bg-kumo-warning-tint text-kumo-default',
+    )}
   >
-    <span className="flex h-(--banner-button) shrink-0 items-center">
+    <span className={cn('flex h-(--banner-button) shrink-0 items-center', tone === 'warning' && 'text-kumo-warning')}>
       <WarningCircleIcon aria-hidden="true" className="size-5" />
     </span>
     {/* Its first line where the middle of the button is, and as far from the banner's foot. */}
@@ -41,7 +50,12 @@ export const Banner = ({ title, description, action }: BannerProps) => (
         variant="ghost"
         disabled={action.disabled}
         onClick={action.onSelect}
-        className="h-(--banner-button) bg-kumo-danger/12 px-3.5 text-sm text-kumo-danger not-data-disabled:hover:bg-kumo-danger/20"
+        className={cn(
+          'h-(--banner-button) px-3.5 text-sm',
+          tone === 'danger'
+            ? 'bg-kumo-danger/12 text-kumo-danger not-data-disabled:hover:bg-kumo-danger/20'
+            : 'bg-kumo-warning/20 text-kumo-default not-data-disabled:hover:bg-kumo-warning/30',
+        )}
       >
         {action.label}
       </Button>

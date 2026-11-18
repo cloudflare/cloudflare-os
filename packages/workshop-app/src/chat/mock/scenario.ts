@@ -10,6 +10,7 @@ import type {
   BlueprintPublicInfo,
 } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import type { AgentSetup } from '@/automations/agents'
 
 /** Who the mock backend says is signed in. */
 export const VIEWER: AiChatAuthorInfo = { type: 'user', id: 'ada@example.com', name: 'Ada Lovelace' }
@@ -314,6 +315,11 @@ export type Scenario = {
    * chat, as the chat a real update makes would hold it.
    */
   templateUpdate?: boolean
+  /**
+   * The agents the workspace's gadgets start, with their runs among its chats: those that failed
+   * end on an error, and those with an action of their own waiting have one.
+   */
+  agents?: { setups: AgentSetup[]; runs: AiChatMetadata[]; failed?: number[]; pending?: number[] }
 }
 
 const CHUNK_DELAY = 45

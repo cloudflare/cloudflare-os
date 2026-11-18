@@ -45,6 +45,8 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
+  /** Goes to the page of the agent whose run the chat is, by its key, where it is one. */
+  onOpenAgent?: (agentKey: string) => void
   /** Opens the chat's settings, from its title, or at what it set up to run by itself, from the header's clock. */
   onOpenSettings?: (tab?: 'automations') => void
   /**
@@ -78,7 +80,7 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
 
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
   const keepBindings = useBindingTitles(workspaceId, chatId, chat.status === 'ready' ? chat.keep?.changes.bindings ?? NO_BINDINGS : NO_BINDINGS)
@@ -242,6 +244,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const requireParticipation = ready && chat.notificationsRequireParticipation
   const openSettings = useHandler((tab?: 'automations') => onOpenSettings?.(tab))
   const openWorkspace = useHandler(onOpenWorkspace)
+  // The agent whose run it is, by what the header shows of it, so that each update does not draw it again.
+  const agentKey = ready ? chat.agent?.key : undefined
+  const agentName = ready ? chat.agent?.name : undefined
+  const openAgent = useHandler(() => agentKey !== undefined && onOpenAgent?.(agentKey))
+  const hasAgentPage = onOpenAgent !== undefined
   const changeNotifications = useHandler((enabled: boolean) => {
     setNotice(undefined)
     if (connection?.blocked()) return
@@ -252,6 +259,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const header = useMemo(() => (workspaceTitle !== undefined || title) && (
     <ChatHeader
       workspace={workspaceTitle !== undefined ? { id: workspaceId, title: workspaceTitle, label: workspaceLabel(workspaceTitle), look, onOpen: openWorkspace } : undefined}
+      agent={agentKey !== undefined && agentName !== undefined ? { agentKey, name: agentName, onOpen: hasAgentPage ? openAgent : undefined } : undefined}
       title={title}
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
       automations={automations > 0 && hasSettings ? { count: automations, onOpen: () => openSettings('automations') } : undefined}
@@ -263,7 +271,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         onDelete: () => setDeleting(true),
       } : undefined}
     />
-  ), [workspaceTitle, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, notificationsRow, requireParticipation, changeNotifications])
+  ), [workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, notificationsRow, requireParticipation, changeNotifications])
 
   const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
   const hasPasteLinks = pasteLinks !== undefined

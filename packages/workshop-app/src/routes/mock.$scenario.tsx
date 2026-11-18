@@ -213,6 +213,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           tab={workspaceTab}
           onTabChange={setWorkspaceTab}
           onOpenChat={() => setWorkspace(false)}
+          // The scripted chats have no agent's page: its runs are the scenario's chat.
+          onOpenAgent={() => setWorkspace(false)}
           onOpenItem={(item) => setOpen(item.key)}
           onNewChat={() => setWorkspace(false)}
           onRemoved={onOpenScenarios}

@@ -11,6 +11,7 @@ import {
   type UserItem,
   type WorkEntry,
 } from './chatItems'
+import { agentKeyOf, namedAgentKey } from '@/automations/agents'
 import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
@@ -39,6 +40,12 @@ export type ChatSnapshot =
        * metadata arrives.
        */
       notificationsRequireParticipation: boolean
+      /**
+       * The agent whose run it is, where it is one (`AiChatMetadata.spawnerId`): its key on the
+       * workspace's Agents tab, and its name as the run was started under. Undefined until the
+       * metadata arrives, and for a chat someone started.
+       */
+      agent: { key: string; name: string } | undefined
       /**
        * The conversation as rows, without the open turn's artefacts (`pinned`): the committed
        * messages, then the messages sent to the running agent that it has not read yet. The
@@ -219,6 +226,7 @@ export class ChatSession {
   #early: Array<() => void> = []
 
   #title: string | undefined
+  #agent: { key: string; name: string } | undefined
   #requiresParticipation = false
   // Set once the workspace says the chat was deleted: nothing it does after that is shown, and it
   // is not connected to again.
@@ -686,6 +694,7 @@ export class ChatSession {
       status: 'ready',
       title: this.#title,
       notificationsRequireParticipation: this.#requiresParticipation,
+      agent: this.#agent,
       items: this.#feed.items,
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
@@ -911,6 +920,9 @@ export class ChatSession {
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    const agentName = chat.spawnerName || 'Agent'
+    this.#agent = chat.spawnerId !== undefined ? { key: agentKeyOf(chat.spawnerId), name: agentName }
+      : chat.spawnerName !== undefined ? { key: namedAgentKey(agentName), name: agentName } : undefined
     this.#requiresParticipation = chat.notificationsRequireParticipation === true
     this.#agentActive = chat.activeAgent !== undefined
     this.#compactedTo = chat.compactedTo

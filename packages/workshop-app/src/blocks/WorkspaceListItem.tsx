@@ -13,13 +13,18 @@ export type WorkspaceListItemProps = {
   /** A line under the title, e.g. when the workspace was last active. */
   subtitle?: string
   unread?: boolean
+  /**
+   * What in it is waiting on the user, in words, such as an agent's run stopped for their
+   * approval: said in the subtitle's place, with a dot of its own in the unread dot's.
+   */
+  attention?: string
   selected?: boolean
   /** The workspace's address, so that it can be opened in another tab. */
   href?: string
   onSelect: () => void
 }
 
-/** One workspace in the sidebar: its icon, title, subtitle and unread dot. */
+/** One workspace in the sidebar: its icon, title, subtitle and unread dot, or what waits on the user in it. */
 export const WorkspaceListItem = ({
   id,
   workspaceLabel,
@@ -27,6 +32,7 @@ export const WorkspaceListItem = ({
   title,
   subtitle,
   unread,
+  attention,
   selected,
   href,
   onSelect,
@@ -46,8 +52,12 @@ export const WorkspaceListItem = ({
     <WorkspaceIcon label={workspaceLabel} {...workspaceLook} />
     <span className="min-w-0 flex-1 leading-snug">
       <span className="block truncate font-medium text-kumo-default">{title}</span>
-      {subtitle && <span className="block truncate text-kumo-subtle">{subtitle}</span>}
+      {attention
+        ? <span className="block truncate text-kumo-warning">{attention}</span>
+        : subtitle && <span className="block truncate text-kumo-subtle">{subtitle}</span>}
     </span>
-    {unread && <span role="img" aria-label="Unread" className="size-2 shrink-0 rounded-full bg-kumo-brand" />}
+    {attention
+      ? <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-warning" />
+      : unread && <span role="img" aria-label="Unread" className="size-2 shrink-0 rounded-full bg-kumo-brand" />}
   </LinkButton>
 )

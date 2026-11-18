@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import { NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
 import type { AsideItem } from '@/aside/asideItems'
+import { runsWantingAttention, type Agent } from '@/automations/agents'
+import { AgentsTab } from '@/automations/AgentsTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
+import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
 import { WorkspaceMoreMenu } from '@/blocks/WorkspaceMoreMenu'
 import { AvatarStack } from '@/components/AvatarStack'
+import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -14,6 +18,7 @@ import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { useNow } from '@/hooks/useNow'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -31,10 +36,11 @@ import { removalOf } from './workspaceRemoval'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 
 /** What a workspace's page shows beneath its title. */
-export type WorkspaceTab = 'chats' | 'library' | 'automations' | 'members'
+export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'members'
 
 export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'chats', label: 'Chats' },
+  { value: 'agents', label: 'Agents' },
   { value: 'library', label: 'Library' },
   { value: 'automations', label: 'Automations' },
   { value: 'members', label: 'Members' },
@@ -47,6 +53,10 @@ export type WorkspacePaneProps = {
   onOpenChat: (chat: { id: number; title: string }) => void
   /** A chat's address, for its row to link to so that it can be opened in another tab. */
   chatHref?: (chatId: number) => string
+  /** Opens one of its agents' page. */
+  onOpenAgent: (agent: Agent) => void
+  /** An agent's page's address, for its row to link to so that it can be opened in another tab. */
+  agentHref?: (agent: Agent) => string
   /** Shows something the workspace has made. */
   onOpenItem: (item: AsideItem) => void
   /** Where an item opens, for its row to link to so that it can be opened in another tab. */
@@ -61,11 +71,13 @@ export type WorkspacePaneProps = {
 /**
  * One workspace: its title, which can be renamed, the way to start a chat in it, who it is shared
  * with and the way to invite more, its More menu, which deletes it, or removes it from the list
- * where it is someone else's, and, a tab each, its chats, what it has made, what runs in it by
- * itself and who has access to it. The chats, the library and what runs load what they list once
- * chosen; who has access is read with the page, for its header.
+ * where it is someone else's, and, a tab each, its chats, its agents, what it has made, what runs
+ * in it by itself and who has access to it. The chats, the library and what runs load what they
+ * list once chosen; who has access is read with the page, for its header, and its agents too, so
+ * that what of theirs waits on the viewer is said over the tabs, whichever is chosen, and counted
+ * on the Agents tab.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenItem, itemHref, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -87,6 +99,13 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const metadata = shared?.metadata ?? workspace
   const removal = metadata && removalOf(metadata)
   const removing = useWorkspaceRemoval({ onRemoved })
+
+  const agents = useWorkspaceAgents(workspaceId)
+  const now = useNow()
+  const wanting = agents.state.status === 'ready' ? runsWantingAttention(agents.state.agents) : []
+  const waiting = wanting.filter(({ run }) => run.status === 'waiting')
+  const tabs = WORKSPACE_TABS.map((each) => (each.value === 'agents' && waiting.length > 0 ? { ...each, count: { value: waiting.length, label: 'waiting on you' } } : each))
+  const openRun = (run: { chatId: number; title: string }) => onOpenChat({ id: run.chatId, title: run.title })
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
@@ -166,9 +185,35 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           </h1>
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
         </div>
-        <Tabs value={tab} onValueChange={onTabChange} tabs={WORKSPACE_TABS} aria-label="Workspace" className="gap-6">
+        {/* What its agents want of the viewer, over every tab but theirs, which lists it first. */}
+        {tab !== 'agents' && wanting.length > 0 && (
+          <Banner
+            tone={waiting.length > 0 ? 'warning' : 'danger'}
+            title={waiting.length > 0
+              ? waiting.length === 1 ? `${waiting[0].agent.name} is waiting on you` : `${waiting.length} agent runs are waiting on you`
+              : wanting.length === 1 ? `${wanting[0].agent.name}’s latest run failed` : `${wanting.length} agents’ latest runs failed`}
+            description={waiting.length > 1 ? 'Their runs stopped for your approval or a connection.'
+              : waiting.length === 1 ? 'Its run stopped for your approval or a connection.'
+                : 'Open the run to see what went wrong.'}
+            action={wanting.length === 1
+              ? { label: 'Open run', onSelect: () => openRun(wanting[0].run) }
+              : { label: 'Review', onSelect: () => onTabChange('agents') }}
+          />
+        )}
+        <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
             <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} />
+          </Tabs.Panel>
+          <Tabs.Panel value="agents" className="flex flex-col gap-8">
+            <AgentsTab
+              state={agents.state}
+              onRetry={agents.retry}
+              onOpenAgent={onOpenAgent}
+              agentHref={agentHref}
+              onOpenRun={openRun}
+              runHref={chatHref}
+              now={now}
+            />
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} />
@@ -178,8 +223,6 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               workspaceId={workspaceId}
               onOpenItem={onOpenItem}
               itemHref={itemHref}
-              onOpenChat={onOpenChat}
-              chatHref={chatHref}
               empty="Nothing runs here by itself yet. Ask in a chat for something to happen on a schedule, or when something arrives."
             />
           </Tabs.Panel>
