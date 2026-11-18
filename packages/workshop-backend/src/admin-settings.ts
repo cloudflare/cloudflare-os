@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor, AdminAccessRecord } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -20,7 +20,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason, type AdminCaller, adminCallerTerms } from './admin-access.js';
 import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -1521,16 +1521,17 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   #sessionId = crypto.randomUUID();
 
   /**
-   * `adminUserId` is the requesting admin's canonical id and `via` the label derived from their
-   * client's User-Agent (AdminVia). The capability's audit `sessionId` is minted here, so there is
-   * one per AuthenticatedApi.getAdminApi() call. Reaches the AdminSettings, UserDirectory,
-   * AdminAudit, Overseer and User namespaces through `ctx.exports`, and reads ADMINS and the admin
-   * access bounds from `env`. `ctx` is kept for its waitUntil(), under which an approved content
-   * access request is granted and settled even if its client hangs up (see
-   * approveContentAccess()).
+   * `adminUserId` is the admin's canonical id and `caller` how their calls are labelled (see
+   * AdminCaller). The capability's audit `sessionId` is minted here, so there is one per
+   * capability. Reaches the AdminSettings, UserDirectory, AdminAudit, Overseer and User namespaces
+   * through `ctx.exports`, and reads ADMINS and the admin access bounds from `env`. `ctx` is kept
+   * for its waitUntil(), under which an approved content access request is granted and settled
+   * even if its client hangs up (see approveContentAccess()): it is a request's ExecutionContext,
+   * or the state of the workspace that lends this to the admin gatekeeper.
    */
-  constructor(private ctx: ExecutionContext, private env: Cloudflare.Env,
-              private adminUserId: string, private via: AdminVia) {
+  constructor(private ctx: Pick<ExecutionContext, "exports" | "waitUntil">,
+              private env: Cloudflare.Env, private adminUserId: string,
+              private caller: AdminCaller) {
     super();
     this.admin = ctx.exports.AdminSettings.getByName("");
     this.directories = ctx.exports.UserDirectoryDurableObject;
@@ -1541,7 +1542,13 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   // Who makes a change through `method` of this capability, as its audit record says.
   #actor(method: AdminSettingMethod): AdminSettingActor {
-    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via, method };
+    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via, method };
+  }
+
+  // How a record or a stored value made through this capability is labelled: the caller's `via`
+  // and, for the admin gatekeeper, where the call came from. Nothing else of the caller is copied.
+  #label(): Pick<AdminAccessRecord, "via" | "agent"> {
+    return adminCallerTerms(this.caller);
   }
 
   getSettings(): Promise<AdminSettingsView> {
@@ -1799,7 +1806,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       let listing = await this.#directoryListing(id.toString());
       await this.audits.getByName("").append({
         kind: "workspace", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, workspaceId: id.toString(), workspaceOwner: listing.ownerId,
+        ...this.#label(), workspaceId: id.toString(), workspaceOwner: listing.ownerId,
         workspaceTitle: listing.title, method: "inspectWorkspace",
         args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, requested, access,
         exposed: "metadata", refused,
@@ -1809,7 +1816,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openForAdmin(id, trimmedReason, { via: this.via, access: requested, expiresAt });
+    return this.#openForAdmin(id, trimmedReason, { ...this.#label(), access: requested, expiresAt });
   }
 
   // Mint the view. A workspace that turns out not to exist leaves the directory (see
@@ -1863,7 +1870,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       // Appended without a retention, as a view's records are.
       await this.audits.getByName("").append({
         kind: "user", at: new Date(), admin: this.adminUserId, sessionId: this.#sessionId,
-        via: this.via, userId, method: "inspectUser",
+        ...this.#label(), userId, method: "inspectUser",
         args: { expiresAt: expiresAt.toISOString() }, reason: trimmedReason, access: "off",
         refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
       });
@@ -1875,7 +1882,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
     return this.users.getByName(userId).openForAdmin(
-        this.adminUserId, trimmedReason, this.#sessionId, { via: this.via, expiresAt });
+        this.adminUserId, trimmedReason, this.#sessionId, { ...this.#label(), expiresAt });
   }
 
   async listAdminAudit(options: AdminAuditQuery = {}): Promise<AdminAuditPage> {
@@ -1924,7 +1931,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     }
     try {
       await this.overseers.get(id).applyAdminWrite({
-        action, args, reason, admin: this.adminUserId, sessionId: this.#sessionId, via: this.via,
+        action, args, reason, admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via,
       });
     } catch (error) {
       await this.#dropIfMissing(id, error);
@@ -1946,7 +1953,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   // Who takes a step of a content access request through this capability, as its audit record
   // says.
   #grantActor(): AdminGrantActor {
-    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via };
+    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via };
   }
 
   async requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest> {
@@ -1976,7 +1983,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       id: crypto.randomUUID(), workspaceId: id.toString(),
       workspaceTitle: cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH),
       workspaceOwner: auditOwnerId(listing.ownerId), reason, requestedBy: this.adminUserId,
-      via: this.via, requestedAt,
+      via: this.caller.via, requestedAt,
       expiresAt: new Date(requestedAt.getTime() + ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS * 1000),
       state: "pending",
     };

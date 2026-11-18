@@ -1407,9 +1407,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * the caller is not one. The access check happens here, once, for every AdminApi method but
    * inspection: AdminApi.inspectWorkspace(), AdminApi.inspectUser() and each call on the view
    * either mints check again (see AdminWorkspaceView and AdminUserView). Every audit record the
-   * capability makes is labelled with an AdminVia derived from the client's User-Agent.
-   * (Authentication config — sign-in providers, password login — is intentionally not managed
-   * here; it stays env-var driven.)
+   * capability makes is labelled with an AdminVia derived from the client's User-Agent ("api" or
+   * "cli"; "gatekeeper" is never derived from a client). (Authentication config — sign-in
+   * providers, password login — is intentionally not managed here; it stays env-var driven.)
    *
    * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
@@ -1799,12 +1799,36 @@ export type DeploymentUpdateStatus = {
 };
 
 /**
- * How an admin's calls reach the deployment, as their audit records say: "cli" when the session's
- * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin panel
- * among them). The User-Agent is the client's own claim, so this is an unverified label that
- * grants nothing.
+ * How an admin's calls reach the deployment, as their records say: "cli" when the session's
+ * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin
+ * panel among them), and "gatekeeper" for a call made through the admin gatekeeper connection
+ * of a workspace that admin owns, by an agent's code, a gadget's code or a session its owner
+ * opened from the connection (see AdminAgentOrigin). "api" and "cli" come from the User-Agent, the
+ * client's own claim: unverified labels that grant nothing. "gatekeeper" is not a claim. Only a
+ * workspace sets it, on the Admin API it lends that gatekeeper, and no client, header or
+ * argument can.
  */
-export type AdminVia = "api" | "cli";
+export type AdminVia = "api" | "cli" | "gatekeeper";
+
+/**
+ * Where a call made through the admin gatekeeper came from. The workspace that lent the
+ * gatekeeper its owner's Admin API sets it when it makes the lend, from what it knows of the
+ * caller the lend is for: neither the gatekeeper nor its caller sets a field. It names the
+ * lend a call was made on. A lend is a capability the gatekeeper holds while it is live, so
+ * that the gatekeeper used it for that caller and no other is the gatekeeper's word. A record
+ * carries it exactly when its `via` is "gatekeeper", and the record's admin is then that
+ * workspace's owner.
+ */
+export type AdminAgentOrigin = {
+  /** The workspace whose admin gatekeeper binding made the call. */
+  workspaceId: string;
+  /** The chat the workspace ties the caller to, by AiChatMetadata.id, when it ties it to one:
+   * the chat whose agent made the call, or the chat whose unmerged changes the calling gadget
+   * code runs. Absent for merged gadget code (a stub a gadget handed to a spawned agent
+   * included) and for a session the owner opened directly from the connection (no other member
+   * is lent one). */
+  chatId?: number;
+};
 
 /** How many records one page of an admin listing (AdminApi.listUsers(), listWorkspaces(),
  * listAdminAudit()) holds when the caller gives no `limit`. */
@@ -2068,6 +2092,9 @@ export type AdminAccessRecord = {
   sessionId: string;
   /** How the admin's calls reached the deployment (see AdminVia). */
   via: AdminVia;
+  /** Where the call came from, when it was made through the admin gatekeeper (see
+   * AdminAgentOrigin): present exactly when `via` is "gatekeeper". */
+  agent?: AdminAgentOrigin;
   /** The workspace. */
   workspaceId: string;
   /** The workspace's owner, by canonical user id, as the workspace knew them when the view opened.
@@ -2124,7 +2151,7 @@ export type AdminAccessRecord = {
  * and the one refusal it carries is `accessOff`.
  */
 export type AdminUserAccessRecord = Pick<AdminAccessRecord,
-    "at" | "admin" | "sessionId" | "via" | "reason" | "access" | "refused"> & {
+    "at" | "admin" | "sessionId" | "via" | "agent" | "reason" | "access" | "refused"> & {
   /** Distinguishes this from an AdminAccessRecord and an AdminSettingRecord. */
   kind: "user";
   /** The user whose account the call was made into, by canonical user id, kept as
@@ -2200,7 +2227,8 @@ export type AdminSettingRecord = {
   /** Opaque. Shared by every record made through one AuthenticatedApi.getAdminApi() capability,
    * so one admin session's records can be read together. */
   sessionId: string;
-  /** How the admin's calls reach the deployment (see AdminVia). */
+  /** How the admin's calls reach the deployment (see AdminVia). No setter is open to the admin
+   * gatekeeper, so a setting record never says "gatekeeper". */
   via: AdminVia;
   /** The AdminApi method called. */
   method: AdminSettingMethod;
