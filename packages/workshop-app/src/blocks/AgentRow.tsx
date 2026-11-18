@@ -1,6 +1,7 @@
-import { RobotIcon } from '@phosphor-icons/react'
+import { useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
+import { AgentMark } from './AgentMark'
 
 export type AgentRowProps = {
   name: string
@@ -20,20 +21,25 @@ export type AgentRowProps = {
 }
 
 /**
- * An agent in a workspace's list of them: a robot, its name over what it is and has done, or over
- * what it wants of the user, with a dot on the robot's corner in the colour of that, or of a run
+ * An agent in a workspace's list of them: its mark, which smiles at the pointer or focus on the row, its name over what it is and has done, or over
+ * what it wants of the user, with a dot on the mark's corner in the colour of that, or of a run
  * at work. The row opens the agent's page.
  */
 export const AgentRow = ({ name, detail, attention, running = false, href, onSelect }: AgentRowProps) => {
+  const [greeting, setGreeting] = useState(false)
   const dot = attention ? (attention.tone === 'warning' ? 'bg-kumo-warning' : 'bg-kumo-danger') : running ? 'bg-(--color-live)' : undefined
   return (
     <LinkButton
       href={href}
       onClick={onSelect}
+      onPointerEnter={() => setGreeting(true)}
+      onPointerLeave={() => setGreeting(false)}
+      onFocus={() => setGreeting(true)}
+      onBlur={() => setGreeting(false)}
       className="flex w-full items-center gap-3 rounded-2xl p-3 text-left text-base hover:bg-kumo-contrast/5"
     >
-      <span className="relative grid size-10 shrink-0 place-items-center rounded-xl bg-kumo-fill text-kumo-default">
-        <RobotIcon aria-hidden="true" className="size-5" />
+      <span aria-hidden="true" className="relative shrink-0">
+        <AgentMark state={running ? 'working' : attention?.tone === 'danger' ? 'failed' : 'idle'} greeting={greeting} />
         {dot && <span aria-hidden="true" className={cn('absolute -right-0.5 -bottom-0.5 size-3 rounded-full ring-2 ring-kumo-tint', dot, !attention && 'motion-safe:animate-pulse')} />}
       </span>
       <span className="flex min-w-0 flex-1 flex-col leading-snug">

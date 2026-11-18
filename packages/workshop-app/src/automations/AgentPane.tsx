@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
-import { RobotIcon } from '@phosphor-icons/react'
 import { AgentCrumb } from '@/blocks/AgentCrumb'
+import { AgentMark } from '@/blocks/AgentMark'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
 import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
@@ -106,7 +106,7 @@ const Fact = ({ label, children }: { label: string; children: ReactNode }) => (
 )
 
 /**
- * What an agent is, drawn from plain props: a robot and its name, what of it wants the user (a run
+ * What an agent is, drawn from plain props: its mark, there to be played with as the home page's is, and its name, what of it wants the user (a run
  * waiting on them, or a latest run that failed) with the way to that run, then the gadget that
  * starts it, the model it thinks with, when it runs and how often it has, then its runs by when,
  * each saying how it stands and opening its conversation, which is where what it did is seen.
@@ -133,9 +133,7 @@ export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
       <div className="flex flex-col items-center gap-2 pt-8 text-center">
-        <span className="grid size-16 place-items-center rounded-2xl bg-kumo-fill text-kumo-default">
-          <RobotIcon aria-hidden="true" className="size-8" />
-        </span>
+        <AgentMark size="large" interactive state={agent.running > 0 ? 'working' : agent.failed ? 'failed' : 'idle'} />
         <h1 className="max-w-full px-2.5 py-1 text-xl font-medium wrap-anywhere text-kumo-default">{agent.name}</h1>
         <p className="max-w-md text-base text-pretty text-kumo-subtle">
           {gadget ? `${gadget.title} starts it with a task.` : 'A gadget starts it with a task.'} Each run is a conversation of its own, there to open to see what it did.
