@@ -30,6 +30,9 @@ export interface UiBlockHost {
   /** Reports an uncaught error in the block's code. */
   reportError(message: string): void
 
+  /** Reports the current image-read failure, or clears it after recovery. */
+  reportImageError(message: string | null): void
+
   /** Read an image path already pinned into this message by the host parser. */
   readImage(source: string): Promise<InlineFile>
 }
@@ -87,6 +90,7 @@ export type UiBlockHostOptions = {
   onMessageRequest: (message: string) => void
   onResize: (height: number) => void
   onError: (message: string) => void
+  onImageError?: (message: string | null) => void
   readImage?: SnapshotFileReader
 }
 
@@ -115,6 +119,10 @@ export class UiBlockHostImpl extends RpcTarget implements UiBlockHost {
 
   reportError(message: string): void {
     this.#options.onError(String(message))
+  }
+
+  reportImageError(message: string | null): void {
+    this.#options.onImageError?.(message === null ? null : String(message))
   }
 
   async readImage(source: string): Promise<InlineFile> {
@@ -151,6 +159,8 @@ const reportHeight = () =>
 
 let started = false;
 const images = new Map();
+const reportImageErrors = () =>
+  host.reportImageError([...images.values()].find(state => state.error)?.error ?? null).catch(() => {});
 const loadImage = async (image, state) => {
   try {
     const result = await host.readImage(state.source);
@@ -172,12 +182,14 @@ const loadImage = async (image, state) => {
     state.url = url;
     state.loaded = true;
     image.src = url;
+    if (state.error) { delete state.error; reportImageErrors(); }
   } catch (error) {
     if (images.get(image) !== state) return;
     if (state.url) URL.revokeObjectURL(state.url);
     state.url = "data:,";
     image.src = state.url;
-    reportError("Could not load " + state.source + ": " + (error?.message ?? error));
+    state.error = "Could not load " + state.source + ": " + (error?.message ?? error);
+    reportImageErrors();
   }
 };
 const scanImages = () => {
@@ -186,6 +198,7 @@ const scanImages = () => {
       if (state.url) URL.revokeObjectURL(state.url);
       images.delete(image);
       state.controller.abort();
+      if (state.error) reportImageErrors();
     }
   }
   for (const image of document.querySelectorAll("img[src]")) {
@@ -206,7 +219,7 @@ class Frame extends RpcTarget {
   retryImages() {
     for (const [image, previous] of images) {
       if (previous.loaded || !image.isConnected) continue;
-      const state = { source: previous.source, controller: new AbortController() };
+      const state = { source: previous.source, controller: new AbortController(), error: previous.error };
       images.set(image, state);
       previous.controller.abort();
       if (previous.url) URL.revokeObjectURL(previous.url);

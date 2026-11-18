@@ -1,6 +1,7 @@
 import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
+import { userEvent } from 'vitest/browser'
 import type { Overseer } from '@gadgets/workshop-shared/api'
 import { AgentAnswer, MarkdownMessage } from './ChatInterface'
 import type { FileSnapshots } from './features/chat/inlineFiles'
@@ -294,4 +295,28 @@ it.each(['utf-16le', 'utf-16be', 'namespace'])('decodes a valid %s SVG header wi
   await expect.poll(() => image('Vector')?.naturalWidth).toBe(17)
   expect(image('Vector')!.naturalHeight).toBe(19)
   expect(image('Vector')!.src).toMatch(/^data:image\/svg\+xml/)
+})
+
+
+it('retains keyboard focus during a delayed download and permits retry after failure', async () => {
+  const source = 'worktree://OUTPUTS/report.csv', oid = 'a'.repeat(40)
+  const pending = Promise.withResolvers<ReadableStream<Uint8Array>>()
+  const readBlob = vi.fn<Overseer['readBlob']>().mockReturnValueOnce(pending.promise)
+    .mockImplementation(async () => stream(new TextEncoder().encode('report')))
+  const downloads = captureDownloads()
+  await show(`[Download](${source})`, { oids: { [source]: oid }, readBlob })
+  const link = host!.querySelector<HTMLButtonElement>('[role="link"]')!
+  link.focus()
+  await act(async () => userEvent.keyboard('{Enter}'))
+  await expect.poll(() => readBlob.mock.calls.length).toBe(1)
+  expect(document.activeElement).toBe(link)
+  await act(async () => userEvent.keyboard('{Enter}'))
+  expect(readBlob).toHaveBeenCalledTimes(1)
+  pending.reject(new Error('Connection lost'))
+  await expect.poll(() => host!.querySelector('[role="alert"]')?.textContent).toContain('Connection lost')
+  expect(document.activeElement).toBe(link)
+  await act(async () => userEvent.keyboard('{Enter}'))
+  await expect.poll(() => downloads.length).toBe(1)
+  expect(document.activeElement).toBe(link)
+  expect(readBlob).toHaveBeenCalledTimes(2)
 })

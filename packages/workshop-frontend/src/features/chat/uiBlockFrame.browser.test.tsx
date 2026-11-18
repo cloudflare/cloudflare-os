@@ -220,10 +220,10 @@ it.each(['failed', 'interrupted'])('retries %s frame image reads on reconnect wh
     if (status === 'failed') throw new Error('Connection lost')
     return new ReadableStream({ start(value) { controller = value; value.enqueue(Uint8Array.of(137, 80)) }, cancel })
   })
-  const show = async (readBlob: Overseer['readBlob']) => act(async () => root.render(<ThemeProvider>
+  const show = async (readBlob: Overseer['readBlob']) => act(async () => root.render(React.createElement(ThemeProvider, null,
     <UiBlockCard block={{kind: 'block', html: `<img src="${source}" onload="agent.send('recovered')"><img src="${loaded}" onload="agent.send('ready')">`}}
       files={{ oids, readBlob }} onSendMessage={async () => {}} onHeightChange={() => {}} scrollRoot={{ current: null }} />
-  </ThemeProvider>))
+  )))
   await show(readBlob)
   await expect.poll(() => readBlob.mock.calls.length).toBe(2)
   await expect.poll(() => host.textContent!.includes('Connection lost')).toBe(status === 'failed')
@@ -234,6 +234,7 @@ it.each(['failed', 'interrupted'])('retries %s frame image reads on reconnect wh
   await expect.poll(() => host.textContent).toContain('recovered')
   expect(reconnected).toHaveBeenCalledExactlyOnceWith(a)
   expect(host.querySelector('iframe')).toBe(iframe)
+  expect(host.textContent).not.toContain('Connection lost')
   if (controller) {
     controller.enqueue(Uint8Array.of(1))
   }

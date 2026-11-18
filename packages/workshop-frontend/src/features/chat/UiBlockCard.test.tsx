@@ -129,6 +129,18 @@ describe('UiBlockCard', () => {
     expect(readBlob).toHaveBeenCalledTimes(1)
   })
 
+  it('clears a recovered image failure without dismissing script errors', async () => {
+    const host = await handshake(await renderCard())
+    await host.reportImageError('Image connection lost')
+    await vi.waitFor(() => expect(container.textContent).toContain('Image connection lost'))
+    await host.reportImageError(null)
+    await vi.waitFor(() => expect(container.textContent).not.toContain('Image connection lost'))
+    await host.reportError('Script failed')
+    await host.reportImageError('Image connection lost')
+    await host.reportImageError(null)
+    await vi.waitFor(() => expect(container.textContent).toContain('Script failed'))
+  })
+
   it("sends the view's message as the viewer's only when they click Send", async () => {
     const host = await handshake(await renderCard())
     for (let i = 0; i < 5; i++) await host.requestMessage(`Show me week ${i}.`)

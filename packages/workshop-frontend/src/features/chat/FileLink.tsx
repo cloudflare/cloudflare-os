@@ -40,8 +40,8 @@ export const FileLink = ({ source, files, children, title }: {
     return <span title="File unavailable">{children} (unavailable)</span>
   }
   return <>
-    <button type="button" role="link" title={title} disabled={busy} aria-busy={busy}
-      onClick={() => void download()} className="cursor-pointer text-kumo-brand hover:underline disabled:cursor-wait">
+    <button type="button" role="link" title={title} aria-disabled={busy} aria-busy={busy}
+      onClick={() => void download()} className="cursor-pointer text-kumo-brand hover:underline aria-disabled:cursor-wait">
       {children}
     </button>
     {error && <span role="alert" className="text-kumo-danger"> Download failed: {error}</span>}

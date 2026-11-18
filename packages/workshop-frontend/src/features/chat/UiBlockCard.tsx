@@ -55,6 +55,7 @@ export const UiBlockCard = ({
   const refused = block.kind === 'block' ? block.error : undefined
   // The latest uncaught error in the block's own code. The view keeps running.
   const [codeError, setCodeError] = useState<string | null>(null)
+  const [imageError, setImageError] = useState<string | null>(null)
   const [chip, setChip] = useState<Chip | null>(null)
   // Parse the original block, not the frame's mutable DOM or its requests. A download pin
   // elsewhere in the message doesn't grant this view access to that file.
@@ -112,6 +113,7 @@ export const UiBlockCard = ({
       // A request needs the frame that made it, and an error the document that threw it.
       setChip(null)
       setCodeError(null)
+      setImageError(null)
     }
 
     // Each load of the frame's document, its first or one its own code started, handshakes once,
@@ -126,6 +128,7 @@ export const UiBlockCard = ({
         onMessageRequest: message => setChip({ message, sending: false }),
         onResize: reported => setHeight(clampHeight(reported)),
         onError: setCodeError,
+        onImageError: setImageError,
         readImage: readCurrentImage,
       }))
       loadRef.current = { frame, written: 0, closed: false }
@@ -172,9 +175,9 @@ export const UiBlockCard = ({
           {live && <ViewFrame ref={iframeRef} title={title} />}
         </div>
       )}
-      {refused === undefined && codeError !== null && (
+      {refused === undefined && (codeError !== null || imageError !== null) && (
         <div className="mt-1">
-          <Text size="sm" variant="error">{codeError}</Text>
+          <Text size="sm" variant="error">{codeError ?? imageError}</Text>
         </div>
       )}
       {refused === undefined && (
