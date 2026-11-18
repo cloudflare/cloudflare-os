@@ -1,4 +1,5 @@
-import { useId, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { TextField } from '@/components/TextField'
@@ -43,6 +44,27 @@ export const InviteField = ({ value, onValueChange, onInvite, pending, suggestio
   const open = focused && !dismissed && !pending && query !== '' && suggestions !== undefined &&
     (people.length > 0 || suggestions.searching || suggestions.failed)
   const chosen = open && !suggestions?.searching ? people[Math.min(highlighted, people.length - 1)] : undefined
+  // Where the list is, held to the field as the window or what holds the field scrolls: fixed to
+  // the window rather than in the dialog's scrolling body, which would cut it off at its foot and
+  // grow to scroll what it covers. As tall as there is room for under the field, scrolled within.
+  const anchor = useRef<HTMLDivElement>(null)
+  const [place, setPlace] = useState<{ top: number; left: number; width: number; maxHeight: number }>()
+  useLayoutEffect(() => {
+    if (!open) return
+    const follow = () => {
+      const box = anchor.current?.getBoundingClientRect()
+      if (!box) return
+      const top = box.bottom + 6
+      setPlace({ top, left: box.left, width: box.width, maxHeight: Math.max(120, window.innerHeight - top - 16) })
+    }
+    follow()
+    window.addEventListener('resize', follow)
+    window.addEventListener('scroll', follow, true)
+    return () => {
+      window.removeEventListener('resize', follow)
+      window.removeEventListener('scroll', follow, true)
+    }
+  }, [open])
   const invite = (userId: string) => {
     setDismissed(true)
     onInvite(userId)
@@ -56,7 +78,7 @@ export const InviteField = ({ value, onValueChange, onInvite, pending, suggestio
   return (
     // On a narrow screen the field has a line to itself, with the choice and the button under its end.
     <div className="flex flex-wrap items-center justify-end gap-2">
-      <div className="relative min-w-0 flex-1 max-md:basis-full">
+      <div ref={anchor} className="relative min-w-0 flex-1 max-md:basis-full">
         <TextField
           role="combobox"
           aria-expanded={open}
@@ -108,8 +130,9 @@ export const InviteField = ({ value, onValueChange, onInvite, pending, suggestio
             role="listbox"
             aria-label="People who match"
             aria-busy={suggestions.searching || undefined}
-            // A menu's surface, under the field, over what follows it in the dialog.
-            className="appears absolute inset-x-0 top-full z-10 mt-1.5 flex flex-col rounded-[21px] bg-kumo-base p-1.5 ring-1 ring-kumo-contrast/6"
+            // A menu's surface, under the field, over what follows it in the dialog and past its foot.
+            style={place}
+            className={cn('appears fixed z-50 flex flex-col overflow-y-auto overscroll-contain rounded-[21px] bg-kumo-base p-1.5 shadow-[0_12px_40px_rgb(0_0_0/0.12)] ring-1 ring-kumo-contrast/6', !place && 'invisible')}
           >
             {people.length === 0 && (
               <p role="status" className="px-(--menu-pad-x) py-(--menu-pad-y) text-sm text-kumo-subtle">
