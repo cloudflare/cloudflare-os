@@ -1,9 +1,6 @@
-import { stored } from './stored'
+import { stored, stringList } from './stored'
 
-const parse = (value: unknown): string[] | undefined =>
-  Array.isArray(value) && value.every((id) => typeof id === 'string') ? value : undefined
-
-const store = stored<string[]>('workshop-app:star-order', parse, [])
+const store = stored<string[]>('workshop-app:star-order', stringList, [])
 
 /**
  * The order the starred workspaces were last put in on this device, as their ids. The server keeps

@@ -10,6 +10,7 @@ export type ChatStartProps = {
   initialDraft?: ComposerProps['initialDraft']
   /** The skills and commands the first message can be sent with. */
   commands?: ComposerProps['commands']
+  /** The skills are still being read, so the + menu keeps their room. */
   commandsLoading?: ComposerProps['commandsLoading']
   /** The format the first message asks for something as, such as a Document. */
   format?: ComposerProps['format']

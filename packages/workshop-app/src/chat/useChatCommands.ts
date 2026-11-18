@@ -24,19 +24,22 @@ export const useChatCommands = (
   const skills = useSkills()
   const [read, setRead] = useState(() => ({ workspaceId, choices: listedIn.get(workspaceId) }))
   const choices = (read.workspaceId === workspaceId ? read.choices : listedIn.get(workspaceId)) ?? []
-  const [answered, setAnswered] = useState(false)
+  // The workspace whose list has answered, read or not.
+  const [answered, setAnswered] = useState<string>()
   useEffect(() => {
     if (!loaded) return
     let current = true
     listCommands().then(
       (listed) => {
         if (!current) return
-        setAnswered(true)
+        setAnswered(workspaceId)
         if (!listed.length) return
         listedIn.set(workspaceId, listed)
         setRead({ workspaceId, choices: listed })
       },
-      () => current && setAnswered(true),
+      () => {
+        if (current) setAnswered(workspaceId)
+      },
     )
     return () => {
       current = false
@@ -45,6 +48,6 @@ export const useChatCommands = (
   return {
     choices,
     commands: useMemo(() => orderCommands(choices.map(composerCommandOf)), [choices]),
-    loading: !answered && !choices.length,
+    loading: answered !== workspaceId && !choices.length,
   }
 }

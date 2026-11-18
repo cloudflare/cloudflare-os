@@ -21,5 +21,9 @@ export const stored = <T>(key: string, parse: (value: unknown) => T | undefined,
   },
 })
 
+/** A `parse` for a list of strings, such as keys or names. */
+export const stringList = (value: unknown): string[] | undefined =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : undefined
+
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
