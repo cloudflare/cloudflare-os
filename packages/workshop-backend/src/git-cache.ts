@@ -2188,7 +2188,11 @@ export class WorkspaceGitCache {
           // What a parent has here and this directory has not, unless some parent has
           // nothing there either: the path is then unchanged from that parent.
           let kept = new Set(frame.entries.map(entry => entry.name));
-          let names = new Set(frame.parents.flatMap(parent => [...parent?.keys() ?? []]));
+          // Parents with the same directory share one map: its names are taken once.
+          let names = new Set<string>();
+          for (let parent of new Set(frame.parents)) {
+            for (let name of parent?.keys() ?? []) names.add(name);
+          }
           for (let name of [...names].toSorted()) {
             if (kept.has(name)) continue;
             let parents = frame.parents.map(parent => entryAt(parent, name));

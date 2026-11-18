@@ -2270,7 +2270,8 @@ describe("push review", () => {
       truncated: true,
     });
     expect(reads).toHaveLength(MAX_PUSH_REVIEW_WALK_OBJECTS);
-  });
+    // It writes a chain of as many commits as a call may read, which takes seconds.
+  }, 60_000);
 
   it("stops a call that has read as many bytes as one may, in wide directories that list " +
       "little", async () => {
