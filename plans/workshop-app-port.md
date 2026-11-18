@@ -22,6 +22,8 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 9. Automations, read only. **Done.**
 10. ⌘K search **(done)** and right-click menus (**deferred**, see below).
 
+Since then, on top of the list (Nov 17): someone a workspace or gadget is shared with confirms their own accounts can see what it reads before it opens (`ObserverAccessProvider`), and the share dialog lists those resources once each under Protected resources; what waits on the user is said for chats and gadgets as it is for agents, live in the sidebar; the Library starts on Recent; an agent's runs are tabbed by how they stand, paged and folded; a skill is added to the collection chosen; the composer's + menu searches skills and keeps its size; and a gadget is published as a template from its own ⋯ menu.
+
 Library rows and cards now have a ⋯ menu, as chats and workspaces do: Open, Open in new tab, Copy link, then for whoever builds in its workspace Rename (in place), Share…, Gadget settings and Delete… (asked first). The gadget pane's More menu gained Rename and Delete… too. Deferred, wanted later: right-click itself, on library rows and cards, skills and templates, opening the same menu the item's ⋯ has, as the prototype has; skills and templates have no ⋯ menu yet. It is a design addition for Balint to agree, not a port.
 
 Main merged in (Nov 17), the scaffold's base (Oct 27) having predated it. That made sharing a
@@ -62,7 +64,7 @@ waiting (`awaitingDecision`) are done: agents as entities, `plans/agents.md`.
 | Changing a model binding's model replaces its connection (unbind, then bind a new one under the same name), not atomically, leaving the old connection in the workspace | there is no call to point a binding at another target | a rebind on `GadgetClient`, or a model setter on the model's gatekeeper |
 | Templates have no use counts: "Most used" is the organisation's first, then the newest | `BlueprintPublicInfo` has no count | a use count on `BlueprintPublicInfo` |
 | A template is always made in a new workspace | the base has no `createGadgetFromBlueprint` | `createGadgetFromBlueprint` |
-| Publishing a template takes the app's title only, no description or screenshot step | scope | none |
+| Publishing a template has no screenshot step, and the templates page's Publish publishes an app under its own title at once, without the title and description the gadget's own Publish as template… asks for | scope | none |
 | Moving a skill to another tag copies it and deletes the old one, not atomically, and can leave its collection empty | the Context Library can't move between collections | none (gatekeeper-context) |
 | No "AI providers" row in the model settings: a key is entered for each model (Duplicate copies one), not once per provider | a key is a field of each model's config; there is no per-user provider key | a per-user provider credential that models refer to |
 | A decision model of the user's own can't be added, edited or removed in the settings, which list only language models | scope: main lists both on its AI Providers page | none |
@@ -88,3 +90,9 @@ waiting (`awaitingDecision`) are done: agents as entities, `plans/agents.md`.
 | A Library item's ⋯ menu has no Remove from Library, only Delete…, and no View code | the library lists what the workspaces made, with no way to hide one; View code is the pane's own state, which an address doesn't carry | a per-user hide on the output index |
 | On a narrow screen a Library row or card has no ⋯ menu; its own page's More menu has the same | the line has no room for it beside the time and the star, as a workspace's row hasn't | none |
 | What is renamed or deleted elsewhere shows on the Library page only once it is read again | `listOutputs()` is read, not subscribed to | a subscription to the output index |
+| Someone asked to confirm their access isn't told who shared it with them, and can't ask that person for access from the dialog; what they cancel isn't asked again for the visit until they choose Confirm access | `ObserverBindingNeed` names no sharer, and there is no access request call | the sharer on the config callback, and a request-access call |
+| Only the workspace on screen asks someone to confirm their access; the sidebar's counts and sweeps of a shared workspace not yet confirmed are refused, so it counts nothing until it is opened | the overseer asks on every open, in the background too | an open that reads counts without verifying |
+| The Library's Recent is what was opened in this browser | nothing records what a user opened | a per-user recent list on the output index |
+| An agent's runs are paged and folded on the page, all read first | `listChats()` returns every chat, unpaged and unfiltered | a paged `listChats` by spawner |
+| The skills chosen last come first in the composer in this browser only | no per-user preference store | a small per-user preferences blob |
+| A connection added from the home page's composer, before another workspace is chosen, stays in the workspace made for it | a connection can't be moved between workspaces, and the chat's workspace isn't made until then | none (it could be deleted, if wanted) |

@@ -291,6 +291,16 @@ that opens in place with a field to find one by. The menu is a `DropdownMenu` th
 workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
 to the page.
 
+The composer's + menu (`ComposerAddMenu`) is Upload and Add a new connection, then the skills, the
+ones chosen last first (`prefs/recentCommands.ts`, as a slash's matches are), then the commands,
+under a field to find one by on the edge nearest the composer (`composerAddEntries.ts`, plain and
+tested): typing narrows it as a slash does and leaves the two actions out. It opens at the size it
+keeps: the skills are read as the app starts (`useReadSkills`), a workspace's commands are kept for
+the visit (`useChatCommands`), and until they are known the room they take says it is loading. On
+the home page a connection is added before the chat exists, so the first one makes the workspace
+the chat will start in (`NewChatPane`'s `makeConnectable`), which is then where it starts unless
+another is chosen.
+
 A chat's header ends in more (`ChatMoreMenu`), and so does its row in the workspace's Chats tab,
 which slides it out when pointed at, for whoever may build in the workspace: someone who can only
 use it has no chats of it. It turns the chat's notifications on or mutes them for the viewer, as
@@ -702,7 +712,9 @@ surface, whatever the order, in a `ScrollArea` once there are more than fit, wit
 icon on them. What a skill is collected in is a tag on it, and whose it is is a picture, as a
 workspace's members are where it is listed: the owner's, or the organization's mark. The organization's are left out until
 the filter for them is on (`startsNarrowedTo`), and the filters are kept on this device
-(`keepsFilters`). One is added by writing it or by uploading Markdown files or a folder.
+(`keepsFilters`). One is added by writing it or by uploading Markdown files or a folder. It
+goes into the collection chosen as it is added (`AddSkillDialog`'s `collections`): one of the
+user's own, My skills first, or a new one named there.
 
 A skill's page (`/skills/<id>`, `SkillPane`) keeps the settings' sidebar, and its header is the
 way back to the list and then the skill. Its name and what it is for are edited where they are
@@ -759,6 +771,14 @@ the run, or to the tab where there are several), counted on the Agents tab (`Tab
 first on the tab (Needs you) and on the agent's page, on the agent's row in the colour of it, and
 in the sidebar, in place of the workspace's subtitle (`WorkspaceListItem`'s `attention`). A run's
 header has its agent's crumb (`AgentCrumb`) after the workspace's, which goes to the agent's page.
+An agent is drawn as the mascot (`AgentMark`): thinking while a run works, sad once its latest
+failed, greeting whoever points at its row. A workspace has one agent of a name: a spawner made
+again under a name one already has carries its runs on, its old key kept as another way to it.
+Its page lists its runs under a tab for each way they stand (`RunFilter`, `runsMatching`,
+`runFilterCounts`: all, needs you, failed, with changes), with what needs the user first under
+All, twenty-five at first and fifty more at a time, and a row of done runs of one title in a row
+folded into one that opens to them (`foldRuns`), so that an agent with hundreds of runs reads at a
+glance and draws only what is shown.
 
 `WorkspaceAgents` (plain, tested, like `GadgetSettings`) keeps a workspace's agents live: its
 runs from `listChats()` and `subscribeToChat()`, the actions waiting from
@@ -775,7 +795,9 @@ not have: such a run joins the agent whose latest run has its name.
 The sidebar has the user's other workspaces asked how many of their agents' runs wait
 (`AgentsWaiting`, plain and tested, held by `AgentsWaitingProvider` in `_app`): those active this
 past week that they build in, a few at a time, every two minutes, each by its chats and the actions
-waiting, as nothing says it of the workspaces as a whole. An open workspace says so as it changes.
+waiting, as nothing says it of the workspaces as a whole. An open workspace says so as it changes. The
+one on screen does wherever it is, in a chat or beside one, not only on its own page (`LiveWaiting`
+in `_app.tsx`), so that what was just approved leaves the sidebar's count at once.
 It only counts an action that names its chat, so the open workspace's page knows more than the
 sidebar of the rest. The same reading counts the chats people had that wait on them
 (stopped on a decision, or with an action waiting), and the gadgets that ask something come from
@@ -952,6 +974,18 @@ does to whom (`RemovalDialog`); from a gadget, they lose that gadget alone. The 
 (each sharer has one default link for what they share) lets anyone in the deployment get it from
 the page it was copied on, its key in the fragment, which `ShareLinkGate` redeems before anything
 is shown. Turned off, whoever came in by it keeps what it gave them.
+
+What it reads at other services is said at the dialog's foot (Protected resources, and how many),
+which goes on to a page of its own listing each once under its service's logo, however many of its
+connections read it (`protectedResources`, by its address, else its title): what whoever it is
+shared with will be asked about. They are asked as they open it (`connections/ObserverAccessProvider`,
+beneath `RpcGate`, which hands every `openWorkspace()` and `getGadget()` the overseer's
+`ObserverConfigCallback`), in `ConfirmAccessDialog`: each resource once with the account to show it
+with, a choice of theirs, or the way to connect one, what would make the one chosen do, and, asked
+again, why it was refused. Only the workspace on screen asks (`viewedWorkspace`): those the sidebar
+and the sweeps open in the background are refused, as is what the user cancelled, until they ask
+again. A gadget that was not confirmed says so in its pane, with Confirm access, which asks again
+(`useAskAccessAgain`).
 
 A workspace goes from the user's list from its More menu (`WorkspaceMoreMenu`), on its page's
 header just after its crumb, as a chat's is after its title and on its row or card on the Workspaces page, which have it beside the
