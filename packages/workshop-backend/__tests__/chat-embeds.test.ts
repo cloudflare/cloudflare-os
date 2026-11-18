@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatEmbeds } from "@gadgets/workshop-shared/api";
+import * as inlineBlocks from "@gadgets/workshop-shared/inline-html-blocks";
 import { snapshotChatEmbeds } from "../src/chat-embeds";
 
 const A = "a".repeat(40), B = "b".repeat(40);
 
 describe("host-pinned answer files", () => {
+  it("skips Markdown parsing for technical answers without a worktree reference", async () => {
+    const parse = vi.spyOn(inlineBlocks, "parseInlineHtmlBlocks");
+    try {
+      await snapshotChatEmbeds('Use `a && b` and `C:\\temp`, then <p>a&amp;b</p>.', {},
+          async () => undefined, true);
+      expect(parse).not.toHaveBeenCalled();
+    } finally { parse.mockRestore(); }
+  });
+
   it.each([
     '[Download](worktree&#58;//OUTPUTS/report.csv)',
     '<inline-html>\n<img src="worktree&#58;//OUTPUTS/report.csv">\n</inline-html>',

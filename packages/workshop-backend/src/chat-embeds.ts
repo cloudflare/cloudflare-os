@@ -1,6 +1,6 @@
 import { validateBindingName, type ChatEmbeds } from "@gadgets/workshop-shared/api";
 import { markdownFileUrls, parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
-import { decodeHTMLAttribute } from "entities/decode";
+import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 
 /** Pin newly emitted file references once; a failed lookup stays unavailable in this message. */
 export async function snapshotChatEmbeds(
@@ -8,7 +8,8 @@ export async function snapshotChatEmbeds(
     resolve: (binding: string, path: string) => Promise<string | undefined>,
     streaming = false): Promise<ChatEmbeds | undefined> {
   // Character references and Markdown escapes can encode parts of the scheme.
-  if (!text.includes("worktree://") && !text.includes("&") && !text.includes("\\")) return;
+  if (!text.includes("worktree://") &&
+      !decodeHTML(text).replace(/\\([:/])/g, "$1").includes("worktree://")) return;
   const sources = new Set<string>();
   for (const part of parseInlineHtmlBlocks(text, {streaming})) {
     if (part.kind === "text") {
