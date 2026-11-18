@@ -24,11 +24,30 @@ import { Select } from '@/components/Select'
 import { Switch } from '@/components/Switch'
 import { Tabs } from '@/components/Tabs'
 import { TextField } from '@/components/TextField'
+import { ModelDialog, type ModelDialogProps } from '@/settings/ModelDialog'
+import type { ModelSource } from '@/settings/modelForm'
 import { settingsNavGroups } from '@/settings/settingsSections'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
 const GROUPS = settingsNavGroups()
+
+// One of the user's models, as the server reads it: its key and one header saved, and withheld.
+const OWN_MODEL: ModelSource = {
+  profile: { type: 'agent', id: 'gpt-proxy', name: 'GPT through our proxy' },
+  config: { provider: 'openai', model: 'gpt-proxy', apiToken: null, apiUrl: 'https://proxy.example.com/v1', extraHeaders: { 'X-Proxy-Key': null, 'X-Team': 'design' }, contextWindow: 128000 },
+}
+const PROVIDERS: ModelDialogProps['providers'] = ['anthropic', 'openai', 'google', 'cloudflare', 'ollama']
+
+// The model dialog's states, by the button that opens each.
+const MODEL_DIALOGS: { label: string; props: Pick<ModelDialogProps, 'mode' | 'gateway' | 'providers'> }[] = [
+  { label: 'Add own model', props: { mode: { kind: 'add' }, gateway: false, providers: PROVIDERS } },
+  { label: 'Add own model, with AI Gateway', props: { mode: { kind: 'add' }, gateway: true, providers: ['anthropic', 'openai'] } },
+  { label: 'Edit, key saved', props: { mode: { kind: 'edit', source: OWN_MODEL }, gateway: false, providers: PROVIDERS } },
+  { label: 'Duplicate', props: { mode: { kind: 'duplicate', source: OWN_MODEL }, gateway: false, providers: PROVIDERS } },
+  { label: 'Reading the model', props: { mode: { kind: 'edit', reading: true }, gateway: false, providers: PROVIDERS } },
+  { label: 'Couldn’t read it', props: { mode: { kind: 'edit', reading: true, problem: 'Model not found.' }, gateway: false, providers: PROVIDERS } },
+]
 
 const WORKSPACES: MutableWorkspace[] = [
   { id: 'design', title: 'Design review', label: 'DR', look: { shape: 'folder', color: 'blue' } },
@@ -76,6 +95,8 @@ export const SettingsPreview = () => {
   const [addingSkill, setAddingSkill] = useState(false)
   const [addingToCollection, setAddingToCollection] = useState(false)
   const [makingCollection, setMakingCollection] = useState(false)
+  const [modelDialog, setModelDialog] = useState<number>()
+  const [modelDialogOpen, setModelDialogOpen] = useState(false)
 
   return (
     <>
@@ -375,10 +396,42 @@ export const SettingsPreview = () => {
             <ul aria-label="Models" className="flex flex-col">
               <ModelListItem name="Claude Opus" id="anthropic/claude-opus" builtIn roles={['default']} />
               <ModelListItem name="Kimi K2.7 Code (Workers AI)" id="@cf/moonshotai/kimi-k2.7-code" builtIn roles={['default', 'quick']} />
-              <ModelListItem name="My local Llama, with a name long enough that it has to be cut off somewhere along the line" id="ollama/llama-with-an-id-that-is-long-too" roles={['quick']} onRemove={() => say('removed the model')} />
-              <ModelListItem name="gpt-5.1-pro" id="gpt-5.1-pro" onRemove={() => say('removed the model')} />
+              <ModelListItem name="My local Llama, with a name long enough that it has to be cut off somewhere along the line" id="ollama/llama-with-an-id-that-is-long-too" roles={['quick']} onEdit={() => say('opened it to edit')} onDuplicate={() => say('opened a duplicate')} onRemove={() => say('removed the model')} />
+              <ModelListItem name="gpt-5.1-pro" id="gpt-5.1-pro" onEdit={() => say('opened it to edit')} onDuplicate={() => say('opened a duplicate')} onRemove={() => say('removed the model')} />
               <ModelListItem name="Being removed" id="openai/going" onRemove={() => {}} busy />
             </ul>
+          </SettingsGroup>
+        </div>
+        <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>
+      </Section>
+      <Section title="ModelDialog: adding one of the user's own models, whose fields follow the provider (a key, Workers AI's account, Ollama's address, and under More options an address, extra headers and limits), with no keys asked for where AI Gateway has its own; changing one, whose saved key and header say Saved and are kept unless typed over (change the address and they must be typed again); duplicating one, its key copied; while the model is read, and where it could not be. Saving fails for a model called taken, and what can't be kept says why once Add model is pressed. Under them, the line shown where the administrator turned adding models off">
+        <div className="flex w-full max-w-3xl flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
+            {MODEL_DIALOGS.map(({ label }, index) => (
+              <Button key={label} onClick={() => { setModelDialog(index); setModelDialogOpen(true) }}>{label}</Button>
+            ))}
+          </div>
+          {modelDialog !== undefined && (
+            <ModelDialog
+              key={modelDialog}
+              open={modelDialogOpen}
+              onOpenChange={setModelDialogOpen}
+              {...MODEL_DIALOGS[modelDialog].props}
+              onSave={async (save) => {
+                // As long as keeping it takes, and refused as one there is already would be.
+                await new Promise((resolve) => setTimeout(resolve, 600))
+                if (save.profile.id === 'taken') throw new Error('You already have a model called taken.')
+                // Whether a key is sent, never the key.
+                const key = save.config.apiToken === null ? 'kept' : save.config.apiToken === '' ? 'none' : 'typed'
+                const copied = save.kind === 'add' && save.copySecretsFrom ? `, saved keys copied from ${save.copySecretsFrom}` : ''
+                say(`${save.kind === 'update' ? 'saved' : 'added'} ${save.profile.name} (${save.profile.id}), key ${key}${copied}`)
+              }}
+            />
+          )}
+          <SettingsGroup title="Your own models, turned off" plain>
+            <SettingsCard>
+              <p className="py-4 text-kumo-subtle">Your administrator has turned off adding your own models.</p>
+            </SettingsCard>
           </SettingsGroup>
         </div>
         <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>

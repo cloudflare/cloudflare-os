@@ -62,6 +62,8 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | A template is always made in a new workspace | the base has no `createGadgetFromBlueprint` | `createGadgetFromBlueprint` |
 | Publishing a template takes the app's title only, no description or screenshot step | scope | none |
 | Moving a skill to another tag copies it and deletes the old one, not atomically, and can leave its collection empty | the Context Library can't move between collections | none (gatekeeper-context) |
+| No "AI providers" row in the model settings: a key is entered for each model (Duplicate copies one), not once per provider | a key is a field of each model's config; there is no per-user provider key | a per-user provider credential that models refer to |
+| A decision model of the user's own can't be added, edited or removed in the settings, which list only language models | scope: main lists both on its AI Providers page | none |
 | A skill's Auto-use and exact casing last only for the visit; only one's own skills can be edited | not stored in the Context Library | none (gatekeeper-context) |
 | Template cards name their services without logos | scope | none |
 | Live Google Docs/Sheets/Slides previews cut | user decision | previews API |

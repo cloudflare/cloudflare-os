@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import type { AiChatAuthorInfo, AiModelProvider } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
+import { providerChoices, userModelsAllowed, type ModelSave } from './modelForm'
 import { messageOf } from './useAttempt'
 
 export type ModelSettings = {
@@ -12,6 +13,12 @@ export type ModelSettings = {
   quick: string | null
   /** The ids of the models the deployment provides, which are not the user's to remove. */
   builtIn: ReadonlySet<string>
+  /** Whether the user may add models of their own, and change those they did. */
+  ownAllowed: boolean
+  /** Requests go through the deployment's AI Gateway, with its keys, so the user's models need none. */
+  gateway: boolean
+  /** The providers a model of the user's can be added under. */
+  providers: AiModelProvider[]
 }
 
 export type ModelSettingsState =
@@ -34,7 +41,17 @@ export const useModelSettings = () => {
     let cancelled = false
     Promise.all([api.listModels(), api.getPreferredModel(), api.getQuickModel(), api.getAiConfig()]).then(
       ([models, preferred, quick, config]) => {
-        if (!cancelled) setState({ status: 'ready', models, preferred, quick, builtIn: new Set(config.enabled ? config.builtInModelIds : []) })
+        if (cancelled) return
+        setState({
+          status: 'ready',
+          models,
+          preferred,
+          quick,
+          builtIn: new Set(config.enabled ? config.builtInModelIds : []),
+          ownAllowed: userModelsAllowed(config),
+          gateway: config.enabled,
+          providers: providerChoices(config),
+        })
       },
       (error) => {
         if (cancelled) return
@@ -68,6 +85,14 @@ export const useModelSettings = () => {
     remove: async (id: string) => {
       if (state.status !== 'ready') return
       await change({ models: state.models.filter((model) => model.id !== id) }, ({ models }) => ({ models }), () => api.deleteModel(id))
+      setAttempts((count) => count + 1)
+    },
+    /** Adds, changes or copies a model of the user's, then reads the list again for its name. Rejects with why it was not kept. */
+    save: async (save: ModelSave) => {
+      if (save.kind === 'update') await api.updateModel(save.profile, save.config)
+      // Left out rather than sent as nothing where there is nothing to copy.
+      else if (save.copySecretsFrom === undefined) await api.addModel(save.profile, save.config)
+      else await api.addModel(save.profile, save.config, save.copySecretsFrom)
       setAttempts((count) => count + 1)
     },
   }
