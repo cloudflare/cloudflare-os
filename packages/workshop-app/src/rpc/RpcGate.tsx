@@ -3,17 +3,20 @@ import type { RpcStub } from 'capnweb'
 import {
   AUTH_ERROR_CODES,
   getAuthErrorCode,
+  resolveSiteName,
   type AiChatAuthorInfo,
   type AuthenticatedApi,
   type PublicApi,
 } from '@gadgets/workshop-shared/api'
+import { SignInForm, type SignInMode } from '@/blocks/SignInForm'
 import { ApiContext, type ApiSession } from './ApiContext'
+import { CF_ACCESS_MODE } from './cfAccess'
 import type { Connection } from './Connection'
 import { ConnectionNotice } from './ConnectionNotice'
 import { ConnectionNoticeContext } from './ConnectionNoticeContext'
-import { hashPassword } from './passwordHash'
+import { useServerConfig } from './serverConfig'
+import { SignInPane } from './SignInPane'
 import { clearToken, readToken, storeToken } from './token'
-import { SignInForm } from '@/blocks/SignInForm'
 
 type Session =
   | { phase: 'connecting' }
@@ -28,21 +31,39 @@ const Notice = ({ children }: { children: ReactNode }) => (
   <div className="grid h-full place-items-center p-6 text-base text-kumo-subtle">{children}</div>
 )
 
+export type RpcGateProps = {
+  connection: Connection
+  /** Where the sign-in page starts, for whoever is signed out: signing in, or making an account. */
+  startsAt?: SignInMode
+  children: ReactNode
+}
+
 /**
  * Renders `children` once the connection is up and the user is signed in, and a short notice until
  * then. A dropped connection signs in again on the new one; meanwhile `children` stay as they are,
  * told that it is reconnecting (`ApiSession.reconnecting`), so that nothing open is lost. Only the
  * first connection is waited for with the page to itself. What the user is told meanwhile, and
  * whether what they ask for can be done, is the `ConnectionNotice` it provides.
+ *
+ * The user is signed in with the token this browser keeps (`token.ts`), or, built for Cloudflare
+ * Access, as whoever Access says (`CF_ACCESS_MODE`). Signed out, the sign-in page (`SignInPane`)
+ * is in place of `children`, at the address the user was going to, so that signing in shows them
+ * what they were going to.
  */
-export const RpcGate = ({ connection, children }: { connection: Connection; children: ReactNode }) => {
+export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
   const { publicApi } = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   // The session records which connection it belongs to, so a new connection never reuses the old
   // one's disposed stub. (An object, because a stub in useState would be called as an updater.)
   const [state, setState] = useState<{ owner: RpcStub<PublicApi>; session: Session } | null>(null)
   const [notice] = useState(() => new ConnectionNotice())
-  // Bumped once a token is stored, to sign in with it.
+  // Bumped once a token is stored, to sign in with it, and to try Cloudflare Access again.
   const [signIns, setSignIns] = useState(0)
+  // Stable, as the sign-in page starts over on a new one.
+  const [tokenReceived] = useState(() => (token: string) => {
+    storeToken(token)
+    setSignIns((n) => n + 1)
+  })
+  const siteName = resolveSiteName(useServerConfig()?.siteName)
   // Stable, as the session it is part of is kept by whatever reads it.
   const [userChanged] = useState(() => (user: AiChatAuthorInfo) =>
     setState((current) =>
@@ -60,18 +81,24 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
 
     const signIn = async () => {
       try {
-        // Written out where it is used, so that a build, where it is `false`, drops the import and
-        // everything behind it, the dev account's password included.
-        const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
-          ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
-          : null)
-        if (!token) return finish({ phase: 'signedOut' })
-        // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
-        api = publicApi.authenticate(token)
+        if (CF_ACCESS_MODE) {
+          // Access signed the user in before the page could load, and its session goes with every
+          // request, so there is no token to keep.
+          api = publicApi.authenticateFromCfAccess()
+        } else {
+          // Written out where it is used, so that a build, where it is `false`, drops the import and
+          // everything behind it, the dev account's password included.
+          const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
+            ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
+            : null)
+          if (!token) return finish({ phase: 'signedOut' })
+          api = publicApi.authenticate(token)
+        }
+        // Pipelined: whoami() goes out with the sign-in, and doubles as its check.
         const value: ApiSession = { api, user: await api.whoami(), userChanged, reconnecting: false }
         finish({ phase: 'ready', value, reconnecting: { ...value, reconnecting: true } })
       } catch (error) {
-        if (getAuthErrorCode(error) === AUTH_ERROR_CODES.invalidSessionToken) {
+        if (!CF_ACCESS_MODE && getAuthErrorCode(error) === AUTH_ERROR_CODES.invalidSessionToken) {
           clearToken()
           finish({ phase: 'signedOut' })
         } else {
@@ -86,18 +113,6 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
       api?.[Symbol.dispose]()
     }
   }, [publicApi, signIns, userChanged])
-
-  const signInWithPassword = async (username: string, password: string) => {
-    if (!publicApi) return 'Not connected to the server.'
-    try {
-      const token = await publicApi.login(username, await hashPassword(username, password))
-      if (!token) return 'Wrong username or password.'
-      storeToken(token)
-      setSignIns((n) => n + 1)
-    } catch (error) {
-      return error instanceof Error ? error.message : String(error)
-    }
-  }
 
   const session = publicApi && state?.owner === publicApi ? state.session : CONNECTING
   // What was signed in on the connection before, until this one is.
@@ -133,11 +148,13 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
 
   switch (session.phase) {
     case 'connecting':
-      return <Notice>Connecting…</Notice>
+      return CF_ACCESS_MODE ? <SignInForm siteName={siteName} state="access" /> : <Notice>Connecting…</Notice>
     case 'signedOut':
-      return <SignInForm onSignIn={signInWithPassword} />
+      return <SignInPane publicApi={publicApi!} startsAt={startsAt} onToken={tokenReceived} />
     case 'failed':
-      return <Notice>Couldn’t sign in: {session.message}</Notice>
+      return CF_ACCESS_MODE
+        ? <SignInForm siteName={siteName} state="access" problem={session.message} onRetry={() => setSignIns((n) => n + 1)} />
+        : <Notice>Couldn’t sign in: {session.message}</Notice>
     case 'ready':
       return signedIn(session.value)
   }

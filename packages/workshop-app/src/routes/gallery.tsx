@@ -45,6 +45,7 @@ import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpCon
 import { SearchPreview } from '@/gallery/SearchPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SharingPreview } from '@/gallery/SharingPreview'
+import { SignInPreview } from '@/gallery/SignInPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
@@ -363,6 +364,7 @@ function Gallery() {
       <GadgetSettingsPreview />
       <SharingPreview />
       <SettingsPreview />
+      <SignInPreview />
       <SearchPreview />
       <HeaderPreview />
       <AutomationsPreview />

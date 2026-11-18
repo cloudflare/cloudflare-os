@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { ServerConfig } from '@gadgets/workshop-shared/api'
 import { sharedConnection } from './sharedConnection'
 
@@ -6,7 +6,12 @@ import { sharedConnection } from './sharedConnection'
 let config: Promise<ServerConfig> | undefined
 let known: ServerConfig | undefined
 
-const read = (): Promise<ServerConfig> | undefined => {
+/**
+ * How the deployment is set up (`PublicApi.getServerConfig`), read the first time it is asked for,
+ * and undefined while there is no connection to read it over. One that could not be read is read
+ * again when it is next asked for.
+ */
+export const readServerConfig = (): Promise<ServerConfig> | undefined => {
   if (config) return config
   const { publicApi } = sharedConnection().getSnapshot()
   if (!publicApi) return undefined
@@ -23,17 +28,20 @@ const read = (): Promise<ServerConfig> | undefined => {
 
 /**
  * How the deployment is set up (`PublicApi.getServerConfig`): what it calls itself, whether its
- * people can be searched. Unknown until it has been read, which it is the first time it is asked for.
+ * people can be searched. Unknown until it has been read, which it is the first time it is asked
+ * for, once there is a connection to read it over.
  */
 export const useServerConfig = (): ServerConfig | undefined => {
+  const connection = sharedConnection()
+  const { publicApi } = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const [value, setValue] = useState(known)
   useEffect(() => {
-    if (value) return
+    if (value || !publicApi) return
     let cancelled = false
-    read()?.then((next) => { if (!cancelled) setValue(next) }, () => {})
+    readServerConfig()?.then((next) => { if (!cancelled) setValue(next) }, () => {})
     return () => {
       cancelled = true
     }
-  }, [value])
+  }, [value, publicApi])
   return value
 }
