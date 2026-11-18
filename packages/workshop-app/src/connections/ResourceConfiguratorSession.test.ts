@@ -76,6 +76,16 @@ describe('ResourceConfiguratorSession', () => {
     expect(onScroll).toHaveBeenCalledWith(-1000, 0)
   })
 
+  it('takes no size from a frame that has not drawn its form yet', async () => {
+    const onResize = vi.fn<ConfiguratorSetup['onResize']>()
+    const session = new ResourceConfiguratorSession(() => frame, () => setup({ onResize }))
+    const host = handshake(session)
+    // The runtime's margin alone, before its form is rendered.
+    await host.resize(8, 4)
+    await host.resize(180, 172)
+    expect(onResize.mock.calls).toEqual([[180, 172]])
+  })
+
   it('asks for access one request at a time, and only where it may', async () => {
     let finish!: (asked: boolean) => void
     const ensureResources = vi.fn<NonNullable<ConfiguratorSetup['ensureResources']>>(() => new Promise((resolve) => { finish = resolve }))
