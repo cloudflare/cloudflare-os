@@ -1329,6 +1329,32 @@ describe("BigQuery picker", () => {
     expect(await ui.listNodes("project:flaky", "", null)).toMatchObject({ nodes: [{ id: "dataset:flaky/logs", runsQueries: false }] });
   });
 
+  it("asks for a query project once the dry run's deadline passes, even while a token is being refreshed", async () => {
+    // The probe's 10-second deadline is taken in hand; every other timeout runs as usual.
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => ms === 10_000 ? deadline.signal : timeout(ms));
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = decodeURIComponent(new URL(String(input)).pathname.replace("/bigquery/v2", ""));
+      if (path === "/projects") return Response.json({ projects: [] });
+      if (path === "/projects/expired/datasets") return Response.json({ datasets: [] });
+      return Response.json({ error: { code: 401, message: "Expired" } }, { status: 401 });
+    }));
+    // The dry run's 401 asks for a fresh token, which doesn't come until the test is done.
+    const refresh = Promise.withResolvers<GoogleAccessToken>();
+    let refreshing = false;
+    const ui = new BigQueryConfiguratorUI((opts?: AccessTokenRequest) => {
+      if (!opts?.forceRefresh) return Promise.resolve(token("t"));
+      refreshing = true;
+      return refresh.promise;
+    });
+    const node = ui.getNode("project:expired");
+    await vi.waitFor(() => expect(refreshing).toBe(true));
+    deadline.abort(new DOMException("Timed out", "TimeoutError"));
+    expect(await node).toMatchObject({ id: "project:expired", runsQueries: false });
+    refresh.resolve(token("fresh"));
+  });
+
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
     const { ui, calls } = bigQuery();
     expect(await ui.getNode("project:nowhere")).toBeNull();
