@@ -53,9 +53,9 @@ const TEXTS: Record<string, string> = {
 }
 
 const FILES: CodeBrowserFile[] = [
-  { path: 'client.js', role: 'What it shows' },
-  { path: 'server.ts', role: 'What it keeps and does' },
-  { path: 'README.md', role: 'What it is' },
+  { path: 'client.js' },
+  { path: 'server.ts' },
+  { path: 'README.md' },
   { path: 'blueprint.png' },
   { path: 'lib/protocol.ts' },
   { path: 'lib/styles.css' },
@@ -85,11 +85,11 @@ const HISTORY: CodeBrowserCommit[] = [
 // What each commit changed, and how each file read before it.
 const CHANGES: Record<string, { files: CodeBrowserFile[]; before: Record<string, string> }> = {
   c3: {
-    files: [{ path: 'client.js', role: 'What it shows', change: 'modified' }, { path: 'server.ts', role: 'What it keeps and does', change: 'modified' }, { path: 'README.md', role: 'What it is', change: 'added' }],
+    files: [{ path: 'client.js', change: 'modified' }, { path: 'server.ts', change: 'modified' }, { path: 'README.md', change: 'added' }],
     before: { 'client.js': CLIENT_BEFORE, 'server.ts': SERVER_BEFORE, 'README.md': '' },
   },
   c2: {
-    files: [{ path: 'client.js', role: 'What it shows', change: 'modified' }, { path: 'lib/old-buttons.js', change: 'removed' }],
+    files: [{ path: 'client.js', change: 'modified' }, { path: 'lib/old-buttons.js', change: 'removed' }],
     before: { 'client.js': CLIENT_BEFORE.replace(/  for \(const amount[\s\S]*?\n  }\n/, ''), 'lib/old-buttons.js': 'export const buttons = []\n' },
   },
 }
@@ -170,9 +170,9 @@ const LiveWorktree = () => {
 
 // The tip jar with edits not saved yet: client.js typed in, the README deleted, a file made.
 const DRAFTED: CodeBrowserFile[] = [
-  { path: 'client.js', role: 'What it shows', edit: 'changed', offers: { rename: true, duplicate: true, delete: true, restore: true, caution: 'Tip jar starts from it' } },
-  { path: 'server.ts', role: 'What it keeps and does', offers: { rename: true, duplicate: true, delete: true, restore: false } },
-  { path: 'README.md', role: 'What it is', edit: 'deleted', offers: { rename: false, duplicate: false, delete: 'It’s deleted until you save.', restore: true } },
+  { path: 'client.js', edit: 'changed', offers: { rename: true, duplicate: true, delete: true, restore: true, caution: 'Tip jar stops working without this file.' } },
+  { path: 'server.ts', offers: { rename: true, duplicate: true, delete: true, restore: false } },
+  { path: 'README.md', edit: 'deleted', offers: { rename: false, duplicate: false, delete: 'It’s deleted until you save.', restore: true } },
   { path: 'lib/protocol.ts', offers: { rename: true, duplicate: true, delete: true, restore: false } },
   { path: 'lib/theme.css', edit: 'added', offers: { rename: true, duplicate: true, delete: true, restore: true } },
 ]
@@ -207,7 +207,7 @@ const Fixed = (props: Omit<CodeBrowserProps, 'onShow'>) => <CodeBrowser frame="c
 /** A gadget's code, and a worktree's. */
 export const CodePreview = () => (
   <>
-    <Section title="CodeBrowser (a gadget's code as a card on a page: its files as a tree beside the one shown, highlighted, with find, go to line, ⌘P to go to a file, lines picked from the gutter, and its history, each time it was kept opening to what changed then, as a diff. Where it is narrow, the files are a drawer its header opens)">
+    <Section title="CodeBrowser (a gadget's code as a card on a page: its files as a tree beside the one shown, highlighted, with find, go to line, ⌘P to go to a file, lines picked from the gutter, and its history, each time it was kept opening to what changed then, as a diff. Where it is narrow, the files are a row of tabs along its top, scrolled along, with Go to file before them and New file after)">
       <div className="w-full max-w-6xl"><Live frame="card" className="h-[620px]" /></div>
     </Section>
     <Section title="CodeBrowser, filling a side pane, as View code shows a gadget's">

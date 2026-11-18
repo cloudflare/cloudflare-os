@@ -8,6 +8,9 @@ export type CodeTreeNode<File extends CodeTreeFile> =
 
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })
 
+/** A file's own name, without the folders it is in: "a/b/c.ts" is "c.ts". */
+export const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1)
+
 /**
  * Files as a tree of folders. At the root, the files come first in the order given (a gadget's
  * screen and server side, then what it is), then its folders; within a folder, as the editors
@@ -26,7 +29,6 @@ export const buildCodeTree = <File extends CodeTreeFile>(files: readonly File[])
     }
     folder.files.push(file)
   }
-  const nameOf = (path: string) => path.slice(path.lastIndexOf('/') + 1)
   const nodes = (folder: Folder, prefix: string, atRoot: boolean): CodeTreeNode<File>[] => {
     const folders = [...folder.folders].toSorted(([a], [b]) => collator.compare(a, b)).map(([name, inner]): CodeTreeNode<File> => (
       { kind: 'folder', name, path: prefix + name, children: nodes(inner, `${prefix}${name}/`, false) }

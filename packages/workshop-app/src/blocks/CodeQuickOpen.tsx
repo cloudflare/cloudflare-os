@@ -118,11 +118,11 @@ export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, 
         </div>
         <div ref={list} id={listId} role="listbox" aria-label="Files" className="min-h-0 overflow-y-auto overscroll-contain p-2">
           {line ? (
-            <p className="px-3 py-5 text-center text-sm text-kumo-subtle">
+            <p className="px-3 py-5 text-center text-(length:--control-text) text-kumo-subtle">
               {onGoToLine ? <>Go to line <span className="font-medium text-kumo-default tabular-nums">{line}</span>{lines ? ` of ${lines}` : ''}, with Enter</> : 'Open a file to go to a line in it'}
             </p>
           ) : found.length === 0 ? (
-            <p className="px-3 py-5 text-center text-sm text-kumo-subtle">No file called “{typed.trim()}”</p>
+            <p className="px-3 py-5 text-center text-(length:--control-text) text-kumo-subtle">No file called “{typed.trim()}”</p>
           ) : found.map(({ file, indices }, index) => {
             const nameStart = file.path.lastIndexOf('/') + 1
             const folder = file.path.slice(0, Math.max(nameStart - 1, 0))
@@ -137,20 +137,20 @@ export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, 
                 aria-selected={index === at}
                 onMouseMove={() => setActive(index)}
                 onClick={() => choose(index)}
-                className="flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2 text-sm aria-selected:bg-kumo-tint"
+                className="flex min-h-(--control-size) cursor-pointer items-center gap-3 rounded-2xl px-3 py-2 text-(length:--control-text) aria-selected:bg-kumo-tint"
               >
-                <Icon aria-hidden="true" className="size-4 shrink-0 text-kumo-subtle" />
+                <Icon aria-hidden="true" className="size-[1.125em] shrink-0 text-kumo-subtle" />
                 <span className="min-w-0 truncate text-kumo-default">
                   <Marked text={file.path.slice(nameStart)} indices={marked} offset={nameStart} />
                 </span>
                 {folder && <span className="min-w-0 flex-1 truncate text-kumo-subtle"><Marked text={folder} indices={marked} offset={0} /></span>}
                 {edits?.has(file.path) && <EditDot edit={edits.get(file.path)!} />}
-                {file.path === shown && <span className="ms-auto shrink-0 text-xs text-kumo-subtle">Open</span>}
+                {file.path === shown && <span className="ms-auto shrink-0 text-sm text-kumo-subtle">Open</span>}
               </div>
             )
           })}
         </div>
-        <div aria-hidden="true" className="flex items-center gap-4 border-t border-kumo-line px-5 py-2 text-xs text-kumo-subtle">
+        <div aria-hidden="true" className="flex items-center gap-4 border-t border-kumo-line px-5 py-2 text-sm text-kumo-subtle">
           <span><Key>↑</Key><Key>↓</Key> to move</span>
           <span><Key>↵</Key> to open</span>
           <span><Key>esc</Key> to close</span>
@@ -161,5 +161,5 @@ export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, 
 }
 
 const Key = ({ children }: { children: string }) => (
-  <kbd className="me-1 inline-grid h-4.5 min-w-4.5 place-items-center rounded-[5px] bg-kumo-tint px-1 font-sans text-[10px] text-kumo-default ring-1 ring-kumo-line">{children}</kbd>
+  <kbd className="me-1 inline-grid h-5 min-w-5 place-items-center rounded-[5px] bg-kumo-tint px-1 font-sans text-xs text-kumo-default ring-1 ring-kumo-line">{children}</kbd>
 )

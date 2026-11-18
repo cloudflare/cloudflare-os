@@ -187,7 +187,7 @@ export const fileOffers = (file: DraftedFile, files: readonly DraftedFile[], gad
     duplicate: readable && (plain || file.kind === 'executable'),
     delete: others ? true : 'A gadget needs at least one file.',
     restore,
-    caution: startsFrom(file.path) ? `${gadget} starts from it` : undefined,
+    caution: startsFrom(file.path) ? `${gadget} stops working without this file.` : undefined,
   }
 }
 

@@ -14,6 +14,8 @@ import { Markdown } from '@/components/Markdown'
 import { codeLanguage } from '@/files/codeLanguage'
 import { codePrefs, type CodePrefs } from '@/prefs/codePrefs'
 import { changeLabel, CodeFileTree, editLabel, type CodeFileEditing, type CodeTreeEntry } from './CodeFileTree'
+import { CodeFileStrip } from './CodeFileStrip'
+import { CodeIconButton } from './CodeIconButton'
 import { CodeQuickOpen } from './CodeQuickOpen'
 
 // The editor and its languages load the first time code is shown: they are most of what it weighs.
@@ -119,7 +121,7 @@ const split = (path: string) => {
 
 // Something to say in place of the code, centred in it.
 const Notice = ({ children, role }: { children: ReactNode; role?: 'status' | 'alert' }) => (
-  <div role={role} className="grid h-full place-items-center p-8 text-center text-sm/6 text-kumo-subtle">{children}</div>
+  <div role={role} className="grid h-full place-items-center p-8 text-center text-base/6 text-kumo-subtle">{children}</div>
 )
 
 // A pair of choices, as the app's tabs are: plain text, the chosen one on a pill.
@@ -138,7 +140,7 @@ const Segmented = <Value extends string>({ value, options, onChange, label }: {
         aria-checked={option.value === value}
         onClick={() => onChange(option.value)}
         className={cn(
-          'h-6 cursor-pointer rounded-full px-2.5 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring',
+          'h-8 cursor-pointer rounded-full px-3.5 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring',
           option.value === value ? 'bg-kumo-base text-kumo-default shadow-xs ring-1 ring-kumo-line' : 'text-kumo-subtle hover:text-kumo-default',
         )}
       >
@@ -149,7 +151,7 @@ const Segmented = <Value extends string>({ value, options, onChange, label }: {
 )
 
 const Kbd = ({ children }: { children: ReactNode }) => (
-  <kbd className="rounded-[5px] bg-kumo-base px-1 font-sans text-[10px] leading-4 text-kumo-subtle ring-1 ring-kumo-line">{children}</kbd>
+  <kbd className="rounded-[5px] bg-kumo-base px-1.5 font-sans text-xs leading-5 text-kumo-subtle ring-1 ring-kumo-line">{children}</kbd>
 )
 
 const mac = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform)
@@ -172,9 +174,9 @@ const DraftStatus = ({ editing, note }: { editing: CodeBrowserEditing; note?: st
           confirmLabel="Discard"
           onConfirm={editing.onDiscard}
           triggerVariant="ghost"
-          triggerClassName="h-6 px-2 text-[11px] text-kumo-subtle"
+          triggerClassName="h-8 px-3 text-sm text-kumo-subtle"
         />
-        <Button variant="primary" title={blocked ?? `Save (${MOD}S)`} disabled={!!blocked} onClick={editing.onSave} className="h-6 px-2.5 text-[11px]">Save</Button>
+        <Button variant="primary" title={blocked ?? `Save (${MOD}S)`} disabled={!!blocked} onClick={editing.onSave} className="h-8 px-4 text-sm">Save</Button>
       </span>
     )
   }
@@ -191,8 +193,8 @@ const DraftStatus = ({ editing, note }: { editing: CodeBrowserEditing; note?: st
  *
  * Its history goes back through each time the code was kept; choosing one lists only what changed
  * then, each file as the change to it, in one column or, where there is room, two. Markdown is
- * shown as it reads, with its source a click away. Where it is narrow, as beside a chat, the tree
- * is a drawer that the file's name opens over the code.
+ * shown as it reads, with its source a click away. Where it is narrow, as beside a chat, the files
+ * are not a tree but a row of pills along the top of the code (`CodeFileStrip`).
  *
  * Where it can be edited (`editing`), the code is typed in and its files changed from the tree, as
  * a draft: the status line ends with how many files it changes, Discard (which asks first) and
@@ -213,8 +215,6 @@ export const CodeBrowser = ({
     codePrefs.write(made)
     return made
   })
-  // The drawer, where there is no room for the tree beside the code.
-  const [drawer, setDrawer] = useState(false)
   const [finding, setFinding] = useState(false)
   const [status, setStatus] = useState<CodeEditorStatus>()
   const [copied, setCopied] = useState<'copied' | 'failed'>()
@@ -244,10 +244,6 @@ export const CodeBrowser = ({
   const [adding, setAdding] = useState<string>()
   const edits = editing ? new Map(list.flatMap(({ path, edit }) => (edit ? [[path, edit] as const] : []))) : undefined
 
-  const show = (path: string) => {
-    onShow(path)
-    setDrawer(false)
-  }
   const copy = (text: string) => navigator.clipboard.writeText(text).then(() => setCopied('copied'), () => setCopied('failed'))
   const download = () => {
     if (file.status !== 'text' || !name) return
@@ -284,29 +280,27 @@ export const CodeBrowser = ({
 
   const tree = (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 px-2 pt-2 pb-1">
+      <div className="flex items-center gap-1 px-3 pt-3 pb-2">
         <button
           type="button"
           onClick={() => setFinding(true)}
-          className="flex h-8 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full bg-kumo-base ps-3 pe-2 text-left text-sm text-kumo-subtle ring-1 ring-kumo-line outline-none hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-ring"
+          className="flex h-(--control-size) min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-xl bg-kumo-base ps-3.5 pe-2 text-left text-(length:--control-text) text-kumo-subtle ring-1 ring-kumo-line outline-none hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-ring"
         >
-          <MagnifyingGlassIcon aria-hidden="true" className="size-3.5 shrink-0" />
+          <MagnifyingGlassIcon aria-hidden="true" className="size-4 shrink-0" />
           <span className="min-w-0 flex-1 truncate">Go to file</span>
           <span aria-hidden="true" className="flex gap-0.5"><Kbd>{MOD.trim()}</Kbd><Kbd>P</Kbd></span>
         </button>
         {editing && (
-          <Button
-            variant="ghost"
+          <CodeIconButton
             icon={PlusIcon}
             aria-label="New file"
             title={editing.blocked ?? 'New file'}
             disabled={!!editing.blocked || saving}
             onClick={() => setAdding(folder)}
-            className="size-8 text-kumo-subtle"
           />
         )}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pt-1 pb-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-1 pb-4">
         {files.status === 'loading'
           ? <p role="status" className="appears-late px-3 py-2 text-sm text-kumo-subtle">Reading its files…</p>
           : list.length === 0
@@ -315,7 +309,7 @@ export const CodeBrowser = ({
               <CodeFileTree
                 files={list}
                 shown={shown}
-                onShow={show}
+                onShow={onShow}
                 editing={editing && { ...editing, blocked: editing.blocked ?? (saving ? 'Saving…' : undefined) }}
                 adding={adding}
                 onAddingEnd={() => setAdding(undefined)}
@@ -359,11 +353,11 @@ export const CodeBrowser = ({
             transition={{ type: 'spring', duration: 0.3, bounce: 0 }}
             className="shrink-0 overflow-hidden"
           >
-            <div className={cn('flex items-center gap-2 px-3 pb-1', frame === 'pane' ? 'pt-5' : 'pt-3')}>
-              <Button variant="ghost" icon={ArrowLeftIcon} aria-label="Back to the code as it is" title="Back to the code as it is" onClick={() => history.onCompare(undefined)} className="size-8" />
+            <div className="flex items-center gap-2 px-3 pt-3 pb-1">
+              <Button variant="ghost" icon={ArrowLeftIcon} aria-label="Back to the code as it is" title="Back to the code as it is" onClick={() => history.onCompare(undefined)} />
               <span className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="truncate text-sm font-medium text-kumo-default">{compared.summary}</span>
-                <span className="truncate text-xs text-kumo-subtle">
+                <span className="truncate text-base font-medium text-kumo-default">{compared.summary}</span>
+                <span className="truncate text-sm text-kumo-subtle">
                   {[compared.author, compared.time, files.status === 'ready' && plural(list.length, 'file') + ' changed'].filter(Boolean).join(' · ')}
                 </span>
               </span>
@@ -372,23 +366,35 @@ export const CodeBrowser = ({
         )}
       </AnimatePresence>
 
-      <div className={cn('flex min-h-0 flex-1', frame === 'pane' && !compared && 'pt-4')}>
-        {prefs.files && <nav aria-label="Files" className="hidden w-60 shrink-0 flex-col @2xl:flex">{tree}</nav>}
+      <div className="flex min-h-0 flex-1 flex-col @4xl:flex-row">
+        {/* Where there is no room for the tree beside the code, the files along its top. */}
+        <nav aria-label="Files" className="shrink-0 @4xl:hidden">
+          <CodeFileStrip
+            files={list}
+            message={files.status === 'loading' ? 'Reading its files…' : list.length === 0 ? 'Nothing changed in its files.' : undefined}
+            shown={shown}
+            onShow={onShow}
+            onFind={() => setFinding(true)}
+            editing={editing && { ...editing, blocked: editing.blocked ?? (saving ? 'Saving…' : undefined) }}
+            adding={adding}
+            onAdd={() => setAdding(folder)}
+            onAddingEnd={() => setAdding(undefined)}
+          />
+        </nav>
+        {prefs.files && <nav aria-label="Files" className="hidden w-64 shrink-0 flex-col @4xl:flex">{tree}</nav>}
 
         <section
           aria-label={shown ?? 'File'}
+          // Not a card of its own on the surface it is on: a line sets it off from the files, under
+          // them where they are the tabs along its top and beside it where they are the tree.
           className={cn(
-            'relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-kumo-base ring-1 ring-kumo-line',
-            frame === 'pane' ? 'mx-2 mb-2 rounded-2xl' : 'm-2 rounded-2xl',
-            prefs.files && '@2xl:ms-0',
+            'relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-t border-kumo-contrast/12 bg-kumo-base @4xl:border-t-0',
+            prefs.files && '@4xl:border-s @4xl:border-kumo-contrast/12',
           )}
         >
-          <header className="flex h-11 shrink-0 items-center gap-1 border-b border-kumo-line ps-1.5 pe-1.5">
-            {/* Where the tree is not beside the code, the way to it; where it is, the way to put it away. */}
-            <span className="@2xl:hidden">
-              <Button variant="ghost" icon={SidebarSimpleIcon} aria-label={`All ${plural(list.length, 'file')}`} title="Files" aria-expanded={drawer} onClick={() => setDrawer(true)} className="size-8" />
-            </span>
-            <span className="hidden @2xl:inline">
+          <header className="flex h-14 shrink-0 items-center gap-1 border-b border-kumo-line ps-2 pe-2">
+            {/* Where the tree is beside the code, the way to put it away. */}
+            <span className="hidden @4xl:inline">
               <Button
                 variant="ghost"
                 icon={SidebarSimpleIcon}
@@ -396,10 +402,10 @@ export const CodeBrowser = ({
                 title={prefs.files ? 'Hide the files' : 'Show the files'}
                 aria-pressed={prefs.files}
                 onClick={() => changePrefs({ files: !prefs.files })}
-                className="size-8 text-kumo-subtle"
+                className="text-kumo-subtle"
               />
             </span>
-            <h3 className="flex min-w-0 flex-1 items-center gap-2 ps-1 text-sm/5">
+            <h3 className="flex min-w-0 flex-1 items-center gap-2 ps-1 text-(length:--control-text) leading-5">
               {shown ? (
                 <button
                   type="button"
@@ -411,9 +417,9 @@ export const CodeBrowser = ({
                   <span className={cn('font-medium text-kumo-default', (shownFile?.change === 'removed' || shownFile?.edit === 'deleted') && 'line-through decoration-kumo-subtle/60')}>{name}</span>
                 </button>
               ) : <span className="text-kumo-subtle">{files.status === 'loading' ? '' : 'No file'}</span>}
-              {editing && shownFile?.edit && <span className="hidden shrink-0 text-xs text-kumo-subtle @md:inline">{editLabel(shownFile.edit)}</span>}
+              {editing && shownFile?.edit && <span className="hidden shrink-0 text-sm text-kumo-subtle @md:inline">{editLabel(shownFile.edit)}</span>}
               {shownFile?.change && (
-                <span className="flex shrink-0 items-center gap-1.5 text-xs">
+                <span className="flex shrink-0 items-center gap-1.5 text-sm">
                   <span className="hidden text-kumo-subtle @md:inline">{changeLabel(shownFile.change)}</span>
                   {asDiff && status?.diff && (
                     <span className="font-mono tabular-nums">
@@ -438,13 +444,13 @@ export const CodeBrowser = ({
                 icon={ClockCounterClockwiseIcon}
                 aria-label="History"
                 triggerVariant="ghost"
-                triggerClassName="size-8 text-kumo-subtle"
+                triggerClassName="text-kumo-subtle"
                 align="end"
               >
                 <DropdownMenu.Item icon={comparing === undefined ? CheckIcon : undefined} label="As it is" onSelect={() => history.onCompare(undefined)}>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">As it is</span>
-                    {note && <span className="block truncate text-xs text-kumo-subtle">{note}</span>}
+                    {note && <span className="block truncate text-sm text-kumo-subtle">{note}</span>}
                   </span>
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator />
@@ -454,7 +460,7 @@ export const CodeBrowser = ({
                   <DropdownMenu.Item key={commit.id} icon={commit.id === comparing ? CheckIcon : undefined} label={commit.summary} onSelect={() => history.onCompare(commit.id)}>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate">{commit.summary}</span>
-                      <span className="block truncate text-xs text-kumo-subtle">{[commit.author, commit.time].filter(Boolean).join(' · ')}</span>
+                      <span className="block truncate text-sm text-kumo-subtle">{[commit.author, commit.time].filter(Boolean).join(' · ')}</span>
                     </span>
                   </DropdownMenu.Item>
                 ))}
@@ -467,21 +473,21 @@ export const CodeBrowser = ({
                 aria-label={copied === 'copied' ? 'Copied' : copied === 'failed' ? 'Couldn’t copy' : `Copy ${name}`}
                 title={copied === 'copied' ? 'Copied' : `Copy ${name}`}
                 onClick={() => copy(file.text)}
-                className="size-8 text-kumo-subtle"
+                className="text-kumo-subtle"
               />
             )}
-            <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${name || 'the code'}`} triggerVariant="ghost" triggerClassName="size-8 text-kumo-subtle" align="end">
+            <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${name || 'the code'}`} triggerVariant="ghost" triggerClassName="text-kumo-subtle" align="end">
               <DropdownMenu.Item icon={TextAlignLeftIcon} onSelect={() => changePrefs({ wrap: !prefs.wrap })}>
                 <span className="min-w-0 flex-1">Wrap lines</span>
-                {prefs.wrap ? <CheckIcon aria-label="On" weight="bold" className="size-3.5" /> : <span className="text-xs text-kumo-subtle">⌥Z</span>}
+                {prefs.wrap ? <CheckIcon aria-label="On" weight="bold" className="size-4" /> : <span className="text-sm text-kumo-subtle">⌥Z</span>}
               </DropdownMenu.Item>
               <DropdownMenu.Item icon={MagnifyingGlassIcon} disabled={file.status !== 'text' || showMarkdown} onSelect={() => editor.current?.openFind()}>
                 <span className="min-w-0 flex-1">Find in file</span>
-                <span className="text-xs text-kumo-subtle">{MOD}F</span>
+                <span className="text-sm text-kumo-subtle">{MOD}F</span>
               </DropdownMenu.Item>
               <DropdownMenu.Item icon={ListNumbersIcon} disabled={file.status !== 'text' || showMarkdown} onSelect={() => editor.current?.openGoToLine()}>
                 <span className="min-w-0 flex-1">Go to line</span>
-                <span className="text-xs text-kumo-subtle">⌃G</span>
+                <span className="text-sm text-kumo-subtle">⌃G</span>
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               {shown && <DropdownMenu.Item icon={CopyIcon} onSelect={() => copy(shown)}>Copy path</DropdownMenu.Item>}
@@ -540,7 +546,7 @@ export const CodeBrowser = ({
             )}
           </div>
 
-          <footer className="flex min-h-7 shrink-0 items-center gap-3 border-t border-kumo-line px-3 text-[11px] text-kumo-subtle">
+          <footer className="flex min-h-10 shrink-0 items-center gap-3 border-t border-kumo-line px-4 text-sm text-kumo-subtle">
             {statusLine}
             <span className="ms-auto flex min-w-0 items-center gap-3">
               {file.status === 'text' && language && <span className={cn('hidden shrink-0', !drafting && '@md:inline')}>{CODE_LANGUAGE_NAMES[language]}</span>}
@@ -549,15 +555,15 @@ export const CodeBrowser = ({
             </span>
           </footer>
           {editing?.save && (editing.save.status === 'failed' || editing.save.status === 'conflict') && (
-            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-kumo-line px-3 py-2 text-xs text-kumo-default">
+            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-kumo-line px-4 py-2.5 text-sm text-kumo-default">
               <WarningCircleIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-danger" />
               <span className="min-w-0 flex-1">
                 {editing.save.status === 'failed' ? `Couldn’t save: ${editing.save.message}` : editing.save.message}
               </span>
               {editing.save.status === 'conflict' && (
                 <span className="flex shrink-0 gap-2">
-                  <Button onClick={editing.save.onDiscardMine} className="h-7 px-3 text-xs">Discard mine</Button>
-                  <Button variant="primary" onClick={editing.save.onSaveAnyway} className="h-7 px-3 text-xs">Save mine anyway</Button>
+                  <Button onClick={editing.save.onDiscardMine} className="h-8 px-4 text-sm">Discard mine</Button>
+                  <Button variant="primary" onClick={editing.save.onSaveAnyway} className="h-8 px-4 text-sm">Save mine anyway</Button>
                 </span>
               )}
             </div>
@@ -571,7 +577,7 @@ export const CodeBrowser = ({
               edits={edits}
               lines={status?.lines}
               onOpen={(path) => {
-                show(path)
+                onShow(path)
                 setFinding(false)
               }}
               onGoToLine={file.status === 'text' && !showMarkdown ? (line) => {
@@ -583,36 +589,6 @@ export const CodeBrowser = ({
           )}
         </section>
       </div>
-
-      {/* The tree as a drawer over the code, where there is no room for it beside it. */}
-      <AnimatePresence>
-        {drawer && (
-          <motion.div key="drawer" className="absolute inset-0 z-20 @2xl:hidden" initial="hidden" animate="shown" exit="hidden">
-            <motion.div
-              aria-hidden="true"
-              className="absolute inset-0 bg-kumo-canvas/60"
-              variants={{ hidden: { opacity: 0 }, shown: { opacity: 1 } }}
-              transition={{ duration: reduceMotion ? 0 : 0.15 }}
-              onClick={() => setDrawer(false)}
-            />
-            <motion.nav
-              aria-label="Files"
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') setDrawer(false)
-              }}
-              className="absolute inset-y-0 start-0 flex w-[min(19rem,85%)] flex-col rounded-e-3xl bg-kumo-tint shadow-xl ring-1 ring-kumo-line"
-              variants={{ hidden: { x: '-100%' }, shown: { x: 0 } }}
-              transition={reduceMotion ? { duration: 0 } : { type: 'spring', duration: 0.35, bounce: 0.05 }}
-            >
-              <div className="flex items-center justify-between ps-4 pe-2 pt-3">
-                <span className="text-sm font-medium text-kumo-default">{plural(list.length, 'file')}</span>
-                <Button variant="ghost" icon={XIcon} aria-label="Back to the code" onClick={() => setDrawer(false)} className="size-8" />
-              </div>
-              {tree}
-            </motion.nav>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   )
 }

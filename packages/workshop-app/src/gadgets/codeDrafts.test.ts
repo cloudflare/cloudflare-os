@@ -137,7 +137,7 @@ describe('copyName', () => {
 describe('fileOffers', () => {
   const files: DraftedFile[] = FILES
   it('cautions about renaming or deleting what the gadget starts from', () => {
-    expect(fileOffers(files[0], files, 'Counter', true)).toEqual({ rename: true, duplicate: true, delete: true, restore: false, caution: 'Counter starts from it' })
+    expect(fileOffers(files[0], files, 'Counter', true)).toEqual({ rename: true, duplicate: true, delete: true, restore: false, caution: 'Counter stops working without this file.' })
     expect(fileOffers(files[2], files, 'Counter', true).caution).toBeUndefined()
   })
 
