@@ -86,6 +86,10 @@ export const UiBlockCard = ({
   })
   useEffect(() => writeBlock(), [block.html, block.kind])
 
+  useEffect(() => {
+    loadRef.current?.frame.retryImages().catch(() => {})
+  }, [files?.readBlob])
+
   const live = nearViewport && refused === undefined && !stopped
 
   useEffect(() => {

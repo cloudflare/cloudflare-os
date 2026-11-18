@@ -2,7 +2,7 @@ import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { Overseer } from '@gadgets/workshop-shared/api'
-import { MarkdownMessage } from './ChatInterface'
+import { AgentAnswer, MarkdownMessage } from './ChatInterface'
 import type { FileSnapshots } from './features/chat/inlineFiles'
 
 let host: HTMLDivElement | undefined
@@ -13,6 +13,7 @@ afterEach(async () => {
   host?.remove()
   root = undefined
   host = undefined
+  window.scrollTo(0, 0)
   vi.restoreAllMocks()
 })
 
@@ -168,6 +169,7 @@ it('cancels an in-progress byte download when its snapshot leaves and releases t
     : stream(png('cyan')))
   const markdown = `![Result](${source})`
   await show(markdown, { oids: { [source]: a }, readBlob })
+  await expect.poll(() => readBlob.mock.calls.length).toBe(1)
   await show(markdown, { oids: { [source]: b }, readBlob })
   await expect.poll(() => cancel.mock.calls.length).toBe(1)
   await expect.poll(() => pixel(image('Result'))).toEqual([0, 255, 255, 255])
@@ -235,4 +237,61 @@ it('never looks up an unavailable path and keeps raw HTML, other schemes and uns
   await show('![No capability](worktree://REPO/result.png)')
   expect(host!.textContent).toBe('No capability')
   expect(host!.querySelector('img')).toBeNull()
+})
+
+
+it('waits to read historical images until the viewer nears them', async () => {
+  const source = 'worktree://REPO/old.png', oid = 'a'.repeat(40)
+  const readBlob = vi.fn<Overseer['readBlob']>(async () => stream(png('cyan')))
+  await show('Setting up history.')
+  host!.style.marginTop = '10000px'
+  await show(`![Historical](${source})`, { oids: { [source]: oid }, readBlob })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(readBlob).not.toHaveBeenCalled()
+  host!.scrollIntoView()
+  await expect.poll(() => image('Historical')?.naturalWidth).toBe(2)
+  expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
+})
+
+
+it('keeps a reader following the latest reply at the bottom after delayed image layout', async () => {
+  await show('Preparing result.')
+  host!.style.cssText = 'height:180px;overflow:auto'
+  const source = 'worktree://OUTPUTS/tall.svg', oid = 'a'.repeat(40)
+  const ready = Promise.withResolvers<void>(), reading = Promise.withResolvers<void>()
+  const readBlob = vi.fn<Overseer['readBlob']>(async () => {
+    reading.resolve()
+    await ready.promise
+    return stream(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="500"/>'))
+  })
+  const keepAtBottom = vi.fn<() => void>(() => { host!.scrollTop = host!.scrollHeight })
+  await act(async () => root!.render(<>
+    <div style={{ height: 800 }}>Earlier replies</div>
+    <AgentAnswer message={`![Result](${source})`} streaming={false} blocks={{
+      scrollRoot: { current: host! }, onHeightChange: keepAtBottom,
+      onSendMessage: async () => {}, files: { oids: { [source]: oid }, readBlob },
+    }} />
+  </>))
+  host!.scrollTop = host!.scrollHeight
+  await reading.promise
+  ready.resolve()
+  await expect.poll(() => image('Result')?.naturalHeight).toBe(500)
+  await expect.poll(() => host!.scrollHeight - host!.clientHeight - host!.scrollTop).toBeLessThan(2)
+  expect(keepAtBottom).toHaveBeenCalled()
+})
+
+it.each(['utf-16le', 'utf-16be', 'namespace'])('decodes a valid %s SVG header with originless image URLs', async encoding => {
+  const svg = '<s:svg xmlns:s="http://www.w3.org/2000/svg" width="17" height="19"/>'
+  let bytes = new TextEncoder().encode(svg)
+  if (encoding !== 'namespace') {
+    bytes = new Uint8Array(2 + svg.length * 2)
+    const view = new DataView(bytes.buffer)
+    view.setUint16(0, 0xfeff, encoding === 'utf-16le')
+    for (let i = 0; i < svg.length; i++) view.setUint16(2 + i * 2, svg.charCodeAt(i), encoding === 'utf-16le')
+  }
+  const source = 'worktree://OUTPUTS/vector.svg'
+  await show(`![Vector](${source})`, { oids: { [source]: 'a'.repeat(40) }, readBlob: async () => stream(bytes) })
+  await expect.poll(() => image('Vector')?.naturalWidth).toBe(17)
+  expect(image('Vector')!.naturalHeight).toBe(19)
+  expect(image('Vector')!.src).toMatch(/^data:image\/svg\+xml/)
 })

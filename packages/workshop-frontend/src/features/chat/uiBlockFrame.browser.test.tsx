@@ -1,5 +1,10 @@
 // An `<inline-html>` block's frame, in Chromium.
 
+import React, { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { ThemeProvider } from '../../ThemeContext'
+import { UiBlockCard } from './UiBlockCard'
+import type { Overseer } from '@gadgets/workshop-shared/api'
 import { RpcSession } from 'capnweb'
 import { afterEach, expect, it, vi } from 'vitest'
 import { readSnapshotFile } from './inlineFiles'
@@ -11,8 +16,10 @@ import {
 const THEME: UiBlockTheme = { scheme: 'light', tokens: {} }
 
 const resources: Disposable[] = []
+const roots: Root[] = []
 
-afterEach(() => {
+afterEach(async () => {
+  await act(async () => { for (const root of roots.splice(0)) root.unmount() })
   for (const resource of resources.splice(0).toReversed()) resource[Symbol.dispose]()
 })
 
@@ -176,4 +183,80 @@ it.each(['', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/
   await expect.poll(() => sent.some(message => message.startsWith('vector:17:blob:'))).toBe(true)
   await expect.poll(() => sent.includes('blocked')).toBe(true)
   expect(readBlob).toHaveBeenCalledTimes(1)
+})
+
+
+it('does not invoke the image fallback while pinned bytes are still being read', async () => {
+  const pending = Promise.withResolvers<void>(), reading = Promise.withResolvers<void>()
+  const sent: string[] = []
+  await openBlock('<img src="worktree://REPO/image.png" onerror="agent.send(\'fallback\'); this.remove()" ' +
+    'onload="agent.send(\'loaded\')">', {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: async () => {
+      reading.resolve()
+      await pending.promise
+      return { oid: 'a'.repeat(40), stream: byteStream(png('cyan')) }
+    },
+  })
+  await reading.promise
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(sent).toEqual([])
+  pending.resolve()
+  await expect.poll(() => sent).toEqual(['loaded'])
+})
+
+
+it.each(['failed', 'interrupted'])('retries %s frame image reads on reconnect while preserving the live view and loaded images', async status => {
+  const host = document.body.appendChild(document.createElement('div'))
+  resources.push({ [Symbol.dispose]: () => host.remove() })
+  const root = createRoot(host)
+  roots.push(root)
+  const source = 'worktree://OUTPUTS/image.png', loaded = 'worktree://OUTPUTS/loaded.png'
+  const a = 'a'.repeat(40), b = 'b'.repeat(40), oids = { [source]: a, [loaded]: b }
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+  const cancel = vi.fn<() => void>()
+  const readBlob = vi.fn<Overseer['readBlob']>(async oid => {
+    if (oid === b) return byteStream(png('red'))
+    if (status === 'failed') throw new Error('Connection lost')
+    return new ReadableStream({ start(value) { controller = value; value.enqueue(Uint8Array.of(137, 80)) }, cancel })
+  })
+  const show = async (readBlob: Overseer['readBlob']) => act(async () => root.render(<ThemeProvider>
+    <UiBlockCard block={{kind: 'block', html: `<img src="${source}" onload="agent.send('recovered')"><img src="${loaded}" onload="agent.send('ready')">`}}
+      files={{ oids, readBlob }} onSendMessage={async () => {}} onHeightChange={() => {}} scrollRoot={{ current: null }} />
+  </ThemeProvider>))
+  await show(readBlob)
+  await expect.poll(() => readBlob.mock.calls.length).toBe(2)
+  await expect.poll(() => host.textContent!.includes('Connection lost')).toBe(status === 'failed')
+  await expect.poll(() => host.textContent).toContain('ready')
+  const iframe = host.querySelector('iframe')
+  const reconnected = vi.fn<Overseer['readBlob']>(async () => byteStream(png('cyan')))
+  await show(reconnected)
+  await expect.poll(() => host.textContent).toContain('recovered')
+  expect(reconnected).toHaveBeenCalledExactlyOnceWith(a)
+  expect(host.querySelector('iframe')).toBe(iframe)
+  if (controller) {
+    controller.enqueue(Uint8Array.of(1))
+  }
+  await expect.poll(() => cancel.mock.calls.length).toBe(status === 'interrupted' ? 1 : 0)
+  await show(vi.fn<Overseer['readBlob']>())
+  expect(host.querySelector('iframe')).toBe(iframe)
+  expect(host.textContent).toContain('recovered')
+})
+
+
+it.each(['utf-16le', 'utf-16be', 'namespace'])('decodes a valid %s SVG in an inline view', async encoding => {
+  const svg = '<s:svg xmlns:s="http://www.w3.org/2000/svg" width="17" height="19"/>'
+  let bytes = new TextEncoder().encode(svg)
+  if (encoding !== 'namespace') {
+    bytes = new Uint8Array(2 + svg.length * 2)
+    const view = new DataView(bytes.buffer)
+    view.setUint16(0, 0xfeff, encoding === 'utf-16le')
+    for (let i = 0; i < svg.length; i++) view.setUint16(2 + i * 2, svg.charCodeAt(i), encoding === 'utf-16le')
+  }
+  const sent: string[] = []
+  await openBlock(observedImage('vector', 'worktree://OUTPUTS/vector.svg'), {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
+  })
+  await expect.poll(() => sent.some(message => message.startsWith('vector:17:blob:'))).toBe(true)
 })

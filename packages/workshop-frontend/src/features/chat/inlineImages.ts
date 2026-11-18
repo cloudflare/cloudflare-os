@@ -1,5 +1,10 @@
 /** Recognize an SVG header with a linear scan of XML comments and DOCTYPE declarations. */
-export function isSvgImage(head: string): boolean {
+export function isSvgImage(head: string | Uint8Array): boolean {
+  if (typeof head !== 'string') {
+    const encoding = head[0] === 0xff && head[1] === 0xfe ? 'utf-16le'
+      : head[0] === 0xfe && head[1] === 0xff ? 'utf-16be' : 'utf-8'
+    head = new TextDecoder(encoding).decode(head)
+  }
   let text = head.trimStart()
   if (/^<\?xml\b/i.test(text)) {
     const end = text.indexOf('?>')
@@ -13,7 +18,7 @@ export function isSvgImage(head: string): boolean {
       text = text.slice(end + 3).trimStart()
       continue
     }
-    if (!/^<!DOCTYPE\s+svg[\s>]/i.test(text)) break
+    if (!/^<!DOCTYPE\s+(?:[\w.-]+:)?svg[\s>]/i.test(text)) break
     // A '>' inside a quoted identifier or an internal subset doesn't end the DOCTYPE.
     let quote = '', subset = 0, end = -1
     for (let i = 9; i < text.length; i++) {
@@ -32,5 +37,5 @@ export function isSvgImage(head: string): boolean {
     if (end === -1) return false
     text = text.slice(end + 1).trimStart()
   }
-  return /^<svg[\s>]/i.test(text)
+  return /^<(?:[\w.-]+:)?svg[\s/>]/i.test(text)
 }

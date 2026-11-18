@@ -45,6 +45,9 @@ export interface UiBlockFrame {
    */
   write(html: string): void
 
+  /** Retry interrupted or failed image reads after the workspace reconnects. */
+  retryImages(): void
+
   /** Ends the block's document once the block closes, so its module scripts run. */
   close(): void
 }
@@ -159,7 +162,7 @@ const loadImage = async (image, state) => {
       signal: state.controller.signal,
     })).blob();
     // Raster formats are sniffed by the browser. SVG needs its MIME type to decode as an image.
-    if (isSvgImage(await blob.slice(0, 1024).text())) {
+    if (isSvgImage(new Uint8Array(await blob.slice(0, 1024).arrayBuffer()))) {
       blob = blob.slice(0, blob.size, "image/svg+xml");
     }
     if (images.get(image) !== state || !image.isConnected) return;
@@ -167,6 +170,7 @@ const loadImage = async (image, state) => {
     if (state.url) URL.revokeObjectURL(state.url);
     image.dataset.blobOid = result.oid;
     state.url = url;
+    state.loaded = true;
     image.src = url;
   } catch (error) {
     if (images.get(image) !== state) return;
@@ -178,7 +182,7 @@ const loadImage = async (image, state) => {
 };
 const scanImages = () => {
   for (const [image, state] of images) {
-    if (!image.isConnected || image.getAttribute("src") !== state.url && image.getAttribute("src") !== state.source) {
+    if (!image.isConnected || image.getAttribute("src") !== (state.url ?? null) && image.getAttribute("src") !== state.source) {
       if (state.url) URL.revokeObjectURL(state.url);
       images.delete(image);
       state.controller.abort();
@@ -190,12 +194,26 @@ const scanImages = () => {
     if (!previous && source.startsWith("worktree://")) {
       const state = { source, controller: new AbortController() };
       images.set(image, state);
+      // Remove the unhandled scheme before yielding to RPC, so native error handlers don't
+      // replace a valid image while its bytes are still in transit.
+      image.removeAttribute("src");
       loadImage(image, state);
     }
   }
 };
 class Frame extends RpcTarget {
   setTheme(theme) { applyTheme(theme); }
+  retryImages() {
+    for (const [image, previous] of images) {
+      if (previous.loaded || !image.isConnected) continue;
+      const state = { source: previous.source, controller: new AbortController() };
+      images.set(image, state);
+      previous.controller.abort();
+      if (previous.url) URL.revokeObjectURL(previous.url);
+      image.removeAttribute("src");
+      loadImage(image, state);
+    }
+  }
   write(html) {
     const first = !started;
     if (first) {

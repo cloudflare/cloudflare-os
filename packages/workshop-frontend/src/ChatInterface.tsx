@@ -154,7 +154,7 @@ import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDi
 import { UiBlockCard, type UiBlockCardProps } from "./features/chat/UiBlockCard";
 import type { FileSnapshots } from "./features/chat/inlineFiles";
 import { FileLink } from "./features/chat/FileLink";
-import { FileImage } from "./features/chat/FileImage";
+import { FileImage, type FileImageLayout } from "./features/chat/FileImage";
 import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
@@ -1214,18 +1214,18 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
 
 // ReactMarkdown owns the image props. Context keeps its renderer's identity stable when files
 // arrive, so previously pinned files keep their downloaded bytes.
-const MarkdownFiles = createContext<FileSnapshots | undefined>(undefined);
+const MarkdownFiles = createContext<{files?: FileSnapshots; layout?: FileImageLayout}>({});
 const MarkdownImage: NonNullable<Components["img"]> = ({ node: _node, src, alt, title, ...props }) => {
-  const files = useContext(MarkdownFiles);
+  const {files, layout} = useContext(MarkdownFiles);
   if (typeof src === "string" && src.startsWith("worktree://")) {
     return files
-      ? <FileImage key={files.oids[src] ?? src} oid={files.oids[src]} alt={alt} title={title} readBlob={files.readBlob} />
+      ? <FileImage key={files.oids[src] ?? src} oid={files.oids[src]} alt={alt} title={title} readBlob={files.readBlob} layout={layout} />
       : <span>{alt}</span>;
   }
   return <img {...props} src={src || undefined} alt={alt} title={title} />;
 };
 const MarkdownFileLink = ({ source, children, title }: { source: string; children: ReactNode; title?: string }) => {
-  const files = useContext(MarkdownFiles);
+  const {files} = useContext(MarkdownFiles);
   return <FileLink key={files?.oids[source] ?? source} source={source} files={files} title={title}>{children}</FileLink>;
 };
 const markdownUrlTransform: UrlTransform = (url, key, node) =>
@@ -1283,12 +1283,13 @@ const MARKDOWN_COMPONENTS_NO_CAPSULES = getMarkdownComponents();
  * single newlines as hard breaks, for text people typed rather than Markdown a model wrote.
  */
 export const MarkdownMessage = memo(function MarkdownMessage(
-  { message, capsules, formats, preserveLineBreaks, files }: {
+  { message, capsules, formats, preserveLineBreaks, files, fileLayout }: {
     message: string;
     capsules?: CapsuleSpecifier[];
     formats?: MessageFormatRef[];
     preserveLineBreaks?: boolean;
     files?: FileSnapshots;
+    fileLayout?: FileImageLayout;
   },
 ): ReactNode {
   const tokenizedMessage = useMemo(
@@ -1312,8 +1313,9 @@ export const MarkdownMessage = memo(function MarkdownMessage(
     [preserveLineBreaks, tokenizedMessage],
   );
 
+  const fileContext = useMemo(() => ({files, layout: fileLayout}), [files, fileLayout]);
   return (
-    <MarkdownFiles value={files}><ReactMarkdown
+    <MarkdownFiles value={fileContext}><ReactMarkdown
       skipHtml={true}
       remarkPlugins={remarkPlugins}
       components={components}
@@ -1347,10 +1349,12 @@ export const AgentAnswer = (
   const oids = blocks.files?.oids, readBlob = blocks.files?.readBlob;
   const files = useMemo(() => oids && readBlob ? { oids, readBlob } : undefined, [oids, readBlob]);
 
+  const imageLayout = useMemo(() => ({scrollRoot: blocks.scrollRoot, onHeightChange: blocks.onHeightChange}),
+      [blocks.scrollRoot, blocks.onHeightChange]);
   return parts.map((part, i) => {
     switch (part.kind) {
       case "text":
-        return <MarkdownMessage key={i} message={part.text} files={files} />;
+        return <MarkdownMessage key={i} message={part.text} files={files} fileLayout={imageLayout} />;
       case "block":
       case "open":
         // An open block's view stays the closed block's: the same component, at the same place.

@@ -47,6 +47,7 @@ class VisibleIntersectionObserver {
 class FakeFrame extends RpcTarget implements UiBlockFrame {
   received: string[] = []
   setTheme() {}
+  retryImages() {}
   write(html: string) { this.received.push(html) }
   close() { this.received.push('close') }
 }
