@@ -1,9 +1,8 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { CommitInfo } from '@gadgets/workshop-shared/api'
 import { CodeBrowser, type CodeBrowserCommit, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import type { CodeLines } from '@/components/CodeEditor'
 import { formatActivity } from '@/workspaces/formatActivity'
-import type { CodeFile } from './gadgetCode'
 import { useCodeEditing } from './useCodeEditing'
 import { useCodeHistory, useGadgetCode, type CodeComparison } from './useGadgetCode'
 
@@ -23,11 +22,6 @@ export type GadgetCodeViewProps = {
   linkTo?: (path: string, lines?: CodeLines) => string
   /** Nothing is read until it is. */
   active?: boolean
-  /**
-   * Orders and marks the files listed, as a worktree's are without a gadget's roles. Should keep
-   * its identity between renders.
-   */
-  arrange?: (files: CodeFile[]) => CodeFile[]
   /** What it says when there are no files. */
   empty?: string
 } & Pick<CodeBrowserProps, 'frame' | 'className'>
@@ -51,7 +45,7 @@ const keptWhen = (date: Date) => {
  * is now is edited (`useCodeEditing`), as a draft saved through a chat.
  */
 export const GadgetCodeView = ({
-  workspaceId, gadget, commitId, file, onShowFile, lines, onLinesChange, linkTo, active = true, arrange, empty, frame, className,
+  workspaceId, gadget, commitId, file, onShowFile, lines, onLinesChange, linkTo, active = true, empty, frame, className,
 }: GadgetCodeViewProps) => {
   const [comparing, setComparing] = useState<string>()
   const history = useCodeHistory(workspaceId, commitId, active)
@@ -59,13 +53,8 @@ export const GadgetCodeView = ({
   const compared = log?.find(({ oid }) => oid === comparing)
   const comparison: CodeComparison | undefined = compared?.parents[0] ? { from: compared.parents[0], to: compared.oid } : undefined
   const edit = useCodeEditing({ workspaceId, gadget, commitId, comparing: comparison !== undefined })
-  // What the draft adds, deletes and changes is listed over what was given to list.
-  const drafted = edit.arrange
-  const listed = useCallback((files: CodeFile[]) => {
-    const given = arrange ? arrange(files) : files
-    return drafted ? drafted(given) : given
-  }, [arrange, drafted])
-  const code = useGadgetCode({ workspaceId, commit: commitId, comparing: comparison, asked: file, active, arrange: arrange || drafted ? listed : undefined })
+  // What the draft adds, deletes and changes is listed over what was read.
+  const code = useGadgetCode({ workspaceId, commit: commitId, comparing: comparison, asked: file, active, arrange: edit.arrange })
   const commits = useMemo(() => log?.filter(({ parents }) => parents.length > 0).map(historyEntry), [log])
   const head = log?.[0]
   const shown = edit.present(code.files, code.shown, code.file)

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RpcTarget } from 'capnweb'
 import type { CommitInfo, WorkpieceSummary, WorkpiecesSubscriber, WorktreeSummary } from '@gadgets/workshop-shared/api'
 import { readChangedPaths, readCommitLog } from '@/gadgets/codeReads'
-import { commitsSince, type CodeFile } from '@/gadgets/gadgetCode'
+import { commitsSince } from '@/gadgets/gadgetCode'
 import { useGadgetCode } from '@/gadgets/useGadgetCode'
 import { useApi } from '@/rpc/ApiContext'
 
@@ -33,9 +33,6 @@ const NONE: ReadonlySet<string> = new Set()
 
 // How many of its commits are listed; a worktree's are its agent's, a handful at most.
 const COMMITS = 50
-
-// A repository's client.ts is not a gadget's screen.
-const withoutRoles = (files: CodeFile[]) => files.map(({ role: _, ...file }) => file)
 
 /**
  * A worktree beside a chat (`WorktreeSummary`), as kept: its code at its accepted commit
@@ -98,7 +95,6 @@ export const useWorktree = (worktree: { workspaceId: string; workpieceId: number
     asked,
     // Until it is known what changed, it is not known what it opens to.
     active: worktree !== undefined && read !== undefined,
-    arrange: withoutRoles,
   })
   const state: WorktreeChanges = useMemo(
     () => (read ? { status: 'ready', changed: read.changed, commits: read.commits } : { status: 'loading' }),

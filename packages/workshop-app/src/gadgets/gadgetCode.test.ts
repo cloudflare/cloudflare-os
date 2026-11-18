@@ -17,9 +17,9 @@ describe('codeFiles', () => {
       { name: 'link', kind: 'symlink' },
     ]
     expect(codeFiles(tree)).toEqual([
-      { path: 'client.ts', kind: 'file', role: 'What it shows' },
-      { path: 'server.ts', kind: 'file', role: 'What it keeps and does' },
-      { path: 'README.md', kind: 'file', role: 'What it is' },
+      { path: 'client.ts', kind: 'file' },
+      { path: 'server.ts', kind: 'file' },
+      { path: 'README.md', kind: 'file' },
       { path: 'blueprint.json', kind: 'file' },
       { path: 'link', kind: 'symlink' },
       { path: 'lib/deep/a.ts', kind: 'file' },
@@ -27,8 +27,8 @@ describe('codeFiles', () => {
     ])
   })
 
-  it('gives a role only to the files at the root', () => {
-    expect(codeFiles([{ name: 'lib', kind: 'dir', children: [file('client.ts')] }])).toEqual([{ path: 'lib/client.ts', kind: 'file' }])
+  it('puts the screen and server side first only at the root', () => {
+    expect(codeFiles([{ name: 'lib', kind: 'dir', children: [file('client.ts')] }, file('a.ts')]).map(({ path }) => path)).toEqual(['a.ts', 'lib/client.ts'])
   })
 })
 
@@ -56,7 +56,7 @@ describe('changedFiles', () => {
     const before = codeFiles([file('server.ts'), file('client.ts'), file('old.ts'), file('same.ts')])
     const after = codeFiles([file('client.ts'), file('server.ts'), file('new.ts'), file('same.ts')])
     expect(changedFiles(after, before, ['new.ts', 'old.ts', 'server.ts'])).toEqual([
-      { path: 'server.ts', kind: 'file', role: 'What it keeps and does', change: 'modified' },
+      { path: 'server.ts', kind: 'file', change: 'modified' },
       { path: 'new.ts', kind: 'file', change: 'added' },
       { path: 'old.ts', kind: 'file', change: 'removed' },
     ])

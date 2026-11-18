@@ -35,8 +35,8 @@ export type UseGadgetCodeOptions = {
   /** Nothing is read until it is. */
   active: boolean
   /**
-   * Orders and marks the files listed, as a worktree's are without a gadget's roles. Should keep
-   * its identity between renders.
+   * Orders and marks the files listed, as the draft's edits do, which add and take away some. Should
+   * keep its identity between renders.
    */
   arrange?: (files: CodeFile[]) => CodeFile[]
 }

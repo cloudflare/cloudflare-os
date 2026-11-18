@@ -8,8 +8,8 @@ import {
 const text = (value: string): DraftBefore => ({ kind: 'text', text: value })
 const ABSENT: DraftBefore = { kind: 'absent' }
 const FILES: CodeFile[] = [
-  { path: 'client.ts', kind: 'file', role: 'What it shows' },
-  { path: 'server.ts', kind: 'file', role: 'What it keeps and does' },
+  { path: 'client.ts', kind: 'file' },
+  { path: 'server.ts', kind: 'file' },
   { path: 'styles.css', kind: 'file' },
   { path: 'lib/util.ts', kind: 'file' },
 ]
@@ -59,9 +59,9 @@ describe('listDraft', () => {
     draft = withFile(draft, 'c1', 'README.md', ABSENT, '# Hi')
     draft = withFile(draft, 'c1', 'components/Button.tsx', ABSENT, '')
     expect(listDraft(FILES, draftEdits(draft))).toEqual([
-      { path: 'client.ts', kind: 'file', role: 'What it shows' },
-      { path: 'server.ts', kind: 'file', role: 'What it keeps and does', edit: 'deleted' },
-      { path: 'README.md', kind: 'file', role: 'What it is', edit: 'added' },
+      { path: 'client.ts', kind: 'file' },
+      { path: 'server.ts', kind: 'file', edit: 'deleted' },
+      { path: 'README.md', kind: 'file', edit: 'added' },
       { path: 'styles.css', kind: 'file', edit: 'changed' },
       { path: 'components/Button.tsx', kind: 'file', edit: 'added' },
       { path: 'lib/util.ts', kind: 'file' },

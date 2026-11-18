@@ -6,21 +6,12 @@ export type CodeFile = {
   path: string
   /** Only a file or an executable has text to show; a symlink or submodule says what it is. */
   kind: 'file' | 'executable' | 'symlink' | 'submodule'
-  /** What it is to the gadget, in a few words, for the files every gadget has. */
-  role?: string
   /** How it changed, where the code is being compared with how it was before. */
   change?: CodeChange
 }
 
 /** How a file changed between two commits. */
 export type CodeChange = 'added' | 'modified' | 'removed'
-
-// The files every gadget is made of, by name without extension, and what each is to it.
-const ROLES: Record<string, string> = {
-  client: 'What it shows',
-  server: 'What it keeps and does',
-  readme: 'What it is',
-}
 
 // Where those come in the list: its two halves, then what it is, then everything else.
 const ORDER = ['client', 'server', 'readme']
@@ -54,11 +45,8 @@ export const codeFiles = (tree: readonly TreeNode[]): CodeFile[] => {
   return orderCodeFiles(files)
 }
 
-/** A file at `path`, with what it is to the gadget where it is one of the files every gadget has. */
-export const codeFileAt = (path: string, kind: CodeFile['kind'] = 'file'): CodeFile => {
-  const role = ROLES[stem(path) ?? '']
-  return role ? { path, kind, role } : { path, kind }
-}
+/** A file at `path`. */
+export const codeFileAt = (path: string, kind: CodeFile['kind'] = 'file'): CodeFile => ({ path, kind })
 
 /** Files in the order the Code tab lists them (see `codeFiles`). */
 export const orderCodeFiles = <File extends { path: string }>(files: readonly File[]): File[] =>
