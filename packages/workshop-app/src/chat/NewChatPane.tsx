@@ -44,6 +44,12 @@ export type NewChatPaneProps = {
    * home has no workspace to make them in until it is sent.
    */
   connectsIn?: string
+  /**
+   * Makes the workspace it will start in, for one that has none yet, so that connections can be
+   * added to the first message before it is sent: it is then given as `connectsIn`, and the
+   * connection is added once it is. Rejects with why it could not.
+   */
+  makeConnectable?: () => Promise<void>
   /** The conversation exists: open it. */
   onStarted: (chat: StartedChat) => Promise<unknown>
 }
@@ -53,7 +59,7 @@ export type NewChatPaneProps = {
  * can start with one of the user's skills, which there is no workspace to list yet, so they are
  * offered from the Library, and found in the workspace the message goes to as it is sent.
  */
-export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn, makeConnectable }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const skills = useSkills()
   const commands = useMemo(() => orderCommands(skills.map(skillCommandOf)), [skills])
@@ -76,7 +82,15 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
     added.current.set(key, made)
     composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
   })
-  const addActions = connectsIn === undefined ? undefined : { onAddConnection: () => setAdding(true) }
+  const addActions = connectsIn !== undefined
+    ? { onAddConnection: () => setAdding(true) }
+    : makeConnectable && {
+      onAddConnection: () => {
+        if (connection?.blocked()) return
+        setProblem(undefined)
+        makeConnectable().then(() => setAdding(true), (error: unknown) => setProblem(`Couldn’t add a connection: ${error instanceof Error ? error.message : String(error)}`))
+      },
+    }
 
   // Resolves to whether the conversation was started; the composer keeps the draft until it has.
   const send = async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {

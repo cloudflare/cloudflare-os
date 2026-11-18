@@ -35,6 +35,19 @@ function Home() {
   const startable = workspaces.status === 'ready' ? workspaces.workspaces.filter(({ role }) => role !== 'use') : []
   // One that is no longer listed is not chosen, so what the page says is what sending does.
   const startsIn = startable.some(({ id }) => id === chosenId) ? chosenId : undefined
+  // The new workspace it starts in, made before it is sent where a connection was added to it
+  // first, which needs a workspace to be made in. Until it has a chat the backend leaves it out
+  // of the list (a provisional workspace), so one that is never sent leaves nothing behind.
+  const [made, setMade] = useState<string>()
+  const makeConnectable = async () => {
+    const overseer = api.newWorkspace()
+    try {
+      setMade((await overseer.getMetadata()).id)
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+  }
+  const startIn = startsIn ?? made
   return (
     <NewChatPane
       // A newer release of the deployment, said to its admins where main's home page said it.
@@ -46,8 +59,10 @@ function Home() {
         value: startsIn,
         onValueChange: setChosenId,
       }}
-      start={(text, files, modelId, command, formats) =>
-        startConversation(() => (startsIn === undefined ? api.newWorkspace() : api.openWorkspace(startsIn)), text, files, modelId, command, formats)}
+      connectsIn={startIn}
+      makeConnectable={makeConnectable}
+      start={(text, files, modelId, command, formats, capsules) =>
+        startConversation(() => (startIn === undefined ? api.newWorkspace() : api.openWorkspace(startIn)), text, files, modelId, command, formats, capsules)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
     />
   )
