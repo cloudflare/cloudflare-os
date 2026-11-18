@@ -98,7 +98,7 @@ const PAGES_AHEAD = [
 /** What a PDF's types say of a text too long for a model's context: where to keep it, and what that costs. */
 const KEPT_IN_A_WORKTREE = [
   "pass `text` to a worktree's `writeBytes(path, text)`",
-  "so every page is read, and billed",
+  "so every page without text of its own is read by the model, and billed, however little of the file you then read",
   "fails with that error and stores nothing",
 ];
 
