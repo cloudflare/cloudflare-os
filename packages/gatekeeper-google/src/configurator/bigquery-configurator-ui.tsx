@@ -1,5 +1,5 @@
 import {
-  Autocomplete, Field, h, HierarchyPicker, Section,
+  Autocomplete, Button, Field, h, HierarchyPicker, Section,
   type ConfiguratorUIHierarchyAncestor, type ConfiguratorUIHierarchyItem, type ConfiguratorUIRenderContext,
   type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
@@ -149,6 +149,13 @@ function suggestQueryProject({ ui, setValues }: Context, target: string | null):
   });
 }
 
+/** Drops a pre-filled query project, so queries run in, and are billed to, the data project. */
+function dropOverride({ setValues, clearFields }: Context): void {
+  overrideFor = null;
+  clearFields("queryProject");
+  setValues({ queryProject: null });
+}
+
 export default {
   initial: { target: null, queryProject: null },
 
@@ -260,7 +267,7 @@ export default {
         label="Run queries in"
         description={shared !== undefined
           ? `This account can't run query jobs in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`
-          : `Queries run in, and are billed to, this project rather than "${override}". Clear it to use "${override}".`}
+          : `Queries run in, and are billed to, the project picked here rather than "${override}".`}
       >
         <Autocomplete
           name="queryProject"
@@ -270,13 +277,13 @@ export default {
           onChange={next => setValues({ queryProject: next })}
           disabled={suggestedFor !== null && suggestedFor === target && queryProject === null}
           optional={override !== undefined}
-          onClear={() => {
-            overrideFor = null;
-            clearFields("queryProject");
-            setValues({ queryProject: null });
-          }}
+          onClear={() => dropOverride(context)}
         />
       </Field>}
+      {/* Clear shows only while a project is picked, and Tab skips it, so dropping the override has its own control. */}
+      {override !== undefined && <div>
+        <Button variant="secondary" onClick={() => dropOverride(context)}>{`Run queries in "${override}"`}</Button>
+      </div>}
     </Section>;
   },
 } satisfies ConfiguratorUISpec<BigQueryConfiguratorRpc, BigQueryConfiguratorValues>;

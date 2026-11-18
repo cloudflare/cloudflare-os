@@ -3,13 +3,14 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BigQueryNode, BigQueryNodePage } from "../src/configurator/bigquery-configurator-types";
-import { nodes } from "./configurator-tree";
+import { nodes, text } from "./configurator-tree";
 
 vi.mock("@gadgets/configurator-ui", () => ({
   h: (component: unknown, props: unknown, ...children: unknown[]) => ({
     component, props: props ?? {}, children,
   }),
   Autocomplete: "Autocomplete",
+  Button: "Button",
   Field: "Field",
   HierarchyPicker: "HierarchyPicker",
   Section: "Section",
@@ -54,6 +55,9 @@ async function open(initial: Values = {}) {
     picker: () => find("HierarchyPicker")[0]!.props,
     fields: () => find("Field").map(node => node.props.label as string),
     autocomplete: () => find("Autocomplete")[0]?.props,
+    /** The label of the one Button rendered, if any. */
+    button: () => { const [button] = find("Button"); return button && text(button); },
+    click: () => find("Button")[0]!.props.onClick(),
     list: (parentId: string, query = "") => find("HierarchyPicker")[0]!.props.loadItems({ parentId, query, cursor: null }),
     load: (id: string) => find("HierarchyPicker")[0]!.props.loadItem(id),
     ready: () => spec.isReady({ values }),
@@ -175,18 +179,36 @@ describe("the query project", () => {
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
     expect(frame.autocomplete()).toMatchObject({ value: "other", optional: true });
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales?queryProject=other");
+    expect(frame.button()).toBe(`Run queries in "mine"`);
     // Typing over the choice abandons it without taking the field away, and the form waits for
-    // another to be picked; only clearing the field bills the data project instead.
+    // another to be picked, or for the user to run queries in the data project instead.
     frame.autocomplete().onChange(null);
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
     expect(frame.ready()).toBe(false);
+    expect(frame.button()).toBe(`Run queries in "mine"`);
     frame.autocomplete().onChange("third");
     expect(frame.ready()).toBe(true);
+    expect(frame.button()).toBe(`Run queries in "mine"`);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales?queryProject=third");
-    frame.autocomplete().onChange(null);
+    // Clear, which shows while a project is picked, drops it just as the button does.
     frame.autocomplete().onClear();
     expect(frame.values()).toEqual({ target: "dataset:mine/sales", queryProject: null });
     expect(frame.fields()).toEqual(["What to connect"]);
+    expect(frame.button()).toBeUndefined();
+    expect(frame.ready()).toBe(true);
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales");
+  });
+
+  it("runs queries in the data project when the user asks to, after typing over a pre-filled query project", async () => {
+    const frame = await open({ target: "dataset:mine/sales", queryProject: "other" });
+    frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", runsQueries: true });
+    await frame.load("dataset:mine/sales");
+    frame.autocomplete().onChange(null);
+    frame.click();
+    expect(frame.clearFields).toHaveBeenCalledWith("queryProject");
+    expect(frame.values()).toEqual({ target: "dataset:mine/sales", queryProject: null });
+    expect(frame.fields()).toEqual(["What to connect"]);
+    expect(frame.button()).toBeUndefined();
     expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales");
   });
