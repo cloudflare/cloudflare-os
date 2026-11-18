@@ -9,7 +9,8 @@ import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
 import type { AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
 import {
   type AdminIssueReport, type AdminWorkspaceDescription, ISSUE_REPORT_ERROR_CODES,
-  type IssueReport, type IssueReportEntry, getIssueReportErrorCode,
+  ISSUE_REPORT_STATUSES, type IssueReport, type IssueReportEntry, type IssueReportStatus,
+  getIssueReportErrorCode,
 } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { type BoundAdminActions, entryText } from "./actions.js";
@@ -33,8 +34,18 @@ const FIRST_LINE_LENGTH = 200;
 export type ScopedIssueReport = IssueReport & { entries: Omit<IssueReportEntry, "agent">[] };
 
 /**
+ * `status` as a report session gives it: itself when this build knows it, and "withAdmin" when
+ * it does not. The Workshop is deployed apart from this Worker and may store a status added
+ * since this build, which may be one the reporter is not shown.
+ */
+function knownStatus(status: IssueReportStatus): IssueReportStatus {
+  return ISSUE_REPORT_STATUSES.includes(status) ? status : "withAdmin";
+}
+
+/**
  * `report` as its reporter reads it. An allowlist: each field is copied by name, so one the
- * Admin API adds later does not come through until it is named here and in types.d.ts.
+ * Admin API adds later does not come through until it is named here and in types.d.ts, and
+ * neither does a status this build does not know (see knownStatus()).
  *
  * The reporter's own entry is the one with no `via`, which is the report store's rule too: no
  * id is compared, so it holds for an admin who filed the report and later answered it as one.
@@ -55,7 +66,7 @@ export function scopedReport(
       ...(context.gadgetId !== undefined && { gadgetId: context.gadgetId }),
       ...(context.appVersion !== undefined && { appVersion: context.appVersion }),
     },
-    status: report.status,
+    status: knownStatus(report.status),
     images: report.images.map(({ id, type, byteLength }) => ({ id, type, byteLength })),
     ...(grant && {
       grant: {
@@ -73,7 +84,7 @@ export function scopedReport(
       visibility: entry.visibility,
       ...(entry.via !== undefined && { via: entry.via }),
       text: entry.text,
-      ...(entry.status !== undefined && { status: entry.status }),
+      ...(entry.status !== undefined && { status: knownStatus(entry.status) }),
     })),
   };
 }

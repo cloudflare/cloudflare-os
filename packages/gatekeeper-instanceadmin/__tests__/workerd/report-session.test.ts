@@ -114,6 +114,15 @@ describe("scopedReport()", () => {
     // Both were written by the reporter's account: only the one written as the reporter has it.
     expect(entries.map((scoped) => scoped.author)).toEqual([{ id: "ada", name: "Ada" }, { name: "Ada" }]);
   });
+
+  it("reads a status this build does not know as \"withAdmin\", on the report and on an entry", () => {
+    const later = "addedSince" as never;
+    const scoped = scopedReport(issueReport({
+      status: later, entries: [{ ...adasEntry("api"), text: "", status: later }],
+    }) as never);
+    expect(scoped.status).toBe("withAdmin");
+    expect(scoped.entries.map((entry) => entry.status)).toEqual(["withAdmin"]);
+  });
 });
 
 describe("a report session", () => {

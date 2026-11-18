@@ -465,7 +465,8 @@ prompt. That is why its reply may reach the reporter with no person in between.
 - `get()`: the report as its reporter reads it. The session builds it field by field
   (`scopedReport()`, an allowlist): no links, no admins-only entry, no admin's id and nothing of
   where an admin's entry came from. A field the Admin API adds later does not come through until
-  it is named there and in `src/types.d.ts`.
+  it is named there and in `src/types.d.ts`, and a status this Worker's build does not know
+  reads `withAdmin`: the Workshop is deployed apart from it, and may store one added since.
 - `readImage(imageId)`: one image of the report, as the stream the Admin API returned.
 - `reply(text)`: queues a public reply, as the kind only this session queues
   (`issueReportScopedReply`).
