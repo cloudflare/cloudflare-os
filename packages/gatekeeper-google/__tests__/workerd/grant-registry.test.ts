@@ -414,7 +414,7 @@ describe("Google grants shared by several connections", () => {
     const other = await connection(google, "other", ada);
     // Not recorded for the second account yet: its profile cannot be read.
     google.profileFails = true;
-    await reconnect(google, moved, "moved-again", grace);
+    await reconnect(google, moved, "moved-again", grace, false);
 
     // The first account's registry still lists it. Asked, it holds that grant no longer, so the
     // account's last connection revokes.
@@ -508,7 +508,8 @@ describe("Google grants shared by several connections", () => {
     const spared = await connection(google, "spared", ada);
     const graces = await connection(google, "graces", grace);
     google.profileFails = true;
-    await reconnect(google, spared, "spared-again", grace);
+    await reconnect(google, spared, "spared-again", grace, false);
+    expect(await spared.stored("grantSubject")).toBeUndefined();
     google.profileFails = false;
     await spared.disconnect();
     expect(google.revoked).toEqual([]);
@@ -518,7 +519,8 @@ describe("Google grants shared by several connections", () => {
     await connection(google, "adas", ada);
     await graces.disconnect();
     google.profileFails = true;
-    await reconnect(google, revoking, "revoking-again", grace);
+    await reconnect(google, revoking, "revoking-again", grace, false);
+    expect(await revoking.stored("grantSubject")).toBeUndefined();
     google.profileFails = false;
     await revoking.disconnect();
     expect(google.revoked).toEqual(["refresh-graces", "refresh-revoking-again"]);
