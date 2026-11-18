@@ -104,6 +104,7 @@ export async function openFakeOverseer(
       // "build") observer verification in one. The sharing manager is still reached, but only to
       // redeem a share key, which these tests never pass.
       authorizeCollaborator: async () => access,
+      admitsNonOwner: () => true,
       getSharingManager: async () => ({}),
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {
