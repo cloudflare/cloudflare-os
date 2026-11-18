@@ -6302,8 +6302,12 @@ function ChatInterface({
                               {msg.attachments && msg.attachments.length > 0 && (
                                 <ChatAttachmentGrid
                                   attachments={msg.attachments}
-                                  loadContent={(attachment) =>
-                                    overseer.getChatAttachmentContent(msg.chatId, attachment.id)}
+                                  // Streamed, as it was uploaded: a large file does not fit
+                                  // one RPC message.
+                                  loadContent={async (attachment) => attachment.oid === undefined
+                                    ? overseer.getChatAttachmentContent(msg.chatId, attachment.id)
+                                    : new Uint8Array(await new Response(
+                                        await overseer.readBlob(attachment.oid)).arrayBuffer())}
                                 />
                               )}
                               {/* A message that is only attachments has no bubble. */}

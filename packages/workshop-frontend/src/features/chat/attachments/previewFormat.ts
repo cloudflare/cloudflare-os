@@ -11,6 +11,12 @@ export type PreviewFormat =
   | "document"
   | "slides";
 
+/**
+ * The largest file drawn on a card or in the viewer. A larger one is fetched only to be
+ * downloaded: every previewer reads its file whole, on the main thread.
+ */
+export const MAX_PREVIEW_BYTES = 4 * 1024 * 1024;
+
 // Formats every current browser decodes in an <img>. HEIC and TIFF are images, but not these.
 const BROWSER_IMAGE_TYPES = new Set([
   "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/svg+xml", "image/bmp",
@@ -29,8 +35,12 @@ const extensionOf = (name: string | undefined): string => {
  * How an attachment can be previewed, or undefined when it can only be downloaded. Refines
  * `attachmentKind`, which is too coarse to choose a previewer: a spreadsheet may be CSV text or an
  * Excel package, and only the Open XML Office formats can be read in the browser.
+ * A file over MAX_PREVIEW_BYTES has none.
  */
-export const previewFormat = (mimeType: string, name?: string): PreviewFormat | undefined => {
+export const previewFormat = (
+  mimeType: string, name?: string, size = 0,
+): PreviewFormat | undefined => {
+  if (size > MAX_PREVIEW_BYTES) return undefined;
   const mime = mimeType.toLowerCase();
   const extension = extensionOf(name);
   // Before the kind, which is decided by the type first: browsers type a TSV and some Markdown as

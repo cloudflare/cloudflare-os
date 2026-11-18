@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { RpcStub } from "capnweb";
-import type { ChatAttachmentHandle, Overseer } from "@gadgets/workshop-shared/api";
-import { reportIssue } from "../../../../errorReporting";
-import { formatAttachmentSize } from "../../attachmentFormatting";
 import {
   MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
-  prepareChatAttachment,
-} from "./prepareChatAttachment";
+  type ChatAttachmentHandle,
+  type Overseer,
+} from "@gadgets/workshop-shared/api";
+import { reportIssue } from "../../../../errorReporting";
+import { formatAttachmentSize } from "../../attachmentFormatting";
+import { prepareChatAttachment } from "./prepareChatAttachment";
 
 export const MAX_COMPOSER_ATTACHMENTS = 5;
 

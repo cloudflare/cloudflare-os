@@ -12,6 +12,7 @@ import {
 import type { ChatAttachmentRef } from "@gadgets/workshop-shared/api";
 import { ThemeProvider } from "../../../ThemeContext";
 import { ChatAttachmentGrid } from "./ChatAttachmentGrid";
+import { MAX_PREVIEW_BYTES } from "./previewFormat";
 import "../../../styles.css";
 
 const encoder = new TextEncoder();
@@ -208,6 +209,19 @@ it("offers a download, without fetching the file, when its type has no preview",
   await userEvent.click(page.getByRole("button", { name: "Preview bundle.zip" }));
 
   await expect.element(page.getByText("There’s no preview for this kind of file.")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Download" }).first()).toBeVisible();
+  expect(loadContent).not.toHaveBeenCalled();
+});
+
+it("offers a download, without fetching the file, when it is too large to preview", async () => {
+  const large = {
+    ...ref("ledger.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    size: MAX_PREVIEW_BYTES + 1,
+  };
+  const loadContent = await mount([large], {});
+  await userEvent.click(page.getByRole("button", { name: "Preview ledger.xlsx" }));
+
+  await expect.element(page.getByText("This file is too large to preview.")).toBeVisible();
   await expect.element(page.getByRole("button", { name: "Download" }).first()).toBeVisible();
   expect(loadContent).not.toHaveBeenCalled();
 });

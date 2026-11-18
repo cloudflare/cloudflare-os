@@ -44,7 +44,9 @@ export const ComposerAttachmentCard = ({
   const uploading = attachment.uploadState === "uploading";
   // An image is its own thumbnail (`previewUrl`).
   const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
-    attachment.previewUrl ? undefined : previewFormat(attachment.mimeType, attachment.name),
+    attachment.previewUrl
+      ? undefined
+      : previewFormat(attachment.mimeType, attachment.name, attachment.blob.size),
     loadContent,
   );
 

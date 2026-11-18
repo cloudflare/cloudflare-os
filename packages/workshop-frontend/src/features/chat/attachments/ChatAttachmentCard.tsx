@@ -44,7 +44,7 @@ export const ChatAttachmentCard = ({
   const [imageFailed, setImageFailed] = useState(false);
   const showsImage = imageUrl !== null && !imageFailed;
   const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
-    previewFormat(attachment.mimeType, attachment.name), loadContent);
+    previewFormat(attachment.mimeType, attachment.name, attachment.size), loadContent);
 
   return (
     <Tooltip content={name} side="top" asChild>
