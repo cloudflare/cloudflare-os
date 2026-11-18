@@ -38,6 +38,22 @@ describe("host-pinned answer files", () => {
     expect(read).toHaveBeenCalledExactlyOnceWith("OUTPUTS", "report.csv");
   });
 
+  it.each([
+    ["[^draft]: [Draft](worktree://OUTPUTS/draft.csv)", []],
+    ["See[^live]\n\n[^live]: [Report](worktree://OUTPUTS/report.csv)\n" +
+      "[^draft]: [Draft](worktree://OUTPUTS/draft.csv)", ["report.csv"]],
+    ["See[^a]\n\n[^a]: ![A](worktree://OUTPUTS/a.png) [^b]\n" +
+      "[^b]: ![B](worktree://OUTPUTS/b.png) [^a]\n" +
+      "[^draft]: [Draft](worktree://OUTPUTS/draft.csv)", ["a.png", "b.png"]],
+  ] as const)("pins only reachable footnote files: %s", async (text, paths) => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    await snapshotChatEmbeds(text + "\n", snapshots, read, true);
+    await snapshotChatEmbeds(text, snapshots, read);
+    expect(snapshots).toEqual(Object.fromEntries(paths.map(path => ["worktree://OUTPUTS/" + path, A])));
+    expect(read.mock.calls.map(([, path]) => path)).toEqual(paths);
+  });
+
   it("pins ordinary file links once, sharing an image's snapshot and preserving binary references", async () => {
     const snapshots: ChatEmbeds = {};
     const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);

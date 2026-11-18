@@ -15,16 +15,28 @@ export function markdownFileUrls(markdown: string, streaming = false): string[] 
   const root = fromMarkdown(markdown, MARKDOWN_OPTIONS);
   const urls: string[] = [], references: string[] = [];
   const definitions = new Map<string, string>();
+  const footnotes = new Map<string, Extract<typeof root.children[number], {type: "footnoteDefinition"}>>();
+  const collectDefinitions = (node: typeof root | typeof root.children[number]) => {
+    if (node.type === "definition" && !definitions.has(node.identifier) &&
+        (!streaming || (node.position?.end.offset ?? markdown.length) < markdown.length)) {
+      definitions.set(node.identifier, node.url);
+    }
+    if (node.type === "footnoteDefinition" && !footnotes.has(node.identifier)) footnotes.set(node.identifier, node);
+    if ("children" in node) node.children.forEach(collectDefinitions);
+  };
+  collectDefinitions(root);
+  const visitedFootnotes = new Set<string>();
   const visit = (node: typeof root | typeof root.children[number]) => {
+    if (node.type === "footnoteDefinition") return;
     // A closing backtick arriving later can turn an apparent image into a code example.
     // Defer paragraphs containing backticks until EOF rather than guessing their final syntax.
     if (streaming && node.type === "paragraph" &&
         markdown.slice(node.position?.start.offset, node.position?.end.offset).includes("`")) return;
     if (node.type === "image" || node.type === "link") urls.push(node.url);
     if (node.type === "imageReference" || node.type === "linkReference") references.push(node.identifier);
-    if (node.type === "definition" && !definitions.has(node.identifier) &&
-        (!streaming || (node.position?.end.offset ?? markdown.length) < markdown.length)) {
-      definitions.set(node.identifier, node.url);
+    if (node.type === "footnoteReference" && !visitedFootnotes.has(node.identifier)) {
+      visitedFootnotes.add(node.identifier);
+      footnotes.get(node.identifier)?.children.forEach(visit);
     }
     if ("children" in node) node.children.forEach(visit);
   };
