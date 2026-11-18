@@ -4,6 +4,7 @@ import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { SetUpAgentDialog } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
 import { Button } from '@/components/Button'
+import { Dialog } from '@/components/Dialog'
 import { Section } from './Section'
 
 const GITHUB = { name: 'GitHub', logoUrl: 'https://github.githubassets.com/favicons/favicon.svg' }
@@ -97,15 +98,16 @@ export const AddConnectionPreview = () => {
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(false)
   const [said, setSaid] = useState('Open + and choose Add a new connection, or paste a Google Doc’s link.')
+  // Each opening starts at the choice; closing leaves the page shown as it is, to close.
   const close = (next: boolean) => {
     setChoosing(next)
-    if (!next) setChosen(undefined)
+    if (next) setChosen(undefined)
   }
 
   return (
-    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a new connection: what kind, found by typing, your services first; then which, in the service’s form, or Back to the list; then it sits above the draft, to go with the message, and is refused beside a skill; a pasted Google Doc link connects by itself, connecting, then named in the words, or says why not, with “missing” in it)">
-      <Button onClick={() => { setLoading(false); setChoosing(true) }}>Add a connection</Button>
-      <Button onClick={() => { setLoading(true); setChoosing(true) }}>While services are read</Button>
+    <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a new connection: what kind, found by typing, your services first; then which, in the service’s form, or Back to the list, the one dialog going from page to page, its surface taking each one’s size; then it sits above the draft, to go with the message, and is refused beside a skill; a pasted Google Doc link connects by itself, connecting, then named in the words, or says why not, with “missing” in it)">
+      <Button onClick={() => { setLoading(false); close(true) }}>Add a connection</Button>
+      <Button onClick={() => { setLoading(true); close(true) }}>While services are read</Button>
       <div className="w-full">
         <Composer
           ref={composer}
@@ -113,7 +115,7 @@ export const AddConnectionPreview = () => {
             setSaid(`Sent “${text}”${connections?.length ? ` with ${connections.map(({ title }) => title).join(' and ')}` : ''}${command ? ` using ${command.title}` : ''}.`)
             return true
           }}
-          addActions={{ onAddConnection: () => setChoosing(true) }}
+          addActions={{ onAddConnection: () => close(true) }}
           onPasteLinks={(urls) => {
             for (const url of urls.filter((each) => each.includes('docs.google.com/document'))) {
               const key = `link:${url}`
@@ -133,30 +135,33 @@ export const AddConnectionPreview = () => {
         />
       </div>
       <p role="status" className="w-full text-sm text-kumo-subtle">{said}</p>
-      <AddConnectionDialog open={choosing && !chosen} onOpenChange={close} to="this chat" choices={loading ? undefined : CHOICES} onChoose={setChosen} />
-      {chosen && (
-        <SetUpConnectionDialog
-          open={choosing}
-          onOpenChange={close}
-          name={chosen.service.name}
-          logoUrl={chosen.service.logoUrl}
-          resource={chosen.title}
-          onBack={() => setChosen(undefined)}
-          accounts={chosen.connected ? [{ id: 1, name: chosen.service.name === 'GitHub' ? 'octocat' : 'ada@example.com' }] : []}
-          selectedAccountId={1}
-          onSelectAccount={() => {}}
-          onConnectAccount={() => later(true)}
-          onReconnect={() => later(true)}
-          configurator={<FakeForm onReady={setReady} />}
-          ready={ready}
-          onAccept={async () => {
-            await later(true)
-            composer.current?.addConnection({ key: `${chosen.key}-${Date.now()}`, title: chosen.key === 'repo' ? 'cloudflare/gadgets' : 'Q3 forecast', kind: chosen.title, service: chosen.service })
-            close(false)
-            return true
-          }}
-        />
-      )}
+      <Dialog open={choosing} onOpenChange={close} wide={chosen !== undefined} page={chosen ? { key: chosen.key, depth: 1 } : { key: '', depth: 0 }}>
+        {!chosen ? (
+          <AddConnectionDialog open={choosing} onOpenChange={close} to="this chat" choices={loading ? undefined : CHOICES} onChoose={setChosen} />
+        ) : (
+          <SetUpConnectionDialog
+            open={choosing}
+            onOpenChange={close}
+            name={chosen.service.name}
+            logoUrl={chosen.service.logoUrl}
+            resource={chosen.title}
+            onBack={() => setChosen(undefined)}
+            accounts={chosen.connected ? [{ id: 1, name: chosen.service.name === 'GitHub' ? 'octocat' : 'ada@example.com' }] : []}
+            selectedAccountId={1}
+            onSelectAccount={() => {}}
+            onConnectAccount={() => later(true)}
+            onReconnect={() => later(true)}
+            configurator={<FakeForm onReady={setReady} />}
+            ready={ready}
+            onAccept={async () => {
+              await later(true)
+              composer.current?.addConnection({ key: `${chosen.key}-${Date.now()}`, title: chosen.key === 'repo' ? 'cloudflare/gadgets' : 'Q3 forecast', kind: chosen.title, service: chosen.service })
+              close(false)
+              return true
+            }}
+          />
+        )}
+      </Dialog>
     </Section>
   )
 }
