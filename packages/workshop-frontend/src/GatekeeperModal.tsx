@@ -1,3 +1,4 @@
+import { ADMIN_GATEKEEPER_VENDOR_ID } from '@gadgets/workshop-shared/admin-agent'
 import { logRpcFailure } from './rpcErrors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog, useKumoToastManager } from '@cloudflare/kumo'
@@ -52,6 +53,11 @@ export interface GatekeeperModalProps {
    * the Home page to lazily provision a gadget on first use.
    */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>
+  /**
+   * Whether the current user owns the workspace. Only its owner can add the admin gatekeeper's
+   * connection (Overseer.newGatekeeper()), so its card is offered only when this is true.
+   */
+  ownsWorkspace?: boolean
   /**
    * Called after the gatekeeper is successfully created, with its id. The caller decides what to
    * do with the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this
@@ -230,7 +236,7 @@ function accountSupportsConnection(account: AccountOption, connection: Connectio
 }
 
 export default function GatekeeperModal({
-  open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
+  open, onClose, getOverseer, ownsWorkspace = false, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceTypeId, initialResourceUrlPattern, initialAccountId,
 }: GatekeeperModalProps) {
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
@@ -306,8 +312,10 @@ export default function GatekeeperModal({
   const siteName = useSiteName()
   const allConnections = useMemo(() => [
     ...platformConnectionTypes(siteName),
-    ...vendors.flatMap(connectionsForVendor),
-  ], [siteName, vendors])
+    ...vendors
+      .filter(vendor => vendor.id !== ADMIN_GATEKEEPER_VENDOR_ID || ownsWorkspace)
+      .flatMap(connectionsForVendor),
+  ], [siteName, vendors, ownsWorkspace])
 
   const selectedConnection = useMemo(
     () => allConnections.find(connection => connection.id === selectedConnectionId) ?? null,
@@ -469,7 +477,10 @@ export default function GatekeeperModal({
         setAccounts(Array.from(accountMap.values()))
       },
     })
-    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    // A deployment may force an auto-provisioned account that offers a resource, and the feed sends
+    // a forced account only to a subscriber that asks for it.
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
     subscription.catch(error => {
       if (cancelled) return
       logRpcFailure('Failed to subscribe to connected accounts:', error)
@@ -664,6 +675,11 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceTypeIds?: string[]) => {
     setConnectingVendor(vendorId)
     try {
+      if (vendors.find(vendor => vendor.id === vendorId)?.description.autoProvisionsAccount) {
+        // No connect flow: the account arrives through the accounts subscription.
+        await authenticatedApi.provisionAmbientAccount(vendorId)
+        return
+      }
       const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
@@ -891,6 +907,8 @@ export default function GatekeeperModal({
                     vendorId={selectedConnection.vendorId}
                     vendorName={selectedConnection.vendor}
                     resourceTitle={selectedConnection.resourceUrlPattern ? selectedConnection.title : undefined}
+                    singleAccount={vendors.find(vendor => vendor.id === selectedConnection.vendorId)
+                      ?.description.autoProvisionsAccount}
                     connecting={connectingVendor === selectedConnection.vendorId}
                     reconnectingAccountId={reconnectingAccountId}
                     requiredResourceTypeIds={account => requiredResourceTypeIds(selectedConnection, account)}

@@ -581,6 +581,56 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     expect(harness.connectAccount).toHaveBeenCalledExactlyOnceWith('google', [CALENDAR_PATTERN])
   })
 
+  it('creates the gadget with the resource URL the configurator returned, whatever its scheme', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    const newWorkspaceFromBlueprint = vi.fn<(id: string, assignments: unknown) => unknown>(() =>
+      Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), {
+        getMetadata: async () => { throw new Error('stopped here') },
+      }))
+    ;(harness.api as unknown as Record<string, unknown>).newWorkspaceFromBlueprint = newWorkspaceFromBlueprint
+    testState.collectResourceUrl = () => Promise.resolve('instanceadmin://deployment')
+    await render(harness)
+    await saveCalendarConnection()
+
+    await act(async () => findButton('Create Gadget')!.click())
+    expect(newWorkspaceFromBlueprint).toHaveBeenCalledTimes(1)
+    const assignments = newWorkspaceFromBlueprint.mock.calls[0]![1] as Record<string, { resourceUrl?: string }>
+    expect(Object.values(assignments).map(assignment => assignment.resourceUrl))
+      .toEqual(['instanceadmin://deployment'])
+  })
+
+  it('adds an auto-provisioning vendor\'s account itself, with no connect flow, and lists a forced one', async () => {
+    const harness = gatekeeperApi(null)
+    const api = harness.api as unknown as Record<string, unknown>
+    const subscribe = api.subscribeConnectedAccounts as (subscriber: ConnectedAccountsSubscriber) => unknown
+    const filters: unknown[] = []
+    api.subscribeConnectedAccounts = (subscriber: ConnectedAccountsSubscriber, filter?: unknown) => {
+      filters.push(filter)
+      return subscribe(subscriber)
+    }
+    api.listGatekeeperVendors = async () => [{
+      id: 'google', description: { ...GOOGLE_VENDOR, autoProvisionsAccount: true }, supportedResources: [CALENDAR_RESOURCE],
+    }]
+    const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>(async () => {})
+    api.provisionAmbientAccount = provisionAmbientAccount
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+    await vi.waitFor(() => expect(findButton('Connect Google')).toBeDefined())
+    await act(async () => findButton('Connect Google')!.click())
+
+    expect(provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('google')
+    expect(harness.connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+    expect(filters.length).toBeGreaterThan(0)
+    expect(new Set(filters.map((filter) => JSON.stringify(filter))))
+      .toEqual(new Set([JSON.stringify({ includeForcedAutoProvisionedAccounts: true })]))
+
+    // Once its account is listed, the chooser offers no other: the vendor has one.
+    await act(async () => harness.addAccount(7, [CALENDAR_PATTERN], [CALENDAR_RESOURCE]))
+    expect(findButton('Use another Google account')).toBeUndefined()
+  })
+
   it('explains why a newly connected account that cannot serve the binding is not listed', async () => {
     // A gatekeeper may offer an account fewer resource types than its vendor, and the chooser lists
     // only accounts offering the binding's type, so without a message the account the user just
