@@ -37,17 +37,52 @@ const BY_SERVICE = new Map<string, ServiceCategory[]>([
   ['context', [AGENTS, PRODUCTIVITY]],
   ['scheduler', [AGENTS, PRODUCTIVITY]],
   ['websearch', [AGENTS]],
+  ['container', [AGENTS, DEVELOPER]],
   ['zoominfo', [SALES, DATA]],
   ['homeassistant', [HOME]],
   ['spotify', [HOME]],
+  ['pagerduty', [DEVELOPER, COMMUNICATION]],
+  ['backstage', [DEVELOPER, PRODUCTIVITY]],
+  ['http', [DEVELOPER]],
+  ['sentry', [DEVELOPER]],
+  ['zinc', [DEVELOPER, DATA]],
+  ['release_manager', [DEVELOPER]],
+  ['clickhouse', [DATA, DEVELOPER]],
+  ['kibana', [DATA, DEVELOPER]],
+  ['prometheus', [DATA, DEVELOPER]],
+  ['thanos', [DATA, DEVELOPER]],
+  ['slo_directory', [DATA, DEVELOPER]],
+  ['town_lake', [DATA]],
+  ['risk_beacon', [DATA]],
+  ['jira', [PRODUCTIVITY, DEVELOPER]],
+  ['cf_wiki', [PRODUCTIVITY]],
+  ['firstbase', [PRODUCTIVITY]],
+  ['oomnitza', [PRODUCTIVITY]],
+  ['intune', [PRODUCTIVITY, DEVELOPER]],
+  ['ironclad', [PRODUCTIVITY]],
+  ['zip', [PRODUCTIVITY]],
+  ['zylo', [PRODUCTIVITY, DATA]],
+  ['netsuite', [PRODUCTIVITY, DATA]],
+  ['salesforce', [SALES, DATA]],
+  ['gtmdata', [SALES, DATA]],
+  ['lighthouse', [SALES, DATA]],
+  ['marketo', [SALES]],
+  ['outreach_contact', [SALES]],
+  ['swoogo', [SALES]],
+  ['canto', [SALES, PRODUCTIVITY]],
+  ['arc', [DATA, DEVELOPER]],
+  ['jamf', [PRODUCTIVITY, DEVELOPER]],
+  ['kyriba', [PRODUCTIVITY, DATA]],
+  ['stripe', [DATA, PRODUCTIVITY]],
+  ['workday', [PRODUCTIVITY]],
 ])
 
 /**
  * What kinds of service the one with this id is, the one it is most first, which is what it is
  * listed under; nothing for one that is not known here. A service says nothing of its kind itself
- * (`VendorDescription`), so this says it for those this repository has a gatekeeper for, and no
- * others: a deployment's own services have no category until a gatekeeper can say its own, which
- * is for the backend to support.
+ * (`VendorDescription`), so this says it for those this repository has a gatekeeper for, and for
+ * the internal deployment's, and no others: a deployment's own services have no category until a
+ * gatekeeper can say its own, which is for the backend to support.
  */
 export const serviceCategories = (vendorId: string): ServiceCategory[] => BY_SERVICE.get(vendorId) ?? []
 

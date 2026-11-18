@@ -495,7 +495,7 @@ category with enough services for the view is a group of its own, and the rest, 
 have no category, are gathered after them under More; while no category has enough, they are all
 under Available. A service says nothing of its categories itself, so
 `connections/serviceCategories.ts` says them for the services this repository has a gatekeeper
-for, by their id. A deployment's own services have none: they should be the gatekeeper's to say
+for, and the internal deployment's, by their id. A deployment's own services have none: they should be the gatekeeper's to say
 (`VendorDescription`), once the backend can. The filters are where a connection stands and, in a
 menu of their own, the categories that something listed is of, which a service passes by any of
 its own. The search also finds one by what it is for, its categories, what it gives access to,

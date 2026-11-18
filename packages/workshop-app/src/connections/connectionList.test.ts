@@ -14,7 +14,8 @@ const vendor = (id: string, displayName: string, rest: Partial<GatekeeperVendorI
 const MAIL = resource('Mail', true)
 const CALENDAR = resource('Calendar', true)
 const GOOGLE = vendor('google', 'Google', { tagline: 'Draft replies and edit docs' }, [MAIL, CALENDAR, resource('Profile')])
-const JIRA = vendor('jira', 'Jira', {}, [resource('Issue')])
+// An id with no category, as a deployment's own service has.
+const JIRA = vendor('own-tracker', 'Jira', {}, [resource('Issue')])
 const GITHUB = vendor('github', 'GitHub')
 const NOTES = vendor('notes', 'Notes', { autoProvisionsAccount: true })
 const WIKI = { ...vendor('wiki', 'Wiki'), unavailable: true }
