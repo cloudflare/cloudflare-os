@@ -7,7 +7,6 @@ import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
-import { STARTER_TASKS, STARTERS_SHOWN } from '@/chat/starterTasks'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { MemberListItem } from '@/blocks/MemberListItem'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
@@ -434,14 +433,13 @@ function Gallery() {
           </div>
         </div>
       </Section>
-      <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them; a slash offers the user’s skills, from the Library, as there is no workspace yet to list them; under it all, things to start with, which choosing writes in the composer)">
-        <div className="flex h-[44rem] w-full rounded-3xl bg-kumo-base">
+      <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them; a slash offers the user’s skills, from the Library, as there is no workspace yet to list them)">
+        <div className="flex h-[32rem] w-full rounded-3xl bg-kumo-base">
           <ChatStart
             greeting="Hello Ada, what should we do today?"
             onSend={previewSend}
             commands={previewCommands.filter(({ kind }) => kind === 'skill')}
             workspace={{ workspaces: pickerWorkspaces, value: startWorkspace, onValueChange: setStartWorkspace }}
-            starters={STARTER_TASKS.slice(0, STARTERS_SHOWN)}
           />
         </div>
       </Section>

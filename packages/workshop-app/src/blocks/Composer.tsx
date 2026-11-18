@@ -26,8 +26,6 @@ export type ComposerHandle = {
   addConnection: (connection: ComposerConnection) => void
   /** Puts `replacement` in place of the first `text` in the draft, as a link made a connection is named in it. */
   replaceInDraft: (text: string, replacement: string) => void
-  /** Writes `text` as the draft in place of what was written, with the cursor at its end, as a task chosen from under it is. */
-  fillDraft: (text: string) => void
 }
 
 export type ComposerProps = {
@@ -144,11 +142,6 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
       inputRef.current?.focus()
     },
     replaceInDraft: (find, replacement) => setText((current) => current.replace(find, () => replacement)),
-    fillDraft: (filled) => {
-      setText(filled)
-      caretRef.current = filled.length
-      inputRef.current?.focus()
-    },
   }), [])
 
   // Reads the slash at the cursor again, as the draft or the cursor moves.
