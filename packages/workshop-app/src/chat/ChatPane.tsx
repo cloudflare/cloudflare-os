@@ -163,7 +163,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     document.addEventListener('visibilitychange', markIfShown)
     return () => document.removeEventListener('visibilitychange', markIfShown)
   }, [actions, builds, latestRow])
-  const commands = useChatCommands(actions.listCommands, chat.status === 'ready')
+  const commands = useChatCommands(workspaceId, actions.listCommands, chat.status === 'ready')
   useOpenNewOutputs(chat.status === 'ready' ? chat : undefined, onOpenOutput)
 
   // What a view in an answer suggested, once the viewer clicked Send under it: a message of their
@@ -336,6 +336,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const agentActive = ready && chat.agentActive
   const waiting = ready ? chat.waiting : undefined
   const composerCommands = commands.commands
+  const commandsLoading = commands.loading
   const { summary: logged, take: takeLogs, peek: peekLogs, discard: discardLogs } = useCapturedLogs(workspaceId, chatId)
   const addLogs = useHandler(() => {
     const text = takeLogs()
@@ -354,6 +355,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       ref={composer}
       onSend={sendMessage}
       commands={composerCommands}
+      commandsLoading={commandsLoading}
       onPasteLinks={hasPasteLinks ? onPasteLinks : undefined}
       addActions={builds ? { onAddConnection: () => setAdding(true) } : undefined}
       stop={agentActive && waiting ? { waiting, onStop: stopAgent } : undefined}
@@ -361,7 +363,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
     />
     </div>
-  ), [logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+  ), [logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
   const confirmDelete = useHandler(async () => {
     if (connection?.blocked()) return

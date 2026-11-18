@@ -17,8 +17,9 @@ export type DropdownMenuProps = TriggerContent & {
   /**
    * The menu holds something of its own to choose with, such as an `OptionPicker`, rather than
    * items: it is as wide as a submenu, and leaves the padding and the scrolling to what it holds.
+   * `wide` gives what it holds a little more room, for rows that say what each choice is for.
    */
-  picker?: boolean
+  picker?: boolean | 'wide'
   /** Sizes and styles the trigger Button; the morphing surface copies it. */
   triggerClassName?: string
   /** The trigger Button's variant. A ghost trigger has no surface, so the menu's fades in as it grows. */
@@ -148,7 +149,7 @@ const DropdownMenuRoot = ({
             className={cn(
               'dropdown-menu relative isolate max-h-[min(var(--available-height),24rem)] rounded-[21px] text-kumo-default outline-none',
               // A width of its own, or it would change with the options a picker is narrowed to.
-              picker ? 'w-64 max-w-(--available-width)' : 'w-max max-w-[min(var(--available-width),28rem)]',
+              picker === 'wide' ? 'w-80 max-w-(--available-width)' : picker ? 'w-64 max-w-(--available-width)' : 'w-max max-w-[min(var(--available-width),28rem)]',
             )}
           >
             <div aria-hidden="true" className="dropdown-menu-surface pointer-events-none absolute -z-10 bg-kumo-base ring-1 ring-kumo-contrast/6">

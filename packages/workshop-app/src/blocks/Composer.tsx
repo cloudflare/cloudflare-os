@@ -46,6 +46,8 @@ export type ComposerProps = {
    * it.
    */
   commands?: readonly ComposerCommand[]
+  /** The skills are still being read, and none are known yet: the add menu keeps their room. */
+  commandsLoading?: boolean
   /**
    * The draft is a reply: a line of the message it answers, shown above the draft, the way to
    * that message, and the way to make the draft an ordinary message again. Whoever sends the
@@ -91,7 +93,7 @@ const MAX_ROWS = 6
 const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, commands = [], reply, format, problem, stop, addActions, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading, reply, format, problem, stop, addActions, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
@@ -161,20 +163,6 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
     setSlash((was) => (was?.start === next?.start && was?.query === next?.query ? was : next))
     if (next?.query !== slash?.query) setHighlighted(0)
     if (next?.start !== dismissedAt) setDismissedAt(undefined)
-  }
-
-  // Everything there is to choose from, as a slash at the start of the draft would offer it.
-  const browseCommands = () => {
-    const field = inputRef.current
-    if (!field) return
-    setCommand(undefined)
-    const at = text && !/\s$/.test(text) ? `${text} /` : `${text}/`
-    setText(at)
-    setSlash({ start: at.length - 1, query: '' })
-    setHighlighted(0)
-    setDismissedAt(undefined)
-    caretRef.current = at.length
-    field.focus()
   }
 
   // The command takes the place of the slash typed for it, and the draft goes on around it.
@@ -439,7 +427,7 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
               anchorRef={formRef}
               inPlace={addMenuInPlace}
               {...addActions}
-              commands={sending ? undefined : { items: ordered, onChoose: choose, onBrowse: browseCommands }}
+              commands={sending ? undefined : { items: ordered, onChoose: choose, loading: commandsLoading }}
               onUpload={() => fileInputRef.current?.click()}
             />
           </div>

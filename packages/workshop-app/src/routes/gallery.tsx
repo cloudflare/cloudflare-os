@@ -78,6 +78,27 @@ const previewCommands: ComposerCommand[] = [
   { key: 'compact', name: 'compact', title: 'Compact', description: 'Sum up the chat so far, to make room for more', kind: 'builtin' },
 ]
 
+// Enough skills that the + menu has to be searched: about 150, from a few dozen subjects.
+const SKILL_SUBJECTS = ['Meeting', 'Invoice', 'Release', 'Incident', 'Hiring', 'Budget', 'Roadmap', 'Design', 'Support', 'Contract', 'Travel', 'Research', 'Launch', 'Onboarding', 'Expense', 'Security', 'Sales', 'Survey', 'Newsletter', 'Interview', 'Quarterly', 'Vendor', 'Customer', 'Training', 'Podcast']
+const SKILL_KINDS = [
+  ['Brief', 'Prepare a one-page brief before it starts'],
+  ['Notes', 'Write up what was said and who does what next'],
+  ['Review', 'Read it through and say what should change'],
+  ['Report', 'Gather the numbers into a report to share'],
+  ['Checklist', 'Make a checklist of everything that has to happen'],
+  ['Email', 'Draft the email that goes out about it'],
+] as const
+const manyCommands: ComposerCommand[] = [
+  ...SKILL_SUBJECTS.flatMap((subject, s) =>
+    SKILL_KINDS.map(([kind, description], k) => {
+      const title = `${subject} ${kind}`
+      const name = title.toLowerCase().replace(/\s+/g, '-')
+      return { key: name, name, title, description: `${description}.`, kind: 'skill' as const, source: ['My skills', 'Engineering', 'Finance', 'People'][(s + k) % 4] }
+    }),
+  ),
+  { key: 'compact', name: 'compact', title: 'Compact', description: 'Sum up the chat so far, to make room for more', kind: 'builtin' },
+]
+
 const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'greeting', workspaceLabel: 'CG', title: 'Casual Greeting', subtitle: '4 hours ago' },
   { id: 'assistant', workspaceLabel: 'AA', title: 'Assistant Availability Check', subtitle: 'Oct 28' },
@@ -444,13 +465,19 @@ function Gallery() {
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
-            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft; the + menu lists a few. Backspace at the start or Escape takes it off.
+            A slash at the start of a word offers the skills and commands, the arrow keys and Enter or Tab choosing one, which then heads the draft; the + menu lists them too, under a field to find one by. Backspace at the start or Escape takes it off.
           </p>
           <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
           <div className="w-80 max-w-full">
             <Composer onSend={previewSend} />
           </div>
+        </div>
+      </Section>
+      <Section title="Composer (150 skills: the + menu opens at the height it keeps, its list scrolling, with the field nearest the composer and the focus in it; typing narrows the list as a slash does, the arrow keys move, Enter or Tab chooses and Escape closes. The second is still reading its skills, and keeps their room)">
+        <div className="flex w-full flex-col gap-3">
+          <Composer onSend={previewSend} addActions={addActions} commands={manyCommands} />
+          <Composer onSend={previewSend} addActions={addActions} commandsLoading />
         </div>
       </Section>
       <Section title="ChatStart (the home page, before the first message; under the composer, the workspace the chat starts in: a new one until another is chosen from the menu, where typing narrows them; a slash offers the user’s skills, from the Library, as there is no workspace yet to list them)">

@@ -5,25 +5,46 @@ import { useSkills } from '@/skills/useSkills'
 import { composerCommandOf, orderCommands } from './slashCommands'
 import type { ChatActions } from './useChatSession'
 
+// What each workspace's chats were last told they offer, for the visit: a chat opened again, or
+// another of the same workspace, offers them at once while they are read again.
+const listedIn = new Map<string, SlashCommandChoice[]>()
+
 /**
  * The skills and commands a chat's composer offers, as its workspace lists them, and that list
  * itself, to send one by. Read once the chat is, and again whenever the user's skills change, so
- * one just written can be used at once; what was read stays when reading again fails.
+ * one just written can be used at once; what was read stays when reading again fails. Until the
+ * first read of the workspace's has answered, `loading` says so.
  */
-export const useChatCommands = (listCommands: ChatActions['listCommands'], loaded: boolean): { choices: SlashCommandChoice[]; commands: ComposerCommand[] } => {
+export const useChatCommands = (
+  workspaceId: string,
+  listCommands: ChatActions['listCommands'],
+  loaded: boolean,
+): { choices: SlashCommandChoice[]; commands: ComposerCommand[]; loading: boolean } => {
   // Read again as the user's skills change, so one just written can be used at once.
   const skills = useSkills()
-  const [choices, setChoices] = useState<SlashCommandChoice[]>([])
+  const [read, setRead] = useState(() => ({ workspaceId, choices: listedIn.get(workspaceId) }))
+  const choices = (read.workspaceId === workspaceId ? read.choices : listedIn.get(workspaceId)) ?? []
+  const [answered, setAnswered] = useState(false)
   useEffect(() => {
     if (!loaded) return
     let current = true
     listCommands().then(
-      (listed) => { if (current && listed.length) setChoices(listed) },
-      () => {},
+      (listed) => {
+        if (!current) return
+        setAnswered(true)
+        if (!listed.length) return
+        listedIn.set(workspaceId, listed)
+        setRead({ workspaceId, choices: listed })
+      },
+      () => current && setAnswered(true),
     )
     return () => {
       current = false
     }
-  }, [listCommands, loaded, skills])
-  return { choices, commands: useMemo(() => orderCommands(choices.map(composerCommandOf)), [choices]) }
+  }, [workspaceId, listCommands, loaded, skills])
+  return {
+    choices,
+    commands: useMemo(() => orderCommands(choices.map(composerCommandOf)), [choices]),
+    loading: !answered && !choices.length,
+  }
 }
