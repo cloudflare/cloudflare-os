@@ -1,5 +1,5 @@
 import type { RpcStub } from 'capnweb'
-import type { AuthenticatedApi, OutputSummary, PublicApi } from '@gadgets/workshop-shared/api'
+import type { AuthenticatedApi, BlueprintGadgetSummary, OutputSummary, PublicApi } from '@gadgets/workshop-shared/api'
 import { templatesOf, type Template } from './templates'
 
 /** The templates, as far as they have been read. */
@@ -21,6 +21,9 @@ export type TemplatesApi = Pick<
 
 /** The part of the public API a blueprint's own record is read through. */
 export type TemplatesPublicApi = Pick<RpcStub<PublicApi>, 'getBlueprint'>
+
+/** A gadget to publish from, by where it is and what it is called. */
+export type PublishedGadget = Pick<OutputSummary, 'workspaceId' | 'workpieceId' | 'title'>
 
 const LOADING: TemplatesState = { status: 'loading' }
 
@@ -98,22 +101,54 @@ export class TemplateStore {
   }
 
   /**
-   * Publishes one of the user's apps as a template, under its title, from what it has committed
+   * Publishes one of the user's apps as a new template, under `title` (its own unless another is
+   * given) and with what it is for, where that is said, from what it has committed
    * (`GadgetClient.createBlueprint()`), then reads the templates again. Gives its id.
    */
-  publish = async (app: OutputSummary): Promise<string> => {
-    if (!this.#api) throw new Error('Not connected.')
+  publish = async (app: PublishedGadget, { title, description }: { title?: string; description?: string } = {}): Promise<string> => {
     // Disposed by hand: `using` is not lowered for every browser this runs in. Pipelined, so it is one round trip.
-    const overseer = this.#api.openWorkspace(app.workspaceId)
+    const overseer = this.#connected().openWorkspace(app.workspaceId)
     const gadget = overseer.getGadget(app.workpieceId)
     try {
-      const { id } = await gadget.createBlueprint(app.title)
+      const { id } = await gadget.createBlueprint(title?.trim() || app.title, description?.trim() || undefined)
       await this.reload()
       return id
     } finally {
       gadget[Symbol.dispose]()
       overseer[Symbol.dispose]()
     }
+  }
+
+  /**
+   * The templates published from a workspace's gadgets (`Overseer.listBlueprints()`), which do not
+   * say which gadget each is of.
+   */
+  publishedFrom = async (workspaceId: string): Promise<BlueprintGadgetSummary[]> => {
+    const overseer = this.#connected().openWorkspace(workspaceId)
+    try {
+      return await overseer.listBlueprints()
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+  }
+
+  /**
+   * Publishes what the gadget a template is of has committed since, as the template's next version
+   * (`Overseer.updateBlueprint()` with `updateCode`), then reads the templates again.
+   */
+  publishChanges = async (workspaceId: string, templateId: string): Promise<void> => {
+    const overseer = this.#connected().openWorkspace(workspaceId)
+    try {
+      await overseer.updateBlueprint(templateId, { updateCode: true })
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    await this.reload()
+  }
+
+  #connected() {
+    if (!this.#api) throw new Error('Not connected.')
+    return this.#api
   }
 
   #publish(state: TemplatesState) {
