@@ -296,6 +296,25 @@ describe("the query project", () => {
     frame.picker().onChange("table:theirs/events/clicks", null);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events/clicks?queryProject=mine");
   });
+
+  it("suggests a query project for a choice in a pre-filled shared project that a search found before the lookup answered", async () => {
+    const frame = await open("https://bigquery.googleapis.com/theirs/events");
+    frame.ui.listProjects.mockResolvedValue([{ value: "mine", title: "mine" }]);
+    const lookup = Promise.withResolvers<BigQueryNode | null>();
+    frame.ui.getNode.mockReturnValueOnce(lookup.promise);
+    const loading = frame.load("dataset:theirs/events");
+    // The search result is the first to say the project is shared.
+    frame.picker().onChange(null, null);
+    frame.ui.listNodes.mockResolvedValueOnce({ nodes: [{ id: "table:theirs/events/clicks", kind: "table", title: "clicks", runsQueries: false }] });
+    await frame.list("bigquery", "theirs.events.clicks");
+    frame.picker().onChange("table:theirs/events/clicks", null);
+    await vi.waitFor(() => expect(frame.values().queryProject).toBe("mine"));
+    expect(frame.ready()).toBe(true);
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events/clicks?queryProject=mine");
+    lookup.resolve(SHARED_DATASET);
+    await loading;
+    expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events/clicks?queryProject=mine");
+  });
 });
 
 describe("URLs", () => {

@@ -257,11 +257,12 @@ export default {
               overrideFor = null;
             } else if (overridden !== undefined) {
               overrideFor = next;
-            } else if (suggestedFor !== null) {
-              suggestedFor = next;
             }
-            setValues({ target: next, queryProject: keep ? queryProject : null });
-            if (!keep) suggestQueryProject(context, next);
+            const kept = keep ? queryProject : null;
+            setValues({ target: next, queryProject: kept });
+            // A choice left without one asks for it, also within its project, which a search result
+            // can say is shared before the pre-fill lookup does; a pending suggestion moves to it.
+            if (kept === null) suggestQueryProject(context, next);
           }}
           icons={ICONS}
           searchPlaceholder="Search here, or paste a link or project ID"
