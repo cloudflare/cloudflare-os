@@ -1,9 +1,10 @@
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { ApiSession } from '@/rpc/ApiContext'
+import type { TemplateReader } from '@/rpc/PublicApiContext'
 import { exampleSkillsBackend } from '@/skills/MemorySkillsBackend'
 import { MockBilling } from './MockBilling'
 import { MOCK_WORKSPACE_ID, MockOverseer } from './MockOverseer'
-import { AGENT, VIEWER, type Scenario } from './scenario'
+import { AGENT, TEMPLATE, VIEWER, type Scenario } from './scenario'
 
 export { MOCK_WORKSPACE_ID }
 
@@ -12,7 +13,7 @@ export { MOCK_WORKSPACE_ID }
  * Only what a chat and its workspace's page need is implemented; any other call throws, so a screen that starts depending
  * on more says so instead of hanging.
  */
-export const createMockApi = (scenario: Scenario): { session: ApiSession; overseer: MockOverseer } => {
+export const createMockApi = (scenario: Scenario): { session: ApiSession; overseer: MockOverseer; publicApi: TemplateReader } => {
   const overseer = new MockOverseer(scenario)
   const billing = new MockBilling()
   const workspace: WorkspaceMetadataWithTimestamps = {
@@ -70,5 +71,7 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
   })
   // The real API is an RPC stub whose every call is a pipelined promise; the fake answers with
   // plain objects, which is all the app awaits.
-  return { session: { api: api as unknown as ApiSession['api'], user: VIEWER, userChanged: () => {}, reconnecting: false }, overseer }
+  // What anyone may read: here, the one template the scenarios' gadget follows.
+  const publicApi: TemplateReader = { getBlueprint: async (id) => (id === TEMPLATE.id ? TEMPLATE : null) }
+  return { session: { api: api as unknown as ApiSession['api'], user: VIEWER, userChanged: () => {}, reconnecting: false }, overseer, publicApi }
 }

@@ -22,7 +22,7 @@ import type {
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, UI_CODE, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
-import { AGENT, stamp, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
+import { AGENT, changes, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
 
 // Who else has the workspace open, beside the viewer.
 const COLLABORATORS = [
@@ -145,6 +145,7 @@ export class MockOverseer {
   #title: string
   #owner: Scenario['owner']
   #restricted: boolean
+  #templateUpdate: boolean
   #handles = new Set<Handle>()
   // Bumped by each restart, as the server's stream generation is.
   #generation = 1
@@ -167,6 +168,7 @@ export class MockOverseer {
     this.#title = scenario.title
     this.#owner = scenario.owner
     this.#restricted = scenario.restricted === true
+    this.#templateUpdate = scenario.templateUpdate ?? false
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#worktrees = scenario.worktrees ?? {}
@@ -194,7 +196,9 @@ export class MockOverseer {
         if (name === 'onRpcBroken') {
           return (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : handle.onBroken.add(callback))
         }
-        if (name === 'getGadget') return (id: number) => this.#gadget(id).open(handle)
+        if (name === 'getGadget') {
+          return (id: number) => ({ ...this.#gadget(id).open(handle), applyBlueprint: (blueprintId: string) => this.#proposeUpdate(id, blueprintId, handle) })
+        }
         const value: unknown = Reflect.get(target, name, target)
         if (typeof value !== 'function' || typeof name === 'symbol' || name === 'then') return value
         return async (...args: unknown[]) => {
@@ -224,7 +228,22 @@ export class MockOverseer {
   }
 
   #gadgetSummary(id: number) {
-    return { id, type: 'gadget', title: 'Q3 platform review', commitId: gadgetCommit(id, GADGET_HISTORY.length - 1) } as const
+    const upstream = this.#templateUpdate ? { upstream: { blueprintId: TEMPLATE.id, commitId: TEMPLATE_TAKEN } } : {}
+    return { id, type: 'gadget', title: 'Q3 platform review', commitId: gadgetCommit(id, GADGET_HISTORY.length - 1), ...upstream } as const
+  }
+
+  /**
+   * Proposes the template's latest release for the gadget after a moment, as working it out takes,
+   * in this chat rather than a new one: the scenario has the one.
+   */
+  async #proposeUpdate(gadgetId: number, blueprintId: string, handle: Handle) {
+    if (handle.broken) throw handle.broken
+    await sleep(1200)
+    if (handle.broken) throw handle.broken
+    if (blueprintId !== TEMPLATE.id) throw new Error(`No template ${blueprintId}.`)
+    const { title, version, commitId = '' } = TEMPLATE.metadata
+    this.#append(changes({ blueprintMerges: [{ gadgetId, blueprintId, title, version, commitId, kind: 'fastForward', baseCommit: TEMPLATE_TAKEN, conflictPaths: [] }] }))
+    return { outcome: 'proposed', chatId: CHAT_ID } as const
   }
 
   /**

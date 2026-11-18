@@ -4,6 +4,7 @@ import type {
   AiChatMetadata,
   AiChatSubscriber,
   ConsoleLogEvent,
+  GadgetUpstream,
   Overseer,
   PresenceParticipant,
   PresenceSubscriber,
@@ -34,6 +35,8 @@ export type GadgetSnapshot = {
   title?: string
   /** The commit its code was last kept in (its head), once the workspace has said: none before it has any. */
   commitId?: string
+  /** The template it follows, and how much of it it has taken, where the workspace says (to whoever builds there). */
+  upstream?: GadgetUpstream
 }
 
 /** A stub, which says when what it reaches can no longer be reached, such as when it restarted. */
@@ -151,7 +154,7 @@ class HeadListener extends RpcTarget implements WorkpiecesSubscriber {
   constructor(
     private readonly gadgetId: number,
     private readonly changed: () => void,
-    private readonly summarized: (summary: { title: string; commitId?: string }) => void,
+    private readonly summarized: (summary: { title: string; commitId?: string; upstream?: GadgetUpstream }) => void,
   ) {
     super()
   }
@@ -160,7 +163,7 @@ class HeadListener extends RpcTarget implements WorkpiecesSubscriber {
 
   entry(summary: WorkpieceSummary) {
     if (summary.id !== this.gadgetId || summary.type !== 'gadget') return
-    this.summarized({ title: summary.title, commitId: summary.commitId })
+    this.summarized({ title: summary.title, commitId: summary.commitId, upstream: summary.upstream })
     // Its other changes, such as a new title, leave the code as it was.
     if (this.#head && summary.commitId !== this.#head.commitId) this.changed()
     this.#head = { commitId: summary.commitId }
@@ -287,8 +290,10 @@ export class GadgetConnection {
     const { chatId } = this.options
     // Before the code is loaded, so that no change can come between.
     this.#subscriptions = [
-      overseer.subscribeToWorkpieces(new HeadListener(this.workpieceId, changed, ({ title, commitId }) => {
-        if (run === this.#run && (title !== this.#snapshot.title || commitId !== this.#snapshot.commitId)) this.#publish({ title, commitId })
+      overseer.subscribeToWorkpieces(new HeadListener(this.workpieceId, changed, ({ title, commitId, upstream }) => {
+        const was = this.#snapshot
+        const moved = upstream?.blueprintId !== was.upstream?.blueprintId || upstream?.commitId !== was.upstream?.commitId
+        if (run === this.#run && (title !== was.title || commitId !== was.commitId || moved)) this.#publish({ title, commitId, upstream })
       })),
       ...(chatId === undefined ? [] : [overseer.subscribeToChat(new ChangeListener(chatId, this.workpieceId, changed))]),
       overseer.subscribeToPresence(

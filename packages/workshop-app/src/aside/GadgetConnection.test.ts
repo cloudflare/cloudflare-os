@@ -224,6 +224,21 @@ describe('GadgetConnection', () => {
     connection.stop()
   })
 
+  it('says which template the gadget follows, and how much of it it has, as the workspace says it', async () => {
+    const { connection, gadget, workpieces } = setUp()
+    connection.start()
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    workpieces().entry(head('a'))
+    expect(connection.getSnapshot().upstream).toBeUndefined()
+    workpieces().entry({ ...head('a'), upstream: { blueprintId: 'tip-jar', commitId: 'r1' } } as WorkpieceSummary)
+    expect(connection.getSnapshot().upstream).toEqual({ blueprintId: 'tip-jar', commitId: 'r1' })
+    // Taking an update moves its head and the release it has together.
+    workpieces().entry({ ...head('b'), upstream: { blueprintId: 'tip-jar', commitId: 'r2' } } as WorkpieceSummary)
+    expect(connection.getSnapshot()).toMatchObject({ commitId: 'b', upstream: { commitId: 'r2' } })
+    await vi.waitFor(() => expect(gadget.getUiBundle).toHaveBeenCalledTimes(2))
+    connection.stop()
+  })
+
   it('connects again quietly: the page shown stays until the new one is loaded', async () => {
     const { connection, gadget, frame, disposed } = setUp()
     connection.start()

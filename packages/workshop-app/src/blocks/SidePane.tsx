@@ -2,7 +2,7 @@ import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, t
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   AppWindowIcon, ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, UserPlusIcon,
+  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, UserPlusIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -65,6 +65,8 @@ export type SidePaneProps = Placement & {
   viewingCode?: boolean
   /** Shares the one shown with people, for whoever may. */
   onShare?: () => void
+  /** Updates the one shown, a gadget, from the newer version its template has, for whoever may. */
+  onUpdate?: () => void
   /**
    * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
    * step up, and the step down is a back button at the start of the header.
@@ -88,16 +90,17 @@ const COMMITS_AT = 0.2
  * It grows in steps, and the end of its header has the step up, with the step down in the same
  * place: beside the page it expands to take the page's place; expanded, it collapses back and
  * fills the window; filling the window, it goes back. Before those are who else is looking at it,
- * more that can be done with it (exporting it, sharing it, and beside the page putting the pane away), and a link
- * to it. Beside the page, the header starts with how many things the page has to show, which
- * opens to the list of them, then the name of the one shown.
+ * more that can be done with it (exporting it, sharing it, updating a gadget whose template has a
+ * newer version, and beside the page putting the pane away), and a link to it. Beside the page, the
+ * header starts with how many things the page has to show, which opens to the list of them, then
+ * the name of the one shown.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
  * corners and a line along the top. The bar at its top pushes the header up out of the way, and
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -182,7 +185,7 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || onShare))) && (
+            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || onShare || onUpdate))) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
@@ -193,6 +196,12 @@ export const SidePane = (props: SidePaneProps) => {
                     ? <DropdownMenu.Item icon={AppWindowIcon} onSelect={onViewCode}>Back to {active?.title ?? 'it'}</DropdownMenu.Item>
                     : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>)}
                   {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
+                  {onUpdate && (
+                    <DropdownMenu.Item icon={LayoutIcon} onSelect={onUpdate} label="Update from template">
+                      <span className="min-w-0 flex-1">Update from template…</span>
+                      <span className="shrink-0 text-(length:--menu-detail-text) text-kumo-brand">New version</span>
+                    </DropdownMenu.Item>
+                  )}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
                 </DropdownMenu>
               </HeaderBubble>

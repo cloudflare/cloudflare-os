@@ -8,6 +8,7 @@ import {
   type GatekeeperCreationSpec,
   type WorkpieceSummary,
   type WorkpiecesSubscriber,
+  validateBindingName,
 } from '@gadgets/workshop-shared/api'
 
 export type { GadgetSummary }
@@ -40,7 +41,7 @@ export type GadgetSettingsSnapshot =
     }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'unbind'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'unbind' | 'renameBinding'> & Disposable
 
 /** The part of a connection the settings use, to say what it is, and the lease that must be disposed. */
 export type SettingsGatekeeper = { getCreationSpec(): Promise<GatekeeperCreationSpec> } & Disposable
@@ -78,6 +79,26 @@ export const describeBinding = (binding: GadgetBindingInfo, spec?: GatekeeperCre
     default:
       return { ...binding, kind: 'service' }
   }
+}
+
+/** Why a name was refused before it was asked for: what is said is the whole of it, for the user as it is. */
+export class InvalidBindingName extends Error {}
+
+/**
+ * Why a binding cannot be renamed to `name`, or nothing where it can: it is blank, it is not a
+ * name code can reach it by (`validateBindingName()`, which the server holds it to as well, said
+ * here without naming the name again), or the gadget has another by it (`taken`).
+ */
+export const bindingNameProblem = (name: string, taken: readonly string[]): string | undefined => {
+  if (name === '') return 'It needs a name.'
+  try {
+    validateBindingName(name)
+  } catch (error) {
+    const why = messageOf(error).replace(/^Invalid binding name "[^"]*": /, '')
+    return why.charAt(0).toUpperCase() + why.slice(1)
+  }
+  if (taken.includes(name)) return `It already has env.${name}. Choose another name.`
+  return undefined
 }
 
 /** A gadget's bindings as its settings list them: the services it reaches, then the agents it starts. */
@@ -198,6 +219,19 @@ export class GadgetSettings {
   /** Takes a binding away from it, leaving what it was bound to in the workspace. */
   unbind = async (name: string) => {
     await this.#with((gadget) => gadget.unbind(name))
+    this.#readBindings(this.#run)
+  }
+
+  /**
+   * Gives a binding another name, which its code then knows it by. Refused with an
+   * `InvalidBindingName`, asking nothing, where the name cannot be one (`bindingNameProblem`).
+   */
+  renameBinding = async (name: string, next: string) => {
+    const current = this.#snapshot
+    const taken = current.status === 'ready' && current.bindings.status === 'ready' ? current.bindings.items.map((binding) => binding.name) : []
+    const problem = bindingNameProblem(next, taken.filter((each) => each !== name))
+    if (problem) throw new InvalidBindingName(problem)
+    await this.#with((gadget) => gadget.renameBinding(name, next))
     this.#readBindings(this.#run)
   }
 

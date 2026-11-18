@@ -18,6 +18,7 @@ import { ApiContext } from '@/rpc/ApiContext'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'
 import { ConnectionNoticeContext } from '@/rpc/ConnectionNoticeContext'
 import { WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
+import { PublicApiContext } from '@/rpc/PublicApiContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 
 /** One scripted chat: the real `ChatPane` over a fake backend, so it needs no server. */
@@ -55,7 +56,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   onRestart: () => void
 }) => {
   // Made once, so the callbacks handed to the chat stay the same.
-  const [{ session: signedIn, overseer, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
+  const [{ session: signedIn, overseer, publicApi, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
     const mock = createMockApi(scenario)
     return {
       ...mock,
@@ -91,26 +92,28 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
 
   return (
     <ConnectionNoticeContext value={notice}>
-      <ApiContext value={session}>
-        <WorkspacesProvider>
-          <ChatSessionsProvider>
-            <MockLayout
-              onOpenScenarios={onOpenScenarios}
-              onSetUpConnection={onSetUpConnection}
-              onAlwaysApprove={onAlwaysApprove}
-              status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
-            >
-              <MockControls
-                scenarios={SCENARIOS}
-                scenario={scenario}
-                player={overseer.player}
-                onSelectScenario={onSelectScenario}
-                onRestart={onRestart}
-              />
-            </MockLayout>
-          </ChatSessionsProvider>
-        </WorkspacesProvider>
-      </ApiContext>
+      <PublicApiContext value={publicApi}>
+        <ApiContext value={session}>
+          <WorkspacesProvider>
+            <ChatSessionsProvider>
+              <MockLayout
+                onOpenScenarios={onOpenScenarios}
+                onSetUpConnection={onSetUpConnection}
+                onAlwaysApprove={onAlwaysApprove}
+                status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
+              >
+                <MockControls
+                  scenarios={SCENARIOS}
+                  scenario={scenario}
+                  player={overseer.player}
+                  onSelectScenario={onSelectScenario}
+                  onRestart={onRestart}
+                />
+              </MockLayout>
+            </ChatSessionsProvider>
+          </WorkspacesProvider>
+        </ApiContext>
+      </PublicApiContext>
     </ConnectionNoticeContext>
   )
 }
@@ -159,6 +162,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
     onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
     onOpenOutput: (output: { workpieceId: number }) => setOpen(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId })),
     onFullScreenChange: () => {},
+    // The scenario's chat is the one the update is proposed in: back to it from the gadget's page.
+    onUpdateProposed: () => setExpanded(false),
   }))
 
   const narrow = useNarrowScreen()
@@ -173,6 +178,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       fullScreen={false}
       onFullScreenChange={handlers.onFullScreenChange}
       onCollapse={() => setExpanded(false)}
+      onUpdateProposed={handlers.onUpdateProposed}
     />
   ) : (
     <AsidePane
@@ -183,6 +189,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       onHide={() => setOpen(undefined)}
       onExpand={() => setExpanded(true)}
       onFullScreenChange={handlers.onFullScreenChange}
+      onUpdateProposed={handlers.onUpdateProposed}
       narrow={narrow}
     />
   ))

@@ -4,6 +4,7 @@ import { ListGroup } from '@/blocks/ListGroup'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
+import type { SaveOutcome } from '@/blocks/useEditedField'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
@@ -11,6 +12,7 @@ import { EditableTitle } from '@/components/EditableTitle'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
+import { Tag } from '@/components/Tag'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/components/workspaceLook'
 import { PageLayout } from '@/layouts/PageLayout'
@@ -47,6 +49,11 @@ export type GadgetSettingsViewProps = {
   description?: string
   /** The template it was made from, by its title; `null` where it was built from scratch. */
   template?: string | null
+  /**
+   * Updating it from its template, for a gadget that follows one: whether there is a newer version
+   * of it, where that can be told, and the way to have it proposed.
+   */
+  templateUpdate?: { status?: 'available' | 'upToDate'; onUpdate: () => void }
   /** The workspace it is in, which the header's crumb goes to. */
   workspace?: { id: string; title: string; label: string; look?: WorkspaceLook }
   tab: GadgetSettingsTab
@@ -60,6 +67,8 @@ export type GadgetSettingsViewProps = {
   services: ReadonlyMap<string, BindingService>
   /** Takes a binding away from it, by the name its code knows it by. */
   onUnbind: (name: string) => void
+  /** Gives a binding another name in its code: how that went, and why where it did not. */
+  onRenameBinding: (name: string, next: string) => Promise<SaveOutcome>
   /** Deletes it, for everyone it is shared with, asked for twice. */
   onDelete: () => void
   /** Back to the gadget itself. */
@@ -74,11 +83,11 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
  * connected to, with the agents it can start apart, and its
- * settings, which are where it is from and deleting it. Only whoever may build in its workspace
+ * settings, which are where it is from, updating it from its template, and deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, template, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onDelete, onBack, onOpenWorkspace,
+  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, onDelete, onBack, onOpenWorkspace,
 }: GadgetSettingsViewProps) => {
   const header = (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
@@ -123,6 +132,8 @@ export const GadgetSettingsView = ({
       model={binding.model}
       pending={binding.chatId !== undefined}
       onRemove={() => onUnbind(binding.name)}
+      // One waiting in a chat is that chat's until its changes are kept.
+      onRename={binding.chatId === undefined ? (next) => onRenameBinding(binding.name, next) : undefined}
     />
   )
 
@@ -148,7 +159,7 @@ export const GadgetSettingsView = ({
         {state.status === 'ready' && (
           <Tabs value={tab} onValueChange={onTabChange} tabs={GADGET_SETTINGS_TABS} aria-label="Gadget" className="gap-6">
             <Tabs.Panel value="connections" className="flex flex-col gap-12">
-              <SettingsGroup title="Connected to" description="What its code can reach, by the name it knows each by." plain>
+              <SettingsGroup title="Connected to" description="What its code can reach, by the name it knows each by. Click a name to change it." plain>
                 {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
                 {bindings.status === 'failed' && <Message>{`Couldn’t load its connections: ${bindings.message}`}</Message>}
                 {bindings.status === 'ready' && (connections.length === 0
@@ -184,6 +195,19 @@ export const GadgetSettingsView = ({
                     description={template === null ? 'It was built from scratch, not from a template.' : 'What it was made from, which it can take updates from.'}
                   >
                     {template === null ? undefined : <span className="truncate text-kumo-default">{template}</span>}
+                  </SettingRow>
+                )}
+                {templateUpdate && (
+                  <SettingRow
+                    title="Updates"
+                    description={templateUpdate.status === 'available'
+                      ? 'There’s a newer version of its template. The update opens in a new chat, where you can try it before accepting it.'
+                      : templateUpdate.status === 'upToDate'
+                        ? 'It has the latest version of its template.'
+                        : 'Its template may have a newer version. The update opens in a new chat, where you can try it before accepting it.'}
+                  >
+                    {templateUpdate.status === 'available' && <Tag className="shrink-0">Update available</Tag>}
+                    <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} onClick={templateUpdate.onUpdate}>Update…</Button>
                   </SettingRow>
                 )}
               </SettingsGroup>

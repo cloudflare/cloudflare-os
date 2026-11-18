@@ -1,5 +1,5 @@
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
-import { parseItemPageId } from '@/aside/asideItems'
+import { formatAsideRef, parseItemPageId } from '@/aside/asideItems'
 import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
 import { GADGET_SETTINGS_TABS, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 
@@ -48,6 +48,8 @@ function GadgetSettings() {
       // Its workspace's library, which it was one of; in place, as the gadget is no longer there to go back to.
       onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library' }, replace: true })}
       onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
+      // The chat that holds the update, with the gadget beside it, showing it.
+      onUpdateProposed={(chatId) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open: formatAsideRef(ref) } })}
     />
   )
 }

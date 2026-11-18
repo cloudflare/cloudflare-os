@@ -7,6 +7,7 @@ import type {
   AiChatStreamEvent,
   AiToolCall,
   BlueprintOutput,
+  BlueprintPublicInfo,
 } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 
@@ -14,6 +15,26 @@ import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeepe
 export const VIEWER: AiChatAuthorInfo = { type: 'user', id: 'ada@example.com', name: 'Ada Lovelace' }
 /** The model that answers by default. */
 export const AGENT: AiChatAuthorInfo = { type: 'agent', id: 'mock-model', name: 'Mock Model' }
+/**
+ * The template the scenarios' gadget follows where a scenario says it has a newer version
+ * (`templateUpdate`), as anyone may read it (`PublicApi.getBlueprint()`).
+ */
+export const TEMPLATE: BlueprintPublicInfo = {
+  id: 'quarterly-review',
+  metadata: {
+    title: 'Quarterly review',
+    description: 'A quarter’s review as a to-do list everyone on the team ticks off, with how much is left.',
+    author: { type: 'user', id: 'templates@example.com', name: 'Platform team' },
+    created: new Date(0),
+    version: 4,
+    lastUpdated: new Date(0),
+    commitId: `r4${'0'.repeat(38)}`,
+    bindings: {},
+  },
+}
+/** The release of `TEMPLATE` the gadget has, which is the one before its latest. */
+export const TEMPLATE_TAKEN = `r3${'0'.repeat(38)}`
+
 /** A second model, for chats that switch. */
 export const FAST_AGENT: AiChatAuthorInfo = { type: 'agent', id: 'mock-model-fast', name: 'Mock Model Fast' }
 
@@ -288,6 +309,11 @@ export type Scenario = {
   sendDelay?: number
   /** Whose the workspace is, where it is not the viewer's own but shared with them to edit. */
   owner?: AiChatAuthorInfo
+  /**
+   * The gadget follows `TEMPLATE`, a version behind, so that it can be updated: proposed in this
+   * chat, as the chat a real update makes would hold it.
+   */
+  templateUpdate?: boolean
 }
 
 const CHUNK_DELAY = 45

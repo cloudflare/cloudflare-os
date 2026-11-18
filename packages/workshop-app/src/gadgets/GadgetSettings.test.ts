@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type GatekeeperCreationSpec, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
-import { describeBinding, GadgetSettings, groupBindings, type GadgetSummary, type SettingsGadget, type SettingsOverseer } from './GadgetSettings'
+import { bindingNameProblem, describeBinding, GadgetSettings, groupBindings, InvalidBindingName, type GadgetSummary, type SettingsGadget, type SettingsOverseer } from './GadgetSettings'
 
 const summary = (title: string, id = 7): GadgetSummary => ({ id, type: 'gadget', title })
 
@@ -20,6 +20,7 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
       { name: 'TRIAGE', target: 4, resourceTitle: 'Triage' },
     ]),
     unbind: vi.fn<SettingsGadget['unbind']>(async () => {}),
+    renameBinding: vi.fn<SettingsGadget['renameBinding']>(async () => {}),
     [Symbol.dispose]: vi.fn<() => void>(),
   }
   const gatekeepers: Array<{ id: number; dispose: () => void }> = []
@@ -60,6 +61,22 @@ describe('groupBindings', () => {
     const agent = describeBinding({ name: 'B', target: 2, resourceTitle: 'B' }, SPECS[4])
     const model = describeBinding({ name: 'C', target: 3, resourceTitle: 'C' }, SPECS[5])
     expect(groupBindings([agent, service, model])).toEqual({ connections: [service, model], agents: [agent] })
+  })
+})
+
+describe('bindingNameProblem', () => {
+  it('takes a name code can reach it by that the gadget has no other by', () => {
+    expect(bindingNameProblem('CALENDAR', ['GITHUB'])).toBeUndefined()
+    expect(bindingNameProblem('team_calendar2', [])).toBeUndefined()
+  })
+
+  it('says why it refuses one, without naming the name again', () => {
+    expect(bindingNameProblem('', [])).toBe('It needs a name.')
+    expect(bindingNameProblem('2FA', [])).toBe('Binding names must be JavaScript identifiers (letters, digits, and \'_\', not starting with a digit).')
+    expect(bindingNameProblem('MY-CALENDAR', [])).toMatch(/^Binding names must be JavaScript identifiers/)
+    expect(bindingNameProblem('class', [])).toBe('This is a reserved word in JavaScript.')
+    expect(bindingNameProblem('constructor', [])).toBe('This name collides with a built-in object property.')
+    expect(bindingNameProblem('GITHUB', ['GITHUB'])).toBe('It already has env.GITHUB. Choose another name.')
   })
 })
 
@@ -135,6 +152,32 @@ describe('GadgetSettings', () => {
     await settings.unbind('GITHUB')
     expect(gadget.unbind).toHaveBeenCalledWith('GITHUB')
     expect(gadget.listBindings).toHaveBeenCalledTimes(2)
+  })
+
+  it('renames a binding and reads them again, refusing a name it cannot have without asking', async () => {
+    const { overseer, gadget, server } = fakeWorkspace()
+    const settings = new GadgetSettings(() => overseer, 7)
+    settings.start()
+    await vi.waitFor(() => expect(overseer.subscribeToWorkpieces).toHaveBeenCalled())
+    server().entry(summary('Todo'))
+    await vi.waitFor(() => {
+      const snapshot = settings.getSnapshot()
+      expect(snapshot.status === 'ready' && snapshot.bindings.status).toBe('ready')
+    })
+
+    await expect(settings.renameBinding('GITHUB', 'TRIAGE')).rejects.toThrow(InvalidBindingName)
+    await expect(settings.renameBinding('GITHUB', 'my repo')).rejects.toThrow(InvalidBindingName)
+    expect(gadget.renameBinding).not.toHaveBeenCalled()
+
+    await settings.renameBinding('GITHUB', 'REPO')
+    expect(gadget.renameBinding).toHaveBeenCalledWith('GITHUB', 'REPO')
+    expect(gadget.listBindings).toHaveBeenCalledTimes(2)
+
+    // What the server refuses is said as it said it.
+    gadget.renameBinding.mockRejectedValueOnce(new Error('Binding name is reserved'))
+    const refused = settings.renameBinding('TRIAGE', 'GADGET')
+    await expect(refused).rejects.toThrow('Binding name is reserved')
+    await expect(refused).rejects.not.toBeInstanceOf(InvalidBindingName)
   })
 
   it('renames and deletes through its client, and says so while it is still loading', async () => {
