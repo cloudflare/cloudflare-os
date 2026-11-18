@@ -87,8 +87,6 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const metadata = shared?.metadata ?? workspace
   const removal = metadata && removalOf(metadata)
   const removing = useWorkspaceRemoval({ onRemoved })
-  // The first of the header's buttons is pushed to its end, after the crumb.
-  const first = people.length > 1 ? 'members' : canInvite ? 'share' : removal ? 'more' : 'new'
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
@@ -106,46 +104,51 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     <PageLayout
       header={(
         <>
-          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
-          {/* Only once there is someone besides the viewer: it goes to the members. */}
-          {people.length > 1 && (
-            <HeaderBubble className="ms-auto">
-              <Button
-                aria-label={`Members: ${people.map(({ name }) => name).join(', ')}`}
-                title="Members"
-                variant="ghost"
-                onClick={() => onTabChange('members')}
-                className="px-1"
-              >
-                <span aria-hidden="true" className="flex"><AvatarStack people={people} aria-label="Members" /></span>
-              </Button>
-            </HeaderBubble>
-          )}
-          {canInvite && (
-            <HeaderBubble className={first === 'share' ? 'ms-auto' : undefined}>
+          {/* As a chat's header is: the crumb, then what else can be done with it. */}
+          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
+            {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
+            {removal && (
+              <HeaderBubble className="shrink-0">
+                <WorkspaceMoreMenu
+                  title={title || 'Workspace'}
+                  triggerVariant="secondary"
+                  removal={{
+                    kind: removal,
+                    onSelect: () => removing.ask({ id: workspaceId, title: title ?? '', removal, others: standing ? people.length - 1 : undefined }),
+                  }}
+                />
+              </HeaderBubble>
+            )}
+          </nav>
+          <span className="ms-auto flex shrink-0 items-center gap-1.5">
+            {/* Only once there is someone besides the viewer: it goes to the members. */}
+            {people.length > 1 && (
+              <HeaderBubble>
+                <Button
+                  aria-label={`Members: ${people.map(({ name }) => name).join(', ')}`}
+                  title="Members"
+                  variant="ghost"
+                  onClick={() => onTabChange('members')}
+                  className="px-1"
+                >
+                  <span aria-hidden="true" className="flex"><AvatarStack people={people} aria-label="Members" /></span>
+                </Button>
+              </HeaderBubble>
+            )}
+            {canInvite && (
+              <HeaderBubble>
+                {narrow
+                  ? <Button icon={UserPlusIcon} aria-label="Share" title="Share" onClick={() => setInviting(true)} />
+                  : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Share</Button>}
+              </HeaderBubble>
+            )}
+            <HeaderBubble>
+              {/* Its icon alone on a narrow screen, which leaves the workspace's title the room. */}
               {narrow
-                ? <Button icon={UserPlusIcon} aria-label="Share" title="Share" onClick={() => setInviting(true)} />
-                : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Share</Button>}
+                ? <Button variant="primary" icon={NotePencilIcon} aria-label="New chat" title="New chat" onClick={onNewChat} />
+                : <Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
             </HeaderBubble>
-          )}
-          {removal && (
-            <HeaderBubble className={first === 'more' ? 'ms-auto' : undefined}>
-              <WorkspaceMoreMenu
-                title={title || 'Workspace'}
-                triggerVariant="secondary"
-                removal={{
-                  kind: removal,
-                  onSelect: () => removing.ask({ id: workspaceId, title: title ?? '', removal, others: standing ? people.length - 1 : undefined }),
-                }}
-              />
-            </HeaderBubble>
-          )}
-          <HeaderBubble className={first === 'new' ? 'ms-auto' : undefined}>
-            {/* Its icon alone on a narrow screen, which leaves the workspace's title the room. */}
-            {narrow
-              ? <Button variant="primary" icon={NotePencilIcon} aria-label="New chat" title="New chat" onClick={onNewChat} />
-              : <Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
-          </HeaderBubble>
+          </span>
         </>
       )}
     >
