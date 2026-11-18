@@ -1,6 +1,12 @@
-import { createRootRoute, Outlet } from '@tanstack/react-router'
+import { createRootRoute, Outlet, redirect } from '@tanstack/react-router'
+import { legacyTarget } from './-legacy'
 
 export const Route = createRootRoute({
+  // The old Workshop's addresses, as people kept them and the server still links to them.
+  beforeLoad: ({ location }) => {
+    const target = legacyTarget(location.pathname, location.search as Record<string, unknown>)
+    if (target) throw redirect({ href: target.href, replace: true })
+  },
   component: () => (
     // Clipped at the window's sides: with the aside put away, the reach of the handle that brings it
     // back runs on past the edge, which would make the page scroll sideways. Nothing there can be
