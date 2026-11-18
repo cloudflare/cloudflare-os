@@ -567,7 +567,11 @@ function codedErrorFamily<Code extends string>(messages: Record<Code, string>) {
   };
 }
 
-/** Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`. */
+/**
+ * Stable error codes attached to expected failures from `AuthenticatedApi.openWorkspace()`.
+ * `workspaceAccessDenied` is also what someone who is not a deployment admin gets from a
+ * workspace that admits only deployment admins (see `Overseer.newGatekeeper()`).
+ */
 export const OPEN_WORKSPACE_ERROR_CODES = {
   workspaceNotFound: "WORKSPACE_NOT_FOUND",
   workspaceAccessDenied: "WORKSPACE_ACCESS_DENIED",
@@ -5233,6 +5237,10 @@ export interface Overseer extends RpcTarget {
    * The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by
    * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget, or pass
    * its id to acceptConnectionRequest() to hand it to the agent that asked for it.
+   *
+   * The admin gatekeeper's connection can be added only by the workspace's owner, while they are
+   * a deployment admin; a workspace that has it admits, beside its owner, only deployment admins,
+   * and one that has read through it keeps doing so after the connection is removed.
    */
   newGatekeeper(accountId: number, resourceUrl: string): Promise<GatekeeperClient<any> | null>;
 
@@ -5781,6 +5789,8 @@ export interface Overseer extends RpcTarget {
    * gadget, after the live gadget) changes nothing but the note, so sharing never narrows
    * anyone; one that covers the caller's earlier grants to them replaces those. Returns the
    * collaborator's info, or null if the username doesn't correspond to an existing account.
+   * Refused, with the reason, for someone who is not a deployment admin while the workspace
+   * admits only admins (see newGatekeeper()).
    */
   addCollaborator(username: string, grant: CollaboratorGrant,
                   note?: string): Promise<CollaboratorInfo | null>;
