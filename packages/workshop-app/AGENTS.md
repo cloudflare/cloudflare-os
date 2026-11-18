@@ -592,18 +592,20 @@ in place in the history): its chats, what it has made (the library's, as beside 
 beside the page), and its members, the owner first. The chats and the library load what they
 list once chosen; who has access is read with the page, for its header.
 
-A workspace is shared whole: the backend gives nothing on its own, so a gadget's Share… (in its
-pane's more menu) opens the workspace's dialog, which says so and starts on Can use
-(`ShareWorkspaceDialog`). Its page's header has who has access, which goes to the members, and
-Share, for whoever may (`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever
-can edit until its data says only the owner may let anyone in (`ownerInvitesOnly`). Someone who
-can only use it is not told who else can. `SharingSession` (plain, tested, like `ChatSession`)
-holds the workspace while the dialog is open: people are invited one at a time to edit or only
-use it, a name that would change nothing says why without asking, and access is taken away from
-a person's row, the server first saying what that does to whom (`RemovalDialog`). Its link (any
-of the workspace's, made here or elsewhere, together) lets anyone in the deployment join from
+A workspace is shared to edit everything in it, and a gadget to use, alone
+(`ShareWorkspaceDialog`, whose target is a `ShareTarget`). A gadget's Share… (in its pane's more
+menu) shares that gadget: its people are those who use it, under one line for everyone who can
+edit the workspace, and the dialog can share all of the workspace instead. Its page's header has
+who has access, which goes to the members, and Share, for whoever may
+(`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever can edit until its data
+says only the owner may let anyone in (`ownerInvitesOnly`). Someone who can only use it is not
+told who else can. `SharingSession` (plain, tested, like `ChatSession`) holds the workspace while
+the dialog is open: people are invited one at a time, a name that would change nothing says why
+without asking, and access is taken away from a person's row, the server first saying what that
+does to whom (`RemovalDialog`); from a gadget, they lose that gadget alone. The viewer's own link
+(each sharer has one default link for what they share) lets anyone in the deployment get it from
 the page it was copied on, its key in the fragment, which `ShareLinkGate` redeems before anything
-is shown.
+is shown. Turned off, whoever came in by it keeps what it gave them.
 
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
 and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a
@@ -676,8 +678,11 @@ taken hold of (`pill.ts` holds what the two share).
 
 A gadget runs live in the pane (`GadgetConnection`, plain and tested like `ChatSession`): its UI
 code is loaded into a page for a sandboxed frame with no origin (`gadgetSandbox.ts`, ported from
-`workshop-frontend`'s `GadgetUI`), and the page is connected to the gadget's server side once it
-asks, with a port it posts. Only messages from the pane's own frame are listened to. Opened from a
+`workshop-frontend`'s `GadgetUI`; the shared `prepareUiPage` turns its bundle into modules), and
+the page is connected once it asks, with a port it posts, to a `GadgetFrameRoot`: the gadget's
+server side and the app as its host (`GadgetHost`), and what the page's runtime reports, its
+console and Escape. A UI of modules is started by `main(gadget, host)`, and a legacy one gets
+`gadget` as a global. Only messages from the pane's own frame are listened to. Opened from a
 chat, a gadget shows that chat's proposed changes. It is loaded again when its code changes: a
 change to its files in that chat, the chat's changes being accepted or thrown away, or its head
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only

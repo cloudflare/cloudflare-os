@@ -10,7 +10,7 @@ import type {
 } from "../../src/outlook-types";
 import type { OutlookScope } from "../../src/outlook-scope";
 import type { AnyGatekeeperProps } from "../workerd/worker";
-import { account, connect, failure, facet, hooks, live, run, unwrap, walk, type Label } from "./tenant";
+import { account, admitted, connect, failure, facet, hooks, live, run, unwrap, walk, type Label } from "./tenant";
 
 const RUN = `run-${Date.now().toString(36)}`;
 const OUTSIDE = /is outside what this Outlook connection covers, or doesn't exist/;
@@ -383,39 +383,39 @@ describe.skipIf(!live)("outlook", { timeout: 180_000 }, () => {
     const props = await bindMail("phillip");
     const name = facet("observers");
     await walk<MessageInfo>(name, props, [["listMessages", { pageSize: 5 }]], 1);
-    expect(failure(await hooks().addObserver(name, props, "bob", await connect("bob")))).toMatch(/can't open in Outlook/);
+    expect(await admitted(name, props, ["bob"])).toEqual([]);
     // A binding that has read only the mailbox's own description shares it with colleagues.
     const fresh = facet("observers-fresh");
     unwrap(await run(fresh, props, [["getMailbox"]]));
-    unwrap(await hooks().addObserver(fresh, props, "sarah", await connect("sarah")));
+    expect(await admitted(fresh, props, ["sarah"])).toEqual(["sarah"]);
     // A narrowed binding's description names mail details (here, a person), so it isn't.
     const narrowed = await bindMail("phillip", `https://outlook.office.com/mail/?senders=${address("sarah")}`);
     const named = facet("observers-narrowed");
     unwrap(await run(named, narrowed, [["getMailbox"]]));
-    expect(failure(await hooks().addObserver(named, narrowed, "bob", await connect("bob")))).toMatch(/can't open in Outlook/);
+    expect(await admitted(named, narrowed, ["bob"])).toEqual([]);
   });
 
   // Fixture: Sarah is a Reviewer of Phillip's Inbox, and of no other folder.
   it("observers: someone shared only the Inbox sees Inbox reads, and nothing beyond it", async () => {
-    const sarah = await connect("sarah");
     const inbox = await bindMail("phillip", "https://outlook.office.com/mail/inbox");
     const inboxName = facet("observers-inbox");
     expect((await walk<MessageInfo>(inboxName, inbox, [["listMessages", { pageSize: 3 }]], 1)).length).toBeGreaterThan(0);
-    unwrap(await hooks().addObserver(inboxName, inbox, "sarah", sarah));
+    expect(await admitted(inboxName, inbox, ["sarah"])).toEqual(["sarah"]);
 
     const sent = await bindMail("phillip", "https://outlook.office.com/mail/sentitems");
     const sentName = facet("observers-sent");
     expect((await walk<MessageInfo>(sentName, sent, [["listMessages", { pageSize: 3 }]], 1)).length).toBeGreaterThan(0);
-    expect(failure(await hooks().addObserver(sentName, sent, "sarah", sarah))).toMatch(/can't open in Outlook/);
+    expect(await admitted(sentName, sent, ["sarah"])).toEqual([]);
 
     // Opening the Inbox isn't opening the mailbox: a narrowed binding's description is for those who can.
     const narrowed = await bindMail("phillip", `https://outlook.office.com/mail/?senders=${address("bob")}`);
     const named = facet("observers-inbox-narrowed");
     unwrap(await run(named, narrowed, [["getMailbox"]]));
-    expect(failure(await hooks().addObserver(named, narrowed, "sarah", sarah))).toMatch(/can't open in Outlook/);
+    expect(await admitted(named, narrowed, ["sarah"])).toEqual([]);
+    const everything = await bindMail("phillip");
     const folders = facet("observers-inbox-folders");
-    unwrap(await run(folders, await bindMail("phillip"), [["listFolders"]]));
-    expect(failure(await hooks().addObserver(folders, await bindMail("phillip"), "sarah", sarah))).toMatch(/can't open in Outlook/);
+    unwrap(await run(folders, everything, [["listFolders"]]));
+    expect(await admitted(folders, everything, ["sarah"])).toEqual([]);
   });
 
   it("hooks: new mail the binding covers is delivered once, with a session to read it; other mail isn't", async () => {

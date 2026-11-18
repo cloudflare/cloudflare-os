@@ -16,7 +16,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 3. Keeping or discarding changes that can't be kept automatically. **Done.**
 4. Composer slash commands, skills and connection lines. **Done.**
 5. Inline views and file previews (Office, worktrees). **Done**, but inline views wait on main.
-6. Sharing. **Done**, of the workspace only.
+6. Sharing. **Done**, of a workspace, or of one of its gadgets to use.
 7. Gadget settings and the Code tab. **Done.** View code shows the code in the pane, with its history as diffs (CodeMirror).
 8. Real blueprints behind Templates, real skills behind `SkillStore`. **Done.**
 9. Automations, read only. **Done.**
@@ -24,8 +24,12 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 
 Deferred, wanted later: right-click menus on library rows and cards, skills and templates, each the same as a ⋯ menu the item would gain (Open, Open in new tab, Copy link, Share…, Remove from Library, Delete gadget…), as the prototype has. Main only has a gadget's right-click Delete; the scaffold's lists have no per-item menu yet, so this is a design addition for Balint to agree, not a port.
 
-Waiting on a merge of main into the scaffold (its base, Oct 27, predates them): inline-view
-agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnreadThreads`).
+Main merged in (Nov 17), the scaffold's base (Oct 27) having predated it. That made sharing a
+gadget on its own real, and the gadget runtime main's (`UiBundle` modules, `main(gadget, host)`).
+It also makes these possible, still to do: unread state (`subscribeToUnreadState`, `markChatRead`,
+`getUnreadThreads`), inline-view agent support, a creation started from what the agent suggested
+(`GatekeeperCreationSpec.configuration`), and telling agents' runs apart (`spawnerId`) and waiting
+(`awaitingDecision`).
 
 ## Sacrifices
 
@@ -34,7 +38,7 @@ agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnrea
 | Setting up an agent has no "report back here" | the chat it reports to isn't a field of the spawner | `reportsToChatId` on `newAgentSpawnerGatekeeper` |
 | Approving a creation can't start from where the agent suggested, so a kind with a creation form always asks, and one without is made where the service puts things | the scaffold's `GatekeeperCreationSpec` has no `configuration` | `configuration` on `GatekeeperCreationSpec` |
 | A creation's card isn't drawn as the file it will make | that needs the live previews, which are cut | none |
-| Keeping changes names a gadget given a connection by `env.NAME`, not the connection's title, unless it is another gadget the chat shows | `listChatConnections` isn't on the scaffold's base | none once main is merged |
+| Keeping changes names a gadget given a connection by `env.NAME`, not the connection's title, unless it is another gadget the chat shows | there is no `listChatConnections`, on main either | `listChatConnections` |
 | A chat's changes are kept as it finishes even when another chat has changes to the same gadget (the scaffold left them proposed) | ours brings in what the other kept first, asking only on conflicts | none |
 | The composer has no model row in its + menu | user decision (model in settings only) | none |
 | Skills are titled as the scaffold titles them ("Meeting Brief") | its `humanizeSkillName` | none |
@@ -47,11 +51,11 @@ agent support, unread state (`subscribeToUnreadState`, `markChatRead`, `getUnrea
 | No inline views in answers | the agent support came in a later main | none once main is merged |
 | An output's card has no gadget colour | the prototype's gadget colours | none |
 | Setting up a connection offers every kind of resource, not only connectable ones | the scaffold's `SupportedResource` has no `connectable` | `connectable` on `SupportedResource` |
-| A gadget can't be shared on its own: Share gives the whole workspace, and there is no "Can view", no "what people see" snapshot and no per-gadget link | roles and links are workspace-wide here | gadget-scoped grants: `addCollaborator(user, {gadgetId, viewOnly})`, `setCollaboratorGadgetAccess`, `listObserverRequirements({gadgetId})`, `ShareLinkInfo.gadgetId`/`viewOnly`, `sharedViewsAvailable`, `GadgetClient.openView`, `viewTakenAt` |
-| Someone with access can only be removed, not moved between Can edit and Can use | there is no set-role call | a set-role call on the Overseer |
+| A gadget is shared to use, never only to view: no "Can view" and no "what people see" snapshot | main's grants are to edit the workspace or use a gadget | `viewOnly` grants, `sharedViewsAvailable`, `GadgetClient.openView`, `viewTakenAt` |
+| Someone with access can only be removed, not moved from Can edit to using a gadget (being let edit is an invite) | there is no call to narrow access | a set-access call on the Overseer |
 | Someone who can only use a workspace doesn't see who else has access | `listCollaborators()` refuses them | `listCollaborators` for users |
 | Skills aren't shared from here, and no Share in the chat header or on Library cards | skill sharing needs the Context Library's own sharing; the scaffold's header and cards have no menu slot | none |
-| Turning a workspace's link off, or changing its role, revokes every link it has | links are workspace-wide, some perhaps made in the old app | none |
+| Only the viewer's own link is turned on and off; links others made, extra ones and their notes aren't shown | each sharer has one default link for what they share, which is all the dialog offers | none |
 | A gadget's settings have no "allow everything" or "ask again" for its permissions | not on the scaffold's `GadgetClient` | `setAutoApprove`, `disallowActionKind` |
 | A gadget's agents show among its bindings with their model, but without their runs, and it has no Automations tab | no `listAgentSpawners` | `listAgentSpawners` |
 | A gadget's description is its template's, read only | there is no call to set one | a description setter on the gadget |

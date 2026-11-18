@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MicrosoftConfigurationError, SHAREPOINT_RESOURCE, acceptsTenant, effectiveSharePoint, getBasePath, getRedirectUri,
+  MicrosoftConfigurationError, SHAREPOINT_RESOURCE, acceptsTenant, effectiveSharePoint, fixedTenant, getBasePath, getRedirectUri,
   grantedResourcePatterns, grantedSharePoint, oauthEndpoints, scopesFor, sharePointAccess, tenantPolicy, type Env,
   OUTLOOK_RESOURCE, effectiveOutlookAccess, grantedOutlookAccess, grantsSharedMailboxes, outlookAccess,
 } from "../src/microsoft-env";
@@ -59,6 +59,15 @@ describe("acceptsTenant", () => {
     expect(acceptsTenant(domain, TENANT, TENANT)).toBe(true);
     expect(acceptsTenant(domain, OTHER, TENANT)).toBe(false);
     expect(acceptsTenant(single, TENANT, OTHER)).toBe(false);
+  });
+});
+
+describe("fixedTenant", () => {
+  it("fixes, for subresource IDs to leave implicit, only a tenant the deployment names by ID", () => {
+    expect(fixedTenant(env({ MICROSOFT_TENANT_ID: TENANT.toUpperCase() }))).toBe(TENANT);
+    // A domain can move to another tenant, and an allowlist admits several: IDs must name theirs.
+    expect(fixedTenant(env({ MICROSOFT_TENANT_ID: "contoso.com" }))).toBeNull();
+    expect(fixedTenant(env({ MICROSOFT_ALLOWED_TENANT_IDS: TENANT }))).toBeNull();
   });
 });
 

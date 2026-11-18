@@ -1,15 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { docxToMarkdown } from "../../src/content/docx";
+import { docxToMarkdown } from "@gadgets/office-content/docx";
 import { DocumentEditError, editDocx, type DocumentEdit } from "../../src/content/docx-edit";
 import { docxFeatures, markdownToDocx } from "../../src/content/docx-write";
-import { parsePart } from "../../src/content/ooxml";
+import { parsePart } from "@gadgets/office-content/ooxml";
 import { OpcPackage } from "../../src/content/pptx-package";
-import { attribute, childElements, descendants, firstChild } from "../../src/content/xml";
-import { openZip } from "../../src/content/zip";
+import { attribute, childElements, descendants, firstChild } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 import { writeZip } from "../../src/content/zip-write";
 import { validateDocx } from "./docx-validate";
-import { buildDocx, paragraph, run } from "./test-fixtures";
+import { buildDocx, paragraph, run } from "@gadgets/office-content/test-fixtures";
 
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../fixtures/${name}`, import.meta.url).pathname));
 const REPORT = fixture("python-docx-report.docx");
@@ -155,7 +155,9 @@ describe("editDocx: keeping everything else", () => {
     expect(after.entries().map(entry => entry.name)).toEqual(before.entries().map(entry => entry.name));
     for (const entry of before.entries()) {
       if (entry.name === "word/document.xml") continue;
-      expect(await after.readBytes(entry.name), entry.name).toEqual(await before.readBytes(entry.name));
+      // `toEqual` walks a typed array element by element, and styles.xml and stylesWithEffects.xml are
+      // nearly 800 KB between them; that alone took this test past its timeout on a loaded runner.
+      expect(Buffer.compare(await after.readBytes(entry.name), await before.readBytes(entry.name)), entry.name).toBe(0);
     }
     const original = await before.readText("word/document.xml");
     const edited = await after.readText("word/document.xml");

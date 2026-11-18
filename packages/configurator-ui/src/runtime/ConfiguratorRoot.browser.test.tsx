@@ -282,13 +282,13 @@ describe("CheckboxList", () => {
 });
 
 describe("RadioCards", () => {
-  it("names the group after its field and each card after its own title", async () => {
+  it.each([false, true])("names the group after its field and each option after its own title, and chooses by click and arrow key (compact: %s)", async compact => {
     await mount({
       initial: { mode: "all" },
       resourceUrl: () => "https://example.com/",
       render: ({ values, setValues }) => (
         <Field label="Tools">
-          <RadioCards value={values.mode} onChange={mode => setValues({ mode })} options={[
+          <RadioCards compact={compact} value={values.mode} onChange={mode => setValues({ mode })} options={[
             { value: "all", title: "All tools", description: "Every tool." },
             { value: "choose", title: "Choose tools", description: "Only the ones ticked." },
           ]} />
@@ -299,6 +299,9 @@ describe("RadioCards", () => {
     await expect.element(page.getByRole("radio", { name: /^All tools/ })).toBeChecked();
     await userEvent.click(page.getByText("Choose tools"));
     await expect.element(page.getByRole("radio", { name: /^Choose tools/ })).toBeChecked();
+    await userEvent.keyboard("{ArrowUp}");
+    await expect.element(page.getByRole("radio", { name: /^All tools/ })).toBeChecked();
+    await expect.element(page.getByRole("radio", { name: /^All tools/ })).toHaveFocus();
   });
 });
 
@@ -424,6 +427,16 @@ describe("Autocomplete", () => {
     spec.initial = { folderId: "F1" };
     await mount(spec, { folderId: "F1" });
     await expect.element(input()).toHaveValue("F1");
+  });
+
+  it("shows a value the module sets into a blank field, but not over what the user typed", async () => {
+    const { session } = await mount(autocompleteSpec(folders));
+    await act(() => session.store.setValues({ folderId: "projects" }));
+    await expect.element(input()).toHaveValue("projects");
+
+    await userEvent.fill(input(), "pro");
+    await act(() => session.store.setValues({ folderId: "proposals" }));
+    await expect.element(input()).toHaveValue("pro");
   });
 
   it("keeps focus and stays closed when a pick renders the field twice", async () => {

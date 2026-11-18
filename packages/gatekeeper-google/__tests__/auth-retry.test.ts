@@ -78,6 +78,43 @@ describe("fetchWithAuthRetry", () => {
     expect(tokens).toEqual(["Bearer token-1", "Bearer token-2"]);
   });
 
+  // A GET is replayed after a network failure, but an abort is the caller saying to stop.
+  it("does not retry a request its caller's own signal aborted", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", (_url: string, init: RequestInit = {}) => {
+      requests++;
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
+      });
+    });
+    let caller = new AbortController();
+    let response = fetchWithAuthRetry(
+      "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal },
+      async () => "token");
+    let outcome = expect(response).rejects.toThrow("stop");
+    await vi.waitFor(() => expect(requests).toBe(1));
+
+    caller.abort(new Error("stop"));
+
+    await outcome;
+    expect(requests).toBe(1);
+  });
+
+  it("still retries a network failure when the caller's signal has not aborted", async () => {
+    let requests = 0;
+    vi.stubGlobal("fetch", async () => {
+      if (requests++ === 0) throw new TypeError("network down");
+      return new Response("{}");
+    });
+
+    let response = await fetchWithAuthRetry(
+      "https://www.googleapis.com/drive/v3/files/file-1", { signal: new AbortController().signal },
+      async () => "token");
+
+    expect(response.status).toBe(200);
+    expect(requests).toBe(2);
+  });
+
   it("does not replay a 401 when the provider cannot refresh its token", async () => {
     let requests = 0;
     vi.stubGlobal("fetch", async () => { requests++; return new Response(null, { status: 401 }); });

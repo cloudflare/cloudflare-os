@@ -5,36 +5,41 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { docxToMarkdown } from "../../src/content/docx";
+import { docxToMarkdown } from "@gadgets/office-content/docx";
 import { docxFeatures } from "../../src/content/docx-features";
 import { checkOfficePackage } from "../../src/content/package-check";
 import { editPptx, PresentationEditError } from "../../src/content/pptx-edit";
 import { pptxFeatures } from "../../src/content/pptx-features";
-import { pptxToMarkdown } from "../../src/content/pptx";
+import { pptxToMarkdown } from "@gadgets/office-content/pptx";
 import { describePptx } from "../../src/content/pptx-describe";
 import { OpcPackage } from "../../src/content/pptx-package";
 import { parseRaw, RawXmlError } from "../../src/content/raw-xml";
-import { parseXml, XmlError } from "../../src/content/xml";
+import { parseXml, XmlError } from "@gadgets/office-content/xml";
 import { writeZip } from "../../src/content/zip-write";
 import { htmlToMarkdown } from "../../src/html-markdown";
 import { featuresLost } from "../../src/office-write";
 import { mailToMarkdown } from "../../src/outlook-content";
-import { buildDocx, buildPptx, paragraph, run, shape, slideParagraph } from "./test-fixtures";
+import { buildDocx, buildPptx, paragraph, run, shape, slideParagraph } from "@gadgets/office-content/test-fixtures";
 
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../fixtures/${name}`, import.meta.url).pathname));
 const DECK = fixture("python-pptx-deck.pptx");
 const P = 'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
 
-/** Runs `work`, asserting it took less than `ms` of wall-clock time whether it resolved or threw. */
+/**
+ * Runs `work`, asserting it used less than `ms` of this thread's CPU time whether it resolved or threw.
+ * CPU time rather than wall-clock, because a CI runner busy with other suites can stretch the wall
+ * clock tenfold, while backtracking or a rescan is CPU work on this thread and still blows the budget.
+ */
 async function timed<T>(work: () => Promise<T> | T, ms = 200): Promise<{ result?: T; error?: unknown }> {
-  const started = performance.now();
+  const started = process.threadCpuUsage();
   let outcome: { result?: T; error?: unknown };
   try {
     outcome = { result: await work() };
   } catch (error) {
     outcome = { error };
   }
-  expect(performance.now() - started, "wall-clock time").toBeLessThan(ms);
+  const { user, system } = process.threadCpuUsage(started);
+  expect((user + system) / 1000, "CPU time").toBeLessThan(ms);
   return outcome;
 }
 

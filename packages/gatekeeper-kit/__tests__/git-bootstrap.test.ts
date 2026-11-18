@@ -9,6 +9,11 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { pullGitPack } from "../src/git-transport";
 
+// Keeps the git commands this suite runs out of any trace2 listener in the user's git config (one
+// that writes into a repository's .git can race the cleanup below, failing it with ENOTEMPTY). The
+// environment variable overrides trace2.eventTarget.
+process.env.GIT_TRACE2_EVENT = "0";
+
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, "-c", "commit.gpgSign=false", ...args], {
     encoding: "utf8",

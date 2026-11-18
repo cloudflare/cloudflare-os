@@ -3,19 +3,22 @@ import { Badge, Button, Collapsible, Input, Radio, Select } from '@cloudflare/ku
 import { COMPACTION_TRIGGER_RATIO, GATEWAY_MODEL_MODES, modelKind } from '@gadgets/workshop-shared/api'
 import type {
   AdminModelView,
+  AiModelProvider,
   GatewayModelCapabilities,
   GatewayModelMode,
   GatewayModelSettings,
   ReasoningLevel,
 } from '@gadgets/workshop-shared/api'
 import { GatewayTestButton, GatewayTestStatus } from './GatewayTest'
+import { AllowedModelsField } from './AllowedModelsField'
+import { MoveButtons, type RowMove } from './MoveButtons'
 import {
-  PROVIDER_LABELS,
   REASONING_LEVEL_LABELS,
   builtInReasoningLabel,
   parseTokenLimit,
+  type AllowedModelSuggestion,
 } from './modelForm'
-import { useFieldErrorAlert } from './useFieldErrorAlert'
+import { useFieldErrorAlert } from '../../hooks/useFieldErrorAlert'
 import type { GatewayTestState } from './useGatewayTests'
 
 /** Each mode's name and what it does to a model, as the Models tab words them. */
@@ -60,7 +63,7 @@ const settingsWith = (
   model: AdminModelView,
   change: GatewayModelSettings,
 ): GatewayModelSettings => {
-  const { reasoning, compactionInputBudget } = { ...model.settings, ...change }
+  const { reasoning, compactionInputBudget, allowedModels } = { ...model.settings, ...change }
   // The server refuses a budget over the maximum, which a budget stored under a larger context
   // window can be. It goes along at the maximum, where the server caps it when a chat runs, and
   // not at all for a model whose window leaves a prompt no room.
@@ -68,28 +71,35 @@ const settingsWith = (
   return {
     ...(reasoning !== undefined && { reasoning }),
     ...(budget > 0 && { compactionInputBudget: budget }),
+    ...(allowedModels !== undefined && { allowedModels }),
   }
 }
 
 /** One gateway model in the Models tab: what it is, and the controls that change it. */
 export const GatewayModelRow = ({
-  model, defaultReasoning, behavesLikeName, busy, test, onModeChange, onSettingsChange, onTest,
-  onRemove,
+  model, defaultReasoning, behavesLikeName, poolProviders = [], poolSuggestions = [], busy, test,
+  move, onModeChange, onSettingsChange, onTest, onRemove,
 }: {
   model: AdminModelView
   /** The deployment's default reasoning level, or null while it sets none. */
   defaultReasoning: ReasoningLevel | null
+  /** The providers that are on, which the Auto Router model picks among while it lists none. */
+  poolProviders?: readonly AiModelProvider[]
+  /** The gateway model names the Auto Router model's allowed-models picker suggests. */
+  poolSuggestions?: readonly AllowedModelSuggestion[]
   /** The catalog's name for the model that `model.behavesLike` names, where the catalog has it. */
   behavesLikeName?: string
   busy: boolean
   /** Where the model's last test stands. Absent until one is run. */
   test: GatewayTestState | undefined
+  /** Where the model can move in its provider's order. */
+  move: RowMove
   onModeChange: (mode: GatewayModelMode) => void
   /** Called with the whole of the model's settings, as a change to one of them leaves them. */
   onSettingsChange: (settings: GatewayModelSettings) => void
   /** Asks for the model to be tested. A test is not a write, so `busy` does not hold it back. */
   onTest: () => void
-  /** Present for a model that can be removed, whose row then also names its provider. */
+  /** Present for a model that can be removed. */
   onRemove?: () => void
 }) => {
   // What is typed into the budget field, or null while the field shows the server's budget.
@@ -163,13 +173,13 @@ export const GatewayModelRow = ({
         <p className="flex flex-wrap items-center gap-2">
           <span className="min-w-0 break-words text-sm font-medium text-kumo-default">{model.name}</span>
           {isDecision && <Badge variant="secondary">Decision</Badge>}
+          {model.added && <Badge variant="secondary">Added</Badge>}
           {(model.mode !== model.defaultMode || model.settings !== undefined) && (
             <Badge variant="outline">Changed</Badge>
           )}
         </p>
         <p className="mt-0.5 break-all font-mono text-xs text-kumo-subtle">{model.id}</p>
         <p className="mt-0.5 text-xs text-kumo-subtle">
-          {onRemove && `${PROVIDER_LABELS[model.provider]} · `}
           Context window: {tokenCount(model.contextWindow)}
           {model.outputLimit !== undefined && ` · Output limit: ${tokenCount(model.outputLimit)}`}
         </p>
@@ -228,6 +238,8 @@ export const GatewayModelRow = ({
           Remove
         </Button>
       )}
+
+      <MoveButtons name={model.name} move={move} busy={busy} />
 
       {/* The test's result brings its own space above it, so this line takes margins in place of
           the row's gap: an empty status then takes no room above the Settings. */}
@@ -327,6 +339,18 @@ export const GatewayModelRow = ({
                     )}
                   </div>
                 </form>
+              )}
+
+              {model.provider === 'cloudflare-auto-router' && (
+                <AllowedModelsField
+                  modelName={model.name}
+                  allowedModels={model.settings?.allowedModels}
+                  providers={poolProviders}
+                  suggestions={poolSuggestions}
+                  busy={busy}
+                  onChange={(allowedModels) =>
+                    onSettingsChange(settingsWith(model, { allowedModels }))}
+                />
               )}
             </div>
           </Collapsible.DefaultPanel>

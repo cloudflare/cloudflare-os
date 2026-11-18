@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useId, useState } from 'react'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { TextField } from '@/components/TextField'
@@ -21,8 +21,6 @@ export type InviteFieldProps = {
   pending: boolean
   /** People the deployment can be searched for, when it can be. */
   suggestions?: InviteSuggestions
-  /** What the invited are given, chosen between the field and the button (a `Select`). */
-  role?: ReactNode
   /** What was typed could not be invited; the note under the field says why. */
   invalid?: boolean
   /** The note under the field, which describes it. */
@@ -34,7 +32,7 @@ export type InviteFieldProps = {
  * deployment can be searched, matches open under it as it is typed, as a menu does, moved through
  * with the arrow keys, and choosing one sends it.
  */
-export const InviteField = ({ value, onValueChange, onInvite, pending, suggestions, role, invalid, describedBy }: InviteFieldProps) => {
+export const InviteField = ({ value, onValueChange, onInvite, pending, suggestions, invalid, describedBy }: InviteFieldProps) => {
   const listId = useId()
   const [focused, setFocused] = useState(false)
   // Put away with Escape, until something more is typed.
@@ -140,7 +138,6 @@ export const InviteField = ({ value, onValueChange, onInvite, pending, suggestio
           </div>
         )}
       </div>
-      {role}
       <Button variant="primary" disabled={pending || query === ''} onClick={submit}>
         {pending ? 'Inviting…' : 'Invite'}
       </Button>

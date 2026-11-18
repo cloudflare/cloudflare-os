@@ -10,7 +10,7 @@ import {
 import type { Box, Deck, LayoutPlaceholder } from "./pptx-deck";
 import { BODY_MARGINS, BULLET_INDENT, DEFAULT_TABLE_STYLE, GROUP_PROPERTIES, NS } from "./pptx-default";
 import type { MediaStore } from "./pptx-images";
-import { escapeAttribute, escapeText, XML_DECLARATION } from "./ooxml";
+import { escapeAttribute, escapeText, XML_DECLARATION } from "@gadgets/office-content/ooxml";
 import { REL } from "./pptx-package";
 
 /** Formatting a writer applies to a run on top of its inline Markdown. */

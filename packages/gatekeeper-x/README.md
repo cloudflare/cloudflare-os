@@ -41,6 +41,9 @@ Two limits keep a gadget from running up the bill:
   The default is 2,000 (about $10 a day at the post-read price); `0` removes the limit. Reads past
   it fail with a message naming when it resets.
 - **Approvals** bound writes: nothing is posted, liked or followed without a user approving it.
+  Bookmarks, mutes and hidden replies are billed too, and the daily read limit does not cover
+  them: once a user auto-approves one of those kinds, only X's per-account rate limit and the
+  app's spending limit bound it.
 
 Reads are cached briefly (a post for 5 minutes, a profile for an hour, a listing's first page for a
 minute), so a gadget polling one page pays at most once a minute.
@@ -81,10 +84,44 @@ X's developer agreement puts these on the app's owner, not on Gadgets:
 
 ## Sharing a workspace
 
-A collaborator can observe a workspace that reads X only with an X connection of their own (and,
-for a Post or List binding, one that can see the bound post or List). What the account reads that
-is private to it -- bookmarks, likes, mutes, private Lists, and posts by protected accounts -- is
-shown only to collaborators connected as the same X user. See `docs/observers.md`.
+Public reads -- public posts, profiles, public Lists, and an unprotected account's followers and
+following -- report `[]`, so the X gatekeeper adds no provider-access restriction to them. The
+Workshop still requires collaborators to choose an X account/verifier for an in-scope binding;
+this does **not** enable account-free workspace admission. New bindings make no extra credential
+or bound-post/List visibility probe in `addObserver()`.
+
+What the account reads that is private to it -- bookmarks, likes, mutes, private Lists, a protected
+account's follow graph and home timeline, and any page containing a protected author's post **or
+a post whose author's privacy X did not report** -- reports `user/<id>`, the numeric ID of the X user
+the connection is pinned to. Only collaborators connected as that same X user can observe it. The
+identity comparison makes no billed resource read; refreshing expired credentials may contact X.
+See `docs/observers.md`.
+
+Post and List connection cards show only the resource's ID and link, never post text, List names or
+member counts. These descriptions can be seen without read authorization, so private details are
+returned only by session reads subject to the checks above. Describing these bindings makes no
+billed request to X, and discards the description an older binding cached in the gatekeeper. The
+Workshop's own copy of that older description, taken when the binding was made, is not refreshed:
+it can still name a protected author or a private List.
+
+Action previews are visible outside read authorization too. Provider-private or unknown-author
+post text and author metadata are redacted, including reply targets and posts quoting or reposting
+protected authors; provider-private List names are replaced by IDs, even while a pending change
+would make the List public. What the workspace wrote -- drafts, changes, and the account's own
+pending posts and Lists -- stays visible for approval. Definitely public provider context can
+still be shown.
+
+Sharing requirements follow data read from X, never data the workspace wrote, so no action or
+draft adds one. **Post and List bindings made before this change are same-X-account-only**, even
+for public reads: the Workshop's copy of their description and their action previews may hold what
+X returned about a private post or List, which only the Workshop can sanitize. Their history export
+is `user/<id>` until it does. This replaces the bound-post/List visibility probe that admitted
+anyone who could see it. Older Account and Profile bindings keep only their recorded legacy private
+reads (`observed:owner`). `addObserver()` checks those reads, and legacy Post/List bindings, against
+the collaborator's stored X identity, which fails if their connection has expired; otherwise it
+makes no credential or visibility check. Newly minted bindings carry immutable
+`redactsActionPreviews: true` props.
+A legacy Post or List binding without a stored pinned identity fails closed.
 
 ## Troubleshooting
 

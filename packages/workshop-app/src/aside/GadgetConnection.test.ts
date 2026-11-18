@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AiChatAuthorInfo, AiChatMetadata, AiChatSubscriber, PresenceSubscriber, UiBundle, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
-import { GadgetConnection, type GadgetHandle, type GadgetOverseer } from './GadgetConnection'
+import type { AiChatAuthorInfo, AiChatMetadata, ConsoleLogEvent, AiChatSubscriber, PresenceSubscriber, UiBundle, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
+import { GadgetConnection, type GadgetHandle, type GadgetOverseer, type GadgetUi } from './GadgetConnection'
+
+// The root each page's session was given, in place of a real session over the port.
+const roots: object[] = []
+vi.mock('capnweb', async (actual) => ({
+  ...(await actual<typeof import('capnweb')>()),
+  newMessagePortRpcSession: (_port: MessagePort, root: object) => {
+    roots.push(root)
+    return { [Symbol.dispose]: () => {} }
+  },
+}))
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void
@@ -27,6 +37,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   received = undefined
+  roots.length = 0
 })
 
 const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' }) } = {}) => {
@@ -68,12 +79,13 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
     ...breakable('overseer'),
   }
   const onEscape = vi.fn<() => void>()
-  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape })
+  const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
+  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape, onConsoleLog })
   const frame = {} as Window
   connection.showIn(() => frame)
   /** The stub named `name` can no longer reach what it did, as when the workspace restarted. */
   const breaks = (name: string) => onBroken.get(name)?.forEach((callback) => callback(new Error('Durable Object reset')))
-  return { connection, overseer, gadget, frame, disposed, onEscape, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
+  return { connection, overseer, gadget, frame, disposed, onEscape, onConsoleLog, links: () => roots, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
 }
 
 const handshake = (source: unknown, origin = 'null') => {
@@ -91,7 +103,8 @@ describe('GadgetConnection', () => {
     expect(overseer.getGadget).toHaveBeenCalledWith(41)
     expect(gadget.getUiBundle).toHaveBeenCalledWith(3)
     const ui = connection.getSnapshot().ui
-    expect(ui.status === 'ready' && ui.page).toContain(encodeURIComponent('render()'))
+    // Each module of the bundle is a data: URL in the page's import map.
+    expect(ui.status === 'ready' && ui.page).toContain(btoa('render()\n//# sourceURL=client.js'))
     connection.stop()
   })
 
@@ -137,14 +150,37 @@ describe('GadgetConnection', () => {
     await vi.waitFor(() => expect(disposed).toEqual(expect.arrayContaining(['server 0', 'gadget', 'overseer', 'presence', 'chat', 'workpieces'])))
   })
 
-  it('passes on Escape from its own page only', () => {
-    const { connection, frame, onEscape } = setUp()
+  it('passes on Escape and what the page logs, through the root its page connects to', async () => {
+    const { connection, frame, onEscape, onConsoleLog, links } = setUp()
     connection.start()
-    received!({ source: {} as Window, origin: 'null', data: { type: 'escape' } })
-    expect(onEscape).not.toHaveBeenCalled()
-    received!({ source: frame, origin: 'null', data: { type: 'escape' } })
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    handshake(frame)
+    await vi.waitFor(() => expect(links()).toHaveLength(1))
+    const root = links()[0]! as unknown as { escape(): void; reportConsole(level: unknown, message: unknown, at?: unknown): void; gadget: unknown }
+    root.escape()
     expect(onEscape).toHaveBeenCalledOnce()
+    root.reportConsole('error', ['Uncaught', 'boom'], { url: 'https://elsewhere.example/x.js', line: 3, column: 7 })
+    root.reportConsole('shout', ['not a level'])
+    expect(onConsoleLog).toHaveBeenCalledOnce()
+    expect(onConsoleLog.mock.calls[0]![0]).toMatchObject({ level: 'error', message: ['Uncaught', 'boom', 'at https://elsewhere.example/x.js:3:7'] })
+    expect(root.gadget).toBeDefined()
     connection.stop()
+  })
+
+  it('builds a page that starts a UI of modules with main(), and a legacy one with globals', async () => {
+    const modules = setUp({ bundle: Promise.resolve<UiBundle | null>({ modules: [{ path: 'client.js', code: 'export default { main() {} }' }] }) })
+    modules.connection.start()
+    await vi.waitFor(() => expect(modules.connection.getSnapshot().ui.status).toBe('ready'))
+    const page = (ui: GadgetUi) => (ui.status === 'ready' ? decodeURIComponent(ui.page) : '')
+    expect(page(modules.connection.getSnapshot().ui)).toContain('<script type="importmap">')
+    expect(page(modules.connection.getSnapshot().ui)).toContain('main.call(entry.default, gadget, host)')
+    modules.connection.stop()
+
+    const legacy = setUp()
+    legacy.connection.start()
+    await vi.waitFor(() => expect(legacy.connection.getSnapshot().ui.status).toBe('ready'))
+    expect(page(legacy.connection.getSnapshot().ui)).toContain('globalThis.gadget = gadget')
+    legacy.connection.stop()
   })
 
   it('loads the UI again, once, when the chat it is shown with changes its code, keeping the page shown meanwhile', async () => {

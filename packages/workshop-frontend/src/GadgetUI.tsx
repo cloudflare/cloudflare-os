@@ -2,37 +2,47 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
-
-// We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
-// the whole module and embed it. We can import the module using ?raw to get a string of the
-// content.
-import CAPNWEB_BUNDLE from 'capnweb?raw'
-
-// btoa() below requires this to stay ASCII; capnweb's build enforces ASCII-only dist bundles
-// since 0.11.1.
-let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
+import { GadgetClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
+import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
+import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
 // use the data URL as a <script> tag's source. Instead, we have to use it in an import statement.
-// And, guess what? That import statement is going to appear in code which is *also* embedded in
-// a data: URL, so we have a doubly-nested data: URL. We'll use base64 encoding for the inner
+// And, guess what? That import statement is going to appear in the runtime, which is *also* a
+// data: URL, so we have a doubly-nested data: URL. We'll use base64 encoding for the inner
 // data: and URL encoding for the outer, as this largely avoids double-escaping.
 //
-// In any case, we'll prefix the gadget code with this prefix which imports the Cap'n Web library
-// (from a massive data URL) and sets up the RPC connection to the parent.
-let INJECTED_CODE_PREFIX = encodeURIComponent(String.raw`//# sourceURL=client.js
-import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
+// The runtime is a module script placed before the gadget's entry. Module scripts run in document
+// order, so what it sets up exists before any gadget module evaluates, even one the entry imports:
+// for a legacy UI, its globals. It must stay synchronous: a top-level await would let the entry run
+// first. For a UI that `callsMain`, the `gadget` and `host` stubs stay in the runtime's module
+// scope, so they reach only the code `main()` hands them to.
+const MISSING_MAIN = "client.js's default export has no main() function. Start the UI with " +
+  '`export default { main(gadget) { ... } }`.'
+const runtimeUrl = (callsMain: boolean) => `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
-let gadget;  // RPC stub to the gadget's server-side Durable Object.
+// The main object of the frame's one RPC session with the page (GadgetFrameRoot), and its
+// properties: the gadget's server-side Durable Object, and the page's GadgetHost.
+let root, gadget, host;
 {
   let {port1, port2} = new MessageChannel();
   window.parent.postMessage("handshake", "*", [port2]);
-  gadget = newMessagePortRpcSession(port1);
+  root = newMessagePortRpcSession(port1);
+  gadget = root.gadget;
+  host = root.host;
 }
 
-// Monkey-patch console to forward logs to the parent frame.
+// Settles a call to the page whose result the runtime ignores, so nothing stays held on either
+// end. A failed call is dropped, since reporting it would make another call.
+let notify = call => { call.then(() => {}, () => {}); };
+${callsMain ? '' : `
+globalThis.gadget = gadget;
+globalThis.RpcTarget = RpcTarget;
+globalThis.RpcStub = RpcStub;
+`}
+
+// Monkey-patch console to forward logs to the page.
 for (let level of ['debug', 'info', 'log', 'warn', 'error']) {
   let original = console[level];
   console[level] = (...args) => {
@@ -43,7 +53,7 @@ for (let level of ['debug', 'info', 'log', 'warn', 'error']) {
         try { return JSON.stringify(arg); }
         catch { return String(arg); }
       });
-      window.parent.postMessage({ type: 'console', level, message }, '*');
+      notify(root.reportConsole(level, message));
     } catch {};
   };
 }
@@ -59,13 +69,11 @@ try {
   Window.prototype.open = blockedOpen;
 } catch {}
 
-// Forward Escape key presses to the parent frame. The sandboxed iframe captures keydown events
-// when it has focus, so the parent never sees them. The workshop UI uses Escape to exit fullscreen
-// gadget mode, so forward it explicitly.
+// Forward Escape key presses to the page. The sandboxed iframe captures keydown events when it
+// has focus, so the page never sees them. The workshop UI uses Escape to exit fullscreen gadget
+// mode, so forward it explicitly.
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    window.parent.postMessage({ type: 'escape' }, '*');
-  }
+  if (event.key === 'Escape') notify(root.escape());
 }, true);
 
 window.addEventListener('click', (event) => {
@@ -83,34 +91,110 @@ window.addEventListener('click', (event) => {
   anchor.setAttribute('rel', Array.from(rel).join(' '));
 }, true);
 
-// Capture unhandled exceptions and promise rejections.
+// Capture unhandled exceptions and promise rejections. The error listener captures because a
+// module graph that fails to fetch fires a non-bubbling error only on its <script> element. An
+// ErrorEvent's location is sent on its own because a SyntaxError's stack carries none; the parent
+// names the file.
+let reportError = (message, at) => notify(root.reportConsole('error', message, at));
 window.addEventListener('error', (event) => {
-  window.parent.postMessage({
-    type: 'console',
-    level: 'error',
-    message: ['Uncaught', event.error?.stack || event.message],
-  }, '*');
-});
+  if (event instanceof ErrorEvent) {
+    reportError(['Uncaught', event.error?.stack || event.message],
+        { url: event.filename, line: event.lineno, column: event.colno });
+  } else if (event.target instanceof HTMLScriptElement) {
+    reportError(['Failed to load script'], { url: event.target.src });
+  }
+}, true);
 window.addEventListener('unhandledrejection', (event) => {
   let reason = event.reason;
-  window.parent.postMessage({
-    type: 'console',
-    level: 'error',
-    message: ['Unhandled promise rejection:', reason?.stack || String(reason)],
-  }, '*');
+  reportError(['Unhandled promise rejection:', reason?.stack || String(reason)]);
 });
+${callsMain ? `
+// The same module instance the entry's <script> loads. A main() that throws or rejects is reported
+// as an unhandled rejection.
+import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
+  let main = entry.default?.main;
+  if (typeof main !== 'function') {
+    reportError([${JSON.stringify(MISSING_MAIN)}]);
+    return;
+  }
+  return main.call(entry.default, gadget, host);
+}, () => {
+  // The entry's <script> element reports a module that fails to load or to evaluate.
+});
+` : ''}
+//# sourceURL=gadget-runtime.js`)}`
+const LEGACY_RUNTIME_URL = runtimeUrl(false)
+const MAIN_RUNTIME_URL = runtimeUrl(true)
 
-`);
+type OpenAgentChat = (chatToken: string) => Promise<void>
 
-const createSandboxedHtml = (jsCode: string): string => {
+// The Workshop as a gadget UI's host.
+class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
+  readonly #openAgentChat: OpenAgentChat
+
+  constructor(openAgentChat: OpenAgentChat) {
+    super()
+    this.#openAgentChat = openAgentChat
+  }
+
+  async openAgentChat(chatToken: string): Promise<void> {
+    // The frame is untrusted, and nothing generates RPC validation in the frontend.
+    if (typeof chatToken !== 'string') throw new TypeError('chatToken must be a string.')
+    await this.#openAgentChat(chatToken)
+  }
+}
+
+// Where a console call or uncaught error happened in the frame, as the browser reported it.
+type ConsoleLocation = { url?: string; line?: number; column?: number }
+
+// What the frame's runtime reports to the page, apart from anything gadget code calls.
+type FrameEvents = {
+  reportConsole(level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation): void
+  escape(): void
+}
+
+// The main object of the frame's RPC session. The frame reaches the gadget's server and the host
+// through one session, so a capability passed between them never proxies through the frame. Its
+// methods are the runtime's, which keeps the root out of gadget code's reach.
+class GadgetFrameRoot extends RpcTarget {
+  readonly #gadget: RpcTarget
+  readonly #host: GadgetHost
+  readonly #events: FrameEvents
+
+  constructor(gadget: RpcTarget, host: GadgetHost, events: FrameEvents) {
+    super()
+    this.#gadget = gadget
+    this.#host = host
+    this.#events = events
+  }
+
+  get gadget() {
+    return this.#gadget
+  }
+
+  get host() {
+    return this.#host
+  }
+
+  reportConsole(level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation) {
+    this.#events.reportConsole(level, message, at)
+  }
+
+  escape() {
+    this.#events.escape()
+  }
+}
+
+const createSandboxedHtml = (page: UiPage): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
+  ${SANDBOX_HEAD}
+  <script type="importmap">${page.importMap}</script>
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
+    <script type="module" src="${page.entryUrl}"></script>
 </body>
 </html>`.trim()
 }
@@ -128,6 +212,10 @@ interface GadgetUIProps {
   // Reports whether the "No gadget UI yet" placeholder is showing: true only once a load has
   // confirmed the gadget has no UI, so a spinner or a not-yet-loaded view never counts.
   onNoUiChange?: (showsNoUi: boolean) => void
+  // Shows the user the chat the gadget names (GadgetHost.openAgentChat). Without it, the request
+  // does nothing. `signal` aborts once the frame's RPC session ends, so a request still in
+  // progress can be dropped rather than act for a view that's gone.
+  onOpenAgentChat?: (chatToken: string, signal: AbortSignal) => Promise<void>
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -139,10 +227,12 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
+  const [error, setError] = useState<{ message: string; stub?: RpcStub<GadgetClient> } | null>(null)
+  const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
   const [isInvalidated, setIsInvalidated] = useState(false)
   const [iframeGeneration, setIframeGeneration] = useState(0)
@@ -164,6 +254,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     reject: (reason: unknown) => void
   } | null>(null)
   const rpcSessionRef = useRef<any>(null)
+  // Aborted when rpcSessionRef's session ends, dropping the host requests it made.
+  const rpcSessionAbortRef = useRef<AbortController | null>(null)
+  // Each module's path by its data: URL, for naming the file in errors the iframe forwards.
+  const pathsByUrlRef = useRef(new Map<string, string>())
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
   const onIframeEscapeRef = useRef(onIframeEscape)
   const onConsoleLogRef = useRef(onConsoleLog)
@@ -171,6 +265,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onConsoleLogRef.current = onConsoleLog
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
+  const onOpenAgentChatRef = useRef(onOpenAgentChat)
+  onOpenAgentChatRef.current = onOpenAgentChat
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -211,6 +307,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     gadgetStubRef.current = null
     rpcSessionRef.current?.[Symbol.dispose]?.()
     rpcSessionRef.current = null
+    rpcSessionAbortRef.current?.abort(reason)
+    rpcSessionAbortRef.current = null
   }
 
   const reloadIframe = (reason: unknown) => {
@@ -237,6 +335,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     const reconnect = async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined
       try {
+        // A pipelined client resolves only once the connection is back and the workspace reopened.
+        // The budget is for the gadget's own answer, not for the outage before it.
+        await gadget
         const replacementStub = await Promise.race([
           replacementPromise,
           new Promise<never>((_, reject) => {
@@ -264,6 +365,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     if (reloadTrigger !== undefined && reloadTrigger !== prevReloadTriggerRef.current && reloadTrigger > 0) {
       // Mark as invalidated but don't reload unless visible
       setIsInvalidated(true)
+      // After a failed load the view is still invalidated, so the flag alone wouldn't reload it.
+      setRetryNonce(nonce => nonce + 1)
       if (!isVisible) {
         // If not visible, just clear the current state
         setSandboxedHtml(null)
@@ -297,7 +400,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       if (!isCurrent()) return
       loadGenerationRef.current++      // so a late reply can no longer write state
       setLoading(false)
-      setError('Timed out loading this view.')
+      setError({ message: 'Timed out loading this view.' })
     }, UI_BUNDLE_LOAD_TIMEOUT_MS)
 
     const loadUiBundle = async () => {
@@ -308,17 +411,22 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
-          const html = createSandboxedHtml(bundle.jsCode)
-          setSandboxedHtml(html)
+          const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
+          pathsByUrlRef.current = page.pathsByUrl
+          setSandboxedHtml(createSandboxedHtml(page))
         } else {
           setSandboxedHtml(null)
         }
+        // A failed load stays unloaded, so a replacement gadget client retries it.
         setHasLoaded(true)
         setIsInvalidated(false)
       } catch (err) {
         if (!isCurrent()) return
         console.error('Failed to load UI bundle:', err)
-        setError('Failed to load UI bundle')
+        // Includes imports that break the rules for UI code, so the agent needs to see it.
+        const message = err instanceof Error ? err.message : 'Failed to load UI bundle'
+        onConsoleLogRef.current?.({ timestamp: new Date(), level: 'error', message: [message] })
+        setError({ message })
       } finally {
         if (isCurrent()) setLoading(false)
         clearTimeout(giveUp)
@@ -337,6 +445,26 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, retryNonce])
 
+  // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
+  const frameEvents: FrameEvents = {
+    reportConsole: (level, message, at) => {
+      let location: string | undefined
+      if (at?.url) {
+        // Chrome names a module by its sourceURL; other browsers may give its data: URL. One not
+        // in the bundle, like the runtime's, can embed hundreds of KB, so it isn't echoed whole.
+        const path = pathsByUrlRef.current.get(at.url) ??
+          (at.url.startsWith('data:') ? `${at.url.slice(0, 40)}…` : at.url)
+        location = at.line ? `${path}:${at.line}:${at.column}` : path
+      }
+      onConsoleLogRef.current?.({
+        timestamp: new Date(),
+        level,
+        message: location ? [...message, `at ${location}`] : message,
+      })
+    },
+    escape: () => onIframeEscapeRef.current?.(),
+  }
+
   // Effect to handle iframe RPC handshake
   useEffect(() => {
     let cancelled = false
@@ -353,6 +481,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        const client = gadgetRef.current
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
         const generation = connectionGenerationRef.current
@@ -362,7 +491,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           event.source === iframeRef.current?.contentWindow
         try {
           // Open the RPC connection to the gadget's server side
-          gadgetStub = await gadgetRef.current.connectToGadget(chatId)
+          gadgetStub = await client.connectToGadget(chatId)
           if (!isCurrent()) {
             gadgetStub[Symbol.dispose]?.()
             port.close()
@@ -381,24 +510,23 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
-          rpcSessionRef.current = newMessagePortRpcSession(port, forwardingTarget)
+          const sessionAbort = new AbortController()
+          const host = new WorkshopGadgetHost(async chatToken => {
+            await onOpenAgentChatRef.current?.(chatToken, sessionAbort.signal)
+          })
+          rpcSessionRef.current = newMessagePortRpcSession(
+              port, new GadgetFrameRoot(forwardingTarget, host, frameEvents))
+          rpcSessionRef.current.onRpcBroken((reason: unknown) => sessionAbort.abort(reason))
+          rpcSessionAbortRef.current = sessionAbort
         } catch (caught) {
           gadgetStub?.[Symbol.dispose]?.()
           port.close()
           if (!isCurrent()) return
           console.error('Failed to establish RPC connection:', caught)
-          setError('Failed to connect gadget to server')
+          setError({ message: 'Failed to connect gadget to server', stub: client })
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
-      } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
-        onConsoleLogRef.current({
-          timestamp: new Date(),
-          level: event.data.level,
-          message: event.data.message,
-        })
-      } else if (event.data?.type === 'escape') {
-        onIframeEscapeRef.current?.()
       }
     }
 
@@ -409,6 +537,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       resetConnection(new Error('Gadget RPC session was closed.'))
     }
   }, [])
+
+  // A new key or document replaces the frame, whose session lingers until the next handshake (or
+  // never comes, with no UI to show); its host requests mustn't outlive the frame.
+  const frameKey = `${reloadTrigger}:${iframeGeneration}`
+  useEffect(() => () => {
+    rpcSessionAbortRef.current?.abort(new Error('Gadget iframe was replaced.'))
+    rpcSessionAbortRef.current = null
+  }, [frameKey, sandboxedHtml])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
@@ -437,7 +573,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     )
   }
 
-  if (error) {
+  if (errorMessage) {
     return (
       <div style={{
         height,
@@ -449,7 +585,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         <Banner
           variant="error"
           title="Error"
-          description={error}
+          description={errorMessage}
           action={
             <Banner.Action
               onClick={() => {
@@ -505,7 +641,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   return (
     <div style={{ height, width: '100%' }}>
       <iframe
-        key={`${reloadTrigger}:${iframeGeneration}`}
+        key={frameKey}
         ref={iframeRef}
         srcDoc={sandboxedHtml}
         style={{
@@ -514,7 +650,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           height: '100%',
           border: 'none'
         }}
-        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        sandbox="allow-scripts allow-pointer-lock allow-popups allow-popups-to-escape-sandbox"
         title="Gadget UI"
       />
     </div>

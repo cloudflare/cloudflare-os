@@ -189,7 +189,7 @@ it("approvals route to the account whose connection staged the write", async () 
 
   const bobApi = setup.use(await signUp(setup.use(connect(harness.url)), bob));
   const bobAccount = await provisionAccount(bobApi);
-  if (!await ws.addCollaborator(bob, "build")) throw new Error("Failed to add Bob");
+  if (!await ws.addCollaborator(bob, "workspace")) throw new Error("Failed to add Bob");
   const callback = setup.use(stubFor(
       new ObserverConfigRecorder().alwaysChoose(bobAccount.id, MAX_OBSERVER_PROMPTS)));
   const bobWs = setup.use(await bobApi.openWorkspace(workspaceId, undefined, callback));

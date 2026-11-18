@@ -7,12 +7,13 @@ import type { RpcStub } from "cloudflare:workers";
 import type { ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { definitions, type CalendarAction, type CalendarActions } from "../src/calendar-actions";
-import type { CalendarAccessLevel, CalendarScope } from "../src/calendar-scope";
+import type { CalendarAccessLevel, CalendarScope, RevealLevel } from "../src/calendar-scope";
 import { CalendarContext, CalendarReaderImpl, CalendarSessionImpl, type CalendarSessionHost } from "../src/calendar-session";
 import type { EventInfo } from "../src/calendar-types";
 import { GraphApi } from "../src/graph-api";
 import { resolveCalendarUrl } from "../src/calendar-resolve";
 import type { StoredIdentity } from "../src/microsoft-credentials";
+import { calendarSubresourceId } from "../src/subresources";
 
 /** Signed in under a name that isn't the mailbox's address: Exchange knows Phillip as phillip@contoso.com, his main calendar's owner. */
 const ME: StoredIdentity = { tenantId: "t", objectId: "aaaaaaaa-0000-0000-0000-000000000001", name: "Phillip", email: "phillip.signin@contoso.onmicrosoft.com", fetchedAt: 0 };
@@ -154,12 +155,13 @@ function fakeGraph(events: Seeded[], options: { leak?: { into: string; event: Se
 function session(scope: CalendarScope, access: CalendarAccessLevel = "read", options: Parameters<typeof fakeGraph>[1] = {}) {
   const graph = fakeGraph(seed(), options);
   const observations: ObservationDescription[] = [];
-  const prepared: string[][] = [];
+  const reported: (string[] | undefined)[] = [];
   const submitted: { kind: keyof CalendarActions; payload: CalendarActions[keyof CalendarActions] }[] = [];
   let sequence = 0;
   const host: CalendarSessionHost = {
     scope, access,
     owner: async () => ME,
+    fixesTenant: true,
     read: op => op(graph.api),
     cached: (_key, _ttl, load) => load(),
     pending: () => submitted.map((action, index) => ({ id: index + 1, action: action as CalendarAction })) as never,
@@ -172,19 +174,19 @@ function session(scope: CalendarScope, access: CalendarAccessLevel = "read", opt
   };
   const queue = {
     dup() { return queue; },
-    authorizeObservation: async (description: ObservationDescription) => { observations.push(description); },
+    authorizeObservation: async (description: ObservationDescription) => { observations.push(description); reported.push(description.subresources); },
     [Symbol.dispose]() {},
   } as unknown as RpcStub<ApprovalQueue>;
   const observers: ObserverStrategy = {
     aclChecks: "per-read",
-    prepare: async ids => { prepared.push([...ids]); return { commit() {} }; },
+    prepare: async () => ({ commit() {} }),
     addObserver: async () => {},
     removeObserver: async () => {},
     prepareWithheld: () => ({ commit() {} }),
   };
   const ctx = new CalendarContext(host, queue, observers);
   const reader = access === "read" ? new CalendarReaderImpl(ctx) : new CalendarSessionImpl(ctx);
-  return { reader, writer: reader as CalendarSessionImpl, graph, observations, prepared, submitted };
+  return { reader, writer: reader as CalendarSessionImpl, graph, observations, reported, submitted };
 }
 
 const teamBinding = (details: "freeBusy" | "limited" | "full", privateEvents: "busy" | "show" = "busy", access: CalendarAccessLevel = "read"): CalendarScope => ({
@@ -201,32 +203,34 @@ async function all(cursor: { next(): Promise<EventInfo[] | null> }): Promise<Eve
   return items;
 }
 
-const teamUnit = (level: string) => `calendar:${ME.objectId}:${TEAM.id}:${level}`;
+const teamUnit = (level: RevealLevel) => calendarSubresourceId({ kind: "calendar", ownerId: ME.objectId, calendarId: TEAM.id, level });
+const availability = (address: string) => calendarSubresourceId({ kind: "availability", address });
+const everything = calendarSubresourceId({ kind: "calendars", ownerId: ME.objectId });
 
 describe("a calendar binding", () => {
   it("lists only its calendar, at free/busy: times and show-as, no titles", async () => {
-    const { reader, prepared, observations } = session(teamBinding("freeBusy"));
+    const { reader, reported, observations } = session(teamBinding("freeBusy"));
     const events = await all(await reader.listEvents(window));
     expect(events).toEqual([
       { id: "AAMkEvStandup", start: "2026-10-19T09:00:00-07:00", end: "2026-10-19T09:30:00-07:00", allDay: false, showAs: "busy" },
       { id: "AAMkEvTeamPrivate", start: "2026-10-19T11:00:00-07:00", end: "2026-10-19T12:00:00-07:00", allDay: false, showAs: "busy" },
     ]);
     expect(JSON.stringify(observations)).not.toMatch(/Standup|Offsite/);
-    expect(prepared.at(-1)).toEqual([teamUnit("freeBusy")]);
+    expect(reported.at(-1)).toEqual([teamUnit("freeBusy")]);
   });
 
   it("shows titles at limited, and a private event as a busy block", async () => {
-    const { reader, prepared } = session(teamBinding("limited"));
+    const { reader, reported } = session(teamBinding("limited"));
     const events = await all(await reader.listEvents(window));
     expect(events.map(event => event.subject ?? (event.private ? "(private)" : "?"))).toEqual(["Standup **now**", "(private)"]);
-    expect(prepared.at(-1)).toEqual([teamUnit("limited")]);
+    expect(reported.at(-1)).toEqual([teamUnit("limited")]);
   });
 
   it("names private events to observers when it shows them", async () => {
-    const { reader, prepared } = session(teamBinding("full", "show"));
+    const { reader, reported } = session(teamBinding("full", "show"));
     const events = await all(await reader.listEvents(window));
     expect(events.map(event => event.subject)).toEqual(["Standup **now**", "Offsite planning"]);
-    expect(prepared.at(-1)).toEqual([teamUnit("private")]);
+    expect(reported.at(-1)).toEqual([teamUnit("private")]);
   });
 
   it("escapes what organizers wrote in observation descriptions", async () => {
@@ -274,13 +278,13 @@ describe("a calendar binding", () => {
   });
 
   it("finds free time in its own calendar", async () => {
-    const { reader, prepared } = session(teamBinding("freeBusy"));
+    const { reader, reported } = session(teamBinding("freeBusy"));
     const free = await reader.findFreeTimes({ duration: 60, start: `${DAY}T16:00:00Z`, end: `${DAY}T20:00:00Z`, workingHoursOnly: false });
     expect(free.slots).toEqual([
       { start: "2026-10-19T09:30:00-07:00", end: "2026-10-19T11:00:00-07:00" },
       { start: "2026-10-19T12:00:00-07:00", end: "2026-10-19T13:00:00-07:00" },
     ]);
-    expect(prepared.at(-1)).toEqual([teamUnit("freeBusy")]);
+    expect(reported.at(-1)).toEqual([teamUnit("freeBusy")]);
   });
 });
 
@@ -295,7 +299,7 @@ describe("an availability binding", () => {
   });
 
   it("gives busy blocks without subjects, says who couldn't be read, and names only those it read", async () => {
-    const { reader, prepared } = session(scope);
+    const { reader, reported } = session(scope);
     const result = await reader.getAvailability(["sarah@contoso.com", "nobody@contoso.com"], window.start, window.end);
     expect(JSON.stringify(result)).not.toContain("SECRET");
     expect(result[0]).toEqual({
@@ -303,7 +307,7 @@ describe("an availability binding", () => {
       workingHours: { days: ["monday"], start: "08:00", end: "17:00", timeZone: "America/Los_Angeles" },
     });
     expect(result[1]).toMatchObject({ address: "nobody@contoso.com", busy: [], error: expect.stringMatching(/Not found/) });
-    expect(prepared.at(-1)).toEqual(["availability:sarah@contoso.com"]);
+    expect(reported.at(-1)).toEqual([availability("sarah@contoso.com")]);
   });
 
   it("finds times everyone is free in their working hours, never in the past", async () => {
@@ -317,16 +321,15 @@ describe("an availability binding", () => {
   });
 
   it("leaves out someone whose free/busy isn't shared, instead of scheduling over them, and doesn't count them as read", async () => {
-    const { reader, prepared } = session(scope);
+    const { reader, reported } = session(scope);
     const free = await reader.findFreeTimes({ people: ["sarah@contoso.com", "hidden@contoso.com"], duration: 30, start: `${DAY}T15:00:00Z`, end: `${DAY}T20:00:00Z` });
     expect(free.unknown).toEqual([{ address: "hidden@contoso.com", error: "Their free/busy isn't shared with you." }]);
     expect(free.slots).toHaveLength(2);
-    expect(prepared.at(-1)).toEqual(["availability:phillip@contoso.com", "availability:sarah@contoso.com"]);
-    const before = prepared.length;
+    expect(reported.at(-1)).toEqual([availability("phillip@contoso.com"), availability("sarah@contoso.com")]);
     const checked = await reader.getAvailability(["hidden@contoso.com"], window.start, window.end);
     expect(checked[0]).toMatchObject({ busy: [], error: expect.stringMatching(/isn't shared/) });
-    // Nothing of theirs was revealed, so no unit is named.
-    expect(prepared).toHaveLength(before);
+    // Nothing of theirs was revealed, so only the owner's tenant is named.
+    expect(reported.at(-1)).toEqual([`tenant/${ME.tenantId}`]);
   });
 
   it("refuses more people than one request can answer, and anything that isn't an address", async () => {
@@ -341,12 +344,12 @@ describe("an all-calendars binding", () => {
   const scope = (access: CalendarAccessLevel = "schedule"): CalendarScope => ({ kind: "all", access });
 
   it("shows the user's own private events, says which calendar each is in, and names everything as the user's alone", async () => {
-    const { reader, prepared } = session(scope("read"));
+    const { reader, reported } = session(scope("read"));
     const events = await all(await reader.listEvents(window));
     expect(events.map(event => [event.subject, event.calendarId])).toEqual([
       ["Standup **now**", TEAM.id], ["Vendor sync", DEFAULT.id], ["Offsite planning", TEAM.id], ["Doctor", DEFAULT.id], ["1:1", DEFAULT.id],
     ]);
-    expect(prepared.at(-1)).toEqual([`calendars:${ME.objectId}`]);
+    expect(reported.at(-1)).toEqual([everything]);
   });
 
   it("refuses an event whose calendar isn't in the user's list, and a series whose master is in another calendar", async () => {
@@ -449,10 +452,10 @@ describe("an all-calendars binding", () => {
   });
 
   it("records what a change shows of the event as a read, before proposing it", async () => {
-    const { writer, prepared, submitted } = session(scope("edit"), "edit");
+    const { writer, reported, submitted } = session(scope("edit"), "edit");
     const shown = await writer.updateEvent("AAMkEvStandup", { location: "Room 2" });
     expect(shown).toMatchObject({ subject: "Standup **now**", location: "Room 2" });
-    expect(prepared).toEqual([[`calendars:${ME.objectId}`]]);
+    expect(reported).toEqual([[everything]]);
     expect(submitted).toHaveLength(1);
   });
 

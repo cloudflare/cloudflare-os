@@ -3,6 +3,7 @@ import type {
   AiChatAuthorInfo,
   AiChatMetadata,
   AiChatSubscriber,
+  ConsoleLogEvent,
   Overseer,
   PresenceParticipant,
   PresenceSubscriber,
@@ -11,7 +12,7 @@ import type {
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { CodeChange } from '@gadgets/workshop-shared/code-change'
-import { ESCAPE_MESSAGE, HANDSHAKE_MESSAGE, gadgetPage } from './gadgetSandbox'
+import { GadgetFrameRoot, HANDSHAKE_MESSAGE, WorkshopGadgetHost, gadgetPage, logLocation } from './gadgetSandbox'
 
 /** A gadget's UI, as far as it has got. */
 export type GadgetUi =
@@ -60,6 +61,16 @@ export type GadgetConnectionOptions = {
   viewerId?: string
   /** Escape was pressed in the gadget's page, which keeps its keys from the app. */
   onEscape?: () => void
+  /**
+   * Something the gadget's page logged, or an error it did not catch, with where it happened at
+   * the end of what it says.
+   */
+  onConsoleLog?: (log: ConsoleLogEvent) => void
+  /**
+   * Shows the chat of an agent the gadget started, named by its token (`GadgetHost`). Without it,
+   * the page's asking does nothing. `signal` aborts once the page's connection has gone.
+   */
+  onOpenAgentChat?: (chatToken: string, signal: AbortSignal) => Promise<void>
   /**
    * The app's connection to the backend, which may be `down` while it is made again. Meanwhile
    * what is shown stays as it is, and `reconnect()` follows once it is back.
@@ -177,7 +188,9 @@ export class GadgetConnection {
   // The page's connection to the gadget's server side, and which handshake made it: one that is
   // overtaken by another, or by a reload, is let go as soon as it is made.
   #handshakes = 0
-  #link: { session: Disposable; server: Disposable } | undefined
+  #link: { session: Disposable; server: Disposable; gone: AbortController } | undefined
+  // The modules of the page shown, by the data: URL each is loaded from, to name where a log came from.
+  #pathsByUrl: ReadonlyMap<string, string> = new Map()
   #frame: () => Window | null | undefined = () => undefined
   #started = false
   // Between attempts to connect again after the gadget was lost: how long the next waits.
@@ -341,7 +354,9 @@ export class GadgetConnection {
       if (!current()) return
       this.#retryDelay = 0
       if (!bundle) this.#unlink()
-      this.#publish({ ui: bundle ? { status: 'ready', page: gadgetPage(bundle.jsCode), load } : { status: 'none' } })
+      const page = bundle && gadgetPage(bundle)
+      if (page) this.#pathsByUrl = page.pathsByUrl
+      this.#publish({ ui: page ? { status: 'ready', page: page.html, load } : { status: 'none' } })
     } catch (error) {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return
@@ -356,7 +371,6 @@ export class GadgetConnection {
     // The frame has no origin, which reads as "null". It cannot browse away, but just in case.
     if (!event.source || event.source !== this.#frame() || event.origin !== 'null') return
     if (event.data === HANDSHAKE_MESSAGE && event.ports[0]) void this.#connect(event.ports[0])
-    else if (event.data?.type === ESCAPE_MESSAGE) this.options.onEscape?.()
   }
 
   async #connect(port: MessagePort) {
@@ -370,7 +384,18 @@ export class GadgetConnection {
         port.close()
         return
       }
-      this.#link = { server, session: newMessagePortRpcSession(port, server) }
+      const gone = new AbortController()
+      const host = new WorkshopGadgetHost(async (chatToken) => {
+        await this.options.onOpenAgentChat?.(chatToken, gone.signal)
+      })
+      const root = new GadgetFrameRoot(server, host, {
+        reportConsole: (level, message, at) => {
+          const where = logLocation(at, this.#pathsByUrl)
+          this.options.onConsoleLog?.({ timestamp: new Date(), level, message: where ? [...message, `at ${where}`] : message })
+        },
+        escape: () => this.options.onEscape?.(),
+      })
+      this.#link = { server, session: newMessagePortRpcSession(port, root), gone }
       // The page's calls go to the gadget's server side, which can go without the rest.
       server.onRpcBroken(() => {
         if (this.#link?.server === server) this.#lost(run)
@@ -383,6 +408,7 @@ export class GadgetConnection {
 
   #unlink() {
     this.#handshakes++
+    this.#link?.gone.abort(new Error('The gadget’s page was replaced.'))
     this.#link?.session[Symbol.dispose]()
     this.#link?.server[Symbol.dispose]()
     this.#link = undefined

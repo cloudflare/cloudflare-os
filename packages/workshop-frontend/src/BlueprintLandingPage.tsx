@@ -3,8 +3,8 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } fro
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi, AdminApi, BlueprintPublicInfo, BlueprintBinding, BlueprintBindingAssignment, BlueprintUserSummary, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
-import { SupportedResource, VendorDescription, ResourceConfiguratorFrame, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
-import { Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
+import { SupportedResource, VendorDescription, ResourceConfiguratorFrame, matchesResourceUrlPattern, findResourceType, getResourceTypeId, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper'
+import { Banner, Button, Dialog, DropdownMenu, Select, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, Lightning, Plus, Robot, Sparkle, Star, Trash, X } from '@phosphor-icons/react'
 
 import { useAuth } from './useAuth'
@@ -239,12 +239,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     }
   }, [isAuthenticated, authenticatedApi])
 
-  const handleConnectAccount = useCallback(async (vendorId: string, resourceUrlPatterns?: string[]) => {
+  const handleConnectAccount = useCallback(async (vendorId: string, resourceTypeIds?: string[]) => {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
       const outcome = await openConnectWindow(
-        await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+        await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (err) {
       if (err instanceof AuthPopupCancelledError) return
@@ -257,12 +257,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
   const handleGrantAccountResources = useCallback(async (
     accountId: number,
-    resourceUrlPatterns: string[],
+    resourceTypeIds: string[],
   ) => {
-    if (!authenticatedApi || resourceUrlPatterns.length === 0) return
+    if (!authenticatedApi || resourceTypeIds.length === 0) return
     setGrantingAccountId(accountId)
     try {
-      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
+      const flow = await authenticatedApi.ensureAccountResources(accountId, resourceTypeIds)
       if (flow) {
         const outcome = await openConnectWindow(flow, authenticatedApi)
         toasts.add({ title: outcome === 'connected' ? 'Access granted.' : 'Grant the additional access in the pop-up window.', variant: 'success' })
@@ -273,10 +273,10 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
             ...account,
             description: {
               ...account.description,
-              grantedResourceUrlPatterns: [
+              grantedResourceTypeIds: [
                 ...new Set([
-                  ...(account.description.grantedResourceUrlPatterns ?? []),
-                  ...resourceUrlPatterns,
+                  ...(getGrantedResourceTypeIds(account.description, account.supportedResources) ?? []),
+                  ...resourceTypeIds,
                 ]),
               ],
             },
@@ -919,7 +919,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
               />
               <DropdownMenu.Content className={MENU_CONTENT}>
                 <DropdownMenu.Item
-                  icon={<DownloadSimple size={13} className="mr-2" />}
+                  icon={<DownloadSimple className="size-3.25" />}
                   onClick={handleDownload}
                   disabled={downloading}
                   className={MENU_ITEM}
@@ -928,7 +928,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                 </DropdownMenu.Item>
 
                 <DropdownMenu.Item
-                  icon={<Star size={13} className="mr-2" weight={isPinned ? 'fill' : 'regular'} />}
+                  icon={<Star className="size-3.25" weight={isPinned ? 'fill' : 'regular'} />}
                   onClick={handleTogglePinned}
                   disabled={updatingPinned}
                   className={MENU_ITEM}
@@ -938,7 +938,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
                 {sourceWorkspace && (
                   <DropdownMenu.Item
-                    icon={<ArrowSquareOut size={13} className="mr-2" />}
+                    icon={<ArrowSquareOut className="size-3.25" />}
                     onClick={() => window.open(`/workspace/${sourceWorkspace.workspaceId}`, '_blank', 'noopener,noreferrer')}
                     className={MENU_ITEM}
                   >
@@ -950,7 +950,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
-                      icon={<Trash size={13} className="mr-2" />}
+                      icon={<Trash className="size-3.25" />}
                       variant="danger"
                       onClick={() => setShowDeleteConfirm(true)}
                       className={MENU_ITEM_DANGER}
@@ -965,7 +965,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     <DropdownMenu.Separator />
                     {isUploadedBlueprint ? (
                       <DropdownMenu.Item
-                        icon={<Trash size={13} className="mr-2" />}
+                        icon={<Trash className="size-3.25" />}
                         variant="danger"
                         onClick={() => setShowDeleteConfirm(true)}
                         className={MENU_ITEM_DANGER}
@@ -974,7 +974,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                       </DropdownMenu.Item>
                     ) : (
                       <DropdownMenu.Item
-                        icon={<Trash size={13} className="mr-2" />}
+                        icon={<Trash className="size-3.25" />}
                         variant="danger"
                         onClick={handleRemoveFromLibrary}
                         disabled={removingFromLibrary}
@@ -990,7 +990,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   <>
                     <DropdownMenu.Separator />
                     <DropdownMenu.Item
-                      icon={<Sparkle size={13} className="mr-2" weight={isFeatured ? 'fill' : 'regular'} />}
+                      icon={<Sparkle className="size-3.25" weight={isFeatured ? 'fill' : 'regular'} />}
                       onClick={handleToggleFeatured}
                       disabled={updatingFeatured}
                       className={MENU_ITEM}
@@ -1312,7 +1312,7 @@ function BlueprintBindingSummaryCard({
       ? 'AI Model'
       : 'Agent'
   const resource = binding.type === 'gatekeeper'
-    ? vendor?.supportedResources.find(r => r.urlPattern === binding.typeUrlPattern)
+    ? findResourceType(vendor?.supportedResources ?? [], binding.resourceTypeId, binding.typeUrlPattern)
     : null
   const suggestion = binding.type === 'gatekeeper'
     ? binding.resourceUrl
@@ -1416,8 +1416,8 @@ function BindingField({
   grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
-  onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
-  onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
+  onConnectAccount: (vendorId: string, resourceTypeIds?: string[]) => void
+  onGrantAccountResources: (accountId: number, resourceTypeIds: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
@@ -1523,21 +1523,19 @@ function BindingField({
 }
 
 // An account can configure a gatekeeper binding when its credentials are live, it belongs to the
-// binding's vendor, it offers the binding's resource type, and — for grantable types — that type
-// is actually granted. A Google account connected for Gmail alone advertises Calendar support but
-// cannot configure a Calendar binding until the grant is expanded.
+// binding's vendor, and it offers connections to that resource type with any required grant.
+// A Google account connected for Gmail alone advertises Calendar support but cannot configure
+// a Calendar binding until the grant is expanded.
 function accountCanConfigureBinding(
   binding: Extract<BlueprintBinding, { type: 'gatekeeper' }>,
   account: AccountOption,
 ): boolean {
   if (!account.credentialsValid ||
       account.vendorId.toLowerCase() !== binding.gatekeeperName.toLowerCase()) return false
-  const resource = account.supportedResources.find(
-    candidate => candidate.urlPattern === binding.typeUrlPattern,
-  )
-  if (!resource) return false
-  const granted = account.description.grantedResourceUrlPatterns
-  return !resource.grantable || granted === undefined || granted.includes(resource.urlPattern)
+  const resource = findResourceType(account.supportedResources, binding.resourceTypeId, binding.typeUrlPattern)
+  if (!resource || resource.connectable === false) return false
+  const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
+  return !resource.grantable || granted === undefined || granted.includes(getResourceTypeId(resource))
 }
 
 function removeUnavailableGatekeeperAssignments(
@@ -1599,8 +1597,8 @@ function BlueprintGatekeeperBindingField({
   grantingAccountId: number | null
   reconnectingAccountId: number | null
   onChange: (updates: Partial<BlueprintBindingAssignment>) => void
-  onConnectAccount: (vendorId: string, resourceUrlPatterns?: string[]) => void
-  onGrantAccountResources: (accountId: number, resourceUrlPatterns: string[]) => void
+  onConnectAccount: (vendorId: string, resourceTypeIds?: string[]) => void
+  onGrantAccountResources: (accountId: number, resourceTypeIds: string[]) => void
   onReconnectAccount: (accountId: number) => void
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
@@ -1611,33 +1609,39 @@ function BlueprintGatekeeperBindingField({
     [vendors, binding.gatekeeperName],
   )
   const resource = useMemo(
-    () => vendor?.supportedResources.find(r => r.urlPattern === binding.typeUrlPattern) ?? null,
-    [vendor, binding.typeUrlPattern],
+    () => findResourceType(vendor?.supportedResources ?? [], binding.resourceTypeId, binding.typeUrlPattern) ?? null,
+    [vendor, binding.resourceTypeId, binding.typeUrlPattern],
   )
 
-  const matchingAccounts = useMemo(() => accounts.filter(account =>
-    account.vendorId === vendor?.id &&
-    account.supportedResources.some(r => r.urlPattern === binding.typeUrlPattern)
-  ), [accounts, vendor?.id, binding.typeUrlPattern])
+  const matchingAccounts = useMemo(() => accounts.filter(account => {
+    if (!resource || resource.connectable === false || account.vendorId !== vendor?.id) return false
+    const accountResource = findResourceType(account.supportedResources, binding.resourceTypeId, binding.typeUrlPattern)
+    return accountResource !== undefined && accountResource.connectable !== false
+  }), [accounts, vendor?.id, binding.resourceTypeId, binding.typeUrlPattern, resource])
+  // A gatekeeper may offer an account fewer resource types than its vendor does. When that leaves
+  // the chooser empty, say why, or an account the user just connected silently never appears.
+  const unusableAccountCount = matchingAccounts.length === 0
+    ? accounts.filter(account => account.vendorId === vendor?.id).length
+    : 0
 
   const selectedAccountId = (value as any).accountId ?? null
   const selectedAccount = matchingAccounts.find(a => a.id === selectedAccountId && a.credentialsValid) ?? null
   const initialResourceUrl = typeof (value as any).resourceUrl === 'string' &&
-      matchesResourceUrlPattern(binding.typeUrlPattern, (value as any).resourceUrl)
+      matchesResourceUrlPattern(resource?.urlPattern ?? binding.typeUrlPattern, (value as any).resourceUrl)
     ? (value as any).resourceUrl as string
     : undefined
-  const requiredResourceUrlPatterns = resource?.grantable ? [resource.urlPattern] : []
-  const missingResourceUrlPatternsFor = (accountId: number) => {
-    const granted = matchingAccounts.find(account => account.id === accountId)
-      ?.description.grantedResourceUrlPatterns
+  const requiredResourceTypeIds = resource?.grantable ? [getResourceTypeId(resource)] : []
+  const missingResourceTypeIdsFor = (accountId: number) => {
+    const account = matchingAccounts.find(account => account.id === accountId)
+    const granted = account ? getGrantedResourceTypeIds(account.description, account.supportedResources) : undefined
     return granted === undefined
       ? []
-      : requiredResourceUrlPatterns.filter(pattern => !granted.includes(pattern))
+      : requiredResourceTypeIds.filter(typeId => !granted.includes(typeId))
   }
-  const missingResourceUrlPatterns = selectedAccount
-    ? missingResourceUrlPatternsFor(selectedAccount.id)
+  const missingResourceTypeIds = selectedAccount
+    ? missingResourceTypeIdsFor(selectedAccount.id)
     : []
-  const hasMissingResourceGrants = missingResourceUrlPatterns.length > 0
+  const hasMissingResourceGrants = missingResourceTypeIds.length > 0
 
   // The parent component re-renders frequently and passes us fresh inline callbacks each time.
   // Stash them in refs so effects below can call the latest versions without re-running every
@@ -1702,7 +1706,7 @@ function BlueprintGatekeeperBindingField({
   }, [])
 
   useEffect(() => {
-    if (!resource || !selectedAccount || hasMissingResourceGrants) {
+    if (!resource || resource.connectable === false || !selectedAccount || hasMissingResourceGrants) {
       replaceFrameState(null)
       setFrameError(null)
       setFrameLoading(false)
@@ -1717,7 +1721,7 @@ function BlueprintGatekeeperBindingField({
     onReadyChangeRef.current(false)
     replaceFrameState(null)
 
-    authenticatedApi.startResourceConfigurator(accountId, resource.urlPattern)
+    authenticatedApi.startResourceConfigurator(accountId, getResourceTypeId(resource))
       .then(frame => {
         if (cancelled) {
           disposeConfiguratorFrame(frame)
@@ -1736,11 +1740,11 @@ function BlueprintGatekeeperBindingField({
     return () => {
       cancelled = true
     }
-  }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern,
+  }, [authenticatedApi, selectedAccount?.id, resource?.urlPattern, resource?.connectable,
     hasMissingResourceGrants, replaceFrameState])
 
   // Bail out if the gatekeeper isn't installed locally or the required resource type isn't
-  // offered by the vendor. The binding can't be satisfied in either case.
+  // offered for connection by the vendor. The binding can't be satisfied in either case.
   if (!vendor) {
     return (
       <div className="rounded-lg border border-kumo-danger/30 bg-kumo-danger-tint px-3 py-2.5 text-sm text-kumo-danger">
@@ -1749,11 +1753,13 @@ function BlueprintGatekeeperBindingField({
       </div>
     )
   }
-  if (!resource) {
+  if (!resource || resource.connectable === false) {
     return (
       <div className="rounded-lg border border-kumo-danger/30 bg-kumo-danger-tint px-3 py-2.5 text-sm text-kumo-danger">
         <p className="font-semibold mb-0.5">{title}</p>
-        <p>The required resource type for this binding isn't offered by {vendor.description.displayName}.</p>
+        <p>{resource
+          ? "This resource type does not support connecting an existing resource, so this blueprint binding can't be configured."
+          : `The required resource type for this binding isn't offered by ${vendor.description.displayName}.`}</p>
       </div>
     )
   }
@@ -1768,7 +1774,7 @@ function BlueprintGatekeeperBindingField({
         resourceTitle={resource.title}
         connecting={connectingVendor === vendor.id}
         reconnectingAccountId={reconnectingAccountId}
-        requiredResourceUrlPatterns={requiredResourceUrlPatterns}
+        requiredResourceTypeIds={requiredResourceTypeIds}
         grantingAccountId={grantingAccountId}
         onSelect={(id) => onChange({
           accountId: id,
@@ -1776,11 +1782,22 @@ function BlueprintGatekeeperBindingField({
         } as any)}
         onConnect={() => onConnectAccount(
           vendor.id,
-          requiredResourceUrlPatterns.length > 0 ? requiredResourceUrlPatterns : undefined,
+          requiredResourceTypeIds.length > 0 ? requiredResourceTypeIds : undefined,
         )}
-        onGrantAccess={(id) => onGrantAccountResources(id, missingResourceUrlPatternsFor(id))}
+        onGrantAccess={(id) => onGrantAccountResources(id, missingResourceTypeIdsFor(id))}
         onReconnect={onReconnectAccount}
       />
+
+      {unusableAccountCount > 0 && (
+        <Banner
+          variant="alert"
+          size="sm"
+          title={unusableAccountCount === 1
+            ? `Your connected ${vendor.description.displayName} account can't be used for ${resource.title}`
+            : `Your ${unusableAccountCount} connected ${vendor.description.displayName} accounts can't be used for ${resource.title}`}
+          description="Connect an account that has access to it."
+        />
+      )}
 
       {selectedAccount && (
         <div className="space-y-2.5">
@@ -1805,8 +1822,8 @@ function BlueprintGatekeeperBindingField({
                   authenticatedApi, toasts, frameState.accountId, patterns)
                 : undefined}
               initialResourceUrl={initialResourceUrl}
-              resourceUrlPattern={binding.typeUrlPattern}
-              acceptedResourceUrlPatterns={[binding.typeUrlPattern]}
+              resourceUrlPattern={resource?.urlPattern}
+              acceptedResourceUrlPatterns={resource ? [resource.urlPattern] : []}
             />
           )}
         </div>

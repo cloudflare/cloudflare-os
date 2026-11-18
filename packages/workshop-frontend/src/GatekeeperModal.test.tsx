@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -12,6 +12,10 @@ import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 const testState = vi.hoisted(() => ({
+  /** The confirmed signed-in user, if any. */
+  userId: undefined as string | undefined,
+  /** The chat models offered, in place of the one the tests otherwise share. */
+  chatModels: null as AiChatAuthorInfo[] | null,
   authenticatedApi: null as RpcStub<AuthenticatedApi> | null,
   readinessEvents: [] as (boolean | null)[],
   ready: null as boolean | null,
@@ -40,7 +44,11 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => ({
 vi.mock('./connectHandoff', () => ({ openConnectWindow }))
 
 vi.mock('./AuthContext', () => ({
-  useAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }),
+  useAuthenticatedApi: () => ({
+    authenticatedApi: testState.authenticatedApi,
+    currentUser: testState.userId === undefined ? null : { type: 'user', id: testState.userId, name: 'Alice' },
+    isCurrentUserConfirmed: testState.userId !== undefined,
+  }),
 }))
 
 vi.mock('./ResourceConfiguratorHost', async () => {
@@ -130,19 +138,20 @@ const api = vi.hoisted(() => ({
   ensureAccountResources: vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>(),
 }))
 
-function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], granted }: {
-  resource?: SupportedResource
+function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds = [1], accountResources, granted }: {
+  resource?: SupportedResource | null
   otherResources?: SupportedResource[]
   accountIds?: number[]
+  accountResources?: Record<number, SupportedResource[]>
   granted?: string[]
 } = {}): RpcStub<AuthenticatedApi> {
-  const resources = [resource, ...otherResources]
+  const resources = [...(resource ? [resource] : []), ...otherResources]
   api.startResourceConfigurator.mockImplementation(async () => ({
     iframeHtml: '<!doctype html>',
     ui: { [Symbol.dispose]() {} },
   }))
   return {
-    listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [CHAT_MODEL],
+    listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : testState.chatModels ?? [CHAT_MODEL],
     listGatekeeperVendors: async () => [{
       id: 'catalog',
       description: VENDOR,
@@ -151,7 +160,8 @@ function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
       api.subscriber = subscriber
       for (const id of accountIds) {
-        subscriber.add(id, accountDescription(id, granted), VENDOR, resources, true, 'catalog')
+        subscriber.add(id, accountDescription(id, granted), VENDOR,
+          accountResources?.[id] ?? resources, true, 'catalog')
       }
       subscriber.ready()
       return subscription()
@@ -168,6 +178,9 @@ afterEach(() => {
   act(() => root?.unmount())
   container?.remove()
   testState.authenticatedApi = null
+  testState.userId = undefined
+  testState.chatModels = null
+  localStorage.clear()
   testState.readinessEvents = []
   testState.ready = null
   testState.collectedUrl = 'https://catalog.example.com/'
@@ -182,12 +195,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderModal(props: {
-  initialVendorId?: string
-  initialResourceUrl?: string
-  initialResourceUrlPattern?: string
-  initialAccountId?: number
-} = {}, apiOptions: Parameters<typeof authenticatedApi>[0] = {}) {
+async function renderModal(props: Partial<ComponentProps<typeof GatekeeperModal>> = {},
+  apiOptions: Parameters<typeof authenticatedApi>[0] = {}) {
   testState.authenticatedApi = authenticatedApi(apiOptions)
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -203,6 +212,13 @@ async function renderModal(props: {
 }
 
 describe('GatekeeperModal configurator readiness', () => {
+  it('does not offer a creation-only type as an existing-resource picker', async () => {
+    await renderModal({}, { resource: { ...RESOURCE, connectable: false, creatable: true } })
+    expect(document.body.querySelector('[aria-controls="connection-group-panel-vendor:catalog"]'))
+      .toBeNull()
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+  })
+
   it('keeps Add connection disabled for a lifecycle null readiness event', async () => {
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
@@ -279,6 +295,96 @@ describe('GatekeeperModal grouped resource types', () => {
       initialResourceUrl,
       resourceUrlPattern: SERVICE.urlPattern,
     })
+  })
+
+  it.each(['creation-only', 'absent'])(
+    'connects a grouped sibling when its account makes the lead %s', async lead => {
+      stubResizeObserver()
+      testState.ready = true
+      testState.collectedUrl = 'https://catalog.example.com/services/s1'
+      const getOverseer = vi.fn<ComponentProps<typeof GatekeeperModal>['getOverseer']>(
+        () => { throw new Error('Reached workspace') })
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      await renderModal({
+        initialVendorId: 'catalog', initialResourceUrl: testState.collectedUrl,
+        initialResourceUrlPattern: SERVICE.urlPattern, getOverseer,
+      }, {
+        ...GROUPED, granted: [SERVICE.urlPattern],
+        accountResources: { 1: [SERVICE,
+          ...(lead === 'creation-only' ? [{ ...CATALOG, connectable: false, creatable: true }] : [])] },
+      })
+
+      await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
+      expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(1, SERVICE.urlPattern)
+      expect(testState.configurator).toEqual({
+        acceptedResourceUrlPatterns: [SERVICE.urlPattern],
+        initialResourceUrl: testState.collectedUrl, resourceUrlPattern: SERVICE.urlPattern,
+      })
+      expect(buttonLabels()).not.toContain('Grant access')
+      await act(async () => button('Add connection').click())
+      expect(getOverseer).toHaveBeenCalledOnce()
+    },
+  )
+
+  it.each([false, true])('requests only connectable account group members (IDs=%s)', async ids => {
+    stubResizeObserver()
+    api.ensureAccountResources.mockResolvedValue(null)
+    const service = { ...SERVICE, id: ids ? 'service' : undefined,
+      groupedWith: ids ? 'catalog' : SERVICE.groupedWith }
+    const catalog = { ...CATALOG, id: ids ? 'catalog' : undefined }
+    const selector = ids ? 'service' : SERVICE.urlPattern
+    const accountResources = [service, { ...catalog, connectable: false, creatable: true }]
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: SERVICE.urlPattern }, {
+      resource: service, otherResources: [catalog], granted: [], accountResources: { 1: accountResources },
+    })
+
+    await vi.waitFor(() => expect(buttonLabels()).toContain('Grant access'))
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+    await act(async () => button('Grant access').click())
+    expect(api.ensureAccountResources).toHaveBeenCalledExactlyOnceWith(1, [selector])
+
+    await act(async () => api.subscriber!.add(1, accountDescription(1, [SERVICE.urlPattern]),
+      VENDOR, accountResources, true, 'catalog'))
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(1))
+    expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(1, selector)
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([SERVICE.urlPattern])
+    expect(buttonLabels()).not.toContain('Grant access')
+  })
+
+  it('excludes a creation-only sibling even if the account retains its old grant', async () => {
+    stubResizeObserver()
+    testState.ready = true
+    testState.collectedUrl = 'https://catalog.example.com/services/s1'
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
+      ...GROUPED, granted: BOTH_GRANTED,
+      accountResources: { 1: [{ ...SERVICE, connectable: false, creatable: true }, CATALOG] },
+    })
+
+    await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([CATALOG.urlPattern])
+    await act(async () => button('Add connection').click())
+    expect(testState.toasts).toEqual([{
+      title: 'This account does not support connecting Service.', variant: 'error',
+    }])
+  })
+
+  it('restarts on a supported sibling when an account stops connecting the lead', async () => {
+    stubResizeObserver()
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
+      ...GROUPED, granted: BOTH_GRANTED,
+    })
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(1))
+    expect(api.startResourceConfigurator).toHaveBeenLastCalledWith(1, CATALOG.urlPattern)
+
+    await act(async () => api.subscriber!.add(1, accountDescription(1, BOTH_GRANTED), VENDOR,
+      [SERVICE, { ...CATALOG, connectable: false, creatable: true }], true, 'catalog'))
+
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(2))
+    expect(api.startResourceConfigurator.mock.calls).toEqual([
+      [1, CATALOG.urlPattern], [1, SERVICE.urlPattern],
+    ])
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([SERVICE.urlPattern])
   })
 
   it('asks an account holding none of a card\'s types for all of them before the configurator opens', async () => {
@@ -407,6 +513,33 @@ describe('GatekeeperModal agent spawner request', () => {
       expect(document.body.querySelector('[aria-label="Agent display name"]')).not.toBeNull()
     })
   })
+
+  // The user is unconfirmed while a dropped connection is re-established, which the modal can be
+  // open across.
+  it("starts the Agent form on the user's remembered model once they are confirmed", async () => {
+    testState.authenticatedApi = authenticatedApi()
+    testState.chatModels = [CHAT_MODEL, { type: 'agent', id: 'other-model', name: 'Other model' }]
+    localStorage.setItem('lastSelectedModel:alice', 'other-model')
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    const render = () => act(async () => root!.render(<GatekeeperModal
+      open
+      onClose={() => {}}
+      getOverseer={() => { throw new Error('not called') }}
+      onCreated={() => Promise.resolve()}
+      initialVendorId="agent-spawner"
+    />))
+    const picker = () => document.body.querySelector('[aria-label="Agent model"]')
+
+    await render()
+    await vi.waitFor(() => expect(picker()?.textContent).toContain('Chat model'))
+
+    testState.userId = 'alice'
+    await render()
+
+    expect(picker()?.textContent).toContain('Other model')
+  })
 })
 
 describe('GatekeeperModal model pickers', () => {
@@ -444,7 +577,7 @@ async function renderConfigurator(props: { initialAccountId?: number } = {},
   apiOptions: Parameters<typeof authenticatedApi>[0] = {}) {
   stubResizeObserver()
   await renderModal({
-    initialVendorId: 'catalog', initialResourceUrlPattern: RESOURCE.urlPattern, ...props,
+    initialVendorId: 'catalog', initialResourceUrlPattern: apiOptions.resource?.urlPattern ?? RESOURCE.urlPattern, ...props,
   }, apiOptions)
   await vi.waitFor(() => expect(testState.ensureResources).not.toBeNull())
   return testState.ensureResources!
@@ -518,6 +651,19 @@ describe('GatekeeperModal configurator access requests', () => {
 })
 
 describe('GatekeeperModal initial account', () => {
+  it.each([RESOURCE.urlPattern, 'https://*'])(
+    'skips creation-only accounts, including a preselected account, for %s', async urlPattern => {
+      const resource = { ...RESOURCE, urlPattern }
+      await renderConfigurator({ initialAccountId: 1 }, {
+        resource, accountIds: [1, 2],
+        accountResources: { 1: [{ ...resource, connectable: false, creatable: true }] },
+      })
+
+      expect(document.body.textContent).not.toContain('Catalog account 1')
+      expect(api.startResourceConfigurator).toHaveBeenCalledExactlyOnceWith(2, urlPattern)
+    },
+  )
+
   it('selects the first valid account when none is given', async () => {
     await renderConfigurator({}, { accountIds: [1, 2] })
 
@@ -601,5 +747,45 @@ describe('GatekeeperModal resource grant step', () => {
     } finally {
       consoleError.mockRestore()
     }
+  })
+})
+
+
+describe('stable resource type selection', () => {
+  it('opens the same type by ID after its pattern changes', async () => {
+    stubResizeObserver()
+    await renderModal({
+      initialVendorId: 'catalog', initialResourceTypeId: 'catalog',
+      initialResourceUrlPattern: RESOURCE.urlPattern,
+    }, { resource: { ...RESOURCE, id: 'catalog', urlPattern: 'https://new.example.com/items/:id' } })
+    expect(api.startResourceConfigurator).toHaveBeenCalledWith(1, 'catalog')
+  })
+
+  it('does not redirect an unknown stored ID or unmatched old pattern to the sole current type', async () => {
+    await renderModal({
+      initialVendorId: 'catalog', initialResourceTypeId: 'retired',
+      initialResourceUrlPattern: RESOURCE.urlPattern,
+    })
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+    act(() => root!.unmount())
+    root = undefined
+    container?.remove()
+    await renderModal({
+      initialVendorId: 'catalog', initialResourceUrlPattern: 'https://old.example.com/*',
+    })
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+  })
+
+  it('recognizes an ID grant and never revives a legacy grant when the ID list is empty', async () => {
+    stubResizeObserver()
+    const resource = { ...RESOURCE, id: 'catalog', grantable: true }
+    await renderModal({ initialVendorId: 'catalog', initialResourceTypeId: 'catalog' }, {
+      resource, granted: [],
+    })
+    expect(api.startResourceConfigurator).not.toHaveBeenCalled()
+    await act(async () => api.subscriber!.add(1, {
+      ...accountDescription(1, []), grantedResourceTypeIds: ['catalog'],
+    }, VENDOR, [resource], true, 'catalog'))
+    expect(api.startResourceConfigurator).toHaveBeenCalledWith(1, 'catalog')
   })
 })

@@ -16,11 +16,10 @@ import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/acti
 import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { isProvisional, OutsideBindingError } from "./binding";
+import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
 import { DownloadTooLargeError, GraphApiError, type GraphApi } from "./graph-api";
 import { graphInstant } from "./calendar-time";
 import { organizationDomains } from "./directory";
-import type { StoredIdentity } from "./microsoft-credentials";
 import { MAX_BATCH, replaceOwnPart, type AttachedFile, type AttachmentUpload, type AutomaticRepliesSetting, type Composed, type FolderTarget, type Forwarded, type MessageState, type MessageTarget, type Origin, type OutlookAction, type OutlookActions, type RecipientNote } from "./outlook-actions";
 import {
   MAX_SUBJECT_CHARS, attachmentBytes, checkBody, checkSubject, mailToMarkdown, markdownToMailHtml, parseRecipients, senderKind,
@@ -72,12 +71,11 @@ const MAX_FORWARDED_CHARS = 20_000;
 const NAMED_FOLDERS = new Set<NonNullable<FolderInfo["wellKnownName"]>>(["inbox", "drafts", "sentitems", "deleteditems", "archive", "junkemail", "outbox"]);
 const isNamedFolder = (name: string): name is NonNullable<FolderInfo["wellKnownName"]> => (NAMED_FOLDERS as ReadonlySet<string>).has(name);
 
-/** What the gatekeeper gives every session. */
-export type OutlookSessionHost = {
+/** What the gatekeeper gives every session: whose binding it is (see ReadAuthority) and the rest. */
+export type OutlookSessionHost = ReadAuthority & {
   scope: OutlookScope;
   /** What the binding may do: its own level, never more than the deployment and grant allow. */
   access: OutlookAccessLevel;
-  owner(): Promise<StoredIdentity>;
   read<T>(op: (api: GraphApi) => Promise<T>): Promise<T>;
   cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>;
   pending(): JournalEntry<OutlookAction>[];
@@ -243,10 +241,9 @@ export class OutlookContext implements Disposable {
     return await this.host.cached("orgDomains", ORGANIZATION_TTL_MS, () => this.host.read(organizationDomains));
   }
 
-  /** Authorizes an observation of what a read revealed; with no units, against the observer baseline. */
-  async observe(title: string, description: string, revealed: readonly string[]): Promise<void> {
-    await this.gate.authorize({ title, description },
-      revealed.length > 0 ? { kind: "collections", ids: [...new Set(revealed)] } : { kind: "baseline" });
+  /** Authorizes a read through `gate` (a cursor's lease, or the session's own): see authorizeRead. */
+  async observe(title: string, description: string, revealed: readonly string[], gate = this.gate): Promise<void> {
+    await authorizeRead(gate, this.host, { title, description }, revealed);
   }
 
   /** The pending actions, as reads see them. */
@@ -689,12 +686,10 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
         return { items: await ctx.infos([...moved, ...kept], overlay), ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
       },
       authorizePage: (items, { terminal }) => items.length === 0
-        ? walk.authorize({ title: "Listed Outlook messages", description: `Listed messages in ${where}${terminal ? "; there were no more" : ""}.` },
-          { kind: "collections", ids: [listedFolder && !isProvisional(listedFolder) ? units.folder(listedFolder) : units.mailbox()] })
-        : walk.authorize({
-          title: "Listed Outlook messages",
-          description: `Listed ${items.length} message${items.length === 1 ? "" : "s"} in ${where}: ${listed(items)}.`,
-        }, { kind: "collections", ids: items.map(item => units.message(item.id)) }),
+        ? ctx.observe("Listed Outlook messages", `Listed messages in ${where}${terminal ? "; there were no more" : ""}.`,
+          [listedFolder && !isProvisional(listedFolder) ? units.folder(listedFolder) : units.mailbox()], walk)
+        : ctx.observe("Listed Outlook messages", `Listed ${items.length} message${items.length === 1 ? "" : "s"} in ${where}: ${listed(items)}.`,
+          items.map(item => units.message(item.id)), walk),
     });
   }
 
@@ -726,12 +721,11 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
         return { items: await ctx.infos(kept, overlay), ...(page.nextLink ? { nextToken: page.nextLink } : {}) };
       },
       authorizePage: (items, { terminal }) => items.length === 0
-        ? walk.authorize({ title: "Searched Outlook", description: `Searched for ${md(query)}${terminal ? "; nothing more matched" : ""}.` },
-          { kind: "collections", ids: [folder ? units.folder(folder.id) : units.mailbox()] })
-        : walk.authorize({
-          title: "Searched Outlook",
-          description: `Searched for ${md(query)} and found ${items.length} message${items.length === 1 ? "" : "s"}: ${listed(items)}.`,
-        }, { kind: "collections", ids: items.map(item => units.message(item.id)) }),
+        ? ctx.observe("Searched Outlook", `Searched for ${md(query)}${terminal ? "; nothing more matched" : ""}.`,
+          [folder ? units.folder(folder.id) : units.mailbox()], walk)
+        : ctx.observe("Searched Outlook",
+          `Searched for ${md(query)} and found ${items.length} message${items.length === 1 ? "" : "s"}: ${listed(items)}.`,
+          items.map(item => units.message(item.id)), walk),
     });
   }
 

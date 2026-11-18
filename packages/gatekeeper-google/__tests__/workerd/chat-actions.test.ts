@@ -1252,6 +1252,40 @@ describe("Google Chat gatekeeper behaviors", () => {
       .rejects.toThrow(/different conversation/);
   });
 
+  it("returns a Chat app's card content from every read without following its links", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("alert", "A", "2024-01-01T00:00:00Z"),
+      sender: {name: "users/app", type: "BOT"},
+      text: "firing: example alert",
+      cardsV2: [{cardId: "c", card: {
+        header: {title: "example alert is firing"},
+        sections: [{widgets: [
+          {textParagraph: {text: "<b>cluster:</b> test"}},
+          {buttonList: {buttons: [{text: "Runbook", onClick: {openLink: {url: "https://runbook.example/r"}}}]}},
+        ]}],
+      }}],
+    });
+    const expected = [{
+      title: "example alert is firing",
+      text: "<b>cluster:</b> test",
+      links: [{label: "Runbook", url: "https://runbook.example/r"}],
+    }];
+    const chat = chatHarness(backend);
+    using requests = vi.spyOn(globalThis, "fetch");
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info).toMatchObject({text: "firing: example alert", cards: expected});
+    using entry = await space.getMessage(messageName("alert"));
+    expect(entry.info.cards).toEqual(expected);
+    expect((await entry.message.getMetadata()).cards).toEqual(expected);
+    const hosts = requests.mock.calls.map(([input]) =>
+      new URL(typeof input === "string" || input instanceof URL ? input : input.url).hostname);
+    expect(hosts).not.toContain("runbook.example");
+    expect(JSON.stringify((await chat.readQueue()).observations)).toContain("cards");
+  });
+
   it("refuses to queue an edit of someone else's message", async () => {
     const backend = chatBackend();
     backend.state.messages.push(

@@ -324,6 +324,14 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   only name that same repository) and follows a redirect only to the same path under that id. A
   transferred issue, which redirects into another repository, is still refused, and props stay
   path-based, so the observer probe and URL builders are unchanged.
+  Since the observer conversion (§8) this gatekeeper pins the project's id as well, read once from
+  its path, and now matches GitHub on redirects: a GET of a project's root by path follows a 301
+  to the root by id (re-issued to the API origin, since the Location names the browser-facing
+  host), which the pin and the legacy admission path check use; nothing beneath a project is
+  followed. It sends every REST request beneath the
+  project to `/projects/<id>/…`, so a move after the pin no longer reaches the error; git, which
+  GitLab addresses only by path, goes to the path the id has now, and a fetch is refused if that
+  path, read afresh once GitLab answered, differs from the one the fetch was sent to.
 - **Tree-by-oid has no REST fallback; the simulation degrades.** GitHub's simulated MR diff over
   queued pushes falls back to `GET /git/trees/{sha}` when a tree isn't in the workspace cache.
   GitLab's tree endpoint is path-and-ref addressed, not oid addressed, so `TreeDiffSource.getTree`
@@ -714,9 +722,9 @@ in `github.ts` is the checklist. Divergences:
   merged, as it is to the retry of a merge whose reply was lost, so the re-read takes a merge
   request merged at the bound `sha` as that merge and succeeds; otherwise it quotes
   `detailed_merge_status`: `conflict`, `not_approved`, `discussions_not_resolved`,
-  `draft_status`, `need_rebase`, … — and, since CI is not exposed in v1,
-  `ci_must_pass`/`ci_still_running` say "the pipeline has not passed yet; pipeline status is not
-  available through this connection — check it in GitLab"), `409` "the head moved since you read
+  `draft_status`, `need_rebase`, … — and `ci_must_pass`/`ci_still_running` say "the pipeline
+  has not passed yet; follow it with getDetails().ci, and merge again once it has" (v1, before
+  the CI reads under Punted, said to check it in GitLab)), `409` "the head moved since you read
   it" (`sha` mismatch) — or, when the bound `sha` is the head a queued push to the source branch
   will leave, "approve that push first", the same ordering guard as the create's —, `422` "the
   branch cannot be merged", `401` "no permission to merge";
@@ -906,10 +914,10 @@ substitutes transport endpoints and REST lookups:
 ### 8. Observers
 
 Strategy B, as GitHub: `GitLabVerifierApi extends GatekeeperUserVerifier { hasProjectAccess(
-projectPath): Promise<boolean> }`; `GitLabVerifier` probes the observer's membership with their
-own token (below); `addObserver` throws when it returns `false`; `removeObserver` is a no-op.
-Issue and MR bindings inherit the project ACL. The internal stub's strategy-C tracker is not
-carried over (no group scope, §Locked).
+projectPath, minAccessLevel?): Promise<boolean> }`; `GitLabVerifier` probes the observer's
+membership with their own token (below); `addObserver` throws when it returns `false`. Issue and
+MR bindings inherit the project ACL. The internal stub's strategy-C tracker over per-project sets
+is not carried over (no group scope, §Locked).
 
 Two tightenings over GitHub's "a 200 means read access", both grounded in GitLab's documentation
 and both places where GitHub's model, carried over unexamined, would leak:
@@ -954,6 +962,76 @@ confidential issue still denies them. That trade is the right way round — the 
 stripping confidential issues and internal notes from what the gatekeeper discloses so that the
 public-project admission becomes sound, would take a headline GitLab feature (security triage in
 confidential issues) away from every owner to serve the rarer case.
+
+The CI reads (Punted) make one exception to "Reporter sees everything a binding can disclose":
+**job logs and test reports need Developer (30).** A job run with `CI_DEBUG_TRACE` writes every
+CI/CD variable, masked or not, into its log, and "access to debug logging is restricted to users
+with the Developer, Maintainer, or Owner role"
+(docs.gitlab.com/ci/variables/variables_troubleshooting); the gatekeeper does not try to tell
+debug logs from others, and a failed test's recorded output is job output too. And **a test
+report read through a Maintainer needs Maintainer (40)**: a job can restrict its artifacts, test
+reports included, to Maintainers with `artifacts:access: maintainer` (GitLab 18.4,
+docs.gitlab.com/ci/yaml/#artifactsaccess), and GitLab's report endpoints filter by what the
+reading account may download, so a Maintainer's read can carry reports a Developer could not see.
+Below Maintainer GitLab has already left them out, so Developer is exact there. The jobs API does
+not expose a job's `access`, so the gatekeeper cannot tell which reports were restricted; a
+per-artifact check is left open. So the binding's strategy is the kit's
+`trackedCollectionObservers` with two sets: `ci-logs` (Developer), marked by the first job-log
+read or test-report read below Maintainer, and `ci-test-reports` (Maintainer), marked by a
+test-report read whose connected account holds Maintainer, checked with the owner's token
+alongside the report. The probe answers "no" when a reconnect lands mid-probe, though the report
+may have been fetched with the replaced Maintainer's token, so the pair is fenced to one
+connection generation and refused ("read again") if it moved. Pipeline and job capabilities
+authorize through their own `ObservationGate`, those reads with their set: from then on
+`addObserver` asks `hasProjectAccess(path, level)` for each marked set, and every such read
+excludes stored observers below its set's role. Observers are stored for this alone, so
+`removeObserver` is no longer a no-op. A binding that never reads a log or test report keeps the
+Reporter bar.
+
+Two consequences of storing them. Bindings from before: observers admitted before this version
+were never stored, and the overseer neither re-admits a viewer already connected nor enforces
+anyone `excludeObservers` does not name, so a log or test-report read on such a binding could
+reach a Reporter admitted then. The gatekeeper therefore decides once, synchronously in its
+constructor before anything else touches storage, whether its roster is complete: storage
+without the `observerRoster` marker is empty on a new binding (`"complete"`) and holds keys on
+one an earlier version used (`"legacy"`); the answer is stored. A legacy binding refuses
+`readLog()`, `getTestReport()` and `listFailedTests()` before fetching anything — the connection
+must be removed and added again — and serves every other CI read. And a cap: the tracker keeps
+at most 50 observers (`maxObservers`; the kit's default of 10 would refuse collaborators
+existing bindings already had), because each such read re-checks every stored observer's
+membership with GitLab, and the cap bounds that fan-out under the Workers subrequest limit.
+
+The owner's own access is checked too: the job read that revalidates a cached log is Reporter's,
+a debug trace Developer's, so a cached log is served only while the connected account holds
+Developer on the project (the verifier's `members/all` probe, run with the owner's token);
+otherwise the read goes to `/trace` and GitLab decides.
+
+**Kernel-checked subresources.** Every read now reports what it depends on as
+`ObservationDescription.subresources` (docs/observers.md §10): `project/<projectId>`, the id the
+binding pins on first use, or for CI data the role it needs, `project/<projectId>/role/developer`
+(job logs, and test reports read below Maintainer) or `project/<projectId>/role/maintainer` (test
+reports read as a Maintainer, an administrator or no member), chosen inside the report's
+connection fence and never recomputed from the owner's later role. `verifyObserverAccess` answers
+through the observer's `UserAccount.checkSubresourceAccess`: the `members/all` probe above, by id,
+at the role named, reusing a grant for 15 minutes and a denial for 15 seconds within one
+connection generation. Reads no longer mark sets, exclude observers or consult the roster, which
+is dropped: the Workshop checks the whole audience, observers admitted unrecorded included.
+`addObserver` keeps the tracker for the sets reads marked before, and requires the baseline and
+each marked set's role by the binding's path, since those reads followed it, and by the stored id
+once there is one. It never pins, which would ask with the owner's token and lock collaborators out
+of the history once the owner's grant lapsed; a binding without an id has read nothing by it. A
+reported id is only true if the read came from it, so REST is addressed by id (§5, redirects), git
+by the path the id has now, and caches filled while reads followed the path are discarded once on
+upgrade.
+
+New bindings carry `reportsSubresources: true` in their immutable props. No read of theirs
+predates reporting, so their `addObserver` and `removeObserver` are no-ops: no check, no stored
+observer, no cap, and a rename or reuse of the old path does not stop sharing them. Legacy
+bindings keep the tracker and the admission checks above, on the original path and any stored id:
+their history is not exported (`getHistoricalSubresources` is not implemented). Returned issue and
+merge request references follow GitLab's current `web_url`, and comment, diff-thread and
+queued-item links the pinned project's current path, not the old path used as the REST ID-rewrite
+key; same-project simulation compares their current source and target.
 
 ### 9. Tests
 
@@ -1105,7 +1183,9 @@ read from its `/help` page; gitlab.com is always current): `draft` list filter 1
 everywhere); `reviewer_state` on `bulk_publish` 19.2 (the gatekeeper reads the Metadata API's
 `version` and refuses `requestChanges` below it); `collapsed`/`too_large` on `/diffs` 18.4 (both
 optional in our reader); "requested changes blocks merge" 17.2 Premium/Ultimate (state is set
-regardless); `auto_merge` 17.11 (CI follow-up); `order_by=merged_at` 17.2 (not used); Planner
+regardless); `auto_merge` 17.11 (tier-2 `autoMerge`, not used yet); `…/pipelines/:id/trigger_jobs`
+19.2, which deprecated `…/bridges` (the gatekeeper reads `version` and lists `bridges` below it);
+`order_by=merged_at` 17.2 (not used); Planner
 role 17.7 and its private-repo read 18.7 (probe denies it either way). Everything else we use
 predates the docs' history window and needs no check.
 
@@ -1306,22 +1386,38 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   assignees, reviewers and milestones on existing issues and merge requests — the next triage
   features review asked for, after `createMergeRequest` gained the labels and assignees
   `createIssue` takes. Each is small; all are omitted for GitHub parity.
-- **CI/CD — deliberately excluded from v1, to be added to both gatekeepers by a separate plan.**
-  GitHub's gatekeeper has no Actions/checks support, and this port keeps parity rather than
-  letting GitLab run ahead. What that costs, so the follow-up is scoped honestly: after
-  `push()` → `createMergeRequest()` the agent cannot learn whether the pipeline passed
-  (`head_pipeline` is on the MR object we already fetch — the field is dropped, not unavailable),
-  cannot read a job log to diagnose a failure, cannot retry/cancel/play jobs, cannot merge with
-  "when pipeline succeeds", and `getCommit()` cannot report a commit's status. Review suggested
-  the smallest first step — a `getHeadPipeline()` read over `head_pipeline`, with no raw-API
-  escape hatch — and `autoMerge` beside it, merging when the pipeline succeeds being GitLab's
-  usual flow. The follow-up
-  plan covers pipeline/job reads (with a tail-capped log read), the cheap non-revertible actions
-  (`retry`/`cancel`/`play`), `autoMerge` on `merge()`, and the GitHub equivalents (check runs,
-  workflow runs, job logs, re-run). Documented starting points: `head_pipeline` on the single-MR
-  GET (with `status`, `web_url`, `detailed_status`), `last_pipeline` on the single-commit GET,
-  `auto_merge` on `/merge` (17.11), and `GET /jobs/:id/trace`, whose size and `Range` behaviour
-  the docs don't cover.
+- **CI/CD — reads shipped (tier 1); actions, `autoMerge` and hooks remain.** v1 left CI out of
+  both gatekeepers for parity; the follow-up added read-only CI to both in one change (GitHub:
+  check runs, commit statuses, workflow runs, job logs). GitLab's tier 1: `ci` on `getCommit()`
+  and on the MR's `getDetails()` — the commit's newest pipeline or the MR's `head_pipeline`, read
+  fresh (status is never cached), a `head_pipeline` counted only when it ran on the current head
+  (or, on `refs/merge-requests/<iid>/merge` or `…/train`, on a commit whose parents include it),
+  and with none a `notStarted`/`done` absence policy over a 10-minute window from this
+  gatekeeper's push-apply record, else the MR's diff versions, else the commit date or, when that
+  is out of the window and CI is expected, a push GitLab recorded (one page of
+  `GET /projects/:id/events?action=pushed`, newest first, matched on `push_data.commit_to`: the
+  post-receive job records a push's event just before it queues the pipelines, so the event
+  covers the gap until the pipeline exists); each lookup best-effort, and `ci` itself left out
+  (logged) rather than failing the read when GitLab fails any other CI read;
+  `listPipelines`/`getPipeline`/`getJob` on project and MR bindings (an MR binding reaches only
+  its own pipelines and their same-project children; fork and cross-project pipelines are data
+  only); `GitLabPipeline` jobs
+  (`…/jobs`, `…/trigger_jobs` or `…/bridges` by version, and external statuses from
+  `…/commits/:sha/statuses`; a status row whose id or name a job listing holds is a job, since
+  GitLab keeps one latest attempt per name in a pipeline, so a retry racing the listing is not
+  taken for a status, and the status filter is applied locally over unfiltered listings),
+  same-project downstreams, `test_report_summary` and the failed cases of `test_report`;
+  `GitLabJob.readLog()` over `GET /jobs/:id/trace` through the kit's `ci` leaf (streamed
+  whole, tail kept, refused past 128 MiB; finished logs cached in chunks and revalidated against
+  `erased_at` and the account's Developer access). Reading a log or a test report raises observer
+  admission to Developer, or Maintainer for a test report read as one (§8). Still open:
+  per-artifact checks in place of that Maintainer bar; `retry`/`cancel`/`play` on jobs and pipelines
+  (non-revertible actions with their own kinds, simulated as `pending`/`canceling`, a retried job
+  as a provisional `~N`); `autoMerge` on `merge()` (below); and GitLab hooks, which this gatekeeper
+  has no infrastructure for, so agents poll `ci.phase`. Unprobed still: the trace endpoint's `Range`
+  behaviour (the read takes the whole body), the push events source (built from the docs and
+  GitLab's `EventsFinder`/`BaseHooksService` source, not a live instance), and stale-head
+  detection for merged-results pipelines beyond the parent check.
 - **Honouring both pull hints at once** if Gitaly accepts `combine:` / `tree:<depth≥1>` — the
   docs list only `blob:none`, `blob:limit` and `sparse:oid` for partial clone; a live probe would
   settle it. A GitLab-specific `filterSpecForHints` variant in the kit, selected by the
@@ -1339,7 +1435,8 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
   the path in props for the observer probe and URL builders, store the id on first read, and
   follow a redirect only to the same path under it.
 - **Lazy label details** if `with_labels_details` list payloads prove heavy.
-- **`autoMerge`** (`merge_when_pipeline_succeeds` / `auto_merge`) on `merge()`; `rebase()` on
+- **`autoMerge`** (`merge_when_pipeline_succeeds` / `auto_merge`, 17.11) on `merge()`: tier 2 of
+  CI, now that `getDetails().ci` lets an agent see the pipeline it would wait on; `rebase()` on
   the MR session (`PUT …/rebase`, async — needs polling).
 - **Reactions / emoji awards, milestones, iterations, epics, time tracking, work items** — GitLab
   has a lot of surface neither gatekeeper touches.

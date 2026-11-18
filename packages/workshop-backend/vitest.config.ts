@@ -85,7 +85,14 @@ export default defineConfig({
           compatibilityDate: COMPATIBILITY_DATE,
           compatibilityFlags: ['experimental', 'streaming_tail_worker'],
         }],
-        bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
+        // FAST_CHECK_SEED reaches the property suites' `process.env` (see
+        // @gadgets/scripts/property-runs) through `nodejs_compat`, which copies string bindings there.
+        bindings: {
+          PUBLIC_BASE_URL: 'https://workshop.example/',
+          // The deployment admin of the admin-view suites.
+          ADMINS: ['deployment-admin@example.test'],
+          ...process.env.FAST_CHECK_SEED ? { FAST_CHECK_SEED: process.env.FAST_CHECK_SEED } : {},
+        },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
         workerLoaders: { LOADER: {} },
         // Where a blueprint's content is published to and read back from.
@@ -97,9 +104,12 @@ export default defineConfig({
           // Never addressed by name: a binding is what puts the class in `ctx.exports`, from
           // which the overseer instantiates it (with props) as one of its own facets.
           TEST_AGENT_SPAWNER: { className: 'AgentSpawnerGatekeeper', useSQLite: true },
+          TEST_REPLICA_GIT_SOURCE: { className: 'ReplicaGitSource', useSQLite: true },
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
           // Likewise only reached through `ctx.exports`, by the overseer deleting a blueprint.
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
+          // The Overseer and AdminSettings also reach it through `ctx.exports`.
+          TEST_ADMIN_AUDIT: { className: 'AdminAuditDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
         },
       },

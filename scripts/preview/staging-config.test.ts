@@ -19,6 +19,7 @@ import {
   gatekeeperBindingName,
   previewPullRequestNumber,
   resolveAccess,
+  resolveAdminConfigSeed,
   resolveAiGateway,
   resolveGatekeeperSecrets,
   resolvePreviewName,
@@ -50,6 +51,7 @@ const SECRETS = backendSecrets({
   admins: [ADMIN],
   access: ACCESS,
   aiGateway: resolveAiGateway(AI_GATEWAY),
+  adminConfigSeed: {},
 });
 const GITHUB_OAUTH = { githubClientId: "Iv1.preview0000000f", githubClientSecret: "9".repeat(40) };
 const GATEKEEPER_SECRETS = resolveGatekeeperSecrets(GITHUB_OAUTH);
@@ -521,4 +523,19 @@ test("every gatekeeper handed an OAuth app is a package that exists, and reads t
     // what the deploy wizard's DEFAULT_CRED_INPUTS asks a real instance for.
     assert.deepEqual(Object.keys(secrets).toSorted(), ["CLIENT_ID", "CLIENT_SECRET"]);
   }
+});
+
+test("resolveAdminConfigSeed uploads a JSON object as ADMIN_CONFIG_SEED, and refuses anything else", () => {
+  assert.deepEqual(resolveAdminConfigSeed({ seed: undefined }), {});
+  assert.deepEqual(resolveAdminConfigSeed({ seed: " " }), {});
+  const seed = '{"modelSettings": {"@cf/zai-org/glm-5.2": {"reasoning": "high"}}}';
+  assert.deepEqual(resolveAdminConfigSeed({ seed }), { ADMIN_CONFIG_SEED: seed });
+  assert.throws(() => resolveAdminConfigSeed({ seed: "{" }), /not JSON/);
+  for (const bad of ["[]", "null", "3"]) {
+    assert.throws(() => resolveAdminConfigSeed({ seed: bad }), /not a JSON object/, bad);
+  }
+  const secrets = backendSecrets({
+    admins: [ADMIN], access: ACCESS, aiGateway: {}, adminConfigSeed: resolveAdminConfigSeed({ seed }),
+  });
+  assert.equal(secrets.ADMIN_CONFIG_SEED, seed);
 });

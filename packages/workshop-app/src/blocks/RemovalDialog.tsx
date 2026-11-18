@@ -32,18 +32,21 @@ export type RemovalDialogProps = {
   onRemovingChange: (removing: Set<string>) => void
   /** Takes it away. A rejection leaves the dialog open, under why. */
   onConfirm: () => ActionResult
+  /** What they are taken off, where it is one gadget rather than the whole workspace. */
+  gadget?: string
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-const said = (name: string, { left }: NonNullable<RemovalDialogProps['outcome']>) => {
+const said = (name: string, { left }: NonNullable<RemovalDialogProps['outcome']>, gadget: string | undefined) => {
+  if (gadget) return left === 'unchanged' ? `Your own invitation goes. ${name} can still use ${gadget} some other way.` : `${name} will no longer be able to use ${gadget}.`
   if (left === 'nothing') return `${name} will lose access to this workspace and everything in it.`
-  if (left === 'use') return `${name} will no longer edit this workspace, but can still use it through someone else’s invitation.`
+  if (left === 'use') return `${name} will no longer edit this workspace, but can still use some of its gadgets through someone else’s invitation.`
   return `Your own invitation goes. ${name} still has access some other way.`
 }
 
 // What the dialog holds, which is only there while it is open: why the last try failed starts over each time.
-const RemovalContent = ({ name, outcome, unknown, removing, onRemovingChange, onConfirm, pending, run }: Omit<RemovalDialogProps, 'open' | 'onOpenChange'> & {
+const RemovalContent = ({ name, outcome, unknown, removing, onRemovingChange, onConfirm, gadget, pending, run }: Omit<RemovalDialogProps, 'open' | 'onOpenChange'> & {
   pending: boolean
   run: (action: () => ActionResult) => void
 }) => {
@@ -72,7 +75,7 @@ const RemovalContent = ({ name, outcome, unknown, removing, onRemovingChange, on
         <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Remove {name}?</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">
-            {outcome ? said(name, outcome) : unknown ? `Couldn’t check who this affects: ${unknown}` : 'Checking who this affects…'}
+            {outcome ? said(name, outcome, gadget) : unknown ? `Couldn’t check who this affects: ${unknown}` : 'Checking who this affects…'}
           </Dialog.Description>
         </div>
         <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />

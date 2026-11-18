@@ -129,7 +129,9 @@ The account advertises its UI through the generic `AccountDescription.providesUi
 mechanism used by other Gatekeeper management apps. The Workshop discovers it dynamically and hosts
 the single-file app in an opaque-origin, network-isolated `srcDoc` frame.
 
-The app can only call its account-scoped, read-only `list()` capability plus bounded host methods for
+The app can only call its account-scoped, read-only `list()` capability (`ScheduleManagementApi` in
+`src/management-types.ts`, which `src/app-api.ts` exports as `AppApi`, so `pnpm cf-os api
+get-gatekeeper-app scheduler ui list` is a typed command) plus bounded host methods for
 theme updates, workspace-title resolution, navigation, and starter prompts. Pages contain at most 100
 schedules. Search is case-insensitive over title and description and is limited to 200 characters.
 Cursors are opaque, bounded, and tied to the normalized search and status filters.
@@ -158,6 +160,9 @@ the alarm. Bounded batches limit ordinary load; they do not eliminate that trade
 The Scheduler is capability-authorized. It does not receive Workshop user identity, assert its own
 ambient policy, expose external network authority, or implement actions. The Workshop's existing hook
 admission and observation authorization remain the security boundaries.
+
+Observers follow the low-stakes policy: `list()` and each delivery report `subresources: []`, and
+`addObserver` and `verifyObserverAccess` admit every collaborator.
 
 ## Limits
 

@@ -24,6 +24,11 @@ import type {
   GitHubTagSummary,
 } from "./types";
 
+/** A GitHub timestamp as a Date; absent or empty reads as undefined. */
+export function parseDate(value?: string | null): Date | undefined {
+  return value ? new Date(value) : undefined;
+}
+
 export function actorFromUser(
   user: { login: string; name?: string | null; html_url: string; avatar_url?: string } | null | undefined,
 ): GitHubActor | null {
@@ -40,7 +45,7 @@ function identityFromResponse(identity?: GitHubGitIdentityResponse | null): GitH
   return {
     name: identity?.name ?? undefined,
     email: identity?.email ?? undefined,
-    date: identity?.date ? new Date(identity.date) : undefined,
+    date: parseDate(identity?.date),
   };
 }
 

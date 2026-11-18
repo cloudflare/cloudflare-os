@@ -133,6 +133,18 @@ export function acceptsTenant(policy: TenantPolicy, tenantId: string, pinnedTena
   return pinnedTenantId === undefined || pinnedTenantId === tenantId;
 }
 
+/**
+ * The tenant ID this deployment permanently fixes for every connection, which subresource IDs then
+ * leave implicit (subresources.ts), or null, so that every ID names its tenant. Only an authority
+ * named by GUID fixes one: `organizations` admits several, and a verified domain can move to
+ * another tenant, whose `tid` acceptsTenant can't compare.
+ * @throws MicrosoftConfigurationError for a setting that cannot work.
+ */
+export function fixedTenant(env: Env): string | null {
+  const policy = tenantPolicy(env);
+  return policy.kind === "single" && TENANT_GUID.test(policy.authority) ? policy.authority.toLowerCase() : null;
+}
+
 /** The OAuth endpoints for an authority. */
 export function oauthEndpoints(authority: string): { authorize: string; token: string } {
   const base = `${LOGIN_ORIGIN}/${encodeURIComponent(authority)}/oauth2/v2.0`;
@@ -168,6 +180,7 @@ export function sharePointAccess(env: Env): SharePointAccess {
  * file, list or page. See plans/microsoft-365-gatekeeper.md.
  */
 export const SHAREPOINT_RESOURCE: SupportedResource = {
+  id: "sharepoint",
   urlPattern: "https://*.sharepoint.com/*",
   title: "SharePoint & OneDrive",
   description: "Find, read and edit files, lists and pages, with your approval for every change. " +
@@ -180,6 +193,7 @@ export const SHAREPOINT_RESOURCE: SupportedResource = {
  * configurator narrows. See plans/microsoft-outlook.md.
  */
 export const OUTLOOK_RESOURCE: SupportedResource = {
+  id: "outlook",
   urlPattern: "https://outlook.office.com/*",
   title: "Outlook",
   description: "Read, search and triage mail, draft replies, and send with your approval. Connect your " +
@@ -192,6 +206,7 @@ export const OUTLOOK_RESOURCE: SupportedResource = {
  * detail, which the configurator chooses. See plans/microsoft-calendar.md.
  */
 export const CALENDAR_RESOURCE: SupportedResource = {
+  id: "calendar",
   urlPattern: "https://outlook.office.com/calendar/*",
   title: "Outlook Calendar",
   description: "See when you and your colleagues are free, read calendars, and schedule with your approval. " +

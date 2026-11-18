@@ -1,0 +1,1 @@
+<!-- Stands in for the generated configurator frame in tests that import the Worker. -->

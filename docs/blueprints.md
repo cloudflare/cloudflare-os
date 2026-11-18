@@ -29,7 +29,7 @@ A blueprint does **not** capture:
 
 - The gadget's SQLite storage contents.
 - AI chat history, or the gadget's commit history. Its commit messages hold chat titles and its authors include collaborators, neither of which the publisher chose to share.
-- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, URL pattern, etc.) is recorded.
+- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, resource type ID or legacy URL pattern, etc.) is recorded.
 
 ## Binding Annotations
 
@@ -45,7 +45,7 @@ All named bindings are included in the blueprint. Annotations are configured in 
 
 Blueprints support three types of bindings, matching the three types of gatekeepers:
 
-1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a URL pattern describing what kind of resource is expected. When instantiating, the user picks a connected account and configures a matching resource.
+1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a `resourceTypeId` identifying the expected resource type within that vendor. An explicit ID is authoritative; a legacy record without one resolves only through an exact current URL pattern. When instantiating, the user picks a connected account and configures a matching resource. See [resource type identity](gatekeeper-resource-types.md).
 
 2. **AI Model** (`type: "aiModel"`) -- a language model binding, or a decision model binding when `modelKind: "decision"` (see `ModelKind`). The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models of the same kind.
 
@@ -53,7 +53,7 @@ Blueprints support three types of bindings, matching the three types of gatekeep
 
 ## Releases
 
-Gadget code is stored as git commits in the workspace's Overseer (see the header of `git-store.ts`), and a blueprint's code is a git commit too. `blueprint-release.ts` defines the format: the commit a blueprint version is, the packfile it ships in, and the check that decides what such a pack may bring into a workspace. It is pure computation over byte arrays and an object lookup, so the same code serves the Overseer and the bundled-blueprint installer.
+Gadget code is stored as git commits in the workspace's Overseer (see the header of `git-cache.ts`), and a blueprint's code is a git commit too. `blueprint-release.ts` defines the format: the commit a blueprint version is, the packfile it ships in, and the check that decides what such a pack may bring into a workspace. It is pure computation over byte arrays and an object lookup, so the same code serves the Overseer and the bundled-blueprint installer.
 
 ### Lineage
 
@@ -133,7 +133,7 @@ A pack arrives from an upload, or from storage that any uploader can write, so i
 - The pack is at most 32 MiB, no object inflates to more than that, and no delta refers to an object outside the pack. Object IDs are computed from content, never taken from the pack.
 - The commit that `metadata.commitId` names is present, and so is every ancestor of it, up to 10,000 commits. Each is in the canonical form the encoder writes.
 - The release's tree is complete. Any other commit's tree is either complete or absent.
-- Trees hold only subtrees and mode `100644` blobs, under names `GitStore` can read back. Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
+- Trees hold only subtrees and mode `100644` blobs, under names the workspace's git store would write (none that `isReservedTreeEntryName()` refuses). Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
 - Nothing else is in the pack.
 
 Publishing runs the same check on what it is about to pack, so a blueprint that publishes always instantiates. Imported objects are stored with no record of any gatekeeper remote possessing them (`WorkspaceGitCache.importObjects`), so they grant no gatekeeper a read.
@@ -210,7 +210,7 @@ Importing a version 2 archive stores the same release commit under a new bluepri
 
 ## Admin Features and Featured Blueprints
 
-Deployments can optionally configure a set of admin usernames through the backend worker's `ADMINS` binding as an array of usernames.
+Deployments can optionally configure a set of admins through the backend worker's `ADMINS` binding, an array of usernames or sign-in emails. Entries match regardless of the case of ASCII letters, since an identity provider may capitalize an email differently than it was typed. `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` bound what those admins may choose for inspecting workspaces and users' accounts and for audit retention; see [admin-access.md](admin-access.md).
 
 Admins get access to two extra RPCs:
 

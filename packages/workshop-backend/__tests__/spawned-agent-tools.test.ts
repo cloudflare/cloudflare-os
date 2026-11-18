@@ -37,6 +37,7 @@ async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
       idFromString: (id: string) => id,
+      idFromName: () => OWNER_USER_ID,
       get: () => ({ getChatContext: async () => ({ profile: OWNER }) }),
     };
     // The turn is driven by hand below, not by the spawn.
@@ -54,7 +55,7 @@ function seedGadget(impl: any): void {
 }
 
 async function commitFiles(impl: any, files: Record<string, string>): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents: [],
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",

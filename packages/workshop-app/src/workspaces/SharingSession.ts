@@ -1,13 +1,12 @@
 import type {
   AffectedCollaborator,
   CollaboratorInfo,
-  CollaboratorRole,
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   Overseer,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import { removalOutcome, withShareKey, workspaceLinksOf, type RemovalOutcome } from './sharingRules'
+import { grantOf, ownLinkOf, removalOutcome, withShareKey, type RemovalOutcome, type ShareTarget } from './sharingRules'
 
 type Calls =
   | 'getMetadata'
@@ -29,16 +28,16 @@ export type SharingOverseer = Pick<Overseer, Calls> & Disposable & {
 }
 
 /**
- * The workspace's link: whether anyone who can sign in to the deployment may join it from its
- * address, and with what (`role`). On, it carries a key minted for this session, ready to copy: a
- * clipboard write is refused once the click that asked for it has passed, so the key cannot be
- * waited for then.
+ * The viewer's own link to what is shared: whether anyone who can sign in to the deployment gets
+ * what sharing it gives from its address. On, it carries a key minted for this session, ready to
+ * copy: a clipboard write is refused once the click that asked for it has passed, so the key
+ * cannot be waited for then.
  */
 export type LinkState =
   | { status: 'loading' }
   | { status: 'failed' }
   | { status: 'off' }
-  | { status: 'on'; role: CollaboratorRole; linkIds: string[]; url?: string }
+  | { status: 'on'; linkId: string; url?: string }
 
 export type SharingSnapshot =
   | { status: 'loading' }
@@ -51,8 +50,8 @@ export type SharingSnapshot =
        * is not told, so for them there is nobody.
        */
       collaborators: CollaboratorInfo[]
-      /** What someone given each role must have their own access to before they can open it, once read. */
-      requirements: Partial<Record<CollaboratorRole, ObserverBindingNeed[]>>
+      /** What someone it is shared with must have their own access to before they can open it, once read. */
+      requirements?: ObserverBindingNeed[]
       /** The services there are, to say which of those asks for a sign-in. Unknown until read. */
       vendors?: GatekeeperVendorInfo[]
       /** Unknown to whoever cannot share it, and where it is not being shared. */
@@ -63,15 +62,16 @@ export type SharingSource = {
   /** Opens the workspace, on whichever connection is current. */
   open: () => SharingOverseer
   /**
-   * For a dialog that shares it, rather than a page that lists who has it: the page a link lets
-   * people in to, which its key is added to, and the services there are, for what its connections
-   * ask of whoever it is shared with. Without it only the people are read.
+   * For a dialog that shares it, rather than a page that lists who has it: what is shared (the
+   * workspace, or one of its gadgets), the page a link lets people in to, which its key is added
+   * to, who is sharing it, whose own link is theirs to turn on and off, and the services there
+   * are, for what its connections ask of whoever it is shared with. Without it only the people
+   * are read.
    */
-  sharing?: { page: string; vendors: () => Promise<GatekeeperVendorInfo[]> }
+  sharing?: { target: ShareTarget; page: string; viewerId: string; vendors: () => Promise<GatekeeperVendorInfo[]> }
 }
 
 const LOADING: SharingSnapshot = { status: 'loading' }
-const ROLES: readonly CollaboratorRole[] = ['build', 'use']
 // After the workspace was lost, it is opened again after this.
 const RETRY_DELAY = 1000
 
@@ -150,33 +150,28 @@ export class SharingSession {
       status: 'ready',
       metadata,
       collaborators,
-      requirements: before?.requirements ?? {},
+      requirements: before?.requirements,
       vendors: before?.vendors,
       link: shares ? before?.link ?? { status: 'loading' } : undefined,
     })
     if (!shares) return
     // None of these holds up the people, and none failing stops anyone being added.
-    for (const role of ROLES) {
-      overseer.listObserverRequirements(role).then(
-        (needs) => {
-          if (run === this.#run && this.#snapshot.status === 'ready') this.#update({ requirements: { ...this.#snapshot.requirements, [role]: needs } })
-        },
-        () => {},
-      )
-    }
+    overseer.listObserverRequirements(grantOf(sharing.target)).then(
+      (requirements) => { if (run === this.#run) this.#update({ requirements }) },
+      () => {},
+    )
     if (!before?.vendors) sharing.vendors().then((vendors) => { if (run === this.#run) this.#update({ vendors }) }, () => {})
-    void this.#loadLink(run, overseer, sharing.page)
+    void this.#loadLink(run, overseer, sharing)
   }
 
-  async #loadLink(run: number, overseer: SharingOverseer, page: string) {
+  async #loadLink(run: number, overseer: SharingOverseer, { target, page, viewerId }: NonNullable<SharingSource['sharing']>) {
     try {
-      const links = workspaceLinksOf(await overseer.listShareLinks())
+      const own = ownLinkOf(await overseer.listShareLinks(), target, viewerId)
       if (run !== this.#run) return
-      if (!links) return this.#update({ link: { status: 'off' } })
-      const { linkIds, role, shown } = links
-      this.#update({ link: { status: 'on', role, linkIds } })
-      const { key } = await overseer.newShareLinkKey(shown)
-      if (run === this.#run) this.#update({ link: { status: 'on', role, linkIds, url: withShareKey(page, key) } })
+      if (!own) return this.#update({ link: { status: 'off' } })
+      this.#update({ link: { status: 'on', linkId: own.linkId } })
+      const { key } = await overseer.newShareLinkKey(own.linkId)
+      if (run === this.#run) this.#update({ link: { status: 'on', linkId: own.linkId, url: withShareKey(page, key) } })
     } catch {
       if (run === this.#run) this.#update({ link: { status: 'failed' } })
     }
@@ -195,58 +190,62 @@ export class SharingSession {
     return this.#overseer
   }
 
+  // A gadget's people are taken off it alone, and a workspace's off all of it.
+  #gadgetId() {
+    const target = this.source.sharing?.target
+    return target?.kind === 'gadget' ? target.gadgetId : undefined
+  }
+
   /**
-   * Gives `username` what `role` lets them do. Resolves to who they are, or to nothing when there
-   * is no such account. The people are read again before it resolves, so they are listed by then.
+   * Shares it with `username`: the workspace, to edit, or the gadget, to use. Resolves to who they
+   * are, or to nothing when there is no such account. The people are read again before it
+   * resolves, so they are listed by then.
    */
-  async invite(username: string, role: CollaboratorRole): Promise<CollaboratorInfo | null> {
-    const person = await this.#require().addCollaborator(username, role)
+  async invite(username: string): Promise<CollaboratorInfo | null> {
+    const target = this.source.sharing?.target ?? { kind: 'workspace' }
+    const person = await this.#require().addCollaborator(username, grantOf(target))
     if (person) await this.#reloadPeople()
     return person
   }
 
   /** What taking someone's access away would do: what is left to them, and who else would lose it. */
   async previewRemoval(profileId: string): Promise<RemovalOutcome> {
-    return removalOutcome(profileId, await this.#require().previewRemoveCollaborator(profileId))
+    return removalOutcome(profileId, await this.#require().previewRemoveCollaborator(profileId, this.#gadgetId()))
   }
 
   /**
-   * Takes someone's access away, and that of those who have it only through them apart from
-   * `keep`, who keep what they would have lost. Resolves to whose access narrowed: nobody's, when
-   * they still have it some other way.
+   * Takes someone's access away, to the gadget shared or else to all of it, and that of those who
+   * have it only through them apart from `keep`, who keep what they would have lost. Resolves to
+   * whose access narrowed: nobody's, when they still have it some other way.
    */
   async remove(profileId: string, keep: string[]): Promise<AffectedCollaborator[]> {
-    const removed = await this.#require().removeCollaborator(profileId, keep)
+    const removed = await this.#require().removeCollaborator(profileId, keep, this.#gadgetId())
     await this.#reloadPeople()
     return removed
   }
 
   /**
-   * Sets what the link lets anyone in to: editing, only using, or nothing. A link's grant cannot
-   * change, so another is made in its place, before the old ones go, so that there is always one
-   * that works. Whoever already came in by an old one keeps what it gave them: they are listed
-   * with the rest and taken off one at a time, never all at once by a switch.
+   * Turns the viewer's own link on or off. Turned off, it stops letting anyone in, but whoever
+   * already came in by it keeps what it gave them: they are listed with the rest and taken off one
+   * at a time, never all at once by a switch.
    */
-  async setLink(to: CollaboratorRole | 'off') {
+  async setLink(on: boolean) {
     const snapshot = this.#snapshot
-    const page = this.source.sharing?.page
-    if (snapshot.status !== 'ready' || !snapshot.link || page === undefined) return
+    const sharing = this.source.sharing
+    if (snapshot.status !== 'ready' || !snapshot.link || !sharing) return
     const { link } = snapshot
-    if (link.status === 'loading' || link.status === 'failed' || to === (link.status === 'on' ? link.role : 'off')) return
+    if (link.status === 'loading' || link.status === 'failed' || on === (link.status === 'on')) return
     const overseer = this.#require()
     const run = this.#run
-    let next: LinkState = { status: 'off' }
-    if (to !== 'off') {
-      const { key, linkId } = await overseer.createShareLink(to)
-      next = { status: 'on', role: to, linkIds: [linkId], url: withShareKey(page, key) }
+    if (on) {
+      const { key, linkId } = await overseer.createShareLink(grantOf(sharing.target), undefined, { default: true })
+      if (run === this.#run) this.#update({ link: { status: 'on', linkId, url: withShareKey(sharing.page, key) } })
+      return
     }
-    if (link.status === 'on') {
-      for (const linkId of link.linkIds) {
-        const affected = await overseer.previewRevokeShareLink(linkId)
-        await overseer.revokeShareLink(linkId, affected.map(({ profile }) => profile.id))
-      }
-    }
-    if (run === this.#run) this.#update({ link: next })
-    if (link.status === 'on') await this.#reloadPeople()
+    if (link.status !== 'on') return
+    const affected = await overseer.previewRevokeShareLink(link.linkId)
+    await overseer.revokeShareLink(link.linkId, affected.map(({ profile }) => profile.id))
+    if (run === this.#run) this.#update({ link: { status: 'off' } })
+    await this.#reloadPeople()
   }
 }

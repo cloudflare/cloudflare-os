@@ -17,6 +17,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Fragment: "Fragment",
   HierarchyPicker: "HierarchyPicker",
   Notice: "Notice",
+  RadioCards: "RadioCards",
   Section: "Section",
 }));
 
@@ -40,13 +41,17 @@ const COPY_DATE = "2026-10-04T00:00:00.000Z";
 async function open(accepted?: string[]) {
   vi.resetModules();
   const spec = (await import("../src/configurator/drive-configurator-ui")).default as unknown as Spec;
-  let values: Values = { ...spec.initial };
+  // These tests are of the Office flow: on Read only, readiness turns on the file alone.
+  let values: Values = { ...spec.initial, access: null };
   const ui = {
     inspectFile: vi.fn(async (_kind: string, _fileId: string): Promise<unknown> => ({ type: "native" })),
+    listDriveNodes: vi.fn(async (_parentId: string): Promise<unknown> => ({ nodes: [] })),
     getDriveNode: vi.fn(async (_id: string): Promise<unknown> => null),
     hasConversionAccess: vi.fn(async () => false),
     convertFile: vi.fn(async (_kind: string, _fileId: string, _opts?: { reuse?: string }): Promise<unknown> =>
       ({ type: "needsAccess" })),
+    offersWriteAccess: vi.fn(async () => true),
+    getWriteAccess: vi.fn(async () => ({ grant: "g", held: false })),
   };
   const ensureResources = vi.fn(async (_patterns: string[]) => true);
   const context = () => ({
@@ -70,6 +75,7 @@ async function open(accepted?: string[]) {
     url: () => spec.resourceUrl({ values, acceptedResourceUrlPatterns: accepted }),
     choose: (target: string | null) => find("HierarchyPicker")[0].props.onChange(target),
     loadItem: (id: string) => find("HierarchyPicker")[0].props.loadItem(id),
+    list: (parentId: string) => find("HierarchyPicker")[0].props.loadItems({ parentId, query: "", cursor: null }),
     notices: () => find("Notice").map(node => ({ tone: node.props.tone, text: text(node) })),
     action: () => find("Notice").map(node => node.props.action).find(Boolean),
     button: (label: string | RegExp) => find("Button").find(node =>
@@ -116,7 +122,7 @@ describe.each([
   });
 
   // The configurator copies each type's pattern; a blueprint binding names one, as accepted.
-  it("binds the type the Workshop accepts, read-only as a Drive file when that is all it takes", async () => {
+  it("binds the type the Workshop accepts, as a Drive file when that is all it takes", async () => {
     const editable = await open([resource.urlPattern]);
     editable.choose(`${kind}:native-1`);
     await settle();
@@ -128,7 +134,8 @@ describe.each([
     expect(readOnly.ui.inspectFile).not.toHaveBeenCalled();
     expect(readOnly.ready()).toBe(true);
     expect(parseResourceUrl(readOnly.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
-    expect(readOnly.notices()).toEqual([{ tone: undefined, text: "Connects read-only as a Drive file." }]);
+    expect(readOnly.notices()).toEqual(
+      [{ tone: undefined, text: "Connects as a Drive file, whose content can be read but not edited." }]);
     expect(readOnly.action()).toBeUndefined();
   });
 
@@ -488,7 +495,51 @@ describe("the Drive picker's Office flow", () => {
     frame.choose("sheets:source-1");
 
     expect(frame.ready()).toBe(false);
+  });
+
+  it("says it is checking a file only once the check is slow", async () => {
+    const frame = await open();
+    let answer!: (inspection: unknown) => void;
+    frame.ui.inspectFile.mockReturnValueOnce(new Promise(resolve => { answer = resolve; }));
+
+    frame.choose("sheets:source-1");
+    expect(frame.notices()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(frame.notices()).toEqual([{ tone: undefined, text: "Checking the file…" }]);
+
+    answer({ type: "native" });
+    await settle();
+    expect(frame.notices()).toEqual([]);
+  });
+
+  it("never says it is checking a file once a quick check has settled", async () => {
+    const frame = await open();
+
+    frame.choose("sheets:native-1");
+    await settle();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(frame.notices()).toEqual([]);
+    expect(frame.ready()).toBe(true);
+  });
+
+  const NATIVE = "application/vnd.google-apps.spreadsheet";
+  const OFFICE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  it.each([
+    ["connects a listed native file without asking Drive", [NATIVE], true],
+    ["still checks a listed Office file", [OFFICE], false],
+    ["checks a file again once a later listing shows it is no longer native", [NATIVE, OFFICE], false],
+  ])("%s", async (_, mimeTypes, native) => {
+    const frame = await open();
+    for (const mimeType of mimeTypes) {
+      frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{ id: "sheets:file-1", title: "Budget", kind: "file", mimeType }] });
+      await frame.list("folder:A");
+    }
+
+    frame.choose("sheets:file-1");
+
+    expect(frame.ready()).toBe(native);
+    expect(frame.ui.inspectFile).toHaveBeenCalledTimes(native ? 0 : 1);
   });
 
   it("drops an inspection that a newer choice overtook", async () => {
@@ -552,7 +603,7 @@ describe("the Drive picker on a Drive card account without an editable type's gr
   const DRIVE_TYPES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
     .map(resource => resource.urlPattern);
 
-  it("connects a file read-only, and offers to ask for every editable type the account lacks", async () => {
+  it("connects a file as a Drive file, and offers to ask for every editable type the account lacks", async () => {
     const frame = await open([...DRIVE_TYPES, GOOGLE_DOC_RESOURCE.urlPattern]);
     const asked = Promise.withResolvers<boolean>();
     frame.ensureResources.mockReturnValue(asked.promise);
@@ -562,7 +613,8 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     expect(parseResourceUrl(frame.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
     expect(frame.notices()).toEqual([{
       tone: undefined,
-      text: "Connects read-only as a Drive file. To edit it as a Google Sheets file, allow editing and choose it again.",
+      text: "Connects as a Drive file, whose content can be read but not edited. " +
+        "To edit it as a Google Sheets file, allow editing and choose it again.",
     }]);
 
     frame.action()!.onClick();
@@ -583,16 +635,21 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     frame.action()!.onClick();
     await settle();
     expect(frame.notices()).toEqual([{ tone: "error", text: "The pop-up was blocked." }]);
+    // A read and write Drive connection edits a presentation; this one is read only.
     frame.choose("slides:native-2");
     expect(frame.notices()).toEqual([{
       tone: undefined,
-      text: "Connects read-only as a Drive file. To edit it as a Google Slides file, allow editing and choose it again.",
+      text: "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
+        "Read and write access. To connect it as a Google Slides file on its own instead, allow " +
+        "editing and choose it again.",
     }]);
 
     frame.action()!.onClick();
     await settle();
     expect(frame.notices()).toEqual([{
-      tone: undefined, text: "Editing isn't available here, so this connects read-only as a Drive file.",
+      tone: undefined,
+      text: "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
+        "Read and write access.",
     }]);
     expect(frame.action()).toBeUndefined();
     expect(frame.ready()).toBe(true);

@@ -16,9 +16,11 @@ import type { Api, Context, Model } from "@earendil-works/pi-ai";
 //   every chat of the agent's kind, so its breakpoints are kept for 1 hour, not 5 minutes: a
 //   chat that resumes after a longer pause still reads it, and so does a new chat. The chat's
 //   own messages keep pi's 5 minutes.
-// - openai-responses, GPT-5.6 and later: the leading developer message becomes two input_text
-//   parts, with an explicit prompt_cache_breakpoint on the first. These models look up cached
-//   prefixes only at message ends; older ones cache at fixed intervals and don't support the field.
+// - openai-responses, GPT-5.6 and later: the leading developer message (after the
+//   additional_tools items pi declares the tools in, for models that take them) becomes two
+//   input_text parts, with an explicit prompt_cache_breakpoint on the first. These models look up
+//   cached prefixes only at message ends; older ones cache at fixed intervals and don't support
+//   the field.
 // - Other APIs: unchanged.
 //
 // Drop the split if pi sends a system message's content and sections as separate blocks with a
@@ -110,23 +112,21 @@ function cachedForAnHour(block: unknown): unknown {
 
 function splitOpenAiResponsesInstructions(payload: object, staticText: string): object | undefined {
   if (!("input" in payload) || !Array.isArray(payload.input)) return undefined;
-  const [instructions, ...rest]: unknown[] = payload.input;
+  const input: unknown[] = [...payload.input];
+  const at = input.findIndex(item => typeof item !== "object" || item === null ||
+      !("type" in item) || item.type !== "additional_tools");
+  const instructions = input[at];
   if (typeof instructions !== "object" || instructions === null || !("role" in instructions) ||
       (instructions.role !== "developer" && instructions.role !== "system") ||
       !("content" in instructions) || !continuesPast(instructions.content, staticText)) {
     return undefined;
   }
-  return {
-    ...payload,
-    input: [
-      {
-        ...instructions,
-        content: [
-          { type: "input_text", text: staticText, prompt_cache_breakpoint: { mode: "explicit" } },
-          { type: "input_text", text: instructions.content.slice(staticText.length) },
-        ],
-      },
-      ...rest,
+  input[at] = {
+    ...instructions,
+    content: [
+      { type: "input_text", text: staticText, prompt_cache_breakpoint: { mode: "explicit" } },
+      { type: "input_text", text: instructions.content.slice(staticText.length) },
     ],
   };
+  return { ...payload, input };
 }

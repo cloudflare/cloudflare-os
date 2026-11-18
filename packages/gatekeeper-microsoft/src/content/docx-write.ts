@@ -12,13 +12,13 @@ import { CONTENT_TYPES, ContentTypesEditor, PackageEditor, RelationshipsEditor }
 import { APP_XML, coreXml, FONT_TABLE_XML, SETTINGS_XML, THEME_XML } from "./docx-parts";
 import { ALL_ROLES, StyleCatalog, type StyleRole } from "./docx-styles";
 import { R_NS, W_NS } from "./docx-xml";
-import { DocumentConversionError } from "./errors";
+import { DocumentConversionError } from "@gadgets/office-content/errors";
 import { parseMarkdown, plainText, type MdBlock } from "./markdown-parse";
-import { findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName, XML_DECLARATION, type Relationships } from "./ooxml";
+import { findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName, XML_DECLARATION, type Relationships } from "@gadgets/office-content/ooxml";
 import { applySplices, parseRaw, rawChildren, RawXmlError, type Splice } from "./raw-xml";
-import { attribute, childElements, descendants, firstChild, type XmlElement } from "./xml";
+import { attribute, childElements, descendants, firstChild, type XmlElement } from "@gadgets/office-content/xml";
 import { writeZip } from "./zip-write";
-import { openZip, type ZipArchive } from "./zip";
+import { openZip, type ZipArchive } from "@gadgets/office-content/zip";
 
 export { docxFeatures } from "./docx-features";
 

@@ -1,4 +1,4 @@
-// The search itself, apart from the Worker's entrypoints so it runs under Node in tests.
+// Web Search request handling, separate from the Worker's RPC entrypoints.
 
 import { z } from "zod";
 import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
@@ -60,5 +60,5 @@ function describeSearch(query: string): ObservationDescription {
       `Searches the public web through AI Gateway, with the "${PROVIDER}" provider.`)
     .inline("Query", query)
     .finish();
-  return { title: "Search the web", description, fields };
+  return { title: "Search the web", description, fields, subresources: [] };
 }

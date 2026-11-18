@@ -6,7 +6,7 @@ import { startConversation, type NewConversationOverseer } from './startConversa
 const fakeOverseer = (workspaceId = 'ws-1', chatId = 0) => {
   const newChat = vi.fn<Overseer['newChat']>(async () => chatId)
   const getMetadata = vi.fn<Overseer['getMetadata']>(async () => ({ id: workspaceId, title: 'Untitled Workspace' }))
-  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.length}`)
+  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content instanceof Uint8Array ? content.length : content.byteLength}`)
   const listSlashCommands = vi.fn<Overseer['listSlashCommands']>(async () => [
     { selection: { gatekeeperId: 4, commandId: 'c1/brief/SKILL.md' }, name: 'brief', description: 'Brief me', providerLabel: 'Context Library' },
   ])

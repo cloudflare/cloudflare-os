@@ -254,6 +254,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
           onClose={() => setShareTarget(null)}
           overseer={shareOverseer.stub}
           metadata={shareTarget}
+          target={{ kind: 'workspace' }}
           currentUser={currentUser}
           authenticatedApi={authenticatedApi}
         />

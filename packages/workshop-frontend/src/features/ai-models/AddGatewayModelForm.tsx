@@ -12,7 +12,7 @@ import type {
 import { GatewayLevelTestsStatus, GatewayTestButton } from './GatewayTest'
 import { PROVIDER_LABELS, REASONING_LEVEL_LABELS, parseTokenLimit } from './modelForm'
 import type { ModelSuggestion } from './modelsDev'
-import { useFieldErrorAlert } from './useFieldErrorAlert'
+import { useFieldErrorAlert } from '../../hooks/useFieldErrorAlert'
 import { useGatewayTests } from './useGatewayTests'
 
 const TOKEN_LIMIT_ERROR = 'Enter a positive whole number of tokens'

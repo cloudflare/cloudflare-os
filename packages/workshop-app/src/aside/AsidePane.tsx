@@ -96,7 +96,7 @@ export const AsidePane = (props: AsidePaneProps) => {
       workspaceId={item.output.workspaceId}
       title={listed.title || 'Workspace'}
       page={page.href}
-      gadget={title}
+      gadget={{ id: item.output.workpieceId, title }}
       open={sharing}
       onOpenChange={setSharing}
     />

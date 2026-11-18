@@ -2,13 +2,14 @@ import { useState, type ReactNode } from 'react'
 import type {
   AffectedCollaborator,
   AiChatAuthorInfo,
+  CollaboratorAccess,
+  CollaboratorGrant,
   CollaboratorInfo,
-  CollaboratorRole,
   ShareLinkInfo,
   UserDirectoryRecord,
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
-import { BuildingsIcon } from '@phosphor-icons/react'
+import { BuildingsIcon, UsersThreeIcon } from '@phosphor-icons/react'
 import { AccessMenu } from '@/blocks/AccessMenu'
 import { InviteField } from '@/blocks/InviteField'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -17,7 +18,6 @@ import { RemovalDialog, type RemovalDialogProps } from '@/blocks/RemovalDialog'
 import { ShareNote } from '@/blocks/ShareNote'
 import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
-import { Select } from '@/components/Select'
 import { ApiContext, type ApiSession } from '@/rpc/ApiContext'
 import type { SharingOverseer } from '@/workspaces/SharingSession'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
@@ -37,8 +37,8 @@ type Setup = {
   metadata?: Partial<WorkspaceMetadata>
   /** The workspace cannot be read. */
   failing?: boolean
-  /** Shared from one of its gadgets, by this name. */
-  gadget?: string
+  /** Shared from one of its gadgets. */
+  gadget?: { id: number; title: string }
 }
 
 const later = <T,>(value: () => T) => new Promise<T>((resolve, reject) => setTimeout(() => {
@@ -49,11 +49,23 @@ const later = <T,>(value: () => T) => new Promise<T>((resolve, reject) => setTim
   }
 }, 500))
 
-/** A workspace to share, in memory: Ada owns it, Grace can edit it, and Alan, whom Grace let in, can use it. */
+const BUILD: CollaboratorAccess = { role: 'build' }
+const CHECKLIST = { id: 7, title: 'Launch checklist' }
+
+// What someone has once `grant` is added to what they had: editing covers everything.
+const granted = (had: CollaboratorAccess | undefined, grant: CollaboratorGrant): CollaboratorAccess => {
+  if (grant === 'workspace' || had?.role === 'build') return BUILD
+  return { role: 'use', gadgetIds: [...new Set([...(had?.gadgetIds ?? []), grant.gadgetId])] }
+}
+
+/**
+ * A workspace to share, in memory: Ada owns it, Grace can edit it, and Alan, whom Grace let in, can
+ * use its launch checklist.
+ */
 const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => {
   let people: CollaboratorInfo[] = [
-    { profile: GRACE, addedBy: [by('ada')], role: 'build' },
-    { profile: ALAN, addedBy: [by('grace')], role: 'use' },
+    { profile: GRACE, addedBy: [by('ada')], access: BUILD },
+    { profile: ALAN, addedBy: [by('grace')], access: { role: 'use', gadgetIds: [CHECKLIST.id] } },
   ]
   let links: ShareLinkInfo[] = []
   const meta: WorkspaceMetadata = {
@@ -65,7 +77,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
   const affected = (id: string): AffectedCollaborator[] =>
     people
       .filter(({ profile, addedBy }) => profile.id === id || (addedBy.length > 0 && addedBy.every((edge) => edge.type === 'user' && edge.sharer === id)))
-      .map(({ profile, addedBy, role }) => ({ profile, addedBy, oldRole: role ?? 'build', newRole: null }))
+      .map(({ profile, addedBy, access }) => ({ profile, addedBy, oldAccess: access, newAccess: null }))
   const overseer = {
     getMetadata: () => later(() => {
       if (failing) throw new Error('The workspace couldn’t be reached.')
@@ -73,10 +85,11 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
     }),
     listCollaborators: () => later(() => structuredClone(people)),
     listObserverRequirements: () => later(() => [{ gatekeeperId: 3, vendorId: 'google', resourceTitle: 'Q3 budget' }]),
-    addCollaborator: (username: string, role: CollaboratorRole) => later(() => {
+    addCollaborator: (username: string, grant: CollaboratorGrant) => later(() => {
       const found = DIRECTORY.find(({ id }) => id === username.trim().toLowerCase())
       if (!found) return null
-      const added: CollaboratorInfo = { profile: { type: 'user', ...found }, addedBy: [by(viewer.id)], role }
+      const had = people.find(({ profile }) => profile.id === found.id)?.access
+      const added: CollaboratorInfo = { profile: { type: 'user', ...found }, addedBy: [by(viewer.id)], access: granted(had, grant) }
       people = [...people.filter(({ profile }) => profile.id !== found.id), added]
       return added
     }),
@@ -87,8 +100,9 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
       return gone
     }),
     listShareLinks: () => later(() => links),
-    createShareLink: (role: CollaboratorRole) => later(() => {
-      links = [{ linkId: 'link', created: new Date(), createdBy: viewer, role }]
+    createShareLink: (grant: CollaboratorGrant) => later(() => {
+      const gadget = grant === 'workspace' ? {} : { gadgetId: grant.gadgetId }
+      links = [{ linkId: 'link', created: new Date(), createdBy: viewer, role: grant === 'workspace' ? 'build' : 'use', default: true, ...gadget }]
       return { key: 'preview-key', linkId: 'link' }
     }),
     newShareLinkKey: () => later(() => ({ key: 'preview-key' })),
@@ -113,7 +127,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
 const SETUPS: Record<string, Setup> = {
   owner: { label: 'As the owner' },
   member: { label: 'As someone who can edit (Grace)', viewer: GRACE },
-  gadget: { label: 'From a gadget', gadget: 'Launch checklist' },
+  gadget: { label: 'From a gadget', gadget: CHECKLIST },
   restricted: { label: 'Restricted data', metadata: { containsRestrictedData: true } },
   ownerOnly: { label: 'Owner invites only', metadata: { ownerInvitesOnly: true, containsRestrictedData: true } },
   ownerOnlyMember: { label: 'Owner invites only, as Grace', viewer: GRACE, metadata: { ownerInvitesOnly: true } },
@@ -154,13 +168,12 @@ const DialogDemo = ({ setup }: { setup: keyof typeof SETUPS }) => {
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full max-w-lg flex-col gap-3">{children}</div>
 
 const LINK = [
-  { value: 'build', label: 'Can edit', hint: 'Anyone with the link works on everything in it' },
-  { value: 'use', label: 'Can use', hint: 'Anyone with the link opens its gadgets' },
+  { value: 'on', label: 'Can edit', hint: 'Anyone with your link works on everything in it' },
   { value: 'off', label: 'No access', hint: 'Only people you add can open it' },
 ] as const
 
 const RowsPreview = () => {
-  const [link, setLink] = useState<'build' | 'use' | 'off'>('use')
+  const [link, setLink] = useState<'on' | 'off'>('on')
   const [people, setPeople] = useState(['Grace Hopper', 'Alan Turing'])
   const [landed, setLanded] = useState<string>()
   const add = () => {
@@ -183,42 +196,40 @@ const RowsPreview = () => {
               access={<AccessMenu label="Can edit" of={name} remove={{ label: 'Remove from workspace', onRemove: () => setPeople(people.filter((one) => one !== name)) }} />}
             />
           ))}
-          <MemberListItem name="Katherine Johnson" role="Can use" />
+          <MemberListItem name="Katherine Johnson" role="Uses 2 gadgets" />
+          <MemberListItem icon={UsersThreeIcon} name="Everyone who can edit Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
             icon={BuildingsIcon}
             name="Anyone in Cloudflare OS"
-            detail={link === 'off' ? undefined : 'With the link'}
+            detail={link === 'off' ? undefined : 'With your link'}
             role=""
-            access={<AccessMenu label={LINK.find(({ value }) => value === link)!.label} of="anyone with the link" choices={{ options: LINK, value: link, onChange: setLink }} />}
+            access={<AccessMenu label={LINK.find(({ value }) => value === link)!.label} of="anyone with your link" choices={{ options: LINK, value: link, onChange: setLink }} />}
           />
         </ListGroup>
         <div className="flex items-center gap-2">
           <Button onClick={add}>Add someone</Button>
-          <AccessMenu label="Changing…" of="anyone with the link" disabled choices={{ options: LINK, value: 'use', onChange: () => {} }} />
+          <AccessMenu label="Changing…" of="anyone with your link" disabled choices={{ options: LINK, value: 'on', onChange: () => {} }} />
         </div>
       </Column>
     </Section>
   )
 }
 
-const ROLES = [{ id: 'build' as const, label: 'Can edit' }, { id: 'use' as const, label: 'Can use' }]
-
 const InvitePreview = () => {
   const { report, say } = useReport()
   const [value, setValue] = useState('')
-  const [role, setRole] = useState<CollaboratorRole>('build')
   const searched = value.trim() === '' ? [] : DIRECTORY.filter(({ name }) => name.toLowerCase().includes(value.toLowerCase()))
-  const roleSelect = <Select aria-label="What they can do" value={role} onValueChange={setRole} options={ROLES} />
   return (
-    <Section title="InviteField, ShareNote (type a name to see matches, Grace or Katherine, say, moved through with the arrow keys; Escape puts the list away and a second closes what it is in; what they can do is chosen beside it; while it sends, it holds what was sent; a search that fails says so; without a search it asks for a username; what came of it, or what to know first, is a note under it, and what went wrong a banner)">
+    <Section title="InviteField, ShareNote (type a name to see matches, Grace or Katherine, say, moved through with the arrow keys; Escape puts the list away and a second closes what it is in; while it sends, it holds what was sent; a search that fails says so; without a search it asks for a username; what came of it, or what to know first, is a note under it, and what went wrong a banner)">
       <Column>
-        <InviteField value={value} onValueChange={setValue} onInvite={(id) => say(`invited ${id} to ${role === 'build' ? 'edit' : 'use'} it`)} pending={false} suggestions={{ people: searched, searching: false, failed: false }} role={roleSelect} />
+        <InviteField value={value} onValueChange={setValue} onInvite={(id) => say(`invited ${id}`)} pending={false} suggestions={{ people: searched, searching: false, failed: false }} />
         <p role="status" className="text-sm text-kumo-subtle">{report}</p>
-        <InviteField value="katherine" onValueChange={() => {}} onInvite={() => {}} pending role={roleSelect} />
+        <InviteField value="katherine" onValueChange={() => {}} onInvite={() => {}} pending />
         <InviteField value="nobody" onValueChange={() => {}} onInvite={() => {}} pending={false} invalid describedBy="preview-invalid" />
         <div id="preview-invalid"><Banner title="There’s no account with that username or email." /></div>
         <ShareNote tone="success">Grace Hopper can now work on everything in Engineering Notes.</ShareNote>
         <ShareNote tone="info">Grace Hopper can already edit this workspace.</ShareNote>
+        <ShareNote tone="success">Katherine Johnson can now use Launch checklist.</ShareNote>
         <ShareNote tone="info" detail="If they can’t, give them access in Google Drive first.">
           Anyone who joins confirms with their own Google Drive account that they can see what this workspace reads.
         </ShareNote>
@@ -234,7 +245,8 @@ const REMOVALS: Record<string, { label: string } & Partial<RemovalDialogProps>> 
     label: 'With people they let in',
     outcome: { left: 'nothing', dependents: [{ id: 'alan', name: 'Alan Turing', invitedBy: 'Grace Hopper' }, { id: 'hedy', name: 'Hedy Lamarr', invitedBy: 'A link' }] },
   },
-  use: { label: 'Can still use it', outcome: { left: 'use', dependents: [] } },
+  use: { label: 'Can still use some of it', outcome: { left: 'use', dependents: [] } },
+  gadget: { label: 'From a gadget', outcome: { left: 'nothing', dependents: [] }, gadget: 'Launch checklist' },
   keeps: { label: 'Keeps access another way', outcome: { left: 'unchanged', dependents: [] } },
   unknown: { label: 'Couldn’t check', unknown: 'The workspace couldn’t be reached.' },
   failing: { label: 'Removing fails', outcome: { left: 'nothing', dependents: [] }, onConfirm: () => later(() => { throw new Error('Grace Hopper couldn’t be removed: try again.') }) },
@@ -282,7 +294,7 @@ const RemovalPreview = () => {
 /** Sharing a workspace: the dialog over fake workspaces, and each of the blocks it is made of. */
 export const SharingPreview = () => (
   <>
-    <Section title="ShareWorkspaceDialog (invite by username, grace or katherine, say, to edit or only use it; a name that changes nothing says why without asking; what its connections ask of whoever joins; remove from a person's menu, which asks first and lists who they let in; anyone with the link, editing, using or off, and Copy link follows it; from a gadget, it says the whole workspace is shared, and starts on Can use; restricted data and owner-only cautions; someone who can only use it is told they can't share; one that can't be read says so with Try again)">
+    <Section title="ShareWorkspaceDialog (invite by username, grace or katherine, say, to edit everything in it; a name that changes nothing says why without asking; what its connections ask of whoever joins; remove from a person's menu, which asks first and lists who they let in; your own link, on or off, and Copy link follows it; from a gadget, people added use that gadget alone, under one line for everyone who can edit, and it can share all of the workspace instead; restricted data and owner-only cautions; someone who can only use it is told they can't share; one that can't be read says so with Try again)">
       {Object.keys(SETUPS).map((setup) => <DialogDemo key={setup} setup={setup} />)}
     </Section>
     <RowsPreview />

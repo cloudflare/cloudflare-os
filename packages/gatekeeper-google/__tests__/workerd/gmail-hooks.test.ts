@@ -332,7 +332,10 @@ it("delivers each new inbox message once, and the hook's reply is queued for app
 
   const hook = await ada.hooks.readGmailHook();
   expect(hook.received.map(info => [info.id, info.subject])).toEqual([[message, subject]]);
-  expect(hook.observations).toContainEqual(expect.objectContaining({title: `New Gmail message: ${subject}`}));
+  // A firing reports the mailbox owner's account, as every read through the binding does.
+  expect(hook.observations).toContainEqual(expect.objectContaining({
+    title: `New Gmail message: ${subject}`, subresources: ["gmail/user/account-subject"],
+  }));
   expect(hook.submissions).toHaveLength(1);
 });
 

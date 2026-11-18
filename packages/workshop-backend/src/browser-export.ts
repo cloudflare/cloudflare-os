@@ -1,8 +1,11 @@
 import { launch, type Page } from "@cloudflare/puppeteer";
-import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
+import { RpcSession, RpcStub, RpcTarget, type RpcTransport } from "capnweb";
+import { validateRpc } from "capnweb-validate";
 import { createLogger } from "@gadgets/observability/logger";
-import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import type { GadgetExportFormat, GadgetHost, UiBundle } from "@gadgets/workshop-shared/api";
+import { prepareUiPage } from "@gadgets/workshop-shared/ui-page";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
+import CAPNWEB_MODULE from "./generated/capnweb-module.txt";
 import HTML_SANITIZER_RUNTIME from "./generated/html-sanitizer-runtime.txt";
 import {
   createStaticHtmlSnapshot,
@@ -37,10 +40,12 @@ const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
 // TODO: CSP and request interception do not cover WebRTC/STUN. The same gap exists for Gadgets
 // running inside an iframe in the user's browser. We should close the gap in both places. For now,
 // extending the same gap to remotely-rendered gadgets is acceptable.
-const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; script-src data:; " +
-  "style-src data: 'unsafe-inline'; img-src data: blob:; media-src data: blob:; " +
-  "font-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; " +
-  "connect-src 'none'; sandbox allow-scripts;";
+// 'unsafe-inline' admits the inline import map, as in the live iframe; `data:` scripts already let
+// gadget code run anything.
+const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; " +
+  "script-src data: 'unsafe-inline' 'wasm-unsafe-eval'; style-src data: 'unsafe-inline'; " +
+  "img-src data: blob:; media-src data: blob:; font-src data:; object-src 'none'; " +
+  "base-uri 'none'; form-action 'none'; connect-src 'none'; sandbox allow-scripts;";
 const STATIC_HTML_CSP = "default-src 'none'; frame-src 'none'; script-src 'none'; " +
   "style-src data: 'unsafe-inline'; img-src data:; media-src data:; font-src data:; " +
   "object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';";
@@ -126,28 +131,65 @@ export class BrowserRpcTransport implements RpcTransport {
   }
 }
 
+/** A browser-mode export as a Gadget UI's host. There is no Workshop UI around the page. */
+@validateRpc()
+class ExportGadgetHost extends RpcTarget implements GadgetHost {
+  // No chat sidebar to open it in.
+  async openAgentChat(_chatToken: string): Promise<void> {}
+}
+
+/**
+ * The main object of the export page's RPC session, as in the live iframe: the Gadget's server and
+ * its host, on one session. Owns `gadget`.
+ */
+class ExportFrameRoot extends RpcTarget {
+  #gadget: RpcStub<any>;
+  #host = new ExportGadgetHost();
+
+  constructor(gadget: RpcStub<any>) {
+    super();
+    // `gadget` is a Workers-native stub. Cap'n Web gives each copy the page makes of it, by dup()
+    // or by resolving the property, its own wrapper, whose disposal would dispose the native stub
+    // for every copy. One Cap'n Web stub around it makes the copies share its lifetime instead.
+    this.#gadget = new RpcStub(gadget);
+  }
+
+  // Reading a property transfers no ownership, so the stub stays this root's to dispose.
+  get gadget(): RpcStub<any> {
+    return this.#gadget;
+  }
+
+  get host(): GadgetHost {
+    return this.#host;
+  }
+
+  [Symbol.dispose](): void {
+    this.#gadget[Symbol.dispose]();
+  }
+}
+
 function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
-function makeExportHtml(clientCode: string, formatId: string): string {
-  let clientPrefix = String.raw`//# sourceURL=client.js
-const { gadget, RpcStub, RpcTarget } = globalThis.__workshopExportRuntime;
-delete globalThis.__workshopExportRuntime;
-`;
-  let clientUrl = scriptUrl(clientPrefix + clientCode);
+const CAPNWEB_URL = scriptUrl(CAPNWEB_MODULE);
+
+function makeExportHtml(bundle: UiBundle, formatId: string): string {
+  let { entryUrl, callsMain, importMap } = prepareUiPage(bundle, CAPNWEB_URL);
   let runtimeUrl = scriptUrl(
       `globalThis.gadgetExportFormatId = ${JSON.stringify(formatId)};\n` +
-      `globalThis.__workshopExportClientUrl = ${JSON.stringify(clientUrl)};\n` +
+      `globalThis.__workshopExportClientUrl = ${JSON.stringify(entryUrl)};\n` +
+      `globalThis.__workshopExportCallsMain = ${callsMain};\n` +
       BROWSER_EXPORT_RUNTIME);
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
+  <script type="importmap">${importMap}</script>
 </head>
 <body>
-  <script src="${runtimeUrl}"></script>
+  <script type="module" src="${runtimeUrl}"></script>
 </body>
 </html>`;
 }
@@ -161,7 +203,7 @@ delete globalThis.__workshopExportRuntime;
  */
 export async function renderGadgetInBrowser(
   browserBinding: BrowserRun,
-  clientCode: string,
+  bundle: UiBundle,
   documentTitle: string,
   gadget: RpcStub<any>,
   format: GadgetExportFormat,
@@ -217,7 +259,7 @@ export async function renderGadgetInBrowser(
               status: 200,
               contentType: "text/html",
               headers: {"Content-Security-Policy": EXPORT_DOCUMENT_CSP},
-              body: makeExportHtml(clientCode, format.id),
+              body: makeExportHtml(bundle, format.id),
             });
           } else {
             void request.abort();
@@ -231,7 +273,7 @@ export async function renderGadgetInBrowser(
       await page.goto(EXPORT_DOCUMENT_URL, { waitUntil: "load" });
       let transport = new BrowserRpcTransport(page);
       page.on("close", () => transport.abort(new Error("Browser page closed.")));
-      let rpcSession = new RpcSession(transport, gadget);
+      let rpcSession = new RpcSession(transport, new ExportFrameRoot(gadget));
       sessionCloser = rpcSession.getRemoteMain();
       await page.evaluate(waitForClientModule);
       const frame = page.mainFrame() as FrameWithIsolatedRealm;

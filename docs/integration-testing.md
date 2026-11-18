@@ -108,6 +108,40 @@ One corollary that is easy to get wrong: the "nothing escaped to the internet" a
 running, so it would inspect and clear state they are still using — and could discard an escape a
 sibling was about to be blamed for.
 
+Reconnection helpers must retain the reopened workspace and its child capabilities until the caller
+finishes using them. Return an owned `DisposableStack` with `stack.move()` rather than letting
+`using` dispose the workspace before returning a child read session; that workspace owns the native
+RPC session the child needs. See `observer-exclusion.test.ts`'s `reopenAfterRestart()`.
+
+### Reaching a Durable Object's storage from a test
+
+`await harness.server.getWorker(name).getDurableObjectStorage(className, { id } | { name })` returns
+a handle on one Durable Object's SQLite storage, whose `exec()` resolves to the result rows.
+`{ name: "" }` addresses the object a Worker reaches with `getByName("")`. Three uses shape the
+admin suites:
+
+- **Faulting a store.** To show that a call fails when its audit record cannot be written, the suite
+  installs a trigger on `admin_audit`, the deployment-wide audit log's table
+  (`CREATE TRIGGER ... BEFORE INSERT ON admin_audit BEGIN SELECT RAISE(ABORT, ...); END`), and drops
+  it afterwards. The insert then fails exactly as a real storage failure would, inside the real
+  Worker, and production code carries no test hook, which would be a switch that disables the audit
+  shipped in every deployment.
+- **Proving an object was never written.** `listDurableObjectIds()` cannot tell: it lists every
+  object with a storage file, and any visit creates one (miniflare records the object's name in it)
+  that a deletion leaves behind. What can tell is `sqlite_master` with miniflare's own `__miniflare*`
+  tables left out. The Overseer keeps its records in typed storage over the KV API, whose `_cf_KV`
+  table the first write creates and `deleteAll()` drops, so whether that table exists says whether
+  anything has been written. `_cf_KV` itself is unreadable (`SQLITE_AUTH`), hence `sqlite_master`. A
+  test client cannot mint an unused workspace id (creating a workspace opens it), so the suite uses
+  a deleted one.
+- **Proving a call wrote nothing.** `SELECT total_changes()` through the handle counts every row the
+  object has written since it started, the KV API's records and the alarm included, so equal counts
+  around one call show that the call wrote nothing. The count restarts with the object, so both
+  reads bracket a single call, and the suite checks that an ordinary write moves it. A workspace
+  reports to its owner's account after the call that caused the report has returned, so the user
+  view's suite closes what it opened to seed an account, and waits for the account's count to
+  settle, before its first read.
+
 ### A redeploy keeps storage, so an upgrade can be tested
 
 `server.update()` is the opposite of `reset()`: it reloads the Workers from new configs and keeps
@@ -125,15 +159,15 @@ installer, and the check that decides whether to run it, are the Workshop's own.
 A gatekeeper's `main` is such an input too, so a gatekeeper can be upgraded from an older release:
 `build:upgrade-base` bundles gatekeeper-google as an earlier revision of the repo had it, the
 Google hooks suite boots that bundle, and `upgradeGoogle()` (`__tests__/google-fake.ts`) swaps in
-this tree's build with `server.update(current => …)`, replacing only that Worker's config.
+this tree's build with `deploy(harness.server, current => …)`, replacing only that Worker's config.
 
 `update()` resolves at the first reload, not the last. It hands each Worker its new config in
 turn, and each rebuilds and reloads on its own, so the reload it waited for can be running one
 Worker's new build beside the other's old one, with a second reload still to come. That second
-restart breaks the sessions and the requests the test has opened since. `upgradeGoogle()` gives
-every Worker's config a mark unique to the update, and waits until each reports it through
+restart breaks the sessions and the requests the test has opened since. So `deploy()`
+(`src/harness.ts`), which `Harness.redeployWorkshop()` and `upgradeGoogle()` both go through,
+gives every Worker's config a mark unique to the update, and waits until each reports it through
 `getWorker(name).getEnv()`, the one state no reload can leave half-applied.
-`Harness.redeployWorkshop()` doesn't wait this way yet.
 
 ### wrangler and miniflare versions are coupled
 

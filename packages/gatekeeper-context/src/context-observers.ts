@@ -1,5 +1,6 @@
 import {
-  trackedCollectionObservers, type ObserverKv, type ObserverStrategy,
+  observerAccessVerifier, trackedCollectionObservers, type ObserverKv, type ObserverStrategy,
+  type VerifyObserverAccess,
 } from "@gadgets/gatekeeper-kit/observers";
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
 import { VENDOR_ID } from "./context-types.js";
@@ -19,26 +20,42 @@ export interface ContextVerifierApi extends GatekeeperUserVerifier {
 }
 
 /**
- * Shown to a collaborator refused admission. It must not name the collection: the collaborator
- * cannot read it, and a private collection's title is its members' data.
+ * Shown to a collaborator refused admission for a collection read before reads reported them as
+ * subresources. It must not name the collection: the collaborator cannot read it, and a private
+ * collection's title is its members' data.
  */
 export const CONTEXT_OBSERVER_DENIED =
   "This workspace has read from a Skills collection that hasn't been shared with your account, so " +
   "you can't open it. Only collaborators who can read every collection the workspace has used may " +
   "open it.";
 
+// The ACL oracle both checks share: collections are the data sets, so a subresource is a collection
+// ID, spelled as the legacy tracker stored it. Public collections are domain-wide; private ones
+// admit their grantees and, when enabled, everyone in the sharing domain.
+function collectionAccess(sharingDomain: string) {
+  return {
+    hasCollectionAccess: (verifier: Fetcher<ContextVerifierApi>, collectionIds: readonly string[]) =>
+      verifier.hasCollectionsAccess(sharingDomain, [...collectionIds]),
+  };
+}
+
 /**
- * Strategy C for the broad Context Library singleton. Collections are the data sets: public
- * collections are domain-wide; private collections admit their grantees and, when enabled, everyone
- * in the sharing domain. The prefix keeps markers recorded before this tracker moved to the kit.
+ * Strategy C for the broad Context Library singleton, kept for what reads recorded before they
+ * reported their collections as subresources: its `addObserver()` still refuses a collaborator who
+ * cannot read one. Reads now record nothing here. The prefix keeps markers recorded before this
+ * tracker moved to the kit.
  */
 export function contextObserverStrategy(kv: ObserverKv, sharingDomain: string): ObserverStrategy {
-  return trackedCollectionObservers<Fetcher<ContextVerifierApi>>({
+  return trackedCollectionObservers({
     kv,
     collectionPrefix: "observedCollection:",
-    hasCollectionAccess: (verifier, collectionIds) =>
-      verifier.hasCollectionsAccess(sharingDomain, [...collectionIds]),
+    ...collectionAccess(sharingDomain),
     denyMessage: () => CONTEXT_OBSERVER_DENIED,
     vendorId: VENDOR_ID,
   });
+}
+
+/** `Gatekeeper.verifyObserverAccess()` for the collections reads report as subresources. */
+export function contextObserverAccessVerifier(sharingDomain: string): VerifyObserverAccess {
+  return observerAccessVerifier(collectionAccess(sharingDomain));
 }

@@ -1,8 +1,9 @@
 import type {
   AffectedCollaborator,
   AiChatAuthorInfo,
+  CollaboratorAccess,
+  CollaboratorGrant,
   CollaboratorInfo,
-  CollaboratorRole,
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   ShareLinkInfo,
@@ -35,8 +36,25 @@ export const shareStanding = (metadata: WorkspaceMetadata, viewer: AiChatAuthorI
   }
 }
 
-/** What someone has, the server's way: a collaborator with no role was added before roles, when everyone could edit. */
-export const roleOf = ({ role }: { role?: CollaboratorRole }): CollaboratorRole => role ?? 'build'
+/**
+ * What is being shared: a whole workspace, whose people can edit everything in it, or one of its
+ * gadgets, whose people can only use it.
+ */
+export type ShareTarget = { kind: 'workspace' } | { kind: 'gadget'; gadgetId: number; title: string }
+
+/** What sharing `target` gives whoever it is shared with, the server's way. */
+export const grantOf = (target: ShareTarget): CollaboratorGrant => (target.kind === 'gadget' ? { gadgetId: target.gadgetId } : 'workspace')
+
+/** Whether someone's access covers what is being shared: editing covers everything, using only the gadgets it names. */
+export const covers = (access: CollaboratorAccess, target: ShareTarget) =>
+  access.role === 'build' || (target.kind === 'gadget' && access.gadgetIds.includes(target.gadgetId))
+
+/** What someone may do, in a few words: "Can edit", or the gadgets they can use. */
+export const accessLabel = (access: CollaboratorAccess) => {
+  if (access.role === 'build') return 'Can edit'
+  const count = access.gadgetIds.length
+  return count === 1 ? 'Uses a gadget' : `Uses ${count} gadgets`
+}
 
 /**
  * Whether the viewer may take someone's access away: the owner may take anyone's, and anyone else
@@ -48,29 +66,34 @@ export const canChange = (person: CollaboratorInfo, standing: ShareStanding, vie
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
 /**
- * Why inviting `userId` with `role` would change nothing, if it would not. The server takes a
+ * Why sharing `target` with `userId` would change nothing, if it would not. The server takes a
  * grant someone already has without complaint, and a typed name gets past any search's
- * exclusions, so this is asked first. Someone who can only use it may still be let edit.
+ * exclusions, so this is asked first. Someone who uses some of its gadgets may still be let edit.
  */
-export const inviteRefusal = (userId: string, role: CollaboratorRole, owner: AiChatAuthorInfo, collaborators: readonly CollaboratorInfo[]) => {
+export const inviteRefusal = (userId: string, target: ShareTarget, owner: AiChatAuthorInfo, collaborators: readonly CollaboratorInfo[]) => {
   if (sameId(owner.id, userId)) return `${owner.name} owns this workspace.`
   const existing = collaborators.find(({ profile }) => sameId(profile.id, userId))
-  if (!existing) return undefined
-  const has = roleOf(existing)
-  if (has === 'build') return `${existing.profile.name} can already edit this workspace.`
-  return role === 'use' ? `${existing.profile.name} can already use this workspace.` : undefined
+  if (!existing || !covers(existing.access, target)) return undefined
+  if (existing.access.role === 'build') return `${existing.profile.name} can already edit this workspace.`
+  return target.kind === 'gadget' ? `${existing.profile.name} can already use ${target.title}.` : undefined
 }
 
 /**
- * The workspace's links: the server keeps any number, made here or elsewhere, and together they
- * are "the" link. It lets people edit if any of them does, else only use (`role`), and the one of
- * them to copy is one that does what that says (`shown`); undefined where there is none.
+ * Whether a link grants what sharing `target` does: the whole workspace (a link made before roles
+ * did), or that one gadget. A link to several gadgets, from before gadgets were shared one at a
+ * time, grants neither.
  */
-export const workspaceLinksOf = (links: readonly ShareLinkInfo[]): { linkIds: string[]; role: CollaboratorRole; shown: string } | undefined => {
-  if (links.length === 0) return undefined
-  const editing = links.find((link) => roleOf(link) === 'build')
-  return { linkIds: links.map(({ linkId }) => linkId), role: editing ? 'build' : 'use', shown: (editing ?? links[0]!).linkId }
-}
+export const linkGrants = (link: ShareLinkInfo, target: ShareTarget) =>
+  target.kind === 'gadget'
+    ? link.gadgetId === target.gadgetId
+    : link.gadgetId === undefined && link.gadgets === undefined && (link.role ?? 'build') === 'build'
+
+/**
+ * The viewer's own link to `target`, the one each person has for what they share (`default`):
+ * anyone who opens it gets what it grants. Others' links are theirs to turn off.
+ */
+export const ownLinkOf = (links: readonly ShareLinkInfo[], target: ShareTarget, viewerId: string) =>
+  links.find((link) => link.default && link.createdBy.id === viewerId && linkGrants(link, target))
 
 const SHARE = 'share='
 
@@ -106,8 +129,8 @@ export const workspaceOfPath = (pathname: string) => {
 /** What taking someone's access away would do, from the server's preview of it. */
 export type RemovalOutcome = {
   /**
-   * What is left to them: nothing, only using it (they were let edit by the viewer, and use it
-   * through someone else), or all they had, as they have it some other way too.
+   * What is left to them: nothing, only using some of its gadgets (they still have those some
+   * other way), or all they had, as they have it some other way too.
    */
   left: 'nothing' | 'use' | 'unchanged'
   /** Those who have it only through them, who lose it too unless kept. */
@@ -117,7 +140,7 @@ export type RemovalOutcome = {
 export const removalOutcome = (profileId: string, affected: readonly AffectedCollaborator[]): RemovalOutcome => {
   const target = affected.find(({ profile }) => profile.id === profileId)
   return {
-    left: !target ? 'unchanged' : target.newRole === null ? 'nothing' : 'use',
+    left: !target ? 'unchanged' : target.newAccess === null ? 'nothing' : 'use',
     dependents: affected.filter(({ profile }) => profile.id !== profileId),
   }
 }

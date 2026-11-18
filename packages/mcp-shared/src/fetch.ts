@@ -57,7 +57,7 @@ export function fetchOptions(env: InsecureEnv): FetchOptions {
  * bounds nothing about what arrives, and a `tools/call` result is not bounded at all: a server
  * answering one request with a gigabyte exhausts the Worker.
  */
-export const MAX_RESPONSE_BYTES = 1024 * 1024;
+export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 /**
  * Reads a response body as text, refusing one larger than `maxBytes`.

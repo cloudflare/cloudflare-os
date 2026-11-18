@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type {
   AffectedCollaborator,
   AiChatAuthorInfo,
+  CollaboratorAccess,
   CollaboratorInfo,
-  CollaboratorRole,
   GatekeeperVendorInfo,
   ObserverBindingNeed,
   PermissionEdge,
@@ -11,23 +11,30 @@ import type {
   WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import {
+  accessLabel,
   canChange,
+  covers,
+  grantOf,
   invitedBy,
   inviteRefusal,
   listed,
+  ownLinkOf,
   removalOutcome,
-  roleOf,
+  type ShareTarget,
   shareKeyOf,
   shareStanding,
   signInServices,
   withShareKey,
-  workspaceLinksOf,
   workspaceOfPath,
 } from './sharingRules'
 
 const person = (id: string, name = id): AiChatAuthorInfo => ({ type: 'user', id, name })
 const by = (sharer: string): PermissionEdge => ({ type: 'user', sharer, created: new Date(0) })
-const collaborator = (id: string, role?: CollaboratorRole, addedBy: PermissionEdge[] = [by('ada')]): CollaboratorInfo => ({ profile: person(id), addedBy, role })
+const BUILD: CollaboratorAccess = { role: 'build' }
+const uses = (...gadgetIds: number[]): CollaboratorAccess => ({ role: 'use', gadgetIds })
+const collaborator = (id: string, access: CollaboratorAccess = BUILD, addedBy: PermissionEdge[] = [by('ada')]): CollaboratorInfo => ({ profile: person(id), addedBy, access })
+const WHOLE: ShareTarget = { kind: 'workspace' }
+const gadget = (gadgetId: number, title = 'Budget'): ShareTarget => ({ kind: 'gadget', gadgetId, title })
 const metadata = (change: Partial<WorkspaceMetadata> = {}): WorkspaceMetadata => ({ id: 'ws', title: 'Engineering', ...change })
 const ada = person('ada', 'Ada Lovelace')
 
@@ -48,10 +55,23 @@ describe('shareStanding', () => {
   })
 })
 
-describe('roleOf', () => {
-  it('takes someone added before roles to be able to edit', () => {
-    expect(roleOf(collaborator('grace'))).toBe('build')
-    expect(roleOf(collaborator('grace', 'use'))).toBe('use')
+describe('access', () => {
+  it('grants the whole workspace, or one gadget', () => {
+    expect(grantOf(WHOLE)).toBe('workspace')
+    expect(grantOf(gadget(3))).toEqual({ gadgetId: 3 })
+  })
+
+  it('takes editing to cover everything, and using only the gadgets it names', () => {
+    expect(covers(BUILD, gadget(3))).toBe(true)
+    expect(covers(uses(3), gadget(3))).toBe(true)
+    expect(covers(uses(4), gadget(3))).toBe(false)
+    expect(covers(uses(3), WHOLE)).toBe(false)
+  })
+
+  it('says what someone may do in a few words', () => {
+    expect(accessLabel(BUILD)).toBe('Can edit')
+    expect(accessLabel(uses(3))).toBe('Uses a gadget')
+    expect(accessLabel(uses(3, 4))).toBe('Uses 2 gadgets')
   })
 })
 
@@ -60,36 +80,44 @@ describe('canChange', () => {
   const asMember = shareStanding(metadata({ owner: person('grace'), role: 'build' }), ada)
 
   it('lets the owner change anyone, and anyone else only who they added', () => {
-    expect(canChange(collaborator('alan', 'build', [by('grace')]), owner, 'ada')).toBe(true)
-    expect(canChange(collaborator('alan', 'build', [by('grace')]), asMember, 'ada')).toBe(false)
-    expect(canChange(collaborator('alan', 'build', [by('ada')]), asMember, 'ada')).toBe(true)
+    expect(canChange(collaborator('alan', BUILD, [by('grace')]), owner, 'ada')).toBe(true)
+    expect(canChange(collaborator('alan', BUILD, [by('grace')]), asMember, 'ada')).toBe(false)
+    expect(canChange(collaborator('alan', BUILD, [by('ada')]), asMember, 'ada')).toBe(true)
   })
 })
 
 describe('inviteRefusal', () => {
-  const people = [collaborator('grace', 'build'), collaborator('alan', 'use')]
+  const people = [collaborator('grace'), collaborator('alan', uses(3))]
 
   it('says why an invite would change nothing', () => {
-    expect(inviteRefusal('ADA', 'build', ada, people)).toBe('Ada Lovelace owns this workspace.')
-    expect(inviteRefusal('grace', 'use', ada, people)).toBe('grace can already edit this workspace.')
-    expect(inviteRefusal('alan', 'use', ada, people)).toBe('alan can already use this workspace.')
+    expect(inviteRefusal('ADA', WHOLE, ada, people)).toBe('Ada Lovelace owns this workspace.')
+    expect(inviteRefusal('grace', gadget(3), ada, people)).toBe('grace can already edit this workspace.')
+    expect(inviteRefusal('alan', gadget(3), ada, people)).toBe('alan can already use Budget.')
   })
 
-  it('lets someone who can only use it be let edit, and anyone new in', () => {
-    expect(inviteRefusal('alan', 'build', ada, people)).toBeUndefined()
-    expect(inviteRefusal('barbara', 'use', ada, people)).toBeUndefined()
+  it('lets someone who uses a gadget be let edit, or use another, and anyone new in', () => {
+    expect(inviteRefusal('alan', WHOLE, ada, people)).toBeUndefined()
+    expect(inviteRefusal('alan', gadget(4), ada, people)).toBeUndefined()
+    expect(inviteRefusal('barbara', gadget(3), ada, people)).toBeUndefined()
   })
 })
 
 describe('links', () => {
   const created = new Date(0)
-  const link = (linkId: string, role?: CollaboratorRole): ShareLinkInfo => ({ linkId, created, createdBy: ada, role })
+  const link = (linkId: string, change: Partial<ShareLinkInfo> = {}): ShareLinkInfo => ({ linkId, created, createdBy: ada, default: true, ...change })
 
-  it('takes every link to be the workspace’s one, letting people edit if any does', () => {
-    expect(workspaceLinksOf([link('a', 'use'), link('b', 'build'), link('c', 'use')])).toEqual({ linkIds: ['a', 'b', 'c'], role: 'build', shown: 'b' })
-    expect(workspaceLinksOf([link('a', 'use')])).toEqual({ linkIds: ['a'], role: 'use', shown: 'a' })
-    expect(workspaceLinksOf([link('old')])).toMatchObject({ role: 'build', shown: 'old' })
-    expect(workspaceLinksOf([])).toBeUndefined()
+  it('finds the viewer’s own link to what is being shared', () => {
+    const links = [
+      link('theirs', { createdBy: person('grace') }),
+      link('extra', { default: undefined }),
+      link('gadget', { role: 'use', gadgetId: 3 }),
+      link('whole', { role: 'build' }),
+    ]
+    expect(ownLinkOf(links, WHOLE, 'ada')?.linkId).toBe('whole')
+    expect(ownLinkOf(links, gadget(3), 'ada')?.linkId).toBe('gadget')
+    expect(ownLinkOf(links, gadget(4), 'ada')).toBeUndefined()
+    expect(ownLinkOf([link('old')], WHOLE, 'ada')?.linkId).toBe('old')
+    expect(ownLinkOf([link('several', { role: 'use', gadgets: [{ id: 3, title: 'Budget' }, { id: 4, title: 'Plan' }] })], WHOLE, 'ada')).toBeUndefined()
   })
 
   it('carries the key in the fragment, and reads it back', () => {
@@ -110,11 +138,11 @@ describe('links', () => {
   })
 })
 
-const affected = (id: string, sharers: string[], newRole: CollaboratorRole | null = null): AffectedCollaborator => ({
+const affected = (id: string, sharers: string[], newAccess: CollaboratorAccess | null = null): AffectedCollaborator => ({
   profile: person(id),
   addedBy: sharers.map(by),
-  oldRole: 'build',
-  newRole,
+  oldAccess: BUILD,
+  newAccess,
 })
 
 describe('removalOutcome', () => {
@@ -125,7 +153,7 @@ describe('removalOutcome', () => {
   })
 
   it('says when they keep using it, or keep all they had', () => {
-    expect(removalOutcome('grace', [affected('grace', ['ada'], 'use')]).left).toBe('use')
+    expect(removalOutcome('grace', [affected('grace', ['ada'], uses(3))]).left).toBe('use')
     expect(removalOutcome('grace', []).left).toBe('unchanged')
   })
 

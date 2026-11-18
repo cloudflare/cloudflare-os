@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { CollaboratorInfo, CollaboratorRole } from '@gadgets/workshop-shared/api'
+import type { CollaboratorInfo } from '@gadgets/workshop-shared/api'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { SharingSession } from './SharingSession'
 
@@ -18,10 +18,10 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  */
 export const useInvite = ({ session, refusal, admitted }: {
   session: SharingSession
-  /** Why inviting them with this role would change nothing, if it would not. */
-  refusal: (userId: string, role: CollaboratorRole) => string | undefined
+  /** Why inviting them would change nothing, if it would not. */
+  refusal: (userId: string) => string | undefined
   /** What to say of someone let in. */
-  admitted: (person: CollaboratorInfo, role: CollaboratorRole) => string
+  admitted: (person: CollaboratorInfo) => string
 }) => {
   const connection = useConnectionNotice()
   const [value, setValue] = useState('')
@@ -35,17 +35,17 @@ export const useInvite = ({ session, refusal, admitted }: {
     return () => clearTimeout(timer)
   }, [landed])
 
-  const invite = async (userId: string, role: CollaboratorRole) => {
+  const invite = async (userId: string) => {
     if (pending || connection?.blocked()) return
-    const refused = refusal(userId, role)
+    const refused = refusal(userId)
     if (refused) return setFeedback({ tone: 'info', message: refused })
     setPending(true)
     setFeedback(undefined)
     try {
-      const person = await session.invite(userId, role)
+      const person = await session.invite(userId)
       if (!person) return setFeedback({ tone: 'error', message: 'There’s no account with that username or email.' })
       setValue('')
-      setFeedback({ tone: 'success', message: admitted(person, role) })
+      setFeedback({ tone: 'success', message: admitted(person) })
       setLanded(person.profile.id)
     } catch (error) {
       setFeedback({ tone: 'error', message: messageOf(error) })
@@ -64,6 +64,6 @@ export const useInvite = ({ session, refusal, admitted }: {
     pending,
     feedback,
     landed,
-    invite: (userId: string, role: CollaboratorRole) => void invite(userId, role),
+    invite: (userId: string) => void invite(userId),
   }
 }

@@ -10,7 +10,7 @@ import {
 } from "../src/outlook-actions";
 import { MailApi, parseMessage } from "../src/outlook-graph";
 import { OutlookHookDeliveryImpl, OutlookHookDriver, handleOutlookNotification } from "../src/outlook-hooks";
-import { decodeMailUnit, encodeMailUnit, isMailUnit, mailUnits, probeMailUnits } from "../src/outlook-observers";
+import { decodeMailUnit, isMailUnit, mailUnits, probeMailUnits } from "../src/outlook-observers";
 import { OutlookOverlay } from "../src/outlook-overlay";
 import { kqlPhrase, listingRequest, passesFilters } from "../src/outlook-query";
 import {
@@ -603,12 +603,13 @@ describe("editing a draft", () => {
 describe("observer units", () => {
   const user = "11111111-2222-3333-4444-555555555555";
 
-  it("round-trips and refuses anything malformed", () => {
-    const units = mailUnits(user);
-    for (const unit of [units.mailbox(), units.folder("AAMk/x+y="), units.message("AAMk_x-y=")]) {
-      expect(isMailUnit(unit)).toBe(true);
-      expect(encodeMailUnit(decodeMailUnit(unit)!)).toBe(unit);
-    }
+  it("reads the units the legacy tracker recorded, and refuses anything malformed", () => {
+    expect([`mailbox:${user}`, `mailFolder:${user}:AAMk/x+y=`, `mail:${user}:AAMk_x-y=`].map(decodeMailUnit)).toEqual([
+      { kind: "mailbox", userId: user },
+      { kind: "mailFolder", userId: user, folderId: "AAMk/x+y=" },
+      { kind: "mail", userId: user, messageId: "AAMk_x-y=" },
+    ]);
+    expect(isMailUnit(`mail:${user}:AAMk`)).toBe(true);
     expect(decodeMailUnit(`mail:${user}:has/../dots?`)).toBeNull();
     expect(decodeMailUnit(`mail:not-a-guid:AAMk`)).toBeNull();
     expect(decodeMailUnit(`mailbox:${user}:extra`)).toBeNull();
@@ -616,7 +617,6 @@ describe("observer units", () => {
   });
 
   it("opens the mailbox only for someone who can list all of it, not someone shared one folder", async () => {
-    const units = mailUnits(user);
     const asked: string[] = [];
     // As Exchange answers someone shared only the Inbox: its folder and messages open, the mailbox's listing doesn't.
     const api = {
@@ -625,8 +625,23 @@ describe("observer units", () => {
         return [request.id, { id: request.id, status: request.url.startsWith(`users/${user}/messages?`) ? 404 : 200, body: {} }];
       })),
     } as unknown as GraphApi;
-    expect(await probeMailUnits(api, [units.mailbox(), units.folder("AAMkInbox"), units.message("AAMkInInbox")])).toEqual([false, true, true]);
+    expect(await probeMailUnits(api, [
+      { kind: "mailbox", userId: user }, { kind: "mailFolder", userId: user, folderId: "AAMkInbox" }, { kind: "mail", userId: user, messageId: "AAMkInInbox" },
+    ])).toEqual([false, true, true]);
     expect(asked[0]).toBe(`users/${user}/messages?$top=1&$select=id`);
+  });
+
+  it("propagates a batch-entry credential rejection instead of denying mail access", async () => {
+    const api = new GraphApi("t", { fetch: async () => Response.json({ responses: [
+      { id: "0", status: 200, body: { id: "AAMkInbox" } },
+      { id: "1", status: 401, body: { error: { code: "InvalidAuthenticationToken" } } },
+    ] }) });
+    const result = probeMailUnits(api, [
+      { kind: "mailFolder", userId: user, folderId: "AAMkInbox" },
+      { kind: "mail", userId: user, messageId: "AAMkInInbox" },
+    ]);
+    await expect(result).rejects.toBeInstanceOf(GraphApiError);
+    await expect(result).rejects.toMatchObject({ status: 401, isAuthError: true });
   });
 });
 
@@ -738,7 +753,10 @@ describe("reading new mail by cursor", () => {
     };
     const ctx = {
       id: { name: `${USER}.${MAILBOX}` },
-      storage: { kv, getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; }, deleteAlarm: async () => { alarm = null; } },
+      storage: {
+        kv, transactionSync: <T>(callback: () => T) => callback(),
+        getAlarm: async () => alarm, setAlarm: async (at: number) => { alarm = at; }, deleteAlarm: async () => { alarm = null; },
+      },
       exports: { UserAccount: { idFromString: (id: string) => id, get: () => account } },
     };
     const delivered: string[] = [];

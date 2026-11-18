@@ -11,15 +11,16 @@ import {
   Sparkle,
   X,
 } from '@phosphor-icons/react'
-import { RpcStub } from 'capnweb'
+import { RpcPromise, RpcStub } from 'capnweb'
 import {
   AGENT_SPAWNER_CONNECTION_ID,
   AgentSpawnerConfig,
   AiChatAuthorInfo,
   GatekeeperClient,
   Overseer,
+  WorkpieceId,
 } from '@gadgets/workshop-shared/api'
-import { SupportedResource, VendorDescription, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
+import { SupportedResource, VendorDescription, matchesResourceUrlPattern, getResourceTypeId, findResourceType, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper'
 import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
 import { useAuthenticatedApi } from './AuthContext'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
@@ -40,6 +41,7 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { getStoredSelectedModel } from './modelSelection'
 import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 export interface GatekeeperModalProps {
@@ -51,11 +53,11 @@ export interface GatekeeperModalProps {
    */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>
   /**
-   * Called after the gatekeeper is successfully created. The caller decides what to do with
-   * the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this callback
-   * and shows a loading state while it runs.
+   * Called after the gatekeeper is successfully created, with its id. The caller decides what to
+   * do with the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this
+   * callback and shows a loading state while it runs.
    */
-  onCreated: (gk: RpcStub<GatekeeperClient<any>>) => Promise<void>
+  onCreated: (gk: RpcStub<GatekeeperClient<any>>, id: WorkpieceId) => Promise<void>
   /**
    * Workpieces offered as env entries when creating an agent spawner (see AgentSpawnerConfig.env),
    * normally the gadget the spawner is being created for plus that gadget's own bindings. All are
@@ -68,12 +70,14 @@ export interface GatekeeperModalProps {
    * Optional pre-seed: when the modal opens, auto-select the resource connection for this vendor,
    * or the Agent form for AGENT_SPAWNER_CONNECTION_ID. Used by the agent's requestConnection
    * accept flow so the user lands on the right connection with minimal clicks.
-   * `initialResourceUrlPattern` is the exact SupportedResource.urlPattern the backend resolved the
-   * request to (authoritative); `initialResourceUrl` is the raw URL the agent supplied (used only
-   * as a fallback if the resolved pattern isn't present in the current list).
+   * `initialResourceTypeId` selects the type; old messages use an exact `initialResourceUrlPattern`.
+   * Only messages without either reference infer a type from `initialResourceUrl` or the vendor's
+   * available types. The concrete URL also prefills the chosen configurator.
    */
   initialVendorId?: string
   initialResourceUrl?: string
+  /** Stable type ID for the requested resource; authoritative over legacy prefill hints. */
+  initialResourceTypeId?: string
   initialResourceUrlPattern?: string
   /**
    * Optional pre-seed: the connected account to select for the pre-seeded connection. Ignored when
@@ -110,7 +114,8 @@ type ConnectionType = {
   // token like `text-kumo-strong` (near-white in dark mode) would vanish on it.
   // Pin the glyph to a dark color that reads on the light tile in both themes.
   iconColor?: string
-  // The card's own type; the configurator starts for it.
+  // The card's preferred type; an account may offer only another member of the group.
+  resourceTypeId?: string
   resourceUrlPattern?: string
   // The resource types the card's configurator may return (see SupportedResource.groupedWith), in
   // the order the vendor declared them.
@@ -164,20 +169,21 @@ function platformConnectionTypes(siteName: string): ConnectionType[] {
 function connectionsForVendor(vendor: VendorOption): ConnectionType[] {
   const groups = new Map<string, SupportedResource[]>()
   for (const resource of vendor.supportedResources) {
-    const key = resource.groupedWith ?? resource.urlPattern
+    if (resource.connectable === false) continue
+    const key = resource.groupedWith ?? getResourceTypeId(resource)
     const group = groups.get(key)
     if (group) group.push(resource)
     else groups.set(key, [resource])
   }
   return Array.from(groups, ([key, members]) => connectionForResources(
-    vendor, members.find(resource => resource.urlPattern === key) ?? members[0], members))
+    vendor, members.find(resource => getResourceTypeId(resource) === key) ?? members[0], members))
 }
 
 function connectionForResources(
   vendor: VendorOption, lead: SupportedResource, resources: SupportedResource[],
 ): ConnectionType {
   return {
-    id: `resource:${vendor.id}:${lead.urlPattern}`,
+    id: `resource:${vendor.id}:${getResourceTypeId(lead)}`,
     vendorId: vendor.id,
     // Group by stable vendor ID, not displayName, so two distinct vendors that
     // happen to share a display name don't get merged into the same group.
@@ -191,16 +197,23 @@ function connectionForResources(
     logoUrl: vendor.description.logo?.url,
     accent: vendor.description.color,
     resourceUrlPattern: lead.urlPattern,
+    resourceTypeId: getResourceTypeId(lead),
     resources,
   }
 }
 
-// The grantable resource `urlPattern`s a connection requires before its configurator can load: one
+// The grantable resource type IDs a connection requires before its configurator can load: one
 // for each type the configurator may return.
-function requiredResourceUrlPatterns(connection: ConnectionType): string[] {
-  return (connection.resources ?? [])
+function requiredResourceTypeIds(connection: ConnectionType, account?: AccountOption): string[] {
+  return resourcesForAccount(connection, account)
     .filter(resource => resource.grantable)
-    .map(resource => resource.urlPattern)
+    .map(getResourceTypeId)
+}
+
+function resourcesForAccount(connection: ConnectionType, account?: AccountOption): SupportedResource[] {
+  return (connection.resources ?? []).filter(resource => !account ||
+    account.supportedResources.some(candidate =>
+      getResourceTypeId(candidate) === getResourceTypeId(resource) && candidate.connectable !== false))
 }
 
 // A URL's own type on the connection, if it names one: the first match in the vendor's declared
@@ -213,16 +226,15 @@ function resourceForUrl(connection: ConnectionType, url: string): SupportedResou
 
 function accountSupportsConnection(account: AccountOption, connection: ConnectionType): boolean {
   return account.vendorId === connection.vendorId &&
-    (!connection.resourceUrlPattern ||
-      connection.resourceUrlPattern === 'https://*' ||
-      account.supportedResources.some(resource => resource.urlPattern === connection.resourceUrlPattern))
+    resourcesForAccount(connection, account).length > 0
 }
 
 export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
-  initialVendorId, initialResourceUrl, initialResourceUrlPattern, initialAccountId,
+  initialVendorId, initialResourceUrl, initialResourceTypeId, initialResourceUrlPattern, initialAccountId,
 }: GatekeeperModalProps) {
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined
   const toasts = useKumoToastManager()
 
   const [selectedConnectionId, setSelectedConnectionId] = useState<ConnectionTypeId | null>(null)
@@ -252,7 +264,13 @@ export default function GatekeeperModal({
   const selectPortalContainer = useDialogSelectPortalContainer()
 
   const [spawnerDisplayName, setSpawnerDisplayName] = useState('')
-  const [spawnerModelId, setSpawnerModelId] = useState<string | null>(null)
+  // Wrapped, so that a pick of "None" (null) is told from no pick at all. Until there is a pick the
+  // form shows the model a new chat would start on, read at render since the user may be confirmed
+  // only after the models load, as when the connection drops while this is open.
+  const [spawnerModelPick, setSpawnerModelPick] = useState<{ modelId: string | null } | null>(null)
+  const spawnerModelId = spawnerModelPick
+    ? spawnerModelPick.modelId
+    : getStoredSelectedModel(userId, availableModels) ?? availableModels[0]?.id ?? null
   const [spawnerEnv, setSpawnerEnv] = useState<SpawnerEnvRow[]>([])
   const spawnerEnvError = validateSpawnerEnv(spawnerEnv)
 
@@ -299,11 +317,8 @@ export default function GatekeeperModal({
   // Pre-seed the selection for the agent requestConnection accept flow. Runs once per open after
   // vendors load and nothing is selected yet.
   //
-  // The backend authoritatively resolved the request to a specific resource and passes its
-  // urlPattern as initialResourceUrlPattern, so we select that exact resource — this can't diverge
-  // from the backend's validation, which guarantees the request resolved to something. The
-  // initialResourceUrl / catch-all / sole-resource branches are defensive fallbacks (e.g. an older
-  // message without a resolved pattern, or the resource list having shifted since the request).
+  // A saved ID, or an exact legacy pattern, identifies the type. A stale reference stays
+  // unresolved; only messages without either reference may infer a type from the URL or catalog.
   useEffect(() => {
     if (!open || !initialVendorId || selectedConnectionId !== null) return
     // A platform connection type (the Agent form) has no vendor; its id stands in for one.
@@ -311,10 +326,12 @@ export default function GatekeeperModal({
     if (vendorConnections.length === 0) return  // vendors may not be loaded yet
 
     let match: ConnectionType | undefined
-    if (initialResourceUrlPattern) {
-      // Authoritative: select the card that picks the exact resource the backend resolved to.
+    if (initialResourceTypeId !== undefined || initialResourceUrlPattern !== undefined) {
       match = vendorConnections.find(c =>
-        c.resources?.some(resource => resource.urlPattern === initialResourceUrlPattern))
+        findResourceType(c.resources ?? [], initialResourceTypeId, initialResourceUrlPattern))
+      // Stored references must not silently fall through to another type after a pattern change.
+      if (match) setSelectedConnectionId(match.id)
+      return
     }
     if (!match && initialResourceUrl) {
       // Fallback: match the raw URL; matchesResourceUrlPattern tolerates trailing-slash differences.
@@ -326,7 +343,7 @@ export default function GatekeeperModal({
       ?? vendorConnections.find(c => c.resources?.some(resource => resource.urlPattern === 'https://*'))
       ?? (vendorConnections.length === 1 ? vendorConnections[0] : undefined)
     if (match) setSelectedConnectionId(match.id)
-  }, [open, initialVendorId, initialResourceUrl, initialResourceUrlPattern, allConnections, selectedConnectionId])
+  }, [open, initialVendorId, initialResourceUrl, initialResourceTypeId, initialResourceUrlPattern, allConnections, selectedConnectionId])
 
   useEffect(() => {
     return () => {
@@ -403,7 +420,7 @@ export default function GatekeeperModal({
     setConfiguratorSelectionReady(null)
     setSelectedModelId(undefined)
     setSpawnerDisplayName('')
-    setSpawnerModelId(null)
+    setSpawnerModelPick(null)
     setSpawnerEnv(
       (spawnerEnvCandidatesRef.current ?? []).map(entry => ({ ...entry, enabled: true })))
 
@@ -413,14 +430,6 @@ export default function GatekeeperModal({
       setAvailableModels(models)
       setDecisionModels(decisions)
       setSelectedModelId((models[0] ?? decisions[0])?.id)
-      if (models.length > 0) {
-        const lastSelected = localStorage.getItem('lastSelectedModel')
-        if (lastSelected && models.some(m => m.id === lastSelected)) {
-          setSpawnerModelId(lastSelected)
-        } else {
-          setSpawnerModelId(models[0].id)
-        }
-      }
     }).catch(err => {
       if (cancelled) return
       console.error('Failed to load models:', err)
@@ -535,28 +544,40 @@ export default function GatekeeperModal({
     account => account.id === selectedAccountId && account.credentialsValid,
   ) ?? null
   const needsAccount = Boolean(selectedConnection?.vendorId)
+  const accountResources = selectedConnection
+    ? resourcesForAccount(selectedConnection, selectedAccount ?? undefined)
+    : []
+  // Each grouped member serves the shared configurator. Keep the card's lead when supported,
+  // otherwise start one the account actually offers.
+  const configuratorResource = accountResources.find(resource =>
+    getResourceTypeId(resource) === selectedConnection?.resourceTypeId) ?? accountResources[0]
+  const configuratorResourceTypeId = configuratorResource && getResourceTypeId(configuratorResource)
+  const configuratorResourceUrlPattern = configuratorResource?.urlPattern
 
   // When the agent's request supplied a concrete resource URL of one of the selected card's types,
   // pass it to the configurator so its form opens pre-filled (and editable). This is general across
   // gatekeepers: the iframe runtime seeds the form from the URL (via the configurator's
   // initialValuesFromResourceUrl hook, or a URLPattern-group fallback). Excludes the whole-instance
   // catch-all, which has no per-resource inputs.
-  const prefilledResource = selectedConnection && initialResourceUrl
-    ? resourceForUrl(selectedConnection, initialResourceUrl)
-    : undefined
+  const requestedResource = selectedConnection && initialResourceUrl
+    ? resourceForUrl(selectedConnection, initialResourceUrl) : undefined
+  const prefilledResource = accountResources.find(resource =>
+    requestedResource && getResourceTypeId(resource) === getResourceTypeId(requestedResource))
 
   // The card's grantable types the selected account hasn't granted. Its configurator offers every
   // other type, and opens once there is one to offer; the account's Grant access button asks for the
   // rest. (An undefined granted set means a legacy account predating grant tracking; treat it as
   // fully granted.)
-  const requiredGrants = selectedConnection ? requiredResourceUrlPatterns(selectedConnection) : []
-  const grantedPatterns = selectedAccount?.description.grantedResourceUrlPatterns
-  const missingGrants = grantedPatterns === undefined
+  const requiredGrants = accountResources.filter(resource => resource.grantable).map(getResourceTypeId)
+  const grantedTypeIds = selectedAccount
+    ? getGrantedResourceTypeIds(selectedAccount.description, selectedAccount.supportedResources)
+    : undefined
+  const missingGrants = grantedTypeIds === undefined
     ? []
-    : requiredGrants.filter(pattern => !grantedPatterns.includes(pattern))
-  const acceptedResourceUrlPatterns = (selectedConnection?.resources ?? [])
+    : requiredGrants.filter(typeId => !grantedTypeIds.includes(typeId))
+  const acceptedResourceUrlPatterns = accountResources
+    .filter(resource => !missingGrants.includes(getResourceTypeId(resource)))
     .map(resource => resource.urlPattern)
-    .filter(pattern => !missingGrants.includes(pattern))
   const awaitingGrant = missingGrants.length > 0 && acceptedResourceUrlPatterns.length === 0
   // A configurator reads the types it may offer only when it starts, so a new grant restarts it.
   const acceptedKey = acceptedResourceUrlPatterns.join('\n')
@@ -580,7 +601,7 @@ export default function GatekeeperModal({
   }, [selectedConnection, matchingAccounts, selectedAccountId, initialVendorId])
 
   useEffect(() => {
-    const resourceUrlPattern = selectedConnection?.resourceUrlPattern ?? null
+    const resourceUrlPattern = configuratorResourceUrlPattern
     if (!open || !resourceUrlPattern || !selectedAccount || awaitingGrant) {
       updateConfiguratorFrameState(null)
       setConfiguratorError(null)
@@ -595,7 +616,7 @@ export default function GatekeeperModal({
     setConfiguratorError(null)
     setConfiguratorSelectionReady(null)
 
-    authenticatedApi.startResourceConfigurator(selectedAccount.id, resourceUrlPattern)
+    authenticatedApi.startResourceConfigurator(selectedAccount.id, configuratorResourceTypeId!)
       .then(frame => {
         if (cancelled) {
           disposeConfiguratorFrame(frame)
@@ -624,7 +645,7 @@ export default function GatekeeperModal({
     return () => {
       cancelled = true
     }
-  }, [open, authenticatedApi, selectedConnection?.id, selectedConnection?.resourceUrlPattern, selectedAccount?.id, awaitingGrant, acceptedKey])
+  }, [open, authenticatedApi, selectedConnection?.id, configuratorResourceTypeId, configuratorResourceUrlPattern, selectedAccount?.id, awaitingGrant, acceptedKey])
 
   const handleSelectAccount = (accountId: number) => {
     pendingInitialAccountIdRef.current = null
@@ -640,10 +661,10 @@ export default function GatekeeperModal({
     else setSelectedAccountId(null)
   }
 
-  const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
+  const handleConnectAccount = async (vendorId: string, resourceTypeIds?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+      const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       if (error instanceof AuthPopupCancelledError) return
@@ -656,10 +677,10 @@ export default function GatekeeperModal({
   }
 
   const handleGrantResourceAccess = async (accountId: number) => {
-    const required = selectedConnection ? requiredResourceUrlPatterns(selectedConnection) : []
-    if (!required.length) return
     const account = matchingAccounts.find(a => a.id === accountId)
-    const granted = account?.description.grantedResourceUrlPatterns
+    const required = selectedConnection && account ? requiredResourceTypeIds(selectedConnection, account) : []
+    if (!required.length) return
+    const granted = account ? getGrantedResourceTypeIds(account.description, account.supportedResources) : undefined
     const missing = granted === undefined ? [] : required.filter(p => !granted.includes(p))
     if (missing.length === 0) return
     setGrantingAccountId(accountId)
@@ -696,29 +717,33 @@ export default function GatekeeperModal({
     }
   }
 
+  // The id is pipelined onto the creation and pulled with it: creating a vendor connection
+  // restarts the workspace about 100 ms after it commits whenever a "build" collaborator is live,
+  // and a separate getId() round trip from a distant client arrives after that.
+  const handOff = async (created: RpcPromise<GatekeeperClient<any>>) => {
+    const [gatekeeper, id] = await Promise.all([created, created.getId()])
+    try {
+      await onCreated(gatekeeper, id)
+    } catch (err) {
+      gatekeeper[Symbol.dispose]()
+      throw err
+    }
+    onClose()
+  }
+
   const handleCreateAiModel = async () => {
     if (!selectedModelId) {
       toasts.add({ title: 'Please select an AI model', variant: 'warning' })
       return
     }
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newAiModelGatekeeper(selectedModelId)
-      if (gatekeeper) {
-        await onCreated(gatekeeper)
-        transferred = true
-        onClose()
-      } else {
-        toasts.add({ title: 'Failed to create AI model connection', variant: 'error' })
-      }
+      await handOff(overseer.newAiModelGatekeeper(selectedModelId))
     } catch (err) {
       console.error('Failed to create AI model gatekeeper:', err)
       toasts.add({ title: 'Failed to create AI model connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }
@@ -739,23 +764,13 @@ export default function GatekeeperModal({
     }
 
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newAgentSpawnerGatekeeper(config)
-      if (gatekeeper) {
-        await onCreated(gatekeeper)
-        transferred = true
-        onClose()
-      } else {
-        toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
-      }
+      await handOff(overseer.newAgentSpawnerGatekeeper(config))
     } catch (err) {
       console.error('Failed to create agent spawner gatekeeper:', err)
       toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }
@@ -763,12 +778,10 @@ export default function GatekeeperModal({
   const handleCreateResourceConnection = async () => {
     if (creating) return
     if (!selectedConnection || selectedAccountId === null) return
-    const resourceUrlPattern = selectedConnection.resourceUrlPattern
+    const resourceUrlPattern = configuratorResourceUrlPattern
     if (!resourceUrlPattern) return
 
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       if (!configuratorFrameState?.frame || configuratorFrameState.accountId !== selectedAccountId || configuratorFrameState.resourceUrlPattern !== resourceUrlPattern) {
         throw new Error('Configurator is not ready.')
@@ -778,23 +791,19 @@ export default function GatekeeperModal({
       // A URL no narrower type names binds the card's whole-instance catch-all, if it has one.
       const resource = resourceForUrl(selectedConnection, resourceUrl) ??
         selectedConnection.resources?.find(({ urlPattern }) => urlPattern === 'https://*')
+      if (resource && !accountResources.some(candidate => getResourceTypeId(candidate) === getResourceTypeId(resource))) {
+        throw new Error(`This account does not support connecting ${resource.title}.`)
+      }
       if (resource && !acceptedResourceUrlPatterns.includes(resource.urlPattern)) {
         throw new Error(`Grant access to ${resource.title} to connect it.`)
       }
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newGatekeeper(selectedAccountId, resourceUrl)
-      if (gatekeeper) {
-        await onCreated(gatekeeper)
-        transferred = true
-        onClose()
-      } else {
-        toasts.add({ title: 'Failed to create connection', variant: 'error' })
-      }
+      // Typed nullable, but never null: the overseer throws instead.
+      await handOff(overseer.newGatekeeper(selectedAccountId, resourceUrl) as RpcPromise<GatekeeperClient<any>>)
     } catch (err) {
       console.error('Failed to create resource gatekeeper:', err)
       toasts.add({ title: err instanceof Error && err.message ? err.message : 'Failed to create connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }
@@ -806,7 +815,7 @@ export default function GatekeeperModal({
       return Boolean(spawnerDisplayName.trim()) && !spawnerEnvError
     }
     if (selectedConnection.resourceUrlPattern) {
-      const resourceUrlPattern = selectedConnection.resourceUrlPattern
+      const resourceUrlPattern = configuratorResourceUrlPattern
       return Boolean(
         selectedAccountId !== null &&
         resourceUrlPattern &&
@@ -884,12 +893,12 @@ export default function GatekeeperModal({
                     resourceTitle={selectedConnection.resourceUrlPattern ? selectedConnection.title : undefined}
                     connecting={connectingVendor === selectedConnection.vendorId}
                     reconnectingAccountId={reconnectingAccountId}
-                    requiredResourceUrlPatterns={requiredResourceUrlPatterns(selectedConnection)}
+                    requiredResourceTypeIds={account => requiredResourceTypeIds(selectedConnection, account)}
                     grantingAccountId={grantingAccountId}
                     onSelect={handleSelectAccount}
                     onConnect={() => {
                       if (!selectedConnection.vendorId) return
-                      const required = requiredResourceUrlPatterns(selectedConnection)
+                      const required = requiredResourceTypeIds(selectedConnection)
                       // No grantable requirement -> request authorization for everything
                       handleConnectAccount(selectedConnection.vendorId, required.length ? required : undefined)
                     }}
@@ -935,7 +944,7 @@ export default function GatekeeperModal({
                     env={spawnerEnv}
                     envError={spawnerEnvError}
                     onDisplayNameChange={setSpawnerDisplayName}
-                    onModelIdChange={setSpawnerModelId}
+                    onModelIdChange={modelId => setSpawnerModelPick({ modelId })}
                     onEnvChange={setSpawnerEnv}
                     selectContainer={selectPortalContainer}
                   />
