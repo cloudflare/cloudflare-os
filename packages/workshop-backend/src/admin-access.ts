@@ -19,8 +19,9 @@ import {
   MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminSettingChange, type AdminSettingRecord, type AdminVia,
-  type AdminWorkspaceAccess, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
-  type CommitInfo, type GatekeeperCreationSpec,
+  type AdminWorkspaceAccess, type AiChatAuthorInfo, type AiChatMetadata,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
+  type NamedUser,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -267,6 +268,17 @@ export function auditOwnerId(id: string): string {
   let digest = createHash("sha256").update(id).digest("hex").slice(0, OWNER_DIGEST_LENGTH);
   let start = cutAdminAuditText(id, MAX_ADMIN_AUDIT_ARG_LENGTH - OWNER_DIGEST_LENGTH - 1);
   return `${start}#${digest}`;
+}
+
+/** `user` as a record that admins read keeps them (NamedUser): the id as auditOwnerId() gives it,
+ * the name cut by cutAdminAuditText() to MAX_ADMIN_AUDIT_ARG_LENGTH, and no other field of a
+ * profile. The one place a profile becomes a NamedUser, so that no such record holds a profile:
+ * neither an id nor a display name has a bound of its own. */
+export function namedUser(user: Pick<AiChatAuthorInfo, "id" | "name">): NamedUser {
+  return {
+    id: auditOwnerId(user.id),
+    name: cutAdminAuditText(user.name, MAX_ADMIN_AUDIT_ARG_LENGTH),
+  };
 }
 
 /** The arguments an AdminAccessRecord keeps (see AdminAccessRecord.args): undefined ones left out,

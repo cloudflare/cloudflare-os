@@ -86,6 +86,10 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
     (ws: RpcStub<Overseer>) => unknown> = {
   setTitle: ws => ws.setTitle("Title"),
   deleteSelf: ws => ws.deleteSelf(),
+  grantAdminAccess: ws => ws.grantAdminAccess(),
+  renewAdminAccess: ws => ws.renewAdminAccess("x"),
+  revokeAdminAccess: ws => ws.revokeAdminAccess("x"),
+  listAdminGrants: ws => ws.listAdminGrants(),
   createGadget: ws => ws.createGadget("App"),
   listTree: ws => ws.listTree(COMMIT),
   listChangedPaths: ws => ws.listChangedPaths(COMMIT, COMMIT),

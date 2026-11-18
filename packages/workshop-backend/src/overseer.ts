@@ -3,9 +3,11 @@ import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-s
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
-  createAdminAccessError, createSnapshotSharingError,
-  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_GRANT_LIFETIME_SECONDS,
+  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_GRANTS_LISTED, SNAPSHOT_SHARING_ERROR_CODES,
+  createAdminAccessError, createAdminGrantError, createSnapshotSharingError,
+  type AdminAccessGrant, type AdminAccessRecord, type AdminAutoApproval,
+  type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
   type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
@@ -67,13 +69,17 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
-  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
-  withholdHookContent,
-  type AdminViewTerms,
+  adminAccessPolicy, adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive,
+  auditOwnerId, cutAdminAuditText, namedUser, redactAdminAuditArgs, validateAdminAccessReason,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
+  withholdCreationContent, withholdHookContent,
+  type AdminAccessPolicy, type AdminViewTerms,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import {
+  isAdminGrantLive, isAdminGrantPrunable, newAdminGrant, newestAdminGrantFirst,
+} from "./admin-grants";
 import { adminWriteArgs, type AdminWriteCall } from "./admin-writes";
 import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
@@ -6860,6 +6866,32 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
+  /** The stored grants that are live (isAdminGrantLive()), from either source, newest first.
+   * Synchronous, and it writes nothing. */
+  liveAdminGrants(): AdminAccessGrant[] {
+    let now = Date.now();
+    return [...this.storage.adminGrants.list()]
+        .filter(grant => isAdminGrantLive(grant, now)).toSorted(newestAdminGrantFirst);
+  }
+
+  /**
+   * Deletes the stored grants that isAdminGrantPrunable(), of `source` alone when one is given.
+   * Synchronous. The owner's methods pass "owner", so that no member call touches a record whose
+   * source is "admins".
+   *
+   * `retentionDays` is the audit log's retention as the caller last read it, which can trail a
+   * change an admin has just made. That is good enough here: the stored record of an ended grant
+   * serves its owner's listing and the admins' view of the workspace, and nothing checks access
+   * against it. Only the grant methods prune, so a workspace nobody gives or ends a grant on
+   * again keeps its ended grants until it is deleted.
+   */
+  pruneAdminGrants(retentionDays: number, source?: AdminAccessGrant["source"]): void {
+    for (let grant of this.storage.adminGrants.list()) {
+      if (source !== undefined && grant.source !== source) continue;
+      if (isAdminGrantPrunable(grant, retentionDays)) this.storage.adminGrants.delete(grant.id);
+    }
+  }
+
   async submitAction(gatekeeperId: number, action: number | "create",
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
@@ -12920,6 +12952,86 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     });
   }
 
+  // --- Grants for admin content reads ---
+  //
+  // Each of the four methods is the owner's alone, sees only the grants the owner gave (see
+  // #ownerGrant()), and first deletes those of them that ended longer ago than the admin audit
+  // log keeps its records. None changes the workspace's metadata, raises an event, adds to the
+  // action log or writes an admin audit record: an owner's grant is the owner's own record.
+
+  // Refuses anyone but the owner, then reads the deployment's policy.
+  async #ownerGrantPolicy(): Promise<AdminAccessPolicy> {
+    if (!this.isOwner) {
+      throw new Error("Only the workspace owner can give admins access to it.");
+    }
+    return adminAccessPolicy(await readAdminConfig(this.impl.env), this.impl.env);
+  }
+
+  // The grant `id` names among those the owner gave, for renewAdminAccess() and
+  // revokeAdminAccess(). The owner's methods never put, delete or return a record whose source
+  // is "admins": nothing a member can call may change because a second admin's approval gave a
+  // grant. So an id naming such a grant is refused by the same lookup and the same throw as an
+  // id naming nothing, and its owner cannot learn by probing that the grant exists.
+  #ownerGrant(id: string): AdminAccessGrant {
+    let grant = this.impl.storage.adminGrants.get(id);
+    if (grant?.source !== "owner") throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    return grant;
+  }
+
+  async grantAdminAccess(): Promise<AdminAccessGrant> {
+    let policy = await this.#ownerGrantPolicy();
+    let owner = await this.#getClientProfile();
+    // Nothing is awaited from here on: the workspace is still its owner's when the grant is put.
+    if (!this.impl.ownerId) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    if (policy.access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+    let grant = newAdminGrant({source: "owner", scope: "workspace", grantedBy: owner});
+    this.impl.storage.adminGrants.put(grant);
+    return grant;
+  }
+
+  async renewAdminAccess(grantId: string): Promise<AdminAccessGrant> {
+    let policy = await this.#ownerGrantPolicy();
+    if (!this.impl.ownerId) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    let grant = this.#ownerGrant(grantId);
+    if (!isAdminGrantLive(grant)) throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+    if (policy.access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+    grant.expiresAt = new Date(Date.now() + ADMIN_GRANT_LIFETIME_SECONDS * 1000);
+    this.impl.storage.adminGrants.put(grant);
+    return grant;
+  }
+
+  async revokeAdminAccess(grantId: string): Promise<void> {
+    let policy = await this.#ownerGrantPolicy();
+    let owner = await this.#getClientProfile();
+    if (!this.impl.ownerId) return;
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    let grant = this.#ownerGrant(grantId);
+    if (!isAdminGrantLive(grant)) return;
+    grant.revokedAt = new Date();
+    grant.revokedBy = namedUser(owner);
+    this.impl.storage.adminGrants.put(grant);
+  }
+
+  // The live ones come first so that the owner always sees a grant they can still end.
+  async listAdminGrants(): Promise<AdminAccessGrant[]> {
+    let policy = await this.#ownerGrantPolicy();
+    if (!this.impl.ownerId) return [];
+    this.impl.pruneAdminGrants(policy.retentionDays, "owner");
+    let now = Date.now();
+    let given = [...this.impl.storage.adminGrants.list()]
+        .filter(grant => grant.source === "owner").toSorted(newestAdminGrantFirst);
+    return [
+      ...given.filter(grant => isAdminGrantLive(grant, now)),
+      ...given.filter(grant => !isAdminGrantLive(grant, now)),
+    ].slice(0, MAX_ADMIN_GRANTS_LISTED);
+  }
+
   async submitCodeChange(chatId: number, submission: CodeChangeSubmission)
       : Promise<{generation: number, revision: number}> {
     let author = await this.#getClientProfile();
@@ -14266,6 +14378,10 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
+  async grantAdminAccess(): Promise<AdminAccessGrant> { this.#deny(); }
+  async renewAdminAccess(_grantId: string): Promise<AdminAccessGrant> { this.#deny(); }
+  async revokeAdminAccess(_grantId: string): Promise<void> { this.#deny(); }
+  async listAdminGrants(): Promise<AdminAccessGrant[]> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)
       : Promise<{generation: number, revision: number}> {
