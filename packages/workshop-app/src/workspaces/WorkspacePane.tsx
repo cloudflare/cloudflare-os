@@ -1,17 +1,15 @@
 import { useState } from 'react'
-import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, UserPlusIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
-import { activityWords, runsWantingAttention, type Agent } from '@/automations/agents'
+import { runsWantingAttention, type Agent } from '@/automations/agents'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { AgentMark } from '@/blocks/AgentMark'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
-import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
-import { WorkspaceMoreMenu } from '@/blocks/WorkspaceMoreMenu'
 import { AvatarStack } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
@@ -30,11 +28,11 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
 import { shareStanding } from './sharingRules'
 import { useSharing } from './useSharing'
-import { useWorkspaceRemoval } from './useWorkspaceRemoval'
 import { WorkspaceChatList } from './WorkspaceChatList'
 import { WorkspaceLibraryList } from './WorkspaceLibraryList'
 import { WorkspaceMemberList } from './WorkspaceMemberList'
-import { useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
+import { WorkspaceOptionsTab } from './WorkspaceOptionsTab'
+import { useRemoveWorkspace, useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
 import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
 import { removalOf } from './workspaceRemoval'
@@ -42,7 +40,7 @@ import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 import { gadgetsWaitingIn } from './waitingWords'
 
 /** What a workspace's page shows beneath its title. */
-export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'members'
+export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'members' | 'settings'
 
 export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'chats', label: 'Chats' },
@@ -50,6 +48,7 @@ export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'library', label: 'Library' },
   { value: 'automations', label: 'Automations' },
   { value: 'members', label: 'Members' },
+  { value: 'settings', label: 'Settings' },
 ]
 
 export type WorkspacePaneProps = {
@@ -79,12 +78,13 @@ export type WorkspacePaneProps = {
 }
 
 /**
- * One workspace: its title, which can be renamed, the way to start a chat in it, who it is shared
- * with and the way to invite more, its More menu, which deletes it, or removes it from the list
- * where it is someone else's, and, a tab each, its chats, its agents, what it has made, what runs
- * in it by itself and who has access to it. The chats, the library and what runs load what they
- * list once chosen; who has access is read with the page, for its header, and its agents too, so
- * that what of theirs waits on the viewer is said over the tabs, whichever is chosen, and counted
+ * One workspace: its title, which can be renamed, who it is shared with and the way to invite
+ * more, and, a tab each, its chats, with the way to start one, its agents, what it has made, what
+ * runs in it by itself, who has access to it, with the way to invite more there too, and its
+ * settings, which mark it read and delete it, or remove it from the list where it is someone
+ * else's. The chats, the library and what runs load what they list once chosen; who has access is
+ * read with the page, for its header, and its agents too, so that what of theirs waits on the
+ * viewer is said over the tabs, whichever is chosen, and counted
  * on the Agents tab.
  */
 export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
@@ -108,7 +108,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   // Whether the viewer owns it, from its own metadata once read and the list's until then.
   const metadata = shared?.metadata ?? workspace
   const removal = metadata && removalOf(metadata)
-  const removing = useWorkspaceRemoval({ onRemoved })
+  const removeWorkspace = useRemoveWorkspace()
 
   const agents = useWorkspaceAgents(workspaceId)
   const now = useNow()
@@ -128,20 +128,12 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const openRun = (run: { chatId: number; title: string }) => onOpenChat({ id: run.chatId, title: run.title })
 
   const renameWorkspace = useRenameWorkspace()
-  // Why the last new title was not kept, or the workspace was not marked read.
+  // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
   const connection = useConnectionNotice()
   const unread = useUnread()
   // Its marks clear as the account says they have.
-  const markRead = unread?.totals.workspaces.has(workspaceId)
-    ? () => {
-        setRenameProblem(undefined)
-        if (connection?.blocked()) return
-        unread.markWorkspaceRead(workspaceId).catch((error: unknown) => {
-          setRenameProblem(`Couldn’t mark the workspace read: ${error instanceof Error ? error.message : String(error)}`)
-        })
-      }
-    : undefined
+  const markRead = unread?.totals.workspaces.has(workspaceId) ? () => unread.markWorkspaceRead(workspaceId) : undefined
   const rename = (next: string) => {
     setRenameProblem(undefined)
     if (connection?.blocked()) return
@@ -154,22 +146,8 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     <PageLayout
       header={(
         <>
-          {/* As a chat's header is: the crumb, then what else can be done with it. */}
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
             {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} look={look} expanded />}
-            {(removal || markRead) && (
-              <HeaderBubble className="shrink-0">
-                <WorkspaceMoreMenu
-                  title={title || 'Workspace'}
-                  triggerVariant="secondary"
-                  onMarkRead={markRead}
-                  removal={removal && {
-                    kind: removal,
-                    onSelect: () => removing.ask({ id: workspaceId, title: title ?? '', removal, others: standing ? people.length - 1 : undefined }),
-                  }}
-                />
-              </HeaderBubble>
-            )}
           </nav>
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
             {/* Only once there is someone besides the viewer: it goes to the members. */}
@@ -189,16 +167,10 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             {canInvite && (
               <HeaderBubble>
                 {narrow
-                  ? <Button icon={UserPlusIcon} aria-label="Share" title="Share" onClick={() => setInviting(true)} />
-                  : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Share</Button>}
+                  ? <Button icon={UserPlusIcon} aria-label="Invite" title="Invite" onClick={() => setInviting(true)} />
+                  : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Invite</Button>}
               </HeaderBubble>
             )}
-            <HeaderBubble>
-              {/* Its icon alone on a narrow screen, which leaves the workspace's title the room. */}
-              {narrow
-                ? <Button variant="primary" icon={NotePencilIcon} aria-label="New chat" title="New chat" onClick={onNewChat} />
-                : <Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
-            </HeaderBubble>
           </span>
         </>
       )}
@@ -209,6 +181,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           {workspace
             ? <WorkspaceIconPicker label={workspaceLabel(workspace.title)} look={look} onLookChange={(next) => setLook(workspaceId, next)} />
             : <WorkspaceIcon label="" />}
+          <span className="mt-3 -mb-2 text-sm text-kumo-subtle">Workspace</span>
           {/* Its own heading, which can be renamed by whoever may build in it. */}
           <h1 className="flex max-w-full justify-center text-xl font-medium text-kumo-default">
             {workspace && workspace.role !== 'use'
@@ -216,22 +189,18 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               : <span className="px-2.5 py-1">{title || 'Workspace'}</span>}
           </h1>
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
-          {/* What waits on the viewer, or when it was last active: one line, always there, so that
-              what comes in as it is read, or a tab changed, moves nothing under it. */}
-          <div className="flex h-(--control-size) items-center justify-center">
-            {attention ? (
+          {attention && (
+            <div className="flex h-(--control-size) items-center justify-center">
               <WaitingPill
                 {...attention}
                 onOpen={({ to }) => ('run' in to ? openRun(to.run) : 'agent' in to ? onOpenAgent(to.agent) : onTabChange(to.tab))}
               />
-            ) : workspace?.lastActive && (
-              <span className="appears text-sm text-kumo-subtle">Active {activityWords(workspace.lastActive, new Date(now))}</span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
         <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
-            <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} />
+            <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} onNewChat={onNewChat} />
           </Tabs.Panel>
           <Tabs.Panel value="agents" className="flex flex-col gap-8">
             <AgentsTab
@@ -256,11 +225,24 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             />
           </Tabs.Panel>
           <Tabs.Panel value="members" className="flex flex-col gap-8">
-            <WorkspaceMemberList {...sharing} />
+            <WorkspaceMemberList {...sharing} onInvite={canInvite ? () => setInviting(true) : undefined} />
+          </Tabs.Panel>
+          <Tabs.Panel value="settings" className="flex flex-col gap-8">
+            <WorkspaceOptionsTab
+              title={title ?? ''}
+              onMarkRead={markRead}
+              removal={removal && {
+                kind: removal,
+                others: standing ? people.length - 1 : undefined,
+                onConfirm: async () => {
+                  await removeWorkspace(workspaceId, removal)
+                  onRemoved()
+                },
+              }}
+            />
           </Tabs.Panel>
         </Tabs>
       </div>
-      {removing.dialog && <RemoveWorkspaceDialog {...removing.dialog} />}
       {canInvite && (
         <ShareWorkspaceDialog
           workspaceId={workspaceId}

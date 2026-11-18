@@ -5,19 +5,6 @@ import { Button } from '@/components/Button'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
-/** A chat's notifications as each can stand, with the ways the menu offers to change them. */
-const STANDINGS = {
-  on: { label: 'Notifications on', choices: [{ enabled: false, label: 'Mute notifications' }] },
-  muted: { label: 'Muted', choices: [{ enabled: true, label: 'Unmute notifications' }] },
-  // A chat an automation started, which the viewer has not taken part in yet.
-  waiting: {
-    label: 'Off until they take part',
-    choices: [{ enabled: true, label: 'Enable notifications' }, { enabled: false, label: 'Mute notifications' }],
-  },
-} as const
-
-type Standing = keyof typeof STANDINGS
-
 /** Asks whether to delete a chat, which either goes, or fails and says why. */
 const DeleteDemo = ({ failing, report }: { failing?: boolean; report: ReturnType<typeof useReport> }) => {
   const { say, later } = report
@@ -40,47 +27,23 @@ const DeleteDemo = ({ failing, report }: { failing?: boolean; report: ReturnType
   )
 }
 
-/**
- * What else can be done with a chat, from its row in a workspace's list and from its header:
- * marking it read or unread, its notifications, as they stand, and deleting it, which asks first.
- */
+/** A chat's row in a workspace's list, and the question asked before deleting a chat. */
 export const ChatMenuPreview = () => {
   const reporting = useReport()
-  const { report, say } = reporting
-  const [standing, setStanding] = useState<Record<string, Standing>>({ jira: 'on', paris: 'muted', brief: 'waiting', header: 'on' })
-  // How many of each chat's messages are unread.
-  const [unread, setUnread] = useState<Record<string, number>>({ jira: 3, paris: 0, brief: 1, header: 0 })
-  const more = (key: string, title: string) => ({
-    read: {
-      unread: unread[key] > 0,
-      onChange: (read: boolean) => {
-        setUnread((current) => ({ ...current, [key]: read ? 0 : 1 }))
-        say(`marked ${title} ${read ? 'read' : 'unread'}`)
-      },
-    },
-    notifications: {
-      choices: [...STANDINGS[standing[key]].choices],
-      onChange: (enabled: boolean) => {
-        setStanding((current) => ({ ...current, [key]: enabled ? 'on' : 'muted' }))
-        say(`${enabled ? 'turned on' : 'muted'} notifications for ${title}`)
-      },
-    },
-    onDelete: () => say(`asked to delete ${title}`),
-  })
   return (
     <>
-      <Section title="ChatListItem with more (a dot while anything in it is unread; pointed at, more slides out: Mark as read or unread, whichever it is not, the chat’s notifications as they stand, on, muted, or off until the viewer takes part, and Delete chat…, which asks first; someone who can only use the workspace has none of it)">
+      <Section title="ChatListItem (a dot while anything in it is unread, and Waiting on you while it needs a decision)">
         <div className="flex w-96 max-w-full flex-col rounded-3xl bg-kumo-tint p-1.5">
-          <ChatListItem title="Jira dashboard" time="4 hours ago" unread={unread.jira} onSelect={() => {}} more={more('jira', 'Jira dashboard')} />
-          <ChatListItem title="Create a new slideshow about the history of Paris" time="Oct 27" unread={unread.paris} onSelect={() => {}} more={more('paris', 'the slideshow')} />
-          <ChatListItem title="Morning brief" time="Oct 26" waiting unread={unread.brief} onSelect={() => {}} more={more('brief', 'Morning brief')} />
+          <ChatListItem title="Jira dashboard" time="4 hours ago" unread={3} onSelect={() => {}} />
+          <ChatListItem title="Create a new slideshow about the history of Paris" time="Oct 27" onSelect={() => {}} />
+          <ChatListItem title="Morning brief" time="Oct 26" waiting unread={1} onSelect={() => {}} />
           <ChatListItem title="Only used here" time="Oct 25" onSelect={() => {}} />
         </div>
-        <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>
       </Section>
       <Section title="DeleteChatDialog (what deleting takes with it, asked before it is done; a failure stays in it, under why)">
         <DeleteDemo report={reporting} />
         <DeleteDemo report={reporting} failing />
+        <p role="status" className="w-full text-sm text-kumo-subtle">{reporting.report}</p>
       </Section>
     </>
   )

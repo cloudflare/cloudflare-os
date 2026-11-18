@@ -278,7 +278,7 @@ That is how the workspace's crumb (`WorkspaceCrumb`) stays between a workspace a
 growing its title out of the icon or drawing it back in, while going to another workspace swaps
 it. Render a pane's header in the commit that mounts the pane, or what it follows is gone by then.
 
-A workspace's page has a New chat button at the end of its header. It opens an empty chat in
+A workspace's page has a New chat button at the end of the Chats tab's controls. It opens an empty chat in
 the workspace (`/workspace/<id>/new`, `NewChatPane`, which the home page shares) that is
 created by its first message; the chat then takes the empty one's place in the history. Until
 then it greets the user as the home page does, under its header (`StartLayout`). The home
@@ -301,18 +301,17 @@ the home page a connection is added before the chat exists, so the first one mak
 the chat will start in (`NewChatPane`'s `makeConnectable`), which is then where it starts unless
 another is chosen.
 
-A chat's header ends in more (`ChatMoreMenu`), and so does its row in the workspace's Chats tab,
-which slides it out when pointed at, for whoever may build in the workspace: someone who can only
-use it has no chats of it. It turns the chat's notifications on or mutes them for the viewer, as
-the old app's menu did (`chat/ChatNotifications.ts`, plain and tested): what the workspace says of
-each chat comes from the viewer's read state scoped to it (`subscribeToUnreadState()`), and a chat
-it says nothing of goes by the default, which is off only in one that waits for the viewer to take
-part (`notificationsRequireParticipation`). A change shows at once and is put back if refused. It
-also deletes the chat, asked first in a `DeleteChatDialog`, as the question cannot grow out of a
-menu's item as a `ConfirmMenu`'s does. A deleted chat leaves its row at once; one that is open
-says so (`ChatSession`'s `deleted`, whoever deleted it), and the page goes to its workspace in
-its place in the history. The list is read once, so a chat someone else deletes stays in it until
-it is read again.
+A chat's notifications, read state and deletion are in its settings (`ChatOptionsTab`), for whoever
+may build in the workspace: someone who can only use it has no chats of it. Its row in the
+workspace's Chats tab has no menu of its own, only a dot while it has anything unread. A chat's
+notifications are turned on or muted for the viewer as the old app's menu did
+(`chat/ChatNotifications.ts`, plain and tested): what the workspace says of each chat comes from the
+viewer's read state scoped to it (`subscribeToUnreadState()`), and a chat it says nothing of goes by
+the default, which is off only in one that waits for the viewer to take part
+(`notificationsRequireParticipation`). A change shows at once and is put back if refused. Deleting a
+chat is asked first. One that is open says so when it is deleted (`ChatSession`'s `deleted`, whoever deleted it), and the page
+goes to its workspace in its place in the history. The list is read once, so a chat someone else
+deletes stays in it until it is read again.
 
 ## Unread, and being told
 
@@ -984,7 +983,7 @@ below.
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
 in place in the history): its chats, its agents (see Agents), what it has made (the library's, as
-beside a chat, opening beside the page), what runs by itself, and its members, the owner first. The
+beside a chat, opening beside the page), what runs by itself, its members, the owner first until ordered by name, under a search and the Invite button, and its Settings. The
 chats and the library load what they list once chosen; who has access is read with the page, for
 its header, and its agents too, for what of theirs waits on the viewer.
 
@@ -1018,17 +1017,17 @@ and the sweeps open in the background are refused, as is what the user cancelled
 again. A gadget that was not confirmed says so in its pane, with Confirm access, which asks again
 (`useAskAccessAgain`).
 
-A workspace goes from the user's list from its More menu (`WorkspaceMoreMenu`), on its page's
-header just after its crumb, as a chat's is after its title and on its row or card on the Workspaces page, which have it beside the
-star; the sidebar's rows have no menu. Its owner deletes it (`deleteSelf`), with everything in it
+A workspace goes from the user's list from its page's Settings tab (`WorkspaceOptionsTab`), which
+also marks everything in it read, or from the More menu (`WorkspaceMoreMenu`) on its row or card on
+the Workspaces page, which have it beside the star; the sidebar's rows have no menu. Its owner deletes it (`deleteSelf`), with everything in it
 and for everyone; someone it was shared with only removes it from their own list
 (`dismissSharedWorkspace`), keeping their access, so that opening it again brings it back. Which
 is offered is whose it is (`workspaces/workspaceRemoval.ts`, plain and tested: a workspace that
-names no `owner` is the viewer's). Either asks first (`RemoveWorkspaceDialog`), deleting saying
+names no `owner` is the viewer's). Either asks first, in place under its button (`ConfirmMenu`, with the words of `RemoveWorkspaceDialog`, which the Workspaces page's menu opens), deleting saying
 what goes and for how many besides the viewer, as far as its members are known, and that it
 cannot be undone. Once done, `WorkspacesProvider` drops it from the list, which nothing else would
 tell it, and its page goes home. The `shared-workspace` scenario's page offers the removal, and
-any other's the deletion: the crumb opens it there.
+any other's the deletion: its Settings tab opens it there.
 
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
 and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a

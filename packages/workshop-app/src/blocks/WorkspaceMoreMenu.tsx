@@ -17,7 +17,7 @@ export type WorkspaceMoreMenuProps = {
   onMarkRead?: () => void
   /** How the viewer may take it out of their list, and the way to ask, which asks first. */
   removal?: { kind: WorkspaceRemoval; onSelect: () => void }
-  /** The trigger Button's variant: ghost over a list, as its star is, and the header's own on a page. */
+  /** The trigger Button's variant: ghost over a list, as its star is. */
   triggerVariant?: ButtonProps['variant']
   /** Styles the button the menu opens from. */
   triggerClassName?: string

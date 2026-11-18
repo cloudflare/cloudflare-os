@@ -125,7 +125,7 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
       <div hidden={resourcesShown} className="contents">
         <header className="flex items-start gap-3 p-6 pb-4">
           <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
-            <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{what}”</Dialog.Title>
+            <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">{gadget ? 'Share' : 'Invite to'} “{what}”</Dialog.Title>
             <Dialog.Description className="text-sm text-kumo-subtle">
               {gadget
                 ? 'People you add can use it, but won’t see the chats or anything else in its workspace.'

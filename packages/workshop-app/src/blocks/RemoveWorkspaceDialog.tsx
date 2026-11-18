@@ -30,7 +30,8 @@ const fromWhom = (others: number | undefined) => {
   return others === 1 ? ', for you and the one person it’s shared with' : `, for you and the ${others} people it’s shared with`
 }
 
-const WORDS: Record<WorkspaceRemoval, {
+/** What each removal asks, says it does, and calls its confirm button. */
+export const REMOVAL_WORDS: Record<WorkspaceRemoval, {
   question: (title: string) => string
   said: (others: number | undefined) => string
   confirm: string
@@ -65,7 +66,7 @@ const RemoveWorkspaceContent = ({ title, removal, others, onConfirm, pending, ru
   run: (action: () => ActionResult) => void
 }) => {
   const [problem, setProblem] = useState<string>()
-  const words = WORDS[removal]
+  const words = REMOVAL_WORDS[removal]
   const confirm = () => {
     setProblem(undefined)
     run(async () => {
