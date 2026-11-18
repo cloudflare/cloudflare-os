@@ -22,6 +22,11 @@ type AdminAuditPanelProps = {
    * when the re-read failed.
    */
   onSettingsChanged: () => Promise<void>
+  /** Called on each press of Refresh, for what the page shows beside the panel. */
+  onRefresh?: () => void
+  /** Increases when something beside the panel records an action (a grant decision), which
+   * loads the statistics and the log again, as Refresh does, with the filters kept. */
+  recorded?: number
   /** The log's filters, which the admin page keeps in its URL. */
   filter: AuditFilter
   onFilterChange: (filter: AuditFilter) => void
@@ -179,10 +184,13 @@ const accessRank = (level: AdminWorkspaceAccess) => ADMIN_WORKSPACE_ACCESS_LEVEL
  * itself, filtered and a page at a time, and the settings that bound admin access to workspaces and
  * users' accounts, and the log's retention.
  */
-export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, onFilterChange }: AdminAuditPanelProps) => {
+export const AdminAuditPanel = ({
+  admin, settings, onSettingsChanged, onRefresh, recorded = 0, filter, onFilterChange,
+}: AdminAuditPanelProps) => {
   const toasts = useKumoToastManager()
   // Each load is one value of this; a new one supersedes those before it.
-  const [loads, setLoads] = useState(0)
+  const [ownLoads, setLoads] = useState(0)
+  const loads = ownLoads + recorded
   const [statsAnswer, setStatsAnswer] = useState<StatsAnswer | null>(null)
   const [savingAccess, setSavingAccess] = useState(false)
   const activityHeading = useId()
@@ -207,6 +215,10 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
   const refreshing = statsAnswer?.loads !== loads
   const statsFailed = statsAnswer !== null && 'failed' in statsAnswer && !refreshing
   const reload = () => setLoads((n) => n + 1)
+  // The load the last press of Refresh asked for. Refresh is disabled only until that one answers:
+  // a load something beside the panel asked for never takes focus from it.
+  const [pressedLoad, setPressedLoad] = useState(0)
+  const answeringPress = statsAnswer === null || statsAnswer.loads < pressedLoad
   // Each settings change is one value of this, which sends the log back to its newest page.
   const [changes, setChanges] = useState(0)
 
@@ -297,9 +309,13 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             variant="secondary"
             size="sm"
             icon={ArrowsClockwise}
-            loading={refreshing && stats !== null}
-            disabled={refreshing}
-            onClick={reload}
+            loading={answeringPress && stats !== null}
+            disabled={answeringPress}
+            onClick={() => {
+              setPressedLoad(loads + 1)
+              reload()
+              onRefresh?.()
+            }}
           >
             Refresh
           </Button>

@@ -8,6 +8,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  RouterContextProvider,
 } from '@tanstack/react-router'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -250,30 +251,50 @@ const detail = (details: HTMLElement, term: string) =>
   [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent ?? null
 
 // The link a record's details hold to the admin's page for its workspace.
+const workspaceLink = (details: HTMLElement) => details.querySelector('a[href^="/admin/workspace/"]')
+
 // What listAdminAudit() is asked for when the panel loads a page.
 const pageQuery = (query: Parameters<AdminApi['listAdminAudit']>[0] = {}) =>
   ({ admin: undefined, method: undefined, cursor: undefined, limit: 50, ...query })
 
 // A router that knows the page a record's details link: the admin's page for a workspace.
+const linkRouter = async () => {
+  const rootRoute = createRootRoute()
+  const router = createRouter({
     routeTree: rootRoute.addChildren(['/', '/admin/workspace/$workspaceId']
+      .map((path) => createRoute({ getParentRoute: () => rootRoute, path }))),
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  await router.load()
+  return router
+}
+
 describe('AdminAuditPanel', () => {
   let container: HTMLDivElement
   let root: Root
 
   // Renders the panel as the admin page does: a filter change is kept, as the URL keeps it, and
-  // shown again.
+  // shown again. The panel is given a router's context and is not a page of it, so that it can be
+  // drawn again with other props.
   const render = async (settings: AuditSettings = settingsWith(), admin = fakeAdmin(), initialFilter: AuditFilter = {}) => {
     const onSettingsChanged = vi.fn<() => Promise<void>>(async () => {})
+    const onRefresh = vi.fn<() => void>()
+    const router = await linkRouter()
     let filter = initialFilter
     let reported = settings
+    let recorded = 0
     const draw = () => root.render(
-      <AdminAuditPanel
-        admin={admin as unknown as RpcStub<AdminApi>}
-        settings={reported}
-        onSettingsChanged={onSettingsChanged}
-        filter={filter}
-        onFilterChange={onFilterChange}
-      />)
+      <RouterContextProvider router={router}>
+        <AdminAuditPanel
+          admin={admin as unknown as RpcStub<AdminApi>}
+          settings={reported}
+          onSettingsChanged={onSettingsChanged}
+          onRefresh={onRefresh}
+          recorded={recorded}
+          filter={filter}
+          onFilterChange={onFilterChange}
+        />
+      </RouterContextProvider>)
     const onFilterChange = vi.fn<(next: AuditFilter) => void>((next) => {
       filter = next
       draw()
@@ -284,7 +305,12 @@ describe('AdminAuditPanel', () => {
       draw()
     })
     await show(settings)
-    return { ...admin, onSettingsChanged, onFilterChange, show }
+    // Says that something beside the panel recorded an action, as a grant decision does.
+    const record = () => act(async () => {
+      recorded++
+      draw()
+    })
+    return { ...admin, onSettingsChanged, onRefresh, onFilterChange, show, record }
   }
 
   const hasButton = (name: string) =>
@@ -427,6 +453,34 @@ describe('AdminAuditPanel', () => {
       await click(within(card('Admin actions, last 7 days'), '3 content reads: show only content reads'))
 
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'workspace', method: 'readFile', exposed: 'content' })
+    })
+
+    it('loads the statistics and the log again, filters kept, when an action is recorded beside it', async () => {
+      const { getAdminAuditStats, listAdminAudit, record } = await render(settingsWith(), fakeAdmin(), { admin: 'admin' })
+      const stats = getAdminAuditStats.mock.calls.length
+      const lists = listAdminAudit.mock.calls.length
+
+      await record()
+
+      expect(getAdminAuditStats.mock.calls.length).toBe(stats + 1)
+      expect(listAdminAudit.mock.calls.length).toBe(lists + 1)
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin' }))
+    })
+
+    it('keeps Refresh enabled, and focused, while a load recorded beside it is answered', async () => {
+      const admin = fakeAdmin()
+      const { record } = await render(settingsWith(), admin)
+      const answer = deferred<ReturnType<typeof testStats>>()
+      admin.getAdminAuditStats.mockReturnValueOnce(answer.promise)
+      const refresh = button('Refresh')
+      await act(async () => refresh.focus())
+
+      await record()
+
+      expect(refresh.disabled).toBe(false)
+      expect(document.activeElement).toBe(refresh)
+      await act(async () => answer.resolve(testStats()))
+      expect(document.activeElement).toBe(refresh)
     })
 
     it('counts no content reads as none, rather than leaving the count out', async () => {
@@ -865,7 +919,7 @@ describe('AdminAuditPanel', () => {
       expect(details.textContent).toContain('chatId: 3')
     })
 
-    it('shows a call that was not refused with its kind alone, and names an untitled workspace in its details', async () => {
+    it('shows a call that was not refused with its kind alone, and in its details names an untitled workspace and links its admin page', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([
         accessRecord({ access: 'metadata', refused: undefined, workspaceId: 'ws-untitled', workspaceTitle: '' }),
@@ -878,6 +932,8 @@ describe('AdminAuditPanel', () => {
       expect(detail(details, 'Access')).toBe('Metadata')
       expect(details.textContent).toContain('Untitled')
       expect(details.textContent).toContain('ws-untitled')
+      expect(workspaceLink(details)?.textContent).toBe('Open workspace admin view')
+      expect(workspaceLink(details)?.getAttribute('href')).toBe('/admin/workspace/ws-untitled')
     })
 
     it('shows a call into a user’s account: its kind and its user, and in its details the account, reason, access and arguments, with no workspace', async () => {
@@ -927,7 +983,8 @@ describe('AdminAuditPanel', () => {
         formatFullTimestamp(WRITE_AT), 'second-admin', 'stopAgent', 'Workspace write', 'owner@example.test',
       ])
       const details = await expand()
-      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titled')
+      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titledOpen workspace admin view')
+      expect(workspaceLink(details)?.getAttribute('href')).toBe('/admin/workspace/ws-titled')
       expect(detail(details, 'Reason')).toBe('Ticket 42: agent stuck')
       expect(detail(details, 'Arguments')).toBe('chatId: 3')
       expect(detail(details, 'Via')).toBe('API')
@@ -1262,7 +1319,7 @@ describe('AdminAuditPanel', () => {
     })
 
     it('loads the counts and the page again on Refresh, keeping the page shown until then', async () => {
-      const { getAdminAuditStats, listAdminAudit } = await render()
+      const { getAdminAuditStats, listAdminAudit, onRefresh } = await render()
       const reloaded = deferred<AdminAuditPage>()
       listAdminAudit.mockReturnValueOnce(reloaded.promise as ReturnType<AdminApi['listAdminAudit']>)
 
@@ -1270,6 +1327,8 @@ describe('AdminAuditPanel', () => {
 
       expect(getAdminAuditStats).toHaveBeenCalledTimes(2)
       expect(listAdminAudit).toHaveBeenCalledTimes(2)
+      // What the page shows beside the panel (the pending approvals) is told to load again too.
+      expect(onRefresh).toHaveBeenCalledTimes(1)
       expect(card('Activity log').querySelector('[aria-busy="true"]')).not.toBeNull()
       expect(logRows()[0].textContent).toContain('second-admin')
       await act(async () => reloaded.resolve(testPage([settingRecord({ admin: 'newest-admin' })])))

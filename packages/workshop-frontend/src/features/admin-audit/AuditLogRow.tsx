@@ -97,7 +97,8 @@ const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
   </div>
 )
 
-// The workspace a record names: its title, which filters the log by that workspace, and its id.
+// The workspace a record names: its title, which filters the log by that workspace, its id, and
+// the way to the admin's page for it.
 const WorkspaceDetail = ({ record, onFilterBy }: {
   record: AdminAccessRecord | AdminWriteRecord | AdminGrantRecord
   onFilterBy: (filter: AuditFilter) => void
@@ -113,6 +114,13 @@ const WorkspaceDetail = ({ record, onFilterBy }: {
       <span className="truncate">{record.workspaceTitle || 'Untitled'}</span>
     </Button>
     <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
+    <Link
+      to="/admin/workspace/$workspaceId"
+      params={{ workspaceId: record.workspaceId }}
+      className="text-kumo-brand hover:underline"
+    >
+      Open workspace admin view
+    </Link>
   </Detail>
 )
 
