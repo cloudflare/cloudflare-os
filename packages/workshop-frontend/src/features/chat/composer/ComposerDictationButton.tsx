@@ -5,7 +5,7 @@ import type { DictationStatus } from "./useComposerDictation";
 const announcements: Record<DictationStatus, string> = {
   idle: "",
   starting: "Starting voice typing…",
-  downloading: "",
+  downloading: "Downloading the voice typing language pack…",
   listening: "Listening…",
   stopping: "Finishing voice typing…",
 };

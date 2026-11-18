@@ -291,13 +291,12 @@ describe("ChatComposer", () => {
     const options = { langs: ["en-US"], processLocally: true };
     expect(DownloadableRecognition.available).toHaveBeenCalledWith(options);
     expect(DownloadableRecognition.install).toHaveBeenCalledWith(options);
-    const downloadStatus = container!.querySelector('[role="status"]:not(.sr-only)');
-    expect(downloadStatus?.textContent).toContain("The mic isn’t listening yet.");
+    expect(container!.querySelector('[role="status"].sr-only')?.textContent)
+      .toBe("Downloading the voice typing language pack…");
     expect(started).not.toHaveBeenCalled();
 
     if (switched) await renderDictationComposer({ chatKey: 2 });
     await act(async () => download.resolve(true));
-    expect(downloadStatus?.textContent).toBe("");
     expect(started).toHaveBeenCalledTimes(switched ? 0 : 1);
     expect(voiceButton(switched ? "Start" : "Stop")).not.toBeNull();
     if (!switched) {
@@ -323,14 +322,12 @@ describe("ChatComposer", () => {
     vi.stubGlobal("SpeechRecognition", StalledRecognition);
     await renderDictationComposer();
     await act(async () => voiceButton("Start")!.click());
-    expect(container!.textContent).toContain("one-time download");
 
     await act(async () => vi.advanceTimersByTimeAsync(3 * 60 * 1000));
     expect(testState.addToast).toHaveBeenCalledWith(expect.objectContaining({
       title: expect.stringContaining("taking longer than expected"),
     }));
     expect(voiceButton("Start")).not.toBeNull();
-    expect(container!.textContent).not.toContain("one-time download");
 
     await act(async () => download.resolve(true));
     expect(started).not.toHaveBeenCalled();

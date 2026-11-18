@@ -991,14 +991,6 @@ export const ChatComposer = ({
           </div>
         </div>
 
-        <div role="status" className="px-4 text-xs text-kumo-subtle">
-          {dictation.status === "downloading" && (
-            <p className="m-0 pb-2">
-              Setting up voice typing (one-time download, may take a couple of minutes). The mic isn’t listening yet.
-            </p>
-          )}
-        </div>
-
         {/* Footer row: add, voice typing, and options left; model and send right */}
         <div className="flex items-center justify-between gap-1.5 px-3 pb-1.5">
           <div className="flex shrink-0 items-center gap-1.5">
