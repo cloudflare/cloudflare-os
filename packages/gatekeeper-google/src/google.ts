@@ -1410,7 +1410,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let tokenPromise = obj.getAccessToken();
     let grantedResourcesPromise = obj.getGrantedResourceUrlPatterns();
     let token = await tokenPromise;
-    let description = await getGoogleAccountDescription(token.token);
+    // Bounded: the Workshop reads it while it handles a credential notice, which the notices after
+    // it, and a reconnect waiting on them, wait for.
+    let description = await getGoogleAccountDescription(
+        token.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
 
     // A private grant is the gatekeeper's own business, never a resource the Workshop can bind.
     description.grantedResourceUrlPatterns =

@@ -261,9 +261,10 @@ export async function getGoogleAccountSubject(accessToken: string): Promise<stri
   return (await getGoogleAccountProfile(accessToken)).sub;
 }
 
-export async function getGoogleAccountDescription(accessToken: string)
+/** `signal` bounds the round trip, which the Workshop's handling of a notice can wait on. */
+export async function getGoogleAccountDescription(accessToken: string, signal?: AbortSignal)
     : Promise<AccountDescription> {
-  const data = await getGoogleAccountProfile(accessToken);
+  const data = await getGoogleAccountProfile(accessToken, signal);
 
   // Mapping the response to our specific interface
   return {

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountProfile } from "../src/google-api";
+import {
+  exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile,
+} from "../src/google-api";
 
 const OAUTH_REDIRECT_URI = "https://gatekeeper-google.gadgets-staging.workers.dev/oauth";
 
@@ -84,6 +86,20 @@ describe("Google access token refresh", () => {
 
 describe("Google user info", () => {
   // A JSON parse error quotes the body, and this one is logged when a grant's holder is recorded.
+  it("ends a description's round trip that Google never answers when the caller's signal does", async () => {
+    // Google never answers, until the request is aborted.
+    const fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      }));
+    vi.stubGlobal("fetch", fetch);
+    const controller = new AbortController();
+    const described = getGoogleAccountDescription("access-token", controller.signal);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    controller.abort(new Error("timed out"));
+    await expect(described).rejects.toThrow("timed out");
+  });
+
   // Its reason phrase is the server's own words, so a failure gives its status alone.
   it("gives a failure's status without its reason phrase", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 503, statusText: "token=abc" })));
