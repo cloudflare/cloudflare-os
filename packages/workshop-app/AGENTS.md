@@ -537,11 +537,29 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   API's own `validateBindingName()`), and stays in the field under why until it is put right or
   Escape puts it back. One waiting in a chat is that chat's, and is not renamed here. Nothing is
   added here: the agent asks for what it needs in a chat.
-- Settings: where it is from, and deleting it.
+- Settings: where it is from, updating it from its template, and deleting it.
+
+A gadget that follows a template is updated from it (`UpdateFromTemplate`, over
+`UpdateFromTemplateDialog`). Its Settings tab always has the way, saying whether there is a newer
+version where that can be told (`templateUpdateStatus`: a template or a gadget that names no
+release says nothing), and its More menu has it, marked New version, only while there is one. The
+update is proposed in a new chat (`applyBlueprint()`, through `proposeTemplateUpdate`, plain and
+tested), which is then gone to with the gadget beside it: it is tried and accepted there, and
+nothing changes until it is. It is reviewed by the model the user's messages are answered by,
+unless another, or No agent, is chosen. Where nothing was proposed the dialog says why: it was up
+to date, the two cannot be merged, or it could not be asked, with Try again. A gadget that shares
+no history with its template is warned of first, in the dialog's place, and merged over a guess
+only on Update anyway. Only a gadget with code of its own takes one: one still waiting in a chat
+has none. Nothing says a template was published again, so a newer version is noticed as its page
+or pane is opened, or once the gadget takes one. The template is read through
+`useTemplateReader` (`rpc/PublicApiContext`), which the scripted chats give a fake of their own:
+the `output` scenario's document follows a template a version behind, whose update is proposed
+in the scenario's own chat.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
 here (who has access, publishing it as a template, its exports and automations, changing what it
-is drawn as) is not here yet.
+is drawn as, switching it to another template, and updating one whose template is not known) is
+not here yet.
 
 ## Lists
 

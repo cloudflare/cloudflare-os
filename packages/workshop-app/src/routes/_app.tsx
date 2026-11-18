@@ -158,6 +158,13 @@ const AppFrame = () => {
       search: {},
       state: { fromItem: true, gadgetTitle: title },
     })
+  // The chat an update from a gadget's template was proposed in, with the gadget beside it, showing it.
+  const openUpdate = (output: AsideOutput, chatId: number) =>
+    navigate({
+      to: '/workspace/$workspaceId/chat/$chatId',
+      params: { workspaceId: output.workspaceId, chatId },
+      search: { open: formatAsideRef({ kind: 'output', workpieceId: output.workpieceId }) },
+    })
 
   let asideElement: ReactNode = null
   if (itemPage && pageItem) {
@@ -175,6 +182,7 @@ const AppFrame = () => {
         onFullScreenChange={setFullScreen}
         narrow={narrow}
         onOpenSettings={builds(pageWorkspaceId) ? openSettings : undefined}
+        onUpdateProposed={openUpdate}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
         // Opened otherwise, such as from the library, there is nothing to collapse into. On a
         // narrow screen, where it is beside nothing, it goes up.
@@ -197,6 +205,7 @@ const AppFrame = () => {
         onFullScreenChange={setFullScreen}
         narrow={narrow}
         onOpenSettings={builds(besideWorkspaceId) ? openSettings : undefined}
+        onUpdateProposed={openUpdate}
         onSelect={(key) => aside.show(key, besideRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}

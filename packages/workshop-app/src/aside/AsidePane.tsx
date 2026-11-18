@@ -9,6 +9,9 @@ import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import type { CodeLines } from '@/components/CodeEditor'
 import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
+import { templateUpdateStatus } from '@/gadgets/templateUpdate'
+import { UpdateFromTemplate } from '@/gadgets/UpdateFromTemplate'
+import { useBlueprintInfo } from '@/gadgets/useGadgetSettings'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { asideItemIcon } from './asideItemIcon'
@@ -35,6 +38,11 @@ export type AsidePaneProps = {
    * the viewer may not change it, which leaves them out of its menu.
    */
   onOpenSettings?: (output: AsideOutput, title: string) => void
+  /**
+   * Goes to the chat an update of a gadget from its template was proposed in, which is where it is
+   * tried. Left out where there is nowhere to go, which leaves the update out of its menu.
+   */
+  onUpdateProposed?: (output: AsideOutput, chatId: number) => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -63,7 +71,7 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange, narrow, onOpenSettings } = props
+  const { item, link, onFullScreenChange, narrow, onOpenSettings, onUpdateProposed } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
@@ -147,6 +155,26 @@ export const AsidePane = (props: AsidePaneProps) => {
   )
   // Its code is its workspace's, which whoever it was shared with to use does not build in.
   const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
+  // A newer version of the template it follows, which its menu offers to update it to. Only a
+  // gadget with code of its own takes one: one still waiting in a chat has none. Its settings
+  // offer the update whether or not there is one.
+  const upstream = gadget && snapshot.upstream
+  const template = useBlueprintInfo(upstream?.blueprintId, upstream?.commitId)
+  const follows = readsCode && upstream?.blueprintId !== undefined && snapshot.commitId !== undefined ? { ...upstream, blueprintId: upstream.blueprintId } : undefined
+  const [updating, setUpdating] = useState(false)
+  const update = gadget && follows && template && onUpdateProposed && (
+    <UpdateFromTemplate
+      open={updating}
+      onOpenChange={setUpdating}
+      workspaceId={gadget.workspaceId}
+      gadgetId={gadget.workpieceId}
+      title={title}
+      upstream={follows}
+      template={template}
+      onProposed={(chatId) => onUpdateProposed(gadget, chatId)}
+    />
+  )
+  const hasUpdate = update && templateUpdateStatus(follows, template) === 'available'
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
@@ -157,6 +185,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     onViewCode: readsCode ? () => setCode({ ...codeHere, key: item.key, open: !viewingCode }) : undefined,
     viewingCode,
     onShare: share ? () => setSharing(true) : undefined,
+    onUpdate: hasUpdate ? () => setUpdating(true) : undefined,
     narrow,
   }
 
@@ -171,11 +200,13 @@ export const AsidePane = (props: AsidePaneProps) => {
     >
       {content}
       {share}
+      {update}
     </SidePane>
   ) : (
     <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
       {share}
+      {update}
     </SidePane>
   )
 }

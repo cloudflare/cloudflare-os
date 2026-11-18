@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { ListGroup } from '@/blocks/ListGroup'
+import { UpdateFromTemplateDialog, type UpdateFromTemplateOutcome, type UpdateTemplate } from '@/blocks/UpdateFromTemplateDialog'
 import { Button } from '@/components/Button'
 import type { GadgetBinding, Listed } from '@/gadgets/GadgetSettings'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
@@ -18,6 +19,59 @@ const BINDINGS: GadgetBinding[] = [
   { name: 'SUMMARY_MODEL', target: 5, resourceTitle: 'Claude Haiku', kind: 'model', model: 'Claude Haiku' },
   { name: 'TRIAGE', target: 6, resourceTitle: 'Triage', kind: 'agent', model: 'Claude Sonnet' },
 ]
+
+const TEMPLATE: UpdateTemplate = { title: 'Tip jar', description: 'Counts tips for the team lunch, and shows everyone the total.', version: 4, status: 'available' }
+const MODELS = [{ id: 'sonnet', name: 'Claude Sonnet' }, { id: 'haiku', name: 'Claude Haiku' }]
+
+// What asking for the update ends in, in each of the dialog's previews.
+const UPDATES: Record<string, { label: string; template?: UpdateTemplate | null; models?: typeof MODELS; outcome: (allowUnrelated: boolean) => UpdateFromTemplateOutcome }> = {
+  proposed: { label: 'Update available', template: TEMPLATE, models: MODELS, outcome: () => ({ outcome: 'proposed' }) },
+  upToDate: { label: 'Up to date', template: { ...TEMPLATE, status: 'upToDate' }, models: MODELS, outcome: () => ({ outcome: 'upToDate' }) },
+  unrelated: { label: 'Unrelated', template: { ...TEMPLATE, status: undefined }, models: MODELS, outcome: (allowUnrelated) => ({ outcome: allowUnrelated ? 'proposed' : 'unrelated' }) },
+  baseUnavailable: { label: 'Can’t be merged', template: TEMPLATE, models: MODELS, outcome: () => ({ outcome: 'baseUnavailable' }) },
+  failed: { label: 'Failed', template: TEMPLATE, models: MODELS, outcome: () => ({ outcome: 'failed', message: 'The gadget changed while the update was being prepared. Try again.' }) },
+  gone: { label: 'Template gone', template: null, models: MODELS, outcome: () => ({ outcome: 'proposed' }) },
+  loading: { label: 'Loading', outcome: () => ({ outcome: 'proposed' }) },
+}
+
+/** The dialog that proposes a gadget's update from its template, opened in each of the ways it can go. */
+const UpdatePreview = () => {
+  const { report, say, later } = useReport()
+  const [shown, setShown] = useState<string>()
+  const [reviewer, setReviewer] = useState<string | null>('sonnet')
+  const update = shown ? UPDATES[shown] : undefined
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1.5">
+        {Object.entries(UPDATES).map(([key, { label }]) => <Button key={key} onClick={() => setShown(key)}>{label}</Button>)}
+      </div>
+      <UpdateFromTemplateDialog
+        open={update !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setShown(undefined)
+        }}
+        gadget="Team lunch tips"
+        template={update?.template}
+        models={update?.models}
+        reviewer={reviewer}
+        onReviewerChange={(id) => {
+          setReviewer(id)
+          say(`reviewed by ${id ?? 'no agent'}`)
+        }}
+        onUpdate={async (allowUnrelated) => {
+          await later()
+          const result = update!.outcome(allowUnrelated)
+          if (result.outcome === 'proposed') {
+            setShown(undefined)
+            say('proposed in a new chat')
+          }
+          return result
+        }}
+      />
+      <p role="status" className="text-sm text-kumo-subtle">{report}</p>
+    </div>
+  )
+}
 
 const STATES = {
   ready: 'Ready',
@@ -61,7 +115,10 @@ export const GadgetSettingsPreview = () => {
           </ListGroup>
         </div>
       </Section>
-      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, and one for where it is from and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
+      <Section title="UpdateFromTemplateDialog (proposing a gadget’s update from its template in a new chat: with a newer version, already up to date, unrelated and warned of first, one that can’t be merged, one that couldn’t be asked with the way to try again, its template gone, and while it is read)">
+        <UpdatePreview />
+      </Section>
+      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, and one for where it is from, updating it from its template, and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(STATES).map(([key, label]) => (
@@ -76,6 +133,7 @@ export const GadgetSettingsPreview = () => {
               icon="appWindow"
               description="Counts tips for the team lunch, and shows everyone the total."
               template="Tip jar"
+              templateUpdate={{ status: 'available', onUpdate: () => say('update from the template') }}
               workspace={{ id: 'ws-1', title: 'Team lunch', label: 'TL' }}
               tab={tab}
               onTabChange={setTab}

@@ -6,6 +6,8 @@ import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from './GadgetSettingsView'
 import { InvalidBindingName } from './GadgetSettings'
+import { templateUpdateStatus } from './templateUpdate'
+import { UpdateFromTemplate } from './UpdateFromTemplate'
 import { useBlueprintInfo, useGadgetSettings, useServices } from './useGadgetSettings'
 
 export type GadgetSettingsPaneProps = {
@@ -21,6 +23,8 @@ export type GadgetSettingsPaneProps = {
   onDeleted: () => void
   /** Goes to the page of the workspace it is in. */
   onOpenWorkspace: () => void
+  /** An update from its template was proposed in this chat, which is where it is tried: go there. */
+  onUpdateProposed: (chatId: number) => void
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -28,9 +32,9 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * A gadget's settings page (`GadgetSettingsView`) over what it shows: the gadget, live, what it is
  * bound to, its code as it was last kept, read once the Code tab is shown, and what its template
- * says of it.
+ * says of it, with whether it has a newer version to update it from (`UpdateFromTemplate`).
  */
-export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace }: GadgetSettingsPaneProps) => {
+export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onUpdateProposed }: GadgetSettingsPaneProps) => {
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -40,7 +44,12 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const gadget = snapshot.status === 'ready' ? snapshot.gadget : undefined
   const title = gadget?.title ?? initialTitle
   const blueprintId = gadget?.upstream?.blueprintId
-  const blueprint = useBlueprintInfo(blueprintId)
+  const upstream = gadget?.upstream
+  const blueprint = useBlueprintInfo(blueprintId, upstream?.commitId)
+  // Only a gadget with code of its own takes an update, from a template it follows: one still
+  // waiting in a chat has none, and one built from scratch follows none.
+  const follows = upstream?.blueprintId !== undefined && gadget?.commitId !== undefined ? { ...upstream, blueprintId: upstream.blueprintId } : undefined
+  const [updating, setUpdating] = useState(false)
   useDocumentTitle(title ? `Settings · ${title}` : 'Gadget settings')
   // Why the last thing asked for was not done.
   const [problem, setProblem] = useState<string>()
@@ -59,37 +68,53 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
       : snapshot
 
   return (
-    <GadgetSettingsView
-      state={state.status === 'ready' ? { status: 'ready' } : state}
-      title={title}
-      icon={gadget?.output?.icon}
-      description={blueprint?.description}
-      // Where it came from is known only for a gadget that says; one built from scratch names no template.
-      template={gadget?.upstream ? (blueprintId ? blueprint?.title : null) : undefined}
-      workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look }}
-      tab={tab}
-      onTabChange={onTabChange}
-      onRename={gadget && ((next) => attempt('rename the gadget', () => settings.rename(next)))}
-      problem={problem}
-      bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
-      services={services}
-      onUnbind={(name) => attempt(`remove env.${name}`, () => settings.unbind(name))}
-      // Said under the name, which keeps what was typed until it is put right.
-      onRenameBinding={async (name, next) => {
-        if (connection?.blocked()) return { saved: false }
-        try {
-          await settings.renameBinding(name, next)
-          return { saved: true }
-        } catch (error) {
-          return { saved: false, problem: error instanceof InvalidBindingName ? error.message : `Couldn’t rename env.${name}: ${messageOf(error)}` }
-        }
-      }}
-      onDelete={() => attempt('delete the gadget', async () => {
-        await settings.remove()
-        onDeleted()
-      })}
-      onBack={onBack}
-      onOpenWorkspace={onOpenWorkspace}
-    />
+    <>
+      <GadgetSettingsView
+        state={state.status === 'ready' ? { status: 'ready' } : state}
+        title={title}
+        icon={gadget?.output?.icon}
+        description={blueprint?.description}
+        // Where it came from is known only for a gadget that says; one built from scratch names no template.
+        template={gadget?.upstream ? (blueprintId ? blueprint?.title : null) : undefined}
+        // The template gone, there is nothing to update it from.
+        templateUpdate={follows && blueprint !== null ? { status: templateUpdateStatus(follows, blueprint), onUpdate: () => setUpdating(true) } : undefined}
+        workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look }}
+        tab={tab}
+        onTabChange={onTabChange}
+        onRename={gadget && ((next) => attempt('rename the gadget', () => settings.rename(next)))}
+        problem={problem}
+        bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
+        services={services}
+        onUnbind={(name) => attempt(`remove env.${name}`, () => settings.unbind(name))}
+        // Said under the name, which keeps what was typed until it is put right.
+        onRenameBinding={async (name, next) => {
+          if (connection?.blocked()) return { saved: false }
+          try {
+            await settings.renameBinding(name, next)
+            return { saved: true }
+          } catch (error) {
+            return { saved: false, problem: error instanceof InvalidBindingName ? error.message : `Couldn’t rename env.${name}: ${messageOf(error)}` }
+          }
+        }}
+        onDelete={() => attempt('delete the gadget', async () => {
+          await settings.remove()
+          onDeleted()
+        })}
+        onBack={onBack}
+        onOpenWorkspace={onOpenWorkspace}
+      />
+      {follows && (
+        <UpdateFromTemplate
+          open={updating}
+          onOpenChange={setUpdating}
+          workspaceId={workspaceId}
+          gadgetId={workpieceId}
+          title={title ?? ''}
+          upstream={follows}
+          template={blueprint}
+          onProposed={onUpdateProposed}
+        />
+      )}
+    </>
   )
 }

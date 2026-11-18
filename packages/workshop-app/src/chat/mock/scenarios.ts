@@ -347,9 +347,11 @@ const output: Scenario = {
   description:
     'The agent creates a document and keeps writing. The card stays under the answer, as a draft until the ' +
     'changes are accepted (scripted here: the edits and the accept arrive on their own). The request has files ' +
-    'attached: they and the document open beside the chat.',
+    'attached: they and the document open beside the chat. The document follows a template with a newer ' +
+    'version, which its More menu offers to update it to, proposed in this chat.',
   history: history([user('Write up the Q3 platform review as a doc.', { attachments: REVIEW_FILES })]),
   files: { 'q2-review': Q2_REVIEW_PDF, 'q3-notes': Q3_NOTES, 'q3-plan': Q3_PLAN_DOCX, roadmap: ROADMAP_PPTX, budget: BUDGET_XLSX },
+  templateUpdate: true,
   script: [
     ...turn(
       say(agent({ text: 'I’ll start a document for it.' })),

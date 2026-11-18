@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { sharedConnection } from '@/rpc/sharedConnection'
+import { useTemplateReader } from '@/rpc/PublicApiContext'
 import { GadgetSettings } from './GadgetSettings'
+import type { TemplateRelease } from './templateUpdate'
 
 /**
  * One gadget's settings (`GadgetSettings`), live while mounted; the caller keys it by the gadget.
@@ -29,23 +30,29 @@ export const useGadgetSettings = (workspaceId: string, workpieceId: number) => {
   return { settings, snapshot: useSyncExternalStore(settings.subscribe, settings.getSnapshot) }
 }
 
-/** What a gadget's blueprint says of itself: its title, and what it is for. */
-export type BlueprintInfo = { title: string; description?: string }
+/**
+ * What a gadget's blueprint says of itself: its title, what it is for, and its release as it now
+ * stands, which says whether the gadget has an update to take (`templateUpdateStatus`).
+ */
+export type BlueprintInfo = { title: string; description?: string } & TemplateRelease
 
 /**
  * What a blueprint says it is, which anyone may read (`PublicApi.getBlueprint()`): for the gadget
- * made from it. Nothing until it is known, and for no blueprint.
+ * made from it. Undefined until it is known, and for no blueprint; null for one that is no longer
+ * there. Read again when `release` changes, which is the gadget taking an update: nothing says a
+ * template was published again, which is noticed then or once the page is opened again.
  */
-export const useBlueprintInfo = (blueprintId: string | undefined) => {
-  const connection = sharedConnection()
-  const { publicApi } = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
-  const [found, setFound] = useState<{ id: string; info?: BlueprintInfo }>()
+export const useBlueprintInfo = (blueprintId: string | undefined, release?: string) => {
+  const publicApi = useTemplateReader()
+  const [found, setFound] = useState<{ id: string; info: BlueprintInfo | null }>()
   useEffect(() => {
     if (!blueprintId || !publicApi) return
     let current = true
     publicApi.getBlueprint(blueprintId).then(
       (blueprint) => {
-        if (current) setFound({ id: blueprintId, info: blueprint ? { title: blueprint.metadata.title, description: blueprint.metadata.description || undefined } : undefined })
+        if (!current) return
+        const { title, description, version, commitId } = blueprint?.metadata ?? {}
+        setFound({ id: blueprintId, info: blueprint ? { title: title || 'Untitled template', description: description || undefined, version: version ?? 0, ...(commitId ? { commitId } : {}) } : null })
       },
       // It only says more of the gadget, which shows without it.
       () => {},
@@ -53,7 +60,7 @@ export const useBlueprintInfo = (blueprintId: string | undefined) => {
     return () => {
       current = false
     }
-  }, [blueprintId, publicApi])
+  }, [blueprintId, release, publicApi])
   return found && found.id === blueprintId ? found.info : undefined
 }
 
