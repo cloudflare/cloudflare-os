@@ -1,8 +1,10 @@
-import { useMemo, useState, type ReactNode } from 'react'
-import type { MessageFormatRef } from '@gadgets/workshop-shared/api'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
+import type { CapsuleSpecifier, MessageFormatRef } from '@gadgets/workshop-shared/api'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatStart, type ChatStartProps } from '@/blocks/ChatStart'
-import { Composer } from '@/blocks/Composer'
+import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
+import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -11,6 +13,7 @@ import { StartLayout } from '@/layouts/StartLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useSkills } from '@/skills/useSkills'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
+import { withCapsules } from './capsules'
 import { orderCommands, skillCommandOf } from './slashCommands'
 import { startWithFormat, type StartFormat } from './startWithFormat'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
@@ -34,7 +37,13 @@ export type NewChatPaneProps = {
    * where the message names a format; or with a skill and the words it is given (see
    * `startConversation`).
    */
-  start: (text: string, files: File[], modelId: string, command?: ComposerCommand, formats?: MessageFormatRef[]) => Promise<StartedChat>
+  start: (text: string, files: File[], modelId: string, command?: ComposerCommand, formats?: MessageFormatRef[], capsules?: CapsuleSpecifier[]) => Promise<StartedChat>
+  /**
+   * The workspace the conversation starts in, where it exists already and the user builds in it,
+   * so that connections can be added to the first message, as to any other. A chat started from
+   * home has no workspace to make them in until it is sent.
+   */
+  connectsIn?: string
   /** The conversation exists: open it. */
   onStarted: (chat: StartedChat) => Promise<unknown>
 }
@@ -44,7 +53,7 @@ export type NewChatPaneProps = {
  * can start with one of the user's skills, which there is no workspace to list yet, so they are
  * offered from the Library, and found in the workspace the message goes to as it is sent.
  */
-export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const skills = useSkills()
   const commands = useMemo(() => orderCommands(skills.map(skillCommandOf)), [skills])
@@ -58,9 +67,19 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
   // start from when it comes back.
   const [unsent, setUnsent] = useState<{ text: string; files: File[]; command?: ComposerCommand }>()
   useDocumentTitle('New chat')
+  // Add a connection is open; and the connections made for the draft, by their line's key.
+  const composer = useRef<ComposerHandle>(null)
+  const [adding, setAdding] = useState(false)
+  const added = useRef(new Map<string, AddedConnection>())
+  const [onAdded] = useState(() => async (made: AddedConnection) => {
+    const key = `gatekeeper:${made.gatekeeperId}`
+    added.current.set(key, made)
+    composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+  })
+  const addActions = connectsIn === undefined ? undefined : { onAddConnection: () => setAdding(true) }
 
   // Resolves to whether the conversation was started; the composer keeps the draft until it has.
-  const send = async (text: string, files: File[], command?: ComposerCommand) => {
+  const send = async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
     if (pending || connection?.blocked()) return false
     if (model.status !== 'ready') {
       setProblem(describeModelProblem(model))
@@ -72,7 +91,10 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
     setPending({ text, files, command, format: asked })
     try {
       const message = asked ? startWithFormat(asked, text) : { text, formats: undefined }
-      const started = await start(message.text, files, model.id, command, message.formats)
+      // The connections after the words, each where its capsule shows it. A skill takes none.
+      const given = command ? [] : connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
+      const { text: written, capsules } = withCapsules(message.text, given)
+      const started = await start(written, files, model.id, command, message.formats, capsules.length ? capsules : undefined)
       refreshWorkspaces()
       await onStarted(started)
       return true
@@ -91,7 +113,8 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} workspace={workspace} autoFocus />
+        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} autoFocus />
+        {connectsIn !== undefined && <AddConnection workspaceId={connectsIn} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />}
       </StartLayout>
     )
   }
@@ -109,7 +132,7 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
 
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={header} composer={<Composer onSend={send} commands={commands} format={pending ? undefined : format} problem={composerProblem} />}>
+    <ChatLayout header={header} composer={<Composer ref={composer} onSend={send} commands={commands} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
       {/* Spaced like the conversation this becomes. */}
       <div className="flex flex-col gap-2">
         {pending && (

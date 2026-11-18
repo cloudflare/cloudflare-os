@@ -26,7 +26,9 @@ function NewChat() {
   const { api, user } = useApi()
   const navigate = useNavigate()
   const workspaces = useWorkspaces()
-  const title = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
+  const listed = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
+  const title = listed?.title
+  const role = listed?.role
   const look = useWorkspaceLooks()[workspaceId]
   // Started from a gadget's page, beside the gadget, it is greeted by the gadget's name.
   const about = useLocation({ select: (location) => (open ? location.state.gadgetTitle : undefined) })
@@ -50,7 +52,10 @@ function NewChat() {
           title="New chat"
         />
       )}
-      start={(text, files, modelId, command) => startConversation(() => api.openWorkspace(workspaceId), text, files, modelId, command)}
+      start={(text, files, modelId, command, formats, capsules) =>
+        startConversation(() => api.openWorkspace(workspaceId), text, files, modelId, command, formats, capsules)}
+      // Making a connection in the workspace is building in it, which those who only use it cannot.
+      connectsIn={role !== undefined && role !== 'use' ? workspaceId : undefined}
       // In its place, so that going back goes to the workspace rather than to an empty chat.
       onStarted={({ chatId }) => {
         if (open) rememberShown(workspaceId, chatId, open)
