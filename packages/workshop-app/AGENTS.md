@@ -103,6 +103,43 @@ plays one (a script's `restart` step).
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
 there so its states can be reviewed in isolation.
 
+## First run, and what the deployment says
+
+A new user is set up before anything else is read for them (`settings/OnboardingGate`, beneath
+`RpcGate`, asked `isOnboardingCompleted()` once a user, and letting them in where it cannot ask):
+in place of the app, laid out as the sign-in page is (`OnboardingFrame`), who they are (the
+picture, kept as it is chosen, and their name), then what the app can use on their behalf
+(`OnboardingServices`: each service to sign in to in a window of its own, and the tools the
+deployment adds as they are, such as the Context Library and Scheduled Tasks, each on unless
+switched off). Finishing keeps the name, turns those on (`provisionAmbientAccount`) and calls
+`completeOnboarding()` (`settings/onboardingSteps.ts`, plain and tested); a tool that cannot be
+turned on is said and keeps nobody from going on. The connections step is left out once there is
+nothing to offer. There is no model step, as the old wizard had: the model is chosen in the
+settings, and until then the first of the user's models answers (`useDefaultModel`).
+
+What the deployment puts around the app, signed in or not, is `rpc/SiteFrame`'s, outside
+`RpcGate` on `_app` and `/signup`: its accent colour (`applyAccentColor`, shared with the old app)
+and its logo in the tab (`rpc/siteLook.ts`), its banner across the top of the window
+(`SiteBanner`, put away on this device until it says something else, `prefs/dismissedBanner.ts`),
+and, over the foot of the window, that a newer version of the app is there (`UpdateNotice`),
+which only the user reloads for. The announcement is said under the sidebar's logo, which is the
+deployment's own where it has one. A socket that outlived a deploy is made again
+(`useStaleBackendReconnect`, `Connection.reconnect`): each socket is asked its backend's version,
+compared on each session check (shown again, back online, every five minutes) with what
+`VERSION_PATH` answers, and a version is left behind once at most (`rpc/staleSession.ts`, plain
+and tested), so that a rollout cannot loop it.
+
+What goes wrong is reported as the old app reports it (`rpc/errorReporting.ts`, ported, with its
+throttle tested), only in a build with `VITE_FRONTEND_ERROR_REPORTING=true`, which also gives the
+build hidden source maps: installed in `main.tsx` before the connection opens, with the root's
+uncaught errors and `ErrorBoundary` (`CrashNotice`), and the signed-in user as an unchecked label
+(`setReportedUserId` in `RpcGate`). Follow `packages/error-reporting/AGENTS.md`: nothing secret in
+an error, and nothing from a gadget's own code.
+
+UI feature flags are `FeatureFlagsProvider`'s (`getUiFeatureFlags()`, read again on a new
+connection): gate a part of the UI with `useUiFeatureFlag(name)`, which says `loading` and gives
+the defaults until they are read.
+
 ## The chat feed
 
 `chat/chatItems.ts` maps a chat's messages to rows, and `chat/ChatItemView.tsx` gives each row kind

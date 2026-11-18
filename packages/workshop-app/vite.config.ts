@@ -48,7 +48,8 @@ const runConfig = {
 }
 
 export default defineConfig(({ command, mode }) => {
-  const backendHost = loadEnv(mode, process.cwd()).VITE_BACKEND_HOST?.trim() || 'localhost:8787'
+  const env = loadEnv(mode, process.cwd())
+  const backendHost = env.VITE_BACKEND_HOST?.trim() || 'localhost:8787'
   // A build ships without the development-only pages: they are not in its route tree, so nothing
   // they import is bundled. The dev server and the tests have them all.
   const build = command === 'build'
@@ -78,6 +79,11 @@ export default defineConfig(({ command, mode }) => {
       // `ws` carries the RPC WebSocket.
       // A template's screenshot is the backend's too, as it is under the router in a deployment.
       proxy: { '/api': { target: `http://${backendHost}`, ws: true }, '/blueprint-screenshot': { target: `http://${backendHost}` } },
+    },
+    build: {
+      // A build that reports what goes wrong (`src/rpc/errorReporting.ts`) has its source maps
+      // uploaded apart, as the old app's are: hidden, so that the bundle names no map to anyone.
+      sourcemap: env.VITE_FRONTEND_ERROR_REPORTING === 'true' ? 'hidden' : false,
     },
   }
 })

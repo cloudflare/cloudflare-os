@@ -1,6 +1,7 @@
 import { createFileRoute, Navigate } from '@tanstack/react-router'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { SiteFrame } from '@/rpc/SiteFrame'
 
 /**
  * Making an account, where `workshop-frontend` has it, so that a link to it from before still
@@ -9,8 +10,10 @@ import { sharedConnection } from '@/rpc/sharedConnection'
  */
 export const Route = createFileRoute('/signup')({
   component: () => (
-    <RpcGate connection={sharedConnection()} startsAt="signUp">
-      <Navigate to="/" replace />
-    </RpcGate>
+    <SiteFrame>
+      <RpcGate connection={sharedConnection()} startsAt="signUp">
+        <Navigate to="/" replace />
+      </RpcGate>
+    </SiteFrame>
   ),
 })

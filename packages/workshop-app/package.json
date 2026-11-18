@@ -22,6 +22,7 @@
     "@codemirror/search": "6.7.2",
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.15",
+    "@gadgets/error-reporting": "workspace:*",
     "@gadgets/gatekeeper-scheduler": "workspace:*",
     "@gadgets/office-content": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",

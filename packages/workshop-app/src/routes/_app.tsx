@@ -16,8 +16,13 @@ import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useApi } from '@/rpc/ApiContext'
 import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { FeatureFlagsProvider } from '@/rpc/FeatureFlagsProvider'
 import { RpcGate } from '@/rpc/RpcGate'
+import { useServerConfig } from '@/rpc/serverConfig'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { SiteFrame } from '@/rpc/SiteFrame'
+import { siteLogoUrl } from '@/rpc/siteLook'
+import { OnboardingGate } from '@/settings/OnboardingGate'
 import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/settingsSections'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
@@ -31,16 +36,23 @@ import { AppSearch } from './-AppSearch'
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
 export const Route = createFileRoute('/_app')({
   component: () => (
-    <RpcGate connection={sharedConnection()}>
-      {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
-      <ShareLinkGate>
-        <WorkspacesProvider>
-          <ChatSessionsProvider>
-            <AppFrame />
-          </ChatSessionsProvider>
-        </WorkspacesProvider>
-      </ShareLinkGate>
-    </RpcGate>
+    <SiteFrame>
+      <RpcGate connection={sharedConnection()}>
+        <FeatureFlagsProvider>
+          {/* A new user is set up before anything else is read for them. */}
+          <OnboardingGate>
+            {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
+            <ShareLinkGate>
+              <WorkspacesProvider>
+                <ChatSessionsProvider>
+                  <AppFrame />
+                </ChatSessionsProvider>
+              </WorkspacesProvider>
+            </ShareLinkGate>
+          </OnboardingGate>
+        </FeatureFlagsProvider>
+      </RpcGate>
+    </SiteFrame>
   ),
 })
 
@@ -60,6 +72,7 @@ const absolute = (href: string) => new URL(href, window.location.origin).href
 const AppFrame = () => {
   const { user } = useApi()
   const avatarUrl = useOwnAvatar()
+  const config = useServerConfig()
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
@@ -290,6 +303,8 @@ const AppFrame = () => {
         leaveSidebar()
         void navigate({ to: '/' })
       }}
+      logoUrl={siteLogoUrl(config)}
+      announcement={config?.announcement?.trim() || undefined}
       notice={notice}
       connections={placeholderLogos}
       library={{
