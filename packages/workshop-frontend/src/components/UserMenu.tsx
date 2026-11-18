@@ -1,12 +1,19 @@
+import { useRef } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
+import { ReportIssueItem } from '../features/issue-reports/ReportIssueItem'
+import type { ReportIssueContext } from '../features/issue-reports/ReportIssueHost'
 import { useAvatar } from '../useAvatar'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './menuStyles'
 
-export default function UserMenu() {
+export default function UserMenu({ report }: {
+  /** Where the menu is, for a report filed from it. Absent outside a workspace. */
+  report?: ReportIssueContext
+}) {
   const { authenticatedApi, logout, currentUser, isAdmin } = useAuthenticatedApi()
   const navigate = useNavigate()
+  const trigger = useRef<HTMLButtonElement>(null)
 
   const avatarUrl = useAvatar(authenticatedApi, currentUser?.id)
 
@@ -19,6 +26,7 @@ export default function UserMenu() {
       <DropdownMenu.Trigger
         render={
           <button
+            ref={trigger}
             className="flex h-11 w-11 cursor-pointer items-center justify-center overflow-hidden rounded-full bg-kumo-tint transition-colors hover:bg-kumo-fill md:h-7 md:w-7"
             title="Open profile menu"
             aria-label="Open profile menu"
@@ -52,6 +60,7 @@ export default function UserMenu() {
             Admin
           </DropdownMenu.Item>
         )}
+        <ReportIssueItem context={report} opener={trigger} />
         <DropdownMenu.Separator />
         <DropdownMenu.Item
           variant="danger"

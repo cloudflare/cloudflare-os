@@ -19,7 +19,9 @@ const mock = vi.hoisted(() => ({
   setMute: vi.fn<(workspaceId: string, mute: NotificationMute | null) => Promise<void>>()
     .mockResolvedValue(undefined),
   onMuteChange: vi.fn<ComponentProps<typeof SidebarGadgetRow>["onNotificationMuteChange"]>(),
+  openReport: vi.fn<(context: unknown, opener: HTMLElement | null) => void>(),
 }));
+vi.mock("../../features/issue-reports/ReportIssueHost", () => ({ useReportIssue: () => mock.openReport }));
 vi.mock("../../AuthContext", () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: { setWorkspaceNotificationMute: mock.setMute } }),
 }));
@@ -75,5 +77,29 @@ it("gives workspace rows the nav width without reserving separate badge/action c
   expect(mock.setMute).toHaveBeenCalledExactlyOnceWith("workspace", { until: expect.any(Date) });
   expect(mock.onMuteChange).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ id: "workspace" }), { until: expect.any(Date) });
+  expect(router.state.location.pathname).toBe("/");
+});
+
+it("reports an issue from the row's menu, about its workspace, without following the row's link", async () => {
+  const base = createRootRoute({ component: () => (
+    <Toasty>
+      <div className="flex w-[260px] flex-col px-2">
+        <SidebarGadgetRow gadget={{ id: "workspace", title: "Trips", created: new Date(), lastActive: new Date() }}
+          onTogglePin={() => {}} onRename={() => {}} onShare={() => {}} onDelete={() => {}}
+          onNotificationMuteChange={mock.onMuteChange} />
+      </div>
+    </Toasty>
+  ) });
+  const router = createRouter({ routeTree: base, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => { await router.load(); root!.render(<RouterProvider router={router} />); });
+
+  const actions = page.getByRole("button", { name: "Workspace actions" });
+  await act(async () => userEvent.click(actions));
+  await act(async () => userEvent.click(page.getByRole("menuitem", { name: "Report issue" })));
+
+  expect(mock.openReport).toHaveBeenCalledExactlyOnceWith(
+    { workspace: { id: "workspace", owned: true } }, actions.element());
   expect(router.state.location.pathname).toBe("/");
 });
