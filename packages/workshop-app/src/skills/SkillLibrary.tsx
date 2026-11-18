@@ -13,7 +13,7 @@ import { useListView } from '@/hooks/useListView'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { formatActivity } from '@/workspaces/formatActivity'
-import { skillList, skillOwner, skillTags } from './skillList'
+import { skillList, skillOwner } from './skillList'
 import { uploadSkills } from './uploadSkills'
 import { skillStore, useSkillsState } from './useSkills'
 
@@ -154,7 +154,10 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
       <AddSkillDialog
         open={writing}
         onOpenChange={setWriting}
-        tags={skillTags(skills)}
+        // Their own, which they can write in; their first (My skills) first.
+        collections={state.status === 'ready'
+          ? state.collections.filter(({ source }) => source.kind === 'mine').toSorted((a, b) => Number(b.untagged) - Number(a.untagged)).map(({ id, title }) => ({ id, title }))
+          : []}
         onAdd={async (skill) => {
           if (connection?.blocked()) return
           const id = await skillStore.add(skill)

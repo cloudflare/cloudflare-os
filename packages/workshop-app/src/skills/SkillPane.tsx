@@ -384,11 +384,11 @@ export const SkillPane = ({ skillId, tab, onTabChange, file: showingPath, onOpen
             <SettingsGroup title="Skill details">
               {mine && (
                 <SettingField
-                  title="Tag"
-                  description="What the skill is filed under in your list."
+                  title="Collection"
+                  description="The collection it’s kept in. Another name moves it there, making that collection if you have none by it."
                   value={skill.tag ?? ''}
                   optional
-                  placeholder="No tag"
+                  placeholder="My skills"
                   onSave={async (tag) => {
                     if (connection?.blocked()) return { saved: false }
                     try {

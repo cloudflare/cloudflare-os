@@ -39,7 +39,7 @@ describe('skillList', () => {
     expect(byTag.arrange(SKILLS, 4).map(({ label, entries }) => [label, names(entries.map(({ value }) => value))])).toEqual([
       ['Engineering', ['Incident', 'Review']],
       ['Reports', ['Report']],
-      ['No tag', ['Travel']],
+      ['My skills', ['Travel']],
     ])
   })
 
@@ -49,7 +49,7 @@ describe('skillList', () => {
 
   it('has a filter for each tag, in a menu of their own, once there is more than one', () => {
     expect(spec.filters!.filter(({ facet }) => facet === 'tag').map(({ label }) => label)).toEqual(['Engineering', 'Reports'])
-    expect(spec.facetMenus).toEqual({ tag: 'Tag' })
+    expect(spec.facetMenus).toEqual({ tag: 'Collection' })
     expect(skillList([SKILLS[0], SKILLS[2]]).filters!.filter(({ facet }) => facet === 'tag')).toEqual([])
   })
 

@@ -23,12 +23,12 @@ const latestFirst = (skills: Skill[]) => skills.toSorted((a, b) => b.updated.get
  */
 const byTag: ListOrder<Skill> = {
   id: 'tag',
-  label: 'Tag',
+  label: 'Collection',
   arrange: (skills) =>
     [...skillTags(skills), undefined]
       .map((tag) => ({
         key: tag === undefined ? 'none' : `tag:${tag}`,
-        label: tag ?? 'No tag',
+        label: tag ?? 'My skills',
         entries: latestFirst(skills.filter((skill) => skill.tag === tag)).map((value) => ({ value })),
       }))
       .filter(({ entries }) => entries.length > 0),
@@ -67,6 +67,6 @@ export const skillList = (skills: Skill[]): ListViewSpec<Skill, ListOrder<Skill>
   // What is left out is the user's to say from then on, so it is as they left it when they come back.
   keepsFilters: true,
   // As many as the user has made, so they have a menu of their own.
-  facetMenus: { tag: 'Tag' },
+  facetMenus: { tag: 'Collection' },
   searchText: (skill) => [skill.name, skill.description, skill.tag, sourceLabel(skill)].filter(Boolean).join(' '),
 })

@@ -1,18 +1,26 @@
-import { useId, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { XIcon } from '@phosphor-icons/react'
 import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { Dialog } from '@/components/Dialog'
+import { Select } from '@/components/Select'
 import { TextField } from '@/components/TextField'
 
-/** A skill as it is written here: what it is called, what it is for, and what it is filed under, if anything. */
-export type NewSkill = { name: string; description: string; tag?: string }
+/**
+ * A skill as it is written here: what it is called, what it is for, and the collection it goes
+ * into: one there is (`collectionId`), or one made for it by its name (`tag`), or, with neither,
+ * the user's first, My skills.
+ */
+export type NewSkill = { name: string; description: string; tag?: string; collectionId?: string }
+
+/** One of the user's own collections, which a skill can be written into. */
+export type SkillCollectionChoice = { id: string; title: string }
 
 export type AddSkillDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  /** The tags there are, which the field for one offers as it is typed in. */
-  tags?: string[]
+  /** The user's own collections, which it can go into, their first (My skills) first. */
+  collections?: SkillCollectionChoice[]
   /** The collection it goes into, by its name, in place of a tag to file it under. */
   into?: string
   /** Adds it, holding the dialog while it does, and leaving it open under why if it cannot. */
@@ -24,21 +32,26 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 // As long as a skill's name can be (the Agent Skills specification's limit).
 const NAME_LENGTH = 64
 
-const AddSkillForm = ({ tags = [], into, onAdd }: Pick<AddSkillDialogProps, 'tags' | 'into' | 'onAdd'>) => {
+// The choice that stands for a collection made for it, by the name typed in its place.
+const NEW = '\0new'
+
+const AddSkillForm = ({ collections = [], into, onAdd }: Pick<AddSkillDialogProps, 'collections' | 'into' | 'onAdd'>) => {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [tag, setTag] = useState('')
+  // Their first, My skills, unless they have none yet, which the first skill makes.
+  const [collection, setCollection] = useState(collections[0]?.id ?? '')
+  const [newTitle, setNewTitle] = useState('')
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState<string>()
-  const tagsId = useId()
-  const written = name.trim() !== '' && description.trim() !== ''
+  const written = name.trim() !== '' && description.trim() !== '' && (collection !== NEW || newTitle.trim() !== '')
   const add = async (event: FormEvent) => {
     event.preventDefault()
     if (!written || pending) return
     setProblem(undefined)
     setPending(true)
     try {
-      await onAdd({ name: name.trim(), description: description.trim(), tag: tag.trim() || undefined })
+      const place = collection === NEW ? { tag: newTitle.trim() } : collection ? { collectionId: collection } : {}
+      await onAdd({ name: name.trim(), description: description.trim(), ...place })
     } catch (error) {
       setProblem(messageOf(error))
     } finally {
@@ -58,13 +71,18 @@ const AddSkillForm = ({ tags = [], into, onAdd }: Pick<AddSkillDialogProps, 'tag
       <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-6 pb-1">
         <TextField label="Name" autoFocus maxLength={NAME_LENGTH} placeholder="Summarize meeting notes" value={name} onValueChange={setName} />
         <TextField label="Description" rows={3} placeholder="What it’s for, and when the assistant should use it" value={description} onValueChange={setDescription} />
-        {into === undefined && (
-          <>
-            <TextField label="Tag" list={tagsId} placeholder="Optional" value={tag} onValueChange={setTag} />
-            <datalist id={tagsId}>
-              {tags.map((known) => <option key={known} value={known} />)}
-            </datalist>
-          </>
+        {/* Written from a collection's page, it goes into that one, which the title says. */}
+        {into === undefined && collections.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-kumo-default">Collection</span>
+            <Select
+              aria-label="Collection"
+              value={collection}
+              onValueChange={setCollection}
+              options={[...collections.map(({ id, title }) => ({ id, label: title })), { id: NEW, label: 'New collection' }]}
+              typed={collection === NEW ? { 'aria-label': 'New collection’s name', placeholder: 'Name it', autoFocus: true, value: newTitle, onValueChange: setNewTitle } : undefined}
+            />
+          </div>
         )}
       </div>
       <footer className="flex flex-col gap-3 p-6">
@@ -79,12 +97,12 @@ const AddSkillForm = ({ tags = [], into, onAdd }: Pick<AddSkillDialogProps, 'tag
 }
 
 /**
- * Where a skill is written, over the page: what it is called, what it is for, and a tag to file it
- * under, which is offered from those there are, or the collection it goes into, from that
- * collection's page. It starts empty each time it is opened.
+ * Where a skill is written, over the page: what it is called, what it is for, and which of the
+ * user's collections it goes into, My skills unless another is chosen, or a new one named there;
+ * from a collection's page, that one. It starts empty each time it is opened.
  */
-export const AddSkillDialog = ({ open, onOpenChange, tags, into, onAdd }: AddSkillDialogProps) => (
+export const AddSkillDialog = ({ open, onOpenChange, collections, into, onAdd }: AddSkillDialogProps) => (
   <Dialog open={open} onOpenChange={onOpenChange}>
-    <AddSkillForm tags={tags} into={into} onAdd={onAdd} />
+    <AddSkillForm collections={collections} into={into} onAdd={onAdd} />
   </Dialog>
 )
