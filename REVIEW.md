@@ -43,7 +43,10 @@ through logs and errors, then everything else.
   view at it, a content view included; the audit log's retention in `listAdminAudit()` and
   `getAdminAuditStats()`; `requestContentAccess()`, and `AdminSettings.claimContentAccess()` for
   an approval, so that content is never requested or approved at a level the mirror alone still
-  shows. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+  shows; and
+  `IssueReportsDurableObject` (`#dueBefore()`), in `alarm()` and when an image upload is accepted,
+  so that reports are never deleted, and no upload refused or let through, by a retention that may
+  be stale. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
 - `OverseerDurableObject.openForAdmin()` stays reachable only over the Durable Object binding, never
   through a capability a user holds, and refuses an uninitialised workspace without writing.
   `UserDurableObject.openForAdmin()` is held to the same, for an account never created. Both views
@@ -88,21 +91,35 @@ through logs and errors, then everything else.
   `ADMIN_WORKSPACE_WRITES`; a member-facing path that writes, deletes or returns a grant with
   source `"admins"`, or that asks the owner's account for the account-wide grant; and an owner's
   grant call that appends to the admin audit log.
-- Two more entry points stay reachable only over the Durable Object binding, never through a
+- Three more entry points stay reachable only over the Durable Object binding, never through a
   capability a user or a member's session holds. `OverseerDurableObject.endAdminGrant()` is called
   only by `AdminApiImpl.endWorkspaceGrant()`; it ends only a live grant with source `"admins"`, and
   appends its record to the deployment-wide log before the grant is ended, so that an ending whose
-  record cannot be written does not happen. `UserDurableObject.liveAccountAdminGrant()` is reached
-  over the binding only by `OverseerImpl.contentGrant()`, that is, only when an admin's call needs
-  content and the workspace's own storage holds no live grant (the account's own
-  `grantAccountAdminAccess()` reads it too); it reads one value and writes nothing. Flag either
-  exposed through a capability; a second caller of either; an `endAdminGrant()` that ends an owner's
-  grant or ends before its record is appended; and a path other than `contentGrant()` (a listing, a
-  metadata call, any member-facing method) that asks an account for its account-wide grant.
-- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS` and `ADMIN_WORKSPACE_WRITES` are
-  env-driven, like auth config, and the cap and the writes switch fail closed. Flag code that
-  enforces `adminWorkspaceAccess`, or enforces or prunes with `adminAuditRetentionDays`, without
-  `adminAccessPolicy()`.
+  record cannot be written does not happen. `OverseerDurableObject.issueReportContext()` is called
+  only by `AuthenticatedApiImpl.submitIssueReport()`, for the caller's own user id; it answers from
+  the sharing records, opens no session, joins no presence and writes nothing.
+  `UserDurableObject.liveAccountAdminGrant()` is reached over the binding only by
+  `OverseerImpl.contentGrant()`, that is, only when an admin's call needs content and the
+  workspace's own storage holds no live grant (the account's own `grantAccountAdminAccess()` reads
+  it too); it reads one value and writes nothing. Flag any of the three exposed through a
+  capability; a second caller of any of them; an `endAdminGrant()` that ends an owner's grant or
+  ends before its record is appended; an `issueReportContext()` handed a user id that is not the
+  caller's own; and a path other than `contentGrant()` (a listing, a metadata call, any
+  member-facing method) that asks an account for its account-wide grant.
+- Issue reports (see docs/issue-reports.md) keep an admins-only entry from the reporter and an
+  image behind its row. Flag a path that returns an admins-only entry, or anything derived from
+  one (a count, a timestamp), to a reporter; a path that returns an admin's id to a reporter; an
+  image served or rendered with a type that is not the recognised one; a use of the image bucket
+  (`ISSUE_IMAGES`) outside `issue-reports.ts`, an image reachable over an HTTP route or a bucket
+  URL, an image object read before its row is checked, or an image row deleted before its object;
+  a copy of a profile or other member-controlled text into the report store, or into a grant,
+  other than through `namedUser()`; a reporter's or an owner's call that can add a row the store
+  keeps without a bound (a `grants` row no report names); and a listing that returns every report
+  or every grant.
+- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS`, `ISSUE_REPORT_RETENTION_MIN_DAYS`
+  and `ADMIN_WORKSPACE_WRITES` are env-driven, like auth config, and the cap and the writes switch
+  fail closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or prunes with
+  `adminAuditRetentionDays` or `issueReportRetentionDays`, without `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
 - Text a user or workspace member controls (display names, titles) enters the directory or the

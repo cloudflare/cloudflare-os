@@ -180,7 +180,8 @@ The compensating controls are:
   returning nothing;
 - `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept. They include
   every content read, with its grant's id. An owner's grant itself is the owner's record and is
-  not among them.
+  not among them. Issue reports have a floor of their own, `ISSUE_REPORT_RETENTION_MIN_DAYS`
+  (see [issue-reports.md](issue-reports.md#retention)).
 
 An admin write (`AdminApi.writeWorkspace()`, run by
 `OverseerDurableObject.applyAdminWrite()`) also runs without the admin being verified as an

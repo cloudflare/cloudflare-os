@@ -145,7 +145,7 @@ admin suites:
 ### A redeploy keeps storage, so an upgrade can be tested
 
 `server.update()` is the opposite of `reset()`: it reloads the Workers from new configs and keeps
-every Durable Object, the KV namespaces, the R2 bucket and the server URL. That makes it a
+every Durable Object, the KV namespaces, the R2 buckets and the server URL. That makes it a
 deployment of a new version over an old one, which is what `Harness.redeployWorkshop()` uses it for.
 It costs about 1.5 s, and it does break every open RPC session, so a test that redeploys starts a
 harness of its own rather than doing it under its siblings.
