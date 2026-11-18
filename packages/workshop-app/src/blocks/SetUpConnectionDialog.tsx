@@ -106,7 +106,7 @@ export const SetUpConnectionDialog = ({
 
   return (
     // Not put away while what was chosen is being connected, whose answer shows here.
-    <Dialog open={open} onOpenChange={(next) => { if (pending !== 'accept') onOpenChange(next) }}>
+    <Dialog wide open={open} onOpenChange={(next) => { if (pending !== 'accept') onOpenChange(next) }}>
       <ServiceDialogHeader name={name} logoUrl={logoUrl} color={color} title={title ?? `Connect ${name}`} pending={pending === 'accept'}>
         {resource && <Dialog.Description className="text-sm text-kumo-subtle">{resource}</Dialog.Description>}
       </ServiceDialogHeader>
@@ -120,8 +120,8 @@ export const SetUpConnectionDialog = ({
           </p>
         )}
         {accounts && accounts.length > 0 && (
-          <section className="flex flex-col gap-2">
-            <h3 className="px-1 text-sm font-medium text-kumo-subtle">Account</h3>
+          <section className="flex flex-col gap-1.5">
+            <h3 className="text-sm font-medium text-kumo-default">Account</h3>
             <div className="flex flex-wrap items-center gap-2">
               <Select
                 aria-label="Account"

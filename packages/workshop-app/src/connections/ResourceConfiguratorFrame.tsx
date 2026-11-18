@@ -14,6 +14,9 @@ export type ResourceConfiguratorFrameProps = Omit<ConfiguratorSetup, 'ui' | 'onR
 
 // The room kept while the form opens: a line, for what `opening` says.
 const OPENING_HEIGHT = 24
+// The runtime keeps its form this far in from the frame's sides, for its focus rings. The frame is
+// that much wider than its room, so the form lines up with what is beside it in the dialog.
+const FORM_INSET = 2
 
 const scrollerOf = (element: HTMLElement | null) => {
   for (let node = element?.parentElement; node && node !== document.documentElement; node = node.parentElement) {
@@ -95,7 +98,14 @@ export const ResourceConfiguratorFrame = ({ frame, opening, onCollect, ...setup 
       scheduled = requestAnimationFrame(place)
       const { drawn, layout } = latestSize.current ?? { drawn: OPENING_HEIGHT, layout: OPENING_HEIGHT }
       const bounds = scroller?.getBoundingClientRect() ?? { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 }
-      const { top, left, width, clip } = placeFrame({ room: room.getBoundingClientRect(), bounds, drawn, layout, windowHeight: window.innerHeight })
+      const box = room.getBoundingClientRect()
+      const { top, left, width, clip } = placeFrame({
+        room: { top: box.top, bottom: box.bottom, left: box.left - FORM_INSET, right: box.right + FORM_INSET },
+        bounds,
+        drawn,
+        layout,
+        windowHeight: window.innerHeight,
+      })
       const next = `${top} ${left} ${width} ${clip.top} ${clip.right} ${clip.bottom} ${clip.left}`
       if (next !== placed) {
         placed = next
