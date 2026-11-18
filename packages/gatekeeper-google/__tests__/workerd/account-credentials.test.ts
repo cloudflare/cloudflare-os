@@ -26,11 +26,22 @@ async function connectedAccount() {
   const google = {
     refresh: (): Response => Response.json({access_token: "access-token", expires_in: 3600}),
     refreshes: 0,
+    /** Whether Google holds back its answer about which account an access token belongs to. */
+    profileHeld: false,
+    /** How many of those answers are being held back. */
+    profilesWaiting: 0,
   };
   vi.stubGlobal("fetch", async (input: string | URL | Request) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     // Asked once a token mints, to record whose grant the account holds.
-    if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") return Response.json({sub: "subject"});
+    if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
+      if (google.profileHeld) {
+        google.profilesWaiting++;
+        while (google.profileHeld) await new Promise(resolve => setTimeout(resolve, 1));
+        google.profilesWaiting--;
+      }
+      return Response.json({sub: "subject"});
+    }
     if (url.href !== "https://oauth2.googleapis.com/token") throw new Error(`unexpected request: ${url}`);
     google.refreshes++;
     return google.refresh();
@@ -292,6 +303,25 @@ describe("Google credential expiry notices", () => {
     account.workshopHoldsRestore(false);
     await account.settle();
     await account.told("credentialsExpired", "credentialsRestored");
+  });
+
+  it("tells again of new credentials refused before their reconnect returned, which the Workshop records as working", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const account = await connectedAccount();
+    // The reconnect waits on Google to say whose grant it holds, and its new credentials are
+    // refused meanwhile.
+    account.google.profileHeld = true;
+    const reconnecting = account.reconnect();
+    await vi.waitFor(() => expect(account.google.profilesWaiting).toBe(1), {timeout: 5000});
+    account.google.refresh = revoked;
+    await expect(account.mint()).rejects.toThrow(/expired or been revoked/);
+    await account.told("credentialsExpired");
+    account.google.profileHeld = false;
+    await reconnecting;
+
+    // The Workshop marks the returned reconnect restored, so the next refusal is told again.
+    await expect(account.mint()).rejects.toThrow(/expired or been revoked/);
+    await account.told("credentialsExpired", "credentialsExpired");
   });
 
   it("starts afresh after a reconnect: no restore notice, and the next refusal is told", async () => {
