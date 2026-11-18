@@ -264,14 +264,11 @@ const AppFrame = () => {
       <AsidePane
         placement="beside"
         item={item}
-        items={items}
         link={linkTo(besideWorkspaceId, item, chatId)}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
-        onOpenSettings={builds(besideWorkspaceId) ? openSettings : undefined}
         onUpdateProposed={openUpdate}
         onDeleted={aside.hide}
-        onSelect={(key) => aside.show(key, besideRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
       />

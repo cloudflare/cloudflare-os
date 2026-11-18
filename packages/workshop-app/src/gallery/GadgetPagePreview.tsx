@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { PresentationIcon } from '@phosphor-icons/react'
+import { CodeIcon, PresentationIcon } from '@phosphor-icons/react'
 import { SidePane } from '@/blocks/SidePane'
 import { Button } from '@/components/Button'
 import { PaneNotice } from '@/blocks/PaneNotice'
@@ -19,8 +19,9 @@ export const GadgetPagePreview = () => {
   const { report, say } = useReport()
   const [chats, setChats] = useState<'some' | 'none' | 'reading'>('some')
   const [shareable, setShareable] = useState(true)
+  const [viewingCode, setViewingCode] = useState(false)
   return (
-    <Section title="SidePane as a gadget's page (the workspace's crumb, title shown, starts the header; Chat, the one labelled control, opens to New chat and up to four of the workspace's chats, those that last had it beside them first and saying so, or with no chats starts a new one at once; Share, where it can be shared, takes the link's place, which moves into more)">
+    <Section title="SidePane as a gadget's page (the workspace's crumb, title shown, starts the header; the title, with a chevron as a chat's has, opens the gadget's settings; Chat, the one labelled control, opens to New chat and up to four of the workspace's chats, those that last had it beside them first and saying so, or with no chats starts a new one at once; Share, where it can be shared, takes the link’s place, which moves into more; the switch at the start of the header, ahead of the workspace’s crumb, shows its code in its place and back)">
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => setChats('some')}>With chats</Button>
         <Button onClick={() => setChats('none')}>No chats yet</Button>
@@ -41,9 +42,14 @@ export const GadgetPagePreview = () => {
           active={{ key: 'slides', title: 'Slides', icon: <PresentationIcon /> }}
           link="https://example.com/app/slides"
           onReload={() => say('reloaded Slides')}
+          onOpenSettings={() => say('opened the settings of Slides')}
           onShare={shareable ? () => say('opened Share') : undefined}
+          onViewCode={() => setViewingCode((was) => !was)}
+          viewingCode={viewingCode}
         >
-          <PaneNotice icon={PresentationIcon} title="Slides" description="The gadget runs here." />
+          {viewingCode
+            ? <PaneNotice icon={CodeIcon} title="Its code" description="What runs Slides shows here, in its place." />
+            : <PaneNotice icon={PresentationIcon} title="Slides" description="The gadget runs here." />}
         </SidePane>
       </div>
       <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>

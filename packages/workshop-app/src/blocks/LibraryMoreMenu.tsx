@@ -52,7 +52,7 @@ export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onShare, onOpen
     {(onRename || onShare || onOpenSettings || onPublish) && <DropdownMenu.Separator />}
     {onRename && <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={onRename}>Rename</DropdownMenu.Item>}
     {onShare && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
-    {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
+    {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
     {onPublish && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onPublish}>Publish as template…</DropdownMenu.Item>}
     {onDelete && <DropdownMenu.Separator />}
     {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}

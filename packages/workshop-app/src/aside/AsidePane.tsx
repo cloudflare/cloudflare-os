@@ -1,25 +1,21 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useGadgetAgents } from '@/automations/useGadgetAgents'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { FileDashedIcon, LockSimpleIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { UiUnderway } from '@/blocks/UiUnderway'
 import { PaneNotice } from '@/blocks/PaneNotice'
-import { PaneStatus } from '@/blocks/PaneStatus'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { accessNotConfirmed, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
 import type { CodeLines } from '@/components/CodeEditor'
+import { agentKeyOf } from '@/automations/agents'
 import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
-import { useGadgetExports } from '@/gadgets/useGadgetExports'
-import { templateUpdateStatus } from '@/gadgets/templateUpdate'
-import { UpdateFromTemplate } from '@/gadgets/UpdateFromTemplate'
-import { PublishTemplate } from '@/library/PublishTemplate'
-import { useBlueprintInfo } from '@/gadgets/useGadgetSettings'
-import { useGadgetEdits } from '@/gadgets/useGadgetEdits'
+import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
+import { DEFAULT_GADGET_SETTINGS_TAB, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import { outputKey } from '@/library/libraryList'
 import { recordLibraryOpen } from '@/prefs/libraryOpened'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
@@ -50,28 +46,14 @@ export type AsidePaneProps = {
   onFullScreenChange: (on: boolean) => void
   /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
   narrow?: boolean
-  /**
-   * Goes to a gadget's settings, with the title it has now. Left out where
-   * the viewer may not change it, which leaves them out of its menu.
-   */
-  onOpenSettings?: (output: AsideOutput, title: string) => void
-  /**
-   * Goes to the chat an update of a gadget from its template was proposed in, which is where it is
-   * tried. Left out where there is nowhere to go, which leaves the update out of its menu.
-   */
+  /** Goes to the chat an update of a gadget from its template, made in its settings, was proposed in, which is where it is tried. */
   onUpdateProposed?: (output: AsideOutput, chatId: number) => void
-  /**
-   * A gadget shown was deleted from its menu: go somewhere that still is. Left out where there is
-   * nowhere to go, which leaves deleting out of its menu.
-   */
+  /** A gadget shown was deleted from its settings: go somewhere that still is. */
   onDeleted?: (output: AsideOutput) => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
       placement: 'beside'
-      /** What can be shown beside the chat, most recent first. */
-      items: AsideItem[]
-      onSelect: (key: string) => void
       onHide: () => void
       /** Has it take the page's place, when it can. */
       onExpand?: () => void
@@ -79,6 +61,12 @@ export type AsidePaneProps = {
   | {
       /** The page itself. */
       placement: 'page'
+      /**
+       * Goes to a gadget's settings page, with the title it has now. Left out where the viewer may
+       * not change it, which leaves them out of its menu. Beside the page they are shown in its
+       * place instead, for whoever builds in its workspace.
+       */
+      onOpenSettings?: (output: AsideOutput, title: string) => void
       fullScreen: boolean
       /** Back beside the chat it was expanded from, when it was. */
       onCollapse?: () => void
@@ -101,7 +89,8 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange, narrow, onOpenSettings, onUpdateProposed, onDeleted } = props
+  const { item, link, onFullScreenChange, narrow, onUpdateProposed, onDeleted } = props
+  const onOpenSettingsPage = props.placement === 'page' ? props.onOpenSettings : undefined
   const fullScreen = props.placement === 'page' && props.fullScreen
   const askAccessAgain = useAskAccessAgain()
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
@@ -123,22 +112,21 @@ export const AsidePane = (props: AsidePaneProps) => {
     ? workspaces.workspaces.find(({ id }) => id === item.output.workspaceId)
     : undefined
   const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
-  // Its title is the one it was last renamed to, until it says so itself.
-  const edits = useGadgetEdits(gadget, snapshot.title ?? item.title, {
-    may: readsCode,
-    workspace: listed?.title,
-    onDeleted: gadget && onDeleted && (() => onDeleted(gadget)),
-  })
-  const title = edits.title
+  const title = snapshot.title ?? item.title
   // Its code, shown in its place, over it: the gadget keeps running under it, so that going back is
   // to it as it was, and the code, opened again, is at the file it was left at. Kept by the item it
   // is of, so that another starts as itself.
   const [code, setCode] = useState<{ key: string; open: boolean; file?: string; lines?: CodeLines }>()
   const codeHere = code?.key === item.key ? code : undefined
   const viewingCode = gadget !== undefined && codeHere?.open === true
+  // Its settings page, beside the page: the one page that is the route's as the page itself, here
+  // in the pane's place, which keeps the gadget running behind it. Kept by the item it is of.
+  const [settings, setSettings] = useState<{ key: string; open: boolean; tab: GadgetSettingsTab }>()
+  const settingsHere = settings?.key === item.key ? settings : undefined
+  const viewingSettings = gadget !== undefined && readsCode && props.placement === 'beside' && settingsHere?.open === true
+  const navigate = useNavigate()
   // As the page, it names the tab; beside one, the page does.
   useDocumentTitle(props.placement === 'page' ? (viewingCode ? `Code · ${title}` : title) : undefined)
-  const reduceMotion = useReducedMotion() ?? false
 
   // A gadget is shared with its workspace, by whoever can share what is in it. Its link is to its
   // own page, without the chat it was shown from, whose changes are not for whoever it lets in.
@@ -166,43 +154,31 @@ export const AsidePane = (props: AsidePaneProps) => {
     return () => window.removeEventListener('keydown', pressed)
   }, [fullScreen, onFullScreenChange])
 
-  // Exported by whoever can use it, and saved to their accounts by whoever builds there.
-  const exports = useGadgetExports(gadget, title, { saves: readsCode })
-  // A refused rename over an export's progress, which goes on meanwhile.
-  const status = edits.status ?? exports.status
-
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.output.type === 'worktree' ? (
     <WorktreeContent key={item.key} worktree={item.output} />
   ) : (
     <>
-      <div inert={viewingCode} className="flex min-h-0 flex-1 flex-col">
+      {/* One or the other, never both: the gadget is hidden, not gone, while its code is shown, so it keeps running. */}
+      <div className={cn('min-h-0 flex-1 flex-col', viewingCode ? 'hidden' : 'flex')}>
         <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} onAskAccess={connection && (() => { askAccessAgain(); connection.reconnect() })} />
       </div>
-      <AnimatePresence initial={false}>
-        {viewingCode && gadget && (
-          <motion.div
-            key={`code:${item.key}`}
-            initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 16, scale: 0.99 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 10, scale: 0.995 }}
-            transition={{ type: 'spring', duration: 0.38, bounce: 0 }}
-            className="absolute inset-0 flex flex-col bg-kumo-tint"
-          >
-            <GadgetCodeView
-              workspaceId={gadget.workspaceId}
-              gadget={{ id: gadget.workpieceId, title, chatId: gadget.chatId }}
-              commitId={snapshot.commitId}
-              file={codeHere?.file}
-              onShowFile={(file) => setCode({ key: item.key, open: true, file })}
-              lines={codeHere?.lines}
-              onLinesChange={(lines) => setCode((was) => was && { ...was, lines })}
-              frame="pane"
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {viewingCode && gadget && (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <GadgetCodeView
+            key={item.key}
+            workspaceId={gadget.workspaceId}
+            gadget={{ id: gadget.workpieceId, title, chatId: gadget.chatId }}
+            commitId={snapshot.commitId}
+            file={codeHere?.file}
+            onShowFile={(file) => setCode({ key: item.key, open: true, file })}
+            lines={codeHere?.lines}
+            onLinesChange={(lines) => setCode((was) => was && { ...was, lines })}
+            frame="pane"
+          />
+        </div>
+      )}
       {gadget && (
         <GadgetAskDock
           key={item.key}
@@ -212,37 +188,9 @@ export const AsidePane = (props: AsidePaneProps) => {
           // On a narrow screen what is beside a chat covers it.
           chatInSight={props.placement === 'beside' && !narrow}
           restricted={listed?.containsRestrictedData === true}
-          raised={status !== undefined}
         />
       )}
     </>
-  )
-  // A newer version of the template it follows, which its menu offers to update it to. Only a
-  // gadget with code of its own takes one: one still waiting in a chat has none. Its settings
-  // offer the update whether or not there is one.
-  const upstream = gadget && snapshot.upstream
-  const template = useBlueprintInfo(upstream?.blueprintId, upstream?.commitId)
-  const follows = readsCode && upstream?.blueprintId !== undefined && snapshot.commitId !== undefined ? { ...upstream, blueprintId: upstream.blueprintId } : undefined
-  const [updating, setUpdating] = useState(false)
-  const update = gadget && follows && template && onUpdateProposed && (
-    <UpdateFromTemplate
-      open={updating}
-      onOpenChange={setUpdating}
-      workspaceId={gadget.workspaceId}
-      gadgetId={gadget.workpieceId}
-      title={title}
-      upstream={follows}
-      template={template}
-      onProposed={(chatId) => onUpdateProposed(gadget, chatId)}
-    />
-  )
-  const hasUpdate = update && templateUpdateStatus(follows, template) === 'available'
-  // Published as a template from what it has kept, by whoever builds in its workspace. Not there
-  // until it is first asked for, as it reads the templates.
-  const [publishing, setPublishing] = useState<boolean>()
-  const mayPublish = readsCode && gadget !== undefined
-  const publish = mayPublish && publishing !== undefined && (
-    <PublishTemplate gadget={{ workspaceId: gadget.workspaceId, workpieceId: gadget.workpieceId, title }} open={publishing} onOpenChange={setPublishing} />
   )
   // As its own page, a gadget names the workspace it is in and leads to a chat there with it
   // beside it, for whoever builds there: someone given it alone to use has no chats in it.
@@ -272,7 +220,6 @@ export const AsidePane = (props: AsidePaneProps) => {
   }
   // The agents it starts, beside its title, as it has kept them.
   const gadgetAgents = useGadgetAgents(gadget?.workspaceId, undefined, gadget ? [gadget.workpieceId] : NO_GADGETS)
-  const navigate = useNavigate()
   const agents = gadget && gadgetAgents.length > 0 ? {
     names: gadgetAgents.map(({ name }) => name),
     onOpen: () => void (gadgetAgents.length === 1
@@ -286,45 +233,53 @@ export const AsidePane = (props: AsidePaneProps) => {
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
-    exports: exports.menu,
-    onOpenSettings: gadget && onOpenSettings && (() => onOpenSettings(gadget, title)),
+    // Beside the page its settings page is shown in the pane's place; as the page it is the route's.
+    onOpenSettings: gadget && (props.placement === 'beside'
+      ? (readsCode ? () => setSettings({ key: item.key, open: true, tab: settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB }) : undefined)
+      : onOpenSettingsPage && (() => onOpenSettingsPage(gadget, title))),
     onViewCode: readsCode ? () => setCode({ ...codeHere, key: item.key, open: !viewingCode }) : undefined,
     viewingCode,
     onShare: share ? () => setSharing(true) : undefined,
-    onUpdate: hasUpdate ? () => setUpdating(true) : undefined,
-    onPublish: mayPublish ? () => setPublishing(true) : undefined,
-    onRename: edits.onRename,
-    onDelete: edits.onDelete,
     narrow,
   }
 
-  return props.placement === 'beside' ? (
+  const pane = props.placement === 'beside' ? (
     <SidePane
       {...shared}
       placement="beside"
-      items={props.items.map((candidate) => paneItem(candidate))}
-      onSelect={props.onSelect}
       onHide={props.onHide}
       onExpand={props.onExpand}
     >
       {content}
-      {status && <PaneStatus {...status} />}
       {share}
-      {exports.dialogs}
-      {update}
-      {publish}
-      {edits.dialog}
     </SidePane>
   ) : (
     <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
-      {status && <PaneStatus {...status} />}
       {share}
-      {exports.dialogs}
-      {update}
-      {publish}
-      {edits.dialog}
     </SidePane>
+  )
+
+  return (
+    <>
+      {viewingSettings && gadget && (
+        <GadgetSettingsPane
+          workspaceId={gadget.workspaceId}
+          workpieceId={gadget.workpieceId}
+          initialTitle={title}
+          chatId={gadget.chatId}
+          namesTab={false}
+          tab={settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB}
+          onTabChange={(next) => setSettings({ key: item.key, open: true, tab: next })}
+          onBack={() => setSettings({ key: item.key, open: false, tab: settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB })}
+          onDeleted={() => onDeleted?.(gadget)}
+          onUpdateProposed={(chatId) => onUpdateProposed?.(gadget, chatId)}
+          onOpenAgent={(spawnerId) => void navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: gadget.workspaceId, agentKey: agentKeyOf(spawnerId) } })}
+        />
+      )}
+      {/* The settings take the whole pane, header and all. Hidden, not gone, so that the gadget keeps running behind them. */}
+      <div className={cn('min-h-0 flex-1 flex-col', viewingSettings ? 'hidden' : 'flex')}>{pane}</div>
+    </>
   )
 }
 
@@ -345,7 +300,7 @@ export type EmptyAsidePaneProps = {
  * known, while the library is read for it, and then if it has made nothing.
  */
 export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: EmptyAsidePaneProps) => (
-  <SidePane placement="beside" items={[]} onSelect={() => {}} onHide={onHide} narrow={narrow}>
+  <SidePane placement="beside" onHide={onHide} narrow={narrow}>
     {problem ? (
       <PaneNotice
         icon={WarningCircleIcon}

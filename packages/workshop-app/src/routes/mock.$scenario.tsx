@@ -191,8 +191,6 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
     <AsidePane
       placement="beside"
       item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
-      items={items}
-      onSelect={setOpen}
       onHide={() => setOpen(undefined)}
       onExpand={() => setExpanded(true)}
       onFullScreenChange={handlers.onFullScreenChange}
