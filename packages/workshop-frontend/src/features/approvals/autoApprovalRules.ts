@@ -8,6 +8,12 @@ export interface AutoApprovalRules {
   /** Whether a rule covers `tag` on `gatekeeperId`. From `listPreApprovableActions`, not inferred. */
   isEnabled: (gatekeeperId: number, tag: string) => boolean
   /**
+   * Whether the stored rules were read, so that `isEnabled` says what the workspace holds. No
+   * rule is offered until they were: one offered from an unread list may exist already, and
+   * confirming it would replace who enabled it.
+   */
+  known: boolean
+  /**
    * Whether the kernel lets a rule apply this kind as the workspace is now
    * (`PreApprovableAction.ruleApplies`). Every kind while the workspace is not restricted;
    * in a restricted one only what the kernel said, and no kind while its answer is unread.
@@ -63,7 +69,7 @@ export function isAutoApproved(entry: Candidate, rules: AutoApprovalRules): bool
  */
 export function canOfferAlwaysApprove(entry: Candidate, rules: AutoApprovalRules): boolean {
   const kind = entry.description.actionKind
-  return entry.description.autoApprovable === true && kind !== undefined &&
+  return rules.known && entry.description.autoApprovable === true && kind !== undefined &&
     rules.applies(entry.gatekeeperId, kind.tag) && !rules.isEnabled(entry.gatekeeperId, kind.tag)
 }
 

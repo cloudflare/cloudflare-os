@@ -94,6 +94,7 @@ async function render(options: {
     <PendingChangesTray
       groups={options.groups}
       rules={{
+        known: true,
         isEnabled: (_gatekeeperId, tag) => (options.enabledTags ?? []).includes(tag),
         applies: (_gatekeeperId, tag) => options.restricted !== true ||
           (options.appliesWhileRestricted ?? []).includes(tag),

@@ -41,6 +41,7 @@ function request(id: number, over: {
  */
 function rules(tags: string[], appliesUnderLatch?: string[]) {
   return {
+    known: true,
     isEnabled: (gatekeeperId: number, tag: string) => gatekeeperId === 1 && tags.includes(tag),
     applies: (gatekeeperId: number, tag: string) => appliesUnderLatch === undefined ||
       (gatekeeperId === 1 && appliesUnderLatch.includes(tag)),

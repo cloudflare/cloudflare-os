@@ -103,7 +103,7 @@ async function render({
   await act(async () => root!.render(
     <PendingChangesTray
       groups={groups}
-      rules={{ isEnabled: () => autoApproved, applies: () => !restricted, restricted }}
+      rules={{ known: true, isEnabled: () => autoApproved, applies: () => !restricted, restricted }}
       ready={true}
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}

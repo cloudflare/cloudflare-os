@@ -48,9 +48,10 @@ export const useAutoApprovalRules = (
   const rules: AutoApprovalRules = useMemo(() => ({
     isEnabled: (gatekeeperId, tag) =>
       enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
+    known: !isLoading && !loadError,
     applies: ruleApplies,
     restricted: want.restricted,
-  }), [enabledRuleKeys, isTagAutoApproved, ruleApplies, want.restricted])
+  }), [enabledRuleKeys, isTagAutoApproved, isLoading, loadError, ruleApplies, want.restricted])
 
   return {
     rules,
