@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { useChatBeside } from '@/chat/useChatSession'
 import { useLibrary } from '@/library/useLibrary'
 import { chatAsideItems, workspaceAsideItems, type AsideItem } from './asideItems'
@@ -12,6 +13,8 @@ export type ChatLibrary = {
    * items, and the files sent in what has been loaded of a chat, which are not listed.
    */
   known: AsideItem[]
+  /** Everything the library has, as read, which the items of the workspace's are made from. */
+  outputs: readonly OutputSummary[]
   /** The library is being read. */
   reading: boolean
   /** Why the library could not be read. */
@@ -19,6 +22,8 @@ export type ChatLibrary = {
   /** Reads it again after it could not be. */
   retry: (() => void) | undefined
 }
+
+const NONE: readonly OutputSummary[] = []
 
 /**
  * What can be shown beside a chat, or beside its workspace's own page: what the workspace has
@@ -42,6 +47,7 @@ export const useChatLibrary = (beside: BesideRef | undefined): ChatLibrary => {
   const known = useMemo(() => [...items, ...fromChat.filter(({ kind }) => kind === 'file')], [items, fromChat])
   return {
     items,
+    outputs: outputs ?? NONE,
     known,
     reading: beside !== undefined && library.status === 'loading',
     problem: library.status === 'failed' ? library.message : undefined,

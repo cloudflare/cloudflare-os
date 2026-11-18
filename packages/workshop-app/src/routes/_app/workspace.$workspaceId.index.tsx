@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
-import { carriedOpen, validateAsideParam } from '@/aside/asideItems'
+import { carriedOpen, outputPage, outputSettings, validateAsideParam } from '@/aside/asideItems'
 import { asideFor, carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
 import { WORKSPACE_TABS, WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
 
@@ -51,6 +51,8 @@ function Workspace() {
       agentHref={({ key }) => router.buildLocation({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: key } }).href}
       onOpenItem={(item) => aside.show(item.key, { workspaceId })}
       itemHref={(item) => router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library', open: item.key } }).href}
+      outputHref={(output) => router.buildLocation(outputPage(output)).href}
+      onOpenSettings={(output) => navigate(outputSettings(output))}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open: carriedOpen(open) } })}
       // Its own address, whole, as it is copied to be opened elsewhere.
       link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}

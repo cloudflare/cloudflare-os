@@ -1,5 +1,5 @@
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
-import type { AsideItem } from '@/aside/asideItems'
+import { outputPage, outputSettings, type AsideItem } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
 import { asideFor } from '@/aside/useAsideNavigation'
 import { CHAT_SETTINGS_TABS, ChatSettingsPane, type ChatSettingsTab } from '@/chat/ChatSettingsPane'
@@ -52,6 +52,8 @@ function ChatSettings() {
           replace: true,
         })
       }
+      outputHref={(output) => router.buildLocation(outputPage(output)).href}
+      onOpenSettings={(output) => navigate(outputSettings(output))}
       onBack={() => {
         if (router.state.location.state.fromChat) return router.history.back()
         void navigate(chat(asideFor({ workspaceId, chatId })))

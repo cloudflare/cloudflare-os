@@ -132,10 +132,17 @@ export const CardBlocksPreview = () => {
           </ListGroup>
         </Column>
       </Section>
-      <Section title="ListGroup, FileListItem (a chat's files and outputs on its settings page, in a surface for each stretch of time: a busy day on its own, quieter days folded together; a name long enough that it has to be cut off)">
+      <Section title="ListGroup, FileListItem (a chat's files and outputs on its settings page, an output with a more menu for whoever may change it, in a surface for each stretch of time: a busy day on its own, quieter days folded together; a name long enough that it has to be cut off)">
         <Column>
           <ListGroup label="Today">
-            <FileListItem title="Q3 platform review" icon={<FileTextIcon aria-hidden="true" />} time="1 hour ago" href="#q3-platform-review" onSelect={() => say('open the document')} />
+            <FileListItem
+              title="Q3 platform review"
+              icon={<FileTextIcon aria-hidden="true" />}
+              time="1 hour ago"
+              href="#q3-platform-review"
+              onSelect={() => say('open the document')}
+              more={{ onRename: (title) => say(`rename it “${title}”`), onShare: () => say('share it'), onOpenSettings: () => say('open its settings'), onDelete: () => say('delete it') }}
+            />
             <FileListItem title="my-favourite-image.jpg" icon={<ImageIcon aria-hidden="true" />} time="4 hours ago" onSelect={() => say('open the image')} />
           </ListGroup>
           <ListGroup label="Since Monday">

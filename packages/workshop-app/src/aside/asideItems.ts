@@ -95,6 +95,13 @@ export const itemPage = (workspaceId: string, ref: AsideRef, app: boolean) =>
     ? ({ to: '/app/$itemId', params: { itemId: itemPageId(workspaceId, ref) } } as const)
     : ({ to: '/library/$itemId', params: { itemId: itemPageId(workspaceId, ref) } } as const)
 
+/** Where an output the library lists is on its own: listed outputs are what was made, so one with no format is an app. */
+export const outputPage = ({ workspaceId, workpieceId, output }: OutputSummary) => itemPage(workspaceId, { kind: 'output', workpieceId }, !output)
+
+/** An output's settings, whose way back is to the output itself; its title is shown until its own arrives. */
+export const outputSettings = ({ workspaceId, workpieceId, title }: OutputSummary) =>
+  ({ to: '/app/$itemId/settings', params: { itemId: itemPageId(workspaceId, { kind: 'output', workpieceId }) }, search: {}, state: { gadgetTitle: title } }) as const
+
 /** Where a shown item is on its own. */
 export const pageOf = (workspaceId: string, item: AsideItem) =>
   itemPage(workspaceId, parseAsideRef(item.key)!, item.kind === 'output' && isApp(item.output))

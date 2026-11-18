@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
+import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { runsWantingAttention, type Agent } from '@/automations/agents'
 import { AgentsTab } from '@/automations/AgentsTab'
@@ -62,6 +63,10 @@ export type WorkspacePaneProps = {
   onOpenItem: (item: AsideItem) => void
   /** Where an item opens, for its row to link to so that it can be opened in another tab. */
   itemHref?: (item: AsideItem) => string
+  /** An output's own page, which sharing it from its row's more menu lets people in to. */
+  outputHref?: (output: OutputSummary) => string
+  /** Goes to an output's settings, from its row's more menu. */
+  onOpenSettings?: (output: OutputSummary) => void
   onNewChat: () => void
   /** The workspace's address, which inviting people copies and its link lets anyone in to. Left out, nobody is invited from here. */
   link?: string
@@ -78,7 +83,7 @@ export type WorkspacePaneProps = {
  * that what of theirs waits on the viewer is said over the tabs, whichever is chosen, and counted
  * on the Agents tab.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -229,7 +234,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             />
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
-            <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} />
+            <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} outputHref={outputHref} onOpenSettings={onOpenSettings} />
           </Tabs.Panel>
           <Tabs.Panel value="automations" className="flex flex-col gap-8">
             <AutomationsTab

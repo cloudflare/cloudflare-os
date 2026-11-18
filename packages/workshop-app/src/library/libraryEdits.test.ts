@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { mayChange, NO_EDITS, withDeletion, withEdits, withoutRename, withRename } from './libraryEdits'
+import type { AsideItem } from '@/aside/asideItems'
+import { mayChange, NO_EDITS, withDeletion, withEdits, withItemEdits, withoutRename, withRename } from './libraryEdits'
 
 const grace = { type: 'user' as const, id: 'grace@example.com', name: 'Grace Hopper' }
 
@@ -51,5 +52,27 @@ describe('withEdits', () => {
   it('puts the old title back when the rename is taken back', () => {
     const edits = withoutRename(withRename(NO_EDITS, outputs[0], 'Q3 platform review'), outputs[0])
     expect(withEdits(outputs, edits)[0]).toBe(outputs[0])
+  })
+})
+
+const item = (workpieceId: number, title: string): AsideItem => ({
+  key: String(workpieceId),
+  title,
+  kind: 'output',
+  output: { workspaceId: 'notes', workpieceId, type: 'gadget' },
+})
+
+describe('withItemEdits', () => {
+  const file: AsideItem = { key: 'file-a', title: 'notes.txt', kind: 'file', file: { id: 'a', name: 'notes.txt', mimeType: 'text/plain', size: 1, workspaceId: 'notes' } }
+
+  it('leaves out the deleted and renames the renamed, an untitled one by the title it is listed as', () => {
+    const edits = withDeletion(withRename(withRename(NO_EDITS, output(1, 'Q3 review'), 'Q3 platform review'), output(3, ''), 'Runbook'), output(2, 'Budget'))
+    const shown = withItemEdits([item(1, 'Q3 review'), item(2, 'Budget'), item(3, 'Untitled'), file], edits)
+    expect(shown.map(({ title }) => title)).toEqual(['Q3 platform review', 'Runbook', 'notes.txt'])
+  })
+
+  it('shows the title read once it is no longer the one renamed from', () => {
+    const edits = withRename(NO_EDITS, output(1, 'Q3 review'), 'Q3 platform review')
+    expect(withItemEdits([item(1, 'Renamed elsewhere')], edits)[0].title).toBe('Renamed elsewhere')
   })
 })
