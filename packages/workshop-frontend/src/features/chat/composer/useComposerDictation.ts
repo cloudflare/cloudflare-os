@@ -38,6 +38,7 @@ const getLocalRecognitionConstructor = () => {
 
 const recognitionUnavailable = "Voice typing is unavailable. You can still type your message.";
 const downloadFailed = "Couldn’t download the voice typing language pack. Try again later.";
+const downloadTimeoutMs = 3 * 60 * 1000;
 
 const recognitionError = (error: string) => {
   switch (error) {
@@ -183,7 +184,20 @@ export const useComposerDictation = ({
         if (availability !== "available") {
           setupError = downloadFailed;
           setStatus("downloading");
-          const installed = await RecognitionConstructor.install?.(options);
+          // The browser owns the download. Timing out invalidates this session, not the download.
+          const timeout = setTimeout(() => {
+            finish();
+            onError("The voice typing download is taking longer than expected. Try again in a moment.");
+          }, downloadTimeoutMs);
+          const clearDownloadTimeout = () => clearTimeout(timeout);
+          signal.addEventListener("abort", clearDownloadTimeout, { once: true });
+          let installed: boolean | undefined;
+          try {
+            installed = await RecognitionConstructor.install?.(options);
+          } finally {
+            clearDownloadTimeout();
+            signal.removeEventListener("abort", clearDownloadTimeout);
+          }
           if (signal.aborted) return;
           if (!installed) {
             finish();

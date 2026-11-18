@@ -118,6 +118,7 @@ describe("ChatComposer", () => {
 
   afterEach(async () => {
     await act(async () => root?.unmount());
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     container?.remove();
     sessionStorage.clear();
@@ -290,11 +291,13 @@ describe("ChatComposer", () => {
     const options = { langs: ["en-US"], processLocally: true };
     expect(DownloadableRecognition.available).toHaveBeenCalledWith(options);
     expect(DownloadableRecognition.install).toHaveBeenCalledWith(options);
-    expect(container!.textContent).toContain("Downloading the voice typing language pack");
+    const downloadStatus = container!.querySelector('[role="status"]:not(.sr-only)');
+    expect(downloadStatus?.textContent).toContain("The mic isn’t listening yet.");
     expect(started).not.toHaveBeenCalled();
 
     if (switched) await renderDictationComposer({ chatKey: 2 });
     await act(async () => download.resolve(true));
+    expect(downloadStatus?.textContent).toBe("");
     expect(started).toHaveBeenCalledTimes(switched ? 0 : 1);
     expect(voiceButton(switched ? "Start" : "Stop")).not.toBeNull();
     if (!switched) {
@@ -302,6 +305,35 @@ describe("ChatComposer", () => {
       await act(async () => speech.report(0, { text: "Build a dashboard", final: true }));
     }
     expect(textarea.value).toBe(switched ? "" : "Build a dashboard");
+  });
+
+  it("stops waiting on a stalled language pack download without starting the mic later", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const download = Promise.withResolvers<boolean>();
+    const started = vi.fn<() => void>();
+    class StalledRecognition extends TestSpeechRecognition {
+      static available = async () => "downloadable";
+      static install = () => download.promise;
+
+      constructor() {
+        super();
+        this.addEventListener("start", () => started());
+      }
+    }
+    vi.stubGlobal("SpeechRecognition", StalledRecognition);
+    await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    expect(container!.textContent).toContain("one-time download");
+
+    await act(async () => vi.advanceTimersByTimeAsync(3 * 60 * 1000));
+    expect(testState.addToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: expect.stringContaining("taking longer than expected"),
+    }));
+    expect(voiceButton("Start")).not.toBeNull();
+    expect(container!.textContent).not.toContain("one-time download");
+
+    await act(async () => download.resolve(true));
+    expect(started).not.toHaveBeenCalled();
   });
 
   it("sends on Enter without clearing document changes made while sending", async () => {

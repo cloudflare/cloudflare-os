@@ -1,11 +1,11 @@
-import { Button } from "@cloudflare/kumo";
+import { Button, Loader } from "@cloudflare/kumo";
 import { Microphone } from "@phosphor-icons/react";
 import type { DictationStatus } from "./useComposerDictation";
 
 const announcements: Record<DictationStatus, string> = {
   idle: "",
   starting: "Starting voice typing…",
-  downloading: "Downloading the voice typing language pack…",
+  downloading: "",
   listening: "Listening…",
   stopping: "Finishing voice typing…",
 };
@@ -15,8 +15,9 @@ export const ComposerDictationButton = ({ status, disabled, onToggle }: {
   disabled: boolean;
   onToggle: () => void;
 }) => {
-  const active = status !== "idle";
-  const label = active ? "Stop voice typing" : "Start voice typing";
+  const listening = status === "listening";
+  const preparing = status === "starting" || status === "downloading";
+  const label = status === "idle" ? "Start voice typing" : "Stop voice typing";
 
   return (
     <>
@@ -29,18 +30,22 @@ export const ComposerDictationButton = ({ status, disabled, onToggle }: {
         disabled={disabled}
         aria-disabled={status === "stopping" || undefined}
         aria-label={label}
-        title={status === "downloading" ? announcements.downloading : label}
-        icon={
+        title={label}
+        icon={preparing ? (
+          <span aria-hidden="true" className="text-kumo-subtle">
+            <Loader size="sm" className="motion-reduce:animate-none" />
+          </span>
+        ) : (
           <Microphone
-            weight={active ? "fill" : "regular"}
-            className={active
+            weight={listening ? "fill" : "regular"}
+            className={listening
               ? "relative z-10 text-kumo-danger"
               : "text-kumo-inactive group-hover:text-kumo-subtle group-focus-visible:text-kumo-subtle"}
           />
-        }
+        )}
         onClick={onToggle}
       >
-        {status === "listening" && (
+        {listening && (
           <span
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 m-auto hidden size-3.5 rounded-full border border-kumo-danger/45 motion-safe:block motion-safe:animate-ping"
