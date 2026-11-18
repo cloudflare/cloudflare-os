@@ -207,6 +207,16 @@ addresses, and links an image from elsewhere instead of loading it, which would 
 there what was read (one carried in the text, `data:` or `blob:`, is shown). Every link the app
 draws passes `components/webUrl.ts`, so none can be `javascript:`.
 
+What the agent writes between `<inline-html>` tags is a live view (`plans/live-views.md`), taken
+out of its prose by the shared parser (`chat/answerParts.ts`, plain and tested) and drawn in place
+as a bubble of its own in the message's run (`MessageBubble`'s `view`, `InlineView`): run in a
+frame sandboxed with no origin, under the gadget UI's CSP (`components/sandboxPage.ts`), with the
+theme's tokens, as tall as it draws, its module scripts run once written in full
+(`blocks/inlineViewFrame.ts`, ported from main's `uiBlockFrame`). What it asks to send
+(`agent.send()`) waits under it, and goes through the chat's own send only on Send. While the
+reply is drafted its views are only named (`InlineViewDraft`); a block the agent never closed is
+shown as code. The `live-view` scenario plays one.
+
 Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
 to the changes, and a compaction. A compaction asked for with `/compact` is announced under the
 command; one that ran on its own, at the cut. Another model taking over is not one: each message's

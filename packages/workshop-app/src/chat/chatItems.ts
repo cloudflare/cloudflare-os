@@ -1,6 +1,8 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import type { AnswerPart } from '@/blocks/AssistantMessage'
 import { webUrl } from '@/components/webUrl'
+import { answerParts } from './answerParts'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
 
@@ -47,7 +49,7 @@ export type ToolEntry =
 export type WorkEntry =
   | ToolEntry
   | { type: 'thinking'; key: string; text: string; running?: boolean }
-  | { type: 'writing'; key: string; text: string }
+  | { type: 'writing'; key: string; text: string; parts?: AnswerPart[] }
 
 /** One thing that led to a message that was written: a step taken, or what was thought. */
 export type TraceEntry = Exclude<WorkEntry, { type: 'writing' }>
@@ -78,6 +80,8 @@ export type UserItem = Row & {
 export type AssistantItem = Row & {
   kind: 'assistant'
   text: string
+  /** It in order: its prose, and the live views it drew (`answerParts`). */
+  parts: AnswerPart[]
   /** The model that wrote it. */
   sender: string
   sentAt: Date
@@ -615,6 +619,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             kind: 'assistant',
             id,
             text,
+            parts: answerParts(text),
             sender: message.author.name,
             sentAt: message.timestamp,
             trace,

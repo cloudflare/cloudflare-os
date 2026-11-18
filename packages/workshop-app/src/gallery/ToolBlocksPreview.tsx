@@ -2,10 +2,14 @@ import type { ReactNode } from 'react'
 import { ActionFields, type ActionField } from '@/blocks/ActionFields'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { WorkLog } from '@/blocks/WorkLog'
+import { answerParts } from '@/chat/answerParts'
 import { useOpen } from './previewState'
 import { Section } from './Section'
 
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full flex-col gap-2">{children}</div>
+
+// A reply being drafted with a view written in it and another still being drawn.
+const DRAFT = 'Here they are side by side:\n\n<inline-html>\n<title>Hosting plans</title>\n<p>Starter, Team, Business</p>\n</inline-html>\n\nAnd by month:\n\n<inline-html>\n<title>Cost by month</title>\n<svg viewBox="0 0 100 40">'
 
 /** One field of every kind, with the states a gatekeeper can send them in. */
 export const fields: ActionField[] = [
@@ -56,7 +60,7 @@ export const ToolBlocksPreview = () => {
 
   return (
     <>
-      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written, which is open; then thinking; then drafting the reply; then nothing yet)">
+      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written, which is open; then thinking; then drafting the reply; then drafting one with a view written and one being drawn, named and not run; then nothing yet)">
         <Column>
           <WorkLog steps={steps} openSteps={open} onToggleStep={toggle} />
           <WorkLog
@@ -67,6 +71,11 @@ export const ToolBlocksPreview = () => {
           <WorkLog
             steps={[steps[0], steps[2], { type: 'writing', key: 'writing', text: 'The chart now covers **twelve weeks**. Two things to check before you' }]}
             openSteps={open}
+            onToggleStep={toggle}
+          />
+          <WorkLog
+            steps={[{ type: 'writing', key: 'writing', text: DRAFT, parts: answerParts(DRAFT, { streaming: true }) }]}
+            openSteps={new Set(['writing'])}
             onToggleStep={toggle}
           />
           <WorkLog steps={[]} openSteps={open} onToggleStep={toggle} />

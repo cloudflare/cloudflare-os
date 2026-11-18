@@ -37,6 +37,8 @@ export type ChatItemHandlers = {
   onDenyConnection: (requestId: string) => ActionResult
   onApproveWebFetch: (requestIds: readonly string[]) => ActionResult
   onDenyWebFetch: (requestId: string) => ActionResult
+  /** Sends what a view in an answer suggested, as the viewer's message; resolves to whether it went. */
+  onSendSuggestion?: (message: string) => Promise<boolean>
   onRetry: () => ActionResult
   onContinue: () => ActionResult
 }
@@ -93,6 +95,8 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       return (
         <AssistantMessage
           text={item.text}
+          parts={item.parts}
+          onSendSuggestion={handlers.onSendSuggestion}
           joins={joins}
           onReply={() => handlers.onReply(item)}
           details={{

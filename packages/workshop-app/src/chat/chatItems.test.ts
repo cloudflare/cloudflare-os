@@ -59,6 +59,14 @@ describe('toChatFeed', () => {
       ])
     })
 
+    it('takes the views out of what the agent said, in order', () => {
+      const [item] = only(feed(agent({ text: 'Pick one:\n\n<inline-html>\n<title>Plans</title>\n<button>B</button>\n</inline-html>' })), 'assistant')
+      expect(item.parts).toEqual([
+        { type: 'text', text: 'Pick one:\n\n' },
+        { type: 'view', html: '<title>Plans</title>\n<button>B</button>', title: 'Plans', error: undefined },
+      ])
+    })
+
     it('draws the resources and formats a user mentioned as chips, where they typed them', () => {
       const capsule = {
         position: 6,
@@ -151,6 +159,7 @@ describe('toChatFeed', () => {
         id: 0,
         key: 'assistant:0',
         text: 'Done',
+        parts: [{ type: 'text', text: 'Done' }],
         sender: 'Mock Model',
         sentAt: messages[0].timestamp,
         trace: [{ type: 'thinking', key: 'thinking:0', text: 'Thinking it through' }],

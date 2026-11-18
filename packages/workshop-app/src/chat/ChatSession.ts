@@ -13,6 +13,7 @@ import {
   type WorkEntry,
 } from './chatItems'
 import { agentKeyOf, namedAgentKey } from '@/automations/agents'
+import { answerParts } from './answerParts'
 import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
@@ -709,7 +710,11 @@ export class ChatSession {
     const live: WorkEntry[] = []
     // It is still thinking only until it starts to write.
     if (this.#reasoning && !withCall) live.push({ type: 'thinking', key: 'live:thinking', text: this.#reasoning, running: this.#streaming === '' })
-    if (this.#streaming) live.push({ type: 'writing', key: 'live:writing', text: this.#streaming })
+    if (this.#streaming) {
+      // The views in it are named rather than drawn, until it is a message.
+      const parts = answerParts(this.#streaming, { streaming: true })
+      live.push({ type: 'writing', key: 'live:writing', text: this.#streaming, ...(parts.some(({ type }) => type === 'view') && { parts }) })
+    }
     this.#calls.forEach((call, index) => live.push(liveEntry(call, index === 0 && withCall ? this.#reasoning || undefined : undefined)))
     return (this.#work = [...work, ...live])
   }

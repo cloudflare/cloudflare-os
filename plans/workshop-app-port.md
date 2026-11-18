@@ -15,7 +15,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 2. Approving an action that creates a resource (`ChatSession.approveAction` TODO). **Done.**
 3. Keeping or discarding changes that can't be kept automatically. **Done.**
 4. Composer slash commands, skills and connection lines. **Done.**
-5. Inline views and file previews (Office, worktrees). **Done**, but inline views wait on main.
+5. Inline views and file previews (Office, worktrees). **Done.**
 6. Sharing. **Done**, of a workspace, or of one of its gadgets to use.
 7. Gadget settings and the Code tab. **Done.** View code shows the code in the pane, with its history as diffs (CodeMirror).
 8. Real blueprints behind Templates, real skills behind `SkillStore`. **Done.**
@@ -45,7 +45,6 @@ waiting (`awaitingDecision`) are done: agents as entities, `plans/agents.md`.
 | Agents have a tab and a page of their own (`plans/agents.md`), read from every gadget's bindings and each run's last messages; the sidebar wakes recently active workspaces to count runs waiting; a failure is only seen on the latest runs; nothing says what an agent is for, or which hook starts it | no `listAgentSpawners`, no failed flag on chats, no per-workspace count of runs waiting, `chatId` missing on some actions | `listAgentSpawners`, `lastTurnFailed` on `AiChatMetadata`, a waiting count on the workspace list or unread summary, `chatId` on every action, a description on `AgentSpawnerConfig` |
 | The scheduler's management app is typed by a local `{ list }` | its class is the worker's and the shared API types a frame's `ui` loosely | a shared type for it |
 | Automations can't be created, edited or deleted here, only switched on and off | read only, by scope | none |
-| No inline views in answers | the agent support came in a later main | none once main is merged |
 | An output's card has no gadget colour | the prototype's gadget colours | none |
 | A gadget is shared to use, never only to view: no "Can view" and no "what people see" snapshot | main's grants are to edit the workspace or use a gadget | `viewOnly` grants, `sharedViewsAvailable`, `GadgetClient.openView`, `viewTakenAt` |
 | Someone with access can only be removed, not moved from Member to using a gadget (becoming a member is an invite) | there is no call to narrow access | a set-access call on the Overseer |

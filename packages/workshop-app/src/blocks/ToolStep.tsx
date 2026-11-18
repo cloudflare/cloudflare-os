@@ -8,6 +8,8 @@ import { CodeBlock } from '@/components/CodeBlock'
 import { Disclosure } from '@/components/Disclosure'
 import { Markdown } from '@/components/Markdown'
 import { ActionFields, type ActionField } from './ActionFields'
+import type { AnswerPart } from './AssistantMessage'
+import { InlineViewDraft } from './InlineView'
 import { ResourceLink, type ResourceLinkProps } from './ResourceLink'
 
 const ICONS = {
@@ -52,14 +54,23 @@ export type ToolStepEntry =
     }
   /** What was thought before something was said, or has been so far while it is `running`. */
   | { type: 'thinking'; key: string; text: string; running?: boolean }
-  /** The reply as far as it has been drafted. */
-  | { type: 'writing'; key: string; text: string }
+  /** The reply as far as it has been drafted, with the views in it apart where it has any. */
+  | { type: 'writing'; key: string; text: string; parts?: AnswerPart[] }
 
 export type ToolStepProps = { entry: ToolStepEntry; open: boolean; onToggle: () => void }
 
 const Detail = ({ entry }: { entry: ToolStepEntry }) => {
   if (entry.type === 'thinking') return <div className="text-sm/5 text-kumo-subtle"><Markdown>{entry.text}</Markdown></div>
-  if (entry.type === 'writing') return <div className="text-base/5 text-kumo-default"><Markdown>{entry.text}</Markdown></div>
+  if (entry.type === 'writing') {
+    return (
+      <div className="flex flex-col gap-3 text-base/5 text-kumo-default">
+        {(entry.parts ?? [{ type: 'text', text: entry.text }]).map((part, index) =>
+          part.type === 'text'
+            ? <Markdown key={index}>{part.text}</Markdown>
+            : <InlineViewDraft key={index} title={part.title} drawing={part.drawing} />)}
+      </div>
+    )
+  }
   if (entry.type === 'observation') {
     const { resource } = entry
     return (

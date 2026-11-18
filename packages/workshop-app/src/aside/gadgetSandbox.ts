@@ -3,21 +3,12 @@
 // `GadgetUI` and `sandboxDocument`, which explain more; the bundle is turned into modules by the
 // shared `prepareUiPage`, which an export builds its page from too.
 import { RpcTarget } from 'capnweb'
-import CAPNWEB_BUNDLE from 'capnweb?raw'
 import type { ConsoleLogEvent, GadgetHost, UiBundle } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey } from '@gadgets/workshop-shared/ui-page'
+import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from '@/components/sandboxPage'
 
 /** What the gadget's page posts with the port it is to be connected through. */
 export const HANDSHAKE_MESSAGE = 'handshake'
-
-// Cap'n Web has no dependencies, so the whole module is embedded, as a data: URL the runtime and
-// the gadget's modules import (`prepareUiPage` maps "capnweb" to it, so that both share one).
-// btoa() requires ASCII, which capnweb's build keeps to.
-const CAPNWEB_MODULE_URL = `data:text/javascript;charset=utf-8;base64,${btoa(`//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`)}`
-
-// No network, no frames; scripts, styles, images and media only inline or as data: URLs.
-const SANDBOX_HEAD = `<meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline' 'wasm-unsafe-eval'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">`
 
 const MISSING_MAIN = "client.js's default export has no main() function. Start the UI with `export default { main(gadget) { ... } }`."
 

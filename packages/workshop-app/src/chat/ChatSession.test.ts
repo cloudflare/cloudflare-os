@@ -471,6 +471,17 @@ describe('ChatSession', () => {
       expect(ready(session).work).toEqual([{ type: 'writing', key: 'live:writing', text: 'still writing' }])
     })
 
+    it('names the views in a reply being drafted, the one still being written as drawn', async () => {
+      const action: AiChatMessage = { chatId: 0, sequence: 0, timestamp: new Date(0), author: agentAuthor, type: 'action', actionId: 1 }
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(action, userMessage(1, 'continue')) })
+      const session = await started(fake)
+      fake.server().stream(0, { type: 'textDelta', delta: 'A chart:\n\n<inline-html>\n<title>Weeks</title>\n<svg' })
+      expect(ready(session).work).toMatchObject([{
+        type: 'writing',
+        parts: [{ type: 'text', text: 'A chart:\n\n' }, { type: 'view', title: 'Weeks', drawing: true }],
+      }])
+    })
+
     it('discards what streamed of a reply on a reset', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       const session = await started(fake)
