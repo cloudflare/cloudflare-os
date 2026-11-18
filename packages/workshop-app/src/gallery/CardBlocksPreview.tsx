@@ -147,7 +147,7 @@ export const CardBlocksPreview = () => {
           </ListGroup>
           <ListGroup label="Since Monday">
             <FileListItem title="my-song-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-in-the-row.wav" icon={<WaveformIcon aria-hidden="true" />} time="Tuesday" onSelect={() => say('open the song')} />
-            <FileListItem title="Launch checklist" icon={<FileTextIcon aria-hidden="true" />} time="Monday" onSelect={() => say('open the checklist')} />
+            <FileListItem title="Launch checklist" icon={<FileTextIcon aria-hidden="true" />} time="Monday" waiting={2} onSelect={() => say('open the checklist')} />
           </ListGroup>
         </Column>
       </Section>

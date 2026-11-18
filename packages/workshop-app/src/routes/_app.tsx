@@ -5,6 +5,7 @@ import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown, rememberShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
+import { gadgetsWaitingIn, waitingWords } from '@/workspaces/waitingWords'
 import { useAgentsWaiting } from '@/automations/AgentsWaitingContext'
 import { AgentsWaitingProvider } from '@/automations/AgentsWaitingProvider'
 import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/ConnectionIsland'
@@ -74,9 +75,6 @@ export const Route = createFileRoute('/_app')({
 // Placeholder logos until real connected apps are wired in.
 const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
 
-/** What a workspace's agents' runs waiting on the user say of it in the sidebar, where any do. */
-const agentsWaitingWords = (count: number) =>
-  count === 0 ? undefined : count === 1 ? 'An agent needs you' : `${count} agent runs need you`
 
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
@@ -278,7 +276,7 @@ const AppFrame = () => {
           workspaceLabel: workspaceLabel(title),
           workspaceLook: looks[id],
           subtitle: formatActivity(lastActive),
-          attention: agentsWaitingWords(waiting.get(id) ?? 0),
+          attention: waitingWords({ runs: waiting.get(id)?.runs ?? 0, chats: waiting.get(id)?.chats ?? 0, gadgets: gadgetsWaitingIn(id, asks.byGadget) }),
           unread: unread?.totals.workspaces.has(id),
           href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
         }))

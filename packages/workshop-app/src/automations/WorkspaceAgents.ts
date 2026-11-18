@@ -25,6 +25,11 @@ export type WorkspaceAgentsSnapshot =
        * known only by its runs, with no gadget, and one that has not run is not known.
        */
       setUpRead: boolean
+      /**
+       * The chats people had with the workspace's agent, rather than its agents' runs, that are
+       * waiting on a person: stopped on a decision, or with an action waiting to be approved.
+       */
+      chatsWaiting: ReadonlySet<number>
     }
 
 /**
@@ -105,6 +110,8 @@ export class WorkspaceAgents {
   #pending = new Set<number>()
   #actionChats = new Map<number, number>()
   #failed = new Set<number>()
+  // The chats people had, apart from the runs, stopped on a decision.
+  #deciding = new Set<number>()
   #tailsRead = new Set<number>()
   #tailsReading = 0
   // The workspace's gadgets, by id, and whether all have been listed.
@@ -174,6 +181,7 @@ export class WorkspaceAgents {
     overseer.listChats().then(
       (chats) => live(() => {
         this.#chats = new Map(chats.filter(isAgentRun).map((chat) => [chat.id, chat]))
+        this.#deciding = new Set(chats.filter((chat) => !isAgentRun(chat) && chat.awaitingDecision).map(({ id }) => id))
         for (const [id, chat] of this.#early) {
           if (chat) this.#chats.set(id, chat)
           else this.#chats.delete(id)
@@ -220,7 +228,13 @@ export class WorkspaceAgents {
   }
 
   #updated(run: number, chat: AiChatMetadata) {
-    if (!isAgentRun(chat)) return
+    if (!isAgentRun(chat)) {
+      const had = this.#deciding.has(chat.id)
+      if (chat.awaitingDecision) this.#deciding.add(chat.id)
+      else this.#deciding.delete(chat.id)
+      if (had !== this.#deciding.has(chat.id)) this.#publishReady()
+      return
+    }
     // A turn under way has not failed, whatever the last one did.
     if (chat.activeAgent) this.#failed.delete(chat.id)
     if (!this.#chats) {
@@ -238,6 +252,7 @@ export class WorkspaceAgents {
       this.#early.set(chatId, null)
       return
     }
+    if (this.#deciding.delete(chatId)) this.#publishReady()
     if (!this.#chats.delete(chatId)) return
     this.#failed.delete(chatId)
     this.#publishReady()
@@ -426,7 +441,10 @@ export class WorkspaceAgents {
       if (chatId !== undefined) pending.add(chatId)
     }
     const signals = { pending, failed: this.#failed }
-    this.#publish({ status: 'ready', agents: agentsOf([...this.#chats.values()], signals, [...this.#setups.values()]), setUpRead: this.#setUpRead })
+    // An action waiting in a chat that is not one of the runs is waiting in a chat a person had.
+    const chatsWaiting = new Set(this.#deciding)
+    for (const chatId of pending) if (!this.#chats.has(chatId)) chatsWaiting.add(chatId)
+    this.#publish({ status: 'ready', agents: agentsOf([...this.#chats.values()], signals, [...this.#setups.values()]), setUpRead: this.#setUpRead, chatsWaiting })
   }
 
   #fail(error: unknown) {

@@ -74,7 +74,7 @@ export const ChatMenuPreview = () => {
         <div className="flex w-96 max-w-full flex-col rounded-3xl bg-kumo-tint p-1.5">
           <ChatListItem title="Jira dashboard" time="4 hours ago" unread={unread.jira} onSelect={() => {}} more={more('jira', 'Jira dashboard')} />
           <ChatListItem title="Create a new slideshow about the history of Paris" time="Oct 27" unread={unread.paris} onSelect={() => {}} more={more('paris', 'the slideshow')} />
-          <ChatListItem title="Morning brief" time="Oct 26" unread={unread.brief} onSelect={() => {}} more={more('brief', 'Morning brief')} />
+          <ChatListItem title="Morning brief" time="Oct 26" waiting unread={unread.brief} onSelect={() => {}} more={more('brief', 'Morning brief')} />
           <ChatListItem title="Only used here" time="Oct 25" onSelect={() => {}} />
         </div>
         <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>

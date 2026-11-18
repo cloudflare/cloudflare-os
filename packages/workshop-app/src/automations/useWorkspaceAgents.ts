@@ -30,10 +30,11 @@ export const useWorkspaceAgents = (workspaceId: string) => {
 
   const snapshot = useSyncExternalStore(agents.subscribe, agents.getSnapshot)
   const waiting = useReportAgentsWaiting()
-  const count = snapshot.status === 'ready' ? snapshot.agents.reduce((sum, agent) => sum + agent.waiting, 0) : undefined
+  const runs = snapshot.status === 'ready' ? snapshot.agents.reduce((sum, agent) => sum + agent.waiting, 0) : undefined
+  const chats = snapshot.status === 'ready' ? snapshot.chatsWaiting.size : 0
   useEffect(() => {
-    if (count !== undefined) waiting?.report(workspaceId, count)
-  }, [waiting, workspaceId, count])
+    if (runs !== undefined) waiting?.report(workspaceId, { runs, chats })
+  }, [waiting, workspaceId, runs, chats])
 
   return { state: snapshot, retry: () => agents.restart() }
 }

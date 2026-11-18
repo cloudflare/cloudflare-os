@@ -5,6 +5,7 @@ import { LinkButton } from '@/components/LinkButton'
 import { LibraryMoreMenu, type LibraryMoreActions } from './LibraryMoreMenu'
 import { RowAction } from './RowAction'
 import { LIST_ACTION } from './StarButton'
+import { WaitingBadge } from './WaitingBadge'
 
 export type FileListItemProps = {
   /** A file's name, an output's title. */
@@ -21,24 +22,28 @@ export type FileListItemProps = {
    * may change. Without it the row has no menu.
    */
   more?: LibraryMoreActions
+  /** How many things it, a gadget, asks of the user, which its own pane asks when it is opened. */
+  waiting?: number
 }
 
 const ROW = 'flex min-w-0 flex-1 items-center gap-3 rounded-2xl px-3 py-3 text-left text-base'
 
 /**
- * A file or an output in a list of them, on one line: what it is, its name, and when it was. With
+ * A file or an output in a list of them, on one line: what it is, its name, how many things it
+ * asks of the user where it asks any, and when it was. With
  * `more`, its more menu slides out at the end while the row is pointed at, as a chat's does in a
  * list of chats; renamed from there, its name is typed where it is, and the row opens nothing
  * until that is done.
  */
-export const FileListItem = ({ title, icon, time, href, onSelect, more }: FileListItemProps) => {
+export const FileListItem = ({ title, icon, time, href, onSelect, more, waiting = 0 }: FileListItemProps) => {
   const [renaming, setRenaming] = useState(false)
   const { onRename } = more ?? {}
   const content = (name: ReactNode) => (
     <>
       <span className="flex shrink-0 text-kumo-default [&>svg]:size-5">{icon}</span>
       {name}
-      {time && <span className="shrink-0 text-kumo-subtle">{time}</span>}
+      {waiting > 0 && <WaitingBadge count={waiting} />}
+      {time && <span className={cn('shrink-0 text-kumo-subtle', waiting > 0 && 'max-md:hidden')}>{time}</span>}
     </>
   )
 
