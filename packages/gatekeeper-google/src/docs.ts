@@ -1427,7 +1427,8 @@ export class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocRead
  * extending it, so its RPC surface has nothing else to call.
  */
 @validateRpc()
-export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEditSession {
+export class GoogleDocEditSessionImpl extends RpcTarget
+    implements GoogleDocEditSession, GoogleDocRenderingReads {
   #session: GoogleDocSessionImpl;
 
   constructor(options: Omit<GoogleDocSessionOptions, "comments">) {
@@ -1457,5 +1458,29 @@ export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEdit
 
   appendText(markdown: string, tabId?: string): Promise<void> {
     return this.#session.appendText(markdown, tabId);
+  }
+
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges> {
+    return this.#session.getPendingChanges(tabId);
+  }
+
+  listImages(tabId: string): Promise<GoogleDocImage[]> {
+    return this.#session.listImages(tabId);
+  }
+
+  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes> {
+    return this.#session.readImage(imageId, tabId);
+  }
+
+  readFont(family: string, weight: number, italic: boolean): Promise<ReadableStream<Uint8Array>> {
+    return this.#session.readFont(family, weight, italic);
+  }
+
+  readDrawing(tabId: string): Promise<GoogleDocDrawing> {
+    return this.#session.readDrawing(tabId);
+  }
+
+  getRenderingTypes(): Promise<string> {
+    return this.#session.getRenderingTypes();
   }
 }

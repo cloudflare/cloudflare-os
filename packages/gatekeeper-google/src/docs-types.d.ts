@@ -83,6 +83,33 @@ export interface GoogleDocEditSession extends GoogleDocReadSession {
    * final table or other structural element before appending.
    */
   appendText(markdown: string, tabId?: string): Promise<void>;
+
+  /**
+   * Return tab `tabId` as Google Docs has it saved, alongside what `getContent()` returns for it,
+   * and the changes that make the difference. A change made here may reach Google Docs later;
+   * until it does it is pending, and `getContent()` already shows it.
+   */
+  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
+
+  /**
+   * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
+   * the order the placeholders appear.
+   */
+  listImages(tabId: string): Promise<GoogleDocImage[]>;
+
+  /**
+   * Read one image `listImages()` returned for tab `tabId`, or one its drawing names. Throws if
+   * the image is not readable or is larger than 10 MB.
+   */
+  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
+
+  /**
+   * Return the declarations of the reads that these types leave out, as TypeScript: `readDrawing()`,
+   * which gives what it takes to render a tab as Google Docs draws it, with its pages, headers,
+   * footers and wrapped images, and `readFont()`. Call it before writing or changing code that
+   * renders the document.
+   */
+  getRenderingTypes(): Promise<string>;
 }
 
 /**
@@ -157,33 +184,6 @@ export interface GoogleDocSession extends GoogleDocEditSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
-
-  /**
-   * Return tab `tabId` as Google Docs has it saved, alongside what `getContent()` returns for it,
-   * and the changes that make the difference. A change made here may reach Google Docs later;
-   * until it does it is pending, and `getContent()` already shows it.
-   */
-  getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
-
-  /**
-   * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
-   * the order the placeholders appear.
-   */
-  listImages(tabId: string): Promise<GoogleDocImage[]>;
-
-  /**
-   * Read one image `listImages()` returned for tab `tabId`, or one its drawing names. Throws if
-   * the image is not readable or is larger than 10 MB.
-   */
-  readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;
-
-  /**
-   * Return the declarations of the reads that these types leave out, as TypeScript: `readDrawing()`,
-   * which gives what it takes to render a tab as Google Docs draws it, with its pages, headers,
-   * footers and wrapped images, and `readFont()`. Call it before writing or changing code that
-   * renders the document.
-   */
-  getRenderingTypes(): Promise<string>;
 }
 
 /** An image, drawing or chart in a tab. */

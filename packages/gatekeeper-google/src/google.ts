@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff, type UiFile, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -47,8 +47,9 @@ import {
   DRIVE_ACTIONS, type DriveAction, type DriveActions, type DriveQueue,
 } from "./drive-actions";
 import {
-  DriveFileEditors, editorOfMimeType, editorOfTag, type DriveEditorName,
+  DriveFileEditors, editorOfMimeType, editorOfTag, parseDrivePreviewId, type DriveEditorName,
 } from "./drive-editors";
+import { PREVIEW_FILES } from "./previews/files";
 import {
   checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
   selectTab,
@@ -2514,6 +2515,16 @@ export class GoogleDriveGatekeeperImpl
   }
 
   /**
+   * The preview of the file an edit's `previewOf` names: the one its kind of file has when
+   * connected on its own, which draws what `openPreview()` opens. A Drive connection has none of
+   * its own.
+   */
+  async getPreviewUi(previewOf?: string): Promise<UiFile[]> {
+    if (previewOf === undefined) throw new Error("A Google Drive connection has a preview of each file it edits, and none of itself.");
+    return PREVIEW_FILES[parseDrivePreviewId(previewOf).editor];
+  }
+
+  /**
    * A read-only binding submits nothing, so it lists no kind. An exact-file binding lists the
    * kinds of its file's editor alone, once describe() has read which that is.
    */
@@ -2747,6 +2758,11 @@ const THROUGH_SHORTCUT =
 /** The Drive session methods that open a native file. */
 type NativeOpener = "openGoogleDoc" | "openGoogleSheet" | "openGoogleSlides";
 
+/** The method that opens each editor's files. */
+const PREVIEW_OPENERS: Record<DriveEditorName, NativeOpener> = {
+  docs: "openGoogleDoc", sheets: "openGoogleSheet", slides: "openGoogleSlides",
+};
+
 /**
  * Drive RPC session implementation, exported for workerd contract coverage. One class serves every
  * scope and access level. A native opener answers the session the binding's access hands out, a
@@ -2865,6 +2881,24 @@ export class GoogleDriveSessionImpl extends RpcTarget
         ? new GooglePresentationSessionImpl(
           this.#slidesApi, presentationId, queue, read, editors.slides(target, queue))
         : new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
+  }
+
+  /**
+   * Opens the file an edit's `previewOf` names, for its preview: through each folder between the
+   * connected one and the file, as an agent reaches it, so its place in the binding's scope is
+   * proven the same way. Not in the agent's types: an agent opens a file by the methods above.
+   */
+  async openPreview(previewOf: string) {
+    let { editor, folderIds, fileId } = parseDrivePreviewId(previewOf);
+    let opened: GoogleDriveSessionImpl[] = [];
+    try {
+      let folder: GoogleDriveSessionImpl = this;
+      for (let id of folderIds) opened.push(folder = await folder.openFolder(id));
+      return await folder[PREVIEW_OPENERS[editor]](fileId);
+    } finally {
+      // The file's session holds a queue of its own.
+      for (let session of opened) session[Symbol.dispose]();
+    }
   }
 
   async readPdf(fileId: string): Promise<DrivePdfText> {

@@ -64,6 +64,10 @@ describe("Slides definitions reused through Drive", () => {
         { label: "File name", kind: "inline", value: "Q3 deck" },
         ...own.fields ?? [],
       ],
+      // What a preview of the change is of: the file, by its kind and its way in.
+      previewOf: {
+        id: "slides:deck-1", title: "Q3 deck", url: "https://docs.google.com/presentation/d/deck-1/edit",
+      },
     });
     expect(own.descriptionIsComplete).toBe(true);
     expect(card.descriptionIsComplete).toBe(true);

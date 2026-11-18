@@ -29,6 +29,7 @@ import {
 import { obsContext } from "./observability";
 import { isLiftable, type DriveWriteTargetPayload } from "./drive-writes";
 import { QueuedChanges } from "./queued-changes";
+import { nativeFileUrl } from "./resources";
 import type { SheetsChangeQueue } from "./sheets";
 import {
   MARKER_RETENTION_MS, retainedMarkers, SHEETS_DEFINITIONS, type MarkerEntry, type SheetsHost,
@@ -94,11 +95,35 @@ type DriveEditor<H> = {
 /** The most the two fields that name the file take of a card, in UTF-8 bytes. */
 const FILE_FIELDS_BYTES = 4 * 1024;
 
+/** Each editor's files as the resource URLs name their kind. */
+const NATIVE_KINDS = { docs: "doc", sheets: "sheets", slides: "slides" } as const;
+
+/**
+ * The name an edit gives its file for a preview (`ActionDescription.previewOf`): the file's kind,
+ * then the folders between the connected one and the file, then the file. A folder session opens
+ * only its direct children, so the way in is part of the name.
+ */
+export function drivePreviewId(editor: DriveEditorName, target: DriveWriteTargetPayload): string {
+  return `${editor}:${[...target.folderIds?.slice(1) ?? [], target.fileId].join("/")}`;
+}
+
+/** What {@link drivePreviewId} named. Throws for any other text. */
+export function parseDrivePreviewId(
+  id: string,
+): { editor: DriveEditorName; folderIds: string[]; fileId: string } {
+  let [, editor, path] = /^(docs|sheets|slides):([\w-]+(?:\/[\w-]+)*)$/.exec(id) ?? [];
+  if (!path) throw new Error("This Google Drive connection has no preview by that name.");
+  let folderIds = path.split("/");
+  return { editor: editor as DriveEditorName, fileId: folderIds.pop()!, folderIds };
+}
+
 /**
  * `presentation` with the file named first: its ID and, when known, its name, both third-party
  * text built as fields. The card is complete only if the editor's card and the two fields are.
  */
-function withFile(target: DriveWriteTargetPayload, presentation: ActionPresentation): ActionPresentation {
+function withFile(
+  editor: DriveEditorName, target: DriveWriteTargetPayload, presentation: ActionPresentation,
+): ActionPresentation {
   let builder = new ActionDescriptionBuilder(undefined, { maxBytes: FILE_FIELDS_BYTES });
   builder.inline("File", target.fileId);
   if (target.fileName !== undefined) builder.inline("File name", target.fileName);
@@ -107,6 +132,11 @@ function withFile(target: DriveWriteTargetPayload, presentation: ActionPresentat
   return {
     ...rest,
     fields: [...fields, ...presentation.fields ?? []],
+    previewOf: {
+      id: drivePreviewId(editor, target),
+      title: target.fileName ?? target.fileId,
+      url: nativeFileUrl(NATIVE_KINDS[editor], target.fileId),
+    },
     ...(editorComplete === true && descriptionIsComplete === true
       ? { descriptionIsComplete: true } : {}),
   };
@@ -134,8 +164,8 @@ export function onDriveFile<P, H>(
     autoApprovable: definition.autoApprovable,
     delivery: definition.delivery,
     ...(definition.claimBeforeApply ? { claimBeforeApply: true } : {}),
-    describe: async ({ target, change }, drive) =>
-      withFile(target, await definition.describe(change, editor.host(drive, target.fileId))),
+    describe: async ({ target, change }, drive) => withFile(
+      editor.name, target, await definition.describe(change, editor.host(drive, target.fileId))),
     apply: async ({ target, change }, drive, ctx) => {
       await drive.editors.prove(editor.name, target, ctx.id);
       let result = await definition.apply(change, editor.host(drive, target.fileId), ctx);
