@@ -1052,7 +1052,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * makes one of that account's resources (a GitHub repository, an MCP server's endpoint) a
    * gatekeeper in a workspace; that is also how a workspace answers an agent's connection request
    * (see Overseer.acceptConnectionRequest()). Ambient gatekeepers need no connecting: see
-   * listAddableGatekeepers().
+   * listAddableGatekeepers(). A vendor that auto-provisions its account is left out while its mode
+   * is 'disabled'.
    */
   listGatekeeperVendors(filter?: GatekeeperVendorFilter): Promise<GatekeeperVendorInfo[]>;
 
@@ -1109,7 +1110,8 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now. They are
    * those set to 'optional' by the admin that the user hasn't added yet, such as Skills
-   * (`context`), Scheduled Tasks (`scheduler`) or Web Search (`websearch`). Rendered as an
+   * (`context`), Scheduled Tasks (`scheduler`) or Web Search (`websearch`). The admin gatekeeper
+   * (`instanceadmin`) is among them only for a user who is a deployment admin now. Rendered as an
    * "Available" section on the Connectors page. ('enabled' ones are already provisioned; 'disabled'
    * ones aren't offered.) Returns the same shape as listGatekeeperVendors (with no resources) so
    * the connect UI handles both identically, routing on `description.autoProvisionsAccount`.
@@ -1121,8 +1123,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * Ambient ones include Skills (`context`), Scheduled Tasks (`scheduler`) and Web Search
    * (`websearch`), and the account is this user's connected account, minted with no OAuth flow.
    * The new account appears via subscribeConnectedAccounts(); if the user already has one, the
-   * call does nothing. Throws for an unknown vendor, one whose mode is 'disabled', or one that
-   * isn't ambient.
+   * call does nothing. Throws for an unknown vendor, one whose mode is 'disabled', one that isn't
+   * ambient, or the admin gatekeeper (`instanceadmin`) when the user is not a deployment admin.
    */
   provisionAmbientAccount(vendorId: string): Promise<void>;
 
@@ -1404,8 +1406,13 @@ export type AdminResource = {
  * Provisioning mode for an auto-provisioning ("ambient") gatekeeper — one that mints a connected
  * account with no OAuth flow (VendorDescription.autoProvisionsAccount), e.g. the Context Library:
  *   - 'disabled': not available; no account is provisioned and any existing one is dormant.
- *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default).
- *   - 'enabled':  auto-provisioned for every user (forced); they can't remove it.
+ *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default,
+ *                 except for the admin gatekeeper).
+ *   - 'enabled':  auto-provisioned for every user who may hold the account (forced); they can't
+ *                 remove it.
+ * The admin gatekeeper (`instanceadmin`) differs in two ways: its account is offered and
+ * provisioned only for users who are deployment admins now, and its mode is 'disabled' until an
+ * admin sets one.
  */
 export const AMBIENT_GATEKEEPER_MODES = ['disabled', 'optional', 'enabled'] as const;
 export type AmbientGatekeeperMode = typeof AMBIENT_GATEKEEPER_MODES[number];
@@ -2242,7 +2249,9 @@ export interface AdminApi {
    * full three-state (disabled / optional / enabled); for an ordinary gatekeeper only 'disabled' /
    * 'enabled' are valid ('optional' is rejected). Soft enforcement: it doesn't revoke a capability a
    * gadget already holds, and 'disabled' leaves an ambient account's data dormant rather than deleting
-   * it.
+   * it. The admin gatekeeper (`instanceadmin`) starts 'disabled'; 'optional' offers it to each
+   * deployment admin and 'enabled' provisions it for every deployment admin, and for nobody else in
+   * either mode.
    */
   setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode): Promise<void>;
 

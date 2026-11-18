@@ -82,3 +82,33 @@ it.each([
     vi.unstubAllGlobals()
   }
 })
+
+it.each([
+  { vendorId: 'instanceadmin', optional: 'Deployment admins can add it themselves', enabled: 'On for every deployment admin automatically' },
+  { vendorId: 'library', optional: 'Users can add it themselves', enabled: 'On for everyone automatically' },
+])('says who receives the $vendorId account in each mode', async ({ vendorId, optional, enabled }) => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+  const vendor = { vendorId, displayName: vendorId, autoProvisions: true, ambientMode: 'optional' } satisfies AdminResourceVendor
+  const settings: AdminSettingsView = {
+    signupsEnabled: true, userSearchEnabled: false, snapshotSharingEnabled: true, siteName: '',
+    instanceInstructions: '',
+    announcement: '', banner: { text: '', color: 'neutral' }, accentColor: '', formats: [],
+    restrictedWebFetchHosts: [], restrictedWebFetchApprovals: false,
+    adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
+    adminAuditRetentionDays: { effective: 30, chosen: 30, min: 30 },
+    resourceVendors: [vendor],
+  }
+  getAdminApi.mockResolvedValue({ getSettings: async () => settings, getUpdateStatus: async () => null })
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+  try {
+    await act(async () => { root.render(<AdminPage />) })
+    expect(container.textContent).toContain(optional)
+    expect(container.textContent).toContain(enabled)
+  } finally {
+    await act(async () => { root.unmount() })
+    container.remove()
+    vi.unstubAllGlobals()
+  }
+})
