@@ -207,7 +207,7 @@ export const GadgetSettingsView = ({
                         : 'Its template may have a newer version. The update opens in a new chat, where you can try it before accepting it.'}
                   >
                     {templateUpdate.status === 'available' && <Tag className="shrink-0">Update available</Tag>}
-                    <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} onClick={templateUpdate.onUpdate}>Update…</Button>
+                    <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} disabled={templateUpdate.status === 'upToDate'} onClick={templateUpdate.onUpdate}>Update…</Button>
                   </SettingRow>
                 )}
               </SettingsGroup>
