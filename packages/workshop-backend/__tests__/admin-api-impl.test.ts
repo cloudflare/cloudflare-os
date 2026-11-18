@@ -5,6 +5,7 @@ import {
   getAdminAccessErrorCode,
   type AdminAccessRecord, type AdminUserAccessRecord, type AdminVia,
 } from "@gadgets/workshop-shared/api";
+import type { AdminWorkspaceViewTerms } from "../src/admin-access.js";
 import { AdminApiImpl } from "../src/admin-settings.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
@@ -153,11 +154,12 @@ describe("AdminApiImpl.inspectWorkspace", () => {
       expect(record).toMatchObject({
         kind: "workspace", admin: ADMIN, via: "cli", workspaceId: id, workspaceOwner: "ada",
         workspaceTitle: "Quarterly plan", method: "inspectWorkspace", reason: REASON,
-        access: "off", refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+        requested: "metadata", access: "off", exposed: "metadata",
+        refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
       });
       expect(Object.keys(record).toSorted()).toEqual([
-        "access", "admin", "args", "at", "kind", "method", "reason", "refused", "sessionId", "via",
-        "workspaceId", "workspaceOwner", "workspaceTitle",
+        "access", "admin", "args", "at", "exposed", "kind", "method", "reason", "refused",
+        "requested", "sessionId", "via", "workspaceId", "workspaceOwner", "workspaceTitle",
       ]);
       expect(Object.keys(record.args)).toEqual(["expiresAt"]);
       const expiresAt = Date.parse(record.args.expiresAt as string);
@@ -171,6 +173,19 @@ describe("AdminApiImpl.inspectWorkspace", () => {
       await rejection(api.inspectWorkspace(id, REASON));
       const [second] = callsTo("audit", "append")[1]!.args as [AdminAccessRecord];
       expect(second.sessionId).toBe(record.sessionId);
+    });
+
+    it("refuses an open for content as any other, for access being off", async () => {
+      const { mint, callsTo } = offDeployment(() => ({ title: "Quarterly plan", ownerId: "ada" }));
+      const error = await rejection(
+          mint().inspectWorkspace(workspaceId(), REASON, { access: "content" }));
+      expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.accessOff);
+      const [record] = callsTo("audit", "append")[0]!.args as [AdminAccessRecord];
+      expect(record).toMatchObject({
+        requested: "content", access: "off", exposed: "metadata",
+        refused: ADMIN_ACCESS_ERROR_CODES.accessOff,
+      });
+      expect(callsTo("overseers", "get")).toEqual([]);
     });
 
     it.each([
@@ -195,17 +210,67 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     });
   });
 
+  // The level in force is "content" only where the cap and the admins' choice both say so.
+  const CONTENT = {
+    config: { adminWorkspaceAccess: "content" as const },
+    vars: { ADMIN_WORKSPACE_ACCESS_MAX: "content" },
+  };
+
   it.each([
-    ["no cap and no options", undefined, undefined],
-    ["the cap at metadata", "metadata", undefined],
-    // The options declare no level, so one passed all the same is never read.
-    ["a level passed in the options", undefined, { access: "full" } as never],
-  ] as const)("opens a view with its channel and expiry alone, given %s",
-      async (_case, max, options) => {
+    ["no cap", { config: { adminWorkspaceAccess: "content" as const } }],
+    ["the cap at metadata", { ...CONTENT, vars: { ADMIN_WORKSPACE_ACCESS_MAX: "metadata" } }],
+    ["the admins' choice of metadata", { vars: CONTENT.vars }],
+  ])("records an open for content below that level, by %s, without reaching the workspace",
+      async (_case, setup) => {
+    const { mint, callsTo } = deployment({
+      ...setup,
+      handlers: { directory: { workspaceListing: () => ({ title: "Plan", ownerId: "ada" }) } },
+    });
+    const id = workspaceId();
+    const error = await rejection(mint().inspectWorkspace(id, REASON, { access: "content" }));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.contentOff);
+
+    const appends = callsTo("audit", "append");
+    expect(appends).toHaveLength(1);
+    const [record, retentionDays] = appends[0]!.args as [AdminAccessRecord, number];
+    expect(record).toStrictEqual({
+      kind: "workspace", at: expect.any(Date), admin: ADMIN, sessionId: expect.any(String),
+      via: "cli", workspaceId: id, workspaceOwner: "ada", workspaceTitle: "Plan",
+      method: "inspectWorkspace", args: { expiresAt: expect.any(String) }, reason: REASON,
+      requested: "content", access: "metadata", exposed: "metadata",
+      refused: ADMIN_ACCESS_ERROR_CODES.contentOff,
+    });
+    expect(retentionDays).toBeUndefined();
+    expect(callsTo("overseers", "get")).toEqual([]);
+  });
+
+  it("takes no option that is not a level a view opens at, and records nothing", () => {
+    const { mint, calls } = deployment(CONTENT);
+    const api = mint();
+    // The method's validator throws before the method runs.
+    for (const access of ["full", "off", "", 1]) {
+      expect(() => api.inspectWorkspace(workspaceId(), REASON, { access } as never))
+          .toThrow(TypeError);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["no cap and no options", {}, undefined, "metadata"],
+    ["the cap at metadata", { vars: { ADMIN_WORKSPACE_ACCESS_MAX: "metadata" } }, undefined,
+     "metadata"],
+    ["metadata asked for", {}, { access: "metadata" }, "metadata"],
+    // Content must be asked for: the level alone opens a metadata view.
+    ["the level at content and no options", CONTENT, undefined, "metadata"],
+    ["the level at content and metadata asked for", CONTENT, { access: "metadata" }, "metadata"],
+    // No grant is needed to open: the directory and the audit log are not asked either.
+    ["the level at content and content asked for", CONTENT, { access: "content" }, "content"],
+  ] as const)("opens a view with its channel, what it was asked for and its expiry, given %s",
+      async (_case, setup, options, access) => {
     // The view comes back wrapped in its validator, so it is told apart by what it answers.
     const view = { describe: async () => "the minted view" };
     const { mint, callsTo } = deployment({
-      vars: max === undefined ? {} : { ADMIN_WORKSPACE_ACCESS_MAX: max },
+      ...setup,
       handlers: { overseer: { openForAdmin: () => view } },
     });
     const id = workspaceId();
@@ -218,13 +283,14 @@ describe("AdminApiImpl.inspectWorkspace", () => {
     const opens = callsTo("overseer", "openForAdmin");
     expect(opens).toHaveLength(1);
     const [adminId, reason, sessionId, terms] = opens[0]!.args as
-        [string, string, string, { via: string; expiresAt: Date }];
+        [string, string, string, AdminWorkspaceViewTerms];
     expect([adminId, reason, typeof sessionId]).toEqual([ADMIN, REASON, "string"]);
-    expect(terms).toStrictEqual({ via: "api", expiresAt: terms.expiresAt });
+    expect(terms).toStrictEqual({ via: "api", access, expiresAt: terms.expiresAt });
     const lifetime = DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS * 1000;
     expect(terms.expiresAt.getTime()).toBeGreaterThanOrEqual(before + lifetime);
     expect(terms.expiresAt.getTime()).toBeLessThanOrEqual(after + lifetime);
     expect(callsTo("audit", "append")).toEqual([]);
+    expect(callsTo("directory", "workspaceListing")).toEqual([]);
   });
 
   it.each([
@@ -502,7 +568,7 @@ describe("AdminApiImpl audit log", () => {
       handlers: { audit: { list: () => page } },
     });
     const since = new Date("2026-01-01T00:00:00Z");
-    // `exposed` and `extra` are keys the query does not declare, so neither reaches the log.
+    // `extra` is a key the query does not declare, so it does not reach the log.
     expect(await mint().listAdminAudit({
       kind: "workspace", admin: ADMIN, method: "getChatState", workspace: "w", owner: "ada",
       exposed: "content", since, cursor: "next", extra: true,
@@ -510,7 +576,7 @@ describe("AdminApiImpl audit log", () => {
     expect(callsTo("audit", "list")[0]!.args).toStrictEqual([
       {
         kind: "workspace", admin: ADMIN, method: "getChatState", workspace: "w", owner: "ada",
-        since, cursor: "next", limit: 50,
+        exposed: "content", since, cursor: "next", limit: 50,
       },
       120,
     ]);

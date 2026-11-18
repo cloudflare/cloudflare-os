@@ -11,4 +11,5 @@ export const ACCESS_LEVEL_NAMES: Record<AdminWorkspaceAccess, string> = {
  * refused. */
 export const REFUSAL_NAMES: Record<NonNullable<AdminAccessRecord['refused']>, string> = {
   [ADMIN_ACCESS_ERROR_CODES.accessOff]: 'Access off',
+  [ADMIN_ACCESS_ERROR_CODES.contentOff]: 'Content off',
 }

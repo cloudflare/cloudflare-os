@@ -107,8 +107,7 @@ it("lets an admin inspect another user's workspace", async () => {
   const demoted = await adminApiOf(demotedApi);
   demotedView = fileScope.use(await demoted.inspectWorkspace(workspaceId, REASON));
   const description = await demotedView.describe();
-  expect(description).toMatchObject({ id: workspaceId });
-  expect(description).not.toHaveProperty("access");
+  expect(description).toMatchObject({ id: workspaceId, access: "metadata", grants: [] });
 });
 
 /** Expects `api` to refuse a write as a deployment without ADMIN_WORKSPACE_WRITES "on" does,

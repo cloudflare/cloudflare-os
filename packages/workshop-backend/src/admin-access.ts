@@ -18,10 +18,11 @@ import {
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
   MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   isAdminWorkspaceAccess,
-  type ActionLogEntry, type AdminSettingChange, type AdminSettingRecord, type AdminVia,
-  type AdminWorkspaceAccess, type AiChatAuthorInfo, type AiChatMetadata,
-  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
-  type NamedUser,
+  type ActionLogEntry, type AdminChatState, type AdminSettingChange, type AdminSettingRecord,
+  type AdminVia, type AdminViewAccess, type AdminWorkspaceAccess, type AdminWorkspaceMethod,
+  type AiChatAuthorInfo, type AiChatMetadata, type BlueprintGadgetSummary,
+  type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec, type NamedUser,
+  type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -157,6 +158,14 @@ export type AdminViewTerms = {
   expiresAt: Date;
 };
 
+/** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()): an admin
+ * view's terms, and what the view was opened for. */
+export type AdminWorkspaceViewTerms = AdminViewTerms & {
+  /** What the view was opened for (AdminWorkspaceInspectOptions.access): recorded on every
+   * record the view makes, and the most any of its calls returns. */
+  access: AdminViewAccess;
+};
+
 // --- Validation ---
 
 function isWholeNumberIn(value: number, min: number, max: number): boolean {
@@ -231,6 +240,40 @@ export function assertAdminViewLive(terms: AdminViewTerms, adminId: string, env:
     throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
   }
 }
+
+/**
+ * What each view method's answer can hold, which decides whether its call looks for a grant:
+ *   - "metadata": metadata alone. The call never looks for a grant.
+ *   - "mixed":    content under a grant and metadata without one. Without a grant it answers as
+ *                 the "metadata" level does; it is not refused.
+ *   - "content":  content alone.
+ * One table over every AdminWorkspaceMethod, so that a method added to ADMIN_WORKSPACE_METHODS
+ * does not compile until it is classified: AdminWorkspaceViewImpl.#call reads the kind from here
+ * and from nowhere else.
+ */
+export const ADMIN_METHOD_ANSWERS = {
+  // The open itself, which AdminWorkspaceViewImpl.open() records through #call as the view's
+  // first call: its record never holds content, and a view is opened for content without a
+  // grant being looked for.
+  inspectWorkspace: "metadata",
+  describe: "mixed",
+  listChats: "mixed",
+  getChatState: "mixed",
+  listChatAttachments: "metadata",
+  listActions: "mixed",
+  listFiles: "metadata",
+  getCommitLog: "mixed",
+  listFilesAtCommit: "metadata",
+  listChangedPaths: "metadata",
+  listPendingChanges: "metadata",
+  listGatekeepers: "mixed",
+  listObservers: "metadata",
+  listObserverRequirements: "metadata",
+  listShareLinks: "metadata",
+  listAutoApprovals: "metadata",
+  listBlueprints: "mixed",
+  getDiagnostics: "metadata",
+} as const satisfies Record<AdminWorkspaceMethod, "metadata" | "mixed" | "content">;
 
 // --- Audit text ---
 
@@ -384,20 +427,49 @@ export function adminSettingChange(setting: string, key: string | undefined, bef
   return change;
 }
 
-// --- What an AdminWorkspaceView withholds ---
+// --- What a call made without a grant withholds, and whether an answer holds any of it ---
+//
+// Each *HoldsContent() predicate takes what a view returns, with a grant or without, and says
+// whether it holds something the "metadata" level withholds (AdminAccessRecord.exposed). Present
+// but empty is not content, so each is false for anything its withholder returns.
 
-/** A copy of `meta` as an AdminWorkspaceView lists it: without `queuedSteers`. */
+/** A copy of `meta` as a call without a grant lists it: without `queuedSteers`. */
 export function withholdChatContent(meta: AiChatMetadata): AiChatMetadata {
   let { queuedSteers: _queuedSteers, ...rest } = meta;
   return rest;
 }
 
-/** A copy of `commit` as an AdminWorkspaceView lists it: `message` emptied. */
+/** Whether `meta` holds what withholdChatContent() drops: a queued steer. */
+export function chatHoldsContent(meta: AiChatMetadata): boolean {
+  return (meta.queuedSteers?.length ?? 0) > 0;
+}
+
+/** A copy of `state` as a call without a grant reports it: each queued call without its
+ * `argsSummary`. */
+export function withholdChatStateContent(state: AdminChatState): AdminChatState {
+  return {
+    ...state,
+    queuedCalls: state.queuedCalls.map(({ argsSummary: _argsSummary, ...call }) => call),
+  };
+}
+
+/** Whether `state` holds what withholdChatStateContent() drops: a queued call's argument
+ * summary. */
+export function chatStateHoldsContent(state: AdminChatState): boolean {
+  return state.queuedCalls.some(call => (call.argsSummary ?? "") !== "");
+}
+
+/** A copy of `commit` as a call without a grant lists it: `message` emptied. */
 export function withholdCommitContent(commit: CommitInfo): CommitInfo {
   return { ...commit, message: "" };
 }
 
-/** A copy of `entry` as an AdminWorkspaceView lists it: `description.description` emptied for an
+/** Whether `commit` holds what withholdCommitContent() empties: a message. */
+export function commitHoldsContent(commit: CommitInfo): boolean {
+  return commit.message !== "";
+}
+
+/** A copy of `entry` as a call without a grant lists it: `description.description` emptied for an
  * action, observation or hook entry, and `description.fields` dropped; never mutates `entry`. */
 export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
   switch (entry.type) {
@@ -414,24 +486,51 @@ export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
   }
 }
 
-/** A copy of `hook` as an AdminWorkspaceView lists it: `description.description` emptied. */
+/** Whether `entry` holds what withholdActionContent() withholds: a description, or a field. */
+export function actionHoldsContent(entry: ActionLogEntry): boolean {
+  return entry.description.description !== "" ||
+      (entry.type !== "bindHook" && (entry.description.fields?.length ?? 0) > 0);
+}
+
+/** A copy of `hook` as a call without a grant lists it: `description.description` emptied. */
 export function withholdHookContent(hook: BoundHookInfo): BoundHookInfo {
   return { ...hook, description: { ...hook.description, description: "" } };
 }
 
-/** A copy of `spec` as an AdminWorkspaceView lists it: without `configuration`, which is text the
- * agent that created the resource wrote. */
+/** Whether `hook` holds what withholdHookContent() empties: a description. */
+export function hookHoldsContent(hook: BoundHookInfo): boolean {
+  return hook.description.description !== "";
+}
+
+/** A copy of `spec` as a call without a grant lists it: without `configuration`, which is text
+ * the agent that created the resource wrote. */
 export function withholdCreationContent(spec: GatekeeperCreationSpec): GatekeeperCreationSpec {
   if (spec.type !== "gatekeeper") return spec;
   let { configuration: _configuration, ...rest } = spec;
   return rest;
 }
 
-/** A copy of `blueprint` as an AdminWorkspaceView lists it: `id` emptied, and `screenshotUrl`,
+/** Whether `spec` holds what withholdCreationContent() drops: a configuration. */
+export function creationHoldsContent(spec: GatekeeperCreationSpec): boolean {
+  return spec.type === "gatekeeper" && (spec.configuration ?? "") !== "";
+}
+
+/** Whether `summary` holds what describe() leaves out without a grant: the blueprint a gadget
+ * follows (`upstream: {}` marks a gadget built from scratch, which follows none). */
+export function workpieceHoldsContent(summary: WorkpieceSummary): boolean {
+  return summary.type === "gadget" && summary.upstream?.blueprintId !== undefined;
+}
+
+/** A copy of `blueprint` as a call without a grant lists it: `id` emptied, and `screenshotUrl`,
  * which holds the id, left out. A blueprint's id is a share link to its code, which is why
- * describe() leaves a gadget's `upstream` out too. */
+ * describe() leaves a gadget's `upstream` out without a grant too. */
 export function withholdBlueprintContent(blueprint: BlueprintGadgetSummary)
     : BlueprintGadgetSummary {
   let { screenshotUrl: _screenshotUrl, ...rest } = blueprint;
   return { ...rest, id: "" };
+}
+
+/** Whether `blueprint` holds what withholdBlueprintContent() empties: an id. */
+export function blueprintHoldsContent(blueprint: BlueprintGadgetSummary): boolean {
+  return blueprint.id !== "";
 }

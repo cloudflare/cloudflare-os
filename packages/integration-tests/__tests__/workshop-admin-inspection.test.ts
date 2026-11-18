@@ -310,7 +310,7 @@ it("refuses every admin method to a non-admin", async () => {
   // The bypass is on the Overseer's Durable Object, never on a capability a user holds.
   const looseWs = ws as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
   await expect(looseWs.openForAdmin!(ownerName, REASON, "session", {
-    via: "api", expiresAt: new Date(Date.now() + 60_000),
+    via: "api", access: "metadata", expiresAt: new Date(Date.now() + 60_000),
   })).rejects.toThrow();
 });
 
@@ -393,8 +393,7 @@ it("records an inspection apart from the workspace, where its members never see 
   {
     using view = await admin.inspectWorkspace(id, REASON);
     const description = await view.describe();
-    expect(description).toMatchObject({ id, title });
-    expect(description).not.toHaveProperty("access");
+    expect(description).toMatchObject({ id, title, access: "metadata", grants: [] });
     await view.listChats();
     await view.listActions();
     // The roster the members see: the owner's session is on it, and the view never is. The
@@ -634,25 +633,34 @@ it("lists attachments, commits and a draft's paths without their content", async
   }
 });
 
-it("has no level above metadata", async () => {
+it("opens a metadata view unless content is asked for, and takes no option or level that is not one",
+    async () => {
   using stack = new DisposableStack();
   const { id, gadgetId, chatId, head, attachmentChatId, attachmentId, draftChatId } =
       await populatedWorkspace(stack, "nolevel");
 
-  // An inspection has no level to ask for: the option is not one, and the view is as any other.
-  using view = await admin.inspectWorkspace(id, REASON, { access: "full" } as never);
+  // A value that is not one a view opens at is not of the option's type: nothing is opened, and
+  // nothing recorded.
+  await expect(admin.inspectWorkspace(id, REASON, { access: "full" } as never))
+      .rejects.toThrow(TypeError);
+  expect(await workspaceRecords(id)).toEqual([]);
+
+  // Opened without the option, a view is one for metadata.
+  using view = await admin.inspectWorkspace(id, REASON);
   const description = await view.describe();
-  expect(description).not.toHaveProperty("access");
+  expect(description.access).toBe("metadata");
+  expect(description.grants).toEqual([]);
   expect(description.workpieces.find(workpiece => workpiece.id === gadgetId))
       .not.toHaveProperty("upstream");
   const logged = await workspaceRecords(id);
   expect(logged.map(record => record.method)).toEqual(["describe", "inspectWorkspace"]);
   for (const record of logged) {
-    expect(record).toMatchObject({ access: "metadata" });
-    expect(Object.keys(record)).not.toContain("requested");
+    expect(record).toMatchObject(
+        { requested: "metadata", access: "metadata", exposed: "metadata" });
+    expect(record).not.toHaveProperty("grantId");
   }
 
-  // Nor is there one to set. The value is not of the setter's type, so the refusal is a
+  // Nor is "full" a level to set. The value is not of the setter's type, so the refusal is a
   // TypeError rather than the error of a level above the deployment's maximum, and nothing is
   // stored or recorded.
   const { adminWorkspaceAccess } = await admin.getSettings();
@@ -754,10 +762,12 @@ it("records each call into a workspace", async () => {
         workspaceId: id, workspaceOwner: ownerName, workspaceTitle: title, reason: REASON,
         access: "metadata",
       });
-      // A record says who called what, when and why, and nothing of what the call returned.
+      // A record says who called what, when and why, what the view was opened for, and of what
+      // the call returned only whether it held content. None ran under a grant.
+      expect(record).toMatchObject({ requested: "metadata", exposed: "metadata" });
       expect(Object.keys(record).toSorted(), record.method).toEqual([
-        "access", "admin", "args", "at", "kind", "method", "reason", "sessionId", "via",
-        "workspaceId", "workspaceOwner", "workspaceTitle",
+        "access", "admin", "args", "at", "exposed", "kind", "method", "reason", "requested",
+        "sessionId", "via", "workspaceId", "workspaceOwner", "workspaceTitle",
       ]);
     }
 

@@ -6,7 +6,7 @@
 
 import {
   ADMIN_ACCESS_ERROR_CODES, createAdminAccessError,
-  type AdminAccessRecord, type AdminUserAccessRecord,
+  type AdminAccessRecord, type AdminUserAccessRecord, type AdminWorkspaceAccess,
 } from "@gadgets/workshop-shared/api";
 import { adminAccessPolicy } from "./admin-access.js";
 import { readAdminConfig } from "./admin-config.js";
@@ -41,10 +41,10 @@ export type AdminViewCallHost = {
  * view.audits.getByName("") with no retention (the policy comes from the KV mirror, and a stale one
  * must not prune); an append that fails is logged through view.logger (warn, event
  * "admin.audit.append.failed", operation: the record's method, error) and rethrown, so the call
- * returns nothing.
+ * returns nothing. `read` is given the level in force, which is never "off".
  */
-export async function adminViewCall<T>(view: AdminViewCallHost, read: () => T | Promise<T>)
-    : Promise<T> {
+export async function adminViewCall<T>(view: AdminViewCallHost,
+    read: (access: AdminWorkspaceAccess) => T | Promise<T>): Promise<T> {
   view.assertLive();
   let config = await readAdminConfig(view.env());
   // Checked again, with nothing awaited from here to a refusal's record: the read may have
@@ -52,14 +52,15 @@ export async function adminViewCall<T>(view: AdminViewCallHost, read: () => T | 
   // must stay empty, with nothing appended for it deployment-wide either.
   view.assertLive();
 
-  if (adminAccessPolicy(config, view.env()).access === "off") {
+  let { access } = adminAccessPolicy(config, view.env());
+  if (access === "off") {
     await append(view, ADMIN_ACCESS_ERROR_CODES.accessOff);
     throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
   }
 
   let answer: T;
   try {
-    answer = await read();
+    answer = await read(access);
   } catch (err) {
     view.assertLive();
     await append(view);

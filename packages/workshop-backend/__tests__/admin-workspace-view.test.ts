@@ -1,29 +1,34 @@
 // A deployment admin's read-only view of a workspace (OverseerDurableObject.openForAdmin() and
 // AdminWorkspaceView): what it refuses before recording anything, what it records and where, what
-// it withholds, how live views follow the deployment's setting, and that nothing it does reaches
-// the workspace's members or its connections.
+// it withholds, what it returns under a grant and how it looks for one, how live views follow the
+// deployment's setting, and that nothing it does reaches the workspace's members or its
+// connections.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding) whose impl.env is replaced
 // per test: the admin path must read the environment only through it. The deployment-wide log is
 // the real AdminAuditDurableObject the Overseer reaches through ctx.exports, read back through the
 // TEST_ADMIN_AUDIT binding.
 
-import { describe, expect, it } from "vitest";
-import { env } from "cloudflare:workers";
+import { describe, expect, it, vi } from "vitest";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcTarget } from "capnweb";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ACCOUNT_CACHE_SECONDS, ADMIN_WORKSPACE_METHODS,
+  DEFAULT_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_GRANTS_LISTED, getAdminAccessErrorCode,
+  type AdminAccessGrant, type AdminAccessRecord, type AdminAutoApproval,
+  type AdminChatAttachment, type AdminChatState,
   type AdminObserver, type AdminPendingChange, type AdminWorkspaceAccess,
   type AdminWorkspaceView, type AiChatAuthorInfo,
-  type BlueprintGadgetSummary, type ChatGadgetPin, type ObserverBindingNeed, type ShareLinkInfo,
+  type BlueprintGadgetSummary, type ChatGadgetPin, type ObserverBindingNeed, type Overseer,
+  type ShareLinkInfo,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
-import type { AdminViewTerms } from "../src/admin-access.js";
+import { ADMIN_METHOD_ANSWERS, type AdminWorkspaceViewTerms } from "../src/admin-access.js";
+import { newAdminGrant } from "../src/admin-grants.js";
 import { encodeGitTree, gitObjectOid } from "../src/git-codec.js";
 import { ADMIN_CONFIG_KEY } from "../src/storage-schema/blueprints-kv.js";
 import { putAction } from "./fixtures.js";
@@ -125,6 +130,9 @@ type Workspace = {
   config: { adminWorkspaceAccess: AdminWorkspaceAccess; adminAuditRetentionDays: number };
   // Replaces the KV read when set, so a test can hold a call at its config read.
   kvGet?: (key: string) => Promise<string | null>;
+  // The owner's account, as the workspace asks it for the owner's account-wide grant: the user
+  // object asked each time, and what it answers.
+  account: { asked: string[]; answer: () => unknown };
   gadgetId: number;
   // The seeded gadget's head, and the head's parent, whose files differ.
   commitId: string;
@@ -159,6 +167,7 @@ async function withWorkspace(fn: (ws: Workspace) => Promise<void>,
     let ws: Workspace = {
       impl, instance, state, id: state.id.toString(),
       config: { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: RETENTION },
+      account: { asked: [], answer: () => null },
       gadgetId: -1, commitId: "", parentCommitId: "", orphanCommitId: "", attachmentOid: "",
       attachmentSequence: -1, lastMessageAt: new Date(NaN),
     };
@@ -176,8 +185,12 @@ async function seed(ws: Workspace): Promise<void> {
   impl.users = {
     idFromString: (id: string) => id,
     idFromName: (name: string) => name,
-    get: () => ({
-      whoami: async () => OWNER, getGadget: async () => null,
+    get: (id: string) => ({
+      id, whoami: async () => OWNER, getGadget: async () => null,
+      liveAccountAdminGrant: async () => {
+        ws.account.asked.push(id);
+        return ws.account.answer();
+      },
       // What the workspace tells its owner's account of members' activity, taken and dropped.
       messageArrived: async () => {}, setWorkspaceLastActive: async () => {},
       getWorkspace: async () => null, syncWorkspaceOutputs: async () => {},
@@ -517,15 +530,19 @@ function addIdleChat(ws: Workspace): void {
       { id: IDLE_CHAT_ID, title: "Idle", started: new Date(0), lastActive: new Date(0) });
 }
 
-// The seeded chat's state once seedTurn() has run, as a view reports it.
-function seededChatState(ws: Workspace): AdminChatState {
+// The seeded chat's state once seedTurn() has run, as a view reports it: with the queued call's
+// argument summary when the call ran under a grant.
+function seededChatState(ws: Workspace, content = false): AdminChatState {
   return {
     turn: {
       modelId: MODEL_ID, initiator: OWNER, callbackInitiated: false, resumeAttempts: 0,
       paused: true,
     },
     lastMessageAt: ws.lastMessageAt,
-    queuedCalls: [{ callId: QUEUED_CALL_ID, methodName: "summarize", initiatorModelId: MODEL_ID }],
+    queuedCalls: [{
+      callId: QUEUED_CALL_ID, methodName: "summarize", initiatorModelId: MODEL_ID,
+      ...(content ? { argsSummary: WITHHELD.callSummary } : {}),
+    }],
     pendingActionIds: [0, 1, 2],
   };
 }
@@ -549,13 +566,59 @@ function seededAttachments(ws: Workspace): AdminChatAttachment[] {
   ];
 }
 
-function terms(overrides: Partial<AdminViewTerms> = {}): AdminViewTerms {
-  return { via: "api", expiresAt: new Date(Date.now() + 600_000), ...overrides };
+function terms(overrides: Partial<AdminWorkspaceViewTerms> = {}): AdminWorkspaceViewTerms {
+  return {
+    via: "api", access: "metadata", expiresAt: new Date(Date.now() + 600_000), ...overrides,
+  };
 }
 
-function open(ws: Workspace, overrides: Partial<AdminViewTerms> = {},
+function open(ws: Workspace, overrides: Partial<AdminWorkspaceViewTerms> = {},
               admin = ADMIN, reason = REASON) {
   return ws.instance.openForAdmin(admin, reason, "session-1", terms(overrides));
+}
+
+// Puts the level in force at "content": the cap, which only impl.env raises (the pool's own env
+// sets none), and the admins' choice.
+function allowContent(ws: Workspace): void {
+  setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "content" });
+  ws.config.adminWorkspaceAccess = "content";
+}
+
+// A view opened for content.
+function openForContent(ws: Workspace, overrides: Partial<AdminWorkspaceViewTerms> = {}) {
+  return open(ws, { access: "content", ...overrides });
+}
+
+// A live grant the owner gave on this workspace, put in its storage.
+function putGrant(ws: Workspace, overrides: Partial<AdminAccessGrant> = {}): AdminAccessGrant {
+  let grant = {
+    ...newAdminGrant({ source: "owner", scope: "workspace", grantedBy: OWNER }), ...overrides,
+  };
+  ws.impl.storage.adminGrants.put(grant);
+  return grant;
+}
+
+// A live account-wide grant, as the owner's account answers with it.
+function accountGrant(overrides: Partial<AdminAccessGrant> = {}): AdminAccessGrant {
+  return {
+    ...newAdminGrant({ source: "owner", scope: "account", grantedBy: OWNER }), ...overrides,
+  };
+}
+
+// The keys the workspace stores its grants under.
+function grantKeys(ws: Workspace): string[] {
+  return storageKeys(ws).filter(key => key.startsWith("adminGrants:"));
+}
+
+// The methods whose answer holds content under a grant, and those that answer with metadata
+// alone, the open left out.
+const MIXED_METHODS = ADMIN_WORKSPACE_METHODS.filter(m => ADMIN_METHOD_ANSWERS[m] === "mixed");
+const METADATA_METHODS = ADMIN_WORKSPACE_METHODS.filter(
+    m => ADMIN_METHOD_ANSWERS[m] === "metadata" && m !== "inspectWorkspace");
+
+// The seed's chat as listChats() lists it.
+async function seededChat(view: AdminWorkspaceView) {
+  return (await view.listChats()).find(chat => chat.id === CHAT_ID)!;
 }
 
 // The code a refusal carries, failing the test if `promise` resolves.
@@ -639,7 +702,7 @@ describe("opening an admin view", () => {
       kind: "workspace", workspaceId: ws.id, workspaceOwner: OWNER.id, at: expect.any(Date),
       admin: ADMIN, sessionId: "session-1", via: "cli", workspaceTitle: "Quarterly plan",
       method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason: REASON,
-      access: "metadata",
+      requested: "metadata", access: "metadata", exposed: "metadata",
     });
   }));
 
@@ -714,7 +777,12 @@ describe("a metadata view", () => {
     // above, and its record asserted.
     expect(new Set(records.map(r => r.method))).toStrictEqual(new Set(ADMIN_WORKSPACE_METHODS));
     expect(new Set(records.map(r => r.reason))).toStrictEqual(new Set([REASON]));
-    for (let record of records) expect(record).not.toHaveProperty("exposed");
+    for (let record of records) {
+      expect(record).toMatchObject({ requested: "metadata", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+    }
+    // A metadata view never asks the owner's account for a grant.
+    expect(ws.account.asked).toStrictEqual([]);
   }));
 
   it("stores each of its records with exposed 'metadata' in the audit table",
@@ -832,9 +900,11 @@ describe("a metadata view", () => {
       }],
     });
     expect(Object.keys(description).toSorted()).toStrictEqual([
-      "collaborators", "containsRestrictedData", "defaultGadgetId", "expiresAt", "id", "owner",
-      "ownerInvitesOnly", "title", "totalCost", "workpieces",
+      "access", "collaborators", "containsRestrictedData", "defaultGadgetId", "expiresAt",
+      "grants", "id", "owner", "ownerInvitesOnly", "title", "totalCost", "workpieces",
     ]);
+    expect(description.access).toBe("metadata");
+    expect(description.grants).toStrictEqual([]);
     let gadget = description.workpieces.find(w => w.id === ws.gadgetId)!;
     expect(gadget).toMatchObject({ type: "gadget", title: "Notes", commitId: ws.commitId });
     expect(gadget).not.toHaveProperty("upstream");
@@ -1860,4 +1930,588 @@ describe("sharing reads", () => {
     await view.getDiagnostics();
     expect(reached).toBe(0);
   }));
+});
+
+// One call of each mixed method on the seed, in the audit's order.
+async function mixedAnswers(ws: Workspace, view: AdminWorkspaceView) {
+  return {
+    describe: await view.describe(),
+    listChats: await view.listChats(),
+    getChatState: await view.getChatState(CHAT_ID),
+    listActions: await view.listActions(),
+    getCommitLog: await view.getCommitLog(ws.commitId),
+    listGatekeepers: await view.listGatekeepers(),
+    listBlueprints: await view.listBlueprints(),
+  };
+}
+
+// What the seed stores of each thing a mixed method returns under a grant and withholds without
+// one. The rest of WITHHELD is what no method of the view returns.
+const MIXED_CONTENT = [
+  WITHHELD.steer, WITHHELD.callSummary, WITHHELD.observation, WITHHELD.observationLabel,
+  WITHHELD.observationValue, WITHHELD.action, WITHHELD.actionLabel, WITHHELD.actionValue,
+  WITHHELD.hookEntry, WITHHELD.hook, WITHHELD.configuration, WITHHELD.upstream,
+  WITHHELD.headMessage, WITHHELD.parentMessage, BLUEPRINT_ID, "/blueprint-screenshot/",
+];
+
+describe("a content view", () => {
+  it.each([
+    ["a live grant in the workspace", (ws: Workspace) => { putGrant(ws); }],
+    ["a live account-wide grant", (ws: Workspace) => { ws.account.answer = () => accountGrant(); }],
+    ["no grant anywhere", () => {}],
+  ])("is opened without a grant being looked for, with %s", (_case, arrange) =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    arrange(ws);
+    let expiresAt = new Date(Date.now() + 600_000);
+    let view = await openForContent(ws, { expiresAt });
+
+    expect(ws.account.asked).toStrictEqual([]);
+    // Strictly: the open's record carries no grant, the workspace's live one included.
+    expect(await deploymentRecords(ws)).toStrictEqual([{
+      kind: "workspace", workspaceId: ws.id, workspaceOwner: OWNER.id, at: expect.any(Date),
+      admin: ADMIN, sessionId: "session-1", via: "api", workspaceTitle: "Quarterly plan",
+      method: "inspectWorkspace", args: { expiresAt: expiresAt.toISOString() }, reason: REASON,
+      requested: "content", access: "content", exposed: "metadata",
+    }]);
+
+    // The first call that could return content is the one that looks: in the workspace's own
+    // storage, and in the owner's account only when that holds no live grant.
+    await view.listChats();
+    expect(ws.account.asked).toStrictEqual(grantKeys(ws).length ? [] : [OWNER_USER_ID]);
+  }));
+
+  it("answers with metadata alone, unrefused, while no grant is live",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    let withheld = await mixedAnswers(ws, await open(ws));
+    allowContent(ws);
+    let view = await openForContent(ws);
+    let answers = await mixedAnswers(ws, view);
+
+    // As a metadata view answers, but for what the view says of itself.
+    let { expiresAt } = answers.describe;
+    expect(answers).toStrictEqual(
+        { ...withheld, describe: { ...withheld.describe, access: "content", expiresAt } });
+    let records = (await deploymentRecords(ws)).slice(-MIXED_METHODS.length);
+    expect(records.map(r => [r.method, r.requested, r.access, r.exposed, r.refused]))
+        .toStrictEqual(MIXED_METHODS.map(
+            method => [method, "content", "content", "metadata", undefined]));
+    for (let record of records) expect(record).not.toHaveProperty("grantId");
+    // An answer that there is no grant is not kept: each call asked the owner's account.
+    expect(ws.account.asked).toStrictEqual(MIXED_METHODS.map(() => OWNER_USER_ID));
+  }));
+
+  it("returns what metadata withholds under a grant in the workspace, and records it",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    addIdleChat(ws);
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+    let answers = await everyAnswer(ws, view);
+
+    let answered = JSON.stringify(answers);
+    for (let sentinel of MIXED_CONTENT) expect(answered, sentinel).toContain(sentinel);
+    // What no method of the view returns stays out: a message, a call's raw arguments, a file.
+    for (let sentinel of [WITHHELD.message, WITHHELD.callArgument, WITHHELD.file]) {
+      expect(answered, sentinel).not.toContain(sentinel);
+    }
+
+    expect((await seededChat(view)).queuedSteers)
+        .toStrictEqual([{ text: WITHHELD.steer, author: OWNER }]);
+    expect(answers.getChatState).toStrictEqual(seededChatState(ws, true));
+    expect(answers.describe.access).toBe("content");
+    expect(answers.describe.grants).toStrictEqual([grant]);
+    expect(answers.describe.workpieces.find(w => w.id === ws.gadgetId))
+        .toMatchObject({ upstream: { blueprintId: WITHHELD.upstream } });
+    let action = answers.listActions.entries.find(entry => entry.type === "action")!;
+    expect(action.description).toMatchObject({
+      description: WITHHELD.action,
+      fields: [{ label: WITHHELD.actionLabel, value: WITHHELD.actionValue }],
+    });
+    expect(answers.getCommitLog.map(commit => commit.message.trim()))
+        .toStrictEqual([WITHHELD.headMessage, WITHHELD.parentMessage]);
+    let [gatekeeper] = answers.listGatekeepers;
+    expect(gatekeeper.creationSpec).toMatchObject({ configuration: WITHHELD.configuration });
+    expect(gatekeeper.hooks.map(hook => hook.description.description))
+        .toStrictEqual([WITHHELD.hook]);
+    expect(answers.listBlueprints.map(blueprint => blueprint.id)).toStrictEqual([BLUEPRINT_ID]);
+
+    // Answers that hold nothing "metadata" withholds: the call ran under the grant all the same.
+    expect((await view.listActions({ beforeId: 0 })).entries).toStrictEqual([]);
+    expect((await view.getChatState(IDLE_CHAT_ID)).queuedCalls).toStrictEqual([]);
+    ws.impl.storage.blueprints.delete(BLUEPRINT_ID);
+    expect(await view.listBlueprints()).toStrictEqual([]);
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.method, r.exposed, r.grantId])).toStrictEqual([
+      ...ADMIN_WORKSPACE_METHODS.filter(method => method !== "inspectWorkspace").map(method =>
+          ADMIN_METHOD_ANSWERS[method] === "mixed"
+              ? [method, "content", grant.id] : [method, "metadata", undefined]),
+      // seededChat()'s listing.
+      ["listChats", "content", grant.id],
+      ["listActions", "metadata", grant.id],
+      ["getChatState", "metadata", grant.id],
+      ["listBlueprints", "metadata", grant.id],
+    ]);
+    for (let record of records) {
+      expect(record).toMatchObject({ requested: "content", access: "content" });
+      expect(record).not.toHaveProperty("refused");
+      expect("grantId" in record, record.method)
+          .toBe(ADMIN_METHOD_ANSWERS[record.method] === "mixed");
+    }
+    // The workspace's own grant answers: the owner's account is not asked.
+    expect(ws.account.asked).toStrictEqual([]);
+  }));
+
+  it("returns metadata alone through a view opened for metadata, whatever grant is live",
+      () => withWorkspace(async ws => {
+    seedTurn(ws);
+    allowContent(ws);
+    let grant = putGrant(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await open(ws);
+    let answered = JSON.stringify(await everyAnswer(ws, view));
+    for (let sentinel of Object.values(WITHHELD)) expect(answered, sentinel).not.toContain(sentinel);
+
+    // Nor does it ask the owner's account when the workspace holds no grant of its own.
+    ws.impl.storage.adminGrants.delete(grant.id);
+    await mixedAnswers(ws, view);
+    expect(ws.account.asked).toStrictEqual([]);
+    for (let record of await deploymentRecords(ws)) {
+      expect(record).toMatchObject({ requested: "metadata", access: "content", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+    }
+  }));
+
+  it("never looks for a grant for a method that answers with metadata alone",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await openForContent(ws);
+    await view.listChatAttachments(CHAT_ID);
+    await view.listFiles(ws.gadgetId);
+    await view.listFilesAtCommit(ws.parentCommitId);
+    await view.listChangedPaths(ws.parentCommitId, ws.commitId);
+    await view.listPendingChanges(DRAFT_CHAT_ID);
+    await view.listObservers();
+    await view.listObserverRequirements("workspace");
+    await view.listShareLinks();
+    await view.listAutoApprovals();
+    await view.getDiagnostics();
+
+    expect(ws.account.asked).toStrictEqual([]);
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => r.method)).toStrictEqual(METADATA_METHODS);
+    for (let record of records) {
+      expect(record).toMatchObject({ requested: "content", access: "content", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+    }
+  }));
+
+  it("withholds from its very next call once the grant is revoked, or has expired",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+    let revoked = putGrant(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+    ws.impl.storage.adminGrants.put({ ...revoked, revokedAt: new Date(), revokedBy: OWNER });
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+
+    let expired = putGrant(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+    ws.impl.storage.adminGrants.put({ ...expired, expiresAt: new Date(Date.now() - 1) });
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.exposed, r.grantId]))
+        .toStrictEqual([
+          ["content", revoked.id], ["metadata", undefined],
+          ["content", expired.id], ["metadata", undefined],
+        ]);
+  }));
+
+  it("withholds from its next call once the level in force is below content, looking for no grant",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = () => accountGrant();
+    let view = await openForContent(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+    expect(ws.account.asked).toHaveLength(1);
+
+    // The admins' choice drops, with the grant still live.
+    ws.config.adminWorkspaceAccess = "metadata";
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+    // So does the cap, whatever the admins chose.
+    ws.config.adminWorkspaceAccess = "content";
+    setEnv(ws);
+    expect(await seededChat(view)).not.toHaveProperty("queuedSteers");
+    expect(ws.account.asked).toHaveLength(1);
+
+    allowContent(ws);
+    expect((await seededChat(view)).queuedSteers).toBeDefined();
+
+    let records = (await deploymentRecords(ws)).slice(1);
+    expect(records.map(r => [r.requested, r.access, r.exposed, "grantId" in r])).toStrictEqual([
+      ["content", "content", "content", true],
+      ["content", "metadata", "metadata", false],
+      ["content", "metadata", "metadata", false],
+      ["content", "content", "content", true],
+    ]);
+  }));
+
+  it("records a read that fails under a grant as an attempt that exposed no content",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grant = putGrant(ws);
+    let view = await openForContent(ws);
+    await expect(view.getChatState(999)).rejects.toThrow();
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({
+      method: "getChatState", args: { chatId: 999 }, exposed: "metadata", grantId: grant.id,
+    });
+  }));
+});
+
+// Runs `fn` with the clock held still, moved only by the `advance` it is handed.
+async function withClock(fn: (advance: (ms: number) => void) => Promise<void>): Promise<void> {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    await fn(ms => { vi.setSystemTime(Date.now() + ms); });
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+// Initialises an unseeded workspace far enough for its owner to open a session on it: an owner
+// whose account answers whoami() with `profile`, and the seed's chat with its queued steer.
+function initForOwnerSession(ws: Workspace, profile: AiChatAuthorInfo = OWNER): void {
+  let impl = ws.impl;
+  impl.directories = {
+    getByName: () => ({ syncWorkspace: async () => {}, removeWorkspace: async () => {} }),
+  };
+  impl.users = {
+    idFromString: (id: string) => id,
+    idFromName: (name: string) => name,
+    get: (id: string) => ({
+      id, whoami: async () => profile,
+      liveAccountAdminGrant: async () => {
+        ws.account.asked.push(id);
+        return ws.account.answer();
+      },
+      listGatekeeperVendors: async () => [], setWorkspaceLastActive: async () => {},
+      recordSharedWorkspaceOpen: async () => {}, workspaceRemoved: async () => {},
+      messageArrived: async () => {}, getWorkspace: async () => null,
+      getGadget: async () => null, syncWorkspaceOutputs: async () => {},
+    }),
+  };
+  // The side effects of opening that reach outside the workspace.
+  impl.ensureAmbientCapsules = async () => {};
+  impl.markOutputsDirty = () => {};
+  impl.scheduleAccessRestart = async () => {};
+  impl.ownerId = OWNER_USER_ID;
+  impl.ownerProfileId = profile.id;
+  impl.storage.ownerId.put(OWNER_USER_ID);
+  impl.storage.title.put("Quarterly plan");
+  impl.storage.chatMeta.put({
+    id: CHAT_ID, title: "Plans", started: new Date(0), lastActive: new Date(0),
+    queuedSteers: [{ text: WITHHELD.steer, author: OWNER }],
+  });
+}
+
+// Runs `fn` over a real owner session on a workspace initForOwnerSession() set up.
+async function asOwner<T>(ws: Workspace, fn: (client: Overseer) => Promise<T>): Promise<T> {
+  // Disposed with the session: the session holds a duplicate of the stub until then.
+  using notifyClosed = new NativeRpcStub<() => void>(() => {});
+  using client = await ws.instance.open(OWNER_USER_ID, OWNER.id, notifyClosed);
+  return await fn(client);
+}
+
+// Whether a listChats() through `view` returned the seeded chat's queued steers: content.
+async function readsContent(view: AdminWorkspaceView): Promise<boolean> {
+  return (await seededChat(view)).queuedSteers !== undefined;
+}
+
+describe("the owner's account-wide grant", () => {
+  it("is asked for once, relied on for a minute, and never copied into the workspace",
+      () => withWorkspace(ws => withClock(async advance => {
+    initForOwnerSession(ws);
+    allowContent(ws);
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    let view = await openForContent(ws);
+
+    expect(await readsContent(view)).toBe(true);
+    advance(30_000);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toStrictEqual([OWNER_USER_ID]);
+
+    // The workspace stores no grant: neither its admins' listing nor its owner's holds one.
+    expect(grantKeys(ws)).toStrictEqual([]);
+    expect((await view.describe()).grants).toStrictEqual([]);
+    expect(await asOwner(ws, client => client.listAdminGrants())).toStrictEqual([]);
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.method, r.exposed, r.grantId]))
+        .toStrictEqual([
+          ["listChats", "content", grant.id], ["listChats", "content", grant.id],
+          // Nothing "metadata" withholds from this workspace's description.
+          ["describe", "metadata", grant.id],
+        ]);
+
+    // The owner ends it. The workspace relies on what it was told until that is a minute old.
+    ws.account.answer = () => null;
+    advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000 - 30_001);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(1);
+    advance(1);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    expect((await deploymentRecords(ws)).at(-1)).not.toHaveProperty("grantId");
+    expect(grantKeys(ws)).toStrictEqual([]);
+  }), { seed: false }));
+
+  it("covers a workspace made after it was given", () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grant = accountGrant({ grantedAt: new Date(Date.now() - 3_600_000) });
+    ws.account.answer = () => grant;
+    expect(await readsContent(await openForContent(ws))).toBe(true);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({ grantId: grant.id });
+  }));
+
+  it("is found by the next call once it is given: an answer that there is none is not kept",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(false);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(3);
+    expect((await deploymentRecords(ws)).slice(1).map(r => [r.exposed, r.grantId]))
+        .toStrictEqual([["metadata", undefined], ["metadata", undefined], ["content", grant.id]]);
+  }));
+
+  it.each<[string, () => unknown]>([
+    ["a grant of one workspace", () => accountGrant({ scope: "workspace" })],
+    ["a grant a second admin approved", () => accountGrant({ source: "admins" })],
+    ["a grant whose end is not a time", () => accountGrant({ expiresAt: new Date(NaN) })],
+    ["a grant whose end is not a Date",
+     () => accountGrant({ expiresAt: "2999-01-01T00:00:00.000Z" as never })],
+    ["a grant of a level that is not content", () => accountGrant({ level: "all" as never })],
+    ["a grant already revoked", () => accountGrant({ revokedAt: new Date(0) })],
+    ["a grant already expired", () => accountGrant({ expiresAt: new Date(Date.now() - 1) })],
+    ["something that is not a grant", () => "yes"],
+    ["nothing", () => undefined],
+  ])("is not taken on the account's word: %s is no grant, and is not kept", (_case, answer) =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    ws.account.answer = answer;
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(false);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    for (let record of (await deploymentRecords(ws)).slice(1)) {
+      expect(record).toMatchObject({ method: "listChats", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+      expect(record).not.toHaveProperty("refused");
+    }
+  }));
+
+  it("counts as none while the account cannot answer, and the call is still answered and recorded",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws);
+
+    // A reset is retried once, and the retry fails too.
+    ws.account.answer = () => {
+      throw Object.assign(new Error("The Durable Object was reset."), { durableObjectReset: true });
+    };
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    // Any other failure is not retried.
+    ws.account.answer = () => { throw new Error("account unavailable"); };
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(3);
+    for (let record of (await deploymentRecords(ws)).slice(1)) {
+      expect(record).toMatchObject({ method: "listChats", access: "content", exposed: "metadata" });
+      expect(record).not.toHaveProperty("grantId");
+      expect(record).not.toHaveProperty("refused");
+    }
+
+    // Nothing was kept of the failures: the next call asks again, and reads content.
+    let grant = accountGrant();
+    ws.account.answer = () => grant;
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(4);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject(
+        { exposed: "content", grantId: grant.id });
+  }));
+
+  it("is not relied on past its own end, inside the minute",
+      () => withWorkspace(ws => withClock(async advance => {
+    allowContent(ws);
+    let grant = accountGrant({ expiresAt: new Date(Date.now() + 10_000) });
+    ws.account.answer = () => grant;
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+    advance(9_999);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(1);
+
+    // The account answering with the ended grant again changes nothing.
+    advance(1);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+  })));
+
+  it("is relied on for a minute from when the question was sent, not from its answer",
+      () => withWorkspace(ws => withClock(async advance => {
+    allowContent(ws);
+    let grant = accountGrant();
+    // The account takes 20 seconds to answer.
+    ws.account.answer = () => {
+      advance(20_000);
+      return grant;
+    };
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+
+    ws.account.answer = () => null;
+    advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000 - 20_001);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toHaveLength(1);
+    // A minute after the question, 40 seconds after the answer.
+    advance(1);
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+  })));
+
+  it("is kept for the owner it was asked of, and dropped when the workspace is deleted",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    const NEXT_OWNER_USER_ID = "next-owner-user-do";
+    let first = accountGrant();
+    let second = accountGrant();
+    ws.account.answer = () => ws.account.asked.at(-1) === OWNER_USER_ID ? first : second;
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+
+    // The workspace is another owner's: what the first owner's account said is not used.
+    ws.impl.ownerId = NEXT_OWNER_USER_ID;
+    ws.impl.storage.ownerId.put(NEXT_OWNER_USER_ID);
+    expect(await readsContent(view)).toBe(true);
+    expect(ws.account.asked).toStrictEqual([OWNER_USER_ID, NEXT_OWNER_USER_ID]);
+    expect((await deploymentRecords(ws)).slice(1).map(r => r.grantId))
+        .toStrictEqual([first.id, second.id]);
+
+    // Kept until the workspace is deleted: its id can live again under an owner.
+    expect(await ws.impl.contentGrant()).toStrictEqual(second);
+    expect(ws.account.asked).toHaveLength(2);
+    ws.impl.beginDeletion(new Set());
+    ws.impl.ownerId = NEXT_OWNER_USER_ID;
+    expect(await ws.impl.contentGrant()).toStrictEqual(second);
+    expect(ws.account.asked).toHaveLength(3);
+  }));
+
+  it.each<[string, number, (ws: Workspace) => Promise<void>, string]>([
+    ["the workspace's deletion", 600_000, async ws => {
+      await ws.state.storage.deleteAll();
+      ws.impl.ownerId = undefined;
+    }, ADMIN_ACCESS_ERROR_CODES.workspaceNotFound],
+    ["the view's expiry", SHORT_LIFETIME_MS,
+     () => scheduler.wait(SHORT_LIFETIME_MS + 100), ADMIN_ACCESS_ERROR_CODES.viewExpired],
+    ["its admin's demotion", 600_000, async ws => {
+      setEnv(ws, { ADMIN_WORKSPACE_ACCESS_MAX: "content", ADMINS: ["someone-else@example.test"] });
+    }, ADMIN_ACCESS_ERROR_CODES.notAdmin],
+  ])("writes nothing for a call that %s overtakes while it asks", (_case, lifetime, overtake, code) =>
+      withWorkspace(async ws => {
+    allowContent(ws);
+    let view = await openForContent(ws, { expiresAt: new Date(Date.now() + lifetime) });
+    let reach!: () => void;
+    let reached = new Promise<void>(resolve => { reach = resolve; });
+    let release!: () => void;
+    let released = new Promise<void>(resolve => { release = resolve; });
+    ws.account.answer = async () => {
+      reach();
+      await released;
+      return accountGrant();
+    };
+
+    let call = view.listChats();
+    await reached;
+    await overtake(ws);
+    release();
+
+    expect(await codeOf(call)).toBe(code);
+    expect((await deploymentRecords(ws)).map(r => r.method)).toStrictEqual(["inspectWorkspace"]);
+  }));
+});
+
+// A live grant given `minutesAgo`, by the owner or by a second admin's approval, so that a test's
+// grants have an order.
+function grantGiven(ws: Workspace, minutesAgo: number, source: "owner" | "admins" = "owner") {
+  let grantedAt = new Date(Date.now() - minutesAgo * 60_000);
+  return putGrant(ws, source === "owner" ? { grantedAt } : {
+    ...newAdminGrant({
+      source: "admins", scope: "workspace", grantedBy: { id: "grace@example.test", name: "Grace" },
+      requestedBy: ADMIN, requestId: `request-${minutesAgo}`, reason: REASON,
+    }),
+    grantedAt,
+  });
+}
+
+describe("the grants a view lists", () => {
+  it("are the newest of the live ones, bounded, on a view opened for metadata too",
+      () => withWorkspace(async ws => {
+    allowContent(ws);
+    let grants = Array.from({ length: 30 }, (_, i) => grantGiven(ws, i));
+    putGrant(ws, { revokedAt: new Date(), revokedBy: OWNER });
+    putGrant(ws, { expiresAt: new Date(Date.now() - 1) });
+
+    let listed = (await (await open(ws)).describe()).grants;
+    expect(listed).toStrictEqual(grants.slice(0, MAX_ADMIN_GRANTS_LISTED));
+    expect(MAX_ADMIN_GRANTS_LISTED).toBe(20);
+
+    // Any live one lets content be read, listed or not.
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(true);
+    expect((await deploymentRecords(ws)).at(-1)).toMatchObject({ grantId: grants[0].id });
+    expect((await view.describe()).grants).toStrictEqual(listed);
+  }));
+
+  it("hold a grant only an admin can end ahead of every owner grant, however old it is",
+      () => withWorkspace(async ws => {
+    let owners = Array.from({ length: 20 }, (_, i) => grantGiven(ws, i));
+    let approved = grantGiven(ws, 600, "admins");
+    expect((await (await open(ws)).describe()).grants)
+        .toStrictEqual([approved, ...owners.slice(0, MAX_ADMIN_GRANTS_LISTED - 1)]);
+  }));
+
+  it("order the admins' grants newest first, then the owner's", () => withWorkspace(async ws => {
+    let older = grantGiven(ws, 30, "admins");
+    let owner = grantGiven(ws, 1);
+    let newer = grantGiven(ws, 10, "admins");
+    expect((await (await open(ws)).describe()).grants).toStrictEqual([newer, older, owner]);
+  }));
+
+  it("stay small whatever the owner's name", () => withWorkspace(async ws => {
+    let name = "n".repeat(1_000_000);
+    initForOwnerSession(ws, { ...OWNER, name });
+    allowContent(ws);
+    await asOwner(ws, async client => {
+      for (let i = 0; i < 30; i++) await client.grantAdminAccess();
+    });
+
+    let description = await (await open(ws)).describe();
+    expect(description.grants).toHaveLength(MAX_ADMIN_GRANTS_LISTED);
+    for (let grant of description.grants) {
+      expect(grant.grantedBy).toStrictEqual(
+          { id: OWNER.id, name: `${"n".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…` });
+    }
+    expect(JSON.stringify(description.grants).length).toBeLessThan(64 * 1024);
+    // The description holds the name once, in the owner's profile, and not once a grant.
+    expect(description.owner.name).toBe(name);
+    expect(JSON.stringify(description).length).toBeLessThan(name.length + 64 * 1024);
+  }, { seed: false }));
 });
