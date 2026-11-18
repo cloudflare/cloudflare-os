@@ -3929,6 +3929,8 @@ describe("pdfConverter", () => {
       byteStream(FAX_SCAN.bytes, [65_536]).stream, ranges(FAX_SCAN).readRange);
     let reader = result.text.getReader();
     void reader.read();
+    // As many as that are made, however long the machine takes over them, and then no more.
+    await vi.waitFor(() => expect(bands).toHaveLength(calls));
     await settled();
     expect(bands).toHaveLength(calls);
     await reader.cancel();
