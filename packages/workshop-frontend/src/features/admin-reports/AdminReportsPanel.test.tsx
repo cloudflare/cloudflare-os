@@ -22,6 +22,7 @@ import {
   type AdminApi,
   type AdminIssueReport,
   type AuthenticatedApi,
+  type IssueReportAssignee,
   type IssueReportEntry,
   type IssueReportGrant,
   type IssueReportImage,
@@ -111,6 +112,14 @@ const streamOf = (bytes: number[]) => new ReadableStream<Uint8Array>({
   },
 })
 
+const ADA = { id: 'ada@example.test', name: 'Ada Admin' }
+const HELD_AT = new Date('2026-10-12T12:00:00Z')
+
+// A report's assignee: Grace, unless `change` names another admin.
+const heldBy = (change: Partial<IssueReportAssignee> = {}): IssueReportAssignee => ({
+  id: 'grace@example.test', name: 'Grace Admin', at: HELD_AT, via: 'api', ...change,
+})
+
 // The admins' API over reports it holds as the server does, newest first: what a call changes,
 // the next read returns. The signed-in admin is Ada.
 const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
@@ -120,7 +129,7 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
     if (opened === undefined) throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.notFound)
     return opened
   }
-  const ada = { id: 'ada@example.test', name: 'Ada Admin' }
+  const ada = ADA
   let entries = 0
   const addEntry = (opened: Opened, entry: Omit<IssueReportEntry, 'id' | 'at' | 'author' | 'via'>) => {
     const added: IssueReportEntry = {
@@ -129,14 +138,24 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
     held.set(opened.id, { ...opened, ...(entry.status && { status: entry.status }), updatedAt: added.at, entries: [...opened.entries, added] })
     return added
   }
+  // A change of assignee, entered in the thread as a line for admins alone, as the store enters
+  // it: what the line says follows from who held the report when the call landed.
+  const assign = (opened: Opened, assignment: NonNullable<IssueReportEntry['assignment']>) => {
+    const { at } = addEntry(opened, { text: '', visibility: 'admins', assignment })
+    const { assignee: _assignee, ...rest } = get(opened.id)
+    held.set(opened.id, assignment === 'released' ? rest : { ...rest, assignee: { ...ada, at, via: 'api' } })
+  }
   return {
     held,
+    whoami: vi.fn<AdminApi['whoami']>(async () => ada),
     listIssueReports: vi.fn<AdminApi['listIssueReports']>(async (query = {}) => {
       const matching = [...held.values()].filter((opened) =>
         (query.status === undefined || opened.status === query.status)
         && (query.priority === undefined || opened.priority === query.priority)
         && (query.reporter === undefined || opened.reporter.id === query.reporter)
-        && (query.workspace === undefined || opened.context.workspaceId === query.workspace))
+        && (query.workspace === undefined || opened.context.workspaceId === query.workspace)
+        && (query.assignee === undefined || opened.assignee?.id === query.assignee)
+        && (query.unassigned !== true || opened.assignee === undefined))
       const size = options.pageSize ?? query.limit ?? 50
       const from = query.cursor === undefined ? 0 : Number(query.cursor)
       const page = matching.slice(from, from + size).map(({ entries: _entries, ...listed }) => listed)
@@ -147,6 +166,20 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
       addEntry(get(id), { text, visibility })),
     setIssueReportStatus: vi.fn<AdminApi['setIssueReportStatus']>(async (id, status) => {
       addEntry(get(id), { text: '', visibility: 'public', status })
+    }),
+    claimIssueReport: vi.fn<AdminApi['claimIssueReport']>(async (id, claim) => {
+      const opened = get(id)
+      if (opened.assignee?.id === ada.id) return
+      if (opened.assignee !== undefined && opened.assignee.id !== claim?.takeOverFrom) {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned)
+      }
+      assign(opened, opened.assignee === undefined ? 'claimed' : 'takenOver')
+    }),
+    releaseIssueReport: vi.fn<AdminApi['releaseIssueReport']>(async (id) => {
+      const opened = get(id)
+      if (opened.assignee === undefined) return
+      if (opened.assignee.id !== ada.id) throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned)
+      assign(opened, 'released')
     }),
     // Keeps each link as the URL it parses to, as the server does.
     setIssueReportLinks: vi.fn<AdminApi['setIssueReportLinks']>(async (id, links) => {
@@ -281,9 +314,38 @@ const submit = (element: HTMLElement) => act(async () => {
   element.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
 })
 
-// The list's status and priority filters, and the open report's status, each by its trigger.
-const filterSelect = (name: 'status' | 'priority') =>
-  container!.querySelectorAll<HTMLElement>('[role="search"] [role="combobox"]')[name === 'status' ? 0 : 1]
+// The list's status, priority and assignee filters, and the open report's status, each by its
+// trigger.
+const FILTER_SELECTS = ['status', 'priority', 'assignee'] as const
+const filterSelect = (name: typeof FILTER_SELECTS[number]) =>
+  container!.querySelectorAll<HTMLElement>('[role="search"] [role="combobox"]')[FILTER_SELECTS.indexOf(name)]
+// What a select offers, opening it to read them.
+const optionsOf = async (trigger: HTMLElement) => {
+  if (trigger.getAttribute('aria-expanded') !== 'true') await click(trigger)
+  const list = document.getElementById(trigger.getAttribute('aria-controls') ?? '')
+  return [...list?.querySelectorAll<HTMLElement>('[role="option"]') ?? []].map((option) => option.textContent)
+}
+// What the open report's status select says beneath it.
+const statusDescription = () => {
+  const said = statusSelect().getAttribute('aria-describedby')?.split(' ')
+    .map((id) => document.getElementById(id)?.textContent).filter(Boolean).join(' ')
+  if (!said) throw new Error('the status select describes nothing')
+  return said
+}
+
+// The open report's assignee block: who holds it, the one button it offers, and the dialog that
+// asks before a report is taken over.
+const assigneeBlock = () => {
+  const found = [...detail()!.querySelectorAll<HTMLElement>('[role="group"]')]
+    .find((group) => group.querySelector('p')?.textContent === 'Assignee')
+  if (!found) throw new Error('no assignee block')
+  return found
+}
+const holder = () => assigneeBlock().querySelectorAll('p')[1].textContent
+const assigneeButtons = () => [...assigneeBlock().querySelectorAll('button')].map((each) => each.textContent?.trim())
+const dialog = () => document.body.querySelector<HTMLElement>('[role="dialog"]')
+// A row's holder cell.
+const rowHolder = (id: string) => row(id).querySelector<HTMLElement>('[data-report-holder]')!
 const statusSelect = () => detail()!.querySelector<HTMLElement>('[role="combobox"]')!
 // By keyboard. The option turns Enter into a click it builds as a PointerEvent, which jsdom
 // lacks, so the window has a stand-in for as long as the choice takes.
@@ -318,6 +380,10 @@ const chooseVisibility = (name: string) => act(async () => {
 })
 const composerField = () => detail()!.querySelector('form textarea') as HTMLTextAreaElement
 const consequence = () => detail()!.querySelector('form [role="status"]')?.textContent
+// What is being written: the text, and the choice of who reads it under the composer's label.
+const draft = () => ({
+  text: composerField().value, reads: chosenVisibility(), field: composerField().labels[0]?.textContent,
+})
 
 describe('the list', () => {
   it('lists each report by its first line, with where it stands, who filed it, where and when', async () => {
@@ -566,6 +632,184 @@ describe('the list', () => {
   })
 })
 
+describe('who holds a report, in the list', () => {
+  it('names the holder of each report, or says that nobody holds it', async () => {
+    await renderPanel(fakeAdmin([
+      report('r-1', { assignee: heldBy() }),
+      report('r-2', { assignee: heldBy(ADA) }),
+      report('r-3'),
+    ]))
+
+    expect(rowHolder('r-1').textContent).toBe('Held byGrace Admin')
+    expect(rowHolder('r-2').textContent).toBe('Held byAda Admin')
+    expect(rowHolder('r-3').textContent).toBe('Unassigned')
+    expect(rowHolder('r-3').querySelector('button')).toBeNull()
+  })
+
+  it('filters by a row’s holder, by id, and names the chip that removes the filter after them', async () => {
+    const admin = await renderPanel(fakeAdmin([
+      report('r-1', { assignee: heldBy() }),
+      report('r-2', { assignee: heldBy(ADA) }),
+      report('r-3'),
+    ]))
+
+    await click(button('Show only reports Grace Admin holds', row('r-1')))
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ assignee: 'grace@example.test', limit: REPORT_PAGE_SIZE })
+    expect(search()).toEqual({ tab: 'reports', assignee: 'grace@example.test' })
+    expect(rowTitles()).toEqual(['Report r-1'])
+    expect(filterSelect('assignee').textContent).toBe('One admin')
+    const chip = button('Show every assignee, not only Grace Admin')
+    expect(chip.textContent).toBe('Assignee: Grace Admin')
+    expect(document.activeElement).toBe(chip)
+
+    await click(chip)
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ limit: REPORT_PAGE_SIZE })
+    expect(search()).toEqual({ tab: 'reports' })
+    expect(rowTitles()).toEqual(['Report r-1', 'Report r-2', 'Report r-3'])
+    expect(document.activeElement).toBe(filterSelect('status'))
+  })
+
+  it('shows the admin’s own name pressed on a row as the choice "Me", with no chip', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1', { assignee: heldBy() }), report('r-2', { assignee: heldBy(ADA) })]))
+
+    await click(button('Show only reports Ada Admin holds', row('r-2')))
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ assignee: ADA.id, limit: REPORT_PAGE_SIZE })
+    expect(rowTitles()).toEqual(['Report r-2'])
+    expect(filterSelect('assignee').textContent).toBe('Me')
+    expect(findButton('Show every assignee, not only Ada Admin')).toBeUndefined()
+    expect(document.activeElement).toBe(filterSelect('assignee'))
+  })
+
+  it('offers "Me" only once the server said who the admin is', async () => {
+    const admin = fakeAdmin([report('r-1')])
+    const answer = Promise.withResolvers<typeof ADA>()
+    admin.whoami.mockReturnValueOnce(answer.promise)
+    await renderPanel(admin)
+
+    expect(await optionsOf(filterSelect('assignee'))).toEqual(['Anyone', 'Nobody'])
+
+    await act(async () => { answer.resolve(ADA) })
+
+    expect(await optionsOf(filterSelect('assignee'))).toEqual(['Anyone', 'Me', 'Nobody'])
+    expect(admin.whoami).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers no "Me" when the server could not say who the admin is', async () => {
+    const admin = fakeAdmin([report('r-1')])
+    admin.whoami.mockRejectedValueOnce(new Error('offline'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await renderPanel(admin)
+
+    expect(await optionsOf(filterSelect('assignee'))).toEqual(['Anyone', 'Nobody'])
+  })
+
+  it('filters by the admin’s own reports and by reports nobody holds, each in place of the other', async () => {
+    const admin = await renderPanel(fakeAdmin([
+      report('r-1', { assignee: heldBy() }),
+      report('r-2', { assignee: heldBy(ADA) }),
+      report('r-3'),
+    ]))
+
+    await choose(filterSelect('assignee'), 'Me')
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ assignee: ADA.id, limit: REPORT_PAGE_SIZE })
+    expect(search()).toEqual({ tab: 'reports', assignee: ADA.id })
+    expect(rowTitles()).toEqual(['Report r-2'])
+
+    await choose(filterSelect('assignee'), 'Nobody')
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ unassigned: true, limit: REPORT_PAGE_SIZE })
+    expect(search()).toEqual({ tab: 'reports', unassigned: true })
+    expect(rowTitles()).toEqual(['Report r-3'])
+    expect(button('Clear filters')).toBeDefined()
+
+    await choose(filterSelect('assignee'), 'Me')
+
+    expect(search()).toEqual({ tab: 'reports', assignee: ADA.id })
+
+    await choose(filterSelect('assignee'), 'Anyone')
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ limit: REPORT_PAGE_SIZE })
+    expect(search()).toEqual({ tab: 'reports' })
+  })
+
+  it('sends the assignee filters the URL holds, with the others', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy() })]), '/admin?tab=reports&status=new&assignee=grace%40example.test',
+    )
+
+    expect(admin.listIssueReports)
+      .toHaveBeenLastCalledWith({ status: 'new', assignee: 'grace@example.test', limit: REPORT_PAGE_SIZE })
+    expect(button('Show every assignee, not only Grace Admin')).toBeDefined()
+  })
+
+  it.each([
+    ['one admin holds', 'assignee=grace%40example.test', { assignee: 'grace@example.test' }, ['r-1', 'r-3', 'r-5']],
+    ['nobody holds', 'unassigned=true', { unassigned: true }, ['r-2', 'r-4', 'r-6']],
+  ] as const)('loads a further page of the reports %s, under that filter', async (_name, query, sent, [first, second, further]) => {
+    const admin = await renderPanel(
+      fakeAdmin([
+        report('r-1', { assignee: heldBy() }), report('r-2'),
+        report('r-3', { assignee: heldBy() }), report('r-4'),
+        report('r-5', { assignee: heldBy() }), report('r-6'),
+      ], { pageSize: 2 }),
+      `/admin?tab=reports&${query}`,
+    )
+    expect(rowTitles()).toEqual([`Report ${first}`, `Report ${second}`])
+
+    await click(button('Load more'))
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ ...sent, cursor: '2', limit: REPORT_PAGE_SIZE })
+    expect(rowTitles()).toEqual([`Report ${first}`, `Report ${second}`, `Report ${further}`])
+    expect(findButton('Load more')).toBeUndefined()
+  })
+
+  it('filters by the holder of a row still listed among the reports nobody holds, in place of that filter', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]), '/admin?tab=reports&unassigned=true&report=r-1')
+
+    // Claimed while it is open, the report keeps its row in the list behind it, which is not
+    // read again: the row then names a holder under the filter for reports with none.
+    await click(button('Assign to me'))
+    await settle()
+    await click([...detail()!.querySelectorAll('a')].find((link) => link.textContent === 'All reports')!)
+    await settle()
+    expect(search()).toEqual({ tab: 'reports', unassigned: true })
+    expect(rowHolder('r-1').textContent).toBe('Held byAda Admin')
+
+    await click(button('Show only reports Ada Admin holds', row('r-1')))
+    await settle()
+
+    expect(search()).toEqual({ tab: 'reports', assignee: ADA.id })
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ assignee: ADA.id, limit: REPORT_PAGE_SIZE })
+    expect(rowTitles()).toEqual(['Report r-1'])
+    expect(filterSelect('assignee').textContent).toBe('Me')
+  })
+
+  it('does not say whose reports the URL’s assignee holds until the server said who the admin is', async () => {
+    const admin = fakeAdmin([report('r-1', { assignee: heldBy(ADA) })])
+    const answer = Promise.withResolvers<typeof ADA>()
+    admin.whoami.mockReturnValueOnce(answer.promise)
+    await renderPanel(admin, `/admin?tab=reports&assignee=${encodeURIComponent(ADA.id)}`)
+
+    // The admin filtered by may be the reader: the choice says neither.
+    expect(filterSelect('assignee').textContent).toBe('One admin')
+    expect(button('Show every assignee, not only Ada Admin').textContent).toBe('Assignee: Ada Admin')
+
+    await act(async () => { answer.resolve(ADA) })
+
+    expect(filterSelect('assignee').textContent).toBe('Me')
+    expect(findButton('Show every assignee, not only Ada Admin')).toBeUndefined()
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('an open report', () => {
   it('opens from its row in place of the list, and returns to the list as it was', async () => {
     const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]), '/admin?tab=reports&priority=medium')
@@ -633,9 +877,9 @@ describe('an open report', () => {
     expect(thread()[0].textContent).toBe(`Grace Admin set the status to Fix suggested${formatFullTimestamp(at)}`)
     expect(statusSelect().textContent).toBe('Fix suggested')
 
-    await choose(statusSelect(), 'Fix in progress')
+    await choose(statusSelect(), 'Fix in progress (the reporter reads “With the admins”)')
     expect(statusSelect().textContent).toBe('Fix in progress')
-    await choose(statusSelect(), 'Fix proposed')
+    await choose(statusSelect(), 'Fix proposed (the reporter reads “Fix in review”)')
     expect(statusSelect().textContent).toBe('Fix proposed')
 
     expect(admin.setIssueReportStatus.mock.calls).toEqual([['r-1', 'fixInProgress'], ['r-1', 'fixProposed']])
@@ -746,6 +990,289 @@ describe('an open report', () => {
       'Your change was saved, but what is shown here is from before it. The store is still unavailable.Read the report again',
     ])
     expect(document.activeElement).toBe(again)
+  })
+})
+
+describe('what the reporter reads, in the status select', () => {
+  it.each([
+    ['fixSuggested', 'Fix suggested', 'With the admins'],
+    ['fixInProgress', 'Fix in progress', 'With the admins'],
+    ['fixProposed', 'Fix proposed', 'Fix in review'],
+    ['waitingOnReporter', 'Waiting on the reporter', 'Waiting on you'],
+  ] as const)('says that the reporter reads %s as another name', async (status, name, forReporter) => {
+    await renderPanel(fakeAdmin([report('r-1', { status })]), '/admin?tab=reports&report=r-1')
+
+    expect(statusSelect().textContent).toBe(name)
+    expect(statusDescription()).toBe(
+      `The reporter sees each change they can tell apart, with your name. The reporter reads this as “${forReporter}”.`)
+    expect(await optionsOf(statusSelect())).toContain(`${name} (the reporter reads “${forReporter}”)`)
+  })
+
+  it.each([
+    ['new', 'New'],
+    ['investigating', 'Investigating'],
+    ['answered', 'Answered'],
+    ['withAdmin', 'With the admins'],
+    ['closed', 'Closed'],
+  ] as const)('says nothing more of %s, which the reporter reads by the same name', async (status, name) => {
+    await renderPanel(fakeAdmin([report('r-1', { status })]), '/admin?tab=reports&report=r-1')
+
+    expect(statusDescription()).toBe('The reporter sees each change they can tell apart, with your name.')
+    expect(await optionsOf(statusSelect())).toContain(name)
+  })
+
+  it('says what the reporter reads of the status as soon as it is chosen', async () => {
+    await renderPanel(fakeAdmin([report('r-1', { status: 'withAdmin' })]), '/admin?tab=reports&report=r-1')
+
+    await choose(statusSelect(), 'Fix suggested (the reporter reads “With the admins”)')
+
+    expect(statusSelect().textContent).toBe('Fix suggested')
+    expect(statusDescription()).toContain('The reporter reads this as “With the admins”.')
+  })
+})
+
+describe('the admins’ lines in the thread', () => {
+  it('shows each change of assignee as one line naming who made it and how', async () => {
+    const at = new Date('2026-10-12T10:05:00Z')
+    const when = formatFullTimestamp(at)
+    await renderPanel(fakeAdmin([report('r-1', { entries: [
+      adminEntry('e-1', '', { visibility: 'admins', assignment: 'claimed', at }),
+      adminEntry('e-2', '', {
+        visibility: 'admins', assignment: 'takenOver', at, author: { id: 'hal@example.test', name: 'Hal Admin' }, via: 'cli',
+      }),
+      adminEntry('e-3', '', {
+        visibility: 'admins', assignment: 'released', at, author: { id: 'hal@example.test', name: 'Hal Admin' },
+      }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    expect(thread().map((entry) => entry.textContent)).toEqual([
+      `Grace Admin took this report${when}`,
+      `Hal Admin took this report overvia the CLI${when}`,
+      `Hal Admin released this report${when}`,
+    ])
+    expect(thread().every((entry) => entry.querySelector('p') === null)).toBe(true)
+  })
+
+  it('marks a change of status that the reporter is not shown, and no other', async () => {
+    const at = new Date('2026-10-12T10:05:00Z')
+    const when = formatFullTimestamp(at)
+    await renderPanel(fakeAdmin([report('r-1', { status: 'fixProposed', entries: [
+      adminEntry('e-1', '', { status: 'fixSuggested', visibility: 'admins', at }),
+      adminEntry('e-2', '', { status: 'fixInProgress', visibility: 'admins', via: 'cli', at }),
+      adminEntry('e-3', '', { status: 'fixProposed', at }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    expect(thread().map((entry) => entry.textContent)).toEqual([
+      `Grace Admin set the status to Fix suggested(not shown to the reporter)${when}`,
+      `Grace Admin set the status to Fix in progress(not shown to the reporter)via the CLI${when}`,
+      `Grace Admin set the status to Fix proposed${when}`,
+    ])
+  })
+})
+
+describe('the assignee of an open report', () => {
+  const since = formatFullTimestamp(HELD_AT)
+
+  it('says that nobody holds the report, and assigns it to the admin', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]))
+    await click(rowLink('r-1'))
+    await settle()
+
+    expect(holder()).toBe('Unassigned')
+    expect(assigneeButtons()).toEqual(['Assign to me'])
+
+    // As a press gives a button focus, which a click made by script does not.
+    await act(async () => { button('Assign to me').focus() })
+    await click(button('Assign to me'))
+    await settle()
+
+    // With no options: nothing is taken from anybody.
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1']])
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(holder()).toBe(`You, since ${formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))}`)
+    expect(assigneeButtons()).toEqual(['Release'])
+    expect(thread().map((entry) => entry.textContent))
+      .toEqual([`Ada Admin took this report${formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))}`])
+    expect(statusSelect().textContent).toBe('New')
+    expect(alerts()).toEqual([])
+    expect(document.activeElement).toBe(button('Release'))
+
+    await click([...detail()!.querySelectorAll('a')].find((link) => link.textContent === 'All reports')!)
+    await settle()
+
+    // The row shows what the report's last read returned.
+    expect(rowHolder('r-1').textContent).toBe('Held byAda Admin')
+    expect(rowHolder('r-2').textContent).toBe('Unassigned')
+  })
+
+  it('says that the admin holds the report, and releases it', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy(ADA) })]), '/admin?tab=reports&report=r-1',
+    )
+
+    expect(holder()).toBe(`You, since ${since}`)
+    expect(assigneeButtons()).toEqual(['Release'])
+
+    await click(button('Release'))
+    await settle()
+
+    expect(admin.releaseIssueReport.mock.calls).toEqual([['r-1']])
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(holder()).toBe('Unassigned')
+    expect(assigneeButtons()).toEqual(['Assign to me'])
+    expect(thread().at(-1)?.textContent).toContain('Ada Admin released this report')
+    expect(document.activeElement).toBe(button('Assign to me'))
+  })
+
+  it('names another admin who holds the report, and takes it over only once the dialog is confirmed', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy() })]), '/admin?tab=reports&report=r-1',
+    )
+
+    expect(holder()).toBe(`Grace Admin, since ${since}`)
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(dialog()).toBeNull()
+
+    await click(button('Take over…'))
+
+    expect(dialog()?.textContent).toContain('Take this report over from Grace Admin?')
+    expect(dialog()?.textContent).toContain(
+      `Grace Admin holds this report since ${since}. Taking it over assigns it to you and is entered in the thread, `
+      + 'where admins read it.')
+    expect(admin.claimIssueReport).not.toHaveBeenCalled()
+
+    await click(button('Cancel', dialog()!))
+    await settle()
+
+    expect(dialog()).toBeNull()
+    expect(admin.claimIssueReport).not.toHaveBeenCalled()
+    expect(holder()).toBe(`Grace Admin, since ${since}`)
+
+    await click(button('Take over…'))
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: 'grace@example.test' }]])
+    expect(dialog()).toBeNull()
+    expect(holder()).toBe(`You, since ${formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))}`)
+    expect(assigneeButtons()).toEqual(['Release'])
+    expect(thread().at(-1)?.textContent).toContain('Ada Admin took this report over')
+    expect(alerts()).toEqual([])
+  })
+
+  it('shows who holds the report and offers nothing while the admin is not known', async () => {
+    const admin = fakeAdmin([report('r-1', { assignee: heldBy(ADA) })])
+    const answer = Promise.withResolvers<typeof ADA>()
+    admin.whoami.mockReturnValueOnce(answer.promise)
+    await renderPanel(admin, '/admin?tab=reports&report=r-1')
+
+    expect(holder()).toBe(`Ada Admin, since ${since}`)
+    expect(assigneeButtons()).toEqual([])
+
+    await act(async () => { answer.resolve(ADA) })
+
+    expect(holder()).toBe(`You, since ${since}`)
+    expect(assigneeButtons()).toEqual(['Release'])
+  })
+
+  it('assigns a report nobody holds while the admin is not known, and gives the block focus', async () => {
+    const admin = fakeAdmin([report('r-1')])
+    admin.whoami.mockReturnValueOnce(new Promise(() => {}))
+    await renderPanel(admin, '/admin?tab=reports&report=r-1')
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1']])
+    expect(holder()).toContain('Ada Admin, since')
+    expect(assigneeButtons()).toEqual([])
+    expect(document.activeElement).toBe(assigneeBlock())
+  })
+
+  it('says that another admin holds a report taken since it was read, and shows who', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    // Grace took the report after this admin read it.
+    admin.held.set('r-1', report('r-1', {
+      assignee: heldBy(), entries: [adminEntry('e-1', '', { visibility: 'admins', assignment: 'claimed' })],
+    }))
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1']])
+    expect(alerts()).toEqual(['Another admin holds this issue report.'])
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(holder()).toBe(`Grace Admin, since ${since}`)
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(thread().map((entry) => entry.textContent)).toEqual([
+      `Grace Admin took this report${formatFullTimestamp(new Date('2026-10-12T10:00:00Z'))}`,
+    ])
+  })
+
+  it('says that another admin holds a report it could not release, and shows who', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy(ADA) })]), '/admin?tab=reports&report=r-1',
+    )
+    admin.held.set('r-1', report('r-1', { assignee: heldBy() }))
+
+    await click(button('Release'))
+    await settle()
+
+    expect(alerts()).toEqual(['Another admin holds this issue report.'])
+    expect(holder()).toBe(`Grace Admin, since ${since}`)
+    expect(assigneeButtons()).toEqual(['Take over…'])
+  })
+
+  it('says why a claim failed, keeps what it showed, and clears the reason with the next change', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    admin.claimIssueReport.mockRejectedValueOnce(createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull))
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(alerts()).toEqual(['This issue report\'s thread is full.'])
+    // No other refusal is answered by reading the report again.
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(1)
+    expect(holder()).toBe('Unassigned')
+    expect(document.activeElement).toBe(button('Assign to me'))
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(alerts()).toEqual([])
+    expect(assigneeButtons()).toEqual(['Release'])
+  })
+
+  it('makes one call for two presses, and disables the button while it runs', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    const store = admin.claimIssueReport.getMockImplementation()!
+    const answer = Promise.withResolvers<void>()
+    admin.claimIssueReport.mockImplementationOnce(async (...sent) => {
+      await answer.promise
+      return store(...sent)
+    })
+
+    await click(button('Assign to me'))
+    expect(button('Assign to me').disabled).toBe(true)
+    await click(button('Assign to me'))
+    await act(async () => { answer.resolve() })
+    await settle()
+
+    expect(admin.claimIssueReport).toHaveBeenCalledTimes(1)
+    expect(button('Release').disabled).toBe(false)
+  })
+
+  it('says so when a claim was saved and the report could not be read again', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    admin.getIssueReport.mockRejectedValueOnce(new Error('offline'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(alerts()).toHaveLength(1)
+    expect(alerts()[0]).toContain('Your change was saved, but what is shown here is from before it.')
+    expect(holder()).toBe('Unassigned')
   })
 })
 
@@ -867,6 +1394,233 @@ describe('the composer', () => {
 
 const links = () => [...card('Links').querySelectorAll('a')]
 const linkField = () => field('Add a link', HTMLInputElement)
+
+describe('a draft in the composer', () => {
+  const DRAFT = 'Half a reply, not sent yet.'
+  const WRITTEN = { text: DRAFT, reads: ['Public'], field: 'Reply to the reporter' }
+  const write = async () => {
+    await chooseVisibility('Public')
+    await type(field('Reply to the reporter', HTMLTextAreaElement), DRAFT)
+    expect(draft()).toEqual(WRITTEN)
+  }
+
+  it('is kept when the report is assigned to the admin and read again', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    const written = composerField()
+    await write()
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(assigneeButtons()).toEqual(['Release'])
+    expect(draft()).toEqual(WRITTEN)
+    // The field itself, not another like it: the composer was not rendered anew.
+    expect(composerField()).toBe(written)
+  })
+
+  it('is kept when the report is released and read again', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy(ADA) })]), '/admin?tab=reports&report=r-1',
+    )
+    const written = composerField()
+    await write()
+
+    await click(button('Release'))
+    await settle()
+
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(assigneeButtons()).toEqual(['Assign to me'])
+    expect(draft()).toEqual(WRITTEN)
+    expect(composerField()).toBe(written)
+  })
+
+  it('is kept when a take-over is cancelled, and when one is confirmed', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy() })]), '/admin?tab=reports&report=r-1',
+    )
+    const written = composerField()
+    await write()
+
+    await click(button('Take over…'))
+    await click(button('Cancel', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport).not.toHaveBeenCalled()
+    expect(draft()).toEqual(WRITTEN)
+
+    await click(button('Take over…'))
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport).toHaveBeenCalledTimes(1)
+    expect(assigneeButtons()).toEqual(['Release'])
+    expect(draft()).toEqual(WRITTEN)
+    expect(composerField()).toBe(written)
+  })
+
+  it('is kept when a claim is refused because another admin holds the report, and the report is read again', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    const written = composerField()
+    await write()
+    admin.held.set('r-1', report('r-1', { assignee: heldBy() }))
+
+    await click(button('Assign to me'))
+    await settle()
+
+    expect(alerts()).toEqual(['Another admin holds this issue report.'])
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(draft()).toEqual(WRITTEN)
+    expect(composerField()).toBe(written)
+  })
+
+  it('is kept when the list behind the open report is filtered by another assignee', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    const written = composerField()
+    await write()
+
+    await act(async () => {
+      await router!.navigate({ to: '/admin', search: { tab: 'reports', report: 'r-1', assignee: 'grace@example.test' } })
+    })
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ assignee: 'grace@example.test', limit: REPORT_PAGE_SIZE })
+    expect(draft()).toEqual(WRITTEN)
+
+    await act(async () => {
+      await router!.navigate({ to: '/admin', search: { tab: 'reports', report: 'r-1', unassigned: true } })
+    })
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ unassigned: true, limit: REPORT_PAGE_SIZE })
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(1)
+    expect(draft()).toEqual(WRITTEN)
+    expect(composerField()).toBe(written)
+  })
+})
+
+// The dialog, asked about Grace, who held the report when this admin read it.
+const askAboutGrace = async () => {
+  const admin = await renderPanel(
+    fakeAdmin([report('r-1', { assignee: heldBy() })]), '/admin?tab=reports&report=r-1',
+  )
+  await click(button('Take over…'))
+  expect(dialog()?.textContent).toContain('Take this report over from Grace Admin?')
+  return admin
+}
+const dialogAlerts = () => [...dialog()!.querySelectorAll('[role="alert"]')].map((alert) => alert.textContent)
+
+describe('a take-over after the holder changed', () => {
+  const GRACE = { id: 'grace@example.test', name: 'Grace Admin' }
+  const HAL = { id: 'hal@example.test', name: 'Hal Admin' }
+  const IDA = { id: 'ida@example.test', name: 'Ida Admin' }
+  const THEN = new Date('2026-10-12T13:00:00Z')
+  const then = formatFullTimestamp(THEN)
+  const now = formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))
+
+  const line = (id: string, author: typeof HAL, assignment: NonNullable<IssueReportEntry['assignment']>) =>
+    adminEntry(id, '', { visibility: 'admins', assignment, author, at: THEN })
+  // The report as the store holds it once `admin` took it over, after this admin read it.
+  const takenBy = (admin: typeof HAL) => report('r-1', {
+    entries: [line('e-1', admin, 'takenOver')], assignee: heldBy({ ...admin, at: THEN }),
+  })
+  it('takes nothing from an admin the dialog did not name, and asks again about the one who holds the report', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', takenBy(HAL))
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    // Refused: the report is Hal's still, and is read again to say so.
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: GRACE.id }]])
+    expect(admin.getIssueReport).toHaveBeenCalledTimes(2)
+    expect(admin.held.get('r-1')!.assignee).toMatchObject(HAL)
+    expect(holder()).toBe(`Hal Admin, since ${then}`)
+    expect(thread().map((entry) => entry.textContent)).toEqual([`Hal Admin took this report over${then}`])
+    // The dialog stays, asks about Hal and says why, in place of a refusal beneath the block.
+    expect(dialog()?.textContent).toContain('Take this report over from Hal Admin?')
+    expect(dialog()?.textContent).toContain(`Hal Admin holds this report since ${then}.`)
+    expect(dialogAlerts()).toEqual(['Grace Admin no longer holds this report, so it was not taken over.'])
+    expect(alerts()).toEqual([])
+    expect(findButton('Take over', dialog()!)?.disabled).toBe(false)
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls.at(-1)).toEqual(['r-1', { takeOverFrom: HAL.id }])
+    expect(admin.claimIssueReport).toHaveBeenCalledTimes(2)
+    expect(dialog()).toBeNull()
+    expect(alerts()).toEqual([])
+    expect(holder()).toBe(`You, since ${now}`)
+    expect(thread().map((entry) => entry.textContent))
+      .toEqual([`Hal Admin took this report over${then}`, `Ada Admin took this report over${now}`])
+  })
+
+  it('asks again each time the holder changed, and takes nothing when the admin then cancels', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', takenBy(HAL))
+    await click(button('Take over', dialog()!))
+    await settle()
+    admin.held.set('r-1', takenBy(IDA))
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls)
+      .toEqual([['r-1', { takeOverFrom: GRACE.id }], ['r-1', { takeOverFrom: HAL.id }]])
+    expect(dialog()?.textContent).toContain('Take this report over from Ida Admin?')
+    expect(dialogAlerts()).toEqual(['Hal Admin no longer holds this report, so it was not taken over.'])
+
+    await click(button('Cancel', dialog()!))
+    await settle()
+
+    expect(dialog()).toBeNull()
+    expect(admin.claimIssueReport).toHaveBeenCalledTimes(2)
+    expect(admin.held.get('r-1')!.assignee).toMatchObject(IDA)
+    expect(holder()).toBe(`Ida Admin, since ${then}`)
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(alerts()).toEqual([])
+
+    // Asked anew, the dialog names the holder and nobody before them.
+    await click(button('Take over…'))
+
+    expect(dialog()?.textContent).toContain('Take this report over from Ida Admin?')
+    expect(dialogAlerts()).toEqual([])
+  })
+
+  it('takes a report nobody holds any more when its holder released it after the dialog named them', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', report('r-1', { entries: [line('e-1', GRACE, 'released')] }))
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: GRACE.id }]])
+    expect(admin.releaseIssueReport).not.toHaveBeenCalled()
+    expect(alerts()).toEqual([])
+    expect(dialog()).toBeNull()
+    expect(holder()).toBe(`You, since ${now}`)
+    expect(thread().map((entry) => entry.textContent))
+      .toEqual([`Grace Admin released this report${then}`, `Ada Admin took this report${now}`])
+  })
+
+  it('closes the dialog on the refusal when the report could not be read again', async () => {
+    const admin = await askAboutGrace()
+    admin.held.set('r-1', takenBy(HAL))
+    admin.getIssueReport.mockRejectedValueOnce(new Error('offline'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await click(button('Take over', dialog()!))
+    await settle()
+
+    // Who holds the report now is not known, so nobody is asked about.
+    expect(dialog()).toBeNull()
+    expect(alerts()).toEqual(['Another admin holds this issue report.'])
+    expect(holder()).toContain('Grace Admin, since')
+    expect(assigneeButtons()).toEqual(['Take over…'])
+    expect(admin.held.get('r-1')!.assignee).toMatchObject(HAL)
+  })
+})
 
 describe('the links', () => {
   it('attaches a link and renders it with the href the server returned, unchanged', async () => {

@@ -1,4 +1,9 @@
-import type { IssueReportPriority, IssueReportStatus } from '@gadgets/workshop-shared/api'
+import {
+  issueReportStatusForReporter,
+  type IssueReportAssignment,
+  type IssueReportPriority,
+  type IssueReportStatus,
+} from '@gadgets/workshop-shared/api'
 
 /** What each priority of an issue report is called. */
 export const ISSUE_PRIORITY_NAMES: Record<IssueReportPriority, string> = {
@@ -31,4 +36,23 @@ export const ADMIN_ISSUE_STATUS_NAMES: Record<IssueReportStatus, string> = {
   fixSuggested: 'Fix suggested',
   fixInProgress: 'Fix in progress',
   fixProposed: 'Fix proposed',
+}
+
+/**
+ * What the reporter reads where the admins read `status`, when the two differ, as the admins'
+ * status control says it beside the status: another status ("fixSuggested" and
+ * "fixInProgress" read as "With the admins"), or another name for the same one ("fixProposed"
+ * reads as "Fix in review", "waitingOnReporter" as "Waiting on you"). Undefined where both
+ * read the same words.
+ */
+export const reporterReads = (status: IssueReportStatus): string | undefined => {
+  const name = ISSUE_STATUS_NAMES[issueReportStatusForReporter(status)]
+  return name === ADMIN_ISSUE_STATUS_NAMES[status] ? undefined : name
+}
+
+/** Who made a bare change of assignee, and what it was, as one line of an admins' thread. */
+export const ASSIGNMENT_LINES: Record<IssueReportAssignment, string> = {
+  claimed: 'took this report',
+  takenOver: 'took this report over',
+  released: 'released this report',
 }

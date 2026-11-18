@@ -27,12 +27,26 @@ const When = ({ at }: { at: Date }) => <time dateTime={at.toISOString()}>{format
 
 const FILTER_BUTTON = '-mx-1.5 max-w-full text-xs'
 
+// A row is its title above its details, and who holds it: a line of its own beneath them on a
+// narrow screen and a column of one width beside them on a wider one, so that the holder starts
+// at the same place in every row. The cell is as tall as the button a held report shows, so that
+// a row is the same height whether or not it is held.
+const ROW = 'grid grid-cols-[minmax(0,1fr)] gap-y-1.5 py-3 sm:grid-cols-[minmax(0,1fr)_14rem] sm:gap-x-4'
+const HOLDER_CELL = [
+  'flex min-h-6.5 min-w-0 items-center gap-x-1.5 text-xs text-kumo-subtle',
+  'sm:col-start-2 sm:row-span-2 sm:row-start-1 sm:self-start',
+].join(' ')
+// Drawn back on the left alone, to start where "Held by" ends: drawn back on the right as well, a
+// long name's button would reach past its row.
+const HOLDER_BUTTON = '-ml-1.5 min-w-0 shrink text-xs'
+
 /**
  * The issue reports loaded so far, newest first, with Load more while the server holds further
  * ones. A row shows a report's first line, which opens it, where it stands, who filed it and the
  * workspace it names, each a button that filters the list by it, when it was filed and last
  * written in, how many images it holds, and what the grant given with it covers and how long that
- * has left.
+ * has left. Who holds the report has a cell of its own, at the same place in every row: the
+ * holder's name, a button that filters the list by them, or that nobody holds it.
  */
 export const ReportList = ({ reports, nextCursor, filter, more, onLoadMore, onFilterBy, onOpen }: {
   reports: AdminIssueReport[]
@@ -43,8 +57,8 @@ export const ReportList = ({ reports, nextCursor, filter, more, onLoadMore, onFi
   /** Where loading a further page stands. */
   more: { loading: boolean; problem: string | null }
   onLoadMore: () => void
-  /** Filters the list by a row's reporter or workspace as well. */
-  onFilterBy: (added: Pick<ReportFilter, 'reporter' | 'workspace'>) => void
+  /** Filters the list by a row's reporter, workspace or holder as well. */
+  onFilterBy: (added: Pick<ReportFilter, 'reporter' | 'workspace' | 'assignee'>) => void
   /** Told that a press is opening a report. */
   onOpen: () => void
 }) => {
@@ -80,8 +94,9 @@ export const ReportList = ({ reports, nextCursor, filter, more, onLoadMore, onFi
         {reports.map((report) => {
           const { workspaceId } = report.context
           const images = report.images.length
+          const holder = report.assignee
           return (
-            <li key={report.id} className="space-y-1.5 py-3">
+            <li key={report.id} className={ROW}>
               <Link
                 to="/admin"
                 search={{ tab: 'reports', ...filter, report: report.id }}
@@ -124,6 +139,22 @@ export const ReportList = ({ reports, nextCursor, filter, more, onLoadMore, onFi
                 {images > 0 && <span>{images} {images === 1 ? 'image' : 'images'}</span>}
                 {report.grant !== undefined && (
                   <span>{GRANT_SCOPE_NAMES[report.grant.scope]}, {grantStanding(report.grant, now)}</span>
+                )}
+              </div>
+              <div className={HOLDER_CELL} data-report-holder="">
+                {holder === undefined ? 'Unassigned' : (
+                  <>
+                    <span className="shrink-0">Held by</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className={HOLDER_BUTTON}
+                      aria-label={`Show only reports ${holder.name} holds`}
+                      onClick={() => onFilterBy({ assignee: holder.id })}
+                    >
+                      <span className="truncate">{holder.name}</span>
+                    </Button>
+                  </>
                 )}
               </div>
             </li>

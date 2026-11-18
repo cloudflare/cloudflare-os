@@ -14,8 +14,10 @@ import {
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ISSUE_REPORT_ERROR_CODES,
+  ISSUE_REPORT_STATUSES,
   MAX_ISSUE_REPORT_TEXT_LENGTH,
   createIssueReportError,
+  issueReportStatusForReporter,
   type AdminAccessGrant,
   type AuthenticatedApi,
   type IssueReportEntry,
@@ -39,6 +41,7 @@ vi.mock('../../ServerConfigContext', () => ({
 }))
 
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
+import { ADMIN_ISSUE_STATUS_NAMES, ISSUE_STATUS_NAMES, reporterReads } from './issueLabels'
 import { MyIssues } from './MyIssues'
 import { useIssueReportCount } from './useIssueReportCount'
 
@@ -459,6 +462,35 @@ describe('the list', () => {
   })
 })
 
+describe('what each reader calls a status', () => {
+  it.each([
+    ['fixSuggested', 'With the admins'],
+    ['fixInProgress', 'With the admins'],
+    ['fixProposed', 'Fix in review'],
+    ['waitingOnReporter', 'Waiting on you'],
+  ] as const)('says that the reporter reads %s as "%s", where the admins read another name', (status, name) => {
+    expect(reporterReads(status)).toBe(name)
+  })
+
+  it.each(['new', 'investigating', 'answered', 'withAdmin', 'closed'] as const)(
+    'says nothing of %s, which both read by one name',
+    (status) => {
+      expect(reporterReads(status)).toBeUndefined()
+    },
+  )
+
+  // The property, so that a status added later is covered or fails here.
+  it.each(ISSUE_REPORT_STATUSES)('says what the reporter reads of %s exactly when it is not what the admins read', (status) => {
+    const forReporter = ISSUE_STATUS_NAMES[issueReportStatusForReporter(status)]
+
+    expect(reporterReads(status)).toBe(forReporter === ADMIN_ISSUE_STATUS_NAMES[status] ? undefined : forReporter)
+  })
+
+  it.each(ISSUE_REPORT_STATUSES)('names %s for the reporter as the status the reporter reads in its place', (status) => {
+    expect(ISSUE_STATUS_NAMES[status]).toBe(ISSUE_STATUS_NAMES[issueReportStatusForReporter(status)])
+  })
+})
+
 // An admin's reply to r-1 that the store holds once the report was opened and marked seen.
 const arrive = (api: FakeApi) => {
   const held = api.held.reports.get('r-1')!
@@ -623,6 +655,27 @@ describe('an open report', () => {
     expect(text()).not.toContain('grace@example.com')
     expect(text()).not.toContain('tickets.example.com')
     expect(container!.querySelector('a[href^="https://tickets"]')).toBeNull()
+  })
+
+  it('renders nothing for a change of assignee, even if the answer carried one, and offers no assignment', async () => {
+    const carried = {
+      ...opened({ entries: [
+        adminEntry('e-1', 'On it.'),
+        adminEntry('e-2', '', { visibility: 'admins', assignment: 'claimed' }),
+        adminEntry('e-3', '', { visibility: 'admins', assignment: 'takenOver', via: 'cli' }),
+        adminEntry('e-4', '', { visibility: 'admins', assignment: 'released' }),
+      ] }),
+      assignee: { id: 'grace@example.com', name: 'Grace Assignee', at: new Date('2026-10-12T12:00:00Z'), via: 'api' },
+    }
+    await renderPage(fakeApi({ opened: [carried] }), '/issues?report=r-1')
+
+    expect(thread()).toHaveLength(1)
+    expect(threadTexts()).toEqual(['On it.'])
+    expect(text()).not.toMatch(/took this report|released this report/)
+    expect(text()).not.toMatch(/Assignee|Unassigned|Held by/)
+    expect(text()).not.toContain('grace@example.com')
+    expect(findButton('Assign to me')).toBeUndefined()
+    expect(findButton('Release')).toBeUndefined()
   })
 
   it('reads the report’s images through the reporter’s API', async () => {

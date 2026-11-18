@@ -3,16 +3,21 @@ import { Link } from '@tanstack/react-router'
 import { Button, Loader, Select } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
 import {
+  getIssueReportErrorCode,
+  ISSUE_REPORT_ERROR_CODES,
   ISSUE_REPORT_STATUSES,
   type AdminApi,
   type AdminIssueReport,
   type IssueReportEntry,
   type IssueReportStatus,
+  type NamedUser,
 } from '@gadgets/workshop-shared/api'
+import { logRpcFailure } from '../../rpcErrors'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import { issueFailure } from '../issue-reports/issueFailure'
-import { ADMIN_ISSUE_STATUS_NAMES, ISSUE_PRIORITY_NAMES } from '../issue-reports/issueLabels'
+import { ADMIN_ISSUE_STATUS_NAMES, ISSUE_PRIORITY_NAMES, reporterReads } from '../issue-reports/issueLabels'
 import { IssueThread } from '../issue-reports/IssueThread'
+import { ReportAssignee } from './ReportAssignee'
 import { ReportComposer } from './ReportComposer'
 import { GRANT_SCOPE_NAMES, grantStanding } from './reportGrant'
 import { ReportLinks } from './ReportLinks'
@@ -35,14 +40,20 @@ const Mono = ({ children }: { children: ReactNode }) => (
 
 /**
  * One issue report as the admins work it: its whole thread, admins-only entries included, where
- * an admin writes a note or a reply; its status; its links; its images, read through the admin
- * API; the grant given with it; where its reporter was; and the way into the admin page of the
- * workspace it names. The report is read again after each change, so what is shown is what the
- * server holds. Whoever renders it keys it by the report.
+ * an admin writes a note or a reply; its status, which says what the reporter reads where that
+ * is not what the admins read; who holds it, which the admin reading it can change; its links;
+ * its images, read through the admin API; the grant given with it; where its reporter was; and
+ * the way into the admin page of the workspace it names. The report is read again after each
+ * change, so what is shown is what the server holds. Whoever renders it keys it by the report.
+ *
+ * The thread and the composer are rendered whoever holds the report, so a change of assignee
+ * leaves what is being written as it is.
  */
-export const ReportDetail = ({ admin, reportId, onRead }: {
+export const ReportDetail = ({ admin, reportId, me, onRead }: {
   admin: RpcStub<AdminApi>
   reportId: string
+  /** The admin reading the report, once known. */
+  me: NamedUser | undefined
   /** Told what the server holds of the report, each time it is read. */
   onRead: (report: AdminIssueReport) => void
 }) => {
@@ -127,6 +138,24 @@ export const ReportDetail = ({ admin, reportId, onRead }: {
     setPendingStatus(null)
   }
 
+  // A claim or a release refused because another admin holds the report is answered by reading
+  // the report again, so that the holder shown, and the one a take-over is next asked about, is
+  // the one the server has.
+  const changeAssignee = async (change: () => Promise<void>) => {
+    try {
+      await change()
+    } catch (err) {
+      if (getIssueReportErrorCode(err) === ISSUE_REPORT_ERROR_CODES.assigned) {
+        await read().catch((failure: unknown) => logRpcFailure('Failed to read the report again:', failure))
+      }
+      throw err
+    }
+    await readAfterChange()
+  }
+
+  const shownStatus = pendingStatus ?? report.status
+  const reporterStatus = reporterReads(shownStatus)
+
   return (
     <div className="space-y-6">
       {staleProblem !== null && (
@@ -137,23 +166,47 @@ export const ReportDetail = ({ admin, reportId, onRead }: {
           </Button>
         </div>
       )}
-      <div className="space-y-2">
-        <p className="text-sm text-kumo-subtle">{ISSUE_PRIORITY_NAMES[report.priority]} priority</p>
-        <div ref={statusField} className="w-56 max-w-full" aria-busy={pendingStatus !== null}>
-          <Select<IssueReportStatus>
-            label="Status"
-            className="w-full"
-            value={pendingStatus ?? report.status}
-            onValueChange={(status) => { if (status !== null) void changeStatus(status) }}
-            renderValue={(status) => ADMIN_ISSUE_STATUS_NAMES[status]}
-            description="The reporter sees each change, with your name."
-          >
-            {ISSUE_REPORT_STATUSES.map((status) => (
-              <Select.Option key={status} value={status}>{ADMIN_ISSUE_STATUS_NAMES[status]}</Select.Option>
-            ))}
-          </Select>
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <p className="text-sm text-kumo-subtle">{ISSUE_PRIORITY_NAMES[report.priority]} priority</p>
+          <div ref={statusField} className="max-w-md" aria-busy={pendingStatus !== null}>
+            <Select<IssueReportStatus>
+              label="Status"
+              className="w-56 max-w-full"
+              value={shownStatus}
+              onValueChange={(status) => { if (status !== null) void changeStatus(status) }}
+              renderValue={(status) => ADMIN_ISSUE_STATUS_NAMES[status]}
+              description={
+                'The reporter sees each change they can tell apart, with your name.'
+                + (reporterStatus === undefined ? '' : ` The reporter reads this as “${reporterStatus}”.`)
+              }
+            >
+              {ISSUE_REPORT_STATUSES.map((status) => {
+                const forReporter = reporterReads(status)
+                return (
+                  <Select.Option key={status} value={status}>
+                    {ADMIN_ISSUE_STATUS_NAMES[status]}
+                    {forReporter !== undefined && (
+                      <span className="text-kumo-subtle"> (the reporter reads “{forReporter}”)</span>
+                    )}
+                  </Select.Option>
+                )
+              })}
+            </Select>
+          </div>
+          {statusProblem !== null && <p role="alert" className="text-sm text-kumo-danger">{statusProblem}</p>}
         </div>
-        {statusProblem !== null && <p role="alert" className="text-sm text-kumo-danger">{statusProblem}</p>}
+        {/* Rendered whoever holds the report, as the thread and the composer below are: a change
+            of holder remounts none of them. */}
+        <ReportAssignee
+          assignee={report.assignee}
+          me={me}
+          onClaim={(takeOverFrom) => changeAssignee(async () => {
+            await (takeOverFrom === undefined
+              ? admin.claimIssueReport(report.id) : admin.claimIssueReport(report.id, { takeOverFrom }))
+          })}
+          onRelease={() => changeAssignee(async () => { await admin.releaseIssueReport(report.id) })}
+        />
       </div>
 
       <IssueThread

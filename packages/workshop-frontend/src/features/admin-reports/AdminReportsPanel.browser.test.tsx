@@ -2,8 +2,9 @@
 
 // The admin Reports tab in Chromium, for what jsdom does not model: the keyboard's way through the
 // filters, the list and the composer, where focus goes after each change, how the choice of who
-// reads an entry is announced, and how the tab lays out at a phone's width. What it shows of each
-// report, and the calls it makes, are tested in its jsdom suite.
+// reads an entry is announced, how the tab lays out at a phone's width, and how the list's rows
+// line up whoever holds their report. What it shows of each report, and the calls it makes, are
+// tested in its jsdom suite.
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -18,7 +19,14 @@ import {
 } from '@tanstack/react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 import { page, userEvent, type Locator } from 'vitest/browser'
-import type { AdminApi, AdminIssueReport, IssueReportEntry } from '@gadgets/workshop-shared/api'
+import {
+  createIssueReportError,
+  ISSUE_REPORT_ERROR_CODES,
+  type AdminApi,
+  type AdminIssueReport,
+  type IssueReportAssignee,
+  type IssueReportEntry,
+} from '@gadgets/workshop-shared/api'
 import '../../styles.css'
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
@@ -50,13 +58,18 @@ const report = (id: string, change: Partial<Opened> = {}): Opened => ({
   ...change,
 })
 
+// A report's assignee: Grace, unless `change` names another admin.
+const heldBy = (change: Partial<IssueReportAssignee> = {}): IssueReportAssignee => ({
+  id: 'grace@example.test', name: 'Grace Admin', at: new Date('2026-10-12T12:00:00Z'), via: 'api', ...change,
+})
+
 // The admins' API over reports it holds as the server does, newest first: `pageSize` reports to a
-// page (all of them in one when absent).
+// page (all of them in one when absent). The signed-in admin is Ada.
 const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
   const held = new Map(reports.map((opened) => [opened.id, opened]))
   const ada = { id: 'ada@example.test', name: 'Ada Admin' }
   let entries = 0
-  const addEntry = (id: string, entry: Pick<IssueReportEntry, 'text' | 'visibility' | 'status'>) => {
+  const addEntry = (id: string, entry: Pick<IssueReportEntry, 'text' | 'visibility' | 'status' | 'assignment'>) => {
     const opened = held.get(id)!
     const added: IssueReportEntry = { id: `added-${++entries}`, at: new Date(), author: ada, via: 'api', ...entry }
     held.set(id, {
@@ -65,13 +78,30 @@ const fakeAdmin = (reports: Opened[], options: { pageSize?: number } = {}) => {
     return added
   }
   return {
+    held,
+    whoami: async () => ada,
+    // A change of assignee answers a few frames later too: its button is drawn disabled
+    // meanwhile, which is when the browser takes focus from it. Another admin's report is taken
+    // only from the admin the claim names, as the server takes it.
+    claimIssueReport: vi.fn<AdminApi['claimIssueReport']>(async (id, claim) => {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const holder = held.get(id)!.assignee
+      if (holder !== undefined && holder.id !== claim?.takeOverFrom) {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned)
+      }
+      const { at } = addEntry(id, {
+        text: '', visibility: 'admins', assignment: held.get(id)!.assignee === undefined ? 'claimed' : 'takenOver',
+      })
+      held.set(id, { ...held.get(id)!, assignee: { ...ada, at, via: 'api' } })
+    }),
     listIssueReports: vi.fn<AdminApi['listIssueReports']>(async (query = {}) => {
       // A further page answers a few frames later, as a call over the network does: Load more is
       // drawn disabled meanwhile, which is when the browser takes focus from it.
       if (query.cursor !== undefined) await new Promise((resolve) => setTimeout(resolve, 100))
       const matching = [...held.values()].filter((opened) =>
         (query.status === undefined || opened.status === query.status)
-        && (query.reporter === undefined || opened.reporter.id === query.reporter))
+        && (query.reporter === undefined || opened.reporter.id === query.reporter)
+        && (query.assignee === undefined || opened.assignee?.id === query.assignee))
       const from = Number(query.cursor ?? 0)
       const to = from + (options.pageSize ?? matching.length)
       return {
@@ -121,6 +151,12 @@ const detail = () => page.getByRole('region', { name: 'Issue report', exact: tru
 const statusFilter = () => page.getByRole('search').getByRole('combobox', { name: 'Status' })
 const reportStatus = () => detail().getByRole('combobox', { name: 'Status' })
 const backLink = () => page.getByRole('link', { name: 'All reports' })
+const assigneeBlock = () => detail().getByRole('group', { name: 'Assignee' })
+// Where a part of a row starts, from the left of the window.
+const left = (element: Element | null | undefined) => {
+  if (!element) throw new Error('a row lacks one of its parts')
+  return element.getBoundingClientRect().left
+}
 
 /** Input as a user gives it, with the updates it causes applied before the next assertion. */
 const input = (action: () => Promise<unknown>) => act(async () => { await action() })
@@ -353,5 +389,198 @@ it('fits a phone’s width: the list, then the report in its place, with nothing
   await input(() => userEvent.click(backLink()))
   await expect.element(rowLink('r-1')).toHaveFocus()
   await expect.element(detail()).not.toBeInTheDocument()
+  fits()
+})
+
+it('keeps focus on the assignee’s button through an assignment, and gives it back when a take-over is cancelled or made', async () => {
+  await viewport(1280, 900)
+  const admin = await renderPanel(
+    [report('r-1'), report('r-2', { assignee: heldBy() })],
+    '/admin?tab=reports&report=r-1',
+  )
+  // The button is disabled while the call runs, and has focus again once the report is read: by
+  // then it is the same button under another name.
+  const assign = assigneeBlock().getByRole('button', { name: 'Assign to me' })
+  await tabTo(assign)
+  await input(() => userEvent.keyboard('{Enter}'))
+  const release = assigneeBlock().getByRole('button', { name: 'Release' })
+  await expect.element(release).toHaveFocus()
+  await expect.element(assigneeBlock()).toMatchTextContent(/^AssigneeYou, since/)
+  expect(admin.claimIssueReport.mock.calls).toEqual([['r-1']])
+
+  await input(() => userEvent.click(backLink()))
+  await input(() => userEvent.click(rowLink('r-2')))
+  await expect.element(assigneeBlock()).toMatchTextContent(/^AssigneeGrace Admin, since/)
+
+  // The dialog opens on Cancel, so that Enter takes nothing, and gives focus back to the button.
+  const takeOver = assigneeBlock().getByRole('button', { name: 'Take over…' })
+  await tabTo(takeOver)
+  await input(() => userEvent.keyboard('{Enter}'))
+  const asking = page.getByRole('dialog', { name: 'Take this report over from Grace Admin?' })
+  await expect.element(asking).toBeVisible()
+  await expect.element(asking.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+  await input(() => userEvent.keyboard('{Enter}'))
+  await expect.element(asking).not.toBeInTheDocument()
+  await expect.element(takeOver).toHaveFocus()
+  expect(admin.claimIssueReport).toHaveBeenCalledTimes(1)
+
+  // Confirmed, the dialog stays until the report is taken, then gives focus back as well.
+  await input(() => userEvent.keyboard('{Enter}'))
+  await input(() => userEvent.click(asking.getByRole('button', { name: 'Take over' })))
+  await expect.element(asking).not.toBeInTheDocument()
+  expect(admin.claimIssueReport).toHaveBeenLastCalledWith('r-2', { takeOverFrom: 'grace@example.test' })
+  await expect.element(assigneeBlock().getByRole('button', { name: 'Release' })).toHaveFocus()
+})
+
+it('asks again on Cancel when the holder changed, so that Enter takes nothing from an admin not yet named', async () => {
+  await viewport(1280, 900)
+  const admin = await renderPanel([report('r-1', { assignee: heldBy() })], '/admin?tab=reports&report=r-1')
+  const takeOver = assigneeBlock().getByRole('button', { name: 'Take over…' })
+  await tabTo(takeOver)
+  await input(() => userEvent.keyboard('{Enter}'))
+  const asking = page.getByRole('dialog', { name: 'Take this report over from Grace Admin?' })
+  await expect.element(asking).toBeVisible()
+  // Hal took the report after the dialog named Grace.
+  admin.held.set('r-1', report('r-1', { assignee: heldBy({ id: 'hal@example.test', name: 'Hal Admin' }) }))
+
+  // The button that confirmed is disabled while the call runs, which takes focus from it. The
+  // dialog then names Hal, says why, and has focus on Cancel as when it opened.
+  await tabTo(asking.getByRole('button', { name: 'Take over' }))
+  await input(() => userEvent.keyboard('{Enter}'))
+  const askingAgain = page.getByRole('dialog', { name: 'Take this report over from Hal Admin?' })
+  await expect.element(askingAgain).toBeVisible()
+  await expect.element(askingAgain.getByRole('alert'))
+    .toHaveTextContent('Grace Admin no longer holds this report, so it was not taken over.')
+  await expect.element(askingAgain.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+
+  await input(() => userEvent.keyboard('{Enter}'))
+  await expect.element(askingAgain).not.toBeInTheDocument()
+  await expect.element(assigneeBlock()).toMatchTextContent(/^AssigneeHal Admin, since/)
+  await expect.element(takeOver).toHaveFocus()
+  expect(admin.claimIssueReport.mock.calls).toEqual([['r-1', { takeOverFrom: 'grace@example.test' }]])
+})
+
+it('fits the take-over dialog in a phone’s width when the holder’s name has nowhere to break', async () => {
+  await viewport(360, 740)
+  // 60 characters with nowhere to break.
+  const longName = 'Abcdefghij'.repeat(6)
+  await renderPanel([report('r-1', { assignee: heldBy({ name: longName }) })], '/admin?tab=reports&report=r-1')
+
+  await input(() => userEvent.click(assigneeBlock().getByRole('button', { name: 'Take over…' })))
+  const asking = page.getByRole('dialog', { name: `Take this report over from ${longName}?` })
+  await expect.element(asking).toBeVisible()
+
+  // The dialog hides what is wider than it, so a name that does not wrap would push the buttons
+  // out of sight: nothing in it is wider than it, and the name wraps onto further lines.
+  const dialog = asking.element()
+  expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth)
+  const box = dialog.getBoundingClientRect()
+  expect(box.left).toBeGreaterThanOrEqual(0)
+  expect(box.right).toBeLessThanOrEqual(window.innerWidth)
+  const inside = [
+    asking.getByRole('heading'),
+    asking.getByRole('button', { name: 'Cancel' }),
+    asking.getByRole('button', { name: 'Take over' }),
+  ]
+  for (const part of inside) {
+    await expect.element(part).toBeVisible()
+    const partBox = part.element().getBoundingClientRect()
+    expect(partBox.left).toBeGreaterThanOrEqual(box.left)
+    expect(partBox.right).toBeLessThanOrEqual(box.right)
+  }
+  fits()
+})
+
+it('fits the assignee filter and its chip in a phone’s width', async () => {
+  await viewport(360, 740)
+  const longName = `Grace ${'Abcdefghij'.repeat(6)}`
+  await renderPanel([
+    report('r-1', { assignee: heldBy({ name: longName }) }),
+    report('r-2'),
+  ])
+  const filters = ['Status', 'Priority', 'Assignee'].map((name) => page.getByRole('search').getByRole('combobox', { name }))
+
+  // The three filters stack, each as wide as the others.
+  const boxes = filters.map((filter) => filter.element().getBoundingClientRect())
+  expect(new Set(boxes.map((box) => box.left)).size).toBe(1)
+  expect(new Set(boxes.map((box) => box.width)).size).toBe(1)
+  expect(boxes[0].bottom).toBeLessThanOrEqual(boxes[1].top)
+  expect(boxes[1].bottom).toBeLessThanOrEqual(boxes[2].top)
+  fits()
+
+  // Filtering by a row's holder moves focus to the chip, which cuts a long name short.
+  await input(() => userEvent.click(page.getByRole('button', { name: `Show only reports ${longName} holds` })))
+  const chip = page.getByRole('button', { name: `Show every assignee, not only ${longName}` })
+  await expect.element(chip).toHaveFocus()
+  await expect.element(rowLink('r-2')).not.toBeInTheDocument()
+  await expect.element(filters[2]).toHaveTextContent('One admin')
+  expect(chip.element().getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth)
+  fits()
+})
+
+it.each([
+  ['a desktop', 1280, 900],
+  ['a phone', 360, 740],
+])('keeps the list’s rows aligned whether or not a report is held, at the width of %s', async (_name, width, height) => {
+  await viewport(width, height)
+  // 60 characters with nowhere to break.
+  const longName = 'Abcdefghij'.repeat(6)
+  await renderPanel([
+    report('r-1'),
+    report('r-2', { assignee: heldBy({ name: 'Bo' }) }),
+    report('r-3', { assignee: heldBy({ id: 'long@example.test', name: longName }) }),
+  ])
+  await expect.element(rowLink('r-3')).toBeVisible()
+
+  const list = page.getByRole('list', { name: 'Issue reports' }).element()
+  const rows = [...list.children] as HTMLElement[]
+  expect(rows).toHaveLength(3)
+  const parts = rows.map((row) => ({
+    title: left(row.querySelector('a')),
+    // The badge and the filing time are the first and a later item of the row's details.
+    badge: left(row.querySelector('a')!.nextElementSibling?.firstElementChild),
+    time: left(row.querySelector('time')),
+    holder: left(row.querySelector('[data-report-holder]')),
+    height: row.getBoundingClientRect().height,
+  }))
+
+  // Who holds a report moves nothing else in its row, and starts at one place in every row.
+  for (const part of ['title', 'badge', 'time', 'holder'] as const) {
+    expect(parts.map((row) => [part, row[part]])).toEqual(parts.map(() => [part, parts[0][part]]))
+  }
+  // A row nobody holds is as tall as one held by a short name.
+  expect(parts[0].height).toBe(parts[1].height)
+
+  // A long name is cut short inside its row.
+  const listBox = list.getBoundingClientRect()
+  for (const row of rows) {
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth)
+    for (const inside of row.querySelectorAll('a, button, [data-report-holder]')) {
+      expect(inside.getBoundingClientRect().right).toBeLessThanOrEqual(listBox.right + 0.5)
+    }
+  }
+  expect(list.scrollWidth).toBeLessThanOrEqual(list.clientWidth)
+  const byLongName = page.getByRole('button', { name: `Show only reports ${longName} holds` })
+  await expect.element(byLongName).toBeVisible()
+  expect(byLongName.element().getBoundingClientRect().height).toBe(
+    page.getByRole('button', { name: 'Show only reports Bo holds' }).element().getBoundingClientRect().height)
+  fits()
+})
+
+it('fits what the reporter reads of each status in the report’s status list, at a phone’s width', async () => {
+  await viewport(360, 740)
+  await renderPanel([report('r-1', { status: 'waitingOnReporter' })], '/admin?tab=reports&report=r-1')
+
+  await expect.element(detail()).toMatchTextContent('The reporter reads this as “Waiting on you”.')
+  await input(() => userEvent.click(reportStatus()))
+  const longest = page.getByRole('option', { name: 'Waiting on the reporter (the reporter reads “Waiting on you”)' })
+  await expect.element(longest).toBeVisible()
+
+  for (const option of page.getByRole('option').elements()) {
+    const box = option.getBoundingClientRect()
+    expect(box.left).toBeGreaterThanOrEqual(0)
+    expect(box.right).toBeLessThanOrEqual(window.innerWidth)
+    expect(option.scrollWidth).toBeLessThanOrEqual(option.clientWidth)
+  }
   fits()
 })

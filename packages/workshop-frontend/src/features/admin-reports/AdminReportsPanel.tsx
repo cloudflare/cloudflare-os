@@ -13,6 +13,7 @@ import type { ReportFilter } from './reportFilter'
 import { ReportFilters } from './ReportFilters'
 import { ReportList } from './ReportList'
 import type { ReportRetention } from './reportSettings'
+import { useAdminIdentity } from './useAdminIdentity'
 
 type AdminReportsPanelProps = {
   admin: RpcStub<AdminApi>
@@ -44,7 +45,8 @@ type Listed = { request: string } & ({ reports: AdminIssueReport[]; nextCursor?:
 
 /**
  * The admin Reports tab: the issue reports users filed, newest first, filtered and a page at a
- * time; the report that is open, with its whole thread; and how long reports are kept.
+ * time; the report that is open, with its whole thread; and how long reports are kept. It reads
+ * who the admin is once, for the list and the report to tell the reports they hold from others'.
  *
  * An open report takes the list's place, and the list stays loaded behind it: a report read while
  * it is open replaces its row, so the list shows what the server last said of it once the admin
@@ -54,6 +56,7 @@ export const AdminReportsPanel = ({
   admin, retention, onSettingsChanged, filter, onFilterChange, reportId,
 }: AdminReportsPanelProps) => {
   const toasts = useKumoToastManager()
+  const me = useAdminIdentity(admin)
   const [listed, setListed] = useState<Listed | null>(null)
   // Each press of Refresh or Retry is one value of this.
   const [reloads, setReloads] = useState(0)
@@ -66,13 +69,18 @@ export const AdminReportsPanel = ({
   const detail = useRef<HTMLElement>(null)
   const filters = useRef<HTMLDivElement>(null)
 
-  const { status, priority, reporter, workspace } = filter
+  const { status, priority, reporter, workspace, assignee, unassigned } = filter
   // Everything the list depends on, so that an answer to an earlier load is told apart.
-  const request = JSON.stringify([status ?? null, priority ?? null, reporter ?? null, workspace ?? null, reloads])
+  const request = JSON.stringify([
+    status ?? null, priority ?? null, reporter ?? null, workspace ?? null, assignee ?? null, unassigned ?? null,
+    reloads,
+  ])
 
   useEffect(() => {
     let current = true
-    admin.listIssueReports({ status, priority, reporter, workspace, limit: REPORT_PAGE_SIZE }).then(
+    admin.listIssueReports({
+      status, priority, reporter, workspace, assignee, unassigned, limit: REPORT_PAGE_SIZE,
+    }).then(
       (page) => { if (current) setListed({ request, ...page }) },
       (err: unknown) => {
         if (!current) return
@@ -81,7 +89,7 @@ export const AdminReportsPanel = ({
       },
     )
     return () => { current = false }
-  }, [admin, status, priority, reporter, workspace, request])
+  }, [admin, status, priority, reporter, workspace, assignee, unassigned, request])
 
   // A list stays shown, dimmed, until the load that replaces it answers.
   const list = listed !== null && 'reports' in listed ? listed : null
@@ -95,7 +103,7 @@ export const AdminReportsPanel = ({
     let problem: string | null = null
     try {
       const page = await admin.listIssueReports({
-        status, priority, reporter, workspace, cursor: list.nextCursor, limit: REPORT_PAGE_SIZE,
+        status, priority, reporter, workspace, assignee, unassigned, cursor: list.nextCursor, limit: REPORT_PAGE_SIZE,
       })
       // A page belongs after the list it was asked for, and is dropped once another has replaced it.
       setListed((previous) => previous?.request !== request || !('reports' in previous) ? previous : {
@@ -138,22 +146,28 @@ export const AdminReportsPanel = ({
     ;(row ?? listing.current)?.focus()
   }, [reportId])
 
-  // A row's reporter or workspace button can go with the rows the filtered list replaces, so focus
-  // goes to the chip that then shows the choice. The chip exists once the URL holds the filter.
-  const chipToFocus = useRef<'reporter' | 'workspace' | null>(null)
-  const filterBy = (added: Pick<ReportFilter, 'reporter' | 'workspace'>) => {
-    const field = added.reporter !== undefined ? 'reporter' : 'workspace'
+  // A row's reporter, workspace or holder button can go with the rows the filtered list replaces,
+  // so focus goes to the chip that then shows the choice. The chip exists once the URL holds the
+  // filter. The admin's own reports have no chip: the Assignee filter shows that choice, and takes
+  // focus.
+  const chipToFocus = useRef<'reporter' | 'workspace' | 'assignee' | null>(null)
+  const filterBy = (added: Pick<ReportFilter, 'reporter' | 'workspace' | 'assignee'>) => {
+    const field = added.reporter !== undefined ? 'reporter' : added.workspace !== undefined ? 'workspace' : 'assignee'
     if (added[field] === filter[field]) return
     chipToFocus.current = field
-    onFilterChange({ ...filter, ...added })
+    // Only reports one admin holds and only reports nobody holds are one choice of two.
+    onFilterChange({ ...filter, ...added, ...(field === 'assignee' && { unassigned: undefined }) })
   }
   useEffect(() => {
     if (chipToFocus.current === null) return
-    filters.current?.querySelector<HTMLElement>(`[data-filter-chip="${chipToFocus.current}"]`)?.focus()
+    const field = chipToFocus.current
     chipToFocus.current = null
-  }, [reporter, workspace])
+    const chip = filters.current?.querySelector<HTMLElement>(`[data-filter-chip="${field}"]`)
+    ;(chip ?? filters.current?.querySelector<HTMLElement>(`[data-filter-field="${field}"] [role="combobox"]`))?.focus()
+  }, [reporter, workspace, assignee])
 
   const reporterName = list?.reports.find((report) => report.reporter.id === reporter)?.reporter.name
+  const assigneeName = list?.reports.find((report) => report.assignee?.id === assignee)?.assignee?.name
 
   const reportFailure = (title: string, err: unknown) => {
     logRpcFailure(`${title}:`, err)
@@ -194,7 +208,7 @@ export const AdminReportsPanel = ({
           </Link>
           <h2 id={detailHeading} className="text-lg font-semibold text-kumo-strong">Issue report</h2>
           {/* Keyed by the report, so that nothing drafted for one is ever written to another. */}
-          <ReportDetail key={reportId} admin={admin} reportId={reportId} onRead={noteRead} />
+          <ReportDetail key={reportId} admin={admin} reportId={reportId} me={me} onRead={noteRead} />
         </section>
       )}
 
@@ -222,7 +236,13 @@ export const AdminReportsPanel = ({
           </div>
 
           <div ref={filters}>
-            <ReportFilters filter={filter} reporterName={reporterName} onFilterChange={onFilterChange} />
+            <ReportFilters
+              filter={filter}
+              me={me}
+              reporterName={reporterName}
+              assigneeName={assigneeName}
+              onFilterChange={onFilterChange}
+            />
           </div>
 
           {list === null && !failed && (
