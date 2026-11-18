@@ -144,9 +144,13 @@ What keeps a member from learning about the owner's other mail:
   is missing, not the group's or malformed.
 - Reads spend the owner's Gmail quota, which members share, so each call fetches a bounded number
   of provider pages.
-- Every observation is `containsRestrictedData`, set by the binding's approval queue rather than
-  by each read (`SharedApprovalQueue`'s `restricted`), so the web-fetch block keeps a
-  prompt-injected agent from sending group mail to an arbitrary URL.
+- No read is `containsRestrictedData`, as none of a Gmail Mailbox or Chat conversation binding
+  is. Who may open a gadget is decided by the group every read reports, not by that mark. A
+  first version set it, to keep a prompt-injected agent from fetching a URL with group mail in
+  it; it was dropped because it also suspends auto-approval for the whole workspace for good, so
+  a hook that files each new message somewhere asked for approval every time, which is the
+  thing a team connects a group for. A workspace that reads group mail is as exposed to what
+  the mail says as one that reads a mailbox (see Known risks).
 - An attachment is a mailbox binding's own capability (`GmailAttachmentStub`, `readPdf()`
   included) over that queue, with the message admitted again before each fetch of its bytes.
 
@@ -194,6 +198,10 @@ subresources. A whole-mailbox, label or search binding keeps refusing every obse
   that named it while it was the other group's, when a colleague sent it or the binding takes
   outside mail: nothing in a message says which group an address was when it arrived. Mail the
   other group delivered is not shown, since delivery is proved against the primary address.
+- **What the mail says reaches an agent that can act.** Group mail is other people's words, a
+  stranger's on a binding that takes outside mail, and the workspace keeps its web fetches and
+  auto-approval rules. An injected agent can send mail it has read wherever those reach, as
+  with a Gmail Mailbox binding.
 - **Nested groups are not followed.** Members through a nested group are refused (see
   Observers), which is narrower than Google Groups.
 - **Newer members read older mail.** For a group whose history is off or limited to managers, a

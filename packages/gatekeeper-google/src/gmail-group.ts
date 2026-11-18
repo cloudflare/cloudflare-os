@@ -75,7 +75,7 @@ export type GmailGroupReadContext = {
 };
 
 export type GmailGroupContext = GmailGroupReadContext & {
-  /** Marks every observation restricted and reports the group (see `SharedApprovalQueue`). */
+  /** Reports the group on every observation (see `SharedApprovalQueue`). */
   approvalQueue: SharedApprovalQueue;
   subscribe(hook: RpcStub<GmailMessageHookTarget>): Promise<void>;
   /**

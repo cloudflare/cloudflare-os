@@ -5241,7 +5241,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
 
   #groupContext(read: GmailGroupReadContext, approvalQueue: RpcStub<ApprovalQueue>): GmailGroupContext {
     const attachments: GmailAttachmentContext = {
-      approvalQueue: new SharedApprovalQueue(approvalQueue.dup(), [gmailGroupSubresourceId(read.group)], true),
+      approvalQueue: new SharedApprovalQueue(approvalQueue.dup(), [gmailGroupSubresourceId(read.group)]),
       convertPdf: pdfConverter(this.env, GMAIL_PDF),
     };
     const ctx: GmailGroupContext = {

@@ -361,8 +361,9 @@ design record.
 - **Searches test only what a message says.** `label:`, `is:`, `in:`, `category:`, `deliveredto:`,
   `bcc:` and most `has:` terms are refused, since they would reveal the owner's own mailbox through
   what matches, and a message with a Bcc never counts as the match.
-- **Restricted data.** Every read is restricted, so a workspace that has read group mail can't
-  fetch from the web and doesn't auto-approve actions.
+- **Not restricted data.** As with a Gmail Mailbox, reading group mail leaves the workspace's web
+  fetches and auto-approval rules on, so a hook can act on new mail unattended. Who can open the
+  gadget is decided by group membership alone.
 
 Things to know:
 

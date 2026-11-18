@@ -300,7 +300,9 @@ describe("Gmail group binding", () => {
     expect(Object.keys(messages[0].info).toSorted()).toEqual(["cc", "from", "id", "snippet", "subject", "threadId", "timestamp", "to"]);
 
     for (const observation of await gmail.observations()) {
-      expect(observation).toMatchObject({containsRestrictedData: true});
+      // Shared by membership alone: as a mailbox's reads, the group's leave auto-approval on.
+      expect(observation).toMatchObject({subresources: [GROUP_SUBRESOURCE]});
+      expect(observation).not.toHaveProperty("containsRestrictedData");
     }
   });
 
@@ -387,7 +389,7 @@ describe("Gmail group binding", () => {
     using session = await gmail.session();
     expect(await session.getGroupAddress()).toEqual({address: GROUP, name: "Team"});
     expect(await gmail.observations()).toMatchObject([
-      {containsRestrictedData: true, subresources: [GROUP_SUBRESOURCE]},
+      {subresources: [GROUP_SUBRESOURCE]},
     ]);
   });
 
@@ -405,7 +407,7 @@ describe("Gmail group binding", () => {
     expect(new TextDecoder().decode(await attachment.getContent())).toBe("Agenda");
     await expect(Promise.resolve(attachment.readPdf())).rejects.toThrow("This attachment is not a PDF.");
     for (const observation of await gmail.observations()) {
-      expect(observation).toMatchObject({containsRestrictedData: true, subresources: [GROUP_SUBRESOURCE]});
+      expect(observation).toMatchObject({subresources: [GROUP_SUBRESOURCE]});
     }
 
     // The owner bins the message: a capability handed out before reads nothing more of it.
