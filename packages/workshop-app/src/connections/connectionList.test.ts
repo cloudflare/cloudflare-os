@@ -139,8 +139,10 @@ const accountNumbered = (id: number, vendorId = 'github') => ({ id, vendorId }) 
 
 describe('setting up a connection', () => {
   it('offers the kinds shown with the one asked for, not those shown apart', () => {
-    const resources = [kind('drive'), kind('drive/file', { groupedWith: 'drive' }), kind('drive/doc', { groupedWith: 'drive' }), kind('calendar')]
-    expect(groupedKinds(resources, 'drive/doc')).toEqual(['drive', 'drive/file', 'drive/doc'])
+    // Shown with another by its type's id, which is not its pattern, as Google Drive's are.
+    const resources = [kind('https://drive.example/my-drive', { id: 'drive' }), kind('drive/file', { groupedWith: 'drive' }), kind('drive/doc', { groupedWith: 'drive' }), kind('calendar')]
+    expect(groupedKinds(resources, 'drive/doc')).toEqual(['https://drive.example/my-drive', 'drive/file', 'drive/doc'])
+    expect(resourceGroups(resources).map(({ lead, members }) => [lead.urlPattern, members.length])).toEqual([['https://drive.example/my-drive', 3], ['calendar', 1]])
     expect(groupedKinds(resources, 'calendar')).toEqual(['calendar'])
     expect(groupedKinds(resources, 'unknown')).toEqual(['unknown'])
   })

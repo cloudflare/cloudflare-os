@@ -220,6 +220,12 @@ export const ConnectResource = ({
   // giving access asks for all of them at once.
   const needsGrant = usable !== undefined && pattern !== undefined && ungranted.includes(pattern)
   const accepted = kinds.filter((each) => !ungranted.includes(each))
+  const grant = async () => {
+    if (connection?.blocked() || !usable) return false
+    const flow = await api.ensureAccountResources(usable.id, ungranted)
+    if (flow) openConnectWindow(flow)
+    return true
+  }
   const grantedKey = usable?.description.grantedResourceUrlPatterns?.join('\n')
 
   // The service's form, for the account chosen once it may reach this kind of resource.
@@ -293,12 +299,9 @@ export const ConnectResource = ({
         openConnectWindow(await api.reconnectAccount(id))
         return true
       }}
-      onGrant={needsGrant ? async () => {
-        if (connection?.blocked()) return false
-        const flow = await api.ensureAccountResources(usable.id, ungranted)
-        if (flow) openConnectWindow(flow)
-        return true
-      } : undefined}
+      onGrant={needsGrant ? grant : undefined}
+      // The rest of what the form could offer, as the old app asks for it beside the form.
+      onGrantMore={!needsGrant && usable && ungranted.length > 0 ? grant : undefined}
       fields={save?.fields}
       configurator={formless ? undefined : pattern === undefined ? (
         <p className="text-base/5 text-kumo-subtle">The agent didn’t say what kind of resource it wants. Ask it again.</p>

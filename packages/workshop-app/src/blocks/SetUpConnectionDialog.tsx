@@ -48,6 +48,11 @@ export type SetUpConnectionDialogProps = {
   onReconnect: (id: number) => Promise<boolean>
   /** The account chosen has not given access to this kind of resource: asks it to, likewise. */
   onGrant?: () => Promise<boolean>
+  /**
+   * The form is open, but some kinds shown with this one aren't reachable through the account
+   * chosen, so it doesn't offer them (Google Drive's files, say): asks for them, likewise.
+   */
+  onGrantMore?: () => Promise<boolean>
   /** What else is asked of the user before the service's form, such as the name a file is saved under. */
   fields?: ReactNode
   /** The service's own form for which one it is, once there is an account to choose it with. */
@@ -72,7 +77,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  */
 export const SetUpConnectionDialog = ({
   open, onOpenChange, name, logoUrl, color, title, accept = { label: 'Connect', pending: 'Connecting…' }, noAccount, resource, reason, onBack,
-  accounts, selectedAccountId, onSelectAccount, onConnectAccount, onReconnect, onGrant, fields, configurator, ready, onAccept,
+  accounts, selectedAccountId, onSelectAccount, onConnectAccount, onReconnect, onGrant, onGrantMore, fields, configurator, ready, onAccept,
 }: SetUpConnectionDialogProps) => {
   const [pending, setPending] = useState<Step | 'accept'>()
   // A window of the service's was opened for this, and is waited for.
@@ -146,6 +151,12 @@ export const SetUpConnectionDialog = ({
           <Banner
             title={`This account hasn’t given access to ${resource ?? 'this'} yet.`}
             action={{ label: opening('grant', 'Give access'), disabled: pending !== undefined, onSelect: () => void run('grant', onGrant) }}
+          />
+        )}
+        {usable && !onGrant && onGrantMore && (
+          <Banner
+            title="This account hasn’t given access to everything here yet."
+            action={{ label: opening('grant', 'Give access'), disabled: pending !== undefined, onSelect: () => void run('grant', onGrantMore) }}
           />
         )}
         {usable && !onGrant && fields}

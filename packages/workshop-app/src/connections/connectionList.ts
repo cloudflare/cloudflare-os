@@ -1,6 +1,6 @@
 import { createElement } from 'react'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
-import { matchesResourceUrlPattern, type AccountDescription, type SupportedResource, type VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import { getResourceTypeId, matchesResourceUrlPattern, type AccountDescription, type SupportedResource, type VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 import type { ArrangedGroup, ListFilter, ListOrder } from '@/components/listView'
 import type { ListViewSpec } from '@/hooks/useListView'
 import { primaryCategory, SERVICE_CATEGORIES, serviceCategories } from './serviceCategories'
@@ -110,8 +110,9 @@ export const isGranted = (granted: readonly string[] | undefined, urlPattern: st
 /** Whether a kind is offered to connect one that exists (`SupportedResource.connectable`), rather than only made. */
 export const isConnectable = (resource: SupportedResource) => resource.connectable !== false
 
-// The kind a kind of resource is shown with: itself, unless it is shown with another.
-const leadOf = (resource: SupportedResource) => resource.groupedWith ?? resource.urlPattern
+// The kind a kind of resource is shown with, by its type's id (`groupedWith` names one): itself,
+// unless it is shown with another.
+const leadOf = (resource: SupportedResource) => resource.groupedWith ?? getResourceTypeId(resource)
 
 /**
  * The kinds of resource a service shows as one with `urlPattern` (`SupportedResource.groupedWith`),
@@ -144,7 +145,7 @@ export const resourceGroups = (resources: readonly SupportedResource[]) => {
     if (members) members.push(resource)
     else groups.set(leadOf(resource), [resource])
   }
-  return Array.from(groups, ([lead, members]) => ({ lead: members.find(({ urlPattern }) => urlPattern === lead) ?? members[0]!, members }))
+  return Array.from(groups, ([lead, members]) => ({ lead: members.find((member) => getResourceTypeId(member) === lead) ?? members[0]!, members }))
 }
 
 /** The kind among `resources` that `url` is: one of its own before any web page (`https://*`). */
