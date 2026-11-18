@@ -310,6 +310,21 @@ the rest, with Hide starred, which leaves the starred to their own tab rather th
 other. They are reordered on their tab and on All. `LibraryPane` reads what the page shows and
 `LibraryView` draws it from plain props, which is what the gallery renders over fake outputs.
 
+Each row and card has a more menu (`LibraryMoreMenu`), slid out beside its star as a workspace's
+row has one, and left out on a narrow screen, where the output's own page has the same: Open, Open
+in new tab and Copy link, then for whoever builds in its workspace (`library/libraryEdits.ts`'s
+`mayChange`, plain and tested: the workspace list's role where it is listed, else the role the
+library kept, which a shared one must say) Rename, typed where the title is (`EditableTitle`'s
+`autoFocus`), Share… (`ShareWorkspaceDialog` for the gadget, as the pane's), Gadget settings, and
+Delete…, asked first (`DeleteGadgetDialog`). Docs and sheets are gadgets too, and have the same.
+A rename and a deletion go through the gadget (`gadgets/gadgetChanges.ts`: `getGadget()` pipelined
+on `openWorkspace()`, both let go of after) and show at once, over the library as it was read
+(`libraryEdits`): a renamed one under its new title while it still reads as the old, put back if it
+was refused, and a deleted one gone, with its star. The gadget pane's More menu has Rename, in its
+title's bubble, and Delete… too (`useGadgetEdits`), only for whoever may, and Delete… only where
+there is somewhere to go once it is gone. The scripted chats' fake workspace renames and deletes its
+gadget, for trying the pane without a backend.
+
 The header ends in Explore templates (Explore, on a narrow screen) and New, whose menu ends in the templates too. The templates
 (`/library/templates`, `TemplateStoreView`) are what the backend calls blueprints, the way a store
 lists apps, with Publish at the header's end (`PublishMenu`: the user's own apps, `ownApps`,

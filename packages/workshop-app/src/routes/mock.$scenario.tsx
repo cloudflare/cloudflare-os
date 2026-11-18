@@ -164,6 +164,11 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
     onFullScreenChange: () => {},
     // The scenario's chat is the one the update is proposed in: back to it from the gadget's page.
     onUpdateProposed: () => setExpanded(false),
+    // Gone, there is nothing to show beside the chat, nor as its page.
+    onDeleted: () => {
+      setExpanded(false)
+      setOpen(undefined)
+    },
   }))
 
   const narrow = useNarrowScreen()
@@ -179,6 +184,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       onFullScreenChange={handlers.onFullScreenChange}
       onCollapse={() => setExpanded(false)}
       onUpdateProposed={handlers.onUpdateProposed}
+      onDeleted={handlers.onDeleted}
     />
   ) : (
     <AsidePane
@@ -190,6 +196,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       onExpand={() => setExpanded(true)}
       onFullScreenChange={handlers.onFullScreenChange}
       onUpdateProposed={handlers.onUpdateProposed}
+      onDeleted={handlers.onDeleted}
       narrow={narrow}
     />
   ))

@@ -2,7 +2,8 @@ import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, t
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   AppWindowIcon, ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, LinkIcon, UserPlusIcon,
+  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, LinkIcon, PencilSimpleIcon, TrashIcon,
+  UserPlusIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -73,6 +74,10 @@ export type SidePaneProps = Placement & {
   onShare?: () => void
   /** Updates the one shown, a gadget, from the newer version its template has, for whoever may. */
   onUpdate?: () => void
+  /** Gives the one shown, a gadget, another title, typed where its name is, for whoever may. */
+  onRename?: (title: string) => void
+  /** Asks whether to delete the one shown, a gadget, for whoever may. */
+  onDelete?: () => void
   /**
    * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
    * step up, and the step down is a back button at the start of the header.
@@ -99,21 +104,24 @@ const copyLink = (link: string) => void navigator.clipboard.writeText(link).catc
  * It grows in steps, and the end of its header has the step up, with the step down in the same
  * place: beside the page it expands to take the page's place; expanded, it collapses back and
  * fills the window; filling the window, it goes back. Before those are who else is looking at it,
- * more that can be done with it (exporting it, updating a gadget whose template has a newer
- * version, and beside the page putting the pane away), and sharing it where it can be shared, its
- * link then copied from more, or else a link to it. Beside the page, the header starts with how many
- * things the page has to show, which opens to the list of them, then the name of the one shown. As
- * the page, it starts with the workspace it is in, and before the rest at its end is the way to a
- * chat with it beside it.
+ * more that can be done with it (exporting it, renaming it where its name is, updating a gadget
+ * whose template has a newer version, beside the page putting the pane away, and deleting it, which
+ * asks first), and sharing it where it can be shared, its link then copied from more, or else a
+ * link to it. Beside the page, the header starts with how many things the page has to show, which
+ * opens to the list of them, then the name of the one shown. As the page, it starts with the
+ * workspace it is in, and before the rest at its end is the way to a chat with it beside it.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
  * corners and a line along the top. The bar at its top pushes the header up out of the way, and
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, onRename, onDelete, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
+  // The one whose name is being typed where it is, so that another shown meanwhile is not.
+  const [renamingKey, setRenamingKey] = useState<string>()
+  const renaming = onRename && active && renamingKey === active.key && !viewingCode
 
   // How far out the header is, 0 to 1. A motion value, so that dragging renders nothing again.
   const [headerShown, setHeaderShown] = useState(true)
@@ -188,6 +196,7 @@ export const SidePane = (props: SidePaneProps) => {
                 title={active.title}
                 icon={active.icon}
                 trail={viewingCode && onViewCode ? { label: 'Code', icon: <CodeIcon />, onBack: onViewCode } : undefined}
+                renaming={renaming ? { onRename, onEnd: () => setRenamingKey(undefined) } : undefined}
               />
             </HeaderBubble>
           )}
@@ -202,13 +211,14 @@ export const SidePane = (props: SidePaneProps) => {
                 <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate))) && (
+            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate || onRename || onDelete))) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {exports && <ExportSubmenu {...exports} />}
                   {onShare && link && <DropdownMenu.Item icon={LinkIcon} onSelect={() => copyLink(link)}>Copy link</DropdownMenu.Item>}
+                  {onRename && active && !viewingCode && <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={() => setRenamingKey(active.key)}>Rename</DropdownMenu.Item>}
                   {onViewCode && (viewingCode
                     ? <DropdownMenu.Item icon={AppWindowIcon} onSelect={onViewCode}>Back to {active?.title ?? 'it'}</DropdownMenu.Item>
                     : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>View code</DropdownMenu.Item>)}
@@ -220,6 +230,8 @@ export const SidePane = (props: SidePaneProps) => {
                     </DropdownMenu.Item>
                   )}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
+                  {onDelete && <DropdownMenu.Separator />}
+                  {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
                 </DropdownMenu>
               </HeaderBubble>
             )}

@@ -123,7 +123,25 @@ describe('MockOverseer', () => {
     expect(await shared.session.api.listWorkspaces()).toEqual([])
   })
 
-  it('deletes the chat, which its subscribers hear of and the workspace no longer lists', async () => {
+  it('renames and deletes a gadget, which those listening to the workpieces hear of', async () => {
+    const workspace = createMockApi(scenario({})).session.api.openWorkspace('mock')
+    const titles: string[] = []
+    const removed: number[] = []
+    const subscriber = { entry: ({ title }: { title: string }) => void titles.push(title), removed: (id: number) => void removed.push(id), ready: () => {} }
+    // Plain, as the fake answers whatever it is given.
+    await workspace.subscribeToWorkpieces(subscriber as unknown as Parameters<typeof workspace.subscribeToWorkpieces>[0])
+    // The gadget is listed once it has been asked for.
+    workspace.getGadget(3)
+
+    await workspace.getGadget(3).setTitle('Q4 platform review')
+    expect(titles).toEqual(['Q3 platform review', 'Q4 platform review'])
+
+    await workspace.getGadget(3).remove()
+    expect(removed).toEqual([3])
+    expect(() => workspace.getGadget(3)).toThrow('No gadget 3.')
+  })
+
+    it('deletes the chat, which its subscribers hear of and the workspace no longer lists', async () => {
     const overseer = new MockOverseer(scenario({ history: history([user('hi')]) }))
     const seen = subscribed(overseer)
     const chatUpdated = vi.fn<(workspaceId: string, chatId: number, chat: unknown) => Promise<void>>(async () => {})

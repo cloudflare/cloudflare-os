@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Switch } from '@/components/Switch'
 import { useListView } from '@/hooks/useListView'
+import { mayChange, NO_EDITS, withDeletion, withEdits, withRename } from '@/library/libraryEdits'
 import { libraryList, outputKey, outputTitle } from '@/library/libraryList'
 import { LibraryView, STARRED_TAB } from '@/library/LibraryView'
 import { FORMATS, PREVIEW_LOOKS, previewOutputs } from './LibraryListPreview'
@@ -13,13 +14,15 @@ export const LibraryPagePreview = () => {
   const [outputs] = useState(() => previewOutputs(Date.now()))
   const [empty, setEmpty] = useState(false)
   const [tab, setTab] = useState(STARRED_TAB)
-  const all = empty ? [] : outputs
+  // Renamed and deleted from their more menus, at once and with no question, as nothing is lost here.
+  const [edits, setEdits] = useState(NO_EDITS)
+  const all = empty ? [] : withEdits(outputs, edits)
   const [stars, setStars] = useState(() => [outputs[4], outputs[0], outputs[8]].map(outputKey))
   const [hideStarred, setHideStarred] = useState(false)
   const list = useListView('gallery-library-page', libraryList(all, FORMATS, new Set(stars), PREVIEW_LOOKS))
 
   return (
-    <Section title="LibraryView (the Library page: a tab for the starred, which it starts at for whoever has any, one for all of it, and one for each type something has been made as, scrolled along their line where it is too short for them. Every tab is the same list under the same controls. The starred come first in every tab, and the filter menu’s Hide starred leaves them to their own tab. They are dragged into another order on their tab and on All, while nothing narrows them. The header ends in the way to the templates and in New, whose menu ends in the templates too)">
+    <Section title="LibraryView (the Library page: a tab for the starred, which it starts at for whoever has any, one for all of it, and one for each type something has been made as, scrolled along their line where it is too short for them. Every tab is the same list under the same controls. The starred come first in every tab, and the filter menu’s Hide starred leaves them to their own tab. They are dragged into another order on their tab and on All, while nothing narrows them. The header ends in the way to the templates and in New, whose menu ends in the templates too. Each output’s more renames it in place and deletes it, here at once; those shared with the viewer here say no role, so they have neither)">
       <div className="flex w-full flex-col gap-3">
         <Switch label="An empty library" checked={empty} onCheckedChange={setEmpty} />
         {/* Wider than the gallery's column, as a page is. */}
@@ -42,6 +45,18 @@ export const LibraryPagePreview = () => {
             onExplore={() => say('explore the templates')}
             looks={PREVIEW_LOOKS}
             me={{ name: 'Ada Lovelace' }}
+            actionsOf={(output) => mayChange(output) ? {
+              onRename: (title) => {
+                setEdits((current) => withRename(current, outputs.find((each) => outputKey(each) === outputKey(output)) ?? output, title))
+                say(`renamed ${outputTitle(output)} to ${title}`)
+              },
+              onShare: () => say(`share ${outputTitle(output)}`),
+              onOpenSettings: () => say(`open the settings of ${outputTitle(output)}`),
+              onDelete: () => {
+                setEdits((current) => withDeletion(current, output))
+                say(`deleted ${outputTitle(output)}`)
+              },
+            } : undefined}
           />
         </div>
         <p role="status" className="text-sm text-kumo-subtle">{report}</p>

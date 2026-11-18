@@ -136,6 +136,8 @@ export class MockOverseer {
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
+  // Deleted, which no longer are, whatever their id.
+  #removedGadgets = new Set<number>()
   #workpieceSubscribers = new Set<WorkpiecesSubscriber>()
   #files: NonNullable<Scenario['files']>
   #worktrees: Record<number, MockWorktree>
@@ -197,7 +199,12 @@ export class MockOverseer {
           return (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : handle.onBroken.add(callback))
         }
         if (name === 'getGadget') {
-          return (id: number) => ({ ...this.#gadget(id).open(handle), applyBlueprint: (blueprintId: string) => this.#proposeUpdate(id, blueprintId, handle) })
+          return (id: number) => ({
+            ...this.#gadget(id).open(handle),
+            applyBlueprint: (blueprintId: string) => this.#proposeUpdate(id, blueprintId, handle),
+            setTitle: (title: string) => this.#renameGadget(id, title, handle),
+            remove: () => this.#removeGadget(id, handle),
+          })
         }
         const value: unknown = Reflect.get(target, name, target)
         if (typeof value !== 'function' || typeof name === 'symbol' || name === 'then') return value
@@ -217,8 +224,9 @@ export class MockOverseer {
     if (wait > 0) await sleep(wait)
   }
 
-  /** Any id is a gadget: the scenarios' outputs are all documents. */
+  /** Any id is a gadget, until it is deleted: the scenarios' outputs are all documents. */
   #gadget(id: number) {
+    if (this.#removedGadgets.has(id)) throw new Error(`No gadget ${id}.`)
     let gadget = this.#gadgets.get(id)
     if (!gadget) {
       this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp())))
@@ -229,7 +237,25 @@ export class MockOverseer {
 
   #gadgetSummary(id: number) {
     const upstream = this.#templateUpdate ? { upstream: { blueprintId: TEMPLATE.id, commitId: TEMPLATE_TAKEN } } : {}
-    return { id, type: 'gadget', title: 'Q3 platform review', commitId: gadgetCommit(id, GADGET_HISTORY.length - 1), ...upstream } as const
+    return { id, type: 'gadget', title: this.#gadgets.get(id)?.title ?? 'Q3 platform review', commitId: gadgetCommit(id, GADGET_HISTORY.length - 1), ...upstream } as const
+  }
+
+  /** Gives the gadget another title, which those listening to the workpieces hear of. */
+  async #renameGadget(id: number, title: string, handle: Handle) {
+    if (handle.broken) throw handle.broken
+    await this.#backUp()
+    this.#gadget(id).title = title
+    for (const subscriber of this.#workpieceSubscribers) subscriber.entry(this.#gadgetSummary(id))
+  }
+
+  /** Deletes the gadget, which those listening to the workpieces hear of, and which is then no more. */
+  async #removeGadget(id: number, handle: Handle) {
+    if (handle.broken) throw handle.broken
+    await this.#backUp()
+    this.#gadget(id)
+    this.#gadgets.delete(id)
+    this.#removedGadgets.add(id)
+    for (const subscriber of this.#workpieceSubscribers) subscriber.removed(id)
   }
 
   /**
