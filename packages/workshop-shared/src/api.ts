@@ -5637,10 +5637,20 @@ export type AiChatMessage = {
   author: AiChatAuthorInfo;
 } & AiChatMessageBody;
 
+/**
+ * Worktree file URLs in links and image embeds, pinned when an agent emits them; Markdown keys use the renderer's URI
+ * encoding. Values are immutable Git blob OIDs; null records an unavailable file and prevents
+ * a later view from resolving a newer file.
+ */
+export type ChatEmbeds = Record<string, string | null>;
+
 export type AiChatMessageBody = {
   /** A regular chat message. */
   type: "message";
   message: string;
+
+  /** Files snapshotted by the host parser, independent of subsequent edits to their paths. */
+  embeds?: ChatEmbeds;
 
   /**
    * The message may contain "capsules", which are embedded capabilities that reference external
@@ -6318,8 +6328,8 @@ export type AiToolCall = {
   output?: {gadgetId: WorkpieceId, changeId?: number, blueprintNotes?: string};
 } | {
   /**
-   * Create a new worktree workpiece: a file tree rooted at a git commit, private to the creating
-   * chat, whose files the agent then reads and edits with the regular file tools. Unlike a
+   * Create a new worktree workpiece: an empty file tree or one rooted at a git commit, private
+   * to the creating chat, whose files the agent then reads and edits with the regular file tools. Unlike a
    * gadget, a worktree has no output, no bindings, and cannot execute; its name lives only in
    * the chat's binding map, never in the workspace default binding list.
    */
@@ -6335,13 +6345,13 @@ export type AiToolCall = {
     bindingName: string;
 
     /**
-     * The git commit to root the worktree at: a full 40-hex oid, resolved against the
-     * workspace's local git store and its gatekeeper-provided metadata (never a remote lookup --
-     * remote refs resolve through gatekeeper APIs first). Abbreviated ids are refused, since
-     * knowing a commit's id is the capability to read it; logs written before that may carry an
+     * Omit to create an empty worktree. Otherwise the git commit to root it at: a full 40-hex oid,
+     * resolved against the workspace's local git store and its gatekeeper-provided metadata
+     * (never a remote lookup -- remote refs resolve through gatekeeper APIs first). Abbreviated ids
+     * are refused, since knowing a commit's id is the capability to read it; logs written before that may carry an
      * unambiguous prefix.
      */
-    commitId: string;
+    commitId?: string;
   };
 
   /**
@@ -6351,10 +6361,10 @@ export type AiToolCall = {
    * `changeId` is the change number of the "changes" batch that records the creation (see
    * `createdWorktrees` on the "changes" message body), like createGadget's.
    *
-   * `baseCommit` is the full oid `input.commitId` resolved to -- the commit the worktree is
-   * rooted at, and its accepted commit until the chat's first accept of changes to it. Recorded
-   * because the input of an older log may be a prefix and the model is told the resolved oid. The creation pins
-   * nothing: the worktree reads as its accepted commit until its first modification pins it
+   * `baseCommit` is the full oid `input.commitId` resolved to, or the empty root commit when
+   * omitted -- the commit the worktree is rooted at, and its accepted commit until the chat's
+   * first accept of changes to it. Recorded because the input of an older log may be a prefix and
+   * the model is told the resolved oid. The creation pins nothing: the worktree reads as its accepted commit until its first modification pins it
    * (see ChatGadgetPin), so replay serves untouched files from the pin when there is one and
    * from the accepted commit otherwise, never from this field.
    */
@@ -6634,6 +6644,8 @@ export type AiChatStreamEvent = {
 } | {
   type: "textDelta";
   delta: string;
+  /** Newly pinned embeds in this delta; persisted with the completed message as embeds. */
+  embeds?: ChatEmbeds;
 } | {
   type: "reasoningDelta";
   delta: string;

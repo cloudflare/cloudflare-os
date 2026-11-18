@@ -1,0 +1,160 @@
+import { describe, expect, it, vi } from "vitest";
+import type { ChatEmbeds } from "@gadgets/workshop-shared/api";
+import { snapshotChatEmbeds } from "../src/chat-embeds";
+
+const A = "a".repeat(40), B = "b".repeat(40);
+
+describe("host-pinned answer files", () => {
+  it.each(["[Download]", "![Preview]"])("pins %s inside GFM footnotes", async label => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    await snapshotChatEmbeds("See the report.[^report]\n\n" +
+        `[^report]: ${label}(worktree://OUTPUTS/report.csv)`,
+        snapshots, read);
+    expect(snapshots).toEqual({"worktree://OUTPUTS/report.csv": A});
+    expect(read).toHaveBeenCalledExactlyOnceWith("OUTPUTS", "report.csv");
+  });
+
+  it("pins ordinary file links once, sharing an image's snapshot and preserving binary references", async () => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const source = "worktree://OUTPUTS/mandelbrot.png";
+    await snapshotChatEmbeds(`[Download PNG](${source}) ![Preview](${source})`, snapshots, read, true);
+    expect(snapshots).toEqual({[source]: A});
+    expect(read).toHaveBeenCalledExactlyOnceWith("OUTPUTS", "mandelbrot.png");
+    read.mockResolvedValue(B);
+    await snapshotChatEmbeds(`[Download PNG](${source}) [Download archive](worktree://OUTPUTS/build.zip)`, snapshots, read);
+    expect(snapshots).toEqual({[source]: A, "worktree://OUTPUTS/build.zip": B});
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for complete file links and their reference definitions", async () => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    await snapshotChatEmbeds('[Download](<worktree://OUTPUTS/ü report.csv>', snapshots, read, true);
+    expect(read).not.toHaveBeenCalled();
+    await snapshotChatEmbeds('[Download](<worktree://OUTPUTS/ü report.csv>)', snapshots, read, true);
+    expect(snapshots).toEqual({"worktree://OUTPUTS/%C3%BC%20report.csv": A});
+    expect(read).toHaveBeenCalledExactlyOnceWith("OUTPUTS", "ü report.csv");
+    await snapshotChatEmbeds('[Source][code]\n\n[code]: worktree://OUTPUTS/main', snapshots, read, true);
+    expect(read).toHaveBeenCalledTimes(1);
+    await snapshotChatEmbeds('[Source][code]\n\n[code]: worktree://OUTPUTS/main.cpp\n', snapshots, read, true);
+    expect(snapshots["worktree://OUTPUTS/main.cpp"]).toBe(A);
+  });
+
+  it("pins an image when its Markdown completes and never resolves that path again in this message", async () => {
+    const images: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const text = "![Result](worktree://REPO/my%20image.png)";
+    expect(await snapshotChatEmbeds(text.slice(0, -1), images, read, true)).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+    expect(await snapshotChatEmbeds(text, images, read, true)).toEqual({"worktree://REPO/my%20image.png": A});
+    expect(read).toHaveBeenCalledWith("REPO", "my image.png");
+    read.mockResolvedValue(B);
+    expect(await snapshotChatEmbeds(text + "\n" + text, images, read)).toBeUndefined();
+    expect(images).toEqual({"worktree://REPO/my%20image.png": A});
+    expect(read).toHaveBeenCalledTimes(1);
+    const next: ChatEmbeds = {};
+    await snapshotChatEmbeds(text, next, read);
+    expect(next).toEqual({"worktree://REPO/my%20image.png": B});
+  });
+
+  it("records a missing or failed lookup once, instead of filling old replies with a later file", async () => {
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>()
+        .mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("Unavailable"));
+    const images: ChatEmbeds = {};
+    const text = "![Missing](worktree://SCRATCH/missing.png) ![Failed](worktree://SCRATCH/failed.png)";
+    await snapshotChatEmbeds(text, images, read);
+    expect(images).toEqual({"worktree://SCRATCH/missing.png": null, "worktree://SCRATCH/failed.png": null});
+    read.mockResolvedValue(A);
+    await snapshotChatEmbeds(text, images, read);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["![Image](worktree://REPO/ü.png)", "worktree://REPO/%C3%BC.png", "ü.png"],
+    ["![Image](<worktree://REPO/my image.png>)", "worktree://REPO/my%20image.png", "my image.png"],
+    ["![Image][picture]\n\n[picture]: <worktree://REPO/ü image.png>\n", "worktree://REPO/%C3%BC%20image.png", "ü image.png"],
+  ])("uses the renderer's normalized image key for %s", async (text, source, path) => {
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const images: ChatEmbeds = {};
+    await snapshotChatEmbeds(text, images, read);
+    expect(images).toEqual({[source]: A});
+    expect(read).toHaveBeenCalledExactlyOnceWith("REPO", path);
+  });
+
+  it("uses real HTML attribute parsing and waits for partial image tags", async () => {
+    const images: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const prefix = '<inline-html>\n<img alt="x > y" src="worktree://SCRATCH/a';
+    await snapshotChatEmbeds(prefix, images, read, true);
+    expect(read).not.toHaveBeenCalled();
+    await snapshotChatEmbeds(prefix + '.png">\n', images, read, true);
+    expect(read).toHaveBeenCalledWith("SCRATCH", "a.png");
+    await snapshotChatEmbeds(prefix + '.png">\n<!-- <img src="worktree://SCRATCH/comment.png"> -->\n' +
+        '<script>const example = \'<img src="worktree://SCRATCH/script.png">\';</script>\n</inline-html>', images, read);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a&amp;b.png", "a&b.png"],
+    ["a&#38;b.png", "a&b.png"],
+    ["a&#x26;b.png", "a&b.png"],
+    ["a&amp;amp;b.png", "a&amp;b.png"],
+    ["a&notit;.png", "a&notit;.png"],
+    ["a&quot;b.png", 'a"b.png'],
+    ["a&#x1f600;.png", "a😀.png"],
+  ])("pins the DOM-decoded HTML attribute exactly once: %s", async (attribute, path) => {
+    const images: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const text = `<inline-html>\n<img src="worktree://REPO/${attribute}">\n</inline-html>`;
+    expect(await snapshotChatEmbeds(text, images, read)).toEqual({[`worktree://REPO/${path}`]: A});
+    expect(images).toEqual({[`worktree://REPO/${path}`]: A});
+    await snapshotChatEmbeds(text, images, read);
+    expect(read).toHaveBeenCalledExactlyOnceWith("REPO", path);
+  });
+
+  it.each([
+    ["&#46;&#46;/secret", "../secret"],
+    ["a&#92;b.png", "a\\b.png"],
+    ["&#37;00", "%00"],
+  ])("validates HTML paths after entity decoding: %s", async (attribute, path) => {
+    const images: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>();
+    await snapshotChatEmbeds(`<inline-html>\n<img src="worktree://REPO/${attribute}">\n</inline-html>`, images, read);
+    expect(images).toEqual({[`worktree://REPO/${path}`]: null});
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("waits for complete reference definitions and ignores examples and other schemes", async () => {
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const images: ChatEmbeds = {};
+    const text = "![Image][picture]\n\n[picture]: worktree://REPO/result";
+    await snapshotChatEmbeds(text, images, read, true);
+    expect(read).not.toHaveBeenCalled();
+    await snapshotChatEmbeds(text + ".png\n", images, read, true);
+    expect(read).toHaveBeenCalledWith("REPO", "result.png");
+    await snapshotChatEmbeds('`![Example](worktree://REPO/code.png)`\n\n' +
+        '```html\n<inline-html>\n<img src="worktree://REPO/example.png">\n</inline-html>\n```\n\n' +
+        '`[Example](worktree://REPO/link.png)` ![Old](worktree:REPO/old.png) ![Oid](git-blob:' + A + ')', images, read);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins the first reference definition, matching the Markdown renderer", async () => {
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const images: ChatEmbeds = {};
+    await snapshotChatEmbeds("![Image][picture]\n\n[picture]: worktree://REPO/first.png\n" +
+        "[picture]: worktree://REPO/second.png\n", images, read);
+    expect(read).toHaveBeenCalledExactlyOnceWith("REPO", "first.png");
+    expect(images).toEqual({"worktree://REPO/first.png": A});
+  });
+
+  it.each(["worktree://REPO/../secret", "worktree://REPO/%2e%2e/secret", "worktree://REPO/%00", "worktree://REPO/a%5cb.png"])(
+      "does not resolve invalid paths: %s", async source => {
+    const images: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>();
+    await snapshotChatEmbeds(`![Invalid](${source})`, images, read);
+    expect(images).toEqual({[source]: null});
+    expect(read).not.toHaveBeenCalled();
+  });
+});

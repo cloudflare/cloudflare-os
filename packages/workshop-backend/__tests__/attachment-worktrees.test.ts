@@ -4,10 +4,11 @@ import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
 import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
-import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Api, type Message} from "@earendil-works/pi-ai";
+import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, getCurrentSystemPrompt, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
+import type {AiChatStreamEvent} from "@gadgets/workshop-shared/api";
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
   TEST_USER: DurableObjectNamespace<UserDurableObject>;
@@ -38,7 +39,109 @@ async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof
 const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName !== "observeUserChanges"
     ? [{toolName: message.toolName, content: message.content, isError: message.isError}] : []);
-describe("scratch worktree attachment ingress", () => {
+describe("attachment worktree ingress", () => {
+  it.each(["image", "file"])("pins streamed %s references across edits/deletion and a DO reset", async kind => {
+    const path = kind === "image" ? "image.png" : "output.zip";
+    const name = crypto.randomUUID(), source = `worktree://OUTPUTS/${path}`;
+    let chatId: number, original: string, updated: string;
+    await inKernel(name, async impl => {
+      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Draw an image");
+      await scriptedTurn(impl, chatId, [fauxToolCall("createWorktree", {
+        title: "Generated images", bindingName: "OUTPUTS",
+      })]);
+      const creation = [...impl.storage.chats.list()].flatMap(message =>
+          message.type === "message" ? message.toolCalls ?? [] : [])
+          .find(call => call.toolName === "createWorktree")!;
+      expect(creation.error).toBeUndefined();
+      if (creation.toolName !== "createWorktree") throw new Error("Expected createWorktree");
+      const worktreeId = creation.output!.worktreeId;
+      expect(await impl.gitCache.listCommitTreePaths(creation.output!.baseCommit)).toEqual([]);
+      expect(impl.getChatAgentContext(chatId).scratch).toBeUndefined();
+      original = impl.gitCache.writeBlob(Uint8Array.of(0, 255, 17)).oid;
+      updated = impl.gitCache.writeBlob(Uint8Array.of(0, 255, 18)).oid;
+      await step(impl, chatId, {[worktreeId]: [[path, {setBytes: {oid: original, byteLength: 3}}]]});
+      const answer = async () => {
+        impl.addChatMessages(chatId, USER, [{type: "message", message: "Show the current image."}]);
+        const events: AiChatStreamEvent[] = [];
+        impl.emitChatStreamEvent = (_chatId, event) => events.push(event);
+        const faux = createFauxCore({models: [{id: "faux-model"}]});
+        faux.setResponses([fauxAssistantMessage(fauxText(`${kind === "image" ? "!" : ""}[Result](${source})`))]);
+        await runAgent(impl, {model: faux.getModel(), stream: faux.stream}, chatId,
+            AUTHOR, new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: ""});
+        return events.flatMap(event => event.type === "textDelta" && event.embeds ? [event.embeds] : []);
+      };
+      expect(await answer()).toEqual([{[source]: original}]);
+      await step(impl, chatId, {[worktreeId]: [[path, {setBytes: {oid: updated, byteLength: 3}}]]});
+      expect(await answer()).toEqual([{[source]: updated}]);
+      await step(impl, chatId, {[worktreeId]: [[path, {remove: true}]]});
+      expect(await answer()).toEqual([{[source]: null}]);
+      await impl.ctx.storage.sync();
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const messages = [...impl.storage.chats.list()].filter(message => message.chatId === chatId);
+      expect(messages.flatMap(message => message.type === "message" && message.embeds ? [message.embeds] : []))
+          .toEqual([{[source]: original}, {[source]: updated}, {[source]: null}]);
+      expect(impl.gitCache.readBlob(original)).toEqual(Uint8Array.of(0, 255, 17));
+      expect(impl.gitCache.readBlob(updated)).toEqual(Uint8Array.of(0, 255, 18));
+    });
+  });
+
+  it("does not create a worktree for a chat without uploads", () => inKernel(crypto.randomUUID(), async impl => {
+    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Hello");
+    await scriptedTurn(impl, chatId, []);
+    await impl.prepareChatBindings(chatId, []);
+    expect(impl.getChatAgentContext(chatId).scratch).toBeUndefined();
+    expect([...impl.storage.gadgets.list()]).toEqual([]);
+  }));
+
+  it.each([false, true])("announces uploads in the transcript without changing the system prompt (initial: %s)", initial => inKernel(crypto.randomUUID(), async impl => {
+    const id = impl.allocateWorkpieceId();
+    impl.storage.gadgets.put({type: "gadget", id, title: "App", created: new Date(),
+      bindingName: "ATTACHMENTS", bindings: {}});
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const oid = impl.gitCache.writeBlob(new TextEncoder().encode("uploaded")).oid;
+    const upload = {oid, name: "input.txt", mimeType: "text/plain"};
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined,
+      initial ? [upload] : undefined);
+    const first = await scriptedTurn(impl, chatId, []);
+    const system = getCurrentSystemPrompt(first[0]);
+    if (initial) impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    else await impl.sendChatMessage(user, {profile: USER}, chatId, "First upload", undefined, [upload]);
+    expect(impl.getChatAgentContext(chatId).scratch?.bindingName).toBe("ATTACHMENTS_2");
+    // Also exercise a following turn, which reuses the cached workspace prompt.
+    for (let i = 0; i < 2; i++) {
+      const requests = await scriptedTurn(impl, chatId, []);
+      expect(getCurrentSystemPrompt(requests[0])).toEqual(system);
+      expect(getCurrentSystemPrompt(requests[0])).not.toContain("This chat's scratch worktree is");
+      expect(JSON.stringify(requests[0])).toContain("workspace file env.ATTACHMENTS_2/input.txt");
+      impl.addChatMessages(chatId, USER, [{type: "message", message: "Continue"}]);
+    }
+  }));
+
+  it("keeps an existing SCRATCH binding when receiving more attachments", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const oid = impl.gitCache.writeBlob(new TextEncoder().encode("uploaded")).oid;
+    const upload = {oid, name: "input.txt", mimeType: "text/plain"};
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined, [upload]);
+    const context = impl.getChatAgentContext(chatId);
+    const {worktreeId, bindingName} = context.scratch!;
+    context.scratch = {worktreeId, bindingName: "SCRATCH"};
+    if (context.bindings) {
+      delete context.bindings[bindingName];
+      context.bindings.SCRATCH = worktreeId;
+    }
+    impl.storage.chatContext.put(context);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Another upload", undefined, [upload]);
+    const requests = await scriptedTurn(impl, chatId, [
+      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "input-2.txt"}),
+    ]);
+    expect(impl.getChatAgentContext(chatId).scratch).toEqual({worktreeId, bindingName: "SCRATCH"});
+    expect([...impl.storage.gadgets.list()].filter(record => record.type === "worktree")).toHaveLength(1);
+    expect(JSON.stringify(requests[0])).toContain("workspace file env.SCRATCH/input-2.txt");
+    expect(JSON.stringify(fileToolResults(requests[1]))).toContain("uploaded");
+  }));
+
   it("normalizes legacy source metadata without overwriting an already edited scratch file", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID()), id = crypto.randomUUID();
     const original = new TextEncoder().encode("original\n");
@@ -116,7 +219,7 @@ describe("scratch worktree attachment ingress", () => {
       expect([...impl.storage.chats.list()].filter(message => message.type === "changes"))
         .toEqual(rows.filter(message => message.type === "changes"));
       const requests = await scriptedTurn(impl, chatId, []);
-      expect(JSON.stringify(requests)).toContain("workspace file env.SCRATCH/legacy-2.txt");
+      expect(JSON.stringify(requests)).toContain("workspace file env.ATTACHMENTS/legacy-2.txt");
     });
   });
 
@@ -159,7 +262,7 @@ describe("scratch worktree attachment ingress", () => {
       expect(await impl.getChatAttachmentData(chatId, ids[0])).toEqual(original);
       const request = JSON.stringify(await scriptedTurn(impl, chatId, []));
       expect(request).not.toContain("original contents are currently unavailable");
-      expect(request).toContain("env.SCRATCH/0.txt");
+      expect(request).toContain("env.ATTACHMENTS/0.txt");
       expect(request).not.toContain("1-2.txt");
     });
   });
@@ -213,8 +316,8 @@ describe("scratch worktree attachment ingress", () => {
       [{oid: ref.oid, mimeType: "text/plain", name: "large.txt"}]);
     const worktree = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const requests = await scriptedTurn(impl, chatId, [
-      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "large.txt", lineCount: 2}),
-      fauxToolCall("grep", {workpiece: "SCRATCH", path: "large.txt", pattern: "needle"}),
+      fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "large.txt", lineCount: 2}),
+      fauxToolCall("grep", {workpiece: "ATTACHMENTS", path: "large.txt", pattern: "needle"}),
     ]);
     const results = fileToolResults(requests.at(-1)!);
     expect(results).toHaveLength(2);
@@ -242,10 +345,10 @@ describe("scratch worktree attachment ingress", () => {
         [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]);
     }
     const requests = await scriptedTurn(impl, chatId, [
-      fauxToolCall("writeFile", {workpiece: "SCRATCH", filename: "data.bin", content: "replacement\n"}),
-      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "data.bin"}),
-      fauxToolCall("editFile", {workpiece: "SCRATCH", filename: "data.bin", textToReplace: "replacement", replacement: "edited"}),
-      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "data.bin"}),
+      fauxToolCall("writeFile", {workpiece: "ATTACHMENTS", filename: "data.bin", content: "replacement\n"}),
+      fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "data.bin"}),
+      fauxToolCall("editFile", {workpiece: "ATTACHMENTS", filename: "data.bin", textToReplace: "replacement", replacement: "edited"}),
+      fauxToolCall("readFile", {workpiece: "ATTACHMENTS", filename: "data.bin"}),
     ]);
     const results = fileToolResults(requests.at(-1)!);
     expect(results).toHaveLength(4);
@@ -534,7 +637,7 @@ describe("scratch worktree attachment ingress", () => {
       const input = requests[0].find(message => message.role === "user")!;
       if (!Array.isArray(input.content)) throw new Error("Expected attachment parts");
       const text = input.content.flatMap(part => part.type === "text" ? [part.text] : []).join("");
-      expect(text).toContain(`workspace file env.SCRATCH/${file.name}`);
+      expect(text).toContain(`workspace file env.ATTACHMENTS/${file.name}`);
       expect(text).not.toContain("\ufffd");
       expect(input.content.some(part => part.type === "image")).toBe(file.mimeType === "image/png");
       if (file.mimeType !== "image/png") expect(text).toContain("binary contents are not inlined");
@@ -568,7 +671,7 @@ describe("scratch worktree attachment ingress", () => {
       if (!Array.isArray(input.content)) throw new Error("Expected attachment parts");
       expect(input.content.some(part => part.type === "image")).toBe(false);
       const text = input.content.flatMap(part => part.type === "text" ? [part.text] : []).join("");
-      expect(text).toContain(`workspace file env.SCRATCH/${file.name}`);
+      expect(text).toContain(`workspace file env.ATTACHMENTS/${file.name}`);
       expect(text).toContain("binary contents are not inlined");
     }
     const message = [...impl.storage.chats.list()].find(message => message.type === "message" && message.attachments?.length);
@@ -603,10 +706,10 @@ describe("scratch worktree attachment ingress", () => {
     }).join("\n"));
     for (const text of texts) {
       expect(text).toContain(fits);
-      expect(text).toContain("env.SCRATCH/first.txt");
+      expect(text).toContain("env.ATTACHMENTS/first.txt");
       expect(text).not.toContain("needle");
     }
-    expect(texts[1]).toContain("env.SCRATCH/later.txt");
+    expect(texts[1]).toContain("env.ATTACHMENTS/later.txt");
   }));
 
   it.each(["image/png", "application/pdf"])(
@@ -638,7 +741,7 @@ describe("scratch worktree attachment ingress", () => {
         const parts = imageParts(request);
         expect(parts).toHaveLength(1);
         expect(parts[0]).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
-        expect(JSON.stringify(request)).toContain("workspace file env.SCRATCH/0.png");
+        expect(JSON.stringify(request)).toContain("workspace file env.ATTACHMENTS/0.png");
         expect(JSON.stringify(request)).toContain("binary contents are not inlined");
       }
       const originals = [...impl.storage.chats.list()].flatMap(message =>
@@ -661,7 +764,7 @@ describe("scratch worktree attachment ingress", () => {
       const upload = {oid: blob.oid, mimeType: "text/plain", name: "notes.txt"};
       await impl.sendChatMessage(user, {profile: USER}, first, "First upload", undefined, [upload]);
       const scratch = impl.getChatAgentContext(first).scratch!;
-      expect(scratch.bindingName).toBe("SCRATCH");
+      expect(scratch.bindingName).toBe("ATTACHMENTS");
       await step(impl, first, {[scratch.worktreeId]: [["plan.md", {set: "working plan"}]]});
       await impl.sendChatMessage(user, {profile: USER}, first, "Repeat upload", undefined, [upload]);
       expect(impl.getChatAgentContext(first).scratch).toEqual(scratch);

@@ -285,6 +285,31 @@ describe("listFiles", () => {
     expect(impl.gitCache.readCommitFiles(commit)).toEqual(new Map([["a.txt", text + "edited\n"]]));
   }));
 
+  it("resolves host image metadata over pending edits without making a commit", () => withImpl(async impl => {
+    addChat(impl, 1);
+    const base = await commitFiles(impl, {"a.txt": "hello😀\n"});
+    const {session, turn, id} = await createWorktreeSession(impl, 1, base);
+    const original = await impl.getWorktreeFileInfo(1, "REPO", "a.txt");
+    expect(original).toEqual(await impl.gitCache.fileBytesAtCommit(base, "a.txt"));
+    await session.writeFile("a.txt", "edited😀\n");
+    await turn.barrier();
+    const edited = await impl.getWorktreeFileInfo(1, "REPO", "a.txt");
+    expect(edited?.oid).not.toBe(original?.oid);
+    expect(edited?.byteLength).toBe(new TextEncoder().encode("edited😀\n").length);
+    const bytes = Uint8Array.of(0, 255, 17);
+    await session.writeBytes("picture.png", bytes);
+    await session.deleteFile("a.txt");
+    await turn.barrier();
+    expect(await impl.getWorktreeFileInfo(1, "REPO", "a.txt")).toBeUndefined();
+    expect(await impl.getWorktreeFileInfo(1, "REPO", "picture.png"))
+        .toEqual({oid: impl.gitCache.writeBlob(bytes).oid, byteLength: bytes.length});
+    expect(impl.gitCache.readBlob(original!.oid)).toEqual(new TextEncoder().encode("hello😀\n"));
+    expect(impl.storage.gadgets.get(id).headCommit).toBe(base);
+    addChat(impl, 2);
+    impl.storage.chatContext.put({chatId: 2, bindings: {OTHER: id}});
+    await expect(impl.getWorktreeFileInfo(2, "OTHER", "picture.png")).rejects.toThrow(/No worktree binding/);
+  }));
+
   it("resolves byte identities without copying the Git object or adding permission records", () => withImpl(async impl => {
     const commit = await commitFiles(impl, {"a.txt": "same text\n"});
     const before = [...impl.storage.gitObjects.list()];
