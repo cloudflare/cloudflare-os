@@ -64,7 +64,8 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   value: string;
   tokens: readonly MirrorToken[];
   disabled: boolean;
-}>(({value, tokens, disabled}, ref) => {
+  interimStart?: number;
+}>(({value, tokens, disabled, interimStart}, ref) => {
   const [hoveredToken, setHoveredToken] = useState<number | null>(null);
   const [tooltipToken, setTooltipToken] = useState<number | null>(null);
   const tooltipTokenRef = useRef<number | null>(null);
@@ -192,6 +193,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   }, []);
 
   const boundaries = new Set([0, value.length]);
+  if (interimStart !== undefined) boundaries.add(interimStart);
   for (const token of tokens) {
     boundaries.add(token.start);
     boundaries.add(token.start + token.length);
@@ -210,7 +212,14 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
     const text = value.slice(start, end);
     if (!token) {
       segments.push(
-        <span key={start} data-text-start={start} data-text-end={end}>{text}</span>,
+        <span
+          key={start}
+          className={interimStart !== undefined && start >= interimStart ? "text-kumo-subtle" : undefined}
+          data-text-start={start}
+          data-text-end={end}
+        >
+          {text}
+        </span>,
       );
       continue;
     }

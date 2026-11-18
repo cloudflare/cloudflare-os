@@ -50,11 +50,13 @@ import {
 } from "./attachments/useComposerAttachments";
 import { CapturedConsoleLogsPrompt } from "./CapturedConsoleLogsPrompt";
 import ComposerAddMenu from "./ComposerAddMenu";
+import { ComposerDictationButton } from "./ComposerDictationButton";
 import { ComposerModelSelector, type SelectedModel } from "./ComposerModelSelector";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { buildComposerSubmission } from "./composerSubmission";
 import {
   applyComposerTextEdit,
+  editWithDictationPreview,
   insertComposerFormat,
   removeComposerDocumentToken,
   resolveComposerSlashCommand,
@@ -62,6 +64,7 @@ import {
 } from "./composerDocument";
 import { useComposerResources } from "./useComposerResources";
 import { useComposerEditorLayout } from "./useComposerEditorLayout";
+import { useComposerDictation } from "./useComposerDictation";
 import styles from "./ChatComposer.module.css";
 
 // A capsule's text begins with an em space, which reserves the box the mirror paints the vendor
@@ -77,6 +80,9 @@ function firstAccountIndex(items: readonly SelectableItem[]): number {
 
 const applyStateAction = <T,>(value: T, action: SetStateAction<T>): T =>
   typeof action === "function" ? (action as (previous: T) => T)(value) : action;
+
+const appendDictatedText = (draft: string, text: string) =>
+  draft + (text && draft && !/\s$/.test(draft) ? " " : "") + text;
 
 export const ChatComposer = ({
   createCapsuleGatekeeper,
@@ -371,6 +377,22 @@ export const ChatComposer = ({
   }, [activeUrl]);
 
   const isBlocked = !!blockedReason;
+  const dictationDisabled = isBlocked || isSending;
+  const dictation = useComposerDictation({
+    disabled: dictationDisabled,
+    chatKey,
+    draftStorageKey,
+    seedNonce,
+    onTranscript: (text) => {
+      recordDraftEdit();
+      setInputValue((draft) => appendDictatedText(draft, text));
+    },
+    onError: (title) => toasts.add({ title, variant: "error" }),
+  });
+  const dictating = dictation.status !== "idle";
+  // Only the textarea and its mirror get the provisional suffix. Draft storage, tokens, and
+  // submission continue to use the confirmed document.
+  const displayedText = appendDictatedText(inputValue, dictation.interimText);
 
   // A disabled textarea stops firing mouse events, so drop the hover state the token hit-testing
   // below leaves behind; otherwise the cursor outlives `disabled:cursor-not-allowed`.
@@ -527,6 +549,7 @@ export const ChatComposer = ({
       const { message, capsules: capsuleSpecifiers, formats: formatRefs } =
         submissionResult.submission;
 
+      dictation.cancel();
       await onSend(message, selectedModel?.id ?? null,
           capsuleSpecifiers,
           readyAttachments.length ? readyAttachments : undefined,
@@ -573,15 +596,18 @@ export const ChatComposer = ({
     setInputValue((prev) => prev + "\n\n" + formatted);
   };
 
+  const draftSelectionStart = () => {
+    const length = inputValueRef.current.length;
+    return Math.min(composerTextareaRef.current?.selectionStart ?? length, length);
+  };
+
   const handleAttachOpen = () => {
-    const position = composerTextareaRef.current?.selectionStart ?? inputValueRef.current.length;
-    openAttachModal(snapCaretOutOfRanges(position, currentTokenRanges(), "nearest"));
+    openAttachModal(snapCaretOutOfRanges(draftSelectionStart(), currentTokenRanges(), "nearest"));
   };
 
   const addMenuCaretRef = useRef(0);
   const rememberAddMenuCaret = () => {
-    const position = composerTextareaRef.current?.selectionStart ?? inputValueRef.current.length;
-    addMenuCaretRef.current = snapCaretOutOfRanges(position, currentTokenRanges(), "nearest");
+    addMenuCaretRef.current = snapCaretOutOfRanges(draftSelectionStart(), currentTokenRanges(), "nearest");
   };
 
   const selectSkillFromAddMenu = (choice: SlashCommandChoice) => {
@@ -590,9 +616,15 @@ export const ChatComposer = ({
     applySlashCommandSelection(choice, position, position);
   };
 
-  const handleInputChange = (newValue: string, editCursorPos?: number) => {
+  const handleInputChange = (newValue: string, editCursorPos: number) => {
+    if (dictating) dictation.cancel();
+    const projectedEdit = dictation.interimText
+      ? editWithDictationPreview(inputValue, displayedText, newValue, editCursorPos)
+      : undefined;
     const transition = applyComposerTextEdit(
-      currentComposerDocument(), newValue, editCursorPos,
+      currentComposerDocument(),
+      projectedEdit?.text ?? newValue,
+      projectedEdit?.caret ?? editCursorPos,
     );
     if (transition.rejected) {
       const textarea = composerTextareaRef.current;
@@ -605,9 +637,12 @@ export const ChatComposer = ({
 
     recordDraftEdit();
     commitComposerDocument(transition.document);
-    if (transition.caret !== undefined) {
-      const caret = transition.caret;
-      requestAnimationFrame(() => moveCaret(caret));
+    const caret = transition.caret ?? projectedEdit?.caret;
+    if (caret !== undefined) {
+      const revision = getDocumentSnapshot().documentRevision;
+      requestAnimationFrame(() => {
+        if (getDocumentSnapshot().documentRevision === revision) moveCaret(caret);
+      });
     }
   };
 
@@ -627,9 +662,10 @@ export const ChatComposer = ({
         textarea.setSelectionRange(snapped, snapped);
       }
     }
-    syncPickerCaret(cursorPos);
+    const draftCursor = Math.min(cursorPos, inputValueRef.current.length);
+    syncPickerCaret(draftCursor);
 
-    scanForResourceUrl(cursorPos);
+    scanForResourceUrl(draftCursor);
   };
 
   // Formats named in the message are inline tokens like capsules, addressed by the caret as one
@@ -645,11 +681,9 @@ export const ChatComposer = ({
   // Inserted at the caret, like a capsule, so the noun lands in the sentence that needs it.
   const chooseFormat = async (format: OutputFormatOffer) => {
     const logo = await formatIconDataUrl(format.output.icon);
-    const value = inputValueRef.current;
     // The menu takes focus, but the textarea keeps its last selection; falling back to the end is
     // right for the case where it was never focused at all.
-    const caret = Math.min(composerTextareaRef.current?.selectionStart ?? value.length, value.length);
-    const at = snapCaretOutOfRanges(caret, currentTokenRanges(), "nearest");
+    const at = snapCaretOutOfRanges(draftSelectionStart(), currentTokenRanges(), "nearest");
     const transition = insertComposerFormat(
       currentComposerDocument(),
       at,
@@ -794,20 +828,24 @@ export const ChatComposer = ({
             )}
             <ComposerMirror
               ref={mirrorRef}
-              value={inputValue}
+              value={displayedText}
               tokens={mirrorTokens}
               disabled={isBlocked}
+              interimStart={dictation.interimText ? inputValue.length : undefined}
             />
             <textarea
-              value={inputValue}
+              value={displayedText}
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={slashCommandPicker.open}
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
               aria-activedescendant={slashCommandPicker.activeDescendant}
+              onCompositionStart={() => {
+                if (dictating) dictation.cancel();
+              }}
               onChange={(e) => {
                 handleInputChange(e.target.value, e.target.selectionStart ?? 0);
-                syncPickerCaret(e.target.selectionStart ?? 0);
+                syncPickerCaret(Math.min(e.target.selectionStart, inputValueRef.current.length));
                 requestAnimationFrame(handleCursorChange);
                 // Auto-resize after value change
                 resizeTextarea(e.target);
@@ -953,9 +991,9 @@ export const ChatComposer = ({
           </div>
         </div>
 
-        {/* Footer row: connection/options left, model + send right */}
+        {/* Footer row: add, voice typing, and options left; model and send right */}
         <div className="flex items-center justify-between gap-1.5 px-3 pb-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+          <div className="flex shrink-0 items-center gap-1.5">
             <ComposerAddMenu
               anchorRef={promptCardRef}
               catalogVersion={catalogVersion}
@@ -968,6 +1006,13 @@ export const ChatComposer = ({
               onAddConnection={handleAttachOpen}
               onSelectSkill={selectSkillFromAddMenu}
             />
+            {dictation.supported && (
+              <ComposerDictationButton
+                status={dictation.status}
+                disabled={dictationDisabled}
+                onToggle={dictation.toggle}
+              />
+            )}
             {(canChooseFormat || onToggleThinkingTraces) && <DropdownMenu>
               <DropdownMenu.Trigger
                 render={
