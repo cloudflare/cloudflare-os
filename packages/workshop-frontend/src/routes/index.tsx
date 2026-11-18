@@ -210,6 +210,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
         <ChatComposer
           createCapsuleGatekeeper={createCapsuleGatekeeper}
           getOverseer={getOverseer}
+          // The composer here makes a workspace of the user's own.
+          ownsWorkspace
           onSend={handleSend}
           isAgentActive={false}
           models={models}

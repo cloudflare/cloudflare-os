@@ -537,7 +537,12 @@ function ConnectorsPage() {
       },
       remove(id) {
         accountMap.delete(id)
-        if (!cancelled) setAccounts(Array.from(accountMap.values()))
+        if (cancelled) return
+        setAccounts(Array.from(accountMap.values()))
+        // An ambient vendor whose account went (here or in another tab) may be addable again.
+        authenticatedApi.listAddableGatekeepers()
+          .then((list) => { if (!cancelled) setAddable(list) })
+          .catch((err) => { logRpcFailure('Failed to load addable gatekeepers:', err) })
       },
       ready() {
         if (!cancelled) setAccountsLoaded(true)
@@ -677,13 +682,17 @@ function ConnectorsPage() {
 
   // Connectable vendors = OAuth/resource gatekeepers plus opt-in ambient ones, rendered identically.
   // An ambient vendor is recognized by `description.autoProvisionsAccount`, which routes the connect
-  // action to a direct (no-OAuth) add instead.
+  // action to a direct (no-OAuth) add instead. One that also offers a resource is in both lists, and
+  // is offered only while it is addable: a user holds at most one such account, so once it exists
+  // or the deployment forces it there is nothing left to connect.
+  // `addable` is a snapshot, so a vendor whose account the feed has since reported (added in
+  // another tab, say) is dropped from it here.
   const availableVendors = useMemo<VendorEntry[]>(
     () => [
-      ...vendors,
-      ...addable,
+      ...vendors.filter((vendor) => !vendor.description.autoProvisionsAccount),
+      ...addable.filter((vendor) => !accounts.some((account) => account.vendorId === vendor.id)),
     ],
-    [vendors, addable],
+    [vendors, addable, accounts],
   )
 
   const filteredAvailable = useMemo(() => {

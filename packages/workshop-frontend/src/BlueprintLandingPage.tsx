@@ -9,7 +9,6 @@ import { ArrowsOutSimple, ArrowLeft, ArrowSquareOut, DotsThree, DownloadSimple, 
 
 import { useAuth } from './useAuth'
 import LoginPage from './LoginPage'
-import { normalizeResourceUrl } from './resourceMatching'
 import {
   BLUEPRINT_ARCHIVE_EXTENSION,
   makeBlueprintFilename,
@@ -227,7 +226,9 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       },
     })
 
-    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    // A forced auto-provisioned account is the one an installer of such a vendor's binding uses.
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
     subscription.catch(err => {
       if (cancelled) return
       logRpcFailure('Failed to subscribe to connected accounts:', err)
@@ -243,6 +244,11 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
+      if (vendors.find(vendor => vendor.id === vendorId)?.description.autoProvisionsAccount) {
+        // Such a vendor has no connect flow: the account arrives through the accounts subscription.
+        await authenticatedApi.provisionAmbientAccount(vendorId)
+        return
+      }
       const outcome = await openConnectWindow(
         await authenticatedApi.connectAccount(vendorId, resourceTypeIds), authenticatedApi)
       toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
@@ -253,7 +259,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     } finally {
       setConnectingVendor(null)
     }
-  }, [authenticatedApi, toasts])
+  }, [authenticatedApi, toasts, vendors])
 
   const handleGrantAccountResources = useCallback(async (
     accountId: number,
@@ -585,11 +591,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
         if (!collect) {
           throw new Error(`Binding "${activeBindingName}" is not configured.`)
         }
+        // Saved as the configurator returned it, as the connection picker does: a vendor's URL
+        // need not be https (the admin gatekeeper's is instanceadmin://deployment).
         const resourceUrl = await collect()
         assignment = {
           type: 'gatekeeper',
           accountId: (form as any).accountId,
-          resourceUrl: normalizeResourceUrl(resourceUrl),
+          resourceUrl,
         }
       } else if (binding.type === 'aiModel') {
         assignment = {
@@ -1772,6 +1780,8 @@ function BlueprintGatekeeperBindingField({
         vendorId={vendor.id}
         vendorName={vendor.description.displayName}
         resourceTitle={resource.title}
+        // A vendor that provisions its account has one: there is no other to add.
+        singleAccount={vendor.description.autoProvisionsAccount}
         connecting={connectingVendor === vendor.id}
         reconnectingAccountId={reconnectingAccountId}
         requiredResourceTypeIds={requiredResourceTypeIds}
