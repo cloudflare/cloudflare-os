@@ -213,7 +213,7 @@ it.each([
   expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
 })
 
-it.each(['', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'])(
+it.each(['', '<?xml-stylesheet type="text/css" href="style.css"?>', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'])(
   'shows a snapshotted SVG with prolog %s without creating an origin-bearing SVG blob URL', async doctype => {
   const source = 'worktree://REPO/vector.svg'
   const bytes = new TextEncoder().encode('<?xml version="1.0"?>' + '<!-- comment -->'.repeat(10) + doctype +

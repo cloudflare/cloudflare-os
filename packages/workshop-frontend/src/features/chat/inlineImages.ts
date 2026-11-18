@@ -1,4 +1,4 @@
-/** Recognize an SVG header with a linear scan of XML comments and DOCTYPE declarations. */
+/** Recognize an SVG header with a linear scan of XML processing instructions, comments and DOCTYPE declarations. */
 export function isSvgImage(head: string | Uint8Array): boolean {
   if (typeof head !== 'string') {
     const encoding = head[0] === 0xff && head[1] === 0xfe ? 'utf-16le'
@@ -6,12 +6,13 @@ export function isSvgImage(head: string | Uint8Array): boolean {
     head = new TextDecoder(encoding).decode(head)
   }
   let text = head.trimStart()
-  if (/^<\?xml\b/i.test(text)) {
-    const end = text.indexOf('?>')
-    if (end === -1) return false
-    text = text.slice(end + 2).trimStart()
-  }
   while (true) {
+    if (text.startsWith('<?')) {
+      const end = text.indexOf('?>')
+      if (end === -1) return false
+      text = text.slice(end + 2).trimStart()
+      continue
+    }
     if (text.startsWith('<!--')) {
       const end = text.indexOf('-->')
       if (end === -1) return false

@@ -168,7 +168,7 @@ it.each(['remove', 'replace'])('cancels an in-progress image download when the v
   expect(errors).toEqual([])
 })
 
-it.each(['', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'])(
+it.each(['', '<?xml-stylesheet type="text/css" href="style.css"?>', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'])(
   'decodes SVG with prolog %s and keeps external HTTP images blocked by the sandbox', async doctype => {
   const source = 'worktree://REPO/image.svg'
   const readBlob = vi.fn<(oid: string) => Promise<ReadableStream<Uint8Array>>>(async () => byteStream(
@@ -260,4 +260,17 @@ it.each(['utf-16le', 'utf-16be', 'namespace'])('decodes a valid %s SVG in an inl
     readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
   })
   await expect.poll(() => sent.some(message => message.startsWith('vector:17:blob:'))).toBe(true)
+})
+
+
+it.each(['data', 'worktree'])('preserves dimensions authored on %s images in existing views', async kind => {
+  const bytes = png('cyan')
+  const source = kind === 'data'
+    ? 'data:image/png;base64,' + btoa(String.fromCharCode(...bytes)) : 'worktree://OUTPUTS/image.png'
+  const sent: string[] = []
+  await openBlock(`<img src="${source}" width="60" height="20" onload="const r = this.getBoundingClientRect(); agent.send(r.width + 'x' + r.height)">`, {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(bytes)}),
+  })
+  await expect.poll(() => sent).toEqual(['60x20'])
 })
