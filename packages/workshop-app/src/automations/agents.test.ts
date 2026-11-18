@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { agentByKey, agentsOf, type AgentSetup, attentionWords, runStatus, runsWantingAttention, runsWords, isAgentRun, isFailure } from './agents'
+import { agentByKey, agentsOf, type AgentRun, type AgentSetup, attentionWords, foldRuns, runFilterCounts, runsMatching, runStatus, runsWantingAttention, runsWords, isAgentRun, isFailure } from './agents'
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 10, 14, 12, minutes))
 const chat = (id: number, minutes: number, more: Partial<AiChatMetadata> = {}): AiChatMetadata =>
@@ -112,4 +112,20 @@ describe('agentsOf', () => {
     expect(agentByKey(agents, '7')).toBe(agents[0])
   })
 
+})
+
+const agentRun = (chatId: number, title: string, status: AgentRun['status']): AgentRun => ({ chatId, title, status, started: at(chatId), lastActive: at(chatId) })
+
+describe('the runs an agent page lists', () => {
+  const runs = [agentRun(6, 'Digest', 'failed'), agentRun(5, 'Digest', 'done'), agentRun(4, 'Digest', 'done'), agentRun(3, 'Other', 'waiting'), agentRun(2, 'Digest', 'done'), agentRun(1, 'Digest', 'changes')]
+
+  it('folds the runs after one that finished the same way, with the same title, under it', () => {
+    expect(foldRuns(runs).map(({ run: { chatId }, folded }) => [chatId, folded.map(({ chatId: id }) => id)])).toEqual([[6, []], [5, [4]], [3, []], [2, []], [1, []]])
+  })
+
+  it('keeps for each filter what it says, and counts them', () => {
+    expect(runsMatching(runs, 'attention').map(({ chatId }) => chatId)).toEqual([6, 3])
+    expect(runsMatching(runs, 'failed').map(({ chatId }) => chatId)).toEqual([6])
+    expect(runFilterCounts(runs)).toEqual({ all: 6, attention: 2, failed: 1, changes: 1 })
+  })
 })

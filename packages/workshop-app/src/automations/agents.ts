@@ -172,3 +172,41 @@ export const attentionWords = (agent: Pick<Agent, 'waiting' | 'failed'>) =>
   agent.waiting > 0
     ? agent.waiting === 1 ? 'A run is waiting on you' : `${COUNT.format(agent.waiting)} runs are waiting on you`
     : agent.failed ? 'Its latest run failed' : undefined
+
+/** Which of an agent's runs its page lists: all of them, those that want the user, those that failed, or those with changes to keep. */
+export type RunFilter = 'all' | 'attention' | 'failed' | 'changes'
+
+/** Whether a run wants the user: it waits on them, or it is the latest and failed. */
+const wantsUser = (run: AgentRun, index: number) => run.status === 'waiting' || (index === 0 && run.status === 'failed')
+
+/** An agent's runs a filter keeps, latest first, as they were. */
+export const runsMatching = (runs: readonly AgentRun[], filter: RunFilter): AgentRun[] =>
+  filter === 'all' ? [...runs]
+    : filter === 'attention' ? runs.filter(wantsUser)
+      : runs.filter(({ status }) => status === filter)
+
+/** How many of an agent's runs each filter keeps, for its tab to say. */
+export const runFilterCounts = (runs: readonly AgentRun[]): Record<RunFilter, number> => ({
+  all: runs.length,
+  attention: runs.filter(wantsUser).length,
+  failed: runs.filter(({ status }) => status === 'failed').length,
+  changes: runs.filter(({ status }) => status === 'changes').length,
+})
+
+/** A run as its agent's page lists it, with the runs folded under it: those just before it that went the same way. */
+export type RunEntry = { key: number; run: AgentRun; folded: AgentRun[] }
+
+/**
+ * Runs as a list of them, latest first, each run after another with the same title that also
+ * finished with nothing to do folded under that one: an agent started on a schedule runs the same
+ * task again and again, and what is the same is said once, with how often.
+ */
+export const foldRuns = (runs: readonly AgentRun[]): RunEntry[] => {
+  const entries: RunEntry[] = []
+  for (const run of runs) {
+    const last = entries.at(-1)
+    if (last && run.status === 'done' && last.run.status === 'done' && last.run.title === run.title) last.folded.push(run)
+    else entries.push({ key: run.chatId, run, folded: [] })
+  }
+  return entries
+}

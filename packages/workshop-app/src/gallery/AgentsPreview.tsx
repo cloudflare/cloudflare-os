@@ -5,7 +5,7 @@ import { ChatHeader } from '@/blocks/ChatHeader'
 import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { WorkspaceRailItem } from '@/blocks/WorkspaceRailItem'
-import { agentsOf, STATUS_WORDS, type AgentSetup } from '@/automations/agents'
+import { agentsOf, STATUS_WORDS, type Agent, type AgentRun, type AgentSetup } from '@/automations/agents'
 import { AgentsTab } from '@/automations/AgentsTab'
 import { AgentView } from '@/automations/AgentPane'
 import type { WorkspaceAgentsSnapshot } from '@/automations/WorkspaceAgents'
@@ -24,6 +24,17 @@ const stateOf = (which: (typeof STATES)[number], setups: readonly AgentSetup[] =
       : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true }
         : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true }
 
+// An agent run on a schedule, many times over: the same digest every few hours, now and then
+// failing, waiting on the user or leaving changes.
+const BUSY: Agent = (() => {
+  const runs = Array.from({ length: 273 }, (_, index): AgentRun => {
+    const lastActive = new Date(EXAMPLE_NOW.getTime() - index * 3 * 60 * 60 * 1000)
+    const status = index === 2 || index === 40 ? 'waiting' : index % 37 === 5 ? 'failed' : index % 23 === 11 ? 'changes' : 'done'
+    return { chatId: 10_000 - index, title: index % 9 === 4 ? 'Weekly digest' : 'Digest of new tickets', started: lastActive, lastActive, status }
+  })
+  return { key: 'busy', name: 'Ticket digest', model: 'claude-sonnet-5-5', gadget: { id: 99, title: 'Triage', bindingName: 'DIGEST' }, runs, waiting: 2, running: 0, failed: false }
+})()
+
 /** A workspace's agents, their runs and what of them waits on the user, in each of their states. */
 export const AgentsPreview = () => {
   const { report, say } = useReport()
@@ -31,7 +42,7 @@ export const AgentsPreview = () => {
   const [tab, setTab] = useState<'chats' | 'agents' | 'library'>('agents')
   const agents = agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, EXAMPLE_AGENT_SETUPS)
   const [shown, setShown] = useState(agents[0].key)
-  const agent = agents.find(({ key }) => key === shown)
+  const agent = shown === BUSY.key ? BUSY : agents.find(({ key }) => key === shown)
 
   return (
     <>
@@ -84,6 +95,7 @@ export const AgentsPreview = () => {
         <div className="flex w-full flex-col gap-4">
           <div className="flex flex-wrap gap-2">
             {agents.map(({ key, name }) => <Button key={key} variant={shown === key ? 'primary' : 'secondary'} onClick={() => setShown(key)}>{name}</Button>)}
+            <Button variant={shown === BUSY.key ? 'primary' : 'secondary'} onClick={() => setShown(BUSY.key)}>273 runs</Button>
             <Button variant={shown === 'gone' ? 'primary' : 'secondary'} onClick={() => setShown('gone')}>No such agent</Button>
           </div>
           <div className="w-full rounded-3xl bg-kumo-base">

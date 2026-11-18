@@ -1,4 +1,6 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
+import { CaretDownIcon } from '@phosphor-icons/react'
 import { AgentCrumb } from '@/blocks/AgentCrumb'
 import { AgentMark } from '@/blocks/AgentMark'
 import { AgentRunRow } from '@/blocks/AgentRunRow'
@@ -7,14 +9,16 @@ import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { LinkButton } from '@/components/LinkButton'
+import { Tabs, type TabsTab } from '@/components/Tabs'
 import { groupByTime } from '@/chat/timeGroups'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useNow } from '@/hooks/useNow'
 import { PageLayout } from '@/layouts/PageLayout'
+import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { agentByKey, attentionWords, runsWords, STATUS_WORDS, type Agent, type AgentRun } from './agents'
+import { activityWords, agentByKey, attentionWords, foldRuns, runFilterCounts, runsMatching, runsWords, STATUS_WORDS, type Agent, type AgentRun, type RunEntry, type RunFilter } from './agents'
 import { cadenceWords } from './cadence'
 import { useAutomations } from './useAutomations'
 import { useWorkspaceAgents } from './useWorkspaceAgents'
@@ -105,11 +109,27 @@ const Fact = ({ label, children }: { label: string; children: ReactNode }) => (
   </div>
 )
 
+// How many of its runs are listed at first, and how many more each time more are asked for.
+const FIRST_RUNS = 25
+const MORE_RUNS = 50
+
+const FILTERS: { value: RunFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'attention', label: 'Needs you' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'changes', label: 'Changes to keep' },
+]
+
 /**
  * What an agent is, drawn from plain props: its mark, there to be played with as the home page's is, and its name, what of it wants the user (a run
  * waiting on them, or a latest run that failed) with the way to that run, then the gadget that
  * starts it, the model it thinks with, when it runs and how often it has, then its runs by when,
  * each saying how it stands and opening its conversation, which is where what it did is seen.
+ *
+ * An agent can run hundreds of times, so its runs are narrowed by how they stand (a tab each, for
+ * those it has), listed a page at a time, and a run that finished the same way as the one after it,
+ * with the same title, is folded under that one, said once with how often, there to open out.
+ * Under All, what wants the user is on top, apart from the rest.
  */
 export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, gadgetHref }: AgentViewProps) => {
   if (state.status === 'loading') return <p role="status" className="appears-late px-4 pt-16 text-center text-base text-kumo-subtle">Loading the agent…</p>
@@ -127,7 +147,6 @@ export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, 
   const date = new Date(now)
   const attention = attentionWords(agent)
   const wanting = agent.runs.find(({ status }) => status === 'waiting') ?? (agent.failed ? agent.runs[0] : undefined)
-  const groups = groupByTime(agent.runs.map((run) => ({ value: run, at: run.lastActive })), date)
   const gadget = agent.gadget
 
   return (
@@ -165,27 +184,122 @@ export const AgentView = ({ state, when, now, onOpenRun, runHref, onOpenGadget, 
         </Fact>
         <Fact label="Runs">{runsWords(agent, date)}</Fact>
       </dl>
-      <section className="flex flex-col gap-2">
-        <h2 className="px-4 text-sm font-medium text-kumo-subtle">Runs</h2>
-        {agent.runs.length === 0 && <p className="px-4 text-base text-kumo-subtle">It hasn’t run yet.</p>}
-        <div className="flex flex-col gap-8">
-          {groups.map(({ key, label, entries }) => (
-            <ListGroup key={key} label={label}>
-              {entries.map(({ value: run, time }) => (
-                <AgentRunRow
-                  key={run.chatId}
-                  title={run.title}
-                  status={run.status}
-                  statusWords={STATUS_WORDS[run.status]}
-                  time={time}
-                  href={runHref?.(run.chatId)}
-                  onSelect={() => onOpenRun(run)}
-                />
-              ))}
-            </ListGroup>
-          ))}
-        </div>
-      </section>
+      <AgentRuns key={agent.key} runs={agent.runs} now={date} onOpenRun={onOpenRun} runHref={runHref} />
     </div>
+  )
+}
+
+type AgentRunsProps = Pick<AgentViewProps, 'onOpenRun' | 'runHref'> & { runs: AgentRun[]; now: Date }
+
+/** An agent's runs, narrowed, a page at a time, with those alike folded (see `AgentView`). */
+const AgentRuns = ({ runs, now, onOpenRun, runHref }: AgentRunsProps) => {
+  const [filter, setFilter] = useState<RunFilter>('all')
+  const [shown, setShown] = useState(FIRST_RUNS)
+  // The runs opened out from under the one they are folded under, by its chat.
+  const [open, setOpen] = useState<ReadonlySet<number>>(new Set())
+  const counts = runFilterCounts(runs)
+  const tabs: TabsTab<RunFilter>[] = FILTERS
+    .filter(({ value }) => value === 'all' || counts[value] > 0 || value === filter)
+    .map((tab) => (tab.value === 'attention' && counts.attention > 0 ? { ...tab, count: { value: counts.attention, label: 'waiting on you' } } : tab))
+
+  // Under All, what wants the user comes first, as its own group; the rest are by when.
+  const pinned = filter === 'all' ? runsMatching(runs, 'attention') : []
+  const pinnedIds = new Set(pinned.map(({ chatId }) => chatId))
+  const listed = runsMatching(runs, filter).filter(({ chatId }) => !pinnedIds.has(chatId))
+  const entries = foldRuns(listed)
+  const page = entries.slice(0, Math.max(0, shown - pinned.length))
+  const left = entries.length - page.length
+  const groups = groupByTime(page.map((entry) => ({ value: entry, at: entry.run.lastActive })), now)
+
+  // Where any run has others folded under it, every row keeps the room of the way to open them, so
+  // that when each was is in one column.
+  const folds = page.some(({ folded }) => folded.length > 0)
+  const row = ({ key, run, folded }: RunEntry, time?: string) => {
+    const opened = open.has(key)
+    return (
+      <div key={key} className="flex flex-col">
+        <div className="flex items-center">
+          <div className="min-w-0 flex-1">
+            <AgentRunRow
+              title={run.title}
+              status={run.status}
+              statusWords={folded.length > 0 ? `${STATUS_WORDS[run.status]} · ${folded.length + 1} runs alike` : STATUS_WORDS[run.status]}
+              time={time}
+              href={runHref?.(run.chatId)}
+              onSelect={() => onOpenRun(run)}
+            />
+          </div>
+          {folded.length > 0 && (
+            <Button
+              variant="ghost"
+              icon={<CaretDownIcon aria-hidden="true" className={cn('transition-transform duration-150 motion-reduce:transition-none', opened && 'rotate-180')} />}
+              aria-label={opened ? `Fold the ${folded.length} earlier runs` : `Show the ${folded.length} earlier runs`}
+              aria-expanded={opened}
+              className="ms-1 shrink-0 text-kumo-subtle"
+              onClick={() => setOpen((current) => {
+                const next = new Set(current)
+                if (!next.delete(key)) next.add(key)
+                return next
+              })}
+            />
+          )}
+          {folds && folded.length === 0 && <span aria-hidden="true" className="ms-1 w-(--control-size) shrink-0" />}
+        </div>
+        {opened && (
+          <div className="ms-5 border-s border-kumo-line ps-2">
+            {folded.map((earlier) => (
+              <AgentRunRow
+                key={earlier.chatId}
+                title={earlier.title}
+                status={earlier.status}
+                statusWords={`${STATUS_WORDS[earlier.status]} · ${activityWords(earlier.lastActive, now)}`}
+                href={runHref?.(earlier.chatId)}
+                onSelect={() => onOpenRun(earlier)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <section aria-label="Runs" className="flex flex-col gap-4">
+      {runs.length === 0 ? (
+        <>
+          <h2 className="px-4 text-sm font-medium text-kumo-subtle">Runs</h2>
+          <p className="px-4 text-base text-kumo-subtle">It hasn’t run yet.</p>
+        </>
+      ) : (
+        <Tabs
+          value={filter}
+          onValueChange={(next) => {
+            setFilter(next)
+            setShown(FIRST_RUNS)
+          }}
+          tabs={tabs}
+          aria-label="Runs"
+          align="start"
+          scrolls
+          className="gap-4"
+        >
+          <Tabs.Panel value={filter} className="flex flex-col gap-8">
+            {pinned.length > 0 && <ListGroup label="Needs you">{pinned.map((run) => row({ key: run.chatId, run, folded: [] }, formatActivity(run.lastActive, now)))}</ListGroup>}
+            {groups.map(({ key, label, entries: grouped }) => (
+              <ListGroup key={key} label={label}>
+                {grouped.map(({ value, time }) => row(value, time))}
+              </ListGroup>
+            ))}
+            {left > 0 && (
+              <div className="flex justify-center">
+                <Button variant="secondary" onClick={() => setShown((current) => current + MORE_RUNS)}>
+                  {`Show ${Math.min(left, MORE_RUNS)} more`}
+                </Button>
+              </div>
+            )}
+          </Tabs.Panel>
+        </Tabs>
+      )}
+    </section>
   )
 }
