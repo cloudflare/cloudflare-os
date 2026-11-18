@@ -62,7 +62,14 @@ export const UiBlockCard = ({
   const imageSources = useMemo(() => {
     const template = document.createElement('template')
     template.innerHTML = block.html
-    return new Set([...template.content.querySelectorAll('img[src]')].map(image => image.getAttribute('src')))
+    const sources = new Set<string>()
+    const collect = (content: DocumentFragment) => {
+      for (const image of content.querySelectorAll('img[src]')) sources.add(image.getAttribute('src')!)
+      // Template contents are separate fragments, which selectors on their parent do not visit.
+      for (const nested of content.querySelectorAll('template')) collect(nested.content)
+    }
+    collect(template.content)
+    return sources
   }, [block.html])
   const readCurrentImage = useEffectEvent(async (source: string) => {
     if (!imageSources.has(source)) throw new Error(`File unavailable: ${source}`)

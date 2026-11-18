@@ -248,6 +248,27 @@ it('does not invoke the image fallback while pinned bytes are still being read',
 })
 
 
+it('renders pinned literal images cloned from nested templates in an actual card', async () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  resources.push({ [Symbol.dispose]: () => host.remove() })
+  const root = createRoot(host)
+  roots.push(root)
+  const source = 'worktree://OUTPUTS/template.png', oid = 'a'.repeat(40)
+  const readBlob = vi.fn<Overseer['readBlob']>(async () => byteStream(png('cyan')))
+  const html = `<template id="outer"><template id="inner">${observedImage('picture', source)}</template></template>
+    <script>
+      document.body.append(document.getElementById('outer').content.cloneNode(true));
+      document.body.append(document.getElementById('inner').content.cloneNode(true));
+    </script>`
+  await act(async () => root.render(React.createElement(ThemeProvider, null,
+    <UiBlockCard block={{kind: 'block', html}} files={{oids: {[source]: oid}, readBlob}}
+      onSendMessage={async () => {}} onHeightChange={() => {}} scrollRoot={{current: null}} />
+  )))
+  await expect.poll(() => host.textContent).toContain('picture:2:blob:')
+  expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
+  expect(host.textContent).not.toContain('File unavailable')
+})
+
 it.each(['failed', 'interrupted'])('retries %s frame image reads on reconnect while preserving the live view and loaded images', async status => {
   const host = document.body.appendChild(document.createElement('div'))
   resources.push({ [Symbol.dispose]: () => host.remove() })
