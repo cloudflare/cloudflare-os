@@ -1208,7 +1208,7 @@ describe("BigQuery picker", () => {
 
   /**
    * An account BigQuery lists a role in `mine` for, which was shared `theirs.events`, and which may
-   * create query jobs in `granted` though BigQuery does not list it.
+   * create query jobs in `granted` though BigQuery does not list it. A dry run in `flaky` fails.
    */
   function bigQuery() {
     const calls: string[] = [];
@@ -1241,6 +1241,10 @@ describe("BigQuery picker", () => {
           return Response.json({ datasets: [dataset("granted", "reports")] });
         case "/projects/granted/jobs":
           return Response.json({ status: { state: "DONE" } });
+        case "/projects/flaky/datasets":
+          return Response.json({ datasets: [dataset("flaky", "logs")] });
+        case "/projects/flaky/jobs":
+          return Response.json({ error: { code: 503, message: "Backend Error", errors: [{ reason: "backendError" }] } }, { status: 503 });
       }
       return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
     }));
@@ -1314,6 +1318,14 @@ describe("BigQuery picker", () => {
     expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ runsQueries: false });
     // Each project BigQuery does not list is asked once; one it lists, never.
     expect(calls.filter(path => path.endsWith("/jobs"))).toEqual(["/projects/granted/jobs", "/projects/theirs/jobs"]);
+  });
+
+  it("asks for a query project when a dry run fails for another reason than a refusal", async () => {
+    const { ui, calls } = bigQuery();
+    expect(await ui.getNode("project:flaky")).toMatchObject({ id: "project:flaky", runsQueries: false });
+    expect(await ui.listNodes("project:flaky", "", null)).toMatchObject({ nodes: [{ id: "dataset:flaky/logs", runsQueries: false }] });
+    // The failure is not remembered, so a later lookup asks again.
+    expect(calls.filter(path => path === "/projects/flaky/jobs")).toHaveLength(2);
   });
 
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
