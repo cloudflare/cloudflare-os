@@ -2799,19 +2799,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.connectedAccounts.put(record);
   }
 
+  // How many times each account has been reported expired since this object started, so that a
+  // reconnect can tell whether its new credentials were reported expired while it committed them.
+  #expiries = new Map<number, number>();
+
   async markCredentialsExpired(accountId: number) {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
+    this.#expiries.set(accountId, (this.#expiries.get(accountId) ?? 0) + 1);
 
     if (!record.credentialsExpired) {
       record.credentialsExpired = true;
       this.storage.connectedAccounts.put(record);
     }
   }
-
-  // Each account's latest markCredentialsRestored. Only its description is written: an earlier
-  // one's describe() may have read credentials that a reconnect has replaced since.
-  #restores = new Map<number, object>();
 
   async markCredentialsRestored(accountId: number, expiresAt?: Date) {
     let record = this.storage.connectedAccounts.get(accountId);
@@ -2820,17 +2821,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     record.credentialsExpired = false;
     record.credentialExpiresAt = expiresAt;
     this.storage.connectedAccounts.put(record);
+    await this.#refreshDescription(record);
+  }
 
-    // Re-fetch the description since the user may have re-authed with different info. Best-effort:
-    // the credentials are live either way, and a record still showing as expired over a failed
-    // describe() would send the user back through a reconnect that changes nothing. Written over
-    // the row as it is after the call, which a disconnect may have deleted meanwhile.
-    let restore = {};
-    this.#restores.set(accountId, restore);
+  // Each account's latest #refreshDescription. Only its description is written: an earlier one's
+  // describe() may have read credentials that a reconnect has replaced since.
+  #describes = new Map<number, object>();
+
+  // Re-fetch the description since the user may have re-authed with different info. Best-effort:
+  // the credentials are live either way, and a record still showing as expired over a failed
+  // describe() would send the user back through a reconnect that changes nothing. Written over the
+  // row as it is after the call, which a disconnect may have deleted meanwhile.
+  async #refreshDescription(record: ConnectedAccountRecord): Promise<void> {
+    let accountId = record.id;
+    let describe = {};
+    this.#describes.set(accountId, describe);
     try {
       let description = await record.account.describe();
       let current = this.storage.connectedAccounts.get(accountId);
-      if (current && this.#restores.get(accountId) === restore) {
+      if (current && this.#describes.get(accountId) === describe) {
         this.storage.connectedAccounts.put({ ...current, description });
       }
     } catch (err) {
@@ -2838,7 +2847,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
       });
     } finally {
-      if (this.#restores.get(accountId) === restore) this.#restores.delete(accountId);
+      if (this.#describes.get(accountId) === describe) this.#describes.delete(accountId);
     }
   }
 
@@ -2936,9 +2945,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let account = this.storage.connectedAccounts.get(record.accountId);
       if (!account) throw new Error("No such account.");
       if (record.stageId === undefined) throw new Error("Corrupt pending reconnect.");
-      // A failed commit changed nothing live, and the gatekeeper's stage expires on its own.
+      // A failed commit changed nothing live, and the gatekeeper's stage expires on its own. An
+      // expiry reported while it committed is of the new credentials: they are described, and the
+      // account stays expired.
+      let expiries = this.#expiries.get(record.accountId);
       await account.account.commitReconnect(record.stageId);
-      await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
+      if (this.#expiries.get(record.accountId) === expiries) {
+        await this.markCredentialsRestored(record.accountId, record.credentialExpiresAt);
+      } else {
+        await this.#refreshDescription(account);
+      }
       logger.info("account credentials restored", {
         event: "account.reconnect.completed", vendorId: account.vendorId,
         accountId: record.accountId,
