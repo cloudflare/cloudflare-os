@@ -488,6 +488,61 @@ describe('PushReviewDialog content', () => {
     expect(buttons('Retry')).toHaveLength(1)
   })
 
+  // A file changed from its parent's version, whose two reads each test settles in its own order.
+  const changedFile = (sent: FileAnswer, earlier: FileAnswer): Reads => ({
+    page: serve([commit('b', { parents: [oid('a')] }), root('b', [entry('dir', 'r')]), modified('b', 'notes.txt')]),
+    files: { [fileKey('b', 'notes.txt')]: sent, [fileKey('a', 'notes.txt')]: earlier },
+  })
+
+  it('shows a sent file as soon as it is read, whole until its earlier version arrives', async () => {
+    const earlier = deferred<FileAtCommit>()
+    await open(changedFile({ kind: 'text', text: 'new\n' }, earlier.promise), { restricted: true })
+    // The review is whole without the earlier version, which the push does not send.
+    expect(readiness()).toBe('The whole review has loaded: 1 commit and 1 file.')
+
+    await press(row('notes.txt'))
+    const whole = editor()!
+    expect(whole).toMatchObject({ filename: 'notes.txt', original: null, text: 'new\n' })
+    expect(pane().querySelector('[aria-label^="Loading"]')).toBeNull()
+    expect(pane().textContent).toContain('The file is shown whole while its earlier version loads to compare with.')
+
+    await act(async () => earlier.resolve({ kind: 'text', text: 'old\n' }))
+    await settle()
+    const diff = editor()!
+    expect(diff).toMatchObject({ original: 'old\n', text: 'new\n' })
+    expect(diff.mount).not.toBe(whole.mount)
+    expect(pane().textContent).not.toContain('while its earlier version loads')
+    expect(pane().textContent).toContain("Removed lines are the earlier version's, not sent")
+  })
+
+  it('reads the earlier version beside the sent file, and shows the diff at once when the file arrives last', async () => {
+    const sent = deferred<FileAtCommit>()
+    const overseer = await open(changedFile(sent.promise, { kind: 'text', text: 'old\n' }))
+    await press(row('notes.txt'))
+    // Both reads are out, and nothing shows of the earlier version alone.
+    expect(readPaths(overseer).toSorted()).toEqual([fileKey('a', 'notes.txt'), fileKey('b', 'notes.txt')].toSorted())
+    expect(editor()).toBeUndefined()
+    expect(pane().querySelector('[aria-label="Loading the file"]')).not.toBeNull()
+
+    await act(async () => sent.resolve({ kind: 'text', text: 'new\n' }))
+    await settle()
+    expect(editor()).toMatchObject({ original: 'old\n', text: 'new\n' })
+    expect(pane().textContent).not.toContain('while its earlier version loads')
+  })
+
+  it('does not fetch an earlier version too large to arrive as text, and says the file is shown whole', async () => {
+    const large = { oid: oid('old-large'), byteLength: 5 * MAX_BUFFERED_BLOB_SIZE }
+    const overseer = await open({
+      ...changedFile({ kind: 'text', text: 'small\n' }, { kind: 'blob', blob: large }),
+      blobs: { [large.oid]: new Uint8Array(8) },
+    })
+    await press(row('notes.txt'))
+    expect(editor()).toMatchObject({ original: null, text: 'small\n' })
+    expect(pane().textContent).toContain(
+      'The file is shown whole: its earlier version, 5.0 MB (5242880 bytes), is too large to compare with.')
+    expect(overseer.readBlob).not.toHaveBeenCalled()
+  })
+
   it('says what each thing it cannot show as text is, with no editor', async () => {
     const overseer = await open({
       page: serve([
