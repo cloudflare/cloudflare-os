@@ -214,8 +214,9 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
                 {link && (
                   <MemberListItem
                     icon={BuildingsIcon}
-                    name={`Anyone in ${siteName}`}
-                    detail={link.status === 'failed' ? 'Couldn’t check your link' : linkOn && !standing.ownerOnly ? 'With your link' : undefined}
+                    name="Anyone with the link"
+                    // Who that can be: only those who can sign in where it is.
+                    detail={link.status === 'failed' ? 'Couldn’t check your link' : `Signed in to ${siteName}`}
                     role={linkOn && !standing.ownerOnly ? linkGives : 'No access'}
                     access={linkAccess()}
                   />

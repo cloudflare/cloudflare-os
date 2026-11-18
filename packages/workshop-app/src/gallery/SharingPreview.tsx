@@ -200,8 +200,8 @@ const RowsPreview = () => {
           <MemberListItem icon={UsersThreeIcon} name="Everyone in Engineering Notes" detail="2 people" role="Can edit" />
           <MemberListItem
             icon={BuildingsIcon}
-            name="Anyone in Cloudflare OS"
-            detail={link === 'off' ? undefined : 'With your link'}
+            name="Anyone with the link"
+            detail="Signed in to Cloudflare OS"
             role=""
             access={<AccessMenu label={LINK.find(({ value }) => value === link)!.label} of="anyone with your link" choices={{ options: LINK, value: link, onChange: setLink }} />}
           />
