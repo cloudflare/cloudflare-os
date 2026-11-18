@@ -1,6 +1,7 @@
 import {
   ISSUE_REPORT_PRIORITIES,
   ISSUE_REPORT_STATUSES,
+  type AdminIssueReport,
   type IssueReportPriority,
   type IssueReportStatus,
 } from '@gadgets/workshop-shared/api'
@@ -61,3 +62,15 @@ export const reportSearchOf = (search: Record<string, unknown>): ReportSearch =>
 /** Whether any filter is set. */
 export const isFiltered = ({ status, priority, reporter, workspace, assignee, unassigned }: ReportFilter) =>
   [status, priority, reporter, workspace, assignee, unassigned].some((value) => value !== undefined)
+
+/**
+ * Whether `report` is among the reports `filter` keeps, by what a write to a report changes: its
+ * status and who holds it. Its priority, its reporter and its workspace stay as they were filed,
+ * so a report that was listed under those filters is listed under them still.
+ */
+export const matchesChangingFilters = (
+  report: Pick<AdminIssueReport, 'status' | 'assignee'>, { status, assignee, unassigned }: ReportFilter,
+) =>
+  (status === undefined || report.status === status)
+  && (assignee === undefined || report.assignee?.id === assignee)
+  && (unassigned !== true || report.assignee === undefined)

@@ -9,7 +9,7 @@ import { DurationSetting } from '../../components/DurationSetting'
 import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
 import { issueFailure } from '../issue-reports/issueFailure'
 import { ReportDetail } from './ReportDetail'
-import type { ReportFilter } from './reportFilter'
+import { matchesChangingFilters, type ReportFilter } from './reportFilter'
 import { ReportFilters } from './ReportFilters'
 import { ReportList } from './ReportList'
 import type { ReportRetention } from './reportSettings'
@@ -50,7 +50,8 @@ type Listed = { request: string } & ({ reports: AdminIssueReport[]; nextCursor?:
  *
  * An open report takes the list's place, and the list stays loaded behind it: a report read while
  * it is open replaces its row, so the list shows what the server last said of it once the admin
- * comes back.
+ * comes back. A change that moves the report out of the list's filters, or into them, loads the
+ * list again, so that the list is then the one the server gives for those filters.
  */
 export const AdminReportsPanel = ({
   admin, retention, onSettingsChanged, filter, onFilterChange, reportId,
@@ -120,20 +121,35 @@ export const AdminReportsPanel = ({
     setFurtherPage({ request, loading: false, problem })
   }
 
+  // The open report as it was last read, to tell a read that moved it across the list's filters
+  // once the list no longer holds its row. The row is what the list's filters last answered for,
+  // so it comes first; a read made while the report was open before says nothing of this list.
+  const lastRead = useRef<AdminIssueReport>(undefined)
   const noteRead = (report: AdminIssueReport) => {
+    const before = list?.reports.find((other) => other.id === report.id)
+      ?? (lastRead.current?.id === report.id ? lastRead.current : undefined)
+    lastRead.current = report
     setListed((previous) => previous === null || !('reports' in previous) ? previous : {
       ...previous,
       reports: previous.reports.map((other) => other.id === report.id ? report : other),
     })
+    // Replacing the row is not enough once the report left the filters, or came under them: its
+    // row would stay in a list it is no longer part of, or be missing from the one it joined.
+    if (before !== undefined && matchesChangingFilters(before, filter) !== matchesChangingFilters(report, filter)) {
+      setReloads((n) => n + 1)
+    }
   }
 
   // Opening a report replaces the list with it, and closing it brings the list back, so the press
   // that did either would leave focus on nothing. The report takes it when one opens. When the
   // list returns, the row of the report that was open takes it, or the list when it holds no such
-  // row.
+  // row, or holds one that the list being read again is about to drop: the report was last read
+  // outside the filters, and focus on that row would go with it.
   const moved = useRef(false)
   const lastOpen = useRef<string | undefined>(undefined)
   useEffect(() => {
+    const closed = lastRead.current
+    lastRead.current = undefined
     if (reportId !== undefined) lastOpen.current = reportId
     if (!moved.current) return
     moved.current = false
@@ -141,9 +157,11 @@ export const AdminReportsPanel = ({
       detail.current?.focus()
       return
     }
-    const row = [...listing.current?.querySelectorAll<HTMLElement>('a[data-report-id]') ?? []]
+    const left = closed !== undefined && closed.id === lastOpen.current && !matchesChangingFilters(closed, filter)
+    const row = left ? undefined : [...listing.current?.querySelectorAll<HTMLElement>('a[data-report-id]') ?? []]
       .find((link) => link.dataset.reportId === lastOpen.current)
     ;(row ?? listing.current)?.focus()
+    // oxlint-disable-next-line exhaustive-deps -- only a change of the open report moves focus.
   }, [reportId])
 
   // A row's reporter, workspace or holder button can go with the rows the filtered list replaces,

@@ -299,6 +299,11 @@ const button = (name: string, within?: ParentNode) => {
   return element
 }
 const click = (element: HTMLElement) => act(async () => { element.click() })
+// The way back from the open report to the list.
+const backToList = async () => {
+  await click([...detail()!.querySelectorAll('a')].find((link) => link.textContent === 'All reports')!)
+  await settle()
+}
 
 const field = <T extends HTMLElement>(label: string, kind: new () => T): T => {
   const control = [...container!.querySelectorAll('label')]
@@ -773,13 +778,13 @@ describe('who holds a report, in the list', () => {
 
   it('filters by the holder of a row still listed among the reports nobody holds, in place of that filter', async () => {
     const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]), '/admin?tab=reports&unassigned=true&report=r-1')
+    // Claimed while it is open, the report keeps its row until the list read again answers,
+    // which here it does not: the row then names a holder under the filter for reports with none.
+    admin.listIssueReports.mockReturnValueOnce(new Promise(() => {}))
 
-    // Claimed while it is open, the report keeps its row in the list behind it, which is not
-    // read again: the row then names a holder under the filter for reports with none.
     await click(button('Assign to me'))
     await settle()
-    await click([...detail()!.querySelectorAll('a')].find((link) => link.textContent === 'All reports')!)
-    await settle()
+    await backToList()
     expect(search()).toEqual({ tab: 'reports', unassigned: true })
     expect(rowHolder('r-1').textContent).toBe('Held byAda Admin')
 
@@ -807,6 +812,146 @@ describe('who holds a report, in the list', () => {
     expect(filterSelect('assignee').textContent).toBe('Me')
     expect(findButton('Show every assignee, not only Ada Admin')).toBeUndefined()
     expect(admin.listIssueReports).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Takes the open report over, confirming the dialog that asks.
+const takeOver = async () => {
+  await click(button('Take over…'))
+  await click(button('Take over', dialog()!))
+}
+
+describe('a report changed while it is open, behind a filtered list', () => {
+  it.each([
+    {
+      name: 'claimed, out of the reports nobody holds',
+      query: 'unassigned=true', sent: { unassigned: true }, held: undefined,
+      change: () => click(button('Assign to me')),
+    },
+    {
+      name: 'released, out of the admin’s own reports',
+      query: `assignee=${encodeURIComponent(ADA.id)}`, sent: { assignee: ADA.id }, held: heldBy(ADA),
+      change: () => click(button('Release')),
+    },
+    {
+      name: 'taken over, out of the reports of the admin who held it',
+      query: 'assignee=grace%40example.test', sent: { assignee: 'grace@example.test' }, held: heldBy(),
+      change: takeOver,
+    },
+  ])('takes a report $name, with no press of Refresh', async ({ query, sent, held, change }) => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: held }), report('r-2', { assignee: held })]), `/admin?tab=reports&${query}`,
+    )
+    await click(rowLink('r-1'))
+    await settle()
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(1)
+
+    await change()
+    await settle()
+
+    // The list is read again under the filters it has, behind the report.
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(2)
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ ...sent, limit: REPORT_PAGE_SIZE })
+
+    await backToList()
+
+    expect(search()).toEqual({ tab: 'reports', ...sent })
+    expect(rowTitles()).toEqual(['Report r-2'])
+    expect(listing()!.closest('[aria-busy]')!.getAttribute('aria-busy')).toBe('false')
+    // The row that was open is gone, so the list takes focus.
+    expect(document.activeElement).toBe(heading('Issue reports')!.closest('section'))
+  })
+
+  it('takes a report out of the reports of a status once it has another', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]), '/admin?tab=reports&status=new')
+    await click(rowLink('r-1'))
+    await settle()
+
+    await choose(statusSelect(), 'Investigating')
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(2)
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ status: 'new', limit: REPORT_PAGE_SIZE })
+
+    await backToList()
+
+    expect(rowTitles()).toEqual(['Report r-2'])
+  })
+
+  it('lists a report again once it is back under the filters', async () => {
+    const admin = await renderPanel(
+      fakeAdmin([report('r-1', { assignee: heldBy(ADA) }), report('r-2', { assignee: heldBy(ADA) })]),
+      `/admin?tab=reports&assignee=${encodeURIComponent(ADA.id)}&report=r-1`,
+    )
+
+    await click(button('Release'))
+    await settle()
+    await click(button('Assign to me'))
+    await settle()
+
+    // Once for the release, which took it out of the list, and once for the claim.
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(3)
+
+    await backToList()
+
+    expect(rowTitles()).toEqual(['Report r-1', 'Report r-2'])
+    expect(document.activeElement).toBe(rowLink('r-1'))
+  })
+
+  it('reads the list again for a report another admin took since it was listed', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]), '/admin?tab=reports&unassigned=true')
+    admin.held.set('r-1', report('r-1', { assignee: heldBy() }))
+
+    await click(rowLink('r-1'))
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(2)
+
+    await backToList()
+
+    expect(rowTitles()).toEqual(['Report r-2'])
+  })
+
+  it('reads the list again for a report taken since a later list held it, though it was open before', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1', { assignee: heldBy() }), report('r-2')]))
+    await click(rowLink('r-1'))
+    await settle()
+    await backToList()
+
+    // Its holder releases it, and the reports nobody holds are listed with it among them.
+    admin.held.set('r-1', report('r-1'))
+    await choose(filterSelect('assignee'), 'Nobody')
+    expect(rowTitles()).toEqual(['Report r-1', 'Report r-2'])
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(2)
+
+    // Another admin takes it before it is opened again: the read matches the one made when it
+    // was open before, and differs from the row.
+    admin.held.set('r-1', report('r-1', { assignee: heldBy() }))
+    await click(rowLink('r-1'))
+    await settle()
+
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(3)
+
+    await backToList()
+
+    expect(rowTitles()).toEqual(['Report r-2'])
+  })
+
+  it('keeps the list, and replaces the row, for a change that leaves the report under the filters', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1'), report('r-2')]), '/admin?tab=reports&status=new&priority=medium')
+    await click(rowLink('r-1'))
+    await settle()
+
+    await click(button('Assign to me'))
+    await settle()
+    await type(composerField(), 'Looking into it.')
+    await submit(composerField())
+    await settle()
+    await backToList()
+
+    expect(admin.listIssueReports).toHaveBeenCalledTimes(1)
+    expect(rowTitles()).toEqual(['Report r-1', 'Report r-2'])
+    expect(rowHolder('r-1').textContent).toBe('Held byAda Admin')
   })
 })
 
