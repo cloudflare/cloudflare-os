@@ -1,3 +1,5 @@
+import { agentByKey, agentKeyOf, attentionWords } from '@/automations/agents'
+import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { useState } from 'react'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -26,6 +28,9 @@ export type GadgetSettingsPaneProps = {
   onOpenWorkspace: () => void
   /** An update from its template was proposed in this chat, which is where it is tried: go there. */
   onUpdateProposed: (chatId: number) => void
+  /** Goes to the page of an agent it starts, by its spawner's id. */
+  onOpenAgent?: (spawnerId: number) => void
+  agentHref?: (spawnerId: number) => string
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -35,7 +40,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * bound to, the user's models its code can be given, its code as it was last kept, read once the Code tab is shown, and what its template
  * says of it, with whether it has a newer version to update it from (`UpdateFromTemplate`).
  */
-export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onUpdateProposed }: GadgetSettingsPaneProps) => {
+export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onUpdateProposed, onOpenAgent, agentHref }: GadgetSettingsPaneProps) => {
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -55,6 +60,13 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   useDocumentTitle(title ? `Settings · ${title}` : 'Gadget settings')
   // Why the last thing asked for was not done.
   const [problem, setProblem] = useState<string>()
+  // What its agents want of the user, as the workspace's Agents tab says it, by spawner.
+  const { state: agentsState } = useWorkspaceAgents(workspaceId)
+  const agentAttention = (spawnerId: number) => {
+    const agent = agentsState.status === 'ready' ? agentByKey(agentsState.agents, agentKeyOf(spawnerId)) : undefined
+    const words = agent && attentionWords(agent)
+    return agent && words ? { words, tone: agent.waiting > 0 ? 'warning' as const : 'danger' as const } : undefined
+  }
 
   // Asked for by the user: not tried over a lost connection, which says so itself.
   const attempt = (what: string, run: () => Promise<unknown>) => {
@@ -110,6 +122,9 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         })}
         onBack={onBack}
         onOpenWorkspace={onOpenWorkspace}
+        onOpenAgent={onOpenAgent}
+        agentAttention={agentAttention}
+        agentHref={agentHref}
       />
       {follows && (
         <UpdateFromTemplate

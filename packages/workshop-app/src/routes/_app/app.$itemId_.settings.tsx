@@ -1,5 +1,6 @@
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, parseItemPageId } from '@/aside/asideItems'
+import { agentKeyOf } from '@/automations/agents'
 import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
 import { GADGET_SETTINGS_TABS, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 
@@ -50,6 +51,8 @@ function GadgetSettings() {
       onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
       // The chat that holds the update, with the gadget beside it, showing it.
       onUpdateProposed={(chatId) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open: formatAsideRef(ref) } })}
+      onOpenAgent={(spawnerId) => navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: agentKeyOf(spawnerId) } })}
+      agentHref={(spawnerId) => router.buildLocation({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey: agentKeyOf(spawnerId) } }).href}
     />
   )
 }

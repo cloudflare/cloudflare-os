@@ -84,6 +84,12 @@ export type GadgetSettingsViewProps = {
   onBack: () => void
   /** Goes to the page of the workspace it is in. */
   onOpenWorkspace: () => void
+  /** Goes to the page of an agent it starts, by its spawner's id. */
+  onOpenAgent?: (spawnerId: number) => void
+  /** Where an agent's page is, so that it can be opened in another tab. */
+  agentHref?: (spawnerId: number) => string
+  /** What an agent it starts wants of the user, by its spawner's id: a run waiting on them, or a latest run that failed. */
+  agentAttention?: (spawnerId: number) => { words: string; tone: 'warning' | 'danger' } | undefined
 }
 
 const Message = ({ children }: { children: string }) => <p className="appears px-5 text-base text-kumo-subtle">{children}</p>
@@ -96,7 +102,7 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace,
+  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention,
 }: GadgetSettingsViewProps) => {
   // What the model dialog was opened for, kept as it closes so that it does not change meanwhile.
   const [modelDialog, setModelDialog] = useState<{ open: boolean; changing?: string; initial?: string }>({ open: false })
@@ -150,6 +156,10 @@ export const GadgetSettingsView = ({
       onRemove={() => onUnbind(binding.name)}
       // One waiting in a chat is that chat's until its changes are kept.
       onRename={binding.chatId === undefined ? (next) => onRenameBinding(binding.name, next) : undefined}
+      // An agent opens its page, where its runs are; one waiting in a chat has none yet.
+      onOpen={binding.kind === 'agent' && binding.chatId === undefined && onOpenAgent ? () => onOpenAgent(binding.target) : undefined}
+      href={binding.kind === 'agent' && binding.chatId === undefined ? agentHref?.(binding.target) : undefined}
+      attention={binding.kind === 'agent' ? agentAttention?.(binding.target) : undefined}
       onChangeModel={binding.kind === 'model' && binding.chatId === undefined ? () => setModelDialog({ open: true, changing: binding.name, initial: binding.modelId }) : undefined}
     />
   )
