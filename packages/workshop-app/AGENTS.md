@@ -427,6 +427,15 @@ again from: its card or row only has a badge before the chevron. What was asked 
 in either dialog and could not be done is said in a `Banner` over its buttons. A dialog is given
 the connection as it is listed now, so that what an account is given shows while it is up.
 
+Which one of a service's resources is chosen in the service's own form, a gatekeeper's resource
+configurator, in `SetUpConnectionDialog` (a `Dialog` that is `wide`): `ResourceConfiguratorFrame`,
+a frame sandboxed with no origin. It is fixed to the window over the room kept for it and cut to
+what scrolls it (`connections/framePlacement.ts`, plain and tested), so that a menu in the form
+draws past the dialog as a select's would rather than being cut off, or scrolled to. So nothing it
+is in may be transformed while it shows: `Dialog` is centred by its margins, not translated. It
+never scrolls within itself, says it is opening until its form is drawn, which is kept out of sight
+until then, and its room grows to the form. The form's fields line up with the dialog's own.
+
 `Banner` is the app's own, drawn from Kumo's colours: a rounded surface in the colour of what went
 wrong, with its icon and its action on the title's line, the action a button of the app's shape
 a shade deeper than the banner. A surface in a dialog, the banner or a list, is a step less round than
