@@ -3,6 +3,7 @@ import type { RpcPromise } from 'capnweb'
 import type { GatekeeperClient } from '@gadgets/workshop-shared/api'
 import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
+import { Dialog } from '@/components/Dialog'
 import { useApi } from '@/rpc/ApiContext'
 import { resourceGroups, resourceOfUrl } from './connectionList'
 import { ConnectResource } from './SetUpConnection'
@@ -46,14 +47,13 @@ type Chosen = ConnectionChoice & {
 export const AddConnection = memo(function AddConnection({ workspaceId, open, onOpenChange, to, onAdded }: AddConnectionProps) {
   const { api } = useApi()
   const { state } = useConnections()
+  // What is being set up, whose form is the page shown, until Back. It stays after closing, so
+  // that the page shown is the one that closes; each opening starts at choosing.
   const [chosen, setChosen] = useState<Chosen>()
-  // Which of the two dialogs is open. What was chosen stays after going back or closing, so that
-  // its dialog closes as a dialog does rather than vanishing; each opening starts at choosing.
-  const [settingUp, setSettingUp] = useState(false)
   const [wasOpen, setWasOpen] = useState(open)
   if (open !== wasOpen) {
     setWasOpen(open)
-    if (open) setSettingUp(false)
+    if (open) setChosen(undefined)
   }
 
   const choices = useMemo((): Chosen[] | undefined => {
@@ -79,30 +79,28 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
   }, [state])
 
   return (
-    <>
-      <AddConnectionDialog
-        open={open && !settingUp}
-        onOpenChange={onOpenChange}
-        to={to}
-        choices={choices}
-        problem={state.status === 'failed' ? `Couldn’t read your services: ${state.message}` : undefined}
-        onChoose={(choice) => {
-          setChosen(choices?.find(({ key }) => key === choice.key))
-          setSettingUp(true)
-        }}
-      />
-      {chosen && (
+    // One dialog that goes from the choice to its service's form and back as pages, rather than
+    // one put away for another. Each kind is a page of its own, so its form starts afresh.
+    <Dialog open={open} onOpenChange={onOpenChange} wide={chosen !== undefined} page={chosen ? { key: chosen.key, depth: 1 } : { key: '', depth: 0 }}>
+      {!chosen ? (
+        <AddConnectionDialog
+          open={open}
+          onOpenChange={onOpenChange}
+          to={to}
+          choices={choices}
+          problem={state.status === 'failed' ? `Couldn’t read your services: ${state.message}` : undefined}
+          onChoose={(choice) => setChosen(choices?.find(({ key }) => key === choice.key))}
+        />
+      ) : (
         <ConnectResource
-          // Each kind starts its form afresh.
-          key={chosen.key}
-          open={open && settingUp}
+          open={open}
           onOpenChange={onOpenChange}
           vendorId={chosen.vendorId}
           name={chosen.service.name}
           logoUrl={chosen.service.logoUrl}
           resourceUrlPattern={chosen.urlPattern}
           resource={chosen.title}
-          onBack={() => setSettingUp(false)}
+          onBack={() => setChosen(undefined)}
           onConnect={async (accountId, resourceUrl) => {
             // Disposed by hand: `using` is not lowered for every browser this runs in.
             const overseer = api.openWorkspace(workspaceId)
@@ -120,6 +118,6 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
           }}
         />
       )}
-    </>
+    </Dialog>
   )
 })

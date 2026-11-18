@@ -451,6 +451,17 @@ is in may be transformed while it shows: `Dialog` is centred by its margins, not
 never scrolls within itself, says it is opening until its form is drawn, which is kept out of sight
 until then, and its room grows to the form. The form's fields line up with the dialog's own.
 
+A dialog that goes on to another, such as adding a connection (`AddConnection`: what kind, then
+the service's form, and Back), is one `Dialog` with pages (`page`, a key and how deep it is) rather
+than one put away for another, which would flicker the backdrop and fade one surface over the
+other. The surface stays and takes the new page's size about its middle, while each page stays
+where it is once settled: the leaving one fades as it slides a little toward where it goes, the new
+one comes from the other side a moment behind it, on one clock that eases out with no overshoot
+(`components/dialogPageMotion.ts`, plain and tested), and only fades with reduced motion. Nothing is
+transformed, so a configurator's frame goes along, cut to the surface. A `Dialog` within a page is
+that page (`AddConnectionDialog`, `SetUpConnectionDialog` unchanged), and its `onOpenChange` puts
+the whole away. Focus goes into the new page. Use pages for the next dialog that goes on to another.
+
 `Banner` is the app's own, drawn from Kumo's colours: a rounded surface in the colour of what went
 wrong, with its icon and its action on the title's line, the action a button of the app's shape
 a shade deeper than the banner. A surface in a dialog, the banner or a list, is a step less round than
