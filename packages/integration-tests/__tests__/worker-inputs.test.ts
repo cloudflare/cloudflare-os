@@ -26,6 +26,11 @@ it.each([
   "packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts",
   "packages/gatekeeper-context/src/library-read.ts",
   "packages/gatekeeper-context/cloudflare.config.ts",
+  "packages/gatekeeper-instanceadmin/src/worker.ts",
+  "packages/gatekeeper-instanceadmin/cloudflare.config.ts",
+  "packages/api-schema/src/check.ts",
+  "packages/api-schema/src/emit/dts.ts",
+  "packages/api-schema/scripts/generate.ts",
   "pnpm-lock.yaml",
 ])("treats %s as a Worker input", path => {
   expect(isWorkerInput(inWorkspace(path))).toBe(true);
@@ -40,6 +45,9 @@ it.each([
   "packages/gatekeeper-context/.wrangler/validate/src/index.ts",
   "packages/gatekeeper-context/src/generated/app.txt",
   "packages/gatekeeper-context/dist-app/app/index.html",
+  "packages/gatekeeper-instanceadmin/.wrangler/validate/src/worker.ts",
+  "packages/gatekeeper-instanceadmin/src/generated/deployment-configurator-ui.txt",
+  "packages/api-schema/generated/admin-api.schema.json",
   "packages/workshop-backend/node_modules/capnweb/index.js",
   "packages/typed-storage/node_modules/.bin/tsc",
   // Another package's tests reach the Worker through none of this.
