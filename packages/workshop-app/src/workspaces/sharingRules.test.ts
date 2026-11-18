@@ -17,6 +17,7 @@ import {
   grantOf,
   invitedBy,
   inviteRefusal,
+  listed,
   ownLinkOf,
   removalOutcome,
   type ShareTarget,
@@ -183,5 +184,10 @@ describe('protectedResources', () => {
   it('tells resources without an address apart by their titles, and waits for the services', () => {
     expect(protectedResources([need(1, 'google'), need(2, 'google'), { ...need(3, 'google'), resourceTitle: 'Connection 1' }], vendors)?.map(({ needs }) => needs.length)).toEqual([2, 1])
     expect(protectedResources([need(5, 'google')], undefined)).toBeUndefined()
+  })
+
+  it('lists names as a sentence does', () => {
+    expect(listed(['Google'])).toBe('Google')
+    expect(listed(['Google', 'Slack', 'GitHub'])).toBe('Google, Slack and GitHub')
   })
 })

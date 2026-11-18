@@ -207,3 +207,7 @@ export const protectedResources = (requirements: readonly ObserverBindingNeed[],
   }
   return [...resources.values()]
 }
+
+/** Names as a sentence lists them: "Google", "Google and Slack", "Google, Slack and GitHub". */
+export const listed = (names: readonly string[]) =>
+  names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`

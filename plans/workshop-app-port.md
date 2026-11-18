@@ -64,7 +64,7 @@ waiting (`awaitingDecision`) are done: agents as entities, `plans/agents.md`.
 | Changing a model binding's model replaces its connection (unbind, then bind a new one under the same name), not atomically, leaving the old connection in the workspace | there is no call to point a binding at another target | a rebind on `GadgetClient`, or a model setter on the model's gatekeeper |
 | Templates have no use counts: "Most used" is the organisation's first, then the newest | `BlueprintPublicInfo` has no count | a use count on `BlueprintPublicInfo` |
 | A template is always made in a new workspace | the base has no `createGadgetFromBlueprint` | `createGadgetFromBlueprint` |
-| Publishing a template has no screenshot step, and the templates page's Publish publishes an app under its own title at once, without the title and description the gadget's own Publish as template… asks for | scope | none |
+| Publishing a template has no screenshot step | scope | none |
 | Moving a skill to another tag copies it and deletes the old one, not atomically, and can leave its collection empty | the Context Library can't move between collections | none (gatekeeper-context) |
 | No "AI providers" row in the model settings: a key is entered for each model (Duplicate copies one), not once per provider | a key is a field of each model's config; there is no per-user provider key | a per-user provider credential that models refer to |
 | A decision model of the user's own can't be added, edited or removed in the settings, which list only language models | scope: main lists both on its AI Providers page | none |
