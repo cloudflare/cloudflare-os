@@ -1093,8 +1093,8 @@ export default function GadgetEditor() {
 
   // A preview that is closed while its connection has changes waiting can be opened again.
   const shownPreview = showingActivity && connectionPreview ? previewKey(connectionPreview) : undefined
-  const closedPreviews = usePendingConnectionPreviews(overseerStub, offersPreview)
-    .filter(preview => previewKey(preview) !== shownPreview)
+  const pendingPreviews = usePendingConnectionPreviews(overseerStub, offersPreview)
+  const closedPreviews = pendingPreviews.filter(preview => previewKey(preview) !== shownPreview)
 
   const closeWorkspacePane = useCallback(() => {
     if (!showingActivity) {
@@ -2310,6 +2310,7 @@ export default function GadgetEditor() {
                   onAgentActiveChange={handleAgentActiveChange}
                   autoApproval={autoApproval}
                   onViewActivity={openActivity}
+                  connectionPreviews={{ offered: pendingPreviews, onOpen: openConnectionPreview }}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}

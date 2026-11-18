@@ -52,6 +52,7 @@ export const PendingChangesTray = ({
   vendorBranding,
   actions,
   bulk,
+  previewFor,
 }: {
   groups: readonly PendingChangeGroup[]
   rules: AutoApprovalRules
@@ -67,6 +68,8 @@ export const PendingChangesTray = ({
   vendorBranding: ReadonlyMap<string, VendorBranding>
   actions: PendingChangeActions
   bulk: BulkResolve
+  /** What opens a group's content beside the chat, for a group whose connection can draw it. */
+  previewFor?: (group: PendingChangeGroup) => (() => void) | undefined
 }) => {
   const [openGroupId, setOpenGroupId] = useState<number | null>(null)
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
@@ -214,6 +217,7 @@ export const PendingChangesTray = ({
               onToggle={() => setOpenGroupId(current =>
                 current === group.gatekeeperId ? null : group.gatekeeperId)}
               actions={decisions}
+              onPreview={previewFor?.(group)}
               bulk={!ready || group.hasCreation || rules.restricted ? undefined : {
                 onApplyAll: () => runBulk(group.entries, 'approve'),
                 onDiscardAll: () => runBulk(group.entries, 'deny'),

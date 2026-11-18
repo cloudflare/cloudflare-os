@@ -118,6 +118,7 @@ import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
+import { previewKey, previewOf, type ConnectionPreview } from "./features/connection-preview/connectionPreview";
 import {
   chatRequestIds, pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
@@ -2457,6 +2458,8 @@ interface ChatInterfaceProps {
   autoApproval?: AutoApprovalChannel;
   // Opens the Activity pane, which is where a standing auto-approval rule is turned off again.
   onViewActivity?: (view: ActivityView) => void;
+  // The previews offered of what has changes waiting, and what opens one beside the chat.
+  connectionPreviews?: { offered: readonly ConnectionPreview[]; onOpen: (preview: ConnectionPreview) => void };
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2667,6 +2670,7 @@ function ChatInterface({
   onAgentActiveChange,
   autoApproval,
   onViewActivity,
+  connectionPreviews,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -4723,6 +4727,12 @@ function ChatInterface({
       vendorBranding={vendorBranding}
       actions={trayActions}
       bulk={bulkResolve}
+      // Of the oldest request, which is the one approved first.
+      previewFor={group => {
+        const key = previewKey(previewOf(group.gatekeeperId, group.entries[0]));
+        const preview = connectionPreviews?.offered.find(offered => previewKey(offered) === key);
+        return preview && (() => connectionPreviews?.onOpen(preview));
+      }}
     />
   );
 
