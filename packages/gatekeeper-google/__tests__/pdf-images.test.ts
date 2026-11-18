@@ -248,6 +248,19 @@ describe("PdfImageScan", () => {
     expect(String.fromCharCode(...bytes.slice(image!.offset, image!.offset + 5))).toBe("ab\ncd");
   });
 
+  it("reads a reference with comments between its parts, as it reads one without", () => {
+    let object = (length: string) => pdf(`%PDF-1.4\n7 0 obj\n5\nendobj\n8 0 obj\n<< ${IMAGE} /Filter /DCTDecode ` +
+      `/ColorSpace /DeviceRGB /Length ${length} >>\nstream\nab\ncd\nendstream\nendobj\n`);
+    for (let length of ["7 % the data's length\n0 R", "7%one%two\r0 % generation\n % and\n R", "7 0 %%\nR"]) {
+      let bytes = object(length);
+      for (let sizes of [[bytes.byteLength], [1], [7]]) {
+        expect(scan(bytes, sizes).images, length).toMatchObject([{ length: 5, encoding: "jpeg", damaged: false }]);
+      }
+    }
+    // A comment that no line end closes is not between a reference's parts: the number stands alone.
+    expect(scan(object("7 % 0 R")).images).toEqual([]);
+  });
+
   it("finds the end of data whose length object it never sees, less the line end before it", () => {
     for (let [lineEnd, length] of [["\n", 5], ["\r\n", 5], ["", 5], ["\n\n", 6]] as const) {
       let bytes = pdf(`8 0 obj\n<< ${IMAGE} /Filter /DCTDecode /Length 99 0 R >>\n` +
@@ -562,6 +575,9 @@ describe("PdfImageScan", () => {
       `1 0 obj(${"endobj ".repeat(9400)}) `.repeat(8),
       `1 0 obj\n[ ${"1 ".repeat(16_000)}${"endobj ".repeat(4600)}`.repeat(4),
       `1 0 obj ${"stream\n".repeat(9000)}`.repeat(4),
+      // Numbers that may each begin a reference, before comments that may each end anywhere.
+      `1 0 obj\n[ ${`7 ${"%".repeat(40)}\n0 X `.repeat(1200)}]\nendobj\n`.repeat(4),
+      `1 0 obj\n[ 7 ${"%a".repeat(30_000)} ]\nendobj\n`.repeat(4),
     ];
     // Each is scanned in under 20 ms on a laptop. An object is read no further than the longest
     // one that is read, so a file of more such objects takes as much longer however each is

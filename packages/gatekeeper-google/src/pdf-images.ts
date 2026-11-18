@@ -121,7 +121,13 @@ const NAME_RUN = /[^\0\t\n\f\r ()<>[\]{}/%]*/y;
 const LETTER_RUN = /[A-Za-z]*/y;
 const LINE_END = /[\n\r]/g;
 const NUMBER = /[+-]?(?:\d+\.?\d*|\.\d+)/y;
-const REFERENCE_REST = /[\0\t\n\f\r ]+\d{1,5}[\0\t\n\f\r ]+R(?![A-Za-z0-9])/y;
+/**
+ * What follows an object number in a reference to it. Between its parts stands whitespace or a
+ * comment, which is taken with the line end that closes it: so a run of them is read one way
+ * only, however many `%` it holds.
+ */
+const REFERENCE_GAP = String.raw`(?:[\0\t\n\f\r ]|%[^\n\r]*[\n\r])+`;
+const REFERENCE_REST = new RegExp(String.raw`${REFERENCE_GAP}\d{1,5}${REFERENCE_GAP}R(?![A-Za-z0-9])`, "y");
 const KEYWORD = /[A-Za-z]+/y;
 
 /**
