@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { RpcStub, RpcTarget } from 'capnweb'
 import type { AuthenticatedApi, ObserverBindingNeed, ObserverConfigCallback } from '@gadgets/workshop-shared/api'
-import { withObserverAccess } from './ObserverAccessProvider'
+import { viewedWorkspace, withObserverAccess } from './ObserverAccessProvider'
 
 type Given = RpcStub<ObserverConfigCallback> | undefined
 const NEEDS: ObserverBindingNeed[] = [{ gatekeeperId: 4, vendorId: 'google', resourceTitle: 'Plan' }]
@@ -58,5 +58,14 @@ describe('an API that asks the user to confirm their access', () => {
     for (const given of fake.given) expect(await given!.configure(NEEDS)).toEqual([{ gatekeeperId: 4, accountId: 9 }])
     expect(asked).toEqual(['this workspace: 1', 'this gadget: 1'])
     overseer[Symbol.dispose]()
+  })
+})
+
+describe('the workspace a page shows', () => {
+  it('is the one in its address, or the one its item is in, and none elsewhere', () => {
+    expect(viewedWorkspace('/workspace/abc/chat/4')).toBe('abc')
+    expect(viewedWorkspace('/app/abc-5/settings')).toBe('abc')
+    expect(viewedWorkspace('/settings')).toBeUndefined()
+    expect(viewedWorkspace('/library/templates/t1')).toBeUndefined()
   })
 })

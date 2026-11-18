@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { RpcTarget, type RpcStub } from 'capnweb'
+import { useRouterState } from '@tanstack/react-router'
 import type { AuthenticatedApi, GatekeeperVendorInfo, ObserverAccountChoice, ObserverBindingNeed, ObserverConfigCallback } from '@gadgets/workshop-shared/api'
+import { parseItemPageId } from '@/aside/asideItems'
 import { ConfirmAccessDialog, type ConfirmAccessRow } from '@/blocks/ConfirmAccessDialog'
 import { ApiContext, useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -21,18 +23,18 @@ class ObserverConfig extends RpcTarget implements ObserverConfigCallback {
   }
 }
 
-type Configure = (what: string) => RpcStub<ObserverConfigCallback>
+type Configure = (what: string, workspaceId: string) => RpcStub<ObserverConfigCallback>
 
 // The overseer an open gave, with its gadgets got as the user's own access asks: a collaborator on
 // one gadget alone is verified when they get it, not when the workspace opens. Over the stub, so
 // that it is still pipelined and disposed of as one.
-const withGadgetAccess = <Overseer extends object>(overseer: Overseer, configure: Configure): Overseer =>
+const withGadgetAccess = <Overseer extends object>(overseer: Overseer, workspaceId: string, configure: Configure): Overseer =>
   new Proxy(overseer, {
     get(target, prop) {
       const value = (target as Record<PropertyKey, unknown>)[prop]
       if (prop !== 'getGadget') return value
       const getGadget = value as (id: number, given?: RpcStub<ObserverConfigCallback>) => unknown
-      return (id: number, given?: RpcStub<ObserverConfigCallback>) => getGadget(id, given ?? configure('this gadget'))
+      return (id: number, given?: RpcStub<ObserverConfigCallback>) => getGadget(id, given ?? configure('this gadget', workspaceId))
     },
   })
 
@@ -48,7 +50,7 @@ export const withObserverAccess = (api: RpcStub<AuthenticatedApi>, configure: Co
       if (prop !== 'openWorkspace') return value
       const open = value as AuthenticatedApi['openWorkspace']
       return (id: string, shareKey?: string, given?: RpcStub<ObserverConfigCallback>) =>
-        withGadgetAccess(open(id, shareKey, given ?? configure('this workspace')), configure)
+        withGadgetAccess(open(id, shareKey, given ?? configure('this workspace', id)), id, configure)
     },
   })
 
@@ -64,6 +66,14 @@ type Asking = {
 const askingKey = (needs: readonly ObserverBindingNeed[]) =>
   needs.map(({ gatekeeperId, failure }) => `${gatekeeperId}${failure ? '!' : ''}`).toSorted().join(',')
 
+/** The workspace a page shows, by its address: its own pages, or one of its items on a page of its own. */
+export const viewedWorkspace = (pathname: string): string | undefined => {
+  const workspace = /^\/workspace\/([^/]+)/.exec(pathname)
+  if (workspace) return decodeURIComponent(workspace[1])
+  const item = /^\/(?:app|library)\/([^/]+)/.exec(pathname)
+  return item ? parseItemPageId(decodeURIComponent(item[1]))?.workspaceId : undefined
+}
+
 const NOT_CONFIRMED = 'You didn’t confirm your access, so it can’t be opened.'
 
 /**
@@ -78,7 +88,13 @@ export const ObserverAccessProvider = ({ children }: { children: ReactNode }) =>
   const declined = useRef(new Set<string>())
   const [asking, setAsking] = useState<Asking>()
 
-  const ask = useCallback((what: string, needs: ObserverBindingNeed[]) => new Promise<ObserverAccountChoice[]>((resolve, reject) => {
+  // Only what is on screen asks: the sidebar's counts and what the gadgets ask open the user's
+  // recent workspaces in the background, which would otherwise ask of them unbidden, wherever they
+  // are. Those are refused, as an open with nothing to ask is.
+  const viewing = useRef<string | undefined>(undefined)
+  viewing.current = useRouterState({ select: ({ location }) => viewedWorkspace(location.pathname) })
+  const ask = useCallback((what: string, workspaceId: string, needs: ObserverBindingNeed[]) => new Promise<ObserverAccountChoice[]>((resolve, reject) => {
+    if (workspaceId !== viewing.current) return reject(new Error(NOT_CONFIRMED))
     const key = askingKey(needs)
     if (declined.current.has(key)) return reject(new Error(NOT_CONFIRMED))
     const same = queue.current.find((each) => each.key === key)
@@ -100,7 +116,7 @@ export const ObserverAccessProvider = ({ children }: { children: ReactNode }) =>
   }
 
   const { api } = session
-  const wrapped = useMemo(() => withObserverAccess(api, (what) => new ObserverConfig((needs) => ask(what, needs)) as unknown as RpcStub<ObserverConfigCallback>), [api, ask])
+  const wrapped = useMemo(() => withObserverAccess(api, (what, workspaceId) => new ObserverConfig((needs) => ask(what, workspaceId, needs)) as unknown as RpcStub<ObserverConfigCallback>), [api, ask])
   const value = useMemo(() => ({ ...session, api: wrapped }), [session, wrapped])
 
   return (
