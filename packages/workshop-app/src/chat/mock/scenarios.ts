@@ -1,5 +1,6 @@
 import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { withQuote } from '../replyQuote'
+import { PLANS_ANSWER } from './liveViews'
 import { BUDGET_XLSX, Q2_REVIEW_PDF, Q3_PLAN_DOCX, ROADMAP_PPTX } from './officeFiles'
 import {
   action,
@@ -58,6 +59,19 @@ const plain: Scenario = {
         text: 'Yes. Each run is listed with its time and result, and a failed run keeps its error so you can see why.',
       })),
     )),
+  ],
+}
+
+const liveView: Scenario = {
+  id: 'live-view',
+  title: 'Hosting plans',
+  description:
+    'An answer with a live view in it. While the reply is drafted, the status beside the mascot names the view; once ' +
+    'written, it runs in place. Choose a plan in it, then Send under it to answer.',
+  history: history([user('Which hosting plan fits a team of 12?')]),
+  script: [
+    ...turn(say(agent({ reasoning: 'Three plans. Show them side by side so the choice is one click.', text: PLANS_ANSWER }))),
+    ...when('onSend', turn(say(agent({ text: 'Done. The workspace is on **Team** now, with room for 25 people.' })))),
   ],
 }
 
@@ -663,6 +677,7 @@ const longHistory: Scenario = {
 /** Every scripted chat, in the order the picker lists them. */
 export const SCENARIOS: Scenario[] = [
   plain,
+  liveView,
   toolRun,
   approval,
   restrictedApproval,

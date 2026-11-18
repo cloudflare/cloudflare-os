@@ -147,6 +147,19 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const commands = useChatCommands(actions.listCommands, chat.status === 'ready')
   useOpenNewOutputs(chat.status === 'ready' ? chat : undefined, onOpenOutput)
 
+  // What a view in an answer suggested, once the viewer clicked Send under it: a message of their
+  // own, as from the composer, but replying to nothing, and leaving the draft as it is.
+  const sendSuggestion = useHandler(async (message: string) => {
+    list.current?.scrollToLatest()
+    if (chat.status !== 'ready') return false
+    if (model.status !== 'ready') {
+      setProblem(describeModelProblem(model))
+      return false
+    }
+    setProblem(undefined)
+    return actions.send(message, model.id)
+  })
+
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
@@ -174,10 +187,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onDenyConnection: actions.denyConnection,
       onApproveWebFetch: actions.approveWebFetches,
       onDenyWebFetch: actions.denyWebFetch,
+      onSendSuggestion: sendSuggestion,
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       onContinue: () => setCreditsShown((shown) => ({ ...shown, open: true })),
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation])
+  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
 
 
   const messages = useMemo(() => {

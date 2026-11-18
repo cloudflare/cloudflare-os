@@ -1,3 +1,4 @@
+import { answerProse } from './answerParts'
 import type { AssistantItem, ChatItem, UserItem } from './chatItems'
 
 // A reply carries what it answers inside its own text, as a Markdown blockquote ahead of what was
@@ -35,7 +36,7 @@ export const quoteOf = (text: string): string => {
  */
 export const quoteLine = (item: UserItem | AssistantItem): string =>
   quoteOf(item.kind === 'assistant'
-    ? item.text
+    ? answerProse(item.parts)
     : item.parts.map((part) => (part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`)).join(''))
 
 /**

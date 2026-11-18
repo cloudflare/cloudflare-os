@@ -3,6 +3,8 @@ import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { messageInfo } from '@/blocks/messageInfo'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
 import { UserMessage } from '@/blocks/UserMessage'
+import { answerParts } from '@/chat/answerParts'
+import { PLANS_ANSWER } from '@/chat/mock/liveViews'
 import { BUDGET_XLSX, Q3_PLAN_DOCX, ROADMAP_PPTX } from '@/chat/mock/officeFiles'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
@@ -14,6 +16,11 @@ const picture = new TextEncoder().encode(
 )
 
 const SENT = new Date(2026, 10, 2, 9, 41)
+
+const COUNTER = '<inline-html>\n<title>Counter</title>\n<button id="add">Add one</button> <output id="count">0</output>\n<script type="module">\nlet count = 0\ndocument.getElementById("add").onclick = () => { document.getElementById("count").value = ++count }\n</script>\n</inline-html>'
+const THROWS = 'It tried to count:\n\n<inline-html>\n<title>Tally</title>\n<p>Counting…</p>\n<script type="module">tally.add(1)</script>\n</inline-html>'
+const EMPTY = 'Here it is:\n\n<inline-html>\n<title>Nothing</title>\n</inline-html>'
+const UNCLOSED = 'A chart:\n\n<inline-html>\n<title>Weeks</title>\n<svg viewBox="0 0 10 10">'
 
 const TRACE: ToolStepEntry[] = [
   { type: 'call', key: 'info-read', icon: 'file', label: 'Read src/chart.tsx', reasoning: 'The window is probably a constant.', sections: [] },
@@ -100,6 +107,23 @@ export const MessageBlocksPreview = () => {
             unread
             details={{ ...of('unread'), ...messageInfo({}) }}
           />
+        </Column>
+      </Section>
+      <Section title="AssistantMessage with live views (prose around a view: choose a plan, then Send or Dismiss what it suggests; a view alone; one whose code throws; one with nothing in it; one the agent never closed, shown as code; Stop and Run under each)">
+        <Column>
+          <AssistantMessage
+            text={PLANS_ANSWER}
+            parts={answerParts(PLANS_ANSWER)}
+            onReply={() => say('reply')}
+            onSendSuggestion={async (message) => {
+              say(`send: ${message}`)
+              return true
+            }}
+          />
+          <AssistantMessage text={COUNTER} parts={answerParts(COUNTER)} onReply={() => say('reply')} />
+          <AssistantMessage text={THROWS} parts={answerParts(THROWS)} />
+          <AssistantMessage text={EMPTY} parts={answerParts(EMPTY)} />
+          <AssistantMessage text={UNCLOSED} parts={answerParts(UNCLOSED)} />
         </Column>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>

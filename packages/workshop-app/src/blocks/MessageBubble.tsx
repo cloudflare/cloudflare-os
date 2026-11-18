@@ -19,6 +19,12 @@ export type MessageBubbleProps = {
    */
   media?: boolean
   /**
+   * It holds a live view the agent drew (`InlineView`): an outlined surface of the page's own
+   * colour, which the view's colours are chosen against, as wide as there is room for beside its
+   * actions, rather than a bubble of the sender's.
+   */
+  view?: boolean
+  /**
    * The neighbours from the same sender, for where bubbles are not siblings in the page and so
    * cannot find each other (a message list wraps every row). Sibling bubbles need not be told.
    */
@@ -50,6 +56,9 @@ const BUBBLE = {
   assistant: 'bg-kumo-fill text-kumo-default',
   error: 'bg-kumo-danger-tint text-kumo-danger',
 } as const
+
+// A view's surface, which it insets itself.
+const VIEW = 'bg-kumo-base text-kumo-default ring-1 ring-inset ring-kumo-line'
 
 // Consecutive messages from one sender read as a run: the row moves closer to the one above (the
 // feed's `gap-2` is 8px, so -mt-1.5 leaves 2px) and the corners where two bubbles meet shrink, on the
@@ -108,7 +117,7 @@ const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, media, joins, onReply, copyText, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
   // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
@@ -165,7 +174,8 @@ export const MessageBubble = ({ role, children, media, joins, onReply, copyText,
     >
       <div
         className={cn(
-          'arrives message-bubble max-w-[min(70%,65ch)] rounded-[21px] text-base/5 break-words',
+          'arrives message-bubble rounded-[21px] text-base/5 break-words',
+          view ? 'w-[min(100%_-_5.5rem,44rem)]' : 'max-w-[min(70%,65ch)]',
           // It grows in downwards, as the conversation does, from its sender's side.
           role === 'user' ? 'origin-top-right' : 'origin-top-left',
           'transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
@@ -185,8 +195,8 @@ export const MessageBubble = ({ role, children, media, joins, onReply, copyText,
           className={cn(
             'message-bubble-text group/message relative rounded-[inherit] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
             // 21px corners less a 5px inset leave a tile's 16px.
-            media ? 'p-[5px]' : 'px-5 py-[11px]',
-            BUBBLE[role],
+            view ? VIEW : media ? 'p-[5px]' : 'px-5 py-[11px]',
+            !view && BUBBLE[role],
             joinsDetails && JOINED[role].below,
           )}
         >
