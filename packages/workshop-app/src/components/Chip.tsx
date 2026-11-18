@@ -11,8 +11,9 @@ export type ChipProps = {
 }
 
 // Tinted with the surrounding text colour, so it reads on a dark bubble as well as a light one.
-// Inline rather than a flex box, so a long name wraps with the sentence it is part of.
-const CHIP = 'mx-0.5 rounded-full bg-current/12 box-decoration-clone px-2 py-0.5 text-[0.9em] font-medium [&>svg]:me-1 [&>svg]:inline [&>svg]:size-[1em] [&>svg]:align-[-0.125em]'
+// One piece, as a name is: it moves to the next line whole rather than breaking between its icon
+// and its words, and a name too long for the line is cut short, whole on hover.
+const CHIP = 'mx-0.5 inline-flex max-w-full items-center gap-1 rounded-full bg-current/12 px-2 py-0.5 align-[-0.3em] text-[0.9em]/[1.25] font-medium whitespace-nowrap [&>svg]:size-[1em] [&>svg]:shrink-0'
 
 /** Something named inside running text: a resource, a format, a command. */
 export const Chip = ({ children, icon, href: given }: ChipProps) => {
@@ -20,10 +21,10 @@ export const Chip = ({ children, icon, href: given }: ChipProps) => {
   const content = (
     <>
       {icon}
-      {children}
+      <span className="min-w-0 truncate">{children}</span>
     </>
   )
   return href
-    ? <a href={href} target="_blank" rel="noreferrer noopener" className={cn(CHIP, 'underline-offset-2 hover:underline')}>{content}</a>
-    : <span className={CHIP}>{content}</span>
+    ? <a href={href} target="_blank" rel="noreferrer noopener" title={typeof children === 'string' ? children : undefined} className={cn(CHIP, 'underline-offset-2 hover:underline')}>{content}</a>
+    : <span title={typeof children === 'string' ? children : undefined} className={CHIP}>{content}</span>
 }
