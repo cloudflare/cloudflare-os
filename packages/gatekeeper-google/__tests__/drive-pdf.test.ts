@@ -2995,9 +2995,9 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     ["lines of its own that read as page headings", HEADING_IN_TEXT, [2]],
     ["a line of its own that reads as the next page's heading, last on a page and first on one", GAPS_IN_TEXT, [3]],
   ])("gives the conversion's text to the byte when no page is read from its image, in a PDF with %s", async (_label, markdown, empty) => {
-    // Every way a page is left as it was: blank, not drawn, read as nothing, and said to be
-    // blank whatever its bands hold.
-    let left = [drawn([null]), refusedAs("memory", true), drawn([12]), drawn([13], { blank: true })];
+    // Every way a page is left as it was: blank, read as nothing, and said to be blank
+    // whatever its bands hold.
+    let left = [drawn([null]), drawn([12]), drawn([13], { blank: true })];
     let { renderer, state } = fakeRenderer(Array.from({ length: 5 }, (_, i) => left[i % left.length]!));
     let { result, asked, bands } = await mixed(markdown, renderer, () => []);
 
@@ -3250,6 +3250,30 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
       // A page the document does not have is left as the conversion gave it.
       "### Page 4\n\n\n");
     expect(state.events).toEqual(["open", "render 2", "render 3", "disposed"]);
+  });
+
+  it("says so of a page without text that could not be drawn, and reads the pages after it", async () => {
+    let { renderer, state } = fakeRenderer([refusedAs("memory", true), TEXT_PAGE, refusedAs("image-pixels", true), TEXT_PAGE, drawn([51])]);
+    let { result, bands } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
+
+    // The page may hold anything, so its place does not read as an empty page's.
+    expect(await read(result)).toBe(sheets(`${UNDRAWN_PAGE}\n\n`, `${UNDRAWN_PAGE}\n\n`, fromImage("band 51")));
+    expect(bands.map(({ shade }) => shade)).toEqual([51]);
+    expect(linesOf("warn", "google.drive.pdf.page_undrawn").map(({ page, reason }) => [page, reason]))
+      .toEqual([[1, "memory"], [3, "image-pixels"]]);
+    expect([state.documents[0]!.disposed, pixelsHeld()]).toEqual([1, 0]);
+  });
+
+  it.each([
+    ["is cut off", "length", `${READ_FROM_IMAGE}${CUT_OFF}\n\n`],
+    ["ends of itself", "stop", "\n\n\n\n"],
+  ])("says that a page was cut off whose answer holds nothing and %s", async (_label, finish, second) => {
+    let { renderer } = fakeRenderer([TEXT_PAGE, drawn([21]), TEXT_PAGE]);
+    // An answer stopped at the output limit before it held a visible character, both times.
+    let { result, bands } = await mixed(HEADING_IN_TEXT, renderer, () => eventResponse(tokenEvents([], finish)));
+    expect(await read(result)).toBe(
+      ownText(HEADING_IN_TEXT).replace("### Page 2\n\n\n\n\n", `### Page 2\n${second}`));
+    expect(bands.length).toBeGreaterThan(0);
   });
 
   it("gives back the headings of the pages before the first with text, and reads those pages", async () => {

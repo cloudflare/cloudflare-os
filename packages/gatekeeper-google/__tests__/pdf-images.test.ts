@@ -57,11 +57,18 @@ function cuts(bytes: Uint8Array): number[][] {
     ...Array.from({ length: bytes.byteLength - 1 }, (_, i) => [i + 1, bytes.byteLength])];
 }
 
-/** How long scanning `bytes` in chunks of `size` takes, in milliseconds. */
+/**
+ * How long scanning `bytes` in chunks of `size` takes, in milliseconds: the shortest of three
+ * scans, so that a moment in which the machine did something else is not counted as the scan's.
+ */
 function scanTime(bytes: Uint8Array, size: number): number {
-  let started = performance.now();
-  scan(bytes, [size]);
-  return performance.now() - started;
+  let shortest = Infinity;
+  for (let i = 0; i < 3; i++) {
+    let started = performance.now();
+    scan(bytes, [size]);
+    shortest = Math.min(shortest, performance.now() - started);
+  }
+  return shortest;
 }
 
 setFlagsFromString("--expose-gc");
@@ -556,6 +563,9 @@ describe("PdfImageScan", () => {
       `1 0 obj\n[ ${"1 ".repeat(16_000)}${"endobj ".repeat(4600)}`.repeat(4),
       `1 0 obj ${"stream\n".repeat(9000)}`.repeat(4),
     ];
+    // Each is scanned in under 20 ms on a laptop. An object is read no further than the longest
+    // one that is read, so a file of more such objects takes as much longer however each is
+    // read: the time is held to a bound, with room, and not compared with a longer file's.
     for (let text of hostile) {
       let bytes = pdf(`%PDF-1.7\n${text}\n7 0 obj\n${image}`);
       for (let size of [4096, 65_536, bytes.byteLength]) expect(scanTime(bytes, size)).toBeLessThan(1000);

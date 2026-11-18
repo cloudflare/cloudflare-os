@@ -737,6 +737,11 @@ function storedPages(
         page.pieces.push(piece);
         page.held += piece.length;
         wake();
+        // This wait keeps the page's slot. With one call a text (`PDF_OCR_CALLS`), a page read
+        // ahead that waits here keeps it from a page before it that rests after a refusal, and
+        // the text then ends by its idle minute. That takes an answer of `answerChars`
+        // characters, which is 32 a token at the 8,192 tokens an answer is stopped at
+        // (`MAX_TOKENS` in workers-ai-vision.ts), where a page's text runs to a few.
         while (page.held >= READ_AHEAD.answerChars && !signal.aborted) await wait();
       }
     } finally {
@@ -1387,9 +1392,12 @@ class PageSections {
  * page, so a PDF whose pages all have text is never read again. When the page is one `pdf` has
  * and is not blank, the vision model reads it, and what it reads takes the place of the line
  * breaks: under {@link READ_FROM_IMAGE} and an empty line, followed by the lines that say it
- * was cut off or drawn at a lower resolution, and by an empty line. A page that is blank, could
- * not be drawn within the renderer's limits, or reads as nothing is left as the conversion gave
- * it.
+ * was cut off or drawn at a lower resolution, and by an empty line. An answer that was cut off
+ * before it held anything has the line that says so directly under the first. A page that could
+ * not be drawn within the renderer's limits gets {@link UNDRAWN_PAGE} and an empty line in place
+ * of its line breaks, as a scan's page gets it for its text, and the pages after it are still
+ * read. A page that is blank, or reads as nothing without having been cut off, is left as the
+ * conversion gave it.
  *
  * The document's own text is worth more than the pages missing from it, so what keeps a page
  * from being read does not fail the text: a PDF the renderer does not open, or renders no
@@ -1513,8 +1521,10 @@ function mixedPages(
       begun--;
     }
     // A page with ink is read whatever it draws: a scan, an image written into its content, or
-    // writing drawn as shapes. One that is blank, or could not be drawn, has nothing to show.
-    if (!came || "undrawn" in came || "blank" in came) return undefined;
+    // writing drawn as shapes. One that is blank has nothing to show.
+    if (!came || "blank" in came) return undefined;
+    // One that could not be drawn may hold anything: its place says that it was not read.
+    if ("undrawn" in came) return `${UNDRAWN_PAGE}\n\n`;
     if ("unrendered" in came) {
       renderFailed(came.unrendered, source);
       return giveUp();
@@ -1523,8 +1533,11 @@ function mixedPages(
       if (signal.aborted || !transcriptionFailed(came.failed, { page: index + 1 }, source)) throw came.failed;
       return giveUp();
     }
-    if (came.text === "") return undefined;
-    return `${READ_FROM_IMAGE}\n\n${came.text}${came.cutOff ? CUT_OFF : ""}${came.reduced ? REDUCED_PAGE : ""}\n\n`;
+    // An answer of nothing is a page that reads as nothing, unless the model was stopped before
+    // it had written any of it.
+    if (came.text === "" && !came.cutOff) return undefined;
+    let text = came.text === "" ? "" : `\n\n${came.text}`;
+    return `${READ_FROM_IMAGE}${text}${came.cutOff ? CUT_OFF : ""}${came.reduced ? REDUCED_PAGE : ""}\n\n`;
   };
 
   let next = async (signal: AbortSignal): Promise<SourcedPage | undefined> => {

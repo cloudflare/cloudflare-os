@@ -181,10 +181,11 @@ export type DrivePdfText = {
    * Each line quoted here is a note on its page, not the document's text. A page the model
    * read may end with "[The transcription of this page was cut off.]" or "[This page was read
    * from a drawing at half the usual resolution, which is what its size allowed, so its text may
-   * be less exact.]". A page of a scanned PDF may have for its text "[This page could not be
-   * drawn within the memory and work a page is allowed, so it was not read.]" or "[This page
-   * came out blank: it has nothing on it, or its image could not be read.]"; a page with nothing
-   * on it has its heading alone. In a PDF with text of its own, what the model read of a page
+   * be less exact.]". A page with no text of its own may have for its text "[This page could not
+   * be drawn within the memory and work a page is allowed, so it was not read.]", and one of a
+   * scanned PDF "[This page came out blank: it has nothing on it, or its image could not be
+   * read.]"; a page with nothing on it has its heading alone. In a PDF with text of its own,
+   * what the model read of a page
    * comes under "[This page has no text of its own: what follows was read from its image by a
    * vision model, which can misread.]", and "[Pages of this PDF that have no text of their own
    * could not be read just now.]" stands for the first page that could not be read: neither it
