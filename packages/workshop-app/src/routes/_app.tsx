@@ -18,6 +18,7 @@ import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { useIsAdmin } from '@/settings/admin/useIsAdmin'
 import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/settingsSections'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
@@ -70,6 +71,8 @@ const AppFrame = () => {
   const { workspaceId } = useParams({ strict: false })
   const [prefs] = useState(readLayoutPrefs)
   const narrow = useNarrowScreen()
+  // Whether the deployment's own settings are listed after the user's.
+  const admin = useIsAdmin()
 
   const homePage = useMatch({ from: '/_app/', shouldThrow: false })
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
@@ -260,7 +263,7 @@ const AppFrame = () => {
   // sidebar is beneath the page and the parts are the page itself.
   const settingsSidebar = (collapsed: boolean) => (
     <SettingsSidebar
-      groups={settingsNavGroups((section) => router.buildLocation({ to: '/settings', search: { section } }).href)}
+      groups={settingsNavGroups((section) => router.buildLocation({ to: '/settings', search: { section } }).href, admin)}
       current={skillPage ? 'skills' : (settingsPage?.search.section ?? FIRST_SECTION)}
       // In place, so that going back leaves the settings rather than going through their parts.
       // Not from a skill's page, which is somewhere to go back to.

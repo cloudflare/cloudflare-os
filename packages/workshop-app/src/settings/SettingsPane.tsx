@@ -7,6 +7,15 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useApi } from '@/rpc/ApiContext'
+import { AdminAccessSettings } from './admin/AdminAccessSettings'
+import { AdminAuditSettings } from './admin/AdminAuditSettings'
+import { AdminProvider } from './admin/AdminContext'
+import { AdminFormatSettings } from './admin/AdminFormatSettings'
+import { AdminGeneralSettings } from './admin/AdminGeneralSettings'
+import { AdminModelSettings } from './admin/AdminModelSettings'
+import { AdminServiceSettings } from './admin/AdminServiceSettings'
+import { AdminUpdateSettings } from './admin/AdminUpdateSettings'
+import { useIsAdmin } from './admin/useIsAdmin'
 import { AdvancedSettings } from './AdvancedSettings'
 import { ApprovalSettings } from './ApprovalSettings'
 import { CollaborationSettings } from './CollaborationSettings'
@@ -15,7 +24,7 @@ import { NotificationSettings } from './NotificationSettings'
 import { PreferenceSettings } from './PreferenceSettings'
 import { ProfileSettings } from './ProfileSettings'
 import { SecuritySettings } from './SecuritySettings'
-import { FIRST_SECTION, sectionInfo, settingsNavGroups, type SettingsSection } from './settingsSections'
+import { FIRST_SECTION, isAdminSection, sectionInfo, settingsNavGroups, type SettingsSection } from './settingsSections'
 import { SkillSettings } from './SkillSettings'
 import { UsageSettings } from './UsageSettings'
 import { useOwnAvatar } from './useOwnAvatar'
@@ -48,7 +57,11 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
   const { user } = useApi()
   const avatarUrl = useOwnAvatar()
   const narrow = useNarrowScreen()
-  const shown = narrow ? section : (section ?? FIRST_SECTION)
+  const admin = useIsAdmin()
+  // The deployment's parts are only an admin's: anyone else named one is shown the first of their
+  // own, once the server has said which they are.
+  const named = section && isAdminSection(section) && admin === false ? undefined : section
+  const shown = narrow ? named : (named ?? FIRST_SECTION)
   const info = shown && sectionInfo(shown)
   useDocumentTitle(info ? `${info.label} · Settings` : 'Settings')
 
@@ -63,6 +76,13 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
     notifications: <NotificationSettings />,
     collaboration: <CollaborationSettings />,
     advanced: <AdvancedSettings />,
+    'admin-general': <AdminGeneralSettings />,
+    'admin-services': <AdminServiceSettings />,
+    'admin-formats': <AdminFormatSettings />,
+    'admin-models': <AdminModelSettings />,
+    'admin-access': <AdminAccessSettings />,
+    'admin-audit': <AdminAuditSettings />,
+    'admin-updates': <AdminUpdateSettings />,
   }
 
   // What the page is, which its header says and nothing under it repeats: the part that is
@@ -79,35 +99,40 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
   )
 
   return (
-    <PageLayout
-      header={narrow && info
-        ? (
-            // Gone into from the list, which the way back is to, before what it is.
-            <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-              <HeaderBubble>
-                <Button icon={CaretLeftIcon} aria-label="Back to Settings" onClick={() => onSectionChange(undefined)} />
-              </HeaderBubble>
-              {name}
-            </nav>
-          )
-        : name}
-    >
-      {info
-        ? (
-            // Another part is another page, faded to.
-            <div key={info.id} className="appears mx-auto flex w-full max-w-3xl flex-col gap-12 pt-4 pb-12">
-              {parts[info.id]}
-            </div>
-          )
-        : (
-            <SettingsMenu
-              user={{ name: user.name, detail: user.id === user.name ? undefined : user.id, avatarUrl }}
-              groups={settingsNavGroups(sectionHref)}
-              // The ids are the parts' own, which the block knows only as strings.
-              onSelect={(id) => onSectionChange(id as SettingsSection)}
-              onSignOut={signOut}
-            />
-          )}
-    </PageLayout>
+    // Held across the parts, so that a visit is one admin session in the audit log.
+    <AdminProvider enabled={admin === true}>
+      <PageLayout
+        header={narrow && info
+          ? (
+              // Gone into from the list, which the way back is to, before what it is.
+              <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+                <HeaderBubble>
+                  <Button icon={CaretLeftIcon} aria-label="Back to Settings" onClick={() => onSectionChange(undefined)} />
+                </HeaderBubble>
+                {name}
+              </nav>
+            )
+          : name}
+      >
+        {info
+          ? (
+              // Another part is another page, faded to.
+              <div key={info.id} className="appears mx-auto flex w-full max-w-3xl flex-col gap-12 pt-4 pb-12">
+                {isAdminSection(info.id) && !admin
+                  ? <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading…</p>
+                  : parts[info.id]}
+              </div>
+            )
+          : (
+              <SettingsMenu
+                user={{ name: user.name, detail: user.id === user.name ? undefined : user.id, avatarUrl }}
+                groups={settingsNavGroups(sectionHref, admin)}
+                // The ids are the parts' own, which the block knows only as strings.
+                onSelect={(id) => onSectionChange(id as SettingsSection)}
+                onSignOut={signOut}
+              />
+            )}
+      </PageLayout>
+    </AdminProvider>
   )
 }

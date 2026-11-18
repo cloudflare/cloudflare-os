@@ -4,6 +4,8 @@ import { Tag } from '@/components/Tag'
 
 export type SettingRowProps = {
   title: string
+  /** What it is of, drawn before what is said of it, such as a service's logo. */
+  icon?: ReactNode
   /** What it does, or why it is as it is. */
   description?: ReactNode
   /**
@@ -40,20 +42,23 @@ export const SoonBadge = () => <Tag>Coming soon</Tag>
  * set by is as wide as it is, and goes under what is said when it has to. What is not there yet,
  * the row or the group it is in, is all drawn fainter, with what it is set by out of use.
  */
-export const SettingRow = ({ title, description, soon = false, stacked = false, children }: SettingRowProps) => {
+export const SettingRow = ({ title, icon, description, soon = false, stacked = false, children }: SettingRowProps) => {
   const off = useContext(SoonContext) || soon
   return (
     <div className="@container border-t border-kumo-line py-4 first:border-t-0">
       {/* What it is set by is level with the row's top, however much is said beside it. */}
       <div className={cn('flex gap-x-6 gap-y-3', stacked ? 'flex-col' : 'flex-wrap items-start')}>
         {/* No narrower than reads well, which is what sends the rest to a line of its own. */}
-        <div className={cn('flex flex-col gap-1 leading-snug', !stacked && 'min-w-[min(100%,14rem)] flex-1')}>
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium text-kumo-default">
-            {/* Fainter with the rest of the row, but for the note that says why. */}
-            <span className={off ? SOON : undefined}>{title}</span>
-            {soon && <SoonBadge />}
-          </p>
-          {description && <p className={cn('text-sm text-kumo-subtle', off && SOON)}>{description}</p>}
+        <div className={cn('flex items-start gap-3', !stacked && 'min-w-[min(100%,14rem)] flex-1')}>
+          {icon !== undefined && <span className={cn('flex shrink-0', off && SOON)}>{icon}</span>}
+          <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
+            <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium text-kumo-default">
+              {/* Fainter with the rest of the row, but for the note that says why. */}
+              <span className={off ? SOON : undefined}>{title}</span>
+              {soon && <SoonBadge />}
+            </p>
+            {description && <p className={cn('text-sm text-kumo-subtle', off && SOON)}>{description}</p>}
+          </div>
         </div>
         {children !== undefined && (
           <div inert={off} className={cn('flex max-w-full min-w-0 items-center gap-2', stacked ? 'w-full' : '@lg:w-72 @lg:shrink-0 @lg:justify-end', off && SOON)}>{children}</div>
