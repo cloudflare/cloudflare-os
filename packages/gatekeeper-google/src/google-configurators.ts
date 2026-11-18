@@ -429,10 +429,13 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
   /** The node `ref` names, asked of BigQuery, or null when this account cannot see it. */
   #node(ref: BigQueryNodeRef): Promise<BigQueryNode | null> {
     return cachedBigQuery(this, `node:${bigQueryNodeId(ref)}`, async () => {
+      // Asked outside the catch below, which takes a refusal for a node this account can't see: a
+      // failed project list is not one, and must fail the lookup so that it is asked again.
+      let held = await this.#heldProjects();
       let api = await bigQueryApi(this);
       try {
         if (ref.kind === "project") {
-          let project = (await this.#heldProjects()).get(ref.projectId);
+          let project = held.get(ref.projectId);
           // Listing a project's datasets needs no role in it: one that was shared a dataset sees that
           // dataset, and a project the account cannot see at all refuses.
           if (!project) await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });

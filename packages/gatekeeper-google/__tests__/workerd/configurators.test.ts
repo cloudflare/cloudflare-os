@@ -1355,6 +1355,22 @@ describe("BigQuery picker", () => {
     refresh.resolve(token("fresh"));
   });
 
+  it("fails a lookup when the project list fails, rather than calling what it names unseen, so it can be asked again", async () => {
+    let lists = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = decodeURIComponent(new URL(String(input)).pathname.replace("/bigquery/v2", ""));
+      if (path === "/projects" && ++lists === 1) {
+        return Response.json({ error: { code: 400, message: "Invalid page token", errors: [{ reason: "invalid" }] } }, { status: 400 });
+      }
+      if (path === "/projects") return Response.json({ projects: [] });
+      if (path === "/projects/theirs/datasets/events") return Response.json(dataset("theirs", "events"));
+      return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
+    }));
+    const ui = new BigQueryConfiguratorUI(async () => token("t"));
+    await expect(ui.getNode("dataset:theirs/events")).rejects.toThrow("http=400");
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ id: "dataset:theirs/events", runsQueries: false });
+  });
+
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
     const { ui, calls } = bigQuery();
     expect(await ui.getNode("project:nowhere")).toBeNull();
