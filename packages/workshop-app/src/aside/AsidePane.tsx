@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useGadgetAgents } from '@/automations/useGadgetAgents'
 import { cn } from '@cloudflare/kumo/utils'
 import { FileDashedIcon, LockSimpleIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
@@ -18,12 +18,12 @@ import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
 import { DEFAULT_GADGET_SETTINGS_TAB, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import { outputKey } from '@/library/libraryList'
 import { recordLibraryOpen } from '@/prefs/libraryOpened'
+import { CreateTemplate } from '@/library/CreateTemplate'
+import { useMadeTemplates } from '@/library/useMadeTemplates'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { useWorkspaceChats } from '@/workspaces/useWorkspaceChats'
-import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
-import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { asideItemIcon } from './asideItemIcon'
 import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
@@ -70,8 +70,6 @@ export type AsidePaneProps = {
       fullScreen: boolean
       /** Back beside the chat it was expanded from, when it was. */
       onCollapse?: () => void
-      /** Goes to the workspace it is in, from the crumb its header starts with. */
-      onOpenWorkspace?: () => void
       /**
        * Goes to a chat in its workspace with it beside it, and `onNewChat` starts one there, greeted
        * by its name. Left out where there is a way back to a chat already, which leaves out Chat.
@@ -125,23 +123,47 @@ export const AsidePane = (props: AsidePaneProps) => {
   const settingsHere = settings?.key === item.key ? settings : undefined
   const viewingSettings = gadget !== undefined && readsCode && props.placement === 'beside' && settingsHere?.open === true
   const navigate = useNavigate()
+  const router = useRouter()
   // As the page, it names the tab; beside one, the page does.
   useDocumentTitle(props.placement === 'page' ? (viewingCode ? `Code · ${title}` : title) : undefined)
 
-  // A gadget is shared with its workspace, by whoever can share what is in it. Its link is to its
-  // own page, without the chat it was shown from, whose changes are not for whoever it lets in.
-  const [sharing, setSharing] = useState(false)
+  // Whoever builds in its workspace can invite people to a gadget, or make a template from it.
+  // Its link is to its own page, without the chat it was shown from, whose changes are not for
+  // whoever it lets in.
+  const [inviting, setInviting] = useState(false)
+  const [creating, setCreating] = useState<boolean>()
+  // How copying the template's link last went, for a moment: the Share button says so.
+  const [copy, setCopy] = useState<'copied' | 'failed'>()
+  useEffect(() => {
+    if (!copy) return
+    const timer = setTimeout(() => setCopy(undefined), COPY_SHOWN_FOR)
+    return () => clearTimeout(timer)
+  }, [copy])
+  // Refused without permission, and missing on a page not served securely.
+  const copyLink = (href: string) => navigator.clipboard.writeText(new URL(href, window.location.href).href).then(() => setCopy('copied'), () => setCopy('failed'))
   const page = link && new URL(link)
   if (page) page.search = ''
-  const share = item.kind === 'output' && item.output.type !== 'worktree' && listed !== undefined && listed.role !== 'use' && page && (
-    <ShareWorkspaceDialog
-      workspaceId={item.output.workspaceId}
-      title={listed.title || 'Workspace'}
-      page={page.href}
-      gadget={{ id: item.output.workpieceId, title }}
-      open={sharing}
-      onOpenChange={setSharing}
-    />
+  const builds = item.kind === 'output' && item.output.type !== 'worktree' && listed !== undefined && listed.role !== 'use' ? { output: item.output, workspace: listed } : undefined
+  // Where it stands as a template, which the Share menu's item says. Read again once the dialog that changes it has closed.
+  const made = useMadeTemplates(builds?.output.workspaceId, creating === true)
+  const stands: 'none' | 'changes' | 'current' = !made.templates || made.templates.length === 0 ? 'none' : made.templates.some(({ changes }) => changes) ? 'changes' : 'current'
+  const templateId = made.templates?.[0]?.id
+  const share = builds && (
+    <>
+      {page && (
+        <ShareWorkspaceDialog
+          workspaceId={builds.output.workspaceId}
+          title={builds.workspace.title || 'Workspace'}
+          page={page.href}
+          gadget={{ id: builds.output.workpieceId, title }}
+          open={inviting}
+          onOpenChange={setInviting}
+        />
+      )}
+      {creating !== undefined && (
+        <CreateTemplate gadget={{ workspaceId: builds.output.workspaceId, workpieceId: builds.output.workpieceId, title }} open={creating} onOpenChange={setCreating} />
+      )}
+    </>
   )
 
   // Escape is for whatever has focus first, such as a menu that is open.
@@ -195,7 +217,6 @@ export const AsidePane = (props: AsidePaneProps) => {
   // As its own page, a gadget names the workspace it is in and leads to a chat there with it
   // beside it, for whoever builds there: someone given it alone to use has no chats in it.
   const ownPage = props.placement === 'page' ? props : undefined
-  const looks = useWorkspaceLooks()
   const home = ownPage && readsCode ? listed : undefined
   const chatsWith = home && ownPage?.onOpenChat && ownPage.onNewChat ? { onOpenChat: ownPage.onOpenChat, onNewChat: ownPage.onNewChat } : undefined
   const workspaceChats = useWorkspaceChats(chatsWith && home?.id)
@@ -204,14 +225,6 @@ export const AsidePane = (props: AsidePaneProps) => {
     ? itemChats(workspaceChats.status === 'ready' ? workspaceChats.chats : [], home.id, item.key, lastShown)
     : undefined
   const pageParts = home && {
-    workspace: ownPage?.onOpenWorkspace && {
-      id: home.id,
-      title: home.title || 'Workspace',
-      label: workspaceLabel(home.title),
-      look: looks[home.id],
-      expanded: true,
-      onOpen: ownPage.onOpenWorkspace,
-    },
     chat: chatsWith && {
       chats: chats?.map(({ chatId, title: chatTitle, at, showing }) => ({ key: String(chatId), title: chatTitle, time: formatActivity(at), showing })),
       onOpenChat: (key: string) => chatsWith.onOpenChat({ id: Number(key), title: chats?.find(({ chatId }) => String(chatId) === key)?.title }),
@@ -226,6 +239,10 @@ export const AsidePane = (props: AsidePaneProps) => {
       ? navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: gadget.workspaceId, agentKey: gadgetAgents[0]!.key } })
       : navigate({ to: '/workspace/$workspaceId', params: { workspaceId: gadget.workspaceId }, search: { tab: 'agents' } })),
   } : undefined
+  // Beside the page its settings page is shown in the pane's place; as the page it is the route's.
+  const openSettings = gadget && (props.placement === 'beside'
+    ? (readsCode ? () => setSettings({ key: item.key, open: true, tab: settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB }) : undefined)
+    : onOpenSettingsPage && (() => onOpenSettingsPage(gadget, title)))
   const shared = {
     active: paneItem(item, title),
     agents,
@@ -233,13 +250,12 @@ export const AsidePane = (props: AsidePaneProps) => {
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
-    // Beside the page its settings page is shown in the pane's place; as the page it is the route's.
-    onOpenSettings: gadget && (props.placement === 'beside'
-      ? (readsCode ? () => setSettings({ key: item.key, open: true, tab: settingsHere?.tab ?? DEFAULT_GADGET_SETTINGS_TAB }) : undefined)
-      : onOpenSettingsPage && (() => onOpenSettingsPage(gadget, title))),
+    onOpenSettings: openSettings,
     onViewCode: readsCode ? () => setCode({ ...codeHere, key: item.key, open: !viewingCode }) : undefined,
     viewingCode,
-    onShare: share ? () => setSharing(true) : undefined,
+    onInvite: builds && page ? () => setInviting(true) : undefined,
+    // Up to date, there is nothing to release: what is left to do with it is send people its link.
+    template: builds ? { stands, copy, onOpen: stands === 'current' && templateId ? () => void copyLink(router.buildLocation({ to: '/library/templates/$templateId', params: { templateId } }).href) : () => setCreating(true) } : undefined,
     narrow,
   }
 
@@ -315,6 +331,9 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
     )}
   </SidePane>
 )
+
+// How long the Share button shows how copying the template's link went.
+const COPY_SHOWN_FOR = 1500
 
 const NO_GADGETS: number[] = []
 

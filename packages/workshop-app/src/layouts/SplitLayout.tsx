@@ -39,6 +39,11 @@ export type SplitLayoutProps = {
    */
   onCloseAside?: () => void
   /**
+   * The divider was let go with the page all but gone, which asks for the aside to take all of the
+   * room, as its Expand does. Left out, the aside only resists there.
+   */
+  onExpandAside?: () => void
+  /**
    * How much room there is past the layout's far edge, in pixels, such as the padding of what it
    * is in. The handle at the edge is set midway between the page and the end of that room.
    */
@@ -54,6 +59,9 @@ const STEP = 0.02
 // Dragged narrower than this share of its narrowest, the aside closes when let go, and is dimmed
 // meanwhile to say so.
 const CLOSES_AT = 0.6
+// Dragged so that the page is narrower than this share of its narrowest, the aside expands when
+// let go, and the page is dimmed meanwhile to say so.
+const EXPANDS_AT = 0.6
 // Pulled out of the edge by at least this many pixels, the aside opens when let go.
 const OPENS_AT = 48
 const PANE = 'flex min-w-0 basis-0 flex-col overflow-hidden rounded-3xl bg-kumo-base ring ring-kumo-line'
@@ -173,7 +181,7 @@ const AsideCard = ({ share, open, alone, isPage, dim, fullScreen, onGone, childr
  * it out.
  */
 export const SplitLayout = ({
-  children, aside, status, asideAlone = false, asideFullScreen = false, initialAsideShare, onAsideShareChange, onOpenAside, onCloseAside, edgeInset = 0,
+  children, aside, status, asideAlone = false, asideFullScreen = false, initialAsideShare, onAsideShareChange, onOpenAside, onCloseAside, onExpandAside, edgeInset = 0,
 }: SplitLayoutProps) => {
   const reduceMotion = useReducedMotion() ?? false
   const root = useRef<HTMLDivElement>(null)
@@ -187,7 +195,10 @@ export const SplitLayout = ({
   const peek = useMotionValue(0)
   const alone = useMotionValue(asideAlone ? 1 : 0)
   const pageGrow = useTransform(() => (1 - share.get() * open.get()) * (1 - alone.get()))
-  const pageOpacity = useTransform(alone, [0, 1], [1, 0])
+  // How far the page has dimmed, and whether letting go of the handle now would expand the aside.
+  const pageDim = useMotionValue(0)
+  const expands = useRef(false)
+  const pageOpacity = useTransform(() => (1 - alone.get()) * (1 - CLOSING_DIM * pageDim.get()))
   const page = useRef<HTMLElement>(null)
   const pageWidth = useMotionValue<number | 'auto'>('auto')
   // The edge's gap becomes the gap between the cards as the aside opens, and goes with the page.
@@ -240,6 +251,12 @@ export const SplitLayout = ({
     rested(to)
     settleSize(share, to, reduceMotion)
   }
+  const setExpands = (value: boolean) => {
+    if (expands.current === value) return
+    expands.current = value
+    if (reduceMotion) pageDim.jump(value ? 1 : 0)
+    else animate(pageDim, value ? 1 : 0, { duration: 0.15 })
+  }
   const setCloses = (value: boolean) => {
     if (closes.current === value) return
     closes.current = value
@@ -254,6 +271,7 @@ export const SplitLayout = ({
     if (!drag.current.opening) {
       share.set(resistSize(wanted, min, max) / width)
       setCloses(onCloseAside !== undefined && wanted < min * CLOSES_AT)
+      setExpands(onExpandAside !== undefined && width - wanted < min * EXPANDS_AT)
       return
     }
     // Pulled out of the edge, room opens as far as it is pulled: up to the width the aside had,
@@ -264,6 +282,12 @@ export const SplitLayout = ({
 
   const dragEnd = () => {
     scrollbars.release()
+    if (expands.current) {
+      // The aside is as wide as before it was dragged over, for when it is back beside the page.
+      setExpands(false)
+      settle(within(drag.current.share))
+      return onExpandAside?.()
+    }
     const { opening, moved } = drag.current
     if (opening) {
       const pulled = open.get() * share.get() * room().width
@@ -353,6 +377,8 @@ export const SplitLayout = ({
                   reopensAt.current = to
                   return onCloseAside()
                 }
+                // A step wider than its widest expands it.
+                if (direction === -1 && onExpandAside && to <= share.get()) return onExpandAside()
                 share.jump(to)
                 rested(to)
               }}

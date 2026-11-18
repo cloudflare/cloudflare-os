@@ -6,12 +6,12 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 export type LibraryMoreActions = {
   /** Gives it another title, typed where its title is. */
   onRename?: (title: string) => void
-  /** Shares it with people. */
-  onShare?: () => void
+  /** Invites people to use it. */
+  onInvite?: () => void
   /** Goes to its settings. */
   onOpenSettings?: () => void
-  /** Publishes it as a template, or its changes to one. */
-  onPublish?: () => void
+  /** Creates a template from it, or releases its changes as a template's next version. */
+  onCreateTemplate?: () => void
   /** Asks whether to delete it. */
   onDelete?: () => void
 }
@@ -37,10 +37,9 @@ const copyLink = (href: string) => {
 
 /**
  * What else can be done with an output on the Library page: open it, here or from its address in
- * another tab, and copy its link; then, for whoever builds in its workspace, rename it, share it
- * go to its settings and publish it as a template; and after a line, delete it, which asks first.
+ * another tab, and copy its link; then, for whoever builds in its workspace, rename it, invite people to it, go to its settings and create a template from it; and after a line, delete it, which asks first.
  */
-export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onShare, onOpenSettings, onPublish, onDelete, triggerVariant = 'ghost', triggerClassName }: LibraryMoreMenuProps) => (
+export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onInvite, onOpenSettings, onCreateTemplate, onDelete, triggerVariant = 'ghost', triggerClassName }: LibraryMoreMenuProps) => (
   <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant={triggerVariant} triggerClassName={triggerClassName} align="end">
     <DropdownMenu.Item icon={AppWindowIcon} onSelect={onOpen}>Open</DropdownMenu.Item>
     {href && (
@@ -49,11 +48,11 @@ export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onShare, onOpen
         <DropdownMenu.Item icon={LinkIcon} onSelect={() => copyLink(href)}>Copy link</DropdownMenu.Item>
       </>
     )}
-    {(onRename || onShare || onOpenSettings || onPublish) && <DropdownMenu.Separator />}
+    {(onRename || onInvite || onOpenSettings || onCreateTemplate) && <DropdownMenu.Separator />}
     {onRename && <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={onRename}>Rename</DropdownMenu.Item>}
-    {onShare && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
+    {onInvite && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onInvite}>Invite user…</DropdownMenu.Item>}
     {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
-    {onPublish && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onPublish}>Publish as template…</DropdownMenu.Item>}
+    {onCreateTemplate && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onCreateTemplate}>Create template…</DropdownMenu.Item>}
     {onDelete && <DropdownMenu.Separator />}
     {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
   </DropdownMenu>

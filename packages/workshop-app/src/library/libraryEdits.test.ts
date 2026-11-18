@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
-import { mayChange, NO_EDITS, withDeletion, withEdits, withItemEdits, withoutRename, withRename } from './libraryEdits'
+import { mayChange, NO_EDITS, templatable, withDeletion, withEdits, withItemEdits, withoutRename, withRename } from './libraryEdits'
 
 const grace = { type: 'user' as const, id: 'grace@example.com', name: 'Grace Hopper' }
 
@@ -74,5 +74,19 @@ describe('withItemEdits', () => {
   it('shows the title read once it is no longer the one renamed from', () => {
     const edits = withRename(NO_EDITS, output(1, 'Q3 review'), 'Q3 platform review')
     expect(withItemEdits([item(1, 'Renamed elsewhere')], edits)[0].title).toBe('Renamed elsewhere')
+  })
+})
+
+describe('templatable', () => {
+  it('has what the user may change, by title, whatever it was made as, and not what they may only use', () => {
+    const outputs = [
+      output(1, 'Zebra counter'),
+      output(2, 'Budget', { output: { id: 'spreadsheet', noun: 'Spreadsheet', plural: 'Spreadsheets', icon: 'table' } }),
+      output(3, 'Atlas board', { owner: grace, role: 'build' }),
+      output(4, 'Only used', { owner: grace, role: 'use' }),
+      output(5, ''),
+    ]
+    // The untitled one by what it is called where it is listed.
+    expect(templatable(outputs).map(({ title }) => title)).toEqual(['Atlas board', 'Budget', '', 'Zebra counter'])
   })
 })

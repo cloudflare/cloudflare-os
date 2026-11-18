@@ -52,7 +52,7 @@ export const LibraryPagePreview = () => {
                 setEdits((current) => withRename(current, outputs.find((each) => outputKey(each) === outputKey(output)) ?? output, title))
                 say(`renamed ${outputTitle(output)} to ${title}`)
               },
-              onShare: () => say(`share ${outputTitle(output)}`),
+              onInvite: () => say(`invite people to ${outputTitle(output)}`),
               onOpenSettings: () => say(`open the settings of ${outputTitle(output)}`),
               onDelete: () => {
                 setEdits((current) => withDeletion(current, output))

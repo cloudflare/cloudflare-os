@@ -13,6 +13,8 @@ export type CopyLinkButtonProps = {
   disabled?: boolean
   /** It is the one thing the dialog it is in is for, as sharing's Copy link is. */
   primary?: boolean
+  /** Only its words, with no icon before them, for a labelled one. */
+  withoutIcon?: boolean
 }
 
 // How long the button shows how the copying went.
@@ -25,7 +27,7 @@ const STATES = {
 }
 
 /** Puts a link on the clipboard, then shows a tick for a moment, or a cross when that was refused. */
-export const CopyLinkButton = ({ link, title, labelled = false, disabled, primary = false }: CopyLinkButtonProps) => {
+export const CopyLinkButton = ({ link, title, labelled = false, disabled, primary = false, withoutIcon = false }: CopyLinkButtonProps) => {
   const [state, setState] = useState<keyof typeof STATES>('ready')
   useEffect(() => {
     if (state === 'ready') return
@@ -44,6 +46,6 @@ export const CopyLinkButton = ({ link, title, labelled = false, disabled, primar
   const { icon, label, text } = STATES[state]
 
   return labelled
-    ? <Button variant={primary ? 'primary' : 'secondary'} icon={icon} aria-label={label(title)} disabled={disabled} onClick={() => void copy()}>{text}</Button>
+    ? <Button variant={primary ? 'primary' : 'secondary'} icon={withoutIcon ? undefined : icon} aria-label={label(title)} disabled={disabled} onClick={() => void copy()}>{text}</Button>
     : <Button icon={icon} aria-label={label(title)} title={label(title)} disabled={disabled} onClick={() => void copy()} />
 }

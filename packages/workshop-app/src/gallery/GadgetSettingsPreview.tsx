@@ -6,7 +6,7 @@ import { UpdateFromTemplateDialog, type UpdateFromTemplateOutcome, type UpdateTe
 import { Button } from '@/components/Button'
 import { bindingNameProblem, freeBindingName, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from '@/gadgets/GadgetSettings'
 import { DEFAULT_GADGET_SETTINGS_TAB, GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
-import type { PublishState } from '@/library/publishState'
+import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -128,12 +128,13 @@ const STATES = {
   failed: 'Failed',
 } as const
 
-const PUBLISH_STATES: { state: PublishState | undefined; label: string }[] = [
-  { state: 'unpublished', label: 'Not published' },
-  { state: 'changes', label: 'Published, with changes' },
-  { state: 'published', label: 'Published, up to date' },
-  { state: undefined, label: 'Publish state not read' },
-]
+const TEMPLATES: Record<string, { label: string; made: MadeTemplate[] | undefined }> = {
+  none: { label: 'No template yet', made: [] },
+  changes: { label: 'Template with changes', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: true }] },
+  current: { label: 'Template up to date', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3 }] },
+  several: { label: 'Several templates', made: [{ id: 'tpl-tip', title: 'Tip jar', description: 'Counts tips for the team lunch.', version: 3, changes: true }, { id: 'tpl-lunch', title: 'Team lunch tracker', description: '', version: 1 }] },
+  unread: { label: 'Templates not read', made: undefined },
+}
 
 /** A gadget's settings page and its blocks: what it is bound to. */
 export const GadgetSettingsPreview = () => {
@@ -142,7 +143,7 @@ export const GadgetSettingsPreview = () => {
   const [title, setTitle] = useState('Tip jar')
   const [bindings, setBindings] = useState(BINDINGS)
   const [shownState, setShownState] = useState<keyof typeof STATES>('ready')
-  const [publishState, setPublishState] = useState<PublishState | undefined>('unpublished')
+  const [shownTemplates, setShownTemplates] = useState<keyof typeof TEMPLATES>('none')
 
   const state: GadgetSettingsState = shownState === 'failed' ? { status: 'failed', message: 'The workspace didn’t answer.', onRetry: () => say('try again') }
     : shownState === 'noBindings' || shownState === 'bindingsFailed' ? { status: 'ready' }
@@ -173,7 +174,7 @@ export const GadgetSettingsPreview = () => {
       <Section title="UpdateFromTemplateDialog (proposing a gadget’s update from its template in a new chat: with a newer version, already up to date, unrelated and warned of first, one that can’t be merged, one that couldn’t be asked with the way to try again, its template gone, and while it is read)">
         <UpdatePreview />
       </Section>
-      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for updating it from its template, publishing it as a template (or its changes since, once published), exporting it, and deleting it, which asks first, and one for what it is connected to, with its agents apart, where a model is added and changed; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
+      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for updating it from its template, creating a template from it, exporting it, a group for each template it has made, which releases its changes as its next version or deletes it, which asks first, and deleting it, which asks first, and one for what it is connected to, with its agents apart, where a model is added and changed; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(STATES).map(([key, label]) => (
@@ -181,8 +182,8 @@ export const GadgetSettingsPreview = () => {
             ))}
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {PUBLISH_STATES.map(({ state: each, label }) => (
-              <Button key={label} variant={each === publishState ? 'primary' : 'secondary'} onClick={() => setPublishState(each)}>{label}</Button>
+            {Object.entries(TEMPLATES).map(([key, { label }]) => (
+              <Button key={key} variant={key === shownTemplates ? 'primary' : 'secondary'} onClick={() => setShownTemplates(key)}>{label}</Button>
             ))}
           </div>
           {/* Wider than the gallery's column, as a page is. */}
@@ -193,7 +194,17 @@ export const GadgetSettingsPreview = () => {
               icon="appWindow"
               description="Counts tips for the team lunch, and shows everyone the total."
               templateUpdate={{ status: 'available', onUpdate: () => say('update from the template') }}
-              publish={{ state: publishState, onPublish: () => say('opened Publish as template') }}
+              template={{
+                made: TEMPLATES[shownTemplates].made,
+                onCreate: () => say('opened Create template'),
+                onOpen: (id) => say(`opened the page of ${id}`),
+                onEdit: async (id, fields) => {
+                  await later()
+                  say(`edited ${id}: ${fields.title}`)
+                },
+                onRelease: (id) => say(`released an update to ${id}`),
+                onDelete: (id) => say(`deleted ${id}`),
+              }}
               exports={{
                 choices: { status: 'ready', formats: [{ id: 'md', label: 'Markdown' }, { id: 'csv', label: 'CSV' }], saves: [{ key: 'doc', title: 'Google Doc' }] },
                 onOpen: () => {},

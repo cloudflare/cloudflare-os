@@ -30,15 +30,15 @@ export type GadgetChatMenuProps = {
 const TRIGGER = 'px-3'
 
 /**
- * The way from an item's own page to a chat with it open beside it: a Chat button in its header,
- * which opens a menu of a new chat in its workspace and the chats there to carry on in, those that
+ * The way from an item's own page to a chat with it open beside it: a Chat button, the header's
+ * one primary action, at its end, which opens a menu of a new chat in its workspace and the chats there to carry on in, those that
  * last had it open first. With no chats there to choose between, the button starts a new one.
  */
 export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, compact = false }: GadgetChatMenuProps) => {
   const label = compact ? undefined : 'Chat'
   if (chats?.length === 0) {
     return (
-      <Button icon={ChatCircleIcon} aria-label={`New chat with ${title} beside it`} title="New chat" onClick={onNewChat} className={compact ? undefined : TRIGGER}>
+      <Button variant="primary" icon={ChatCircleIcon} aria-label={`New chat with ${title} beside it`} title="New chat" onClick={onNewChat} className={compact ? undefined : TRIGGER}>
         {label}
       </Button>
     )
@@ -48,7 +48,9 @@ export const GadgetChatMenu = ({ title, chats, onOpenChat, onNewChat, compact = 
       icon={ChatCircleIcon}
       label={label}
       aria-label={`Chat with ${title} beside it`}
+      triggerVariant="primary"
       align="end"
+      inPlace
       triggerClassName={compact ? undefined : TRIGGER}
     >
       <DropdownMenu.Item icon={PlusIcon} label="New chat" onSelect={onNewChat}>

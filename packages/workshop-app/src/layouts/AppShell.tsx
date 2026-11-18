@@ -17,7 +17,7 @@ export type AppShellProps = {
   /** The sidebar came to rest on the rail or at another width, to be kept for the next time. */
   onSidebarChange?: (size: SidebarSize) => void
   children: ReactNode
-} & Pick<SplitLayoutProps, 'status' | 'aside' | 'asideAlone' | 'asideFullScreen' | 'onOpenAside' | 'onCloseAside' | 'initialAsideShare' | 'onAsideShareChange'>
+} & Pick<SplitLayoutProps, 'status' | 'aside' | 'asideAlone' | 'asideFullScreen' | 'onOpenAside' | 'onCloseAside' | 'onExpandAside' | 'initialAsideShare' | 'onAsideShareChange'>
 
 // The sidebar's width expanded, in pixels. An arrow key moves it by a step.
 const SIDEBAR = { min: 208, initial: 248, max: 400, step: 8 }
@@ -82,7 +82,7 @@ const SidebarLayout = ({ instant, children }: { instant: boolean; children: Reac
  * covers it instead (`asideFullScreen`).
  */
 export const AppShell = ({
-  sidebar, initialSidebar, onSidebarChange, status, children, aside, asideAlone, asideFullScreen = false, onOpenAside, onCloseAside, initialAsideShare, onAsideShareChange,
+  sidebar, initialSidebar, onSidebarChange, status, children, aside, asideAlone, asideFullScreen = false, onOpenAside, onCloseAside, onExpandAside, initialAsideShare, onAsideShareChange,
 }: AppShellProps) => {
   const reduceMotion = useReducedMotion() ?? false
   const [start] = useState(() => ({
@@ -222,6 +222,7 @@ export const AppShell = ({
         asideFullScreen={asideFullScreen}
         onOpenAside={onOpenAside}
         onCloseAside={onCloseAside}
+        onExpandAside={onExpandAside}
         initialAsideShare={initialAsideShare}
         onAsideShareChange={onAsideShareChange}
         edgeInset={INSET}

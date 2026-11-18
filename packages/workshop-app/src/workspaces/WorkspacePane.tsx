@@ -44,8 +44,8 @@ export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'mem
 
 export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'chats', label: 'Chats' },
-  { value: 'agents', label: 'Agents' },
   { value: 'library', label: 'Library' },
+  { value: 'agents', label: 'Agents' },
   { value: 'automations', label: 'Automations' },
   { value: 'members', label: 'Members' },
   { value: 'settings', label: 'Settings' },

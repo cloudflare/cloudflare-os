@@ -14,7 +14,7 @@ import type { ListView } from '@/hooks/useListView'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
 import { withStar } from './libraryStars'
-import { PublishMenu } from './PublishMenu'
+import { CreateTemplateMenu } from './CreateTemplateMenu'
 import { mostUsed, recentlyAdded, templatesByType } from './templateList'
 import { TemplateEntries } from './TemplateEntries'
 import { TemplateEntry } from './TemplateEntry'
@@ -48,13 +48,13 @@ export type TemplateStoreViewProps = {
   templateHref?: (template: Template) => string
   /** Goes back to the library. */
   onBack: () => void
-  /** The apps the user could publish as templates (`ownApps`), which Publish lists; left out until they are known. */
+  /** The gadgets the user could make templates from (`templatable`), which Create template lists; left out until they are known. */
   apps?: OutputSummary[]
   /**
-   * Publishes the app chosen as a template, under its own title. Left out, choosing one only
+   * Creates a template from the gadget chosen, under its own title. Left out, choosing one only
    * closes the menu.
    */
-  onPublish?: (app: OutputSummary) => void
+  onCreateTemplate?: (app: OutputSummary) => void
 }
 
 /** What the banner makes much of: the organization's own first, then the most used of the rest. */
@@ -66,12 +66,12 @@ const promoted = (templates: Template[]) => {
 /**
  * The templates there are to start something from, as a store lists what it has, under a banner
  * of the organization's own (`PromoCarousel`), whichever tab is showing. Its front makes
- * much of a few: the most used, on one line that is scrolled along, the latest published, two to
+ * much of a few: the most used, on one line that is scrolled along, the latest created, two to
  * a line, then some of each kind they make, each with the way to the rest. A tab lists all of
  * them, and one each those of a kind, under the controls a list has; a search or a filter lists
  * what it leaves in place of the front.
  */
-export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onPublish }: TemplateStoreViewProps) => {
+export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onCreateTemplate }: TemplateStoreViewProps) => {
   const narrow = useNarrowScreen()
   const kinds = templatesByType(templates)
   const tabs = [
@@ -115,7 +115,7 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
           </nav>
           {/* What the page offers to do, at the header's end, as the library's New is. */}
           <HeaderBubble className="ms-auto">
-            <PublishMenu apps={apps} onPublish={onPublish} />
+            <CreateTemplateMenu apps={apps} onCreate={onCreateTemplate} />
           </HeaderBubble>
         </>
       )}

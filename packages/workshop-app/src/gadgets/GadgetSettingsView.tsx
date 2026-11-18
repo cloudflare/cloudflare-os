@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from 'react'
 import { CaretLeftIcon, FileArrowDownIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
+import type { MadeTemplate } from '@/blocks/CreateTemplateDialog'
 import { ExportItems, type ExportItemsProps } from '@/blocks/ExportItems'
 import { ListGroup } from '@/blocks/ListGroup'
+import { MadeTemplateSettings } from '@/blocks/MadeTemplateSettings'
 import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PaneStatus, type PaneStatusProps } from '@/blocks/PaneStatus'
@@ -19,7 +21,6 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
 import type { WorkspaceLook } from '@/components/workspaceLook'
 import { PageLayout } from '@/layouts/PageLayout'
-import type { PublishState } from '@/library/publishState'
 import { bindingNameProblem, freeBindingName, groupBindings, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from './GadgetSettings'
 import type { BindingService } from './useGadgetSettings'
 
@@ -60,10 +61,23 @@ export type GadgetSettingsViewProps = {
    */
   templateUpdate?: { status?: 'available' | 'upToDate'; onUpdate: () => void }
   /**
-   * Publishing it as a template, or its changes since to the one it was published as: where it
-   * stands, once that is read, and the way to the dialog that does it. Left out where it cannot be.
+   * Templates: the way to the dialog that creates one from it, and those its workspace has made,
+   * once they are read, each of which can be released an update or deleted. The backend does not
+   * say which gadget each was made from. Left out where it cannot be.
    */
-  publish?: { state?: PublishState; onPublish: () => void }
+  template?: {
+    made?: MadeTemplate[]
+    onCreate: () => void
+    /** Goes to a template's page. */
+    onOpen: (id: string) => void
+    /** Keeps a new title and what it is for, rejecting with why it could not. */
+    onEdit: (id: string, fields: { title: string; description: string }) => Promise<void>
+    onRelease: (id: string) => void
+    onDelete: (id: string) => void
+    /** The one being released to or deleted, and why the last of those did not go through. */
+    busy?: string
+    problem?: string
+  }
   /** What it can be exported as and saved to, as the More menu offers it (`ExportItems`). */
   exports?: ExportItemsProps
   /** What became of the last export, floated over the foot of the page. */
@@ -110,13 +124,15 @@ const Message = ({ children }: { children: string }) => <p className="appears px
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
  * connected to, with the agents it can start apart, where an AI model is added and changed, and its
- * settings, which are updating it from its template, publishing it as one, exporting it, and
+ * settings, which are updating it from its template, creating a template from it, exporting it, and
  * deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, templateUpdate, publish, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention,
+  state, title, icon, description, templateUpdate, template, exports, status: exported, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onChangeModel, onDelete, onBack, onOpenWorkspace, onOpenAgent, agentHref, agentAttention,
 }: GadgetSettingsViewProps) => {
+  const made = template?.made ?? []
+  const offersCreate = template !== undefined && made.length === 0
   // What the model dialog was opened for, kept as it closes so that it does not change meanwhile.
   const [modelDialog, setModelDialog] = useState<{ open: boolean; changing?: string; initial?: string }>({ open: false })
 
@@ -230,44 +246,36 @@ export const GadgetSettingsView = ({
               )}
             </Tabs.Panel>
             <Tabs.Panel value="settings" className="flex flex-col gap-4">
-              {(templateUpdate || publish || exports) && (
-                <SettingsCard>
-                  {templateUpdate && (
-                    <SettingRow
-                      title="Updates"
-                      description={templateUpdate.status === 'available'
-                        ? 'There’s a newer version of its template. The update opens in a new chat, where you can try it before accepting it.'
-                        : templateUpdate.status === 'upToDate'
-                          ? 'It has the latest version of its template.'
-                          : 'Its template may have a newer version. The update opens in a new chat, where you can try it before accepting it.'}
-                    >
-                      {templateUpdate.status === 'upToDate'
-                        ? <span className="shrink-0 text-kumo-subtle">Up to date</span>
-                        : <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} onClick={templateUpdate.onUpdate}>Update…</Button>}
-                    </SettingRow>
-                  )}
-                  {publish && (
-                    <SettingRow
-                      title={publish.state === 'changes' ? 'Publish changes' : publish.state === 'published' ? 'Published as a template' : 'Publish as template'}
-                      description={publish.state === 'changes'
-                        ? 'It has changes since it was last published as a template. They go out as the template’s next version.'
-                        : publish.state === 'published'
-                          ? 'There’s nothing new to publish since it was last published as a template.'
-                          : 'Anyone you share a template with can make their own from it, connected to their own accounts.'}
-                    >
-                      <Button variant={publish.state === 'changes' ? 'primary' : 'secondary'} onClick={publish.onPublish}>Publish…</Button>
-                    </SettingRow>
-                  )}
-                  {exports && (
-                    <SettingRow title="Export" description="Save it to this device as a file, or to one of your accounts.">
-                      <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
-                        <ExportItems {...exports} />
-                      </DropdownMenu>
-                    </SettingRow>
-                  )}
-                </SettingsCard>
-              )}
               <SettingsCard>
+                {templateUpdate && (
+                  <SettingRow
+                    title="Updates"
+                    description={templateUpdate.status === 'available'
+                      ? 'There’s a newer version of its template. The update opens in a new chat, where you can try it before accepting it.'
+                      : templateUpdate.status === 'upToDate'
+                        ? 'It has the latest version of its template.'
+                        : 'Its template may have a newer version. The update opens in a new chat, where you can try it before accepting it.'}
+                  >
+                    {templateUpdate.status === 'upToDate'
+                      ? <span className="shrink-0 text-kumo-subtle">Up to date</span>
+                      : <Button variant={templateUpdate.status === 'available' ? 'primary' : 'secondary'} onClick={templateUpdate.onUpdate}>Update…</Button>}
+                  </SettingRow>
+                )}
+                {template && offersCreate && (
+                  <SettingRow
+                    title="Create template"
+                    description="Let others copy your app. They get their own separate copy to start from, connected to their own accounts."
+                  >
+                    <Button onClick={template.onCreate}>Create template…</Button>
+                  </SettingRow>
+                )}
+                {exports && (
+                  <SettingRow title="Export" description="Save it to this device as a file, or to one of your accounts.">
+                    <DropdownMenu icon={FileArrowDownIcon} label="Export" caret keepTrigger align="end">
+                      <ExportItems {...exports} />
+                    </DropdownMenu>
+                  </SettingRow>
+                )}
                 <SettingRow title="Delete this gadget" description="It goes for everyone it’s shared with. What it’s connected to stays in the workspace.">
                   <ConfirmMenu
                     label="Delete gadget"
@@ -278,6 +286,24 @@ export const GadgetSettingsView = ({
                   />
                 </SettingRow>
               </SettingsCard>
+              {template && made.length > 0 && (
+                // Its own section, after the rest, once there is a template to look after.
+                <div className="mt-8 flex flex-col gap-8">
+                  {template.problem && <p role="alert" className="px-5 text-base text-kumo-danger">{template.problem}</p>}
+                  {made.map((each) => (
+                    <MadeTemplateSettings
+                      key={each.id}
+                      template={each}
+                      title={made.length === 1 ? 'Template' : 'Templates'}
+                      busy={template.busy !== undefined}
+                      onOpen={() => template.onOpen(each.id)}
+                      onEdit={(fields) => template.onEdit(each.id, fields)}
+                      onRelease={() => template.onRelease(each.id)}
+                      onDelete={() => template.onDelete(each.id)}
+                    />
+                  ))}
+                </div>
+              )}
             </Tabs.Panel>
           </Tabs>
         )}

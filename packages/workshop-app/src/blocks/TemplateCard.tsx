@@ -18,7 +18,7 @@ export type TemplateCardProps = {
   creator: TemplateCreator
   /** The services it has to be connected to before it can be used, by name. */
   connections?: string[]
-  /** A picture of what it makes, where its publisher gave one. */
+  /** A picture of what it makes, where its creator gave one. */
   previewUrl?: string
   starred: boolean
   onStarredChange: (starred: boolean) => void

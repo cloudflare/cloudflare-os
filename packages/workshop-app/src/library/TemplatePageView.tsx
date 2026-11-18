@@ -1,9 +1,11 @@
-import { useId } from 'react'
+import { useId, useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { BuildingsIcon, CaretLeftIcon, CompassIcon, StarIcon, UserIcon } from '@phosphor-icons/react'
+import { BuildingsIcon, CaretLeftIcon, CompassIcon, PencilSimpleIcon, StarIcon, TrashIcon, UserIcon } from '@phosphor-icons/react'
 import { ConnectionNeeds } from '@/blocks/ConnectionNeeds'
+import { EditTemplateDialog } from '@/blocks/EditTemplateDialog'
 import { TemplatePreview } from '@/blocks/TemplatePreview'
 import { Button } from '@/components/Button'
+import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { ClampedText } from '@/components/ClampedText'
 import { FactStrip } from '@/components/FactStrip'
 import { FormatIcon } from '@/components/FormatIcon'
@@ -33,6 +35,12 @@ export type TemplatePageViewProps = {
   connected?: ReadonlySet<string>
   /** Connects a service that is known not to be. */
   onConnect?: (need: TemplateNeed) => void
+  /**
+   * What its creator can do about it, where it is the viewer's and its workspace is still there:
+   * change its title and what it is for, and delete it, from buttons beside its star. `busy` is
+   * one of those under way, and `problem` why the last did not go through.
+   */
+  owner?: { onEdit: (fields: { title: string; description: string }) => Promise<void>; onDelete: () => void; busy?: boolean; problem?: string }
   /** Others of its kind, to go on to. */
   related: Template[]
   onOpenTemplate: (template: Template) => void
@@ -51,10 +59,11 @@ const HEADING = 'text-lg font-medium text-kumo-default'
  * of what it makes, what it is for, the services it has to be connected to, the same facts at
  * length, and others of its kind.
  */
-export const TemplatePageView = ({ template, status, starred, onStarredChange, onUse, connected, onConnect, related, onOpenTemplate, templateHref, onBack }: TemplatePageViewProps) => {
+export const TemplatePageView = ({ template, status, starred, onStarredChange, onUse, connected, onConnect, owner, related, onOpenTemplate, templateHref, onBack }: TemplatePageViewProps) => {
   const narrow = useNarrowScreen()
   const connectionsId = useId()
   const informationId = useId()
+  const [editing, setEditing] = useState(false)
 
   // Where the template is listed, which is the way back, then the template, which is where this is.
   const header = (
@@ -83,7 +92,7 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
           : (
               <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2 pt-8 text-center">
                 <h1 className="text-xl font-medium text-kumo-default">{status ? 'Couldn’t load the template' : 'Template not found'}</h1>
-                <p className="max-w-md text-base text-kumo-subtle">{status ? status.failed : 'It may have been taken down by whoever published it.'}</p>
+                <p className="max-w-md text-base text-kumo-subtle">{status ? status.failed : 'It may have been taken down by whoever created it.'}</p>
               </div>
             )}
       </PageLayout>
@@ -110,22 +119,32 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
               <p className="text-base text-kumo-subtle">{noun} · {creator.organization ? 'From your organization' : `By ${creator.name}`}</p>
             </div>
           </div>
-          <div className="ms-auto flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
-              <Button
-                icon={<StarIcon weight={starred ? 'fill' : 'regular'} />}
-                aria-label={`Star ${title}`}
-                aria-pressed={starred}
-                onClick={() => onStarredChange(!starred)}
-              />
-              <Button variant="primary" disabled={!onUse} onClick={onUse}>Use template</Button>
-            </div>
-            {/* What stands between the button and using it, in a few words under it. */}
-            <span className="text-sm leading-tight text-kumo-subtle">
-              {onUse ? (needs.length > 0 ? `Needs ${needs.length === 1 ? 'a connection' : `${needs.length} connections`}` : 'Nothing to set up') : 'Coming soon'}
-            </span>
+          <div className="ms-auto flex items-center gap-2">
+            {owner && (
+              <>
+                <Button icon={PencilSimpleIcon} aria-label="Edit template" title="Edit" disabled={owner.busy} onClick={() => setEditing(true)} />
+                <ConfirmMenu
+                  icon={TrashIcon}
+                  aria-label="Delete template"
+                  title="Delete template?"
+                  description="It’s removed for everyone, including anyone with its link. What people already made from it stays as it is. This can’t be undone."
+                  confirmLabel="Delete"
+                  disabled={owner.busy}
+                  onConfirm={owner.onDelete}
+                />
+              </>
+            )}
+            <Button
+              icon={<StarIcon weight={starred ? 'fill' : 'regular'} />}
+              aria-label={`Star ${title}`}
+              aria-pressed={starred}
+              onClick={() => onStarredChange(!starred)}
+            />
+            <Button variant="primary" disabled={!onUse} onClick={onUse}>Use template</Button>
           </div>
         </div>
+
+        {owner?.problem && <p role="alert" className="-mt-4 text-base text-kumo-danger">{owner.problem}</p>}
 
         <FactStrip
           facts={[
@@ -165,10 +184,10 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
           <dl className="grid grid-cols-2 gap-x-8 gap-y-5 rounded-3xl bg-kumo-tint p-4 text-base max-md:grid-cols-1">
             {[
               ['Makes', noun],
-              ['Published by', creator.name],
+              ['Created by', creator.name],
               ['Version', String(version)],
               ['Last updated', date.format(lastUpdated)],
-              ['Published', date.format(created)],
+              ['Created', date.format(created)],
               ['Connections', names || 'None needed'],
             ].map(([label, value]) => (
               <div key={label} className="flex flex-col">
@@ -187,6 +206,16 @@ export const TemplatePageView = ({ template, status, starred, onStarredChange, o
           </div>
         )}
       </div>
+      {owner && (
+        <EditTemplateDialog
+          // Keyed, so that what was typed for one opening is not carried to the next.
+          key={`${title}:${description}`}
+          open={editing}
+          onOpenChange={setEditing}
+          template={{ title, description }}
+          onSave={owner.onEdit}
+        />
+      )}
     </PageLayout>
   )
 }

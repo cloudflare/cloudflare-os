@@ -22,8 +22,8 @@ export type TemplatesApi = Pick<
 /** The part of the public API a blueprint's own record is read through. */
 export type TemplatesPublicApi = Pick<RpcStub<PublicApi>, 'getBlueprint'>
 
-/** A gadget to publish from, by where it is and what it is called. */
-export type PublishedGadget = Pick<OutputSummary, 'workspaceId' | 'workpieceId' | 'title'>
+/** A gadget to make a template from, by where it is and what it is called. */
+export type TemplateSource = Pick<OutputSummary, 'workspaceId' | 'workpieceId' | 'title'>
 
 const LOADING: TemplatesState = { status: 'loading' }
 
@@ -31,7 +31,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 /**
  * The templates there are to start something from (`templatesOf`): the deployment's featured
- * blueprints, the user's saved ones and those they published, with their stars, which are the
+ * blueprints, the user's saved ones and those they created, with their stars, which are the
  * backend's `pinned`. Observable through `subscribe`/`getSnapshot`, so that the store and a
  * template's page show the same. A star is shown at once and put back if the server refuses it.
  */
@@ -65,15 +65,15 @@ export class TemplateStore {
     const run = ++this.#run
     const publicApi = this.#publicApi
     try {
-      const [featured, library, published, vendors] = await Promise.all([
+      const [featured, library, created, vendors] = await Promise.all([
         api.listFeaturedBlueprints(),
         api.listLibraryBlueprints(),
         api.listOwnBlueprints(),
-        // Without them, a template's services go by what its publisher called them.
+        // Without them, a template's services go by what its creator called them.
         api.listGatekeeperVendors().catch(() => []),
       ])
-      // What the user published is listed only as a summary; its record has the rest.
-      const own = await Promise.all(published.map(async (summary) => ({
+      // What the user created is listed only as a summary; its record has the rest.
+      const own = await Promise.all(created.map(async (summary) => ({
         summary,
         info: publicApi ? await publicApi.getBlueprint(summary.id).catch(() => null) : null,
       })))
@@ -101,11 +101,11 @@ export class TemplateStore {
   }
 
   /**
-   * Publishes one of the user's apps as a new template, under `title` (its own unless another is
+   * Creates a new template from one of the user's apps, under `title` (its own unless another is
    * given) and with what it is for, where that is said, from what it has committed
    * (`GadgetClient.createBlueprint()`), then reads the templates again. Gives its id.
    */
-  publish = async (app: PublishedGadget, { title, description }: { title?: string; description?: string } = {}): Promise<string> => {
+  create = async (app: TemplateSource, { title, description }: { title?: string; description?: string } = {}): Promise<string> => {
     // Disposed by hand: `using` is not lowered for every browser this runs in. Pipelined, so it is one round trip.
     const overseer = this.#connected().openWorkspace(app.workspaceId)
     const gadget = overseer.getGadget(app.workpieceId)
@@ -120,10 +120,10 @@ export class TemplateStore {
   }
 
   /**
-   * The templates published from a workspace's gadgets (`Overseer.listBlueprints()`), which do not
+   * The templates made from a workspace's gadgets (`Overseer.listBlueprints()`), which do not
    * say which gadget each is of.
    */
-  publishedFrom = async (workspaceId: string): Promise<BlueprintGadgetSummary[]> => {
+  createdFrom = async (workspaceId: string): Promise<BlueprintGadgetSummary[]> => {
     const overseer = this.#connected().openWorkspace(workspaceId)
     try {
       return await overseer.listBlueprints()
@@ -133,13 +133,41 @@ export class TemplateStore {
   }
 
   /**
-   * Publishes what the gadget a template is of has committed since, as the template's next version
+   * Releases what the gadget a template is of has committed since, as the template's next version
    * (`Overseer.updateBlueprint()` with `updateCode`), then reads the templates again.
    */
-  publishChanges = async (workspaceId: string, templateId: string): Promise<void> => {
+  release = async (workspaceId: string, templateId: string): Promise<void> => {
     const overseer = this.#connected().openWorkspace(workspaceId)
     try {
       await overseer.updateBlueprint(templateId, { updateCode: true })
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    await this.reload()
+  }
+
+  /**
+   * Changes a template's title and what it is for (`Overseer.updateBlueprint()`), then reads the
+   * templates again. Its code and version stay as they are.
+   */
+  update = async (workspaceId: string, templateId: string, { title, description }: { title: string; description: string }): Promise<void> => {
+    const overseer = this.#connected().openWorkspace(workspaceId)
+    try {
+      await overseer.updateBlueprint(templateId, { title, description })
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    await this.reload()
+  }
+
+  /**
+   * Deletes a template made from a workspace's gadget (`Overseer.deleteBlueprint()`), for everyone
+   * who could have found it, then reads the templates again. What was made from it stays.
+   */
+  remove = async (workspaceId: string, templateId: string): Promise<void> => {
+    const overseer = this.#connected().openWorkspace(workspaceId)
+    try {
+      await overseer.deleteBlueprint(templateId)
     } finally {
       overseer[Symbol.dispose]()
     }

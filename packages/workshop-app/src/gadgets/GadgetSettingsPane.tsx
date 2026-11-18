@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import { useRouter } from '@tanstack/react-router'
 import { agentByKey, agentKeyOf, attentionWords } from '@/automations/agents'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
-import { PublishTemplate } from '@/library/PublishTemplate'
-import { usePublishState } from '@/library/usePublishState'
+import { CreateTemplate } from '@/library/CreateTemplate'
+import { useMadeTemplates } from '@/library/useMadeTemplates'
+import { useTemplateOwner } from '@/library/useTemplateOwner'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
@@ -65,8 +67,10 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const follows = upstream?.blueprintId !== undefined && gadget?.commitId !== undefined ? { ...upstream, blueprintId: upstream.blueprintId } : undefined
   const [updating, setUpdating] = useState(false)
   // Not there until it is first asked for, as it reads the templates.
-  const [publishing, setPublishing] = useState<boolean>()
-  const publishState = usePublishState(workspaceId, publishing === true || tab !== 'settings')
+  const [creating, setCreating] = useState<boolean>()
+  const made = useMadeTemplates(workspaceId, creating === true || tab !== 'settings')
+  const owner = useTemplateOwner(workspaceId, { onChange: made.refresh })
+  const router = useRouter()
   // Only whoever builds in its workspace gets here, who may save it to their accounts too.
   const exports = useGadgetExports(gadget && { workspaceId, workpieceId, type: 'gadget', chatId }, title ?? '', { saves: true })
   useDocumentTitle(namesTab ? (title ? `Settings · ${title}` : 'App settings') : undefined)
@@ -102,7 +106,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         description={blueprint?.description}
         // The template gone, there is nothing to update it from.
         templateUpdate={follows && blueprint !== null ? { status: templateUpdateStatus(follows, blueprint), onUpdate: () => setUpdating(true) } : undefined}
-        publish={gadget && { state: publishState, onPublish: () => setPublishing(true) }}
+        template={gadget && { made: made.templates, onCreate: () => setCreating(true), onEdit: owner.edit, onRelease: owner.release, onDelete: owner.remove, busy: owner.busy, problem: owner.problem, onOpen: (id) => void router.navigate({ to: '/library/templates/$templateId', params: { templateId: id } }) }}
         exports={exports.menu}
         status={exports.status}
         workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), look }}
@@ -140,8 +144,8 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
         agentHref={agentHref}
       />
       {exports.dialogs}
-      {gadget && publishing !== undefined && (
-        <PublishTemplate gadget={{ workspaceId, workpieceId, title: title ?? '' }} open={publishing} onOpenChange={setPublishing} />
+      {gadget && creating !== undefined && (
+        <CreateTemplate gadget={{ workspaceId, workpieceId, title: title ?? '' }} open={creating} onOpenChange={setCreating} />
       )}
       {follows && (
         <UpdateFromTemplate

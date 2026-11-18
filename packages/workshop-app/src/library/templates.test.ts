@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import type { BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, BlueprintSource, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { narrowList } from '@/components/listView'
 import { mostUsed, recentlyAdded, templateList, templatesByType } from './templateList'
 import { templateNeeds, templateSearchText, templatesOf, templateTypes, type Template } from './templates'
@@ -42,7 +42,7 @@ describe('templates', () => {
     ])
   })
 
-  it('names a service as the deployment does, with what its publisher called it said of it', () => {
+  it('names a service as the deployment does, with what its creator called it said of it', () => {
     const [need] = templateNeeds({ ...template('Budget', { bindings: { SHEET: { ...service('Budget sheet'), description: '' } } }), services: { SHEET: { name: 'Google', logoUrl: '/google.svg' } } })
     expect(need).toMatchObject({ name: 'Google', description: 'Budget sheet', logoUrl: '/google.svg' })
   })
@@ -52,7 +52,7 @@ describe('templates', () => {
     expect(types.map(({ id }) => id)).toEqual(['document', 'app'])
   })
 
-  it('finds a template by what it makes, who published it and what it needs', () => {
+  it('finds a template by what it makes, who created it and what it needs', () => {
     const text = templateSearchText(template('Triage', { output: DOCUMENT, bindings: { JIRA: service('Jira') } }))
     for (const word of ['Triage', 'Documents', 'Lovelace', 'Jira']) expect(text).toContain(word)
   })
@@ -67,11 +67,11 @@ describe('templateList', () => {
   const spec = templateList(ALL, new Set(['Retro']))
   const left = (...ids: string[]) => titles(narrowList(ALL, { query: '', searchText: spec.searchText, filters: spec.filters!.filter(({ id }) => ids.includes(id)) }))
 
-  it('puts the most used first, and of those used as much, the latest published', () => {
+  it('puts the most used first, and of those used as much, the latest created', () => {
     expect(titles(mostUsed(ALL))).toEqual(['Dashboard', 'Retro', 'Notes', 'Triage'])
   })
 
-  it('puts the latest published first', () => {
+  it('puts the latest created first', () => {
     expect(titles(recentlyAdded(ALL))).toEqual(['Triage', 'Retro', 'Dashboard', 'Notes'])
   })
 
@@ -97,12 +97,17 @@ describe('templateList', () => {
 
 const metadata = (title: string, extra: Partial<BlueprintMetadata> = {}): BlueprintMetadata => ({ ...template(title).metadata, ...extra })
 const info = (id: string, title: string): BlueprintPublicInfo => ({ id, metadata: metadata(title), screenshotUrl: `/blueprint-screenshot/${id}` })
-const summary = (id: string, source: { type: 'deletedWorkspace' } | { type: 'imported' }, pinned?: true) =>
+const summary = (id: string, source: BlueprintSource, pinned?: true) =>
   ({ id, title: id, description: '', source, version: 1, lastUpdated: new Date(2026, 1, 1), pinned })
 
 describe('templatesOf', () => {
+  it('says where one the user created was made from, which is where it is released to and deleted from', () => {
+    const source: BlueprintSource = { type: 'workspace', workspaceId: 'notes', workspaceTitle: 'Notes' }
+    const { templates } = templatesOf({ featured: [], library: [], own: [{ summary: summary('d', source), info: info('d', 'Counter') }], vendors: [] })
+    expect(templates.map(({ id, mine, source: from }) => [id, mine, from])).toEqual([['d', true, source]])
+  })
 
-  it('lists each blueprint once, however many ways the user has it: the featured as the organization’s, what they published as theirs', () => {
+  it('lists each blueprint once, however many ways the user has it: the featured as the organization’s, what they created as theirs', () => {
     const { templates, stars } = templatesOf({
       featured: [info('a', 'Tip jar')],
       library: [
@@ -111,7 +116,7 @@ describe('templatesOf', () => {
       ],
       own: [
         { summary: summary('b', { type: 'deletedWorkspace' }, true), info: info('b', 'Standup') },
-        // Added, not published: listed from the library, where it is.
+        // Added, not created: listed from the library, where it is.
         { summary: summary('c', { type: 'imported' }), info: info('c', 'Planner') },
         // Its record could not be read: there is nothing to show of it.
         { summary: summary('z', { type: 'deletedWorkspace' }), info: null },

@@ -2,11 +2,12 @@ import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type Reac
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, GearSixIcon, UserPlusIcon,
+  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, GearSixIcon, ShareNetworkIcon, XIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
+import { Illustration } from '@/components/Illustration'
 import { Grabber } from '@/components/Grabber'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
@@ -15,7 +16,6 @@ import { CopyLinkButton } from './CopyLinkButton'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
 import { SidePaneTitle } from './SidePaneTitle'
-import { WorkspaceCrumb, type WorkspaceCrumbProps } from './WorkspaceCrumb'
 
 export type SidePaneItem = {
   key: string
@@ -42,8 +42,6 @@ type Placement =
       /** Filling the window, for nothing but it: the step up. */
       fullScreen: boolean
       onFullScreenChange: (on: boolean) => void
-      /** The workspace it is in, which its header starts with, as a chat's does. */
-      workspace?: WorkspaceCrumbProps
       /** The way to a chat with it beside it (`GadgetChatMenu`), for whoever builds where it is. */
       chat?: Omit<GadgetChatMenuProps, 'title' | 'compact'>
     }
@@ -68,8 +66,18 @@ export type SidePaneProps = Placement & {
   onViewCode?: () => void
   /** Its code is shown in its place (`onViewCode`), which the title says, with the way back. */
   viewingCode?: boolean
-  /** Shares the one shown with people, for whoever may, from a button of its own in place of the link's. */
-  onShare?: () => void
+  /**
+   * Invites people to use the one shown, with the same data as everyone else, for whoever may.
+   * With `onCreateTemplate`, from a menu of its own in place of the link's button.
+   */
+  onInvite?: () => void
+  /**
+   * Where the one shown stands as a template, for whoever may make one, which the Share menu's item
+   * says: none yet (Create template), one with changes to release (Release update), or one up to
+   * date (Copy template link, which `onOpen` does). `copy` is how the last copying of the link went,
+   * for a moment, which the Share button says with a tick or a cross in place of its icon.
+   */
+  template?: { stands: 'none' | 'changes' | 'current'; onOpen: () => void; copy?: 'copied' | 'failed' }
   /**
    * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
    * step up, and the step down is a back button at the start of the header.
@@ -85,11 +93,32 @@ export type SidePaneProps = Placement & {
 const HEADER_HEIGHT = 60
 const TUCK = HEADER_HEIGHT
 // The surface's top corners, the card's own (`rounded-3xl`).
+// What the template's item says, by where the app stands as one.
+const TEMPLATE_ITEMS = {
+  none: { label: 'Create template', description: 'Let others copy your app' },
+  changes: { label: 'Release update', description: 'Release your latest changes to the template' },
+  current: { label: 'Copy template link', description: 'Let others copy your app' },
+} as const
+
+const ShareItems = ({ onInvite, template }: Pick<SidePaneProps, 'onInvite' | 'template'>) => {
+  const item = template && TEMPLATE_ITEMS[template.stands]
+  return (
+    <>
+      {onInvite && (
+        <DropdownMenu.Item illustration={<Illustration name="invite" />} onSelect={onInvite} description="Let others use this app with you">Invite people</DropdownMenu.Item>
+      )}
+      {template && item && (
+        <DropdownMenu.Item illustration={<Illustration name="template" />} onSelect={template.onOpen} description={item.description}>{item.label}</DropdownMenu.Item>
+      )}
+    </>
+  )
+}
+
 const CORNER = 24
 // Pulled this far out of where it was, the header goes the rest of the way when let go.
 const COMMITS_AT = 0.2
-// A header narrower than this, in pixels, is crammed: its name is left a few letters, and Share
-// goes into more.
+// A header narrower than this, in pixels, is crammed: its name is left a few letters, and what it
+// shares goes into more.
 const CRAMPED_BELOW = 460
 // The most the header can be tugged down on, with it all the way out: it snaps away at once, where
 // let go of short of it, after any tug down, it rolls up all the same.
@@ -102,12 +131,12 @@ const TUG_AT = 120
  * beside the page the button is Hide, which puts the pane away, and expanding it to take the page's
  * place is in more; expanded, it collapses back and fills the window; filling the window, it goes
  * back. Before those are who else is looking at it, more (reloading it, downloading a file, its code,
- * its settings, which is where it is exported, published, updated, renamed and deleted, and beside
- * the page expanding it), and sharing it where it can be shared, whose dialog has its link, which
- * goes into more where the header has no room for it, as does the switch to its code on a phone,
+ * its settings, which is where it is exported, made into a template, updated, renamed and deleted,
+ * and beside the page expanding it), and sharing it where it can be shared (a menu of Invite user
+ * and Create template), which goes into more where the header has no room for it, as does the
+ * switch to its code on a phone,
  * or else a button to copy the link. The header starts with the name of the one shown, which for a gadget goes to
- * its settings; as the page, with the workspace it is in first, and before the rest at its end is
- * the way to a chat with it beside it.
+ * its settings; as the page, before the rest at its end is the way to a chat with it beside it.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
  * corners and a line along the top. The bar at its top pushes the header up out of the way, and
@@ -116,7 +145,7 @@ const TUG_AT = 120
  * pull. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, viewingCode = false, onShare, agents, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, agents, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -154,12 +183,19 @@ export const SidePane = (props: SidePaneProps) => {
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
-  const shareInMore = crammed && onShare !== undefined
+  const shares = onInvite !== undefined || template !== undefined
+  const shareInMore = crammed && shares
   // On a phone the switch between the app and its code is in more too, where it has no room.
   const codeInMore = narrow && onViewCode !== undefined
 
   const beside = props.placement === 'beside' ? props : undefined
   const page = props.placement === 'page' ? props : undefined
+  // The header's one primary action: the way to a chat with it beside it.
+  const chat = page?.chat && active && !fullScreen && (
+    <HeaderBubble key="chat">
+      <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
+    </HeaderBubble>
+  )
   const stepDown = beside ? beside.onHide : page?.onCollapse
 
   return (
@@ -184,7 +220,6 @@ export const SidePane = (props: SidePaneProps) => {
               />
             </HeaderBubble>
           )}
-          {page?.workspace && !fullScreen && !narrow && <WorkspaceCrumb {...page.workspace} />}
           {active && (
             // Keyed, so that going to another swaps the bubble.
             <HeaderBubble key={active.key} className="min-w-0">
@@ -204,18 +239,13 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {page?.chat && active && !fullScreen && (
-              <HeaderBubble key="chat">
-                <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
-              </HeaderBubble>
-            )}
             {active && (onReload || onDownload || shareInMore || codeInMore || onOpenSettings || (beside?.onExpand && !narrow)) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {codeInMore && (viewingCode
                     ? <DropdownMenu.Item icon={EyeIcon} onSelect={onViewCode}>Show the app</DropdownMenu.Item>
                     : <DropdownMenu.Item icon={CodeIcon} onSelect={onViewCode}>Show the code</DropdownMenu.Item>)}
-                  {shareInMore && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share</DropdownMenu.Item>}
+                  {shareInMore && <ShareItems onInvite={onInvite} template={template} />}
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {beside?.onExpand && !narrow && <DropdownMenu.Item icon={ArrowsOutSimpleIcon} onSelect={beside.onExpand}>Expand</DropdownMenu.Item>}
@@ -225,25 +255,29 @@ export const SidePane = (props: SidePaneProps) => {
               </HeaderBubble>
             )}
             {/* Keyed, so that the one button swaps for the other. In more instead where there is no room. */}
-            {active && onShare && !crammed && (
+            {active && shares && !crammed && (
               <HeaderBubble key="share">
-                <Button icon={UserPlusIcon} aria-label="Share" title="Share" onClick={onShare} />
+                <DropdownMenu
+                  icon={template?.copy === 'copied' ? CheckIcon : template?.copy === 'failed' ? XIcon : ShareNetworkIcon}
+                  aria-label={template?.copy === 'copied' ? 'Template link copied' : template?.copy === 'failed' ? 'Couldn’t copy the template link' : 'Share'}
+                  align="end"
+                  inPlace
+                >
+                  <ShareItems onInvite={onInvite} template={template} />
+                </DropdownMenu>
               </HeaderBubble>
             )}
-            {active && link && !onShare && (
+            {active && link && !shares && (
               <HeaderBubble key="copy-link">
                 <CopyLinkButton link={link} title={active.title} />
               </HeaderBubble>
             )}
+            {/* Where the gadget's page was expanded from beside a chat, Chat is ahead of the step down, which is last, where the arrow that puts the pane away was beside the chat. */}
+            {page?.onCollapse && chat}
             {/* Keyed, so that expanding swaps the one button for the other in its place. On a narrow screen the back button at the start puts it away. */}
             {beside && !narrow && (
               <HeaderBubble key="hide">
                 <Button icon={ArrowLineRightIcon} aria-label="Hide pane" title="Hide pane" onClick={beside.onHide} />
-              </HeaderBubble>
-            )}
-            {page?.onCollapse && !fullScreen && !narrow && (
-              <HeaderBubble key="collapse">
-                <Button icon={ArrowsInSimpleIcon} aria-label="Collapse" title="Collapse" onClick={page.onCollapse} />
               </HeaderBubble>
             )}
             {page && !narrow && (
@@ -254,6 +288,13 @@ export const SidePane = (props: SidePaneProps) => {
                   : <Button icon={CornersOutIcon} aria-label="Full screen" title="Full screen" onClick={() => page.onFullScreenChange(true)} />}
               </HeaderBubble>
             )}
+            {page?.onCollapse && !fullScreen && !narrow && (
+              <HeaderBubble key="collapse">
+                <Button icon={ArrowsInSimpleIcon} aria-label="Collapse" title="Collapse" onClick={page.onCollapse} />
+              </HeaderBubble>
+            )}
+            {/* Otherwise the header's one primary action is at its far end. */}
+            {!page?.onCollapse && chat}
           </span>
         </header>
       </motion.div>

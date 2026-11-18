@@ -141,7 +141,7 @@ export const CardBlocksPreview = () => {
               time="1 hour ago"
               href="#q3-platform-review"
               onSelect={() => say('open the document')}
-              more={{ onRename: (title) => say(`rename it “${title}”`), onShare: () => say('share it'), onOpenSettings: () => say('open its settings'), onDelete: () => say('delete it') }}
+              more={{ onRename: (title) => say(`rename it “${title}”`), onInvite: () => say('invite people to it'), onOpenSettings: () => say('open its settings'), onDelete: () => say('delete it') }}
             />
             <FileListItem title="my-favourite-image.jpg" icon={<ImageIcon aria-hidden="true" />} time="4 hours ago" onSelect={() => say('open the image')} />
           </ListGroup>

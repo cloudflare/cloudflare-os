@@ -219,6 +219,8 @@ const AppFrame = () => {
     })
 
   let asideElement: ReactNode = null
+  // Takes the aside's item to a page of its own, from its Expand and from dragging the divider all the way over.
+  let expandAside: (() => void) | undefined
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
     const { chat: fromChat } = itemPage.search
@@ -247,8 +249,6 @@ const AppFrame = () => {
           : fromChat !== undefined
             ? () => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: fromChat }, search: { open } })
             : undefined}
-        // It stays beside the workspace's page, as it would going there from a chat.
-        onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageWorkspaceId }, search: { open: carryAside(open, { workspaceId: pageWorkspaceId }) } })}
         onOpenChat={backToChat ? undefined : (toChat) => {
           rememberShown(pageWorkspaceId, toChat.id, open)
           void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: toChat.id }, search: { open }, state: { chatTitle: toChat.title } })
@@ -260,6 +260,7 @@ const AppFrame = () => {
   } else if (besideOf && named) {
     const item = asideItemFor(besideOf.params.workspaceId, named, chatId, known)
     const { workspaceId: besideWorkspaceId } = besideOf.params
+    expandAside = () => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })
     asideElement = (
       <AsidePane
         placement="beside"
@@ -270,7 +271,7 @@ const AppFrame = () => {
         onUpdateProposed={openUpdate}
         onDeleted={aside.hide}
         onHide={aside.hide}
-        onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
+        onExpand={expandAside}
       />
     )
   } else if (openedEmpty) {
@@ -468,6 +469,7 @@ const AppFrame = () => {
       asideFullScreen={fullScreen}
       onOpenAside={openAside}
       onCloseAside={closeAside}
+      onExpandAside={expandAside}
     >
       <Outlet />
     </AppShell>

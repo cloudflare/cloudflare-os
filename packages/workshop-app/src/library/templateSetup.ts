@@ -2,7 +2,7 @@ import type { AiChatAuthorInfo, BlueprintBindingAssignment, BlueprintMetadata, M
 
 // Ported from our prototype's `blueprints/blueprintNeeds.ts`, tests and all.
 
-/** A model a template's publisher suggests, as they had it: its provider and its name there. */
+/** A model a template's creator suggests, as they had it: its provider and its name there. */
 export type SuggestedModel = { provider: string; modelName: string }
 
 /**
@@ -18,11 +18,11 @@ export type SetupNeed = { key: string; title: string; description: string } & (
       vendorId: string
       /** The kind of resource it accepts (`SupportedResource.urlPattern`). */
       urlPattern: string
-      /** The one its publisher had, offered to start the service's form with. */
+      /** The one its creator had, offered to start the service's form with. */
       resourceUrl?: string
     }
   | { type: 'model'; kind: ModelKind; suggested?: SuggestedModel }
-  /** `suggested` null: the publisher's ran with no model, which the agent can do too. */
+  /** `suggested` null: the creator's ran with no model, which the agent can do too. */
   | { type: 'agent'; suggested?: SuggestedModel | null }
 )
 
@@ -34,7 +34,7 @@ export type ModelsByKind = { language: readonly AiChatAuthorInfo[]; decision: re
 
 const ORDER: Record<SetupNeed['type'], number> = { connection: 0, model: 1, agent: 2 }
 
-/** What a template needs set up: connections first, then models, then agents, each as its publisher named them. */
+/** What a template needs set up: connections first, then models, then agents, each as its creator named them. */
 export const setupNeedsOf = (metadata: Pick<BlueprintMetadata, 'bindings'>): SetupNeed[] =>
   Object.entries(metadata.bindings)
     .map(([key, binding]): SetupNeed => {
@@ -55,7 +55,7 @@ export const modelsFor = (need: SetupNeed, models: ModelsByKind) =>
   need.type === 'model' && need.kind === 'decision' ? models.decision : models.language
 
 /**
- * The one of `models` the publisher's suggestion names, as the user's own configuration calls it:
+ * The one of `models` the creator's suggestion names, as the user's own configuration calls it:
  * by its id or name, alone or after its provider; else the only one that mentions both. None when
  * it is ambiguous, rather than a guess.
  */
@@ -73,8 +73,8 @@ export const suggestedModelId = (models: readonly AiChatAuthorInfo[], suggested:
 }
 
 /**
- * How each model or agent need starts out met: with the model the publisher suggested where the
- * user has it, else the one they prefer, else their first of its kind. An agent whose publisher
+ * How each model or agent need starts out met: with the model the creator suggested where the
+ * user has it, else the one they prefer, else their first of its kind. An agent whose creator
  * ran it with no model starts with none. Connections start unmet: only the user can say which.
  */
 export const initialAnswers = (needs: readonly SetupNeed[], models: ModelsByKind, preferred?: string): SetupAnswers => {

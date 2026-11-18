@@ -12,28 +12,31 @@ const CHATS = [
 ]
 
 /**
- * A gadget as its own page: its workspace's crumb, then its title, and at the end Chat, with a new
- * chat beside it or one of the workspace's to carry on in, then more and Share.
+ * A gadget as its own page: its title, and at the end Chat, with a new
+ * chat beside it or one of the workspace's to carry on in, then more and Share, a menu of Invite user and Create template.
  */
 export const GadgetPagePreview = () => {
   const { report, say } = useReport()
   const [chats, setChats] = useState<'some' | 'none' | 'reading'>('some')
   const [shareable, setShareable] = useState(true)
+  const [stands, setStands] = useState<'none' | 'changes' | 'current'>('none')
   const [viewingCode, setViewingCode] = useState(false)
   return (
-    <Section title="SidePane as a gadget's page (the workspace's crumb, title shown, starts the header; the title, with a chevron as a chat's has, opens the gadget's settings; Chat, the one labelled control, opens to New chat and up to four of the workspace's chats, those that last had it beside them first and saying so, or with no chats starts a new one at once; Share, where it can be shared, takes the link’s place, which moves into more; the switch at the start of the header, ahead of the workspace’s crumb, shows its code in its place and back)">
+    <Section title="SidePane as a gadget's page (the title shown starts the header; the title, with a chevron as a chat's has, opens the gadget's settings; Chat, the one labelled control and the header’s one primary button, last of all, opens to New chat and up to four of the workspace's chats, those that last had it beside them first and saying so, or with no chats starts a new one at once; Share, where it can be shared, opens a menu of Invite user, which lets others use the app with the same data, and a template item that says where the app stands, Create template, which lets others copy it, Release update, while it has changes, or Copy template link, once it is up to date, each saying so under its name, and takes the link’s place, which moves into more; the switch at the start of the header shows its code in its place and back)">
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => setChats('some')}>With chats</Button>
         <Button onClick={() => setChats('none')}>No chats yet</Button>
         <Button onClick={() => setChats('reading')}>Chats being read</Button>
         <Button onClick={() => setShareable((was) => !was)}>{shareable ? 'Can’t be shared' : 'Can be shared'}</Button>
+        <Button onClick={() => setStands('none')}>No template</Button>
+        <Button onClick={() => setStands('changes')}>Template with changes</Button>
+        <Button onClick={() => setStands('current')}>Template up to date</Button>
       </div>
       <div className="flex h-72 w-[min(48rem,100%)] flex-col rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
         <SidePane
           placement="page"
           fullScreen={false}
           onFullScreenChange={() => say('asked for full screen')}
-          workspace={{ id: 'marketing', title: 'Marketing', label: 'MA', expanded: true, onOpen: () => say('opened Marketing') }}
           chat={{
             chats: chats === 'some' ? CHATS : chats === 'none' ? [] : undefined,
             onOpenChat: (key) => say(`opened ${CHATS.find((chat) => chat.key === key)?.title} with Slides beside it`),
@@ -43,7 +46,8 @@ export const GadgetPagePreview = () => {
           link="https://example.com/app/slides"
           onReload={() => say('reloaded Slides')}
           onOpenSettings={() => say('opened the settings of Slides')}
-          onShare={shareable ? () => say('opened Share') : undefined}
+          onInvite={shareable ? () => say('opened Invite user') : undefined}
+          template={shareable ? { stands, onOpen: () => say(stands === 'current' ? 'copied the template’s link' : stands === 'changes' ? 'opened Release update' : 'opened Create template') } : undefined}
           onViewCode={() => setViewingCode((was) => !was)}
           viewingCode={viewingCode}
         >

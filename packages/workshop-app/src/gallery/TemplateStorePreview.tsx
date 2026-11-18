@@ -1,14 +1,16 @@
 import { useState } from 'react'
-import { PublishTemplateDialog, type PublishTemplateDialogProps } from '@/blocks/PublishTemplateDialog'
+import { CreateTemplateDialog, type CreateTemplateDialogProps } from '@/blocks/CreateTemplateDialog'
 import { UseTemplateDialog, type UseTemplateNeed } from '@/blocks/UseTemplateDialog'
 import { Button } from '@/components/Button'
 import { useListView } from '@/hooks/useListView'
 import { exampleTemplates } from '@/library/exampleTemplates'
-import { outputTitle, ownApps } from '@/library/libraryList'
+import { TemplateCard } from '@/blocks/TemplateCard'
+import { templatable } from '@/library/libraryEdits'
+import { outputTitle } from '@/library/libraryList'
 import { withStar } from '@/library/libraryStars'
 import { mostUsed, templateList } from '@/library/templateList'
 import { TemplatePageView } from '@/library/TemplatePageView'
-import { templateType } from '@/library/templates'
+import { templateCreator, templateServices, templateType } from '@/library/templates'
 import { DISCOVER_TAB, TemplateStoreView } from '@/library/TemplateStoreView'
 import { previewOutputs } from './LibraryListPreview'
 import { useReport } from './previewState'
@@ -47,7 +49,7 @@ const UseTemplatePreview = () => {
         open={open !== undefined}
         onOpenChange={(next) => { if (!next) setOpen(undefined) }}
         title="Budget tracker"
-        publisher="Katherine Johnson"
+        creator="Katherine Johnson"
         needs={open === 'nothing' ? [] : needs}
         onUse={async () => {
           await new Promise((resolve) => setTimeout(resolve, 800))
@@ -66,21 +68,21 @@ export const TemplateStorePreview = () => (
   <>
     <TemplateStorePages />
     <UseTemplatePreview />
-    <PublishTemplatePreview />
+    <CreateTemplatePreview />
   </>
 )
 
-const PUBLISHED: Record<string, { label: string; published: PublishTemplateDialogProps['published'] }> = {
-  first: { label: 'Never published', published: { status: 'ready', templates: [] } },
+const EXISTING: Record<string, { label: string; existing: CreateTemplateDialogProps['existing'] }> = {
+  first: { label: 'No template yet', existing: { status: 'ready', templates: [] } },
   before: {
-    label: 'Published before',
-    published: { status: 'ready', templates: [{ id: 'tpl-counter', title: 'Counter', version: 3, changes: true }, { id: 'tpl-tally', title: 'Tally for teams', version: 1 }] },
+    label: 'Has templates',
+    existing: { status: 'ready', templates: [{ id: 'tpl-counter', title: 'Counter', description: 'Counts things.', version: 3, changes: true }, { id: 'tpl-tally', title: 'Tally for teams', description: '', version: 1 }] },
   },
-  checking: { label: 'Still checking', published: { status: 'loading' } },
-  failed: { label: 'Couldn’t check', published: { status: 'failed', message: 'The workspace could not be reached.' } },
+  checking: { label: 'Still checking', existing: { status: 'loading' } },
+  failed: { label: 'Couldn’t check', existing: { status: 'failed', message: 'The workspace could not be reached.' } },
 }
 
-// Publishing is slow enough to see held, and one called “Taken” is refused.
+// Creating is slow enough to see held, and one called “Taken” is refused.
 const later = <T,>(value: () => T) => new Promise<T>((resolve, reject) => setTimeout(() => {
   try {
     resolve(value())
@@ -89,32 +91,51 @@ const later = <T,>(value: () => T) => new Promise<T>((resolve, reject) => setTim
   }
 }, 700))
 
-/** `PublishTemplateDialog` in each way it opens: a first template, one published before, still checking, and couldn’t check. */
-const PublishTemplatePreview = () => {
+/** `CreateTemplateDialog` in each way it opens: a first template, one with templates already, still checking, and couldn’t check. */
+const CreateTemplatePreview = () => {
   const { report, say } = useReport()
   const [open, setOpen] = useState<string>()
   return (
-    <Section title="PublishTemplateDialog (a gadget’s More menu › Publish as template…: a first template is a title, its own to start with, and what it is for; one published before starts at its templates, each publishing the gadget’s changes as its next version where it has any, or a new one; once published it says so, with the way to the template; one called Taken is refused)">
+    <Section title="CreateTemplateDialog (a gadget’s More menu › Create template…: a first template is a title, its own to start with, and what it is for; one with a template already starts at it, which releases the gadget’s changes as its next version where it has any, and has no way to make another; once made it says so, with the template as a card, as the templates page shows its most used, and the way to its page; one called Taken is refused)">
       <div className="flex flex-wrap gap-2">
-        {Object.entries(PUBLISHED).map(([key, { label }]) => <Button key={key} onClick={() => setOpen(key)}>{label}</Button>)}
+        {Object.entries(EXISTING).map(([key, { label }]) => <Button key={key} onClick={() => setOpen(key)}>{label}</Button>)}
       </div>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
-      {Object.entries(PUBLISHED).map(([key, { published }]) => (
-        <PublishTemplateDialog
+      {Object.entries(EXISTING).map(([key, { existing }]) => (
+        <CreateTemplateDialog
           key={key}
           open={open === key}
           onOpenChange={(next) => setOpen(next ? key : undefined)}
           title="Counter"
-          published={published}
-          onPublish={({ title }) => later(() => {
-            if (title === 'Taken') throw new Error('A template by that name is being published already.')
-            say(`published “${title}”`)
+          existing={existing}
+          onCreate={({ title }) => later(() => {
+            if (title === 'Taken') throw new Error('A template by that name is being made already.')
+            say(`created “${title}”`)
             return 'tpl-new'
           })}
-          onPublishChanges={(id) => later(() => say(`published the changes to ${id}`))}
+          onRelease={(id) => later(() => say(`released the update to ${id}`))}
           onViewTemplate={(id) => {
             say(`went to ${id}`)
             setOpen(undefined)
+          }}
+          renderTemplate={() => {
+            const example = exampleTemplates()[0]!
+            return (
+              <div className="mx-auto flex w-60 max-w-full flex-col">
+                <TemplateCard
+                  title={example.metadata.title}
+                  description={example.metadata.description}
+                  kind={templateType(example).noun}
+                  icon={templateType(example).icon}
+                  creator={templateCreator(example)}
+                  connections={templateServices(example).map(({ name }) => name)}
+                  starred={false}
+                  onStarredChange={() => say('starred it')}
+                  href="#"
+                  onSelect={() => say('opened its page')}
+                />
+              </div>
+            )
           }}
           templateHref={() => '#'}
         />
@@ -126,7 +147,7 @@ const PublishTemplatePreview = () => {
 const TemplateStorePages = () => {
   const { report, say } = useReport()
   const [templates] = useState(exampleTemplates)
-  const [apps] = useState(() => ownApps(previewOutputs(Date.now())))
+  const [apps] = useState(() => templatable(previewOutputs(Date.now())))
   const [tab, setTab] = useState(DISCOVER_TAB)
   const [stars, setStars] = useState(['budget-tracker'])
   const [openId, setOpenId] = useState<string>()
@@ -138,7 +159,7 @@ const TemplateStorePages = () => {
   const open = templates.find(({ id }) => id === openId)
 
   return (
-    <Section title="TemplateStoreView, TemplatePageView, TemplateCard, TemplateListing, ConnectionNeeds, FactStrip, ScrollRow, Shelf (the templates, as a store lists what it has. Discover is its front: the most used on one line that is scrolled along, the latest published two to a line, then some of each kind, each with the way to the rest. All lists every one in the order chosen, and a tab each those of a kind; a search or a filter lists what it leaves in place of the front. The templates while they are read, and where they could not be. A template’s own page has what it makes on a tile beside its title and the way to use it, what there is to know of it at a glance, a picture of what it makes, sketched until its publisher gives one, what it is for, the services it has to be connected to, each with whether it is and the way to connect it, the facts at length, and others of its kind)">
+    <Section title="TemplateStoreView, TemplatePageView, TemplateCard, TemplateListing, ConnectionNeeds, FactStrip, ScrollRow, Shelf (the templates, as a store lists what it has. Discover is its front: the most used on one line that is scrolled along, the latest created two to a line, then some of each kind, each with the way to the rest. All lists every one in the order chosen, and a tab each those of a kind; a search or a filter lists what it leaves in place of the front. The templates while they are read, and where they could not be. A template’s own page has what it makes on a tile beside its title and the way to use it, what there is to know of it at a glance, a picture of what it makes, sketched until its creator gives one, what it is for, the services it has to be connected to, each with whether it is and the way to connect it, the facts at length, and others of its kind; one that is the viewer’s own, the Budget tracker here, has an Edit button, for its title and what it is for, and a Delete button, which asks first, beside its star)">
       <div className="flex w-full flex-col gap-3">
         {/* Wider than the gallery's column, as a page is. */}
         <div data-preview="templates" className="relative left-1/2 flex h-[64rem] w-[min(60rem,100vw-4rem)] shrink-0 -translate-x-1/2 rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
@@ -156,7 +177,7 @@ const TemplateStorePages = () => {
                   templateHref={({ id }) => `#${id}`}
                   onBack={() => say('back to the library')}
                   apps={apps}
-                  onPublish={(app) => say(`publish ${outputTitle(app)} as a template`)}
+                  onCreateTemplate={(app) => say(`create a template from ${outputTitle(app)}`)}
                 />
               )
             : (
@@ -169,6 +190,13 @@ const TemplateStorePages = () => {
                   onUse={() => say(`use ${open?.metadata.title}`)}
                   connected={new Set(connected)}
                   onConnect={({ key }) => setConnected([...connected, key])}
+                  // As if the Budget tracker were the viewer's own.
+                  owner={open?.id === 'budget-tracker'
+                    ? {
+                        onEdit: async ({ title }) => say(`edited ${open.metadata.title}: ${title}`),
+                        onDelete: () => say(`deleted ${open.metadata.title}`),
+                      }
+                    : undefined}
                   related={open ? mostUsed(templates).filter((other) => other.id !== open.id && templateType(other).id === templateType(open).id).slice(0, 4) : []}
                   onOpenTemplate={({ id }) => setOpenId(id)}
                   templateHref={({ id }) => `#${id}`}

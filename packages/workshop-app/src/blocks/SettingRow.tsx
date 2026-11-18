@@ -3,7 +3,8 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Tag } from '@/components/Tag'
 
 export type SettingRowProps = {
-  title: string
+  /** What it is called: text, or a link where the row's name goes somewhere. */
+  title: ReactNode
   /** What it is of, drawn before what is said of it, such as a service's logo. */
   icon?: ReactNode
   /** What it does, or why it is as it is. */

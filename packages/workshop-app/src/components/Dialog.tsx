@@ -12,11 +12,13 @@ export type DialogProps = {
   onOpenChange: (open: boolean) => void
   /** Wider than most, for one that holds a service's own form, laid out for more room. */
   wide?: boolean
+  /** Narrower than most, for one that holds little: a few lines of words and a card (a template's is 15rem wide), which it is about as wide as. */
+  narrow?: boolean
   /**
    * Which page it shows, where it has several, one after another: it then stays as it goes from
    * one to the next, its surface taking the new page's size and the page sliding in where it
    * goes. A `Dialog` within it is the page it shows, drawn there rather than as a dialog of its
-   * own, and what puts it away is that dialog's `onOpenChange`; its `open` and `wide` are this one's.
+   * own, and what puts it away is that dialog's `onOpenChange`; its `open`, `wide` and `narrow` are this one's.
    */
   page?: DialogPage
   /** What it holds, with a `Dialog.Title` in it, which is what it is called. */
@@ -62,7 +64,7 @@ const DialogRoot = (props: DialogProps) => {
   return page ? <DialogAsPage page={page} onOpenChange={props.onOpenChange}>{props.children}</DialogAsPage> : <DialogSurface {...props} />
 }
 
-const DialogSurface = ({ open, onOpenChange, wide, page, children }: DialogProps) => {
+const DialogSurface = ({ open, onOpenChange, wide, narrow, page, children }: DialogProps) => {
   const key = page?.key ?? ''
   const depth = page?.depth ?? 0
   // What each page was last drawn with, so that one that leaves goes as it was.
@@ -178,6 +180,7 @@ const DialogSurface = ({ open, onOpenChange, wide, page, children }: DialogProps
         <BaseDialog.Popup ref={observe} className={cn(
           '[--surface-radius:1rem] fixed inset-0 z-50 m-auto flex h-fit max-h-[calc(100dvh-2rem)] w-[min(34rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-3xl bg-kumo-base text-base text-kumo-default ring-1 ring-kumo-contrast/6 outline-none transition-[opacity,scale] duration-150 data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0 motion-reduce:transition-none',
           wide && 'w-[min(40rem,calc(100vw-1.5rem))]',
+          narrow && 'w-[min(21rem,calc(100vw-1.5rem))]',
         )}>
           {page ? (
             <>

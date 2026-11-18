@@ -1,7 +1,7 @@
 import type { CollaboratorRole, OutputSummary } from '@gadgets/workshop-shared/api'
 import type { AsideItem } from '@/aside/asideItems'
 import { titleAfter, type Renamed } from '@/gadgets/gadgetChanges'
-import { outputKey } from './libraryList'
+import { outputKey, outputTitle } from './libraryList'
 
 /**
  * Whether the viewer may change an output (rename it, delete it, open its settings, share it):
@@ -14,6 +14,13 @@ export const mayChange = (output: OutputSummary, listed?: { role?: CollaboratorR
   if (listed) return listed.role !== 'use'
   return output.owner === undefined || output.role === 'build'
 }
+
+/**
+ * What the user could make a template from: whatever they may change (`mayChange`), as an app, a
+ * document or anything else is made into one the same way. By title.
+ */
+export const templatable = (outputs: OutputSummary[]) =>
+  outputs.filter((output) => mayChange(output)).toSorted((a, b) => outputTitle(a).localeCompare(outputTitle(b)))
 
 /**
  * What the user has done to the library from the Library page, shown at once, before it is read

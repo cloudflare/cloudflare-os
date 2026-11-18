@@ -18,7 +18,7 @@ describe('setupNeedsOf', () => {
     expect(needs[0]).toMatchObject({ vendorId: 'google', urlPattern: BINDINGS.SHEET.type === 'gatekeeper' ? BINDINGS.SHEET.typeUrlPattern : '' })
   })
 
-  it('names one its publisher left untitled by the name its code knows it by', () => {
+  it('names one its creator left untitled by the name its code knows it by', () => {
     expect(setupNeedsOf({ bindings: BINDINGS }).find(({ key }) => key === 'JUDGE')).toMatchObject({ title: 'JUDGE', kind: 'decision' })
   })
 })

@@ -3,8 +3,9 @@ import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useListView } from '@/hooks/useListView'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { outputKey, outputTitle, ownApps } from './libraryList'
-import { PublishTemplate } from './PublishTemplate'
+import { templatable } from './libraryEdits'
+import { outputKey, outputTitle } from './libraryList'
+import { CreateTemplate } from './CreateTemplate'
 import { templateList } from './templateList'
 import type { Template } from './templates'
 import { DISCOVER_TAB, TemplateStoreView } from './TemplateStoreView'
@@ -26,9 +27,9 @@ const NONE: Template[] = []
 
 /**
  * The templates' page (`TemplateStoreView`) over what it shows: the templates there are (the
- * deployment's featured blueprints, the user's saved ones and what they published), their stars,
- * which are the backend's, and how they are listed; and the user's apps, which Publish lists, the
- * one chosen published as a gadget's own More menu publishes it (`PublishTemplate`).
+ * deployment's featured blueprints, the user's saved ones and what they created), their stars,
+ * which are the backend's, and how they are listed; and the user's gadgets, which Create template
+ * lists, the one chosen made into a template as a gadget's own More menu does (`CreateTemplate`).
  */
 export const TemplateStorePane = ({ tab = DISCOVER_TAB, onTabChange, onOpenTemplate, templateHref, onBack }: TemplateStorePaneProps) => {
   const { state, setStars, reload } = useTemplates()
@@ -37,8 +38,8 @@ export const TemplateStorePane = ({ tab = DISCOVER_TAB, onTabChange, onOpenTempl
   const list = useListView('templates', templateList(templates, new Set(stars)))
   const library = useLibrary()
   const connection = useConnectionNotice()
-  // The app chosen to publish, kept while its dialog closes.
-  const [publishing, setPublishing] = useState<{ app: OutputSummary; open: boolean }>()
+  // The gadget chosen to make a template from, kept while its dialog closes.
+  const [creating, setCreating] = useState<{ app: OutputSummary; open: boolean }>()
   useDocumentTitle('Templates')
 
   return (
@@ -56,15 +57,15 @@ export const TemplateStorePane = ({ tab = DISCOVER_TAB, onTabChange, onOpenTempl
       onOpenTemplate={onOpenTemplate}
       templateHref={templateHref}
       onBack={onBack}
-      apps={library.status === 'ready' ? ownApps(library.outputs) : library.status === 'failed' ? [] : undefined}
-      onPublish={(app) => setPublishing({ app, open: true })}
+      apps={library.status === 'ready' ? templatable(library.outputs) : library.status === 'failed' ? [] : undefined}
+      onCreateTemplate={(app) => setCreating({ app, open: true })}
     />
-    {publishing && (
-      <PublishTemplate
-        key={outputKey(publishing.app)}
-        gadget={{ workspaceId: publishing.app.workspaceId, workpieceId: publishing.app.workpieceId, title: outputTitle(publishing.app) }}
-        open={publishing.open}
-        onOpenChange={(open) => setPublishing((current) => current && { ...current, open })}
+    {creating && (
+      <CreateTemplate
+        key={outputKey(creating.app)}
+        gadget={{ workspaceId: creating.app.workspaceId, workpieceId: creating.app.workpieceId, title: outputTitle(creating.app) }}
+        open={creating.open}
+        onOpenChange={(open) => setCreating((current) => current && { ...current, open })}
       />
     )}
     </>

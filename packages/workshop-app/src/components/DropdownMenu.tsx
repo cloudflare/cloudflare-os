@@ -223,12 +223,26 @@ type DropdownMenuItemProps = {
   danger?: boolean
   /** The menu stays open once it is chosen, for an item whose answer shows in the menu, such as Try again. */
   keepOpen?: boolean
+  /** What choosing it does, in a line or two under it, for an item whose name alone does not say. */
+  description?: ReactNode
+  /** A picture that starts the item, in place of its icon, on a faint square of its own: an `Illustration`. */
+  illustration?: ReactNode
 }
 
-const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger, keepOpen }: DropdownMenuItemProps) => (
-  <Menu.Item onClick={onSelect} closeOnClick={!keepOpen} disabled={disabled} label={label} className={cn(ITEM_CLASS, danger && 'text-kumo-danger')}>
-    {Icon && <Icon aria-hidden="true" className="shrink-0" />}
-    {children}
+const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger, keepOpen, description, illustration }: DropdownMenuItemProps) => (
+  <Menu.Item onClick={onSelect} closeOnClick={!keepOpen} disabled={disabled} label={label} className={cn(ITEM_CLASS, description && 'items-start', illustration && 'items-center p-1.5 pe-3', danger && 'text-kumo-danger')}>
+    {illustration && (
+      // On a faint square of its own, with the picture smaller in it, so it sits back from the text.
+      <span aria-hidden="true" className="grid size-12 shrink-0 place-items-center rounded-2xl bg-kumo-contrast/3 [&>svg]:size-7">{illustration}</span>
+    )}
+    {/* Level with the first line, not the middle of the item. */}
+    {!illustration && Icon && <Icon aria-hidden="true" className={cn('shrink-0', description && 'mt-[calc((var(--menu-line)-var(--menu-icon))/2)]')} />}
+    {description ? (
+      <span className="flex max-w-60 min-w-0 flex-col">
+        <span>{children}</span>
+        <span className="text-(length:--menu-detail-text) leading-(--menu-detail-line) text-pretty text-kumo-subtle">{description}</span>
+      </span>
+    ) : children}
   </Menu.Item>
 )
 

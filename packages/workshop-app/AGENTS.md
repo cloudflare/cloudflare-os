@@ -404,8 +404,8 @@ row has one, and left out on a narrow screen, where the output's own page has th
 in new tab and Copy link, then for whoever builds in its workspace (`library/libraryEdits.ts`'s
 `mayChange`, plain and tested: the workspace list's role where it is listed, else the role the
 library kept, which a shared one must say) Rename, typed where the title is (`EditableTitle`'s
-`autoFocus`), Share… (`ShareWorkspaceDialog` for the gadget, as the pane's), App settings, and
-Delete…, asked first (`DeleteGadgetDialog`). Docs and sheets are gadgets too, and have the same.
+`autoFocus`), Invite user… (`ShareWorkspaceDialog` for the gadget, as the pane's), App settings,
+Create template…, and Delete…, asked first (`DeleteGadgetDialog`). Docs and sheets are gadgets too, and have the same.
 A rename and a deletion go through the gadget (`gadgets/gadgetChanges.ts`: `getGadget()` pipelined
 on `openWorkspace()`, both let go of after) and show at once, over the library as it was read
 (`libraryEdits`): a renamed one under its new title while it still reads as the old, put back if it
@@ -415,16 +415,20 @@ renames and deletes its gadget, for trying the pane without a backend.
 
 The header ends in Explore templates (Explore, on a narrow screen) and New, whose menu ends in the templates too. The templates
 (`/library/templates`, `TemplateStoreView`) are what the backend calls blueprints, the way a store
-lists apps, with Publish at the header's end (`PublishMenu`: the user's own apps, `ownApps`,
-under a field to find one by; choosing one goes on as Publish as template… does). A gadget is
-also published from its own More menu and the Library's, Publish as template… (`PublishTemplate`
-over `PublishTemplateDialog`, `GadgetClient.createBlueprint()`):
-a title and what it is for, or, where its workspace has published before (`Overseer.listBlueprints()`),
-those templates first, each publishing what the gadget has kept since as its next version
-(`updateBlueprint` with `updateCode`); there is no step for a screenshot. And a banner of the organization's
+lists apps, with Create template at the header's end (`CreateTemplateMenu`: whatever the user may
+change, `templatable`, under a field to find one by; choosing one goes on as Create template…
+does). A template is made from any gadget but a worktree, as the old app's Publish as blueprint…
+was, and making one is publishing it: `GadgetClient.createBlueprint()` stores and propagates it in
+one step, so there is no draft, and "publish" is not said anywhere. A gadget has one from its
+Share menu (Create template, under Invite user), its settings, and its row's More menu, Create
+template… (`CreateTemplate` over `CreateTemplateDialog`): a title and what it is for. There is one
+template to an app: a workspace that has made one (`Overseer.listBlueprints()`) opens the dialog at
+it instead, with Release update, which releases what the gadget has kept since as its next version
+(`updateBlueprint` with `updateCode`), and no way to make another. The backend does not say which
+gadget a template was made from, so "has one" is the workspace's; there is no step for a screenshot. And a banner of the organization's
 own over everything else (`PromoCarousel`, in the workspace colours, moving on by itself while it
 is not pointed at or focused, and not with reduced motion): a tab each (`?tab=`) for its front (Discover: the most used on one line that is
-scrolled along (`ScrollRow`), the latest published two to a line, then some of each kind they
+scrolled along (`ScrollRow`), the latest created two to a line, then some of each kind they
 make, each a `Shelf` with the way to the rest), for all of them, and for each kind, then a search
 and the filters (`library/templateList.ts`, plain and tested: starred, needing nothing connected,
 and the services they work with). A search or a filter lists what it leaves in place of the front.
@@ -436,13 +440,15 @@ or the organization's mark) and the services it needs connected as a stack of th
 A template's own page (`/library/templates/<id>`, `TemplatePageView`) is laid out as a store's
 page for an app: what it makes on a tile beside its title, Use template and its star, what there
 is to know at a glance (`FactStrip`), a picture of what it makes (`TemplatePreview`, sketched by
-kind from Kumo's tokens until its publisher gives a screenshot), what it is for, the services it
+kind from Kumo's tokens until its creator gives a screenshot), what it is for, the services it
 needs connected in place of an app's privacy (`ConnectionNeeds`), the facts at length, and others
-of its kind. A section's title is a group of settings' (`text-lg`).
+of its kind. A template the user made, from a workspace that is still there (`Template.source`), ends
+in Your template, the same rows as its gadget's settings have, and goes back to the templates once
+deleted. A section's title is a group of settings' (`text-lg`).
 
 The templates are the deployment's featured blueprints (`listFeaturedBlueprints()`), which are the
 organization's own, then the user's saved and uploaded ones (`listLibraryBlueprints()`), then those
-they published (`listOwnBlueprints()`, each read from its public record), once each
+they created (`listOwnBlueprints()`, each read from its public record), once each
 (`templatesOf`, plain and tested), held by `TemplateStore` so that the store and a template's page
 show the same. A template's services are named as the deployment's vendors name them. Its stars are
 the backend's `pinned` (`setBlueprintPinned()`, which saves one to the library first), shown at once
@@ -451,7 +457,7 @@ puts the organization's first among the most used, and a template's page leaves 
 examples (`exampleTemplates.ts`) say it, for the gallery. A template whose link was shared, which
 is not listed, is read on its own (`getBlueprint()`). Use template (`UseTemplate`,
 `UseTemplateDialog`) sets up each binding with the user's own (a connection in its service's form,
-`ConnectResource`; a model, starting as its publisher suggested, `library/templateSetup.ts`), then
+`ConnectResource`; a model, starting as its creator suggested, `library/templateSetup.ts`), then
 makes it in a new workspace named after it (`newWorkspaceFromBlueprint()`) and shows what it made.
 Making one in a workspace the user has is for the backend to offer. Keep `/blueprint/<id>` public
 for share links, and do not call starring one "Add to library", which lists outputs.
@@ -817,12 +823,13 @@ gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## A gadget's own page
 
-A gadget's page (`/app/<id>`, the side pane as the page) says where it lives and leads to a chat
+A gadget's page (`/app/<id>`, the side pane as the page) leads to a chat
 with it, as using it with the agent (a slides gadget whose agent builds the deck with you) and
 carrying on building it both happen in a chat. For whoever builds in its workspace (not
-`role === 'use'`), its header starts with the workspace's `WorkspaceCrumb`, title shown, which goes
-to the workspace with the gadget beside it. At the far end, ahead of more, is Chat
-(`GadgetChatMenu`), the one labelled control: New chat (`/workspace/$id/new?open=`, greeted "what
+`role === 'use'`), its header ends in Chat (`GadgetChatMenu`), the one labelled control, and its one
+primary button, last of all after the full-screen button (but where the page was expanded from
+beside a chat, the step down is last, where the arrow that puts the pane away was, with full screen
+before it and Chat before that): New chat (`/workspace/$id/new?open=`, greeted "what
 should we do with Slides?" through the `gadgetTitle` history state), then up to four of the
 workspace's chats to carry on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those
 that last had it beside them in this browser (`lastShown`) first and saying so, agents' runs left
@@ -860,7 +867,7 @@ is at the file it was left at. The pull tab only has the header to do with. The 
 and, beside a chat, Expand, then after a separator, at its foot, App settings for whoever may build
 there (a file has Download in place of the settings). That goes to its settings page
 (`/app/<id>/settings`, `GadgetSettingsPane`), as does the title's bubble, a button ending in a
-chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting, publishing,
+chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting, making a template of it,
 updating and deleting it, is on that page, and copying its link is in Share.
 The page is laid out as a skill's
 page is: what it is drawn as, its title, renamed where it is, and what its template says it is for,
@@ -868,12 +875,16 @@ which is the template's and only read here. The way back to the gadget goes back
 opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in the history):
 
 - Settings, which is the first (`DEFAULT_GADGET_SETTINGS_TAB`, which an address leaves out):
-  updating it from its template, publishing it as a template, exporting it, and deleting
-  it, as rows on cards with no titles of their own (no row says which workspace or template it is
-  from). Publishing is Publish as template until its workspace has published a template, then
-  Publish changes while one has changes to publish (`library/publishState.ts`, plain and tested,
-  read by `usePublishState` from `Overseer.listBlueprints()`, which does not say which gadget each
-  template is of), both through the More menu's `PublishTemplate`. Export is the More menu's
+  updating it from its template, creating a template from it, exporting it, and deleting
+  it, as rows on one card with no titles of their own (no row says which workspace or template it is
+  from). The template row is Create template until its workspace has made one. Then it is gone, and
+  a group of its own after the card, Template (`MadeTemplateSettings`, one for each: the workspace
+  may have several, as the backend does not say which gadget each is of), read by `useMadeTemplates`
+  from `Overseer.listBlueprints()`. Across from its title is View template, which goes to its page;
+  its rows are Edit details (`EditTemplateDialog`: its title and what it is for, `updateBlueprint`),
+  Release update where its gadget has changes, else Updates with Up to date, and Delete template,
+  which asks "Delete template?" without the name, as the name would read as the gadget.
+  `useTemplateOwner` does them, one at a time. Export is the More menu's
   (`ExportItems`) in a menu of its own.
 - Connections: what it is bound to (`GadgetSettings`, plain and tested,
   `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
@@ -907,7 +918,7 @@ unless another, or No agent, is chosen. Where nothing was proposed the dialog sa
 to date, the two cannot be merged, or it could not be asked, with Try again. A gadget that shares
 no history with its template is warned of first, in the dialog's place, and merged over a guess
 only on Update anyway. Only a gadget with code of its own takes one: one still waiting in a chat
-has none. Nothing says a template was published again, so a newer version is noticed as its page
+has none. Nothing says a template had a new version released, so a newer version is noticed as its page
 or pane is opened, or once the gadget takes one. The template is read through
 `useTemplateReader` (`rpc/PublicApiContext`), which the scripted chats give a fake of their own:
 the `output` scenario's document follows a template a version behind, whose update is proposed
@@ -982,8 +993,8 @@ below.
 
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
-in place in the history): its chats, its agents (see Agents), what it has made (the library's, as
-beside a chat, opening beside the page), what runs by itself, its members, the owner first until ordered by name, under a search and the Invite button, and its Settings. The
+in place in the history): its chats, what it has made (the library's, as beside a chat, opening
+beside the page), its agents (see Agents), what runs by itself, its members, the owner first until ordered by name, under a search and the Invite button, and its Settings. The
 chats and the library load what they list once chosen; who has access is read with the page, for
 its header, and its agents too, for what of theirs waits on the viewer.
 
@@ -991,10 +1002,12 @@ A workspace is shared to join it, and a gadget to use, alone (`ShareWorkspaceDia
 target is a `ShareTarget`). The words are for people who have never shared software: a workspace's
 people are Members and its link lets anyone with it join; a gadget's people and link Can use it,
 and the line for the workspace's members Can edit it, as changing a gadget is editing it. A
-gadget's Share (a button in its pane's header, where Copy link is otherwise) shares that gadget:
-its people are those who use it, under one line for everyone who can
-edit the workspace; the workspace itself is shared from its own page. Its page's header has
-who has access, which goes to the members, and Share, for whoever may
+gadget's Share (a menu in its pane's header, where Copy link is otherwise) has Invite user, which
+shares that gadget: its people are those who use it, under one line for everyone who can edit the
+workspace, and a template item that says where the app stands: Create template, which lets others
+copy the app instead, Release update while the workspace's template has changes, and Copy
+template link, to its page, once it is up to date (each says so under its name); the workspace itself is invited to from its own page. Its page's header has who has access,
+which goes to the members, and Invite, for whoever may
 (`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever can edit until its data
 says only the owner may let anyone in (`ownerInvitesOnly`). Someone who can only use it is not
 told who else can. `SharingSession` (plain, tested, like `ChatSession`) holds the workspace while
@@ -1065,6 +1078,11 @@ back; with nothing open it shows the pane empty, with no surface and no bar, whi
 to make room for. Opening something shows the pane too. Closing the last thing open puts the pane
 away with it.
 
+Dragged the other way, until the page is all but gone, the page dims to say that letting go expands
+the pane, as its Expand does (`SplitLayout`'s `onExpandAside`, given where something is open beside
+a chat), and so does a step wider than its widest from the keyboard. It is as wide when it comes
+back beside the page as before it was dragged over.
+
 A pane that was put away can also be had back from the page's far edge, empty or not. As it goes,
 the page stops a little short of the edge and the handle stays out there for a moment, to show
 where the pane went, then both slide away. A pointer that reaches the edge brings them out again:
@@ -1091,9 +1109,9 @@ is shown as before.
 The card (`SidePane`) is a header, then what is shown on a tinted surface that fills the rest of the
 card out to its sides and bottom, with rounded top corners and a line along its top only. The header
 starts with the name of the one shown (`SidePaneTitle`). At its far end: who else has the workspace
-open, more (reload, expand, its settings), Share where the one shown can be shared, or else a link
+open, more (reload, expand, its settings), the Share menu where the one shown can be shared, or else a link
 to copy, full screen, and the arrow. Where the header is crammed (narrower than `CRAMPED_BELOW`,
-measured, as the menu is drawn outside it) Share is in more instead, first in it, and the name is
+measured, as the menu is drawn outside it) Invite user and Create template are in more instead, first in it, and the name is
 left the room. The bar at the top of the surface, in the middle, pushes the
 header up out of the way and pulls it back down (`Grabber`); clicking it does the same. People
 pull down on it whatever it does, so with the header all the way out a tug down stretches the

@@ -3,6 +3,7 @@ import {
   type BlueprintLibrarySummary,
   type BlueprintOutput,
   type BlueprintPublicInfo,
+  type BlueprintSource,
   type BlueprintUserSummary,
   type GatekeeperVendorInfo,
 } from '@gadgets/workshop-shared/api'
@@ -12,16 +13,18 @@ import { APP } from './libraryList'
 export type TemplateService = { name: string; logoUrl?: string; color?: string }
 
 /**
- * Something to start from that somebody published: what the backend calls a blueprint, as the
+ * Something to start from that somebody created: what the backend calls a blueprint, as the
  * library says it, with how many times it has been used, which the backend does not say yet;
  * whether it is the organization's own (one the deployment features) rather than one of its
- * people's; whether it is the user's own, published by them; and the services its bindings are
+ * people's; whether it is the user's own, created by them; and the services its bindings are
  * to, by the binding, where the deployment has them.
  */
 export type Template = BlueprintPublicInfo & {
   uses?: number
   organization?: true
   mine?: true
+  /** Where one of the user's own was made from, which is where it is released to and deleted from. */
+  source?: BlueprintSource
   services?: Record<string, TemplateService>
 }
 
@@ -29,24 +32,24 @@ export type Template = BlueprintPublicInfo & {
 export type TemplateNeed = {
   /** Which of the template's it is. */
   key: string
-  /** The service: "Jira", or what its publisher called it where the deployment does not have it. */
+  /** The service: "Jira", or what its creator called it where the deployment does not have it. */
   name: string
-  /** What the template does with it, where its publisher said. */
+  /** What the template does with it, where its creator said. */
   description: string
   logoUrl?: string
   /** The service's id, as the deployment's vendors have it (`GATEKEEPER_<NAME>`, lowercased). */
   vendorId: string
   /** The kind of resource it is given (`SupportedResource.urlPattern`). */
   urlPattern: string
-  /** The one its publisher had, to start the service's form with. */
+  /** The one its creator had, to start the service's form with. */
   resourceUrl?: string
 }
 
-/** Who a template is by, as it is said where one is listed: its publisher, or the organization. */
+/** Who a template is by, as it is said where one is listed: its creator, or the organization. */
 export const templateCreator = ({ metadata, organization }: Template): { name: string; organization: boolean } =>
   organization ? { name: 'Your organization', organization: true } : { name: metadata.author.name, organization: false }
 
-/** What making one from a template gives: what its publisher says, or an app. */
+/** What making one from a template gives: what its creator says, or an app. */
 export const templateType = ({ metadata }: Template): BlueprintOutput => metadata.output ?? APP
 
 /**
@@ -60,7 +63,7 @@ export const templateNeeds = ({ metadata, services = {} }: Template): TemplateNe
     return [{
       key,
       name: service?.name ?? binding.title,
-      // Its publisher's name for what it is given says what it is for, once the service is named instead.
+      // Its creator's name for what it is given says what it is for, once the service is named instead.
       description: service ? binding.description || binding.title : binding.description,
       logoUrl: service?.logoUrl,
       vendorId: binding.gatekeeperName.toLowerCase(),
@@ -81,14 +84,14 @@ export const templateTypes = (templates: Template[]): BlueprintOutput[] => {
   return [...types.values()]
 }
 
-/** What a search looks through for a template: its title, what it is for, what it makes, who published it and what it needs. */
+/** What a search looks through for a template: its title, what it is for, what it makes, who created it and what it needs. */
 export const templateSearchText = (template: Template) => {
   const { noun, plural } = templateType(template)
   const { title, description, author } = template.metadata
   return [title, description, noun, plural, author.name, ...templateNeeds(template).map(({ name }) => name)].join(' ')
 }
 
-/** What the templates are read from: the deployment's featured blueprints, those the user saved or uploaded, and those they published, each of those with its public record where it could be read. */
+/** What the templates are read from: the deployment's featured blueprints, those the user saved or uploaded, and those they created, each of those with its public record where it could be read. */
 export type TemplateSources = {
   featured: readonly BlueprintPublicInfo[]
   library: readonly BlueprintLibrarySummary[]
@@ -100,7 +103,7 @@ export type TemplateSources = {
 /**
  * Every template the user can find, once each however many ways they have it: those the deployment
  * features, which are the organization's, then those they saved or uploaded, then those they
- * published, which are theirs. One published whose public record could not be read is left out,
+ * created, which are theirs. One created whose public record could not be read is left out,
  * as there is nothing to show of it. With the ids of the starred ones (the backend's `pinned`),
  * in the order they are listed.
  */
@@ -115,8 +118,8 @@ export const templatesOf = ({ featured, library, own, vendors }: TemplateSources
   }
   for (const { summary, info } of own) {
     if (summary.pinned) stars.add(summary.id)
-    // One the user added rather than published is in their library, and listed from there.
-    if (info && summary.source.type !== 'imported') put(info, { mine: true })
+    // One the user added rather than created is in their library, and listed from there.
+    if (info && summary.source.type !== 'imported') put(info, { mine: true, source: summary.source })
   }
   const named = new Map(vendors.map(({ id, description }) => [id, { name: description.displayName, logoUrl: description.logo?.url, color: description.color }]))
   const templates = [...byId.values()].map((template) => {

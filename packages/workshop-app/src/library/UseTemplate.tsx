@@ -45,7 +45,7 @@ const useSetupModels = (open: boolean, decision: boolean) => {
 /**
  * Makes something of the user's own from a template (`UseTemplateDialog`). What it needs is set up
  * with the user's own: a connection in its service's form (`ConnectResource`), coming back here
- * once chosen; a model from their models, starting as its publisher suggested where they have it.
+ * once chosen; a model from their models, starting as its creator suggested where they have it.
  * Then it is made in a new workspace (`newWorkspaceFromBlueprint`), named after it and listed with
  * the user's workspaces.
  */
@@ -131,7 +131,7 @@ export const UseTemplate = ({ template, open, onOpenChange, onMade }: UseTemplat
         open={open && !connectingNeed}
         onOpenChange={onOpenChange}
         title={metadata.title}
-        publisher={metadata.author.id === user.id ? undefined : metadata.author.name}
+        creator={metadata.author.id === user.id ? undefined : metadata.author.name}
         needs={rows}
         onUse={make}
       />

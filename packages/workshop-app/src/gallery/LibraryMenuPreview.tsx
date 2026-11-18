@@ -52,7 +52,7 @@ export const LibraryMenuPreview = () => {
       setItems((current) => current.map((each) => (each.key === item.key ? { ...each, title } : each)))
       say(`renamed ${item.title} to ${title}`)
     },
-    onShare: () => say(`share ${item.title}`),
+    onInvite: () => say(`invite people to ${item.title}`),
     onOpenSettings: () => say(`open the settings of ${item.title}`),
     onDelete: () => setDeleting({ item, open: true }),
   }
@@ -68,7 +68,7 @@ export const LibraryMenuPreview = () => {
 
   return (
     <>
-      <Section title="LibraryRow, LibraryCard with more (pointed at, more slides out before the star: Open, Open in new tab and Copy link, then for whoever builds in its workspace Rename, typed where the title is and kept with Enter or by leaving it, Share…, App settings, and Delete…, which asks first and takes it from the list once it is gone. Whoever it was shared with to use has only the first three)">
+      <Section title="LibraryRow, LibraryCard with more (pointed at, more slides out before the star: Open, Open in new tab and Copy link, then for whoever builds in its workspace Rename, typed where the title is and kept with Enter or by leaving it, Invite user…, App settings, Create template…, and Delete…, which asks first and takes it from the list once it is gone. Whoever it was shared with to use has only the first three)">
         <div className="flex w-[28rem] max-w-full flex-col rounded-3xl bg-kumo-tint p-1.5">
           {items.map((item) => <LibraryRow key={item.key} {...shared(item)} detail={item.detail} time={item.time} />)}
         </div>

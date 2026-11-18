@@ -5,7 +5,7 @@ import type { ListViewSpec } from '@/hooks/useListView'
 import { templateNeeds, templateSearchText, templateType, templateTypes, type Template } from './templates'
 
 /**
- * The most used first, and of those used as much, the organization's, then the latest published.
+ * The most used first, and of those used as much, the organization's, then the latest created.
  * Where how much each is used is not known, as the backend does not say yet, that is the
  * organization's first.
  */
@@ -13,7 +13,7 @@ export const mostUsed = (templates: Template[]): Template[] =>
   templates.toSorted((a, b) =>
     (b.uses ?? 0) - (a.uses ?? 0) || Number(Boolean(b.organization)) - Number(Boolean(a.organization)) || b.metadata.created.getTime() - a.metadata.created.getTime())
 
-/** The latest published first. */
+/** The latest created first. */
 export const recentlyAdded = (templates: Template[]): Template[] =>
   templates.toSorted((a, b) => b.metadata.created.getTime() - a.metadata.created.getTime())
 
@@ -46,7 +46,7 @@ const needFilters = (templates: Template[]): ListFilter<Template>[] =>
 
 /**
  * How the templates can be ordered, narrowed and searched: by how much they are used, by when
- * they were published and by title; by whether they are starred (`starred`, the ids of those that
+ * they were created and by title; by whether they are starred (`starred`, the ids of those that
  * are), by whether they need anything connected, and by the services they work with, a menu of
  * its own. What they make is not a filter: the page has a tab for each kind.
  */

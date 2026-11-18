@@ -12,9 +12,9 @@ export type SetupModel = { id: string; name: string }
 /** One thing a template needs set up, as the dialog asks for it. */
 export type UseTemplateNeed = {
   key: string
-  /** What its publisher called it: "Budget sheet". */
+  /** What its creator called it: "Budget sheet". */
   title: string
-  /** What it is for, where its publisher said, under its title until it is met. */
+  /** What it is for, where its creator said, under its title until it is met. */
   description?: string
 } & (
   | {
@@ -43,8 +43,8 @@ export type UseTemplateDialogProps = {
   onOpenChange: (open: boolean) => void
   /** The template's name. */
   title: string
-  /** Who published it, where that is someone other than the user. */
-  publisher?: string
+  /** Who created it, where that is someone other than the user. */
+  creator?: string
   needs: readonly UseTemplateNeed[]
   /**
    * Makes something from it, holding the dialog while it does, and leaving it open under why if it
@@ -97,7 +97,7 @@ const NeedControl = ({ need, pending }: { need: UseTemplateNeed; pending: boolea
 }
 
 // What the dialog holds, which is only there while it is open: why it could not be made starts over each time.
-const UseTemplateContent = ({ title, publisher, needs, onUse, onDone }: Omit<UseTemplateDialogProps, 'open' | 'onOpenChange'> & { onDone: () => void }) => {
+const UseTemplateContent = ({ title, creator, needs, onUse, onDone }: Omit<UseTemplateDialogProps, 'open' | 'onOpenChange'> & { onDone: () => void }) => {
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState<string>()
   // An agent's model is met by none, which is null; anything else not chosen is undefined.
@@ -124,7 +124,7 @@ const UseTemplateContent = ({ title, publisher, needs, onUse, onDone }: Omit<Use
             {needs.length > 0
               ? 'Set up what it needs with your own accounts and models. It’s made in a new workspace, named after it.'
               : 'It needs nothing set up. It’s made in a new workspace, named after it.'}
-            {publisher && ` Published by ${publisher}: nothing of theirs comes with it.`}
+            {creator && ` Created by ${creator}: nothing of theirs comes with it.`}
           </Dialog.Description>
         </div>
         <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" disabled={pending} className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />

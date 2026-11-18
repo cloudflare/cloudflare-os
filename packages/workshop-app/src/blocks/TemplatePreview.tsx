@@ -4,7 +4,7 @@ import type { FormatIconName } from '@/components/FormatIcon'
 export type TemplatePreviewProps = {
   /** What the template makes, by what that is drawn as; otherwise an app. */
   icon?: FormatIconName
-  /** A picture of what it makes, where its publisher gave one. */
+  /** A picture of what it makes, where its creator gave one. */
   src?: string
   /** Its shape, and with a text size, how large a sketch is drawn, which is sized by it. */
   className?: string
@@ -67,7 +67,7 @@ const Sketch = ({ icon }: { icon?: FormatIconName }) => {
 }
 
 /**
- * A picture of what a template makes: its publisher's, or until there is one, a page of the kind
+ * A picture of what a template makes: its creator's, or until there is one, a page of the kind
  * of thing it is, sketched, coming up from the picture's end.
  */
 export const TemplatePreview = ({ icon, src, className }: TemplatePreviewProps) => (
