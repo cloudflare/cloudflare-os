@@ -24,6 +24,8 @@ export type DropdownMenuProps = TriggerContent & {
   triggerClassName?: string
   /** Sizes the popup, such as a width to suit where it opens from, which is otherwise as wide as its items. */
   popupClassName?: string
+  /** Styles the popup's surface, such as no fill or edge, for one that is only what is in it. */
+  surfaceClassName?: string
   /** The trigger Button's variant. A ghost trigger has no surface, so the menu's fades in as it grows. */
   triggerVariant?: ButtonProps['variant']
   /** A chevron after the label, for a trigger that would otherwise read as a button that acts at once. */
@@ -47,6 +49,19 @@ export type DropdownMenuProps = TriggerContent & {
   duration?: number
   /** Lifted off what it covers by a faint shadow, for one that stands apart from a surface like its own. */
   raised?: boolean
+  /**
+   * It does not morph out of the trigger: it fades in at its full size over where it opens and
+   * out again, as the trigger fades out and back, for one that is not a menu of actions.
+   */
+  fade?: boolean
+  /** Whether it is open, for whoever keeps that, such as for a menu left open. With `onOpenChange`; otherwise it opens and closes itself. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  /**
+   * It stays open until it is closed from its button or with Escape, rather than by going
+   * elsewhere, which leaves the rest of the page usable meanwhile: for a card that is left open.
+   */
+  persistent?: boolean
 }
 
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
@@ -70,6 +85,7 @@ const DropdownMenuRoot = ({
   picker = false,
   triggerClassName,
   popupClassName,
+  surfaceClassName,
   triggerVariant,
   caret = false,
   anchorRef,
@@ -79,6 +95,10 @@ const DropdownMenuRoot = ({
   keepTrigger = false,
   duration = 360,
   raised = false,
+  fade = false,
+  open,
+  onOpenChange,
+  persistent = false,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const actionsRef = useRef<Menu.Root.Actions>(null)
@@ -100,10 +120,19 @@ const DropdownMenuRoot = ({
   )
 
   return (
-    <Menu.Root actionsRef={actionsRef}>
+    <Menu.Root
+      actionsRef={actionsRef}
+      open={open}
+      modal={persistent ? false : undefined}
+      onOpenChange={(next, details) => {
+        if (persistent && !next && (details.reason === 'outside-press' || details.reason === 'focus-out')) return details.cancel()
+        onOpenChange?.(next)
+      }}
+    >
       <Menu.Trigger
         ref={triggerRef}
         data-in-place={inPlace || undefined}
+        data-fade={fade || undefined}
         render={(props, { open }) => (
           <Button
             {...props}
@@ -140,6 +169,7 @@ const DropdownMenuRoot = ({
             data-in-place={inPlace || undefined}
             data-keep-trigger={keepsTrigger || undefined}
             data-raised={raised || undefined}
+            data-fade={fade || undefined}
             data-variant={triggerVariant}
             style={time}
             aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}
@@ -156,7 +186,7 @@ const DropdownMenuRoot = ({
               popupClassName,
             )}
           >
-            <div aria-hidden="true" className="dropdown-menu-surface pointer-events-none absolute -z-10 bg-kumo-base ring-1 ring-kumo-contrast/6">
+            <div aria-hidden="true" className={cn('dropdown-menu-surface pointer-events-none absolute -z-10 bg-kumo-base ring-1 ring-kumo-contrast/6', surfaceClassName)}>
               <div className="absolute inset-0 rounded-[inherit]" />
             </div>
             {/* A copy of the trigger rides the surface, so the button itself appears to morph. */}

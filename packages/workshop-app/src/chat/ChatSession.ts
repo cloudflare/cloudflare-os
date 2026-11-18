@@ -121,6 +121,7 @@ type Calls =
   | 'updateChatFromMainline'
   | 'revertChanges'
   | 'markChatRead'
+  | 'markChatUnread'
   | 'viewChat'
 
 /**
@@ -575,6 +576,17 @@ export class ChatSession {
       // Said again with the next message, or when the chat is next come back to.
       if (this.#markedRead === latest) this.#markedRead = -1
     })
+  }
+
+  /**
+   * Marks the chat unread for the viewer from a message on (`sequence`, a row's id): that message
+   * and every one after it count as unread, until another arrives or the chat is come back to.
+   * Rejects with why it could not be. Only for whoever may build in the workspace.
+   */
+  markUnreadFrom = async (sequence: number) => {
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) throw new Error('The conversation is still loading.')
+    await overseer.markChatUnread(this.chatId, sequence)
   }
 
   /**

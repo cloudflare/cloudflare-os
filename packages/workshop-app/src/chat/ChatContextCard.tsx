@@ -1,0 +1,76 @@
+import { useState } from 'react'
+import { GitBranchIcon, LightningIcon } from '@phosphor-icons/react'
+import { ATTACHMENT_KIND_ICONS } from '@/blocks/attachmentKindIcons'
+import { ContextRow } from '@/blocks/ContextRow'
+import { ContextSection } from '@/blocks/ContextSection'
+import { FormatIcon } from '@/components/FormatIcon'
+import { ServiceLogo } from '@/components/ServiceLogo'
+import { attachmentKind } from '@/files/attachmentKind'
+import { useLibrary } from '@/library/useLibrary'
+import type { ChatContext } from './chatContext'
+import type { ChatAttachment, HookItem, OutputFormat, OutputItem } from './chatItems'
+
+type Section = 'outputs' | 'automations' | 'files' | 'connectors'
+
+export type ChatContextCardProps = {
+  workspaceId: string
+  context: ChatContext
+  onOpenOutput: (output: OutputItem) => void
+  onOpenAttachment: (file: ChatAttachment) => void
+  /** An output's own page, for its row to link to so that it can be opened in another tab. */
+  outputHref?: (output: OutputItem) => string
+  /** Goes to an automation where it is listed, from its row. Left out, its row only says what it is. */
+  onOpenAutomation?: (hook: HookItem) => void
+  /** Where that is, so that it can be opened in another tab. */
+  automationHref?: (hook: HookItem) => string
+}
+
+/** What kind of thing an output is, as the library draws it: its format's glyph, so that an app, a document and slides differ. */
+const outputIcon = (output: OutputItem, format: OutputFormat | undefined) =>
+  output.type === 'worktree' ? <GitBranchIcon aria-hidden="true" /> : <FormatIcon name={(output.format ?? format)?.icon} />
+
+const fileIcon = (file: ChatAttachment) => {
+  const Glyph = ATTACHMENT_KIND_ICONS[attachmentKind({ name: file.name, type: file.mimeType })]
+  return <Glyph aria-hidden="true" />
+}
+
+/**
+ * What a chat has, all of it, a section for each kind it has: what it made, what it set up to run
+ * by itself, what was uploaded to it and the services it used. Each folds away under its title.
+ */
+export const ChatContextCard = ({ workspaceId, context, onOpenOutput, onOpenAttachment, outputHref, onOpenAutomation, automationHref }: ChatContextCardProps) => {
+  const { outputs, hooks, files, connectors } = context
+  // What the conversation does not say of an output's format, the library does: it is read once the card is open.
+  const library = useLibrary(workspaceId)
+  const formats = new Map(
+    library.status === 'ready'
+      ? library.outputs.flatMap(({ workspaceId: at, workpieceId, output }) => (at === workspaceId && output ? [[workpieceId, { noun: output.noun, icon: output.icon }] as const] : []))
+      : [],
+  )
+  // Open, until folded away.
+  const [folded, setFolded] = useState<ReadonlySet<Section>>(new Set())
+  const toggle = (section: Section) => setFolded((current) => {
+    const next = new Set(current)
+    if (!next.delete(section)) next.add(section)
+    return next
+  })
+  const section = (name: Section, title: string, count: number, rows: ReturnType<typeof ContextRow>[]) =>
+    count > 0 && <ContextSection title={title} open={!folded.has(name)} onToggle={() => toggle(name)}>{rows}</ContextSection>
+
+  return (
+    <>
+      {section('outputs', 'Outputs', outputs.length, outputs.map((output) => (
+        <ContextRow key={output.key} icon={outputIcon(output, formats.get(output.workpieceId))} title={output.title} href={outputHref?.(output)} onSelect={() => onOpenOutput(output)} />
+      )))}
+      {section('automations', 'Automations', hooks.length, hooks.map((hook) => (
+        <ContextRow key={hook.key} icon={<LightningIcon aria-hidden="true" />} title={hook.title} href={automationHref?.(hook)} onSelect={onOpenAutomation && (() => onOpenAutomation(hook))} />
+      )))}
+      {section('files', 'Uploads', files.length, files.map((file) => (
+        <ContextRow key={file.id} icon={fileIcon(file)} title={file.name} onSelect={() => onOpenAttachment(file)} />
+      )))}
+      {section('connectors', 'Connectors', connectors.length, connectors.map(({ key, name, logoUrl, scopes }) => (
+        <ContextRow key={key} icon={<ServiceLogo name={name} src={logoUrl} small />} title={name} detail={scopes.join(', ') || undefined} />
+      )))}
+    </>
+  )
+}

@@ -227,6 +227,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           onTabChange={setSettingsTab}
           onBack={() => setSettings(false)}
           onOpenWorkspace={openWorkspace}
+          onDeleted={openWorkspace}
           onOpenItem={(item) => {
             setOpen(item.key)
             setSettings(false)
@@ -237,8 +238,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           {...CHAT}
           onOpenWorkspace={openWorkspace}
           onDeleted={openWorkspace}
-          onOpenSettings={(tab) => {
-            setSettingsTab(tab ?? 'library')
+          onOpenSettings={() => {
+            setSettingsTab('library')
             setSettings(true)
           }}
           onOpenAttachment={handlers.onOpenAttachment}

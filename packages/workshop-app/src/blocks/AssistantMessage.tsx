@@ -23,6 +23,8 @@ export type AssistantMessageProps = {
   joins?: MessageJoins
   /** Start a reply to the message. */
   onReply?: () => void
+  /** Marks the chat unread from the message on. */
+  onMarkUnread?: () => void
   /** What there is to know about the message (see `messageInfo`), shown under it while open. */
   details?: MessageDetails
   /** Sends what one of its views suggested, as the viewer's own message (`InlineView`'s `onSend`). */
@@ -34,10 +36,10 @@ export type AssistantMessageProps = {
  * (`MessageBubble`'s `view`), live, in order; what can be done with the message is on the last.
  * Copied, it is the Markdown it was written in.
  */
-export const AssistantMessage = ({ text, parts, joins, onReply, details, onSendSuggestion }: AssistantMessageProps) => {
+export const AssistantMessage = ({ text, parts, joins, onReply, onMarkUnread, details, onSendSuggestion }: AssistantMessageProps) => {
   if (!parts || (parts.length === 1 && parts[0].type === 'text')) {
     return (
-      <MessageBubble role="assistant" joins={joins} onReply={onReply} copyText={text} details={details}>
+      <MessageBubble role="assistant" joins={joins} onReply={onReply} onMarkUnread={onMarkUnread} copyText={text} details={details}>
         <Markdown>{parts?.[0]?.type === 'text' ? parts[0].text : text}</Markdown>
       </MessageBubble>
     )
@@ -52,6 +54,7 @@ export const AssistantMessage = ({ text, parts, joins, onReply, details, onSendS
           role: 'assistant',
           joins: { above: index === 0 && joins?.above, below: ends && joins?.below },
           onReply: ends ? onReply : undefined,
+          onMarkUnread: ends ? onMarkUnread : undefined,
           copyText: ends ? text : undefined,
           details: ends ? details : undefined,
         } as const

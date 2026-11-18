@@ -106,13 +106,13 @@ const copyLink = (link: string) => void navigator.clipboard.writeText(link).catc
 /**
  * A file or an output: a header, then what it shows on a surface of its own.
  *
- * It grows in steps, and the end of its header has the step up, with the step down in the same
- * place: beside the page it expands to take the page's place; expanded, it collapses back and
- * fills the window; filling the window, it goes back. Before those are who else is looking at it,
- * more that can be done with it (exporting it, renaming it where its name is, updating a gadget
- * whose template has a newer version, beside the page putting the pane away, and deleting it, which
- * asks first), and sharing it where it can be shared, its link then copied from more, or else a
- * link to it. Beside the page, the header starts with how many things the page has to show, which
+ * It grows in steps, which are at the end of its header, and the way to put it away is there too:
+ * beside the page the button is Hide, which puts the pane away, and expanding it to take the page's
+ * place is in more; expanded, it collapses back and fills the window; filling the window, it goes
+ * back. Before those are who else is looking at it, more that can be done with it (exporting it,
+ * renaming it where its name is, updating a gadget whose template has a newer version, beside the
+ * page expanding it, and deleting it, which asks first), and sharing it where it can be shared, its
+ * link then copied from more, or else a link to it. Beside the page, the header starts with how many things the page has to show, which
  * opens to the list of them, then the name of the one shown. As the page, it starts with the
  * workspace it is in, and before the rest at its end is the way to a chat with it beside it.
  *
@@ -219,7 +219,7 @@ export const SidePane = (props: SidePaneProps) => {
                 <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate || onPublish || onRename || onDelete))) && (
+            {active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate || onPublish || onRename || onDelete || (beside?.onExpand && !narrow)) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
@@ -238,7 +238,7 @@ export const SidePane = (props: SidePaneProps) => {
                     </DropdownMenu.Item>
                   )}
                   {onPublish && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onPublish}>Publish as template…</DropdownMenu.Item>}
-                  {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
+                  {beside?.onExpand && !narrow && <DropdownMenu.Item icon={ArrowsOutSimpleIcon} onSelect={beside.onExpand}>Expand</DropdownMenu.Item>}
                   {onDelete && <DropdownMenu.Separator />}
                   {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
                 </DropdownMenu>
@@ -255,10 +255,10 @@ export const SidePane = (props: SidePaneProps) => {
                 <CopyLinkButton link={link} title={active.title} />
               </HeaderBubble>
             )}
-            {/* Keyed, so that expanding swaps the one button for the other in its place. */}
-            {beside?.onExpand && active && !narrow && (
-              <HeaderBubble key="expand">
-                <Button icon={ArrowsOutSimpleIcon} aria-label="Expand" title="Expand" onClick={beside.onExpand} />
+            {/* Keyed, so that expanding swaps the one button for the other in its place. On a narrow screen the back button at the start puts it away. */}
+            {beside && !narrow && (
+              <HeaderBubble key="hide">
+                <Button icon={ArrowLineRightIcon} aria-label="Hide pane" title="Hide pane" onClick={beside.onHide} />
               </HeaderBubble>
             )}
             {page?.onCollapse && !fullScreen && !narrow && (

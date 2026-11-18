@@ -6,6 +6,11 @@
   transform-origin: left center;
 }
 
+.header-bubble[data-bubble][data-origin='end'] {
+  /* A bubble at the side a header ends at grows out from there instead. */
+  transform-origin: right center;
+}
+
 .header-bubble[data-bubble='arriving'] {
   animation:
     header-bubble-grow 240ms 80ms cubic-bezier(0.22, 1, 0.36, 1) backwards,

@@ -25,9 +25,9 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * (`useAllAutomations`), each named with its workspace and the gadget it runs, from the library,
  * which open them; its switch for whoever builds there, as on a workspace's tab; and, with none,
  * a chat started from one of the things to ask for. The clock moves on while it is shown, so
- * "next in 5 minutes" stays true.
+ * "next in 5 minutes" stays true. It starts searched for `query` where a link to it asks for one.
  */
-export const AutomationsPane = () => {
+export const AutomationsPane = ({ query }: { query?: string }) => {
   const { state, setEnabled } = useAllAutomations()
   const workspaces = useWorkspaces()
   const library = useLibrary()
@@ -51,7 +51,7 @@ export const AutomationsPane = () => {
     const output = outputs.get(outputKey({ workspaceId: automation.workspaceId, workpieceId: automation.hook.gadgetId }))
     return { ...automation, workspaceTitle: titleOf(automation.workspaceId), gadgetTitle: output && outputTitle(output) }
   })
-  const list = useListView('automations', automationList(listed, looks))
+  const list = useListView('automations', { ...automationList(listed, looks), startsSearchedFor: query })
   const groups = list.arrange(list.narrow(listed))
 
   const change = (automation: ListedAutomation, enabled: boolean) => {

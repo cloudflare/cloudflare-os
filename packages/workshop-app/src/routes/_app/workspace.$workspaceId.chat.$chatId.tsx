@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react'
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, isApp, itemPage, validateAsideParam } from '@/aside/asideItems'
 import { carryAside, useAsideNavigation } from '@/aside/useAsideNavigation'
-import type { ActionItem, ChatAttachment, ConnectionItem, OutputItem } from '@/chat/chatItems'
+import type { ActionItem, ChatAttachment, ConnectionItem, HookItem, OutputItem } from '@/chat/chatItems'
 import { ChatPane } from '@/chat/ChatPane'
 import { useApproveCreation } from '@/connections/ApproveCreation'
 import { SetUpConnection, type ConnectionRequest } from '@/connections/SetUpConnection'
@@ -39,6 +39,8 @@ function WorkspaceChat() {
     (output: OutputItem) => aside.show(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId }), { workspaceId, chatId }),
     [aside, workspaceId, chatId],
   )
+  const openAutomation = useCallback((hook: HookItem) => void navigate({ to: '/automations', search: { q: hook.title } }), [navigate])
+  const automationHref = useCallback((hook: HookItem) => router.buildLocation({ to: '/automations', search: { q: hook.title } }).href, [router])
   const outputHref = useCallback(
     (output: OutputItem) =>
       router.buildLocation({ ...itemPage(workspaceId, { kind: 'output', workpieceId: output.workpieceId }, isApp(output)), search: { chat: chatId } }).href,
@@ -73,12 +75,15 @@ function WorkspaceChat() {
       onDeleted={() =>
         navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(router.state.location.search.open, { workspaceId }) }, replace: true })
       }
-      onOpenSettings={(tab) =>
-        navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: { tab }, state: { fromChat: true } })
+      onOpenSettings={() =>
+        navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: {}, state: { fromChat: true } })
       }
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}
       outputHref={outputHref}
+      // An automation is listed on the Automations page, searched for by its title.
+      onOpenAutomation={openAutomation}
+      automationHref={automationHref}
       onSetUpConnection={setUpConnection}
       onApproveCreation={approveAsCreation}
     />

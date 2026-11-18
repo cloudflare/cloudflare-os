@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { ChatHeader } from '@/blocks/ChatHeader'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { DeleteChatDialog } from '@/blocks/DeleteChatDialog'
 import { Button } from '@/components/Button'
@@ -78,14 +77,6 @@ export const ChatMenuPreview = () => {
           <ChatListItem title="Only used here" time="Oct 25" onSelect={() => {}} />
         </div>
         <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>
-      </Section>
-      <Section title="ChatHeader with more (last, once the title is there: the same menu as the chat’s row, where Mark as unread leaves it unread until another message arrives or it is come back to)">
-        <ChatHeader
-          workspace={{ id: 'q3', title: 'Q3 Forecast', label: 'QF', onOpen: () => say('opened Q3 Forecast') }}
-          title="Morning brief"
-          onOpenSettings={() => say('opened the chat’s settings')}
-          more={more('header', 'Morning brief')}
-        />
       </Section>
       <Section title="DeleteChatDialog (what deleting takes with it, asked before it is done; a failure stays in it, under why)">
         <DeleteDemo report={reporting} />

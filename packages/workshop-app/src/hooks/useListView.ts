@@ -17,6 +17,8 @@ export type ListViewSpec<T, Order extends ListOrder<T>> = {
   searchText: (item: T) => string
   /** How it is drawn until the user chooses: as rows, unless it says cards. */
   startsAs?: ListViewMode
+  /** What it is searched for to start with, such as what a link to it asked for. */
+  startsSearchedFor?: string
 }
 
 export type ListView<T, Order extends ListOrder<T>> = {
@@ -41,7 +43,7 @@ export type ListView<T, Order extends ListOrder<T>> = {
  */
 export const useListView = <T, Order extends ListOrder<T> = ListOrder<T>>(name: string, spec: ListViewSpec<T, Order>): ListView<T, Order> => {
   const [prefs, setPrefs] = useState(() => listViewPrefs(name, spec.startsAs).read())
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(spec.startsSearchedFor ?? '')
   // Those kept from before, where the list keeps them, or else those it starts with.
   const [filtersOn, setFiltersOn] = useState<string[]>(() => (spec.keepsFilters ? prefs.filters : undefined) ?? spec.startsNarrowedTo ?? [])
 

@@ -22,13 +22,15 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { ChatOptionsTab } from './ChatOptionsTab'
 import { groupByTime } from './timeGroups'
 import { useChatSession } from './useChatSession'
 
 /** What a chat's settings page shows beneath its title. */
-export type ChatSettingsTab = 'library' | 'automations'
+export type ChatSettingsTab = 'library' | 'automations' | 'settings'
 
 export const CHAT_SETTINGS_TABS: { value: ChatSettingsTab; label: string }[] = [
+  { value: 'settings', label: 'Settings' },
   { value: 'library', label: 'Library' },
   { value: 'automations', label: 'Automations' },
 ]
@@ -51,18 +53,25 @@ export type ChatSettingsPaneProps = {
   outputHref?: (output: OutputSummary) => string
   /** Goes to an output's settings, from its more menu. */
   onOpenSettings?: (output: OutputSummary) => void
+  /** The chat was deleted from its Settings: go somewhere else, in place of it in the history. */
+  onDeleted: () => void
 }
 
 /**
- * What a chat has, apart from the conversation, a tab each: what its workspace has made, as beside
- * the chat (`useChatLibrary`), latest first, grouped by when; and what the chat set up to run by
- * itself, as the cards in its conversation show.
+ * What a chat has, apart from the conversation, a tab each: for whoever builds in its workspace,
+ * what they can do about the chat (its notifications, marking it read, and deleting it), which it
+ * starts with; what its workspace has made, as beside the chat (`useChatLibrary`), latest first,
+ * grouped by when; and what the chat set up to run by itself, as the cards in its conversation
+ * show. Whoever may only use the workspace starts with its library.
  */
-export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onOpenWorkspace, onOpenItem, itemHref, outputHref, onOpenSettings }: ChatSettingsPaneProps) => {
+export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onOpenWorkspace, onOpenItem, itemHref, outputHref, onOpenSettings, onDeleted }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
+  // Its Settings are for whoever builds in the workspace: someone who can only use it has no chats of it.
+  const builds = workspace !== undefined && workspace.role !== 'use'
+  const tabs = builds ? CHAT_SETTINGS_TABS : CHAT_SETTINGS_TABS.filter(({ value }) => value !== 'settings')
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
@@ -117,7 +126,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
         </div>
         {chat.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading the chat…</p>}
-        <Tabs value={tab} onValueChange={onTabChange} tabs={CHAT_SETTINGS_TABS} aria-label="Chat" className="gap-6">
+        <Tabs value={tabs.some(({ value }) => value === tab) ? tab : tabs[0].value} onValueChange={onTabChange} tabs={tabs} aria-label="Chat" className="gap-6">
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             {libraryProblem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{libraryProblem}</p>}
             {chat.status === 'ready' && groups.length === 0 && !library.reading && !library.problem && (
@@ -158,6 +167,11 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
               />
             )}
           </Tabs.Panel>
+          {builds && (
+            <Tabs.Panel value="settings" className="flex flex-col gap-8">
+              {chat.status === 'ready' && <ChatOptionsTab workspaceId={workspaceId} chatId={chatId} title={title ?? ''} onDeleted={onDeleted} />}
+            </Tabs.Panel>
+          )}
         </Tabs>
       </div>
       {dialogs}

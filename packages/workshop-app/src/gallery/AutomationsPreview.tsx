@@ -2,9 +2,7 @@ import { useState } from 'react'
 import { AUTOMATION_EXAMPLES } from '@/automations/AutomationsView'
 import { AutomationRow } from '@/blocks/AutomationRow'
 import { AutomationsEmpty } from '@/blocks/AutomationsEmpty'
-import { ChatHeader } from '@/blocks/ChatHeader'
 import { ListGroup } from '@/blocks/ListGroup'
-import { Button } from '@/components/Button'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useReport } from './previewState'
 import { Section } from './Section'
@@ -52,14 +50,12 @@ const GROUPS = [
  * Automations as a workspace's tab and a chat's list them: scheduled ones, saying when they run
  * and when next, a retry warned of and one that stopped; a paused one whose schedule is not known;
  * one an event sets off, with what it watches; and one for whoever may only look. Switches answer
- * after a moment, one refused to show what is said. Then the agents, and a chat's header with its
- * clock, which pops in as the chat's first automation is set up.
+ * after a moment, one refused to show what is said.
  */
 export const AutomationsPreview = () => {
   const { report, say, later } = useReport()
   const [rows, setRows] = useState(ROWS)
   const [problems, setProblems] = useState<Record<string, string>>({})
-  const [count, setCount] = useState(0)
 
   return (
     <>
@@ -123,20 +119,6 @@ export const AutomationsPreview = () => {
       <Section title="AutomationsEmpty (the Automations page with nothing on it: what an automation does, and things to ask for, each starting a chat with it written in the composer)">
         <div className="w-full max-w-2xl">
           <AutomationsEmpty examples={AUTOMATION_EXAMPLES} onTry={(prompt) => say(`started a chat with “${prompt}”`)} />
-        </div>
-      </Section>
-      <Section title="ChatHeader with automations (a clock with how many, after the title, once the chat has set something up to run by itself; it opens the chat’s Automations tab)">
-        <div className="flex w-full flex-col items-start gap-3">
-          <ChatHeader
-            workspace={{ id: 'q3', title: 'Q3 Forecast', label: 'QF', onOpen: () => say('opened Q3 Forecast') }}
-            title="Morning brief"
-            onOpenSettings={() => say('opened the chat’s settings')}
-            automations={count > 0 ? { count, onOpen: () => say('opened the chat’s automations') } : undefined}
-          />
-          <div className="flex gap-2">
-            <Button onClick={() => setCount((current) => current + 1)}>Set one up</Button>
-            <Button variant="ghost" disabled={count === 0} onClick={() => setCount(0)}>Delete them</Button>
-          </div>
         </div>
       </Section>
     </>

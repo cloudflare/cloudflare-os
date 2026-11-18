@@ -140,7 +140,7 @@ export const useMenuMorph = () => {
     update()
     // Keep the real button hidden through the exit animation, until Kumo unmounts
     // the popup. Swapping opaque surfaces at identical bounds avoids a crossfade.
-    if (!keepTrigger) trigger.setAttribute('data-menu-morphing', '')
+    if (!keepTrigger && !popup.hasAttribute('data-fade')) trigger.setAttribute('data-menu-morphing', '')
     const resize = new ResizeObserver(update)
     resize.observe(popup)
     resize.observe(trigger)

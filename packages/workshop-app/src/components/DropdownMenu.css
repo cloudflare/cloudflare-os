@@ -341,7 +341,37 @@
   opacity: clamp(0, var(--menu-size) / 0.1, 1);
 }
 
+/* A menu that fades does not morph: it is at its full size where it opens, and only fades in and
+   out, as the trigger fades out and back under it, which it is never replaced by. The trigger
+   is gone as long as the menu is open (Base UI's `data-popup-open`), not until it has unmounted. */
+.dropdown-menu[data-fade] {
+  transition: opacity calc(180ms * var(--menu-time, 1)) ease-out;
+}
+
+.dropdown-menu[data-fade][data-starting-style],
+.dropdown-menu[data-fade][data-ending-style] {
+  --menu-open: 1;
+  opacity: 0;
+  transition: opacity calc(180ms * var(--menu-time, 1)) ease-out;
+}
+
+.dropdown-menu[data-fade][data-starting-style] .dropdown-menu-items,
+.dropdown-menu[data-fade][data-ending-style] .dropdown-menu-items {
+  opacity: 1;
+  filter: none;
+}
+
+.dropdown-menu-trigger[data-fade] {
+  transition: opacity calc(180ms * var(--menu-time, 1)) ease-out;
+}
+
+.dropdown-menu-trigger[data-fade][data-popup-open] {
+  opacity: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .dropdown-menu[data-fade],
+  .dropdown-menu-trigger[data-fade],
   .dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open],
   .dropdown-menu-content {
     animation: none;

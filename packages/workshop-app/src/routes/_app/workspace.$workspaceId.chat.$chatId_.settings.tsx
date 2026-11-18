@@ -6,11 +6,12 @@ import { CHAT_SETTINGS_TABS, ChatSettingsPane, type ChatSettingsTab } from '@/ch
 import { writeLayoutPrefs } from '@/prefs/layoutPrefs'
 
 const validateTab = (value: unknown): ChatSettingsTab | undefined =>
-  CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'library')?.value
+  CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'settings')?.value
 
 /**
- * A chat's settings, opened from its title: what its workspace has made, or with `?tab=`, what the
- * chat set up to run by itself.
+ * A chat's settings, opened from its title: what can be done about the chat, or with `?tab=`, what
+ * its workspace has made, or what the chat set up to run by itself, which the card of what the chat
+ * has lists too.
  */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/chat/$chatId_/settings')({
   validateSearch: (search: Record<string, unknown>): { tab?: ChatSettingsTab } => ({ tab: validateTab(search.tab) }),
@@ -27,7 +28,7 @@ export const Route = createFileRoute('/_app/workspace/$workspaceId/chat/$chatId_
 
 function ChatSettings() {
   const { workspaceId, chatId } = Route.useParams()
-  const { tab = 'library' } = Route.useSearch()
+  const { tab = 'settings' } = Route.useSearch()
   const initialTitle = useLocation({ select: (location) => location.state.chatTitle })
   const navigate = useNavigate()
   const router = useRouter()
@@ -47,13 +48,15 @@ function ChatSettings() {
         navigate({
           to: '/workspace/$workspaceId/chat/$chatId/settings',
           params: { workspaceId, chatId },
-          search: { tab: next === 'library' ? undefined : next },
+          search: { tab: next === 'settings' ? undefined : next },
           state: (state) => state,
           replace: true,
         })
       }
       outputHref={(output) => router.buildLocation(outputPage(output)).href}
       onOpenSettings={(output) => navigate(outputSettings(output))}
+      // To its workspace's page, which lists what is left, in the deleted chat's place in the history.
+      onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, replace: true })}
       onBack={() => {
         if (router.state.location.state.fromChat) return router.history.back()
         void navigate(chat(asideFor({ workspaceId, chatId })))

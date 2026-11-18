@@ -124,14 +124,15 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
         role="region"
         aria-label="Conversation messages"
         tabIndex={0}
-        className="chat-fade h-full overflow-x-hidden overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
+        // Made room in at its end, by the page, for something open there: the scrollbar stays at the edge.
+        className="chat-fade h-full overflow-x-hidden overflow-y-auto overscroll-y-contain pe-[var(--end-shift,0px)] [overflow-anchor:none]"
       >
         <div
           ref={contentRef}
           role="log"
           aria-relevant="additions"
           aria-busy={streaming || loading}
-          className="appears mx-auto flex w-full max-w-4xl flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]"
+          className="appears mx-auto flex w-full max-w-4xl [translate:var(--end-slide,none)] flex-col gap-2 px-3 pt-[max(0.75rem,var(--header-height,0px))] pb-[calc(var(--composer-half,0px)+0.75rem)]"
         >
           <div ref={startRef} className="shrink-0">
             {hasMore && (
@@ -150,7 +151,7 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
         </div>
       </div>
       {!atBottom && (
-        <div className="absolute inset-x-0 bottom-[calc(var(--composer-half,0px)+0.75rem)] flex justify-center pointer-events-none">
+        <div className="absolute inset-x-0 bottom-[calc(var(--composer-half,0px)+0.75rem)] flex [translate:var(--end-slide,none)] justify-center pe-[var(--end-shift,0px)] pointer-events-none">
           <Button
             className="pointer-events-auto shadow-sm"
             icon={ArrowDownIcon}

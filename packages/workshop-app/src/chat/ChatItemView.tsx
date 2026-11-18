@@ -19,6 +19,8 @@ import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 export type ChatItemHandlers = {
   /** Start a reply to a message. */
   onReply: (item: UserItem | AssistantItem) => void
+  /** Marks the chat unread from a message on. Left out where that is not the viewer's to do. */
+  onMarkUnread?: (item: UserItem | AssistantItem) => void
   /** Go to the message a reply answers. */
   onShowQuoted: (reply: UserItem) => void
   onOpenAttachment: (attachment: ChatAttachment) => void
@@ -88,6 +90,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           loadAttachment={handlers.loadAttachment}
           joins={joins}
           onReply={() => handlers.onReply(item)}
+          onMarkUnread={handlers.onMarkUnread && (() => handlers.onMarkUnread?.(item))}
           details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.from, sentAt: item.sentAt }) }}
         />
       )
@@ -99,6 +102,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           onSendSuggestion={handlers.onSendSuggestion}
           joins={joins}
           onReply={() => handlers.onReply(item)}
+          onMarkUnread={handlers.onMarkUnread && (() => handlers.onMarkUnread?.(item))}
           details={{
             open: isOpen,
             onToggle: toggle,

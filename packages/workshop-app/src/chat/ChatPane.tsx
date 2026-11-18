@@ -1,9 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { hooksShownIn } from '@/automations/automations'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
-import { DeleteChatDialog } from '@/blocks/DeleteChatDialog'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
@@ -22,9 +20,12 @@ import { messageOf } from '@/settings/useAttempt'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { notificationChoices, notificationsOf } from './ChatNotifications'
+import { ChatContextPanel } from './ChatContextPanel'
+import { chatContextOf, contextCount } from './chatContext'
+import { useContextOpen } from './useContextOpen'
+import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatAttachment, type ChatItem, type HookItem, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
@@ -34,9 +35,7 @@ import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { withCapsules } from './capsules'
 import { useLinkConnections } from './useLinkConnections'
-import { useChatNotifications } from './useChatNotifications'
 import { useChatSession } from './useChatSession'
-import { useDeleteChat } from './useDeleteChat'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
 import { firstMessageOf } from './firstMessage'
@@ -54,8 +53,8 @@ export type ChatPaneProps = {
   onOpenAgent?: (agentKey: string) => void
   /** Goes to the workspace's Agents, for the several the chat's gadgets start. */
   onOpenAgents?: () => void
-  /** Opens the chat's settings, from its title, or at what it set up to run by itself, from the header's clock. */
-  onOpenSettings?: (tab?: 'automations') => void
+  /** Opens the chat's settings, from its title. */
+  onOpenSettings?: () => void
   /**
    * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
    * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
@@ -64,6 +63,9 @@ export type ChatPaneProps = {
   onOpenAttachment?: ChatItemHandlers['onOpenAttachment']
   onOpenOutput?: ChatItemHandlers['onOpenOutput']
   outputHref?: ChatItemHandlers['outputHref']
+  /** Goes to where an automation the chat set up is listed, from the card of what the chat has, and where that is. Left out, they only say what they are. */
+  onOpenAutomation?: (hook: HookItem) => void
+  automationHref?: (hook: HookItem) => string
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
   /**
@@ -87,7 +89,7 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
 
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
   const keepBindings = useBindingTitles(workspaceId, chatId, chat.status === 'ready' ? chat.keep?.changes.bindings ?? NO_BINDINGS : NO_BINDINGS)
@@ -110,7 +112,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const items = chat.status === 'ready' ? chat.items : undefined
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
-  const automations = useMemo(() => hooksShownIn([...(items ?? []), ...(pinned ?? [])]).length, [items, pinned])
   // The agents the chat's gadgets start, for the header, read again as each turn ends.
   const gadgetIds = useMemo(() => (items ?? []).flatMap((item) => (item.kind === 'output' && item.type === 'gadget' ? [item.workpieceId] : [])), [items])
   const turns = useRef(0)
@@ -142,11 +143,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Making a connection in the workspace is building in it, which those who only use it cannot.
   const builds = workspace !== undefined && workspace.role !== 'use'
   const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
-  // Its notifications and deleting it are for whoever builds there too: someone who can only use
-  // the workspace has no chats of it.
-  const notifications = useChatNotifications(workspaceId, builds)
-  const deleteChat = useDeleteChat(workspaceId)
-  const [deleting, setDeleting] = useState(false)
   // Left once, whether the workspace says it was deleted first or the call returns first.
   const left = useRef(false)
   const leave = () => {
@@ -198,6 +194,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
     return {
+      onMarkUnread: builds ? (item) => {
+        setNotice(undefined)
+        if (connection?.blocked()) return
+        actions.markUnreadFrom(item.id).catch((error: unknown) => setNotice(`Couldn’t mark the chat unread: ${messageOf(error)}`))
+      } : undefined,
       onReply: (item) => {
         setReply({ key: item.key, quote: quoteLine(item) })
         composer.current?.focus()
@@ -226,7 +227,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       onContinue: () => setCreditsShown((shown) => ({ ...shown, open: true })),
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
+  }, [actions, builds, connection, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, sendSuggestion])
 
 
   const messages = useMemo(() => {
@@ -290,9 +291,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // The header and the composer are drawn again only for what they show. The chat renders for
   // every piece of a reply that streams in, and they are most of what it would draw again then.
   const ready = chat.status === 'ready'
-  const notificationsRow = notifications.rows.get(chatId)
-  const requireParticipation = ready && chat.notificationsRequireParticipation
-  const openSettings = useHandler((tab?: 'automations') => onOpenSettings?.(tab))
+  const openSettings = useHandler(() => onOpenSettings?.())
   const openWorkspace = useHandler(onOpenWorkspace)
   // The agent whose run it is, by what the header shows of it, so that each update does not draw it again.
   const agentKey = ready ? chat.agent?.key : undefined
@@ -305,18 +304,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const several = startsAgents.length > 1
   const openStarted = useHandler(() => (several ? onOpenAgents?.() : firstAgentKey !== undefined && onOpenAgent?.(firstAgentKey)))
   const hasAgentPage = onOpenAgent !== undefined
-  const changeNotifications = useHandler((enabled: boolean) => {
-    setNotice(undefined)
-    if (connection?.blocked()) return
-    notifications.setEnabled(chatId, enabled).catch((error: unknown) => setNotice(`Couldn’t change the chat’s notifications: ${messageOf(error)}`))
-  })
-  // Marked unread, it stays so until another message arrives or the chat is come back to.
-  const changeRead = useHandler((read: boolean) => {
-    setNotice(undefined)
-    if (connection?.blocked()) return
-    notifications.setRead(chatId, read).catch((error: unknown) => setNotice(`Couldn’t mark the chat ${read ? 'read' : 'unread'}: ${messageOf(error)}`))
-  })
-  const unread = (notificationsRow?.unreadMessageCount ?? 0) > 0
   const hasSettings = onOpenSettings !== undefined
   const workspaceTitle = workspace?.title
   const header = useMemo(() => (workspaceTitle !== undefined || title) && (
@@ -325,18 +312,37 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       agent={agentKey !== undefined && agentName !== undefined ? { agentKey, name: agentName, onOpen: hasAgentPage ? openAgent : undefined } : undefined}
       title={title}
       onOpenSettings={hasSettings ? () => openSettings() : undefined}
-      automations={automations > 0 && hasSettings ? { count: automations, onOpen: () => openSettings('automations') } : undefined}
       agents={agentNames ? { names: agentNames.split('\n'), onOpen: openStarted } : undefined}
-      more={builds && ready ? {
-        read: { unread, onChange: changeRead },
-        notifications: {
-          choices: notificationChoices(notificationsOf(notificationsRow, requireParticipation)),
-          onChange: changeNotifications,
-        },
-        onDelete: () => setDeleting(true),
-      } : undefined}
     />
-  ), [agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings, automations, builds, ready, unread, changeRead, notificationsRow, requireParticipation, changeNotifications])
+  ), [agentNames, openStarted, workspaceTitle, agentKey, agentName, openAgent, hasAgentPage, title, workspaceId, look, openWorkspace, hasSettings, openSettings])
+
+  // What the chat has, at the end of its header while it has any, where there is room for it beside the conversation.
+  const context = useMemo(() => chatContextOf([...(items ?? []), ...(pinned ?? [])]), [items, pinned])
+  const hasContext = contextCount(context) > 0
+  const [contextOpen, changeContextOpen, contextRestored] = useContextOpen()
+  // Not on a phone, where the conversation has the screen to itself.
+  const narrow = useNarrowScreen()
+  const openOutput = useHandler((output: OutputItem) => handlers.onOpenOutput(output))
+  const openAttachment = useHandler((file: ChatAttachment) => handlers.onOpenAttachment(file))
+  const openAutomation = useHandler((hook: HookItem) => onOpenAutomation?.(hook))
+  const hrefOfAutomation = useHandler((hook: HookItem) => automationHref?.(hook) ?? '')
+  const linksAutomations = automationHref !== undefined
+  const opensAutomations = onOpenAutomation !== undefined
+  const headerEnd = useCallback((room: 'beside' | 'floating') => (
+    <ChatContextPanel
+      workspaceId={workspaceId}
+      context={context}
+      open={contextOpen}
+      onOpenChange={changeContextOpen}
+      floating={room === 'floating'}
+      instant={contextRestored}
+      onOpenOutput={openOutput}
+      onOpenAttachment={openAttachment}
+      outputHref={outputHref}
+      onOpenAutomation={opensAutomations ? openAutomation : undefined}
+      automationHref={linksAutomations ? hrefOfAutomation : undefined}
+    />
+  ), [workspaceId, context, contextOpen, changeContextOpen, contextRestored, openOutput, openAttachment, outputHref, opensAutomations, openAutomation, linksAutomations, hrefOfAutomation])
 
   const onPasteLinks = useHandler((urls: string[]) => pasteLinks?.(urls))
   const hasPasteLinks = pasteLinks !== undefined
@@ -388,16 +394,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     </div>
   ), [logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, commandsLoading, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
-  const confirmDelete = useHandler(async () => {
-    if (connection?.blocked()) return
-    await deleteChat(chatId)
-    leave()
-  })
-  const chatTitle = title || 'Untitled chat'
-  const deleteDialog = useMemo(() => (
-    <DeleteChatDialog open={deleting && !gone} onOpenChange={setDeleting} title={chatTitle} onConfirm={confirmDelete} />
-  ), [deleting, gone, chatTitle, confirmDelete])
-
   const hasEarlier = ready && chat.hasEarlier
   const loadingEarlier = ready && chat.loadingEarlier
   const historyError = ready ? chat.historyError : undefined
@@ -409,6 +405,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   return (
     <ChatLayout
       header={header}
+      headerEnd={hasContext && !narrow ? headerEnd : undefined}
+      headerEndOpen={hasContext && contextOpen && !narrow}
       composer={composerElement}
     >
       {chat.status === 'ready' && (
@@ -472,7 +470,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       {adding && (
         <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
       )}
-      {deleteDialog}
     </ChatLayout>
   )
 }

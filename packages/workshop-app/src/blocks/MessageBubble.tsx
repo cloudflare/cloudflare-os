@@ -33,6 +33,8 @@ export type MessageBubbleProps = {
   onReply?: () => void
   /** What copying the message puts on the clipboard. */
   copyText?: string
+  /** Marks the chat unread from this message on, from more. Left out where it is not the viewer's to mark. */
+  onMarkUnread?: () => void
   /**
    * What there is to know about the message (see `messageInfo`), in an outlined panel below it while open.
    * Controlled, so it can outlive the message being unmounted (a virtual list does that).
@@ -104,7 +106,7 @@ const JOINED = {
 // which would be done unseen by a tap beside the message.
 const ACTIONS =
   'absolute top-1/2 -translate-y-1/2 opacity-0 transition-opacity motion-reduce:transition-none ' +
-  'group-hover/message:opacity-100 has-[:focus-visible]:opacity-100 ' +
+  'group-hover/message:opacity-100 has-[:focus-visible]:opacity-100 has-data-popup-open:pointer-events-auto has-data-popup-open:opacity-100 ' +
   'pointer-coarse:pointer-events-none group-data-[actions=shown]/message:pointer-events-auto group-data-[actions=shown]/message:opacity-100'
 
 // What a tap on a message is for already, rather than for showing its actions.
@@ -117,12 +119,12 @@ const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, media, view, joins, onReply, copyText, onMarkUnread, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
   // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
-  const actions = (onReply || copyText !== undefined || details) &&
-    <MessageActions onReply={onReply} copyText={copyText} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+  const actions = (onReply || copyText !== undefined || onMarkUnread || details) &&
+    <MessageActions onReply={onReply} copyText={copyText} onMarkUnread={onMarkUnread} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
   // Shown by a tap, rather than by a pointer that is there, until the message is tapped again or
   // anything else is.

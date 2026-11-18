@@ -15,6 +15,8 @@ export type HeaderBubbleProps<State> = {
   children: ReactNode | ((previous: State | undefined) => ReactNode)
   /** For how the bubble sits in its header, e.g. that it may shrink. */
   className?: string
+  /** Which end of its header the bubble is at, which it grows out from and shrinks away to: the start, unless it is at the end. */
+  origin?: 'start' | 'end'
 }
 
 // The named bubbles on screen, each with the state it is in, and once it has gone, where it was.
@@ -51,7 +53,7 @@ const popOut = (element: HTMLElement, name: string | undefined) => {
 }
 
 /** One of the rounded buttons a page's header is made of. It pops in when it appears and out when it goes. */
-export const HeaderBubble = <State,>({ name, state, children, className }: HeaderBubbleProps<State>) => {
+export const HeaderBubble = <State,>({ name, state, children, className, origin = 'start' }: HeaderBubbleProps<State>) => {
   const ref = useRef<HTMLSpanElement>(null)
   const [predecessor] = useState(() => (name === undefined ? undefined : onScreen.get(name)))
 
@@ -85,7 +87,7 @@ export const HeaderBubble = <State,>({ name, state, children, className }: Heade
   }, [name])
 
   return (
-    <span ref={ref} data-bubble={predecessor ? undefined : 'arriving'} className={cn('header-bubble relative inline-flex', className)}>
+    <span ref={ref} data-bubble={predecessor ? undefined : 'arriving'} data-origin={origin === 'end' ? 'end' : undefined} className={cn('header-bubble relative inline-flex', className)}>
       {typeof children === 'function' ? children(predecessor?.state as State | undefined) : children}
     </span>
   )

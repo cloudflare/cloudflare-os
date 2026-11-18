@@ -98,6 +98,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
     getChatAttachmentContent: vi.fn<Overseer['getChatAttachmentContent']>(async (_chatId, id) => new TextEncoder().encode(id)),
     markChatRead: vi.fn<Overseer['markChatRead']>(async () => {}),
+    markChatUnread: vi.fn<Overseer['markChatUnread']>(async () => true),
     viewChat: vi.fn<Overseer['viewChat']>(async () => ({ [Symbol.dispose]: viewDispose }) as unknown as RpcStub<{}>),
   }
 
@@ -613,6 +614,15 @@ describe('ChatSession', () => {
       const session = await started(fake, 0, { connection: down() })
       session.markRead()
       expect(fake.markChatRead).not.toHaveBeenCalled()
+    })
+
+    it('marks the chat unread from a message on, and says why when the account refused it', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'go'), agentMessage(1, 'done')) })
+      const session = await started(fake)
+      await session.markUnreadFrom(1)
+      expect(fake.markChatUnread.mock.calls).toEqual([[0, 1]])
+      fake.markChatUnread.mockRejectedValueOnce(new Error('Not available in use-only sessions.'))
+      await expect(session.markUnreadFrom(0)).rejects.toThrow('Not available in use-only sessions.')
     })
   })
 
