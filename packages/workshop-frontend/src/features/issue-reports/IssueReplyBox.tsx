@@ -39,7 +39,8 @@ export const IssueReplyBox = ({ closed, onReply }: {
       setProblem(issueFailure(err, 'Couldn’t send your reply.'))
     }
     flushSync(() => {
-      if (sent) setText('')
+      // The field takes typing while the reply is sent: what was typed since is kept.
+      if (sent) setText((current) => (current === text ? '' : current))
       setSending(false)
     })
     // The button was disabled while the reply was sent, which takes focus from it, and stays

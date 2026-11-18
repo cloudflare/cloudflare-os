@@ -746,6 +746,31 @@ describe('the composer', () => {
     expect(thread()).toHaveLength(0)
   })
 
+  it('keeps what was typed while an entry was being sent, and clears a field left as it was sent', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    const store = admin.addIssueReportEntry.getMockImplementation()!
+    const answer = Promise.withResolvers<void>()
+    admin.addIssueReportEntry.mockImplementationOnce(async (...sent) => {
+      await answer.promise
+      return store(...sent)
+    })
+
+    await type(composerField(), 'A note.')
+    await submit(composerField())
+    await type(composerField(), 'A note. And a second thought.')
+    await act(async () => { answer.resolve() })
+    await settle()
+
+    expect(thread().map((entry) => entry.querySelector('p')?.textContent)).toEqual(['A note.'])
+    expect(composerField().value).toBe('A note. And a second thought.')
+
+    await submit(composerField())
+    await settle()
+
+    expect(thread()).toHaveLength(2)
+    expect(composerField().value).toBe('')
+  })
+
   it('says when the admins’ entries of the chosen kind are full, and still takes the other kind', async () => {
     const notes = Array.from({ length: MAX_ISSUE_REPORT_THREAD_ENTRIES }, (_, index) =>
       adminEntry(`note-${index}`, `Note ${index}`, { visibility: 'admins' }))
@@ -857,6 +882,32 @@ describe('the links', () => {
     expect(alerts()).toEqual(['Invalid link.'])
     expect(links()).toEqual([])
     expect(linkField().value).toBe('https://example.test/42')
+  })
+
+  it('keeps a link typed while another was being attached, and clears a field left as it was sent', async () => {
+    const admin = await renderPanel(fakeAdmin([report('r-1')]), '/admin?tab=reports&report=r-1')
+    const store = admin.setIssueReportLinks.getMockImplementation()!
+    const answer = Promise.withResolvers<void>()
+    admin.setIssueReportLinks.mockImplementationOnce(async (...sent) => {
+      await answer.promise
+      return store(...sent)
+    })
+
+    await type(linkField(), 'https://example.test/1')
+    await submit(linkField())
+    await type(linkField(), 'https://example.test/2')
+    await act(async () => { answer.resolve() })
+    await settle()
+
+    expect(links().map((link) => link.getAttribute('href'))).toEqual(['https://example.test/1'])
+    expect(linkField().value).toBe('https://example.test/2')
+
+    await submit(linkField())
+    await settle()
+
+    expect(links().map((link) => link.getAttribute('href')))
+      .toEqual(['https://example.test/1', 'https://example.test/2'])
+    expect(linkField().value).toBe('')
   })
 
   it('removes one link, leaving the others in their order', async () => {

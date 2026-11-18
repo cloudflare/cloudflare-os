@@ -850,6 +850,30 @@ describe('an open report', () => {
       expect(thread()).toHaveLength(1)
     })
 
+    it('keeps what was written while a reply was being sent, and clears a field left as it was sent', async () => {
+      const api = fakeApi({ opened: [opened()] })
+      const answer = Promise.withResolvers<void>()
+      const store = api.replyToIssueReport.getMockImplementation()!
+      api.replyToIssueReport.mockImplementationOnce(async (id, written) => {
+        await answer.promise
+        return store(id, written)
+      })
+      await renderPage(api, '/issues?report=r-1')
+
+      await typeReply('Firefox.')
+      await click(button('Send reply'))
+      await typeReply('Firefox. And Safari.')
+      await act(async () => { answer.resolve() })
+
+      expect(threadTexts()).toEqual(['Which browser are you using?', 'Firefox.'])
+      expect(replyField().value).toBe('Firefox. And Safari.')
+
+      await click(button('Send reply'))
+
+      expect(threadTexts()).toEqual(['Which browser are you using?', 'Firefox.', 'Firefox. And Safari.'])
+      expect(replyField().value).toBe('')
+    })
+
     it('sends nothing blank', async () => {
       const api = await renderPage(fakeApi({ opened: [opened()] }), '/issues?report=r-1')
       expect(button('Send reply').disabled).toBe(true)

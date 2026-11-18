@@ -83,7 +83,10 @@ export const ReportLinks = ({ links, stale = false, onSave }: {
       setProblem(refusal)
       return
     }
-    if (await save('attach', [...links, link], 'Couldn’t attach the link.')) setTyped('')
+    // The field takes typing while the link is saved: what was typed since is kept.
+    if (await save('attach', [...links, link], 'Couldn’t attach the link.')) {
+      setTyped((current) => (current === typed ? '' : current))
+    }
   }
 
   return (
