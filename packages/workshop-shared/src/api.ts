@@ -654,7 +654,8 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
 
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
- * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls.
+ * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls, and of
+ * AdminApi.writeWorkspace().
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -662,6 +663,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   accessOff: "ADMIN_WORKSPACE_ACCESS_OFF",
   viewExpired: "ADMIN_VIEW_EXPIRED",
   notAdmin: "ADMIN_NOT_ADMIN",
+  writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -675,7 +677,10 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "Admin access to workspaces and users is turned off on this deployment.",
   [ADMIN_ACCESS_ERROR_CODES.viewExpired]: "This admin view has expired. Inspect again.",
   [ADMIN_ACCESS_ERROR_CODES.notAdmin]:
-      "Only a deployment admin can inspect a workspace or a user.",
+      "Only a deployment admin can inspect a workspace or a user, or change a workspace.",
+  [ADMIN_ACCESS_ERROR_CODES.writesOff]:
+      "Admin writes to workspaces are turned off on this deployment. Only its " +
+      "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -1893,10 +1898,11 @@ export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
 
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
- * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord and
- * inspectUser() as an AdminUserAccessRecord. The rest change no setting and are not recorded: the
- * reads (getSettings, isBlueprintFeatured, getUpdateStatus, listUsers, listWorkspaces,
- * listAdminAudit, getAdminAuditStats), the gateway tests, and checkForUpdates.
+ * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord,
+ * inspectUser() as an AdminUserAccessRecord, and writeWorkspace() as an AdminWriteRecord. The rest
+ * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
+ * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats), the gateway
+ * tests, and checkForUpdates.
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2160,6 +2166,17 @@ export const ADMIN_WRITE_ACTIONS = [
 export type AdminWriteAction = typeof ADMIN_WRITE_ACTIONS[number];
 
 /**
+ * The arguments of an admin write. Each action takes only its own, and a write naming any other,
+ * or missing a required one, is rejected:
+ *   - stopAgent: `chatId`;
+ *   - restartWorkspace: none.
+ */
+export type AdminWriteArgs = {
+  /** The chat, by AiChatMetadata.id. */
+  chatId?: number;
+};
+
+/**
  * One admin write to a workspace (AdminApi.writeWorkspace()), in the deployment-wide audit log.
  * The workspace appends it before it changes anything, so that a write whose record cannot be
  * written does not happen; its owner and title are the workspace's own then, kept as an
@@ -2181,14 +2198,15 @@ export type AdminWriteRecord = Pick<AdminAccessRecord,
 /**
  * Capability for managing and investigating the deployment, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
- * capability is minted, so these methods don't re-check, with one exception: inspectWorkspace()
- * and inspectUser() re-check, and so does every call on the view either mints (AdminWorkspaceView,
- * AdminUserView), since a view is the one thing an admin holds that reads users' data. Covers
- * branding, agent instructions, which gatekeeper connectors/resources are offered, the models an
- * AI Gateway deployment provides, the user and workspace directory, and admin access to
- * workspaces and to users' accounts — NOT authentication config (that's env-var driven). Each
- * setter throws on invalid input, and records the change it makes in the deployment's audit log
- * before making it (see AdminSettingRecord).
+ * capability is minted, so these methods don't re-check, with two exceptions. inspectWorkspace()
+ * and inspectUser() re-check, and so does every call on the view either mints
+ * (AdminWorkspaceView, AdminUserView), since a view is what an admin holds that reads users'
+ * data. writeWorkspace() re-checks too, since it changes a user's workspace. Covers branding,
+ * agent instructions, which gatekeeper connectors/resources are offered, the models an AI Gateway
+ * deployment provides, the user and workspace directory, admin access to workspaces and to users'
+ * accounts, and admin writes to workspaces — NOT authentication config (that's env-var driven). Each setter throws on invalid
+ * input, and records the change it makes in the deployment's audit log before making it (see
+ * AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -2616,6 +2634,29 @@ export interface AdminApi {
    * environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.
    */
   setAdminAuditRetentionDays(days: number): Promise<void>;
+
+  /**
+   * Change a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. Off unless the
+   * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". A reason is required, as for
+   * inspectWorkspace(), and is kept in the admins' log only.
+   *
+   * The workspace records the write (an AdminWriteRecord) in the deployment-wide log and only then
+   * runs it, so a write whose record cannot be written does not happen. That record is the write's
+   * only trace: the workspace keeps none, and its members are not told an admin acted. Each action
+   * does what a member's operation does:
+   *   - "stopAgent": stops the chat's turn as Overseer.stopAgent(chatId) does, and the chat and
+   *     its agent are told so as for any stop, except that the chat's queued steers are kept: no
+   *     client stops the turn to put them in its draft, so they go into the chat as their senders'
+   *     messages (see `steered` of AiChatMessageBody).
+   *   - "restartWorkspace": ends every session on the workspace, as a revoked collaborator does.
+   *
+   * Refused `notAdmin` for a caller who is no longer a deployment admin, `writesOff` unless
+   * ADMIN_WORKSPACE_WRITES is "on", and `workspaceNotFound` for an id that names no workspace.
+   * Rejects arguments the action does not take. A write that fails once recorded, such as a
+   * stopAgent of a chat that does not exist, keeps its record.
+   */
+  writeWorkspace(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
+                 reason: string): Promise<void>;
 }
 
 /** A workspace as AdminWorkspaceView.describe() presents it. */
@@ -5316,7 +5357,8 @@ export type AiChatMetadata = {
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`). Absent when none.
+   * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
+   * `steered` messages. Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
@@ -5781,7 +5823,8 @@ export type AiChatMessageBody = {
   /**
    * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
    * reads it before its next model request, or, if the turn ended before it could and started no
-   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   * other (it failed, stopped to wait on the user's decision, or was stopped by a deployment
+   * admin's write), when the agent next runs.
    */
   steered?: true;
 } | {
