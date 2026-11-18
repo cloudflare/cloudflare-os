@@ -591,9 +591,15 @@ export class SkillStore {
   }
 
   // The frame's `ui` is typed by each gatekeeper, not by the Workshop's API: the Context Library's
-  // is `ContextApi`, which it exports for exactly this. Its page is not shown here.
+  // is `ContextApi`, which it exports for exactly this. Its page, megabytes of HTML, is not shown
+  // here, so the frame is never awaited: its `ui` is called pipelined, which brings nothing else
+  // back. Only where that fails is the frame read, to tell a user with no Context Library.
   #open() {
-    this.#backend ??= this.#needApi().getGatekeeperApp(SKILLS_APP).then((frame) => (frame ? (frame.ui as unknown as SkillsBackend & Partial<Disposable>) : null))
+    if (!this.#backend) {
+      const frame = this.#needApi().getGatekeeperApp(SKILLS_APP)
+      const ui = (frame as unknown as { ui: SkillsBackend & Partial<Disposable> }).ui
+      this.#backend = ui.listEnabledContextCollections().then(() => ui, () => frame.then((found) => (found ? ui : null)))
+    }
     // Tried again next time, rather than failing from then on.
     this.#backend.catch(() => {
       this.#backend = undefined

@@ -202,7 +202,8 @@ describe('SkillStore', () => {
 
   it('says skills are off for a user with no Context Library, and whether they can be turned on', async () => {
     const api: SkillsApi = {
-      getGatekeeperApp: (async () => null) as SkillsApi['getGatekeeperApp'],
+      // As an RPC promise of nothing is: its `ui` fails when called.
+      getGatekeeperApp: (() => Object.assign(Promise.resolve(null), { ui: { listEnabledContextCollections: () => Promise.reject(new TypeError('There is no app.')) } })) as unknown as SkillsApi['getGatekeeperApp'],
       listAddableGatekeepers: (async () => [{ id: 'context' }]) as unknown as SkillsApi['listAddableGatekeepers'],
       provisionAmbientAccount: (async () => {}) as SkillsApi['provisionAmbientAccount'],
       createGatekeeperUserSelection: (async () => null) as unknown as SkillsApi['createGatekeeperUserSelection'],

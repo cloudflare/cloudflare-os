@@ -124,8 +124,10 @@ export class SurfaceGlide {
   }
 
   private readonly step = (now: number) => {
-    // A frame long at most, so that a tab come back to does not leap.
-    const dt = Math.min((now - this.last) / 1000, 1 / 30)
+    // The step is exact for any time, so a slow frame (the page busy loading) goes as far as the
+    // time it took rather than the glide crawling; a quarter of a second at most, so that a tab
+    // come back to does not leap.
+    const dt = Math.min((now - this.last) / 1000, 1 / 4)
     this.last = now
     this.target = this.natural()
     const next = glideStep({ height: this.height ?? this.target, velocity: this.velocity, target: this.target, dt })

@@ -207,7 +207,12 @@ export class MemorySkillsBackend implements SkillsBackend {
   asApi(): SkillsApi {
     const frame: GatekeeperUiFrame = { iframeHtml: '', ui: this as unknown as GatekeeperUiFrame['ui'] }
     return {
-      getGatekeeperApp: (async (id: string) => (id === SKILLS_APP ? frame : null)) as SkillsApi['getGatekeeperApp'],
+      // As an RPC promise is: its `ui` called before it is awaited, and failing where there is none.
+      getGatekeeperApp: ((id: string) => {
+        const found = id === SKILLS_APP ? frame : null
+        const none = new Proxy({}, { get: () => () => Promise.reject(new TypeError('There is no app.')) })
+        return Object.assign(Promise.resolve(found), { ui: found ? found.ui : none })
+      }) as unknown as SkillsApi['getGatekeeperApp'],
       listAddableGatekeepers: (async () => []) as SkillsApi['listAddableGatekeepers'],
       provisionAmbientAccount: (async () => {}) as SkillsApi['provisionAmbientAccount'],
       createGatekeeperUserSelection: (async (vendorId: string, userId: string) =>
