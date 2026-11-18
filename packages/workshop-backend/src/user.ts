@@ -1614,6 +1614,16 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     await this.#syncReportGrant(grant);
   }
 
+  /**
+   * Whether this user has a connected account of gatekeeper `vendorId`. It reads this user's
+   * stored accounts and nothing else: no account is provisioned and no vendor is asked.
+   * Binding-only: what a workspace asks of its owner's account before it lends that owner's
+   * Admin API to the admin gatekeeper (OverseerImpl.lendAdminApi()).
+   */
+  async holdsGatekeeperAccount(vendorId: string): Promise<boolean> {
+    return this.#hasAccountForVendor(vendorId.toLowerCase());
+  }
+
   async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
     let models = await getGatewayModels(this.env);
     let result: AiChatAuthorInfo[] = [];
