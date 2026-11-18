@@ -1332,11 +1332,18 @@ function endedPages(): unknown[] {
   return linesOf("info", "google.drive.pdf.page_transcribed").map(({ page }) => page);
 }
 
-/** Moves the faked clock on, a millisecond at a time, until `met`: for a second of it at most. */
+/**
+ * Moves the faked clock on, a millisecond at a time, until `met`: for a second of it at most.
+ * What is waited for may take time by the real clock, of which a step of the faked one is some
+ * hundredth of a millisecond: a band's PNG is deflated on another thread. Most waits end within
+ * a step, so the first twenty are given no more; each one after waits two milliseconds by the
+ * real clock as well, which gives what is waited for two seconds to come.
+ */
 async function tickedUntil(met: () => boolean): Promise<void> {
   for (let waited = 0; !met(); waited++) {
     if (waited === 1000) throw new Error("What was waited for did not come.");
     await vi.advanceTimersByTimeAsync(1);
+    if (waited >= 20) await new Promise(resolve => realSetTimeout(resolve, 2));
   }
 }
 
