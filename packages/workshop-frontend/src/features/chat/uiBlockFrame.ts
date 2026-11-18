@@ -5,6 +5,8 @@
 
 import { RpcTarget } from 'capnweb'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from '../../sandboxDocument'
+import { isSvgImage } from './inlineImages'
+import type { InlineFile, SnapshotFileReader } from './inlineFiles'
 
 /** The Workshop's theme, as a block's frame applies it. */
 export type UiBlockTheme = {
@@ -27,6 +29,9 @@ export interface UiBlockHost {
 
   /** Reports an uncaught error in the block's code. */
   reportError(message: string): void
+
+  /** Read an image path already pinned into this message by the host parser. */
+  readImage(source: string): Promise<InlineFile>
 }
 
 /** What the Workshop may call on a block's frame. */
@@ -79,6 +84,7 @@ export type UiBlockHostOptions = {
   onMessageRequest: (message: string) => void
   onResize: (height: number) => void
   onError: (message: string) => void
+  readImage?: SnapshotFileReader
 }
 
 /**
@@ -107,12 +113,19 @@ export class UiBlockHostImpl extends RpcTarget implements UiBlockHost {
   reportError(message: string): void {
     this.#options.onError(String(message))
   }
+
+  async readImage(source: string): Promise<InlineFile> {
+    if (!this.#options.readImage) throw new Error('Files are unavailable in this view.')
+    return this.#options.readImage(source)
+  }
 }
 
 // Runs in the frame's shell, before any of the block's code, which arrives later through
 // Frame.write.
 const BOOTSTRAP_URL = `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`//# sourceURL=ui-block-bootstrap.js
 import { RpcTarget, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
+
+const isSvgImage = ${isSvgImage.toString()};
 
 const applyTheme = ({ scheme, tokens }) => {
   const root = document.documentElement.style;
@@ -134,6 +147,53 @@ const reportHeight = () =>
   host.resize(Math.ceil(document.body.getBoundingClientRect().height)).catch(() => {});
 
 let started = false;
+const images = new Map();
+const loadImage = async (image, state) => {
+  try {
+    const result = await host.readImage(state.source);
+    if (images.get(image) !== state || !image.isConnected) {
+      await result.stream?.cancel();
+      return;
+    }
+    let blob = await new Response(result.stream.pipeThrough(new TransformStream(), {
+      signal: state.controller.signal,
+    })).blob();
+    // Raster formats are sniffed by the browser. SVG needs its MIME type to decode as an image.
+    if (isSvgImage(await blob.slice(0, 1024).text())) {
+      blob = blob.slice(0, blob.size, "image/svg+xml");
+    }
+    if (images.get(image) !== state || !image.isConnected) return;
+    const url = URL.createObjectURL(blob);
+    if (state.url) URL.revokeObjectURL(state.url);
+    image.dataset.blobOid = result.oid;
+    state.url = url;
+    image.src = url;
+  } catch (error) {
+    if (images.get(image) !== state) return;
+    if (state.url) URL.revokeObjectURL(state.url);
+    state.url = "data:,";
+    image.src = state.url;
+    reportError("Could not load " + state.source + ": " + (error?.message ?? error));
+  }
+};
+const scanImages = () => {
+  for (const [image, state] of images) {
+    if (!image.isConnected || image.getAttribute("src") !== state.url && image.getAttribute("src") !== state.source) {
+      if (state.url) URL.revokeObjectURL(state.url);
+      images.delete(image);
+      state.controller.abort();
+    }
+  }
+  for (const image of document.querySelectorAll("img[src]")) {
+    const source = image.getAttribute("src");
+    const previous = images.get(image);
+    if (!previous && source.startsWith("worktree://")) {
+      const state = { source, controller: new AbortController() };
+      images.set(image, state);
+      loadImage(image, state);
+    }
+  }
+};
 class Frame extends RpcTarget {
   setTheme(theme) { applyTheme(theme); }
   write(html) {
@@ -146,6 +206,9 @@ class Frame extends RpcTarget {
       window.addEventListener("error", event => reportError(event.error?.message ?? event.message));
       window.addEventListener("unhandledrejection",
           event => reportError(event.reason?.message ?? event.reason));
+      new MutationObserver(() => scanImages()).observe(document, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ["src"],
+      });
     }
     document.write(html);
     if (first) new ResizeObserver(reportHeight).observe(document.body);
@@ -171,7 +234,7 @@ const themeStyle = ({ scheme, tokens }: UiBlockTheme) =>
 
 // The head of the frame's shell and of the block's document: the gadget UI sandbox head, the
 // theme, and the style that fits the block into the answer.
-const frameHead = (theme: UiBlockTheme) => `${SANDBOX_HEAD}
+const frameHead = (theme: UiBlockTheme) => `${SANDBOX_HEAD.replace('img-src data:;', 'img-src data: blob: worktree:;')}
   <style>
     ${themeStyle(theme)}
     html, body { margin: 0; height: auto; background: transparent; }
@@ -184,6 +247,7 @@ const frameHead = (theme: UiBlockTheme) => `${SANDBOX_HEAD}
     }
     button, input, select, textarea { font: inherit; letter-spacing: inherit; }
     code, kbd, pre, samp { font-family: var(--font-mono); }
+    img { max-width: 100%; height: auto; }
   </style>`
 
 /**

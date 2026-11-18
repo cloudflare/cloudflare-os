@@ -1,7 +1,8 @@
 // An `<inline-html>` block's frame, in Chromium.
 
 import { RpcSession } from 'capnweb'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { readSnapshotFile } from './inlineFiles'
 import {
   createUiBlockDocumentStart, createUiBlockShell, UiBlockHostImpl, type UiBlockFrame, type UiBlockHostOptions,
   type UiBlockTheme,
@@ -67,4 +68,112 @@ it('releases what a view asks to send, though its code ignores the result', asyn
   await expect.poll(() => sent.length).toBe(8)
   // Left is the host the frame was given: the eight requests' results are all released.
   await expect.poll(() => session.getStats().exports).toBe(1)
+})
+
+const png = (color: string): Uint8Array => {
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = 2
+  const context = canvas.getContext('2d')!
+  context.fillStyle = color
+  context.fillRect(0, 0, 2, 2)
+  return Uint8Array.from(atob(canvas.toDataURL().split(',')[1]), c => c.charCodeAt(0))
+}
+const byteStream = (bytes: Uint8Array) => new ReadableStream<Uint8Array>({
+  start(controller) { controller.enqueue(bytes); controller.close() },
+})
+const observedImage = (id: string, source: string) =>
+  `<img id="${id}" src="${source}" onload="agent.send(this.id + ':' + this.naturalWidth + ':' + this.src)">`
+
+it('renders only the message snapshot bytes through its narrow RPC reader', async () => {
+  const oid = 'a'.repeat(40), source = 'worktree://REPO/image.png'
+  const readBlob = vi.fn<(oid: string) => Promise<ReadableStream<Uint8Array>>>(async () => byteStream(png('red')))
+  const sent: string[] = []
+  await openBlock(observedImage('first', source) + observedImage('second', source), {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: url => readSnapshotFile({ oids: { [source]: oid }, readBlob }, url),
+  })
+  await expect.poll(() => sent.filter(message => /^(first|second):2:blob:/.test(message)).length).toBe(2)
+  expect(readBlob.mock.calls.map(([value]) => value)).toEqual([oid, oid])
+})
+
+it.each([
+  ['a&amp;b.png', 'a&b.png'],
+  ['a&#38;b.png', 'a&b.png'],
+  ['a&#x26;b.png', 'a&b.png'],
+  ['a&amp;amp;b.png', 'a&amp;b.png'],
+  ['a&notit;.png', 'a&notit;.png'],
+  ['a&quot;b.png', 'a"b.png'],
+  ['a&#x1f600;.png', 'a😀.png'],
+])('reads the pinned DOM-decoded inline image URL for %s', async (attribute, path) => {
+  const source = `worktree://REPO/${path}`, oid = 'a'.repeat(40)
+  const readBlob = vi.fn<(oid: string) => Promise<ReadableStream<Uint8Array>>>(async () => byteStream(png('red')))
+  const readImage = vi.fn<NonNullable<UiBlockHostOptions['readImage']>>(url =>
+    readSnapshotFile({ oids: { [source]: oid }, readBlob }, url))
+  const sent: string[] = []
+  await openBlock(observedImage('picture', `worktree://REPO/${attribute}`), {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readImage,
+  })
+  await expect.poll(() => sent.some(message => message.startsWith('picture:2:blob:'))).toBe(true)
+  expect(readImage).toHaveBeenCalledExactlyOnceWith(source)
+  expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
+})
+
+it.each(['remove', 'replace'])('cancels an in-progress image download when the view chooses to %s it', async action => {
+  const source = 'worktree://REPO/pending.png', trigger = 'worktree://REPO/trigger.png'
+  const replacement = 'worktree://REPO/replacement.png'
+  const first = 'a'.repeat(40), second = 'b'.repeat(40), third = 'c'.repeat(40)
+  const reading = Promise.withResolvers<void>()
+  const cancel = vi.fn<() => void>()
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  let chunks = 0
+  const pending = new ReadableStream<Uint8Array>({
+    start(value) { controller = value },
+    pull(value) {
+      if (chunks++ === 0) value.enqueue(Uint8Array.of(137, 80))
+      else reading.resolve()
+    },
+    cancel,
+  }, { highWaterMark: 0 })
+  resources.push({ [Symbol.dispose]: () => controller.error(new Error('Test ended')) })
+  const readBlob = vi.fn<(oid: string) => Promise<ReadableStream<Uint8Array>>>(async oid => {
+    if (oid === first) return pending
+    // The trigger cannot load and mutate the view until the first download is consuming bytes.
+    if (oid === second) await reading.promise
+    return byteStream(png('cyan'))
+  })
+  const sent: string[] = [], errors: string[] = []
+  const mutation = action === 'remove' ? 'target.remove()' : `target.src = '${replacement}'`
+  await openBlock(observedImage('target', source) +
+    `<img src="${trigger}" onload="const target = document.getElementById('target'); ${mutation}; agent.send('evicted')">`, {
+    onMessageRequest: message => {
+      sent.push(message)
+      // Cap'n Web's sender observes remote cancellation when its next write is acknowledged.
+      if (message === 'evicted' && cancel.mock.calls.length === 0) controller.enqueue(Uint8Array.of(1))
+    },
+    onResize: () => {}, onError: message => errors.push(message),
+    readImage: url => readSnapshotFile({ oids: { [source]: first, [trigger]: second, [replacement]: third }, readBlob }, url),
+  })
+  await expect.poll(() => sent.includes('evicted')).toBe(true)
+  await expect.poll(() => cancel.mock.calls.length).toBe(1)
+  await expect.poll(() => readBlob.mock.calls.map(([oid]) => oid))
+    .toEqual(action === 'replace' ? [first, second, third] : [first, second])
+  await expect.poll(() => sent.some(message => message.startsWith('target:2:blob:'))).toBe(action === 'replace')
+  expect(errors).toEqual([])
+})
+
+it.each(['', '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">'])(
+  'decodes SVG with prolog %s and keeps external HTTP images blocked by the sandbox', async doctype => {
+  const source = 'worktree://REPO/image.svg'
+  const readBlob = vi.fn<(oid: string) => Promise<ReadableStream<Uint8Array>>>(async () => byteStream(
+    new TextEncoder().encode('<?xml version="1.0"?>' + '<!-- comment -->'.repeat(10) + doctype +
+      '<svg xmlns="http://www.w3.org/2000/svg" width="17" height="19"/>')))
+  const sent: string[] = []
+  await openBlock(observedImage('vector', source) +
+    '<img src="https://example.com/blocked.png" onerror="agent.send(\'blocked\')">', {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: url => readSnapshotFile({ oids: { [source]: 'a'.repeat(40) }, readBlob }, url),
+  })
+  await expect.poll(() => sent.some(message => message.startsWith('vector:17:blob:'))).toBe(true)
+  await expect.poll(() => sent.includes('blocked')).toBe(true)
+  expect(readBlob).toHaveBeenCalledTimes(1)
 })

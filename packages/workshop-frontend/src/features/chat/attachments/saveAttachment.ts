@@ -1,5 +1,5 @@
-/** Hands bytes to the browser as a file download. */
-export const saveAttachment = (bytes: Uint8Array, name: string | undefined, mimeType: string) => {
+/** Hands bytes or an existing Blob to the browser as a file download. */
+export const saveAttachment = (bytes: Uint8Array | Blob, name: string | undefined, mimeType: string) => {
   const url = URL.createObjectURL(
     new Blob([bytes as BlobPart], { type: mimeType || "application/octet-stream" }));
   try {

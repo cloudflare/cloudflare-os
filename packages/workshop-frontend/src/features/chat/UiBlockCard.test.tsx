@@ -32,6 +32,7 @@ vi.mock('@cloudflare/kumo', () => ({
 vi.mock('../../ThemeContext', () => ({ useTheme: () => ({ resolvedThemeMode: 'light' }) }))
 
 import { UiBlockCard, type UiBlockCardProps } from './UiBlockCard'
+import type { FileSnapshots } from './inlineFiles'
 
 // Every card is near the viewport.
 class VisibleIntersectionObserver {
@@ -108,6 +109,24 @@ describe('UiBlockCard', () => {
 
   const buttonNamed = (name: string) =>
     [...container.querySelectorAll('button')].find(button => button.textContent === name)
+
+  it('provides only this block’s literal images, excluding download-only and other blocks’ pins', async () => {
+    const source = 'worktree://SCRATCH/image&more&again.png'
+    const download = 'worktree://OUTPUTS/report.csv', other = 'worktree://OUTPUTS/other.png'
+    const readBlob = vi.fn<FileSnapshots['readBlob']>().mockRejectedValue(new Error('Blob unavailable'))
+    await act(async () => root.render(<UiBlockCard
+      block={{ ...BLOCK, html: `<img src="${source.replaceAll('&', '&amp;')}"><!-- <img src="${download}"> -->` +
+        `<script>const example = '<img src="${other}">';</script>` }} scrollRoot={scrollRoot}
+      onHeightChange={onHeightChange} onSendMessage={async () => {}}
+      files={{ oids: { [source]: 'a'.repeat(40), [download]: 'b'.repeat(40), [other]: 'c'.repeat(40) }, readBlob }} />))
+    const host = await handshake(container.querySelector('iframe')!, new FakeFrame())
+    await expect(Promise.resolve(host.readImage(source))).rejects.toThrow('Blob unavailable')
+    expect(readBlob).toHaveBeenCalledWith('a'.repeat(40))
+    await expect(Promise.resolve(host.readImage('worktree://SCRATCH/other.png'))).rejects.toThrow(/File unavailable/)
+    await expect(Promise.resolve(host.readImage(download))).rejects.toThrow(/File unavailable/)
+    await expect(Promise.resolve(host.readImage(other))).rejects.toThrow(/File unavailable/)
+    expect(readBlob).toHaveBeenCalledTimes(1)
+  })
 
   it("sends the view's message as the viewer's only when they click Send", async () => {
     const host = await handshake(await renderCard())
