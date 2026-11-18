@@ -713,6 +713,37 @@ describe("a change to a report", () => {
   });
 });
 
+describe("a change whose event cannot be written", () => {
+  it("is undone, whichever write made it", async () => {
+    let reports = store();
+    let report = await reports.file();
+    await reports.setStatus(report.id, "answered");
+    await reports.settled();
+    let read = () => reports.run(host => host.get(report.id));
+    let before = await read();
+    await reports.sql(`CREATE TRIGGER no_event BEFORE INSERT ON events
+        BEGIN SELECT RAISE(ABORT, 'The event cannot be written.'); END`);
+
+    let label = { via: "api" } as const;
+    for (let write of [
+      (host: IssueReportsDurableObject) => host.reply(ADA, report.id, "Any news?"),
+      (host: IssueReportsDurableObject) =>
+          host.addEntry(GRACE, label, report.id, "Looking.", "admins"),
+      (host: IssueReportsDurableObject) => host.setStatus(GRACE, label, report.id, "closed"),
+      (host: IssueReportsDurableObject) => host.claim(GRACE, label, report.id),
+      (host: IssueReportsDurableObject) => host.setLinks(report.id, ["https://example.test/1"]),
+      (host: IssueReportsDurableObject) => host.submit(
+          ADA, { text: "Another report.", priority: "low" }, false),
+    ]) {
+      await expect(reports.run(write)).rejects.toThrow("The event cannot be written.");
+    }
+
+    expect(await read()).toStrictEqual(before);
+    expect(await reports.count("reports")).toBe(1);
+    expect(await reports.waiting()).toStrictEqual([]);
+  });
+});
+
 describe("a store whose events table has no status column", () => {
   // The table as a store made without the column holds it.
   const EVENTS_WITHOUT_STATUS = `CREATE TABLE events (

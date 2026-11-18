@@ -564,14 +564,16 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
 
     let id = crypto.randomUUID();
     let now = Date.now();
-    sql.exec(
-      `INSERT INTO reports (id, filed_at, reporter_id, reporter_name, text, priority,
-         workspace_id, owns_workspace, context, status, links, updated_at, last_admin_public,
-         seen)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', '[]', ?, 0, 0)`,
-      id, now, user.id, user.name, text, input.priority, workspaceId ?? null,
-      ownsWorkspace && workspaceId !== undefined ? 1 : 0, JSON.stringify(context), now);
-    this.#addEvent("reported", id, input.priority, now);
+    this.ctx.storage.transactionSync(() => {
+      sql.exec(
+        `INSERT INTO reports (id, filed_at, reporter_id, reporter_name, text, priority,
+           workspace_id, owns_workspace, context, status, links, updated_at, last_admin_public,
+           seen)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', '[]', ?, 0, 0)`,
+        id, now, user.id, user.name, text, input.priority, workspaceId ?? null,
+        ownsWorkspace && workspaceId !== undefined ? 1 : 0, JSON.stringify(context), now);
+      this.#addEvent("reported", id, input.priority, now);
+    });
     await this.#tellSoon();
     return ownReportOf(this.#report("r.id = ?", id)!);
   }
@@ -810,9 +812,12 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.tooManyReplies);
     }
     let reopens = report.status === "answered" || report.status === "waitingOnReporter";
-    let entry = this.#addEntry(report.seq, user, "public", null, body,
-        reopens ? "withAdmin" : undefined);
-    this.#addEvent("changed", report.id, "reply", entry.at, reopens ? "withAdmin" : undefined);
+    let entry = this.ctx.storage.transactionSync(() => {
+      let entry = this.#addEntry(report.seq, user, "public", null, body,
+          reopens ? "withAdmin" : undefined);
+      this.#addEvent("changed", report.id, "reply", entry.at, reopens ? "withAdmin" : undefined);
+      return entry;
+    });
     await this.#tellSoon();
     return entryOf(entry, "reporter");
   }
@@ -1025,8 +1030,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (written >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
-    let row = this.#addEntry(seq, author, visibility, label, body);
-    this.#addEvent("changed", id, visibility === "public" ? "reply" : "note", row.at);
+    let row = this.ctx.storage.transactionSync(() => {
+      let row = this.#addEntry(seq, author, visibility, label, body);
+      this.#addEvent("changed", id, visibility === "public" ? "reply" : "note", row.at);
+      return row;
+    });
     await this.#tellSoon();
     return entryOf(row, "admins");
   }
@@ -1059,11 +1067,13 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     let reads = issueReportStatusForReporter;
     let visibility: IssueReportEntry["visibility"] =
         reads(report.status as IssueReportStatus) === reads(status) ? "admins" : "public";
-    let { at } = this.#addEntry(report.seq, author, visibility, label, "", status);
-    if (report.status === "investigating" && status !== "new") {
-      this.#addEvent("investigationComplete", report.id, status, at);
-    }
-    this.#addEvent("changed", report.id, "status", at, status);
+    this.ctx.storage.transactionSync(() => {
+      let { at } = this.#addEntry(report.seq, author, visibility, label, "", status);
+      if (report.status === "investigating" && status !== "new") {
+        this.#addEvent("investigationComplete", report.id, status, at);
+      }
+      this.#addEvent("changed", report.id, "status", at, status);
+    });
     await this.#tellSoon();
   }
 
@@ -1093,9 +1103,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (report.assignee_id !== null && report.assignee_id !== takeOverFrom) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
     }
-    let { at } = this.#assign(
-        report.seq, holder, label, report.assignee_id === null ? "claimed" : "takenOver");
-    this.#addEvent("changed", report.id, "assignment", at);
+    this.#assign(report, holder, label, report.assignee_id === null ? "claimed" : "takenOver");
     await this.#tellSoon();
   }
 
@@ -1114,20 +1122,22 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (report.assignee_id !== holder.id) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.assigned);
     }
-    let { at } = this.#assign(report.seq, holder, label, "released");
-    this.#addEvent("changed", report.id, "assignment", at);
+    this.#assign(report, holder, label, "released");
     await this.#tellSoon();
   }
 
-  // Enters a change of assignee in a report's thread, bounded for the admin gatekeeper as its
-  // changes of status are (see setStatus()).
-  #assign(reportSeq: number, author: NamedUser, label: Pick<AdminAccessRecord, "via" | "agent">,
-      assignment: IssueReportAssignment): EntryRow {
+  // Enters a change of assignee in a report's thread, with its event, bounded for the admin
+  // gatekeeper as its changes of status are (see setStatus()).
+  #assign(report: { seq: number; id: string }, author: NamedUser,
+      label: Pick<AdminAccessRecord, "via" | "agent">, assignment: IssueReportAssignment): void {
     if (label.via === "gatekeeper" &&
-        this.#threadCount(reportSeq, "assignment", true) >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
+        this.#threadCount(report.seq, "assignment", true) >= MAX_ISSUE_REPORT_THREAD_ENTRIES) {
       throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.threadFull);
     }
-    return this.#addEntry(reportSeq, author, "admins", label, "", undefined, assignment);
+    this.ctx.storage.transactionSync(() => {
+      let { at } = this.#addEntry(report.seq, author, "admins", label, "", undefined, assignment);
+      this.#addEvent("changed", report.id, "assignment", at);
+    });
   }
 
   /** Replaces a report's links with `links` as reportLinks() keeps them. Links the report
@@ -1135,12 +1145,15 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
    * links that are not ones; refused `notFound`. */
   async setLinks(reportId: string, links: string[]): Promise<void> {
     let kept = JSON.stringify(reportLinks(links));
-    let changed = this.ctx.storage.sql.exec(
-        "UPDATE reports SET links = ? WHERE id = ? AND links <> ? RETURNING seq",
-        kept, reportId, kept).toArray();
+    let changed = this.ctx.storage.transactionSync(() => {
+      let rows = this.ctx.storage.sql.exec(
+          "UPDATE reports SET links = ? WHERE id = ? AND links <> ? RETURNING seq",
+          kept, reportId, kept).toArray();
+      if (rows.length > 0) this.#addEvent("changed", reportId, "links", Date.now());
+      return rows.length > 0;
+    });
     // No row: the links are those the report has, or there is no such report.
-    if (changed.length === 0) return void this.#reportSeq(reportId);
-    this.#addEvent("changed", reportId, "links", Date.now());
+    if (!changed) return void this.#reportSeq(reportId);
     await this.#tellSoon();
   }
 
@@ -1242,8 +1255,9 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
 
   // --- Events ---
 
-  // Writes the row that tells the admin gatekeeper of a change. Called in the synchronous step
-  // that made the change, so the two are one write. `status`: the status a write to a report set.
+  // Writes the row that tells the admin gatekeeper of a change. Called in the transaction that
+  // made the change, so the two are one write: a row that cannot be written undoes the change.
+  // `status`: the status a write to a report set.
   #addEvent(kind: IssueReportEvent["kind"], reportId: string,
       label: IssueReportPriority | IssueReportStatus | IssueReportChange, at: number,
       status?: IssueReportStatus): void {
