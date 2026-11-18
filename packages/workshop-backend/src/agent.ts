@@ -342,8 +342,9 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   overseer.ts?
  */
 export interface AgentHooks {
-  /** In-process metadata lookup for pinning output files; never exposed to the agent or UI. */
-  getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string): Promise<string | undefined>;
+  /** In-process output-file pinning against the running turn; never exposed to the agent or UI. */
+  getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -4285,7 +4286,8 @@ async function runAgentPass(
   const snapshotEmbeds = (text: string, streaming: boolean) => snapshotChatEmbeds(
       text, embeds, async (binding, path) => {
         const entry = chatBindings.get(binding);
-        return entry?.type === "workpiece" ? hooks.getWorktreeFileOid(chatId, entry.id, path) : undefined;
+        return entry?.type === "workpiece"
+            ? hooks.getWorktreeFileOid(chatId, entry.id, path, worktreeTurnAccess) : undefined;
       }, streaming);
 
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.

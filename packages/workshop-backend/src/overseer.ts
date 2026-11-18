@@ -2844,41 +2844,25 @@ class OverseerImpl implements AgentHooks {
   // bumps the generation or is caught by the revision check, and chat deletion clears it via
   // destroyLiveChat.
   #chatContentCache = new Map<number, {generation: number, revision: number,
-                                       content: CodeContent,
-                                       touched?: {sequence: number, paths: Map<WorkpieceId, Set<string>>}}>();
+                                       content: CodeContent}>();
 
   invalidateChatContent(chatId: number): void {
     this.#chatContentCache.delete(chatId);
   }
 
-  async getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string): Promise<string | undefined> {
-    // Worktree content is a lazy overlay: an absent path can mean an untouched base or a deletion.
-    for (let attempt = 0; ; attempt++) {
-      const record = this.storage.gadgets.get(id);
-      if (record?.type !== "worktree" || record.chatId !== chatId) {
-        throw new Error(`No worktree in this chat: ${id}`);
-      }
-      const meta = this.getChatMetaOrThrow(chatId);
-      const position = JSON.stringify(meta.codeBase);
-      const sequence = this.nextChatSequencePeek(chatId);
-      const content = await this.getCurrentChatContent(chatId, meta);
-      const cached = this.#chatContentCache.get(chatId);
-      let touched = cached?.content === content ? cached.touched : undefined;
-      if (touched?.sequence !== sequence) {
-        const messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
-        touched = {sequence, paths: this.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
-            this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation))};
-        if (cached?.content === content) cached.touched = touched;
-      }
-      const value = content.get(id)?.get(path);
-      const result = value !== undefined
-          ? typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)).oid : value.oid
-          : touched.paths.get(id)?.has(path) ? undefined : await this.gitCache.fileOidAtCommit(
-              this.worktreePinBases(meta).get(id) ?? record.pinBase, path);
-      if (position === JSON.stringify(this.getChatMetaOrThrow(chatId).codeBase) &&
-          sequence === this.nextChatSequencePeek(chatId)) return result;
-      if (attempt >= 4) throw new Error("The chat is changing too quickly; please retry.");
+  async getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined> {
+    const record = this.storage.gadgets.get(id);
+    if (record?.type !== "worktree" || record.chatId !== chatId) {
+      throw new Error(`No worktree in this chat: ${id}`);
     }
+    const value = turn.getOverlayFiles(id).get(path);
+    if (value !== undefined) {
+      return typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)).oid : value.oid;
+    }
+    if (turn.getRemovedPaths(id).has(path)) return undefined;
+    const base = turn.getBaseCommit(id);
+    return base === undefined ? undefined : this.gitCache.fileOidAtCommit(base, path);
   }
 
   // Live row count that triggers materialization (see submitCodeChange). A field so tests can
