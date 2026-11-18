@@ -2,11 +2,13 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { Button, Loader, Select, Table, useKumoToastManager } from '@cloudflare/kumo'
 import { ArrowsClockwise } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import { ADMIN_WORKSPACE_ACCESS_LEVELS, MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
+import {
+  ADMIN_WORKSPACE_ACCESS_LEVELS, ADMIN_WORKSPACE_METHODS, MAX_ADMIN_AUDIT_RETENTION_DAYS,
+} from '@gadgets/workshop-shared/api'
 import type { AdminApi, AdminAuditStats, AdminWorkspaceAccess } from '@gadgets/workshop-shared/api'
 import { DurationSetting } from '../../components/DurationSetting'
 import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
-import { ACCESS_LEVEL_NAMES } from './accessNames'
+import { ACCESS_LEVEL_NAMES, CONTENT_ABOVE_MAX_HELP, CONTENT_ACCESS_HELP } from './accessNames'
 import type { AuditFilter } from './auditFilter'
 import { AuditLog } from './AuditLog'
 import type { AuditSettings } from './auditSettings'
@@ -51,9 +53,30 @@ const Writes = ({ count }: { count: unknown }) => typeof count !== 'number' ? nu
   </span>
 )
 
-const StatsCards = ({ stats, onFilterBy }: {
+// The window's content reads, which `onShow` lists in the log. Left out, as the writes
+// are, when the backend's statistics do not count them.
+const ContentReads = ({ count, onShow }: { count: unknown; onShow: () => void }) => {
+  if (typeof count !== 'number') return null
+  const counted = `${NUMBER.format(count)} ${count === 1 ? 'content read' : 'content reads'}`
+  return (
+    <span className="block">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 text-sm"
+        aria-label={`${counted}: show only content reads`}
+        onClick={onShow}
+      >
+        {counted}
+      </Button>
+    </span>
+  )
+}
+
+const StatsCards = ({ stats, onFilterBy, onShowContentReads }: {
   stats: AdminAuditStats
   onFilterBy: (filter: AuditFilter) => void
+  onShowContentReads: () => void
 }) => (
   <div className="grid items-start gap-6 lg:grid-cols-2">
     <div className={CARD}>
@@ -62,6 +85,7 @@ const StatsCards = ({ stats, onFilterBy }: {
         <span className="text-2xl font-semibold text-kumo-default tabular-nums">{NUMBER.format(stats.totalEvents)}</span>
         {' '}{stats.totalEvents === 1 ? 'action' : 'actions'}, by UTC day
         <Writes count={stats.writes} />
+        <ContentReads count={stats.contentReads} onShow={onShowContentReads} />
       </p>
       <Table>
         <Table.Header>
@@ -132,10 +156,13 @@ const accessHelp = ({ chosen, effective, max }: AuditSettings['adminWorkspaceAcc
       'user’s account, Metadata withholds what each connected account’s gatekeeper says of it ' +
       '(its names, avatar and what it grants) and the ids of the user’s blueprints. Off refuses ' +
       'inspection, and reaches views already open within about a minute.',
+    CONTENT_ACCESS_HELP,
   ]
   if (max === 'off') {
     help.push('This deployment’s ADMIN_WORKSPACE_ACCESS_MAX allows no inspection (a value that is ' +
       'not a level counts as off).')
+  } else if (max !== 'content') {
+    help.push(CONTENT_ABOVE_MAX_HELP)
   }
   if (chosen !== effective) {
     help.push(`The level set here is ${ACCESS_LEVEL_NAMES[chosen]}, which that maximum limits to ` +
@@ -238,6 +265,18 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
   }
 
   const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
+  // Content is exposed only by a call into a workspace: a Kind or an Action that no such call has
+  // would leave nothing listed, so it goes, and the other filters stay.
+  const showContentReads = () => {
+    const { kind, method, ...kept } = filter
+    const methods: readonly string[] = ADMIN_WORKSPACE_METHODS
+    onFilterChange({
+      ...kept,
+      ...(kind === 'workspace' && { kind }),
+      ...(method !== undefined && methods.includes(method) && { method }),
+      exposed: 'content',
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -247,8 +286,11 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             <h2 id={activityHeading} className="text-lg font-semibold text-kumo-strong">Admin activity</h2>
             <p className="text-sm text-kumo-subtle mt-0.5">
               Every change an admin makes to the deployment&rsquo;s settings, every admin call into a
-              workspace or a user&rsquo;s account, and every admin write to a workspace, kept for{' '}
-              {NUMBER.format(retention.effective)} days.
+              workspace or a user&rsquo;s account, every admin write to a workspace and every step of
+              admins&rsquo; access to a workspace&rsquo;s content without its owner, kept for{' '}
+              {NUMBER.format(retention.effective)} days. The log records what admins do: a grant a
+              workspace&rsquo;s owner gives is the owner&rsquo;s own record, shown on the
+              workspace&rsquo;s admin page.
             </p>
           </div>
           <Button
@@ -274,7 +316,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             <Button variant="secondary" size="sm" className="mt-3" onClick={reload}>Retry</Button>
           </div>
         )}
-        {stats !== null && !statsFailed && <StatsCards stats={stats} onFilterBy={filterBy} />}
+        {stats !== null && !statsFailed && <StatsCards stats={stats} onFilterBy={filterBy} onShowContentReads={showContentReads} />}
 
         <section className={CARD} aria-labelledby={logHeading}>
           <h3 id={logHeading} className="text-lg font-semibold text-kumo-strong mb-4">Activity log</h3>

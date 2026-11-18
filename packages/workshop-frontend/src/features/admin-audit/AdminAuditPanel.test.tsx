@@ -3,6 +3,12 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from '@tanstack/react-router'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import { ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
@@ -12,6 +18,7 @@ import type {
   AdminAuditPage,
   AdminAuditRecord,
   AdminAuditStats,
+  AdminGrantRecord,
   AdminSettingRecord,
   AdminUserAccessRecord,
   AdminWriteRecord,
@@ -145,6 +152,22 @@ const writeRecord = (patch: Partial<AdminWriteRecord> = {}): AdminWriteRecord =>
   ...patch,
 })
 
+const grantRecord = (patch: Partial<AdminGrantRecord> = {}): AdminGrantRecord => ({
+  kind: 'grant',
+  at: WRITE_AT,
+  admin: 'second-admin',
+  sessionId: 'session-4',
+  via: 'api',
+  workspaceId: 'ws-titled',
+  workspaceOwner: 'owner@example.test',
+  workspaceTitle: 'Quarterly report',
+  reason: 'Ticket 42: owner unreachable',
+  method: 'requestContentAccess',
+  requestId: 'request-1',
+  requestedBy: 'admin',
+  ...patch,
+})
+
 const testPage = (records: AdminAuditRecord[] = [settingRecord()], nextCursor?: string): AdminAuditPage =>
   nextCursor === undefined ? { records } : { records, nextCursor }
 
@@ -226,10 +249,13 @@ const changesIn = (details: HTMLElement) => [...details.querySelectorAll('li')].
 const detail = (details: HTMLElement, term: string) =>
   [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent ?? null
 
+// The link a record's details hold to the admin's page for its workspace.
 // What listAdminAudit() is asked for when the panel loads a page.
 const pageQuery = (query: Parameters<AdminApi['listAdminAudit']>[0] = {}) =>
   ({ admin: undefined, method: undefined, cursor: undefined, limit: 50, ...query })
 
+// A router that knows the page a record's details link: the admin's page for a workspace.
+    routeTree: rootRoute.addChildren(['/', '/admin/workspace/$workspaceId']
 describe('AdminAuditPanel', () => {
   let container: HTMLDivElement
   let root: Root
@@ -278,13 +304,16 @@ describe('AdminAuditPanel', () => {
     return element
   }
   const accessSelect = () => selectIn('Inspection access')
-  // The log's one select; its other comboboxes are text fields.
-  const kindSelect = () => {
+  // The log's selects, in the order shown: the kind, then what a call exposed. Its other
+  // comboboxes are text fields.
+  const logSelect = (index: number) => {
     const element = [...card('Activity log').querySelectorAll<HTMLElement>('[role="combobox"]')]
-      .find((combobox) => !(combobox instanceof HTMLInputElement))
-    if (!element) throw new Error('no kind select')
+      .filter((combobox) => !(combobox instanceof HTMLInputElement))[index]
+    if (!element) throw new Error(`no select ${index} in the log`)
     return element
   }
+  const kindSelect = () => logSelect(0)
+  const exposedSelect = () => logSelect(1)
 
   const retentionInput = () => {
     const labelElement = [...container.querySelectorAll('label')]
@@ -359,9 +388,51 @@ describe('AdminAuditPanel', () => {
 
       expect([...card('Most active admins').querySelectorAll('thead th')].map((head) => head.textContent))
         .toEqual(['Admin', 'Actions'])
-      for (const title of ['Admin actions, last 7 days', 'Most active admins']) {
-        expect(card(title).textContent).not.toMatch(/content read/i)
-      }
+      expect(card('Most active admins').textContent).not.toMatch(/content read/i)
+    })
+
+    it('counts the week’s content reads, one as a singular, and lists them in the log when the count is chosen', async () => {
+      const admin = fakeAdmin()
+      admin.getAdminAuditStats.mockResolvedValueOnce(testStats({ contentReads: 1 }))
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ contentReads: 1234 }))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin, { admin: 'admin' })
+
+      expect(card('Admin actions, last 7 days').textContent).toMatch(/1 content read(?!s)/)
+      await click(button('Refresh'))
+      expect(card('Admin actions, last 7 days').textContent).toContain('1,234 content reads')
+      await click(within(card('Admin actions, last 7 days'), '1,234 content reads: show only content reads'))
+
+      expect(onFilterChange).toHaveBeenCalledExactlyOnceWith({ admin: 'admin', exposed: 'content' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin', exposed: 'content' }))
+      expect(exposedSelect().textContent).toBe('Content reads')
+    })
+
+    it('drops a Kind or an Action no content read has when the count is chosen, and keeps the rest', async () => {
+      const admin = fakeAdmin()
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ contentReads: 3 }))
+      const { onFilterChange } = await render(settingsWith(), admin,
+        { kind: 'grant', method: 'approveContentAccess', workspace: 'ws-1', owner: 'olive', admin: 'admin' })
+
+      await click(within(card('Admin actions, last 7 days'), '3 content reads: show only content reads'))
+
+      expect(onFilterChange).toHaveBeenLastCalledWith(
+        { workspace: 'ws-1', owner: 'olive', admin: 'admin', exposed: 'content' })
+    })
+
+    it('keeps a workspace Kind and a workspace call’s Action when the count is chosen', async () => {
+      const admin = fakeAdmin()
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ contentReads: 3 }))
+      const { onFilterChange } = await render(settingsWith(), admin, { kind: 'workspace', method: 'readFile' })
+
+      await click(within(card('Admin actions, last 7 days'), '3 content reads: show only content reads'))
+
+      expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'workspace', method: 'readFile', exposed: 'content' })
+    })
+
+    it('counts no content reads as none, rather than leaving the count out', async () => {
+      await render()
+
+      expect(card('Admin actions, last 7 days').textContent).toContain('0 content reads')
     })
 
     it('counts the week’s writes, one as a singular', async () => {
@@ -375,16 +446,17 @@ describe('AdminAuditPanel', () => {
       expect(card('Admin actions, last 7 days').textContent).toContain('1,234 writes')
     })
 
-    it('says nothing of writes to a backend whose statistics lack the count', async () => {
+    it('says nothing of writes or content reads to a backend whose statistics lack the counts', async () => {
       const admin = fakeAdmin()
       // As a backend older than admin writes sends them.
-      const { writes: _, ...older } = testStats()
+      const { writes: _, contentReads: __, ...older } = testStats()
       admin.getAdminAuditStats.mockResolvedValue(older as AdminAuditStats)
       await render(settingsWith(), admin)
 
       const shown = card('Admin actions, last 7 days').textContent
       expect(shown).toMatch(/\d+ actions, by UTC day/)
       expect(shown).not.toMatch(/\d+ writes?\b/)
+      expect(shown).not.toContain('content read')
       expect(shown).not.toContain('NaN')
     })
 
@@ -781,7 +853,7 @@ describe('AdminAuditPanel', () => {
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
-        formatFullTimestamp(ACCESS_AT), 'admin', 'getChatState', 'Workspace accessRefused', 'owner@example.test',
+        formatFullTimestamp(ACCESS_AT), 'admin', 'getChatState', 'Workspace accessMetadataRefused', 'owner@example.test',
       ])
       expect(logRows()[0].querySelector('[title="Access off"]')?.textContent).toBe('Refused')
       const details = await expand()
@@ -801,7 +873,7 @@ describe('AdminAuditPanel', () => {
       await render(settingsWith(), admin)
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
-      expect(cells.slice(4)).toEqual(['Workspace access', 'owner@example.test'])
+      expect(cells.slice(4)).toEqual(['Workspace accessMetadata', 'owner@example.test'])
       const details = await expand()
       expect(detail(details, 'Access')).toBe('Metadata')
       expect(details.textContent).toContain('Untitled')
@@ -872,7 +944,7 @@ describe('AdminAuditPanel', () => {
 
       expect(kindSelect().textContent).toBe('Any kind')
       expect((await openOptions(kindSelect())).map((option) => option.textContent))
-        .toEqual(['Any kind', 'Workspace access', 'User access', 'Workspace write', 'Setting change'])
+        .toEqual(['Any kind', 'Workspace access', 'User access', 'Workspace write', 'Content grant', 'Setting change'])
       await choose(kindSelect(), 'Workspace access')
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: 'workspace' })
       expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ kind: 'workspace' }))
@@ -897,21 +969,184 @@ describe('AdminAuditPanel', () => {
       expect(onFilterChange).toHaveBeenLastCalledWith({ kind: undefined })
       expect(listAdminAudit.mock.lastCall?.[0]?.kind).toBeUndefined()
       expect(kindSelect().textContent).toBe('Any kind')
-      for (const [query] of listAdminAudit.mock.calls) {
-        expect(query).not.toHaveProperty('exposed')
-        expect(query).not.toHaveProperty('sensitivity')
-      }
+      // A kind alone asks for nothing of what a call exposed.
+      for (const [query] of listAdminAudit.mock.calls) expect(query?.exposed).toBeUndefined()
     })
 
-    it('names a record by its kind, and says nothing of what a call returned', async () => {
+    it('filters by what a call exposed, which the log asks the server for as it is', async () => {
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), fakeAdmin(), { admin: 'admin' })
+
+      expect(exposedSelect().textContent).toBe('Anything')
+      expect((await openOptions(exposedSelect())).map((option) => option.textContent))
+        .toEqual(['Anything', 'Content reads', 'Metadata only'])
+      await choose(exposedSelect(), 'Content reads')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'admin', exposed: 'content' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin', exposed: 'content' }))
+      expect(exposedSelect().textContent).toBe('Content reads')
+
+      await choose(exposedSelect(), 'Metadata only')
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ admin: 'admin', exposed: 'metadata' }))
+      expect(exposedSelect().textContent).toBe('Metadata only')
+
+      await choose(exposedSelect(), 'Anything')
+      expect(onFilterChange).toHaveBeenLastCalledWith({ admin: 'admin', exposed: undefined })
+      expect(listAdminAudit.mock.lastCall?.[0]?.exposed).toBeUndefined()
+      expect(exposedSelect().textContent).toBe('Anything')
+    })
+
+    it('starts again from the newest page when what a call exposed is chosen', async () => {
       const admin = fakeAdmin()
-      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord(), settingRecord()]))
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord()], 'cursor-2'))
+      const { listAdminAudit } = await render(settingsWith(), admin)
+      await click(within(pages(), 'Older'))
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ cursor: 'cursor-2' }))
+
+      await choose(exposedSelect(), 'Content reads')
+
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ exposed: 'content' }))
+      expect(pages().textContent).toContain('Page 1')
+    })
+
+    it('names a record by its kind, with what a call into a workspace exposed beside it and nowhere else', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(
+        testPage([accessRecord(), userRecord(), settingRecord(), writeRecord(), grantRecord()]))
       await render(settingsWith(), admin)
-      await openOptions(kindSelect())
 
       expect([...card('Activity log').querySelectorAll('thead th')].map((head) => head.firstChild?.textContent))
         .toEqual(['Expand', 'Time', 'Admin', 'Action', 'Kind', 'Target user'])
-      expect(document.body.textContent).not.toMatch(/sensitivity|workspace metadata|content read/i)
+      expect(logRows().map((row) => row.querySelectorAll('td')[4].textContent)).toEqual([
+        'Workspace accessMetadataRefused', 'User access', 'Setting change', 'Workspace write',
+        'Content grant',
+      ])
+    })
+
+    it('shows a content read: its badge, and in its details what the view was opened for and the grant it ran under', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord({
+        method: 'getChat', requested: 'content', access: 'content', exposed: 'content', grantId: 'grant-7f3a',
+        refused: undefined,
+      })]))
+      await render(settingsWith(), admin)
+
+      const kind = logRows()[0].querySelectorAll('td')[4]
+      expect(kind.textContent).toBe('Workspace accessContent')
+      expect(kind.querySelector('[title="The call’s answer held content"]')?.textContent).toBe('Content')
+      const details = await expand()
+      expect(detail(details, 'Opened for')).toBe('Content')
+      expect(detail(details, 'Access')).toBe('Content')
+      expect(detail(details, 'Under grant')).toBe('grant-7f3a')
+    })
+
+    it('shows a call made under a grant whose answer held no content: the Metadata badge, and its grant', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord({
+        method: 'listFiles', requested: 'content', access: 'content', grantId: 'grant-7f3a', refused: undefined,
+      })]))
+      await render(settingsWith(), admin)
+
+      const kind = logRows()[0].querySelectorAll('td')[4]
+      expect(kind.textContent).toBe('Workspace accessMetadata')
+      expect(kind.querySelector('[title="The call’s answer held no content"]')?.textContent).toBe('Metadata')
+      expect(detail(await expand(), 'Under grant')).toBe('grant-7f3a')
+    })
+
+    it.each([
+      { code: ADMIN_ACCESS_ERROR_CODES.contentOff, name: 'Content off', requested: 'content', access: 'metadata' },
+      {
+        code: ADMIN_ACCESS_ERROR_CODES.contentNotRequested, name: 'Content not requested', requested: 'metadata',
+        access: 'content',
+      },
+      { code: ADMIN_ACCESS_ERROR_CODES.grantRequired, name: 'No grant', requested: 'content', access: 'content' },
+    ] as const)('names a content call refused $code: $name', async ({ code, name, requested, access }) => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        accessRecord({ method: 'readFile', args: { gadgetId: 'gadget-1', path: 'src/main.ts' }, requested, access, refused: code }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const kind = logRows()[0].querySelectorAll('td')[4]
+      // A refused call read nothing, so it exposed no content.
+      expect(kind.textContent).toBe('Workspace accessMetadataRefused')
+      expect(kind.querySelector(`[title="${name}"]`)?.textContent).toBe('Refused')
+      const details = await expand()
+      expect(detail(details, 'Access')).toBe(`${access === 'content' ? 'Content' : 'Metadata'} · refused: ${name}`)
+      expect(detail(details, 'Opened for')).toBe(requested === 'content' ? 'Content' : null)
+      expect(detail(details, 'Under grant')).toBeNull()
+    })
+
+    it('shows a record of the shape kept before content reads as a metadata call, with no line for a view’s purpose or a grant', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord({ access: 'metadata', refused: undefined })]))
+      await render(settingsWith(), admin)
+
+      expect(logRows()[0].querySelectorAll('td')[4].textContent).toBe('Workspace accessMetadata')
+      const details = await expand()
+      expect(detail(details, 'Opened for')).toBeNull()
+      expect(detail(details, 'Under grant')).toBeNull()
+      expect(detail(details, 'Access')).toBe('Metadata')
+    })
+
+    it('shows a record that says neither what its view was opened for nor what it exposed with no badge and no line for either', async () => {
+      const { requested: _, exposed: __, ...bare } = accessRecord({ access: 'metadata', refused: undefined })
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([bare as unknown as AdminAccessRecord]))
+      await render(settingsWith(), admin)
+
+      const row = logRows()[0]
+      expect(row.querySelectorAll('td')[4].textContent).toBe('Workspace access')
+      const details = await expand()
+      expect(detail(details, 'Opened for')).toBeNull()
+      expect(detail(details, 'Under grant')).toBeNull()
+      expect(row.textContent).not.toContain('undefined')
+      expect(details.textContent).not.toContain('undefined')
+    })
+
+    it.each(['full', 'constructor'])('shows no badge for a record whose stored exposure, %s, the API does not name', async (exposed) => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        { ...accessRecord({ access: 'metadata', refused: undefined }), exposed } as unknown as AdminAccessRecord,
+      ]))
+      await render(settingsWith(), admin)
+
+      const row = logRows()[0]
+      expect(row.querySelectorAll('td')[4].textContent).toBe('Workspace access')
+      expect(row.textContent).not.toContain('undefined')
+    })
+
+    it('shows a content access request’s steps: its requester apart from who took the step, and the grant an approval gave and an ending ended', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        grantRecord({
+          method: 'endWorkspaceGrant', admin: 'third-admin', grantId: 'grant-7f3a',
+          endReason: 'Ticket 42 closed',
+        }),
+        grantRecord({ method: 'approveContentAccess', grantId: 'grant-7f3a', replacedGrantId: 'grant-1c2d' }),
+        grantRecord({ method: 'requestContentAccess', admin: 'admin' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      expect(logRows().map((row) => [...row.querySelectorAll('td')].slice(2).map((cell) => cell.textContent)))
+        .toEqual([
+          ['third-admin', 'endWorkspaceGrant', 'Content grant', 'owner@example.test'],
+          ['second-admin', 'approveContentAccess', 'Content grant', 'owner@example.test'],
+          ['admin', 'requestContentAccess', 'Content grant', 'owner@example.test'],
+        ])
+      const ended = await expand(0)
+      expect(detail(ended, 'Workspace')).toContain('Quarterly report')
+      expect(detail(ended, 'Request')).toBe('request-1')
+      expect(detail(ended, 'Reason')).toBe('Ticket 42: owner unreachable')
+      expect(detail(ended, 'Requested by')).toBe('admin')
+      expect(detail(ended, 'Grant')).toBe('grant-7f3a')
+      expect(detail(ended, 'Reason for ending')).toBe('Ticket 42 closed')
+      const approved = await expand(1)
+      expect(detail(approved, 'Grant')).toBe('grant-7f3a')
+      expect(detail(approved, 'Ended grant')).toBe('grant-1c2d')
+      const requested = await expand(2)
+      // The admin who asked is the record's own, named once, in the row.
+      expect(detail(requested, 'Requested by')).toBeNull()
+      expect(detail(requested, 'Grant')).toBeNull()
+      expect(detail(requested, 'Via')).toBe('API')
     })
 
     it('filters by a write action picked in the Action filter', async () => {
@@ -1142,6 +1377,36 @@ describe('AdminAuditPanel', () => {
         .toEqual(['Off', 'Metadata', 'Content'])
       expect(await enabledOptions(accessSelect())).toEqual(['Off'])
       expect(card('Inspection access').textContent).toContain('ADMIN_WORKSPACE_ACCESS_MAX allows no inspection')
+    })
+
+    it('says that Content is read only under a live grant, and that such a read is recorded with it', async () => {
+      await render()
+
+      expect(card('Inspection access').textContent).toContain(
+        'Content lets an admin also read what Metadata withholds of a workspace, but only under a live ' +
+          'grant: one the workspace’s owner gave, or one a second admin approved. Never ' +
+          'without one. Each such read is recorded here with the grant it ran under.')
+    })
+
+    it('says why Content cannot be chosen while the deployment’s maximum is below it, and not once it allows it', async () => {
+      const reason = 'Content cannot be chosen here: only this deployment’s ADMIN_WORKSPACE_ACCESS_MAX can allow it.'
+      await render()
+      expect(await enabledOptions(accessSelect())).not.toContain('Content')
+      expect(card('Inspection access').textContent).toContain(reason)
+
+      act(() => root.unmount())
+      root = createRoot(container)
+      await render(settingsWith({ access: { max: 'content' } }))
+      expect(card('Inspection access').textContent).not.toContain(reason)
+    })
+
+    it('says which level holds a choice of Content down, under the reason it cannot be chosen', async () => {
+      await render(settingsWith({ access: { chosen: 'content' } }))
+
+      expect(accessSelect().textContent).toContain('Metadata')
+      expect(card('Inspection access').textContent).toContain(
+        'only this deployment’s ADMIN_WORKSPACE_ACCESS_MAX can allow it.' +
+          'The level set here is Content, which that maximum limits to Metadata.')
     })
 
     it('sets Content where the deployment allows it', async () => {
