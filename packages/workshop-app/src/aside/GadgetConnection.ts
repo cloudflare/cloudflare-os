@@ -45,8 +45,11 @@ type Breakable = { onRpcBroken(callback: (error: unknown) => void): void }
 /** The part of a gadget the pane uses, and the lease that must be disposed. */
 export type GadgetHandle = {
   getUiBundle(chatId?: number): Promise<UiBundle | null>
-  /** Its server side, for its page to call. */
-  connectToGadget(chatId?: number): Promise<Disposable & Breakable>
+  /**
+   * Its server side, for its page to call. Used before it resolves, as Cap'n Web's promises can
+   * be, so the result is a stub too.
+   */
+  connectToGadget(chatId?: number): Promise<Disposable & Breakable> & Disposable & Breakable
 } & Disposable & Breakable
 
 /** The part of a workspace's Overseer the pane uses, and the lease that must be disposed. */
@@ -375,40 +378,45 @@ export class GadgetConnection {
   #received = (event: MessageEvent) => {
     // The frame has no origin, which reads as "null". It cannot browse away, but just in case.
     if (!event.source || event.source !== this.#frame() || event.origin !== 'null') return
-    if (event.data === HANDSHAKE_MESSAGE && event.ports[0]) void this.#connect(event.ports[0])
+    if (event.data === HANDSHAKE_MESSAGE && event.ports[0]) this.#connect(event.ports[0])
   }
 
-  async #connect(port: MessagePort) {
+  #connect(port: MessagePort) {
     this.#unlink()
     const handshake = this.#handshakes
-    try {
-      const run = this.#run
-      const server = await this.#gadget!.connectToGadget(this.options.chatId)
-      if (handshake !== this.#handshakes) {
-        server[Symbol.dispose]()
+    const run = this.#run
+    // Not waited for: the page's first calls are pipelined on it, so that they go as soon as the
+    // page makes them rather than a round trip later.
+    const server = this.#gadget!.connectToGadget(this.options.chatId)
+    let connected = false
+    server.then(
+      () => {
+        connected = true
+      },
+      (error: unknown) => {
+        if (handshake !== this.#handshakes) return
+        this.#unlink()
         port.close()
-        return
-      }
-      const gone = new AbortController()
-      const host = new WorkshopGadgetHost(async (chatToken) => {
-        await this.options.onOpenAgentChat?.(chatToken, gone.signal)
-      })
-      const root = new GadgetFrameRoot(server, host, {
-        reportConsole: (level, message, at) => {
-          const where = logLocation(at, this.#pathsByUrl)
-          this.options.onConsoleLog?.({ timestamp: new Date(), level, message: where ? [...message, `at ${where}`] : message })
-        },
-        escape: () => this.options.onEscape?.(),
-      })
-      this.#link = { server, session: newMessagePortRpcSession(port, root), gone }
-      // The page's calls go to the gadget's server side, which can go without the rest.
-      server.onRpcBroken(() => {
-        if (this.#link?.server === server) this.#lost(run)
-      })
-    } catch (error) {
-      port.close()
-      if (handshake === this.#handshakes) this.#publish({ ui: { status: 'failed', message: `Couldn’t connect to the gadget: ${messageOf(error)}` } })
-    }
+        this.#publish({ ui: { status: 'failed', message: `Couldn’t connect to the gadget: ${messageOf(error)}` } })
+      },
+    )
+    const gone = new AbortController()
+    const host = new WorkshopGadgetHost(async (chatToken) => {
+      await this.options.onOpenAgentChat?.(chatToken, gone.signal)
+    })
+    const root = new GadgetFrameRoot(server, host, {
+      reportConsole: (level, message, at) => {
+        const where = logLocation(at, this.#pathsByUrl)
+        this.options.onConsoleLog?.({ timestamp: new Date(), level, message: where ? [...message, `at ${where}`] : message })
+      },
+      escape: () => this.options.onEscape?.(),
+    })
+    this.#link = { server, session: newMessagePortRpcSession(port, root), gone }
+    // The page's calls go to the gadget's server side, which can go without the rest. One that
+    // never connected says so instead.
+    server.onRpcBroken(() => {
+      if (connected && this.#link?.server === server) this.#lost(run)
+    })
   }
 
   #unlink() {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AiChatAuthorInfo, AiChatMetadata, ConsoleLogEvent, AiChatSubscriber, PresenceSubscriber, UiBundle, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { GadgetConnection, type GadgetHandle, type GadgetOverseer, type GadgetUi } from './GadgetConnection'
+import { pipelined } from '@/chat/mock/pipelined'
 
 // The root each page's session was given, in place of a real session over the port.
 const roots: object[] = []
@@ -55,10 +56,10 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
   let workpieces: WorkpiecesSubscriber | undefined
   const gadget: GadgetHandle = {
     getUiBundle: vi.fn<GadgetHandle['getUiBundle']>(() => bundle),
-    connectToGadget: vi.fn<GadgetHandle['connectToGadget']>(async () => {
+    connectToGadget: vi.fn<GadgetHandle['connectToGadget']>(() => {
       const server = breakable(`server ${servers.length}`)
       servers.push(server)
-      return server
+      return pipelined(Promise.resolve(server))
     }),
     ...breakable('gadget'),
   }
@@ -137,7 +138,7 @@ describe('GadgetConnection', () => {
     const { connection, gadget, frame, disposed } = setUp()
     connection.start()
     const pending = deferred<Awaited<ReturnType<GadgetHandle['connectToGadget']>>>()
-    vi.mocked(gadget.connectToGadget).mockReturnValueOnce(pending.promise)
+    vi.mocked(gadget.connectToGadget).mockReturnValueOnce(pipelined(pending.promise))
     handshake(frame)
     connection.reload()
     pending.resolve({ [Symbol.dispose]: () => disposed.push('overtaken'), onRpcBroken: () => {} })
@@ -148,6 +149,28 @@ describe('GadgetConnection', () => {
     await Promise.resolve()
     connection.stop()
     await vi.waitFor(() => expect(disposed).toEqual(expect.arrayContaining(['server 0', 'gadget', 'overseer', 'presence', 'chat', 'workpieces'])))
+  })
+
+  it('connects the page at once, its calls pipelined on the gadget’s server side before that is reached', async () => {
+    const { connection, gadget, frame, links } = setUp()
+    connection.start()
+    const pending = deferred<Awaited<ReturnType<GadgetHandle['connectToGadget']>>>()
+    const server = pipelined(pending.promise)
+    vi.mocked(gadget.connectToGadget).mockReturnValueOnce(server)
+    handshake(frame)
+    await vi.waitFor(() => expect(links()).toHaveLength(1))
+    expect((links()[0]! as unknown as { gadget: unknown }).gadget).toBe(server)
+    connection.stop()
+  })
+
+  it('says the gadget could not be connected to, when its server side could not be reached', async () => {
+    const { connection, gadget, frame } = setUp()
+    connection.start()
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    vi.mocked(gadget.connectToGadget).mockReturnValueOnce(pipelined(Promise.reject(new Error('gone'))))
+    handshake(frame)
+    await vi.waitFor(() => expect(connection.getSnapshot().ui).toEqual({ status: 'failed', message: 'Couldn’t connect to the gadget: gone' }))
+    connection.stop()
   })
 
   it('passes on Escape and what the page logs, through the root its page connects to', async () => {

@@ -1,5 +1,6 @@
 import { RpcTarget } from 'capnweb'
 import type { GadgetExportFormat, UiBundle } from '@gadgets/workshop-shared/api'
+import { pipelined } from './pipelined'
 
 // What a gadget's UI takes to load, so that loading can be seen.
 const LOAD_TIME = 500
@@ -130,11 +131,11 @@ export class MockGadget {
         if (text === undefined) throw new Error('Browser rendering isn’t available in a scripted chat.')
         return new Blob([text]).stream()
       },
-      connectToGadget: async () => {
+      connectToGadget: () => pipelined((async () => {
         await reachable()
         const server = new MockGadgetServer(this.#document)
         return Object.assign(server, { onRpcBroken: (callback: (error: unknown) => void) => void handle.onBroken.add(callback) })
-      },
+      })()),
       onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : void handle.onBroken.add(callback)),
       // Nothing to release: the fake workspace keeps its gadgets.
       [Symbol.dispose]: () => {},
