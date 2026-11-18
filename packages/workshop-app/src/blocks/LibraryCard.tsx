@@ -11,6 +11,7 @@ import { CardAction } from './CardAction'
 import { LibraryMoreMenu, type LibraryMoreActions } from './LibraryMoreMenu'
 import { LIST_ACTION, StarButton } from './StarButton'
 import { TemplatePreview } from './TemplatePreview'
+import { WaitingBadge } from './WaitingBadge'
 
 export type LibraryCardProps = {
   title: string
@@ -34,6 +35,8 @@ export type LibraryCardProps = {
   onSelect: () => void
   /** What else can be done to it from its more menu, for whoever may (`LibraryMoreMenu`). */
   more?: LibraryMoreActions
+  /** How many things it asks that wait on the user, which it says at the end of its last line. */
+  waiting?: number
 }
 
 const CARD = 'flex flex-1 flex-col rounded-3xl p-1.5 text-left text-base group-hover:bg-kumo-contrast/5 group-has-focus-visible:bg-kumo-contrast/5 group-has-data-popup-open:bg-kumo-contrast/5'
@@ -50,7 +53,7 @@ const TOOLTIP_DELAY = 150
  * more, its title is typed where it is, and the card opens nothing until that is done. On a narrow
  * screen, where two cards share a line, more is left out, which the output's own page has.
  */
-export const LibraryCard = ({ title, kind, icon, workspace, owner, time, starred, onStarredChange, href, onSelect, more }: LibraryCardProps) => {
+export const LibraryCard = ({ title, kind, icon, workspace, owner, time, starred, onStarredChange, href, onSelect, more, waiting = 0 }: LibraryCardProps) => {
   const whose = owner && (owner.you ? 'Yours' : `Shared by ${owner.name}`)
   const [renaming, setRenaming] = useState(false)
   const { onRename } = more ?? {}
@@ -79,6 +82,7 @@ export const LibraryCard = ({ title, kind, icon, workspace, owner, time, starred
             </Tooltip>
           )}
           {time && <span className="truncate">{time}</span>}
+          {waiting > 0 && <WaitingBadge count={waiting} className="ms-auto" />}
         </span>
       </span>
     </>

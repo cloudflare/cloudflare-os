@@ -65,6 +65,8 @@ export type LibraryViewProps = {
    * the viewer may: renaming it, sharing it, its settings and deleting it.
    */
   actionsOf?: (output: OutputSummary) => LibraryMoreActions | undefined
+  /** How many things an output asks that wait on the user, which its row and card say. */
+  waitingOf?: (output: OutputSummary) => number
   /** Why the last thing asked for from a more menu was not done. */
   problem?: string
 }
@@ -77,7 +79,7 @@ export type LibraryViewProps = {
  */
 export const LibraryView = ({
   tab, onTabChange, library, list, formats, stars, onStarsChange, hideStarred, onHideStarredChange, onOpenOutput, outputHref, onOpenWorkspace, workspaceHref, onNew, onExplore, looks, me,
-  actionsOf, problem,
+  actionsOf, waitingOf, problem,
 }: LibraryViewProps) => {
   const narrow = useNarrowScreen()
   const all = library.status === 'ready' ? library.outputs : []
@@ -122,6 +124,7 @@ export const LibraryView = ({
     href: outputHref?.(output),
     onSelect: () => onOpenOutput(output),
     more: actionsOf?.(output),
+    waiting: waitingOf?.(output),
   })
 
   // The starred and each type have a tab, so the menu has the other filters, and on every tab but

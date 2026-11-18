@@ -314,6 +314,12 @@ export type Scenario = {
    * chat, as the chat a real update makes would hold it.
    */
   templateUpdate?: boolean
+  /**
+   * What the chat's gadget asks outside any chat, as when it is used on its own page or by
+   * someone it was shared with: through the connection it is bound to, those waiting from the
+   * start, and one more each time one of its tasks is ticked off.
+   */
+  gadgetAsks?: { connection: { name: string; target: number; resourceTitle: string; vendorId?: string }; waiting: ActionLogEntry[] }
 }
 
 const CHUNK_DELAY = 45

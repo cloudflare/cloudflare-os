@@ -1,4 +1,4 @@
-import type { BlueprintOutput } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, BlueprintOutput } from '@gadgets/workshop-shared/api'
 import { withQuote } from '../replyQuote'
 import { BUDGET_XLSX, Q2_REVIEW_PDF, Q3_PLAN_DOCX, ROADMAP_PPTX } from './officeFiles'
 import {
@@ -371,7 +371,65 @@ const output: Scenario = {
   ],
 }
 
-const RATES_BASE = 'b000000000000000000000000000000000000052'
+// The document's connection, a Google Doc it writes a line into as each of its tasks is done.
+const NOTES = { name: 'NOTES', target: 51, resourceTitle: 'Q3 notes', vendorId: 'google' }
+const MINUTE = 60_000
+const appendDone = (id: number, task: string, minutesAgo: number): Extract<ActionLogEntry, { type: 'action' }> => ({
+  id,
+  type: 'action',
+  state: 'pending',
+  gatekeeperId: NOTES.target,
+  resourceTitle: NOTES.resourceTitle,
+  createdAt: new Date(Date.now() - minutesAgo * MINUTE),
+  description: {
+    title: `Append “${task}” to Q3 notes`,
+    description: 'Adds one line at the end of **Q3 notes**.',
+    fields: [{ label: 'Text', kind: 'text', value: `Done: ${task}` }],
+    descriptionIsComplete: true,
+    implementsRevert: false,
+    autoApprovable: true,
+    actionKind: { tag: 'append', label: 'Append to document' },
+  },
+})
+
+const gadgetAsks: Scenario = {
+  id: 'gadget-asks',
+  title: 'Q3 review asks',
+  description:
+    'A document that writes a line into a Google Doc as each of its tasks is ticked off, which it asks to do. ' +
+    'Open it beside the chat, as its own page or in full screen: what it asked while it was used on its own, by you ' +
+    'or someone it was shared with, is docked over its foot, with Always allow, Only this time and Don’t allow. ' +
+    'Tick a task off to have it ask again.',
+  history: history([
+    user('Make the Q3 review a to-do list, and add a line to Q3 notes whenever a task is done.'),
+    agent({ toolCalls: [createDoc] }),
+    changes({ author: AGENT, createdGadgets: [{ gadgetId: 41, title: 'Q3 platform review', bindingName: 'REVIEW' }] }),
+    merge(),
+    agent({ text: 'Done. Each task you tick off asks to add a line to Q3 notes, so nothing is written there without you.' }),
+  ]),
+  gadgetAsks: {
+    connection: NOTES,
+    waiting: [
+      appendDone(1001, 'Summarise the quarter’s incidents', 180),
+      appendDone(1002, 'Chart deploy frequency against Q2', 42),
+      {
+        ...appendDone(1003, 'Share', 42),
+        description: {
+          title: 'Share Q3 notes with the platform team',
+          description: 'Gives **platform-team@example.com** edit access to **Q3 notes**.',
+          fields: [{ label: 'With', kind: 'list', items: ['platform-team@example.com'] }, { label: 'Role', kind: 'inline', value: 'Editor' }],
+          descriptionIsComplete: true,
+          implementsRevert: true,
+          autoApprovable: false,
+          actionKind: { tag: 'share', label: 'Share document' },
+        },
+      },
+    ],
+  },
+  script: when('onSend', turn(say(agent({ text: 'What it asked for waits on the document itself, over its foot.' })))),
+}
+
+const RATES_BASE ='b000000000000000000000000000000000000052'
 const checkout = call(
   'createWorktree',
   { title: 'rates', bindingName: 'RATES', commitId: RATES_BASE },
@@ -669,6 +727,7 @@ export const SCENARIOS: Scenario[] = [
   observationHook,
   connection,
   output,
+  gadgetAsks,
   worktree,
   errors,
   outOfCredits,

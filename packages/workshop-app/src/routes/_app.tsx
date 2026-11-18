@@ -9,6 +9,7 @@ import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
+import { useWaitingAsks, WaitingAsksProvider } from '@/gadgets/WaitingAsksProvider'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
@@ -36,7 +37,9 @@ export const Route = createFileRoute('/_app')({
       <ShareLinkGate>
         <WorkspacesProvider>
           <ChatSessionsProvider>
-            <AppFrame />
+            <WaitingAsksProvider>
+              <AppFrame />
+            </WaitingAsksProvider>
           </ChatSessionsProvider>
         </WorkspacesProvider>
       </ShareLinkGate>
@@ -70,6 +73,7 @@ const AppFrame = () => {
   const { workspaceId } = useParams({ strict: false })
   const [prefs] = useState(readLayoutPrefs)
   const narrow = useNarrowScreen()
+  const waiting = useWaitingAsks()
 
   const homePage = useMatch({ from: '/_app/', shouldThrow: false })
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
@@ -294,6 +298,7 @@ const AppFrame = () => {
       connections={placeholderLogos}
       library={{
         current: [libraryPage, libraryItemPage, templatesPage, templatePage].some((match) => match !== undefined),
+        waiting: waiting.total,
         onOpen: () => {
           leaveSidebar()
           void navigate({ to: '/library' })
