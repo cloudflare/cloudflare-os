@@ -172,6 +172,32 @@ describe("host-pinned answer files", () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["`", "``"])("does not pin an unfinished %s code example while streaming", async marker => {
+    const snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const example = marker + "![Example](worktree://OUTPUTS/image.png)";
+    await snapshotChatEmbeds(example, snapshots, read, true);
+    expect(snapshots).toEqual({});
+    expect(read).not.toHaveBeenCalled();
+    await snapshotChatEmbeds(example + marker, snapshots, read);
+    expect(snapshots).toEqual({});
+    expect(read).not.toHaveBeenCalled();
+    // A literal, unclosed backtick is prose at EOF, so its real image still works.
+    await snapshotChatEmbeds(example, snapshots, read);
+    expect(snapshots).toEqual({"worktree://OUTPUTS/image.png": A});
+  });
+
+  it.each(["`![Example](worktree://OUTPUTS/example.png)`", "Example removed"])(
+      "drops provisional pins absent from the final rendered message: %s", async example => {
+    const source = "worktree://OUTPUTS/example.png", real = "worktree://OUTPUTS/real.png";
+    const snapshots: ChatEmbeds = {[source]: A, [real]: B};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>();
+    expect(await snapshotChatEmbeds(example + ' ![Real](' + real + ')', snapshots, read))
+        .toEqual({[source]: null});
+    expect(snapshots).toEqual({[real]: B});
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it("pins the first reference definition, matching the Markdown renderer", async () => {
     const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
     const images: ChatEmbeds = {};

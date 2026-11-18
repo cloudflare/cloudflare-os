@@ -16,6 +16,10 @@ export function markdownFileUrls(markdown: string, streaming = false): string[] 
   const urls: string[] = [], references: string[] = [];
   const definitions = new Map<string, string>();
   const visit = (node: typeof root | typeof root.children[number]) => {
+    // A closing backtick arriving later can turn an apparent image into a code example.
+    // Defer paragraphs containing backticks until EOF rather than guessing their final syntax.
+    if (streaming && node.type === "paragraph" &&
+        markdown.slice(node.position?.start.offset, node.position?.end.offset).includes("`")) return;
     if (node.type === "image" || node.type === "link") urls.push(node.url);
     if (node.type === "imageReference" || node.type === "linkReference") references.push(node.identifier);
     if (node.type === "definition" && !definitions.has(node.identifier) &&

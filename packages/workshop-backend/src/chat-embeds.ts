@@ -2,13 +2,13 @@ import { validateBindingName, type ChatEmbeds } from "@gadgets/workshop-shared/a
 import { markdownFileUrls, parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
 import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 
-/** Pin newly emitted file references once; a failed lookup stays unavailable in this message. */
+/** Pin emitted file references once, removing provisional pins absent from the final message. */
 export async function snapshotChatEmbeds(
     text: string, snapshots: ChatEmbeds,
     resolve: (binding: string, path: string) => Promise<string | undefined>,
     streaming = false): Promise<ChatEmbeds | undefined> {
   // Character references and Markdown escapes can encode parts of the scheme.
-  if (!text.includes("worktree://") &&
+  if ((streaming || Object.keys(snapshots).length === 0) && !text.includes("worktree://") &&
       !decodeHTML(text).replace(/\\([:/])/g, "$1").includes("worktree://")) return;
   const sources = new Set<string>();
   for (const part of parseInlineHtmlBlocks(text, {streaming})) {
@@ -28,7 +28,14 @@ export async function snapshotChatEmbeds(
       }
     }
   }
-  let added: ChatEmbeds | undefined;
+  let updates: ChatEmbeds | undefined;
+  if (!streaming) {
+    for (const source of Object.keys(snapshots)) {
+      if (sources.has(source)) continue;
+      delete snapshots[source];
+      (updates ??= {})[source] = null;
+    }
+  }
   for (const source of sources) {
     if (!source.startsWith("worktree://") || Object.hasOwn(snapshots, source)) continue;
     let oid: string | null = null;
@@ -46,7 +53,7 @@ export async function snapshotChatEmbeds(
       // A bad file reference must not fail the answer, nor silently resolve against a later file version.
     }
     snapshots[source] = oid;
-    (added ??= {})[source] = oid;
+    (updates ??= {})[source] = oid;
   }
-  return added;
+  return updates;
 }
