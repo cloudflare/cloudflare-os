@@ -253,9 +253,9 @@ export const ACCESS_TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
 /**
  * How long `AccessTokenCache` serves a token before it asks the `UserAccount` again. The account
  * answers from the token it has stored, and mints only once that is within its expiry safety
- * window, so asking usually costs one RPC. It is also the
- * only way a gatekeeper learns that its connection was disconnected while the grant lives on at
- * Google, where the token itself goes on working until it expires.
+ * window, so asking usually costs one RPC. It is also the only way a gatekeeper learns that its
+ * connection was disconnected while the grant lives on at Google, where the token itself goes on
+ * working until it expires.
  */
 export const ACCESS_TOKEN_MEMO_MAX_AGE_MS = 60 * 1000;
 
