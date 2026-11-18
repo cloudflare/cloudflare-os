@@ -140,6 +140,10 @@ export const ObserverAccessProvider = ({ children }: { children: ReactNode }) =>
   )
 }
 
+// An account by the name the user knows it by, as its row in the dialog says it.
+const accountNamed = (account: ConnectedAccount | undefined) =>
+  (account && (accountLabel(account.description) ?? account.vendor.displayName)) ?? 'The account chosen'
+
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 type ConfirmAccessProps = {
@@ -214,10 +218,10 @@ const ConfirmAccess = ({ what, needs, onAnswer }: ConfirmAccessProps) => {
       key: resource.key,
       title: resource.title,
       service: resource.service,
-      accounts: theirs.map(({ id, description, vendor: service, credentialsValid }) => ({ id, name: accountLabel(description) ?? service.displayName, expired: !credentialsValid })),
+      accounts: theirs.map((each) => ({ id: each.id, name: accountNamed(each), expired: !each.credentialsValid })),
       chosen: account?.id,
       ready: accountWillDo(resource, vendor, account),
-      refusal: failure && { account: known.find(({ id }) => id === failure.accountId)?.description.displayName ?? 'The account chosen', reason: failure.reason },
+      refusal: failure && { account: accountNamed(known.find(({ id }) => id === failure.accountId)), reason: failure.reason },
       fix: !account ? undefined
         : missing.length > 0
           ? { kind: 'grant', pending: pending === resource.key, onSelect: () => during(resource.key, async () => {

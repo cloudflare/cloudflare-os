@@ -150,22 +150,6 @@ export const invitedBy = (person: AffectedCollaborator, names: ReadonlyMap<strin
   person.addedBy.filter((edge) => edge.type === 'user').map((edge) => names.get(edge.sharer) ?? edge.sharer).join(', ') || 'A link'
 
 /**
- * The services whose accounts someone given it must confirm they can see its data with, by name, in
- * the order its connections were made: those it reads from that need a sign-in. One that sets up an
- * account by itself (Skills, Scheduled Tasks) asks nothing of anyone, so it is left out, as is one
- * not among `vendors`; undefined until the services are known.
- */
-export const signInServices = (requirements: readonly ObserverBindingNeed[], vendors: readonly GatekeeperVendorInfo[] | undefined) => {
-  if (!vendors) return undefined
-  const byId = new Map(vendors.map((vendor) => [vendor.id.toLowerCase(), vendor.description]))
-  const names = requirements.flatMap(({ vendorId }) => {
-    const vendor = byId.get(vendorId.toLowerCase())
-    return vendor && !vendor.autoProvisionsAccount ? [vendor.displayName] : []
-  })
-  return [...new Set(names)]
-}
-
-/**
  * One of what a workspace reads that someone given it must be able to see with their own account,
  * with the connections that read it (`needs`): several often read the same one, which is the one
  * thing to see.
@@ -189,9 +173,10 @@ export const resourceIdentity = ({ vendorId, resourceUrl, resourceTitle }: Pick<
 
 /**
  * What someone given it must be able to see with their own account before they can open it, by
- * name, in the order its connections were made: those of its connections that need a sign-in, as
- * `signInServices` has them, each resource once however many of its connections read it. Undefined
- * until the services are known.
+ * name, in the order its connections were made: those of its connections that need a sign-in, each
+ * resource once however many of its connections read it. One whose service sets up an account by
+ * itself (Skills, Scheduled Tasks) asks nothing of anyone, so it is left out, as is one not among
+ * `vendors`. Undefined until the services are known.
  *
  * With `every`, it is every one of them, for confirming access, where each connection has to be
  * answered: those whose service sets up an account by itself, and any of a service not known here,
@@ -222,7 +207,3 @@ export const protectedResources = (requirements: readonly ObserverBindingNeed[],
   }
   return [...resources.values()]
 }
-
-/** Names as a sentence lists them: "Google", "Google and Slack", "Google, Slack and GitHub". */
-export const listed = (names: readonly string[]) =>
-  names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`

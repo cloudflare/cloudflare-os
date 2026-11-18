@@ -125,14 +125,14 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
       <div hidden={resourcesShown} className="contents">
         <header className="flex items-start gap-3 p-6 pb-4">
           <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
-            <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{gadget?.title ?? title}”</Dialog.Title>
+            <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{what}”</Dialog.Title>
             <Dialog.Description className="text-sm text-kumo-subtle">
               {gadget
                 ? 'People you add can use it, but won’t see the chats or anything else in its workspace.'
                 : 'People you add become members. They can see its chats, start their own, and use and change its gadgets.'}
             </Dialog.Description>
           </div>
-          <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+          <CloseButton />
         </header>
 
         {/* Room at its top for the field's focus ring, which its scrolling would otherwise cut off. */}
@@ -241,12 +241,17 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
           {/* Until its key is minted, a link that is on has nothing to copy that would let anyone in. */}
           <CopyLinkButton link={copied ?? page} title={what} labelled primary disabled={linkOn && copied === undefined} />
         </footer>
-        {/* Within it, so that it is the one Escape and a click outside put away. */}
       </div>
+      {/* Within it, so that it is the one Escape and a click outside put away. */}
       {removal.dialog && <RemovalDialog {...removal.dialog} gadget={gadget?.title} />}
     </>
   )
 }
+
+// The dialog's own close, at the end of each page's header.
+const CloseButton = () => (
+  <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+)
 
 /**
  * What a workspace reads that someone it is shared with must be able to see with their own
@@ -259,7 +264,7 @@ const ProtectedResources = ({ what, gadget, resources, onBack }: { what: string;
       <Button variant="ghost" icon={<CaretLeftIcon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
       {/* A heading rather than the dialog's title, which stays the sharing's, kept under it. */}
       <h2 className="min-w-0 flex-1 truncate text-lg font-medium text-kumo-default">Protected resources</h2>
-      <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+      <CloseButton />
     </header>
     <div className="appears flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
       <p className="text-base text-pretty text-kumo-subtle">
@@ -296,7 +301,8 @@ const ProtectedResources = ({ what, gadget, resources, onBack }: { what: string;
  * the page. A workspace's people can edit everything in it; a gadget's can use that gadget alone,
  * under whoever can edit the workspace. Whoever may share it invites people one at a time, by name or email, turns
  * their own link on or off, and takes access away from a person's row, having been told what that
- * does to whom. What its data asks of anyone it is shared with, the resources they must see for themselves, is a page of its own, from its footer.
+ * does to whom. What its data asks of anyone it is shared with, the resources they must see for
+ * themselves, is a page of its own, from its footer.
  */
 export const ShareWorkspaceDialog = ({ open, onOpenChange, gadget, ...props }: ShareWorkspaceDialogProps) => {
   const target: ShareTarget = gadget ? { kind: 'gadget', gadgetId: gadget.id, title: gadget.title } : { kind: 'workspace' }
