@@ -18,11 +18,11 @@ import {
   MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
   MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   isAdminWorkspaceAccess,
-  type ActionLogEntry, type AdminChatState, type AdminSettingChange, type AdminSettingRecord,
-  type AdminVia, type AdminViewAccess, type AdminWorkspaceAccess, type AdminWorkspaceMethod,
-  type AiChatAuthorInfo, type AiChatMetadata, type BlueprintGadgetSummary,
-  type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec, type NamedUser,
-  type WorkpieceSummary,
+  type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminFileContent,
+  type AdminSettingChange, type AdminSettingRecord, type AdminVia, type AdminViewAccess,
+  type AdminWorkspaceAccess, type AdminWorkspaceMethod, type AiChatAuthorInfo, type AiChatHistoryPage, type AiChatMetadata,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
+  type NamedUser, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -246,7 +246,7 @@ export function assertAdminViewLive(terms: AdminViewTerms, adminId: string, env:
  *   - "metadata": metadata alone. The call never looks for a grant.
  *   - "mixed":    content under a grant and metadata without one. Without a grant it answers as
  *                 the "metadata" level does; it is not refused.
- *   - "content":  content alone.
+ *   - "content":  content alone. Without a grant the call is recorded and refused.
  * One table over every AdminWorkspaceMethod, so that a method added to ADMIN_WORKSPACE_METHODS
  * does not compile until it is classified: AdminWorkspaceViewImpl.#call reads the kind from here
  * and from nowhere else.
@@ -258,14 +258,19 @@ export const ADMIN_METHOD_ANSWERS = {
   inspectWorkspace: "metadata",
   describe: "mixed",
   listChats: "mixed",
+  getChat: "content",
   getChatState: "mixed",
   listChatAttachments: "metadata",
+  readChatAttachment: "content",
   listActions: "mixed",
   listFiles: "metadata",
+  readFile: "content",
   getCommitLog: "mixed",
   listFilesAtCommit: "metadata",
+  readFileAtCommit: "content",
   listChangedPaths: "metadata",
   listPendingChanges: "metadata",
+  readPendingFile: "content",
   listGatekeepers: "mixed",
   listObservers: "metadata",
   listObserverRequirements: "metadata",
@@ -274,6 +279,17 @@ export const ADMIN_METHOD_ANSWERS = {
   listBlueprints: "mixed",
   getDiagnostics: "metadata",
 } as const satisfies Record<AdminWorkspaceMethod, "metadata" | "mixed" | "content">;
+
+/** Why a call may return no content before any grant is looked for: `contentNotRequested` for a
+ * view opened for metadata, then `contentOff` while `policy.access` is below "content";
+ * undefined when both allow content. Never throws. */
+export function adminContentRefusal(
+    terms: AdminWorkspaceViewTerms, policy: Pick<AdminAccessPolicy, "access">)
+    : AdminAccessRecord["refused"] | undefined {
+  if (terms.access !== "content") return ADMIN_ACCESS_ERROR_CODES.contentNotRequested;
+  if (policy.access !== "content") return ADMIN_ACCESS_ERROR_CODES.contentOff;
+  return undefined;
+}
 
 // --- Audit text ---
 
@@ -533,4 +549,16 @@ export function withholdBlueprintContent(blueprint: BlueprintGadgetSummary)
 /** Whether `blueprint` holds what withholdBlueprintContent() empties: an id. */
 export function blueprintHoldsContent(blueprint: BlueprintGadgetSummary): boolean {
   return blueprint.id !== "";
+}
+
+/** Whether `page` holds what getChat() reads: a message, or a compaction summary. */
+export function chatPageHoldsContent(page: AiChatHistoryPage): boolean {
+  return page.messages.length > 0 || page.compacted !== undefined;
+}
+
+/** Whether `file` holds what a file read (readFile(), readFileAtCommit(), readPendingFile())
+ * reads: any file found at the path, an unreadable one too, since its message can quote the file
+ * (a symlink's quotes its target). */
+export function fileHoldsContent(file: AdminFileContent): boolean {
+  return file.kind !== "absent";
 }

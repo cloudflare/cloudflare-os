@@ -92,6 +92,7 @@ import {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   READ_FILES_RESPONSE_BUDGET,
+  type AdminFileContent,
   type AiChatAuthorInfo,
   type CommitIdentity,
   type CommitInfo,
@@ -1337,6 +1338,38 @@ export class WorkspaceGitCache {
               : { name: entry.name, kind };
         });
     return walk(parseGitCommitRefs(this.#requireHeld(commitOid, "commit"), commitOid).tree);
+  }
+
+  /**
+   * One file of a commit, as an admin's content read returns it (see AdminFileContent): "absent"
+   * for a path naming nothing or a directory, "unreadable" for a submodule or a symlink, "stream"
+   * for a regular file over MAX_BUFFERED_BLOB_SIZE or one that is not text, else "text". Read only
+   * from objects this store holds: never pulls. The blob is read whole only when it is at most
+   * MAX_BUFFERED_BLOB_SIZE; a stream reads it as the caller pulls, and a symlink whose blob is
+   * over that size is named without its target. Throws for an invalid path and when an object
+   * along the path, or the file's or the symlink's blob, is missing.
+   */
+  readLocalFileAtCommit(commitOid: GitOid, path: string): AdminFileContent {
+    let entry = this.#localEntryAt(commitOid, path);
+    if (entry === undefined || entry.mode === "40000") return { kind: "absent" };
+    if (entry.mode === "160000") {
+      return { kind: "unreadable", message: submoduleMessage(path, entry.oid) };
+    }
+    let reader = this.openLocalBlob(entry.oid);
+    if (reader === undefined) {
+      throw new Error(`The blob ${entry.oid} is not in the workspace's git store.`);
+    }
+    if (entry.mode === "120000") {
+      // The target is the link's blob, and a tree can name a blob of any size as a link.
+      let message = reader.size > MAX_BUFFERED_BLOB_SIZE
+          ? `${path} is a symlink` : symlinkMessage(path, reader.read(0, reader.size));
+      return { kind: "unreadable", message };
+    }
+    let text = reader.size > MAX_BUFFERED_BLOB_SIZE
+        ? undefined : blobText(reader.read(0, reader.size));
+    return text === undefined
+        ? { kind: "stream", byteLength: reader.size, content: blobByteStream(reader) }
+        : { kind: "text", text };
   }
 
   /**
