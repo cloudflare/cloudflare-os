@@ -167,7 +167,9 @@ export const signInServices = (requirements: readonly ObserverBindingNeed[], ven
 
 /** One of what a workspace reads that someone given it must be able to see with their own account. */
 export type ProtectedResource = {
-  key: number
+  key: string
+  /** The connections that reach it, each of which asks the same: several can reach one document. */
+  gatekeeperIds: number[]
   title: string
   url?: string
   service: { name: string; logoUrl?: string; color?: string }
@@ -176,23 +178,33 @@ export type ProtectedResource = {
 /**
  * What someone given it must be able to see with their own account before they can open it, by
  * name, in the order its connections were made: those of its connections that need a sign-in, as
- * `signInServices` has them, each once. Undefined until the services are known.
+ * `signInServices` has them. What several connections reach (the same service, and the same
+ * address, or the same title where there is none) is one resource. Undefined until the services
+ * are known.
  */
 export const protectedResources = (requirements: readonly ObserverBindingNeed[], vendors: readonly GatekeeperVendorInfo[] | undefined): ProtectedResource[] | undefined => {
   if (!vendors) return undefined
   const byId = new Map(vendors.map((vendor) => [vendor.id.toLowerCase(), vendor.description]))
-  const seen = new Set<number>()
-  return requirements.flatMap(({ gatekeeperId, vendorId, resourceTitle, resourceUrl }) => {
+  const resources = new Map<string, ProtectedResource>()
+  for (const { gatekeeperId, vendorId, resourceTitle, resourceUrl } of requirements) {
     const vendor = byId.get(vendorId.toLowerCase())
-    if (!vendor || vendor.autoProvisionsAccount || seen.has(gatekeeperId)) return []
-    seen.add(gatekeeperId)
-    return [{
-      key: gatekeeperId,
-      title: resourceTitle || vendor.displayName,
+    if (!vendor || vendor.autoProvisionsAccount) continue
+    const title = resourceTitle || vendor.displayName
+    const key = `${vendorId.toLowerCase()} ${resourceUrl ? `url:${resourceUrl}` : `title:${title}`}`
+    const known = resources.get(key)
+    if (known) {
+      if (!known.gatekeeperIds.includes(gatekeeperId)) known.gatekeeperIds.push(gatekeeperId)
+      continue
+    }
+    resources.set(key, {
+      key,
+      gatekeeperIds: [gatekeeperId],
+      title,
       ...(resourceUrl ? { url: resourceUrl } : {}),
       service: { name: vendor.displayName, logoUrl: vendor.logo?.url, color: vendor.color },
-    }]
-  })
+    })
+  }
+  return [...resources.values()]
 }
 
 /** Names as a sentence lists them: "Google", "Google and Slack", "Google, Slack and GitHub". */

@@ -190,13 +190,21 @@ describe('signInServices', () => {
 
 describe('protectedResources', () => {
   const vendors = [vendor('google', 'Google'), vendor('scheduler', 'Scheduled Tasks', true)]
+  const google = { name: 'Google', logoUrl: undefined, color: undefined }
 
-  it('lists each connection that needs a sign-in once, by its title, with its service', () => {
-    expect(protectedResources([need(2, 'scheduler'), need(5, 'Google'), need(5, 'google'), { ...need(6, 'google'), resourceUrl: 'https://docs.google.com/d/1' }], vendors))
-      .toEqual([
-        { key: 5, title: 'Connection 5', service: { name: 'Google', logoUrl: undefined, color: undefined } },
-        { key: 6, title: 'Connection 6', url: 'https://docs.google.com/d/1', service: { name: 'Google', logoUrl: undefined, color: undefined } },
-      ])
+  it('lists what needs a sign-in once, however many connections reach it, by its address or else its title', () => {
+    const doc = 'https://docs.google.com/d/1'
+    expect(protectedResources([
+      need(2, 'scheduler'),
+      need(5, 'Google'),
+      need(5, 'google'),
+      { ...need(6, 'google'), resourceTitle: 'Connection 5' },
+      { ...need(7, 'google'), resourceUrl: doc },
+      { ...need(8, 'google'), resourceTitle: 'Renamed', resourceUrl: doc },
+    ], vendors)).toEqual([
+      { key: 'google title:Connection 5', gatekeeperIds: [5, 6], title: 'Connection 5', service: google },
+      { key: `google url:${doc}`, gatekeeperIds: [7, 8], title: 'Connection 7', url: doc, service: google },
+    ])
     expect(protectedResources([need(5, 'google')], undefined)).toBeUndefined()
   })
 })

@@ -115,131 +115,134 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentP
   }
 
   const what = gadget?.title ?? title
-  if (showingResources && resources) {
-    return <ProtectedResources what={what} gadget={gadget !== undefined} resources={resources} onBack={() => setShowingResources(false)} />
-  }
+  const resourcesShown = showingResources && resources !== undefined
 
   return (
     <>
-      <header className="flex items-start gap-3 p-6 pb-4">
-        <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
-          <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{gadget?.title ?? title}”</Dialog.Title>
-          <Dialog.Description className="text-sm text-kumo-subtle">
-            {gadget
-              ? 'People you add can use it, but won’t see the chats or anything else in its workspace.'
-              : 'People you add become members. They can see its chats, start their own, and use and change its gadgets.'}
-          </Dialog.Description>
-        </div>
-        <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
-      </header>
+      {resourcesShown && <ProtectedResources what={what} gadget={gadget !== undefined} resources={resources} onBack={() => setShowingResources(false)} />}
+      {/* Kept while the resources are looked at, only hidden: drawn again on coming back, it was
+          laid out while the dialog glided between their heights, and its menus measured from there. */}
+      <div hidden={resourcesShown} className="contents">
+        <header className="flex items-start gap-3 p-6 pb-4">
+          <div className="flex min-w-0 flex-1 flex-col gap-1 leading-snug">
+            <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{gadget?.title ?? title}”</Dialog.Title>
+            <Dialog.Description className="text-sm text-kumo-subtle">
+              {gadget
+                ? 'People you add can use it, but won’t see the chats or anything else in its workspace.'
+                : 'People you add become members. They can see its chats, start their own, and use and change its gadgets.'}
+            </Dialog.Description>
+          </div>
+          <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
+        </header>
 
-      {/* Room at its top for the field's focus ring, which its scrolling would otherwise cut off. */}
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pt-1 pb-1">
-        {snapshot.status === 'loading' && (
-          // As tall as a short list, so that the dialog does not jump much once it is read.
-          <p role="status" className="appears-late grid min-h-32 place-items-center text-base text-kumo-subtle">Loading who has access…</p>
-        )}
-        {snapshot.status === 'failed' && (
-          <Banner title="Couldn’t load who has access" description={snapshot.message} action={{ label: 'Try again', onSelect: () => session.start() }} />
-        )}
-        {ready && standing && (
-          <>
-            {standing.canShare ? (
-              <div className="flex flex-col gap-2">
-                <InviteField
-                  value={invite.value}
-                  onValueChange={invite.setValue}
-                  onInvite={(userId) => invite.invite(userId)}
-                  pending={invite.pending}
-                  suggestions={search}
-                  invalid={invite.feedback?.tone === 'error'}
-                  describedBy={invite.feedback ? feedbackId : undefined}
-                />
-                {invite.feedback && (invite.feedback.tone === 'error'
-                  ? <div id={feedbackId}><Banner title={invite.feedback.message} /></div>
-                  : <ShareNote id={feedbackId} tone={invite.feedback.tone}>{invite.feedback.message}</ShareNote>)}
-              </div>
-            ) : (
-              <ShareNote tone="info">
-                {standing.ownerOnly && ready.metadata.role !== 'use'
-                  ? `Only ${standing.owner.name} can invite people to this workspace.`
-                  : 'You can use what’s shared with you here, but not share it.'}
-              </ShareNote>
-            )}
-            {standing.isOwner && standing.ownerOnly && (
-              <ShareNote tone="caution" detail="It has read data that needs each person to be let in by you, so nobody else can invite anyone and links don’t work.">
-                Only you can invite people
-              </ShareNote>
-            )}
-            {ready.metadata.containsRestrictedData && !standing.ownerOnly && (
-              <ShareNote tone="caution" detail={gadget ? `Anyone you add can see what ${gadget.title} shows of it.` : 'Anyone you invite can read it, and ask its agent about it.'}>
-                This workspace has read restricted data
-              </ShareNote>
-            )}
-            {problem && <Banner title="Couldn’t change your link" description={problem} />}
-            {/* Someone who can only use it is not told who else can. */}
-            {ready.metadata.role !== 'use' && (
-              <ListGroup label="Who has access">
-                <MemberListItem name={standing.owner.name} role="Owner" you={standing.isOwner} />
-                {gadget && editors.length > 0 && (
-                  <MemberListItem
-                    icon={UsersThreeIcon}
-                    name={`Everyone in ${title}`}
-                    detail={editors.length === 1 ? editors[0]!.profile.name : `${editors.length} people`}
-                    role="Can edit"
+        {/* Room at its top for the field's focus ring, which its scrolling would otherwise cut off. */}
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pt-1 pb-1">
+          {snapshot.status === 'loading' && (
+            // As tall as a short list, so that the dialog does not jump much once it is read.
+            <p role="status" className="appears-late grid min-h-32 place-items-center text-base text-kumo-subtle">Loading who has access…</p>
+          )}
+          {snapshot.status === 'failed' && (
+            <Banner title="Couldn’t load who has access" description={snapshot.message} action={{ label: 'Try again', onSelect: () => session.start() }} />
+          )}
+          {ready && standing && (
+            <>
+              {standing.canShare ? (
+                <div className="flex flex-col gap-2">
+                  <InviteField
+                    value={invite.value}
+                    onValueChange={invite.setValue}
+                    onInvite={(userId) => invite.invite(userId)}
+                    pending={invite.pending}
+                    suggestions={search}
+                    invalid={invite.feedback?.tone === 'error'}
+                    describedBy={invite.feedback ? feedbackId : undefined}
                   />
-                )}
-                {listedPeople.map((person) => {
-                  const { id, name } = person.profile
-                  const label = gadget ? 'Can use' : accessLabel(person.access)
-                  return (
+                  {invite.feedback && (invite.feedback.tone === 'error'
+                    ? <div id={feedbackId}><Banner title={invite.feedback.message} /></div>
+                    : <ShareNote id={feedbackId} tone={invite.feedback.tone}>{invite.feedback.message}</ShareNote>)}
+                </div>
+              ) : (
+                <ShareNote tone="info">
+                  {standing.ownerOnly && ready.metadata.role !== 'use'
+                    ? `Only ${standing.owner.name} can invite people to this workspace.`
+                    : 'You can use what’s shared with you here, but not share it.'}
+                </ShareNote>
+              )}
+              {standing.isOwner && standing.ownerOnly && (
+                <ShareNote tone="caution" detail="It has read data that needs each person to be let in by you, so nobody else can invite anyone and links don’t work.">
+                  Only you can invite people
+                </ShareNote>
+              )}
+              {ready.metadata.containsRestrictedData && !standing.ownerOnly && (
+                <ShareNote tone="caution" detail={gadget ? `Anyone you add can see what ${gadget.title} shows of it.` : 'Anyone you invite can read it, and ask its agent about it.'}>
+                  This workspace has read restricted data
+                </ShareNote>
+              )}
+              {problem && <Banner title="Couldn’t change your link" description={problem} />}
+              {/* Someone who can only use it is not told who else can. */}
+              {ready.metadata.role !== 'use' && (
+                <ListGroup label="Who has access">
+                  <MemberListItem name={standing.owner.name} role="Owner" you={standing.isOwner} />
+                  {gadget && editors.length > 0 && (
                     <MemberListItem
-                      key={id}
-                      name={name}
-                      role={label}
-                      you={id === user.id}
-                      landed={invite.landed === id}
-                      access={removable(person)
-                        ? <AccessMenu label={label} of={name} remove={{ label: gadget ? `Remove from ${gadget.title}` : 'Remove from workspace', onRemove: () => removal.ask({ id, name }) }} />
-                        : undefined}
+                      icon={UsersThreeIcon}
+                      name={`Everyone in ${title}`}
+                      detail={editors.length === 1 ? editors[0]!.profile.name : `${editors.length} people`}
+                      role="Can edit"
                     />
-                  )
-                })}
-                {link && (
-                  <MemberListItem
-                    icon={BuildingsIcon}
-                    name="Anyone with the link"
-                    // Who that can be: only those who can sign in where it is.
-                    detail={link.status === 'failed' ? 'Couldn’t check your link' : `Signed in to ${siteName}`}
-                    role={linkOn && !standing.ownerOnly ? linkGives : 'No access'}
-                    access={linkAccess()}
-                  />
-                )}
-              </ListGroup>
-            )}
-          </>
-        )}
-      </div>
+                  )}
+                  {listedPeople.map((person) => {
+                    const { id, name } = person.profile
+                    const label = gadget ? 'Can use' : accessLabel(person.access)
+                    return (
+                      <MemberListItem
+                        key={id}
+                        name={name}
+                        role={label}
+                        you={id === user.id}
+                        landed={invite.landed === id}
+                        access={removable(person)
+                          ? <AccessMenu label={label} of={name} remove={{ label: gadget ? `Remove from ${gadget.title}` : 'Remove from workspace', onRemove: () => removal.ask({ id, name }) }} />
+                          : undefined}
+                      />
+                    )
+                  })}
+                  {link && (
+                    <MemberListItem
+                      icon={BuildingsIcon}
+                      name="Anyone with the link"
+                      // Who that can be: only those who can sign in where it is.
+                      detail={link.status === 'failed' ? 'Couldn’t check your link' : `Signed in to ${siteName}`}
+                      role={linkOn && !standing.ownerOnly ? linkGives : 'No access'}
+                      access={linkAccess()}
+                    />
+                  )}
+                </ListGroup>
+              )}
+            </>
+          )}
+        </div>
 
-      <footer className="flex items-center gap-2 p-6">
-        {/* Said only once the services are known, and not at all when nothing asks it. */}
-        {standing?.canShare && resources && resources.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowingResources(true)}
-            className="inline-flex h-(--control-size) min-w-0 items-center gap-1.5 rounded-full bg-kumo-info-tint px-(--control-pad) text-(length:--control-text) font-medium text-kumo-info hover:brightness-95 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
-          >
-            <LockSimpleIcon aria-hidden="true" weight="bold" className="size-[1.125em] shrink-0" />
-            <span className="truncate">Protected resources</span>
-            <span className="opacity-70">({resources.length})</span>
-            <CaretRightIcon aria-hidden="true" weight="bold" className="size-[0.875em] shrink-0" />
-          </button>
-        )}
-        <span className="flex-1" />
-        {/* Until its key is minted, a link that is on has nothing to copy that would let anyone in. */}
-        <CopyLinkButton link={copied ?? page} title={what} labelled primary disabled={linkOn && copied === undefined} />
-      </footer>
-      {/* Within it, so that it is the one Escape and a click outside put away. */}
+        <footer className="flex items-center gap-2 p-6">
+          {/* Said only once the services are known, and not at all when nothing asks it. */}
+          {standing?.canShare && resources && resources.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowingResources(true)}
+              className="inline-flex h-(--control-size) min-w-0 items-center gap-1.5 rounded-full bg-kumo-info-tint px-(--control-pad) text-(length:--control-text) font-medium text-kumo-info hover:brightness-95 focus-visible:ring-2 focus-visible:ring-kumo-focus focus-visible:outline-none"
+            >
+              <LockSimpleIcon aria-hidden="true" weight="bold" className="size-[1.125em] shrink-0" />
+              <span className="truncate">Protected resources</span>
+              <span className="opacity-70">({resources.length})</span>
+              <CaretRightIcon aria-hidden="true" weight="bold" className="size-[0.875em] shrink-0" />
+            </button>
+          )}
+          <span className="flex-1" />
+          {/* Until its key is minted, a link that is on has nothing to copy that would let anyone in. */}
+          <CopyLinkButton link={copied ?? page} title={what} labelled primary disabled={linkOn && copied === undefined} />
+        </footer>
+        {/* Within it, so that it is the one Escape and a click outside put away. */}
+      </div>
       {removal.dialog && <RemovalDialog {...removal.dialog} gadget={gadget?.title} />}
     </>
   )
@@ -254,13 +257,14 @@ const ProtectedResources = ({ what, gadget, resources, onBack }: { what: string;
   <>
     <header className="flex items-center gap-2 p-6 pb-2">
       <Button variant="ghost" icon={<CaretLeftIcon weight="bold" />} aria-label="Back to sharing" onClick={onBack} className="-ms-2 text-kumo-subtle hover:text-kumo-default" />
-      <Dialog.Title className="min-w-0 flex-1 truncate text-lg font-medium text-kumo-default">Protected resources</Dialog.Title>
+      {/* A heading rather than the dialog's title, which stays the sharing's, kept under it. */}
+      <h2 className="min-w-0 flex-1 truncate text-lg font-medium text-kumo-default">Protected resources</h2>
       <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
     </header>
     <div className="appears flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
-      <Dialog.Description className="text-base text-pretty text-kumo-subtle">
+      <p className="text-base text-pretty text-kumo-subtle">
         {gadget ? 'Anyone you add' : 'Anyone who joins'} must have their own access to these before they can open {what}. If they don’t, give them access there first.
-      </Dialog.Description>
+      </p>
       <ListGroup label="Protected resources">
         {resources.map(({ key, title, url, service }) => {
           const href = webUrl(url)
