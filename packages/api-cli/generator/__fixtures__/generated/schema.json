@@ -53,6 +53,48 @@
           }
         },
         {
+          "name": "exportNote",
+          "doc": "A note's text, or a byte stream inside the result for a note too long to return whole.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "ref",
+            "name": "NoteExport"
+          }
+        },
+        {
+          "name": "exportNotes",
+          "doc": "Each note's export, in order: a result that may hold several byte streams.",
+          "params": [
+            {
+              "name": "ids",
+              "type": {
+                "kind": "array",
+                "element": {
+                  "kind": "string"
+                }
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "array",
+            "element": {
+              "kind": "ref",
+              "name": "NoteExport"
+            }
+          }
+        },
+        {
           "name": "findNotes",
           "doc": "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
           "params": [
@@ -698,6 +740,41 @@
           "kind": "string"
         }
       }
+    },
+    "NoteExport": {
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "object",
+          "properties": {
+            "kind": {
+              "kind": "literal",
+              "value": "text"
+            },
+            "text": {
+              "kind": "string"
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "byteLength": {
+              "kind": "number"
+            },
+            "content": {
+              "kind": "readableStream",
+              "element": {
+                "kind": "bytes"
+              }
+            },
+            "kind": {
+              "kind": "literal",
+              "value": "stream"
+            }
+          }
+        }
+      ]
     },
     "Outline": {
       "kind": "object",

@@ -245,6 +245,14 @@ test("classifies each result", () => {
   assert.deepEqual(returns("FixtureAuthedApi", "get-photo"), { kind: "value", type: "Uint8Array | null", bytes: true });
   assert.equal("bytes" in returns("FixtureAuthedApi", "find-notes"), false);
   assert.deepEqual(real.nodes.Overseer!.commands["get-chat-attachment-content"]!.returns, { kind: "value", type: "Uint8Array", bytes: true });
+  // A byte stream inside a value, behind a named type, a union and an array, is marked so for --out;
+  // a stream that is the result keeps its own kind, and plain JSON and bytes are not marked.
+  const noteExport = 'NoteExport = { kind: "text"; text: string } | { byteLength: number; content: ReadableStream; kind: "stream" }';
+  assert.deepEqual(returns("FixtureAuthedApi", "export-note"), { kind: "value", type: noteExport, stream: true });
+  assert.deepEqual(returns("FixtureAuthedApi", "export-notes"), { kind: "value", type: `NoteExport[], where ${noteExport}`, stream: true });
+  for (const [node, command] of [["FixtureAuthedApi", "find-notes"], ["FixtureAuthedApi", "get-photo"], ["FixturePublicApi", "download"]]) {
+    assert.equal("stream" in returns(node!, command!), false, command);
+  }
   assert.deepEqual(returns("Notebook", "lock"), { kind: "handle" });
   assert.deepEqual(returns("Notebook", "connect"), { kind: "untyped" });
   assert.deepEqual(returns("Notebook", "subscribe"), { kind: "subscription" });
@@ -256,6 +264,16 @@ test("classifies each result", () => {
       ...Array.from({ length: 60 }, (_, i) => [`field${i}`, { kind: "string" }])]));
   }));
   assert.deepEqual(long.nodes.Notebook!.commands.outline!.returns, { kind: "value", type: "Outline" });
+  // A recursive type is walked once: a stream deep inside it is found, and one without any ends.
+  const recursive = buildTable(edited((schema) => {
+    schema.shapes.Outline = objectOf({
+      title: { kind: "string" },
+      children: { kind: "array", element: { kind: "ref", name: "Outline" } },
+      attachments: { kind: "map", key: { kind: "string" }, value: { kind: "tuple", elements: [{ kind: "string" }], rest: { kind: "readableStream" } } },
+    });
+  }));
+  assert.equal("stream" in recursive.nodes.Notebook!.commands.outline!.returns, true);
+  assert.equal("stream" in returns("Notebook", "outline"), false);
 });
 
 /** An object shape of `properties`. */
