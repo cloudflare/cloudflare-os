@@ -6,7 +6,9 @@ import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 // (prepareChatAttachment.ts).
 const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 
-const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
+type ImageMimeType = "image/jpeg" | "image/png" | "image/webp";
+
+const IMAGE_SIGNATURES = new Map<ImageMimeType, readonly (number | null)[]>([
   ["image/jpeg", [0xFF, 0xD8, 0xFF]],
   ["image/png", [0x89, 0x50, 0x4E, 0x47]],
   ["image/webp", [
@@ -61,6 +63,17 @@ export function validateChatAttachmentUpload<T extends {
   return attachment;
 }
 
+/** The image format `prefix` (a file's first bytes, 12 or more) starts as, by signature alone:
+ * "image/jpeg", "image/png" or "image/webp"; undefined for anything else. */
+export function sniffImageMimeType(prefix: Uint8Array): ImageMimeType | undefined {
+  for (let [mimeType, signature] of IMAGE_SIGNATURES) {
+    if (signature.every((expected, index) => expected === null || prefix[index] === expected)) {
+      return mimeType;
+    }
+  }
+  return undefined;
+}
+
 /** Decode only genuine UTF-8 text; all other attachments retain opaque byte semantics. */
 export function decodeChatAttachmentText(mimeType: string, bytes: Uint8Array): string | undefined {
   if (!isTextLikeAttachmentMimeType(mimeType) || bytes.includes(0)) return undefined;
@@ -73,7 +86,8 @@ export function decodeChatAttachmentText(mimeType: string, bytes: Uint8Array): s
 
 /** Whether a MIME type is one of the image encodings Workshop accepts for chat attachments. */
 export function isAllowedChatAttachmentImageMimeType(mimeType: string | undefined): boolean {
-  return IMAGE_SIGNATURES.has(sanitizeChatAttachmentMimeType(mimeType));
+  let allowed: ReadonlyMap<string, unknown> = IMAGE_SIGNATURES;
+  return allowed.has(sanitizeChatAttachmentMimeType(mimeType));
 }
 
 /** Keep oversized or unrecognized image headers workspace-only, without changing stored bytes. */

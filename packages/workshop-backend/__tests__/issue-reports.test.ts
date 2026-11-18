@@ -108,6 +108,7 @@ describe("filing an issue report", () => {
       priority: "high",
       context: { workspaceId: "w1", chatId: 4, gadgetId: 0, appVersion: "1.2.3" },
       status: "new",
+      images: [],
       unseen: false,
     });
     expect(report.filedAt.getTime()).toBeGreaterThanOrEqual(before);

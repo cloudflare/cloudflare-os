@@ -1,16 +1,19 @@
 import {
   ISSUE_REPORT_ERROR_CODES, ISSUE_REPORT_PAGE_SIZE, ISSUE_REPORT_PRIORITIES,
   ISSUE_REPORT_STATUSES, MAX_ISSUE_REPORTS_PER_DAY, MAX_ISSUE_REPORT_APP_VERSION_LENGTH,
-  MAX_ISSUE_REPORT_LINKS, MAX_ISSUE_REPORT_LINK_LENGTH, MAX_ISSUE_REPORT_REPLIES_PER_DAY,
-  MAX_ISSUE_REPORT_TEXT_LENGTH, MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError,
+  MAX_ISSUE_REPORT_IMAGES, MAX_ISSUE_REPORT_IMAGE_BYTES, MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER,
+  MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER, MAX_ISSUE_REPORT_LINKS, MAX_ISSUE_REPORT_LINK_LENGTH,
+  MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_TEXT_LENGTH,
+  MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError,
   type AdminAccessGrant, type AdminIssueReport, type AdminIssueReportPage,
   type AdminIssueReportQuery, type AdminVia, type AiChatAuthorInfo, type IssueReport,
   type IssueReportAuthor, type IssueReportContext, type IssueReportEntry, type IssueReportGrant,
-  type IssueReportInput, type IssueReportPriority, type IssueReportStatus, type NamedUser,
-  type OwnIssueReport, type OwnIssueReportPage,
+  type IssueReportImage, type IssueReportInput, type IssueReportPriority, type IssueReportStatus,
+  type NamedUser, type OwnIssueReport, type OwnIssueReportPage,
 } from "@gadgets/workshop-shared/api";
 import { DurableObject } from "cloudflare:workers";
 import { adminAccessPolicy, adminListLimit, auditOwnerId, namedUser } from "./admin-access.js";
+import { sniffImageMimeType } from "./chat-attachment-validation.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.issue-reports");
@@ -19,8 +22,21 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 // Reports past the retention that one alarm deletes at most, so that a store left with many is
-// trimmed over several short writes, a minute apart.
+// trimmed over several short writes, a minute apart; and as many stale uploads a sweep. A report
+// holds five images at most, so a batch's images are 500 keys, under the 1000 one delete call
+// of the bucket takes.
 const PRUNE_BATCH = 100;
+// How old a 'pending' image row is before the sweep deletes it with its object: ten minutes,
+// twice what an upload is given, so a row that old belongs to no upload that can still finish.
+const PENDING_IMAGE_SECONDS = 10 * 60;
+// How long an upload may run before it is cut off: five minutes, which the largest image takes
+// on a connection of 140 kbit/s. Half of PENDING_IMAGE_SECONDS, so that an upload that is still
+// being received is never old enough to be swept.
+const IMAGE_UPLOAD_SECONDS = 5 * 60;
+// The bytes the longest image signature takes: no image an issue report takes is shorter.
+const IMAGE_SIGNATURE_BYTES = 12;
+// What makes a report due for deletion, given the time its retention began (see #dueBefore()).
+const REPORT_DUE = "filed_at < ?";
 // The longest reporter or workspace filter list() takes, and the longest workspace id a report
 // names; workspace ids are 64 characters.
 const MAX_FILTER_LENGTH = 1000;
@@ -29,7 +45,10 @@ const MAX_FILTER_LENGTH = 1000;
 const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter_name, r.text,
     r.priority, r.workspace_id, r.context, r.status, r.links, r.updated_at, r.last_admin_public,
     r.seen, g.id AS grant_id, g.scope AS grant_scope, g.expires_at AS grant_expires_at,
-    g.ended_at AS grant_ended_at
+    g.ended_at AS grant_ended_at,
+    (SELECT json_group_array(
+         json_object('id', i.id, 'type', i.type, 'byteLength', i.byte_length) ORDER BY i.n)
+       FROM images i WHERE i.report_seq = r.seq AND i.state = 'stored') AS images
   FROM reports r LEFT JOIN grants g ON g.id = r.grant_id`;
 
 // The three kinds of entry MAX_ISSUE_REPORT_THREAD_ENTRIES bounds, each apart. A bare change of
@@ -59,6 +78,18 @@ type ReportRow = {
   grant_scope: string | null;
   grant_expires_at: number | null;
   grant_ended_at: number | null;
+  images: string;
+};
+
+// What an image's object is named by: its report's id and its own, as their rows hold them.
+type ImageKey = { report_id: string; id: string };
+
+// An upload's reservation: the 'pending' row of `images` it inserted.
+type PendingImage = ImageKey & {
+  report_seq: number;
+  reporter_id: string;
+  byte_length: number;
+  started_at: number;
 };
 
 type EntryRow = {
@@ -155,6 +186,7 @@ function reportOf(row: ReportRow): IssueReport {
     priority: row.priority as IssueReportPriority,
     context: row.workspace_id === null ? context : { workspaceId: row.workspace_id, ...context },
     status: row.status as IssueReportStatus,
+    images: JSON.parse(row.images) as IssueReportImage[],
   };
   if (row.grant_id !== null) {
     report.grant = {
@@ -203,6 +235,20 @@ function notFound(): Error {
   return createIssueReportError(ISSUE_REPORT_ERROR_CODES.notFound);
 }
 
+// The key of an image's object in the bucket. Built from rows alone, never from what a caller
+// sent, and neither stored nor returned: whoever holds a key was let through by a row.
+function imageKey(image: ImageKey): string {
+  return `${image.report_id}/${image.id}`;
+}
+
+function uploadTookTooLong(): Error {
+  return new Error("The image upload took too long. Try again.");
+}
+
+function fewerBytesThanDeclared(): TypeError {
+  return new TypeError("The image holds fewer bytes than its byteLength.");
+}
+
 /**
  * The deployment-wide store of issue reports: each report with its thread, the links admins
  * attached and a copy of the grant given with it. Always addressed as getByName(""). Its callers
@@ -214,8 +260,20 @@ function notFound(): Error {
  * their id is, and nothing of a profile but the id and the name is kept.
  *
  * How long a report is kept is not stored here: alarm() asks AdminSettings for the retention in
- * force each time it runs, and deletes the reports filed before it, with their threads. No read
- * filters by age.
+ * force each time it runs, and deletes the reports filed before it, with their threads and
+ * images. No read filters by age.
+ *
+ * An image's bytes are one object in the R2 bucket bound as ISSUE_IMAGES, named by imageKey(),
+ * and its row in `images` is everything else, which is what every decision reads: who may read
+ * it, how many a report has, how many bytes a reporter holds. An object never exists without its
+ * row: a row is inserted, 'pending', before its object is put; an upload deletes its object only
+ * after its put has settled, since a delete sent while the put is in flight can be answered
+ * before the put lands; and a row is deleted only after the delete of its object has resolved.
+ * So what a failure leaves is a row, which the sweep or the alarm retries, never an object
+ * nothing names, and a report with images outlives its retention for as long as the bucket
+ * cannot be reached. The put happens here rather than in the session that received the stream,
+ * so that one class writes the row before its object and deletes it after, and an upload whose
+ * session dropped is cleared away by the code that began it.
  *
  * Schema. A report's workspace is a column, for the filter, and the rest of where its reporter
  * was is JSON in `context`. `last_admin_public` is the `n` of the newest public entry an admin
@@ -238,8 +296,15 @@ function notFound(): Error {
  *   index (author_id, at)
  *   grants(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, scope TEXT NOT NULL, workspace_id TEXT,
  *     expires_at INTEGER NOT NULL, ended_at INTEGER) STRICT;
+ *   images(report_seq INTEGER NOT NULL, id TEXT PRIMARY KEY, reporter_id TEXT NOT NULL,
+ *     state TEXT NOT NULL CHECK (state IN ('pending', 'stored')), type TEXT,
+ *     byte_length INTEGER NOT NULL, started_at INTEGER NOT NULL, n INTEGER NOT NULL) STRICT;
+ *   indexes (report_seq, n), (reporter_id), (state, started_at)
  * An entry's `via` is set for an entry the admins wrote and NULL for the reporter's own; a bare
- * change of status is an admins' public entry whose text is ''.
+ * change of status is an admins' public entry whose text is ''. An image is 'pending' from its
+ * upload's reservation, when `started_at` and `n` (its place among its report's images) are set
+ * and `byte_length` is the length its sender declared, until its object is in the bucket; only
+ * a 'stored' image has a `type`, and only a 'stored' image is listed or read.
  */
 export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
@@ -295,6 +360,21 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       expires_at INTEGER NOT NULL,
       ended_at INTEGER
     ) STRICT`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS images (
+      report_seq INTEGER NOT NULL,
+      id TEXT PRIMARY KEY,
+      reporter_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('pending', 'stored')),
+      type TEXT,
+      byte_length INTEGER NOT NULL,
+      started_at INTEGER NOT NULL,
+      n INTEGER NOT NULL
+    ) STRICT`);
+    sql.exec("CREATE INDEX IF NOT EXISTS images_report ON images (report_seq, n)");
+    // A reporter's held bytes and uploads in flight are summed across all their reports.
+    sql.exec("CREATE INDEX IF NOT EXISTS images_reporter ON images (reporter_id)");
+    // The sweep reads the oldest 'pending' rows.
+    sql.exec("CREATE INDEX IF NOT EXISTS images_state ON images (state, started_at)");
   }
 
   // --- The reporter ---
@@ -342,6 +422,179 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     return ownReportOf(this.#report("r.id = ?", id)!);
   }
 
+  /**
+   * Adds an image to a report `reporterId` filed: `image` is a stream of its bytes and
+   * `byteLength` how many it holds, as the caller declared. The bytes go to the bucket as they
+   * arrive, a piece at a time, and nothing is held whole. Returns the image once it is stored.
+   *
+   * Refused `imageTooLarge` over MAX_ISSUE_REPORT_IMAGE_BYTES; `notFound` for a report that is
+   * not the reporter's or is past the retention in force (the alarm is about to delete it, and
+   * an upload must not put that off); `closed`; `tooManyImages` at MAX_ISSUE_REPORT_IMAGES in
+   * the report; `tooManyUploads` at MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER uploads of the
+   * reporter in flight; `imageQuotaReached` past MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER; and
+   * `imageNotRecognised` unless the first bytes are a PNG's, a JPEG's or a WebP's. Throws
+   * (TypeError) for a `byteLength` that is not a whole number and for a stream that holds more
+   * or fewer bytes than it, and an Error for an upload cut off after IMAGE_UPLOAD_SECONDS.
+   * Whatever refuses or fails it, the stream is cancelled and nothing of it stays stored.
+   */
+  async addImage(reporterId: string, reportId: string, image: ReadableStream<Uint8Array>,
+      byteLength: number): Promise<IssueReportImage> {
+    let sql = this.ctx.storage.sql;
+    let reader = image.getReader();
+    let row: PendingImage;
+    try {
+      // 1. The length, before any row. Nothing shorter than a signature is an image.
+      if (!Number.isSafeInteger(byteLength) || byteLength < 0) {
+        throw new TypeError("An image's byteLength must be a whole number.");
+      }
+      if (byteLength > MAX_ISSUE_REPORT_IMAGE_BYTES) {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.imageTooLarge);
+      }
+      if (byteLength < IMAGE_SIGNATURE_BYTES) {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.imageNotRecognised);
+      }
+      // 2. Stale uploads give their room back first. When the bucket cannot be reached they
+      // keep it, and this upload goes on.
+      try {
+        await this.#sweepPendingImages();
+      } catch (error) {
+        logger.error("failed to delete the issue report image uploads that never finished", {
+          event: "issue.report.image.sweep.failed", error,
+        });
+      }
+      // 3. The retention in force, which fails the upload if it cannot be asked.
+      let dueBefore = await this.#dueBefore();
+      // 4. The reservation, in one step with that answer: there is no `await` from the answer
+      // to the inserted row, so uploads racing each other count each other's.
+      row = this.#reserveImage(auditOwnerId(reporterId), reportId, byteLength, dueBefore);
+    } catch (error) {
+      // No byte of the stream has been read.
+      reader.cancel().catch(() => {});
+      throw error;
+    }
+
+    let key = imageKey(row);
+    let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+    let put: Promise<unknown> | undefined;
+    let stored: IssueReportImage | undefined;
+    let failure: unknown;
+    // 5. The cut-off, counted from the reservation. It only marks the upload and stops its two
+    // streams: the upload fails where it is waiting, and its cleanup deletes what there is.
+    let cutOff: Error | undefined;
+    let timer = setTimeout(() => {
+      cutOff = uploadTookTooLong();
+      reader.cancel(cutOff).catch(() => {});
+      writer?.abort(cutOff).catch(() => {});
+    }, IMAGE_UPLOAD_SECONDS * 1000);
+    // What `step` settled as, unless the upload was cut off meanwhile: that is looked at first,
+    // because a read that was waiting when its reader was cancelled rejects for a stream that
+    // came over a binding and reports the end for a local one, and neither is the stream's own
+    // error or end.
+    let settled = async <T>(step: Promise<T>): Promise<T> => {
+      let outcome = await step.then(value => ({ value }), (error: unknown) => ({ error }));
+      if (cutOff !== undefined) throw cutOff;
+      if ("error" in outcome) throw outcome.error;
+      return outcome.value;
+    };
+    try {
+      // 6. The format, from the first bytes, before anything is sent to the bucket. The pieces
+      // read for it are kept as they came.
+      let read = async (): Promise<Uint8Array | undefined> => {
+        let { done, value } = await settled(reader.read());
+        return done ? undefined : value;
+      };
+      let head: Uint8Array[] = [];
+      let prefix = new Uint8Array(IMAGE_SIGNATURE_BYTES);
+      for (let held = 0; held < IMAGE_SIGNATURE_BYTES;) {
+        let piece = await read();
+        if (piece === undefined) throw fewerBytesThanDeclared();
+        prefix.set(piece.subarray(0, IMAGE_SIGNATURE_BYTES - held), held);
+        held += piece.byteLength;
+        head.push(piece);
+      }
+      let type = sniffImageMimeType(prefix);
+      if (type === undefined) {
+        throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.imageNotRecognised);
+      }
+
+      // 7. The put, with the last byte held back. The bucket stores an object as soon as its
+      // body has received `byteLength` bytes, before the body is closed, and an abort after
+      // that leaves the object. So until the source has reported its end the body is a byte
+      // short, and the bucket can hold nothing of an upload that turns out longer or broken.
+      let body = new FixedLengthStream(byteLength);
+      writer = body.writable.getWriter();
+      put = this.env.ISSUE_IMAGES.put(key, body.readable);
+      // Awaited below and in the cleanup; a rejection that arrives in between is not unhandled.
+      put.catch(() => {});
+      let count = 0;
+      let last: Uint8Array | undefined;
+      // One piece at a time, each written before the next is read: the bucket's own
+      // backpressure, with nothing held but the piece in hand.
+      let next = async () => head.shift() ?? await read();
+      for (let piece = await next(); piece !== undefined; piece = await next()) {
+        if (piece.byteLength === 0) continue;
+        if (count + piece.byteLength > byteLength) {
+          throw new TypeError("The image holds more bytes than its byteLength.");
+        }
+        count += piece.byteLength;
+        if (count < byteLength) {
+          await settled(writer.write(piece));
+        } else {
+          last = piece.slice(-1);
+          if (piece.byteLength > 1) await settled(writer.write(piece.subarray(0, -1)));
+        }
+      }
+      if (last === undefined) throw fewerBytesThanDeclared();
+      await settled(writer.write(last));
+      await settled(writer.close());
+      await settled(put);
+
+      // 8. The finish, in one step: the put resolved and the upload was not cut off. A row as
+      // old as the sweep takes is the sweep's, so a row a sweep has read never becomes 'stored'
+      // under it.
+      let finished = sql.exec(
+        `UPDATE images SET state = 'stored', type = ?
+         WHERE id = ? AND state = 'pending' AND started_at > ? RETURNING id`,
+        type, row.id, Date.now() - PENDING_IMAGE_SECONDS * 1000).toArray();
+      if (finished.length === 0) {
+        // The put outlasted its row's age. When a sweep has taken the row since, it is put back
+        // while its report exists, so that the object this put stored has a row while the
+        // cleanup deletes it, and is the sweep's to retry if that delete fails. This is the one
+        // place that leans on a delete succeeding: when the report has been deleted since, or
+        // the sweep deletes the row after this step, the object has no row to be retried by,
+        // and the cleanup's delete is the one it gets.
+        this.#insertPendingImage(row);
+        throw uploadTookTooLong();
+      }
+      stored = { id: row.id, type, byteLength };
+      return stored;
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      // 9. The cleanup of an upload that did not store its image.
+      clearTimeout(timer);
+      if (stored === undefined) {
+        reader.cancel(failure).catch(() => {});
+        writer?.abort(failure).catch(() => {});
+        try {
+          if (put !== undefined) {
+            // The delete is sent only once the put has settled, resolved or rejected: sent
+            // sooner it can be answered before the put lands, and the object then stays.
+            await put.then(() => {}, () => {});
+            await this.env.ISSUE_IMAGES.delete(key);
+          }
+          sql.exec("DELETE FROM images WHERE id = ? AND state = 'pending'", row.id);
+        } catch (error) {
+          // The row stays for the sweep, which deletes the object again and then the row.
+          logger.error("failed to delete an issue report image that was not stored", {
+            event: "issue.report.image.delete.failed", error,
+          });
+        }
+      }
+    }
+  }
+
   /** One page of the reporter's reports, newest first, ISSUE_REPORT_PAGE_SIZE at most. Throws for
    * a cursor that is not one. The page is filtered by the reporter whatever the cursor. */
   listOwn(reporterId: string, cursor?: string): OwnIssueReportPage {
@@ -357,6 +610,13 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   getOwn(reporterId: string, reportId: string): OwnIssueReport & { entries: IssueReportEntry[] } {
     let row = this.#ownReport(reporterId, reportId);
     return { ...ownReportOf(row), entries: this.#entries(row.seq, "reporter") };
+  }
+
+  /** The bytes of an image of a report `reporterId` filed, as a stream: the reporter's read.
+   * `notFound` for any other report, and for an image that is not stored in it. */
+  async readOwnImage(reporterId: string, reportId: string, imageId: string)
+      : Promise<ReadableStream<Uint8Array>> {
+    return this.#openImage(this.#storedImage(this.#ownReport(reporterId, reportId), imageId));
   }
 
   /**
@@ -542,6 +802,12 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     return { ...adminReportOf(row), entries: this.#entries(row.seq, "admins") };
   }
 
+  /** The bytes of an image of any report, as a stream: the admins' read. The caller has checked
+   * that it serves an admin. `notFound` for an image that is not stored in that report. */
+  async readImage(reportId: string, imageId: string): Promise<ReadableStream<Uint8Array>> {
+    return this.#openImage(this.#storedImage(this.#reportSeq(reportId), imageId));
+  }
+
   /**
    * Adds an entry `admin` wrote to a report's thread, for the reporter ("public") or for admins
    * alone ("admins"), and returns it. It changes no status, and works on a closed report. A
@@ -587,37 +853,191 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     if (changed.length === 0) throw notFound();
   }
 
+  // --- Images ---
+
+  // The reservation of an upload of `byteLength` bytes to the report `reportId`, by `reporter`
+  // (as auditOwnerId() gives it): its 'pending' row, inserted here. One synchronous step, so
+  // that what it counts cannot change before its row is in. Once inserted the row holds the
+  // declared length and a slot in the report, so uploads racing each other cannot pass a bound
+  // together. `dueBefore` is #dueBefore()'s answer.
+  #reserveImage(reporter: string, reportId: string, byteLength: number, dueBefore: number)
+      : PendingImage {
+    let sql = this.ctx.storage.sql;
+    let [report] = sql.exec<{ seq: number; id: string; status: string; due: number }>(
+      `SELECT seq, id, status, ${REPORT_DUE} AS due FROM reports
+       WHERE id = ? AND reporter_id = ?`, dueBefore, reportId, reporter).toArray();
+    if (report === undefined || report.due) throw notFound();
+    if (report.status === "closed") {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.closed);
+    }
+    let { images } = sql.exec<{ images: number }>(
+      "SELECT COUNT(*) AS images FROM images WHERE report_seq = ?", report.seq).one();
+    if (images >= MAX_ISSUE_REPORT_IMAGES) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.tooManyImages);
+    }
+    // Over all the reporter's reports. An upload in flight is a stream and an open put held in
+    // this one object, so a reporter may not hold one for every slot of every open report.
+    let held = sql.exec<{ uploads: number; bytes: number }>(
+      `SELECT COUNT(*) FILTER (WHERE state = 'pending') AS uploads,
+         COALESCE(SUM(byte_length), 0) AS bytes
+       FROM images WHERE reporter_id = ?`, reporter).one();
+    if (held.uploads >= MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.tooManyUploads);
+    }
+    if (held.bytes + byteLength > MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER) {
+      throw createIssueReportError(ISSUE_REPORT_ERROR_CODES.imageQuotaReached);
+    }
+    let row: PendingImage = {
+      report_seq: report.seq, report_id: report.id, id: crypto.randomUUID(),
+      reporter_id: reporter, byte_length: byteLength, started_at: Date.now(),
+    };
+    this.#insertPendingImage(row);
+    return row;
+  }
+
+  // Inserts an upload's 'pending' row, last among its report's images: only while its report
+  // exists, and not over a row of that id.
+  #insertPendingImage(image: PendingImage): void {
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO images
+         (report_seq, id, reporter_id, state, byte_length, started_at, n)
+       SELECT seq, ?, ?, 'pending', ?, ?,
+         (SELECT COALESCE(MAX(n), 0) + 1 FROM images WHERE report_seq = reports.seq)
+       FROM reports WHERE seq = ?`,
+      image.id, image.reporter_id, image.byte_length, image.started_at, image.report_seq);
+  }
+
+  // Deletes the uploads that never finished: up to PRUNE_BATCH 'pending' rows older than
+  // PENDING_IMAGE_SECONDS, oldest first, their objects in one call of the bucket and then, once
+  // that resolved, the rows. It waits for no put: an upload whose row is that old is gone, or
+  // is refused at its finish. Throws what the bucket threw, having deleted no row.
+  async #sweepPendingImages(): Promise<void> {
+    let sql = this.ctx.storage.sql;
+    let stale = sql.exec<ImageKey>(
+      `SELECT r.id AS report_id, i.id FROM images i JOIN reports r ON r.seq = i.report_seq
+       WHERE i.state = 'pending' AND i.started_at < ? ORDER BY i.started_at LIMIT ?`,
+      Date.now() - PENDING_IMAGE_SECONDS * 1000, PRUNE_BATCH).toArray();
+    if (stale.length === 0) return;
+    await this.env.ISSUE_IMAGES.delete(stale.map(imageKey));
+    this.ctx.storage.transactionSync(() => {
+      for (let { id } of stale) {
+        sql.exec("DELETE FROM images WHERE id = ? AND state = 'pending'", id);
+      }
+    });
+  }
+
+  // The row of the 'stored' image `imageId` of `report`; `notFound` for an id that names none
+  // there, and for an upload that has not finished.
+  #storedImage(report: { seq: number; id: string }, imageId: string): ImageKey {
+    let [image] = this.ctx.storage.sql.exec<{ id: string }>(
+      "SELECT id FROM images WHERE report_seq = ? AND id = ? AND state = 'stored'",
+      report.seq, imageId).toArray();
+    if (image === undefined) throw notFound();
+    return { report_id: report.id, id: image.id };
+  }
+
+  // The bytes of the image a row names, as the bucket's own byte stream, which crosses the
+  // binding as it is: nothing is read or held here. `notFound` when the object is not there.
+  async #openImage(image: ImageKey): Promise<ReadableStream<Uint8Array>> {
+    let object = await this.env.ISSUE_IMAGES.get(imageKey(image));
+    if (object === null) {
+      logger.error("an issue report image's row has no object in the bucket", {
+        event: "issue.report.image.missing",
+      });
+      throw notFound();
+    }
+    return object.body;
+  }
+
   // --- Retention ---
 
+  // The time before which a report was filed if it is past the retention in force: see
+  // REPORT_DUE. The retention is asked of AdminSettings (the committed config) each time, never
+  // kept.
+  async #dueBefore(): Promise<number> {
+    let config = await this.ctx.exports.AdminSettings.getByName("").committedAdminConfig();
+    return Date.now() - adminAccessPolicy(config, this.env).issueReportRetentionDays * DAY_MS;
+  }
+
   /**
-   * Deletes the reports filed before the retention in force, with their threads, PRUNE_BATCH a
-   * run. The retention is asked of AdminSettings (the committed config) each time, never kept: if
-   * that question fails nothing is deleted, since a report must not go by a value that may be
-   * stale. Sets the next alarm itself: a minute ahead while more reports are due, a day ahead
-   * while any report remains, an hour ahead after a failure. Never throws: the platform gives up
-   * on an alarm that keeps throwing.
+   * Deletes the uploads that never finished, then the reports filed before the retention in
+   * force, with their threads and images, PRUNE_BATCH a run. If the retention cannot be asked
+   * no report is deleted, since a report must not go by a value that may be stale.
+   *
+   * A report's images go first: their objects in one call of the bucket, then their rows, then
+   * each report of the batch that has no image row left. So a report whose objects could not
+   * be deleted keeps its rows and is retried, as is one that gained an image while the bucket
+   * was called, and a report with no image goes whatever the bucket did. A due report with an
+   * upload in flight is left for a later run: the upload finishes or is swept within
+   * PENDING_IMAGE_SECONDS, and none begins on a due report.
+   *
+   * Sets the next alarm itself: an hour ahead after a failure, else a minute ahead while a
+   * report is still due, else a day ahead while anything remains. Never throws: the platform
+   * gives up on an alarm that keeps throwing.
    */
   async alarm(): Promise<void> {
     let sql = this.ctx.storage.sql;
-    let next = HOUR_MS;
+    let failed = false;
+    let dueLeft = false;
     try {
-      let config = await this.ctx.exports.AdminSettings.getByName("").committedAdminConfig();
-      let { issueReportRetentionDays } = adminAccessPolicy(config, this.env);
+      await this.#sweepPendingImages();
+    } catch (error) {
+      failed = true;
+      logger.error("failed to delete the issue report image uploads that never finished", {
+        event: "issue.report.image.sweep.failed", error,
+      });
+    }
+    try {
+      let dueBefore = await this.#dueBefore();
       // Chosen in `filed_at` order, which its index answers without reading the table.
       let due = sql.exec<{ seq: number }>(
-        "SELECT seq FROM reports WHERE filed_at < ? ORDER BY filed_at, seq LIMIT ?",
-        Date.now() - issueReportRetentionDays * DAY_MS, PRUNE_BATCH + 1).toArray();
-      this.#deleteReports(due.slice(0, PRUNE_BATCH).map(({ seq }) => seq));
-      next = due.length > PRUNE_BATCH ? MINUTE_MS : DAY_MS;
+        `SELECT seq FROM reports WHERE ${REPORT_DUE} AND NOT EXISTS
+           (SELECT 1 FROM images WHERE report_seq = reports.seq AND state = 'pending')
+         ORDER BY filed_at, seq LIMIT ?`, dueBefore, PRUNE_BATCH).toArray();
+      let seqs = JSON.stringify(due.map(({ seq }) => seq));
+      let within = "IN (SELECT value FROM json_each(?))";
+      let images = sql.exec<ImageKey>(
+        `SELECT r.id AS report_id, i.id FROM images i JOIN reports r ON r.seq = i.report_seq
+         WHERE i.report_seq ${within}`, seqs).toArray();
+      let deleted = true;
+      if (images.length > 0) {
+        try {
+          await this.env.ISSUE_IMAGES.delete(images.map(imageKey));
+        } catch (error) {
+          deleted = false;
+          failed = true;
+          logger.error("failed to delete the images of the issue reports past their retention", {
+            event: "issue.report.image.delete.failed", error,
+          });
+        }
+      }
+      this.ctx.storage.transactionSync(() => {
+        if (deleted) {
+          sql.exec(`DELETE FROM images WHERE id ${within}`,
+              JSON.stringify(images.map(({ id }) => id)));
+        }
+        let gone = sql.exec<{ seq: number }>(
+          `SELECT seq FROM reports WHERE seq ${within} AND NOT EXISTS
+             (SELECT 1 FROM images WHERE report_seq = reports.seq)`, seqs).toArray();
+        this.#deleteReports(gone.map(({ seq }) => seq));
+      });
+      dueLeft = sql.exec(`SELECT 1 FROM reports WHERE ${REPORT_DUE} LIMIT 1`, dueBefore)
+          .toArray().length > 0;
     } catch (error) {
+      failed = true;
       logger.error("failed to delete the issue reports past their retention", {
         event: "issue-reports.prune.failed", error,
       });
     }
     try {
       // An empty store needs no alarm: submit() sets one with the next report.
-      let kept = sql.exec("SELECT 1 FROM reports LIMIT 1").toArray();
-      if (kept.length > 0) await this.ctx.storage.setAlarm(Date.now() + next);
+      let kept = sql.exec(
+        "SELECT 1 FROM reports UNION ALL SELECT 1 FROM images WHERE state = 'pending' LIMIT 1")
+          .toArray();
+      if (kept.length > 0) {
+        await this.ctx.storage.setAlarm(
+            Date.now() + (failed ? HOUR_MS : dueLeft ? MINUTE_MS : DAY_MS));
+      }
     } catch (error) {
       logger.error("failed to set the issue reports' next alarm", {
         event: "issue-reports.alarm.failed", error,
@@ -626,7 +1046,7 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Deletes the reports `seqs` number, with their entries and each grant row no report names
-  // any more: the one place a report is deleted.
+  // any more: the one place a report is deleted. A report it is handed has no image row left.
   #deleteReports(seqs: number[]): void {
     if (seqs.length === 0) return;
     let sql = this.ctx.storage.sql;
@@ -657,10 +1077,11 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     return row;
   }
 
-  // What the admins' writes need of a report; `notFound` for an id that names none.
-  #reportSeq(reportId: string): { seq: number; status: string } {
-    let [row] = this.ctx.storage.sql.exec<{ seq: number; status: string }>(
-        "SELECT seq, status FROM reports WHERE id = ?", reportId).toArray();
+  // What the admins' writes and their read of an image need of a report; `notFound` for an id
+  // that names none.
+  #reportSeq(reportId: string): { seq: number; id: string; status: string } {
+    let [row] = this.ctx.storage.sql.exec<{ seq: number; id: string; status: string }>(
+        "SELECT seq, id, status FROM reports WHERE id = ?", reportId).toArray();
     if (row === undefined) throw notFound();
     return row;
   }
