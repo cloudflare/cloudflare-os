@@ -192,12 +192,14 @@ export async function getAccessToken(
         return { ok: false, reason: "policyBlocked",
                  detail: body.error_description ?? "admin_policy_enforced" };
       }
-      throw new Error(
-          `Failed to refresh access token: ${body.error} ${body.error_description}`);
+      // Google's code only: its description, like any body it sends, can repeat the request.
+      let code = safeProviderCode(body.error);
+      throw new Error(`Failed to refresh access token [http=${response.status}` +
+          `${code !== undefined ? ` error=${code}` : ""}]`);
     }
 
-    let errorText = await readErrorText(response);
-    throw new Error(`Failed to refresh access token: ${response.status} ${errorText}`);
+    await response.body?.cancel();
+    throw new Error(`Failed to refresh access token [http=${response.status}]`);
   }
 
   const data = await response.json() as {
@@ -1917,31 +1919,6 @@ export function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boo
     escaped = char === "\\" && !escaped;
   }
   return flushToken();
-}
-
-// Read a bounded prefix of an error response body for inclusion in thrown errors.
-async function readErrorText(response: Response, maxBytes = 4096): Promise<string> {
-  if (!response.body) return response.statusText;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (total < maxBytes) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    const remaining = maxBytes - total;
-    const chunk = value.subarray(0, remaining);
-    chunks.push(chunk);
-    total += chunk.byteLength;
-    if (chunk.byteLength < value.byteLength) break;
-  }
-  await reader.cancel();
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
 }
 
 // Google's reasons for a request it limited rather than refused, on a 403 or a 429. The limit is
