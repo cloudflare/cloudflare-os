@@ -184,6 +184,8 @@ const AppFrame = () => {
         narrow={narrow}
         onOpenSettings={builds(pageWorkspaceId) ? openSettings : undefined}
         onUpdateProposed={openUpdate}
+        // Its workspace's library, which it was one of; in place, as it is no longer there to go back to.
+        onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageWorkspaceId }, search: { tab: 'library' }, replace: true })}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
         // Opened otherwise, such as from the library, there is nothing to collapse into. On a
         // narrow screen, where it is beside nothing, it goes up.
@@ -207,6 +209,7 @@ const AppFrame = () => {
         narrow={narrow}
         onOpenSettings={builds(besideWorkspaceId) ? openSettings : undefined}
         onUpdateProposed={openUpdate}
+        onDeleted={aside.hide}
         onSelect={(key) => aside.show(key, besideRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}

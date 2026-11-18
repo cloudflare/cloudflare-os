@@ -14,6 +14,7 @@ import { useGadgetExports } from '@/gadgets/useGadgetExports'
 import { templateUpdateStatus } from '@/gadgets/templateUpdate'
 import { UpdateFromTemplate } from '@/gadgets/UpdateFromTemplate'
 import { useBlueprintInfo } from '@/gadgets/useGadgetSettings'
+import { useGadgetEdits } from '@/gadgets/useGadgetEdits'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { asideItemIcon } from './asideItemIcon'
@@ -45,6 +46,11 @@ export type AsidePaneProps = {
    * tried. Left out where there is nowhere to go, which leaves the update out of its menu.
    */
   onUpdateProposed?: (output: AsideOutput, chatId: number) => void
+  /**
+   * A gadget shown was deleted from its menu: go somewhere that still is. Left out where there is
+   * nowhere to go, which leaves deleting out of its menu.
+   */
+  onDeleted?: (output: AsideOutput) => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -73,15 +79,28 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange, narrow, onOpenSettings, onUpdateProposed } = props
+  const { item, link, onFullScreenChange, narrow, onOpenSettings, onUpdateProposed, onDeleted } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
   const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
-  const title = snapshot.title ?? item.title
   // A gadget's, which a worktree, with no settings of its own, is not.
   const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
+  // A gadget's settings, connections and code are its workspace's, which whoever it was shared
+  // with to use does not build in, rename or delete there.
+  const workspaces = useWorkspaces()
+  const listed = item.kind === 'output' && workspaces.status === 'ready'
+    ? workspaces.workspaces.find(({ id }) => id === item.output.workspaceId)
+    : undefined
+  const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
+  // Its title is the one it was last renamed to, until it says so itself.
+  const edits = useGadgetEdits(gadget, snapshot.title ?? item.title, {
+    may: readsCode,
+    workspace: listed?.title,
+    onDeleted: gadget && onDeleted && (() => onDeleted(gadget)),
+  })
+  const title = edits.title
   // Its code, shown in its place, over it: the gadget keeps running under it, so that going back is
   // to it as it was, and the code, opened again, is at the file it was left at. Kept by the item it
   // is of, so that another starts as itself.
@@ -94,10 +113,6 @@ export const AsidePane = (props: AsidePaneProps) => {
 
   // A gadget is shared with its workspace, by whoever can share what is in it. Its link is to its
   // own page, without the chat it was shown from, whose changes are not for whoever it lets in.
-  const workspaces = useWorkspaces()
-  const listed = item.kind === 'output' && workspaces.status === 'ready'
-    ? workspaces.workspaces.find(({ id }) => id === item.output.workspaceId)
-    : undefined
   const [sharing, setSharing] = useState(false)
   const page = link && new URL(link)
   if (page) page.search = ''
@@ -155,8 +170,6 @@ export const AsidePane = (props: AsidePaneProps) => {
       </AnimatePresence>
     </>
   )
-  // Its code is its workspace's, which whoever it was shared with to use does not build in.
-  const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
   // Exported by whoever can use it, and saved to their accounts by whoever builds there.
   const exports = useGadgetExports(gadget, title, { saves: readsCode })
   // A newer version of the template it follows, which its menu offers to update it to. Only a
@@ -179,6 +192,8 @@ export const AsidePane = (props: AsidePaneProps) => {
     />
   )
   const hasUpdate = update && templateUpdateStatus(follows, template) === 'available'
+  // A refused rename over an export's progress, which goes on meanwhile.
+  const status = edits.status ?? exports.status
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
@@ -191,6 +206,8 @@ export const AsidePane = (props: AsidePaneProps) => {
     viewingCode,
     onShare: share ? () => setSharing(true) : undefined,
     onUpdate: hasUpdate ? () => setUpdating(true) : undefined,
+    onRename: edits.onRename,
+    onDelete: edits.onDelete,
     narrow,
   }
 
@@ -204,18 +221,20 @@ export const AsidePane = (props: AsidePaneProps) => {
       onExpand={props.onExpand}
     >
       {content}
-      {exports.status && <PaneStatus {...exports.status} />}
+      {status && <PaneStatus {...status} />}
       {share}
       {exports.dialogs}
       {update}
+      {edits.dialog}
     </SidePane>
   ) : (
     <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
-      {exports.status && <PaneStatus {...exports.status} />}
+      {status && <PaneStatus {...status} />}
       {share}
       {exports.dialogs}
       {update}
+      {edits.dialog}
     </SidePane>
   )
 }

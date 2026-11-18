@@ -101,6 +101,15 @@ export class MockGadget {
     }
   }
 
+  /** What it is called, which renaming it changes. */
+  get title() {
+    return this.#document.title
+  }
+
+  set title(title: string) {
+    this.#document.title = title
+  }
+
   /** The gadget, through the workspace's `handle`, which breaks with it. */
   open(handle: Handle) {
     const reachable = async () => {

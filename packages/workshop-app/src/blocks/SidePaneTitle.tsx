@@ -2,6 +2,7 @@ import type { ReactElement } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { CaretRightIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
+import { EditableTitle } from '@/components/EditableTitle'
 
 export type SidePaneTitleProps = {
   title: string
@@ -12,6 +13,11 @@ export type SidePaneTitleProps = {
    * back to it.
    */
   trail?: { label: string; icon?: ReactElement; onBack: () => void }
+  /**
+   * Its name is being typed where it is, as when it is renamed from the pane's menu: kept with
+   * `onRename`, and `onEnd` once it is left, whether or not anything was.
+   */
+  renaming?: { onRename: (title: string) => void; onEnd: () => void }
 }
 
 const icon = (element: ReactElement) => <span className="flex shrink-0 [&>svg]:size-[1.125em]">{element}</span>
@@ -19,9 +25,10 @@ const icon = (element: ReactElement) => <span className="flex shrink-0 [&>svg]:s
 /**
  * The name of what is shown in the side pane, as a bubble shaped like a button. Looking at a part of
  * it in its place, the part follows the name, as a path does, and the name, quieter, is a button
- * back: the trail grows out of the bubble, and the name keeps its place.
+ * back: the trail grows out of the bubble, and the name keeps its place. Renamed, the name is typed
+ * where it is.
  */
-export const SidePaneTitle = ({ title, icon: kind, trail }: SidePaneTitleProps) => {
+export const SidePaneTitle = ({ title, icon: kind, trail, renaming }: SidePaneTitleProps) => {
   const reduceMotion = useReducedMotion() ?? false
   return (
     <span className={cn('inline-flex h-(--control-size) min-w-0 items-center rounded-full bg-kumo-base text-(length:--control-text) font-medium text-kumo-default ring-1 ring-kumo-line', trail ? 'ps-1 pe-(--control-pad)' : kind ? 'ps-(--control-pad-icon) pe-(--control-pad)' : 'px-(--control-pad)')}>
@@ -42,7 +49,10 @@ export const SidePaneTitle = ({ title, icon: kind, trail }: SidePaneTitleProps) 
       ) : (
         <>
           {kind && <span className="me-2 flex text-kumo-subtle">{icon(kind)}</span>}
-          <span className="truncate">{title}</span>
+          {renaming
+            // Where the name was: the field's own room is taken from its sides.
+            ? <EditableTitle value={title} onRename={renaming.onRename} onEnd={renaming.onEnd} autoFocus aria-label="Title" className="-mx-2.5 -my-1 font-medium text-kumo-default" />
+            : <span className="truncate">{title}</span>}
         </>
       )}
       <AnimatePresence initial={false}>

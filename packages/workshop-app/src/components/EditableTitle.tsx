@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent } from 'react'
+import { useRef, useState, type FocusEvent, type KeyboardEvent } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 
 export type EditableTitleProps = {
@@ -12,6 +12,13 @@ export type EditableTitleProps = {
   multiline?: boolean
   /** The heading's own type, which the field takes on. */
   className?: string
+  /**
+   * Being edited from the start, with what it says chosen, as when it is renamed from a menu.
+   * Only on one: focus goes to it when it is shown.
+   */
+  autoFocus?: boolean
+  /** It was left, whether or not anything was kept: for whoever shows it only while it is edited. */
+  onEnd?: () => void
 }
 
 /**
@@ -20,7 +27,7 @@ export type EditableTitleProps = {
  * was typed, and Escape puts the title back. What is said under a title is edited the same way
  * (`multiline`).
  */
-export const EditableTitle = ({ value, onRename, 'aria-label': label, placeholder, multiline = false, className }: EditableTitleProps) => {
+export const EditableTitle = ({ value, onRename, 'aria-label': label, placeholder, multiline = false, className, autoFocus, onEnd }: EditableTitleProps) => {
   // What is being typed, while it is.
   const [draft, setDraft] = useState<string>()
   // Left with Escape, which keeps nothing that was typed.
@@ -30,6 +37,7 @@ export const EditableTitle = ({ value, onRename, 'aria-label': label, placeholde
     cancelled.current = false
     setDraft(undefined)
     if (next && next !== value) onRename(next)
+    onEnd?.()
   }
 
   const shared = {
@@ -37,7 +45,11 @@ export const EditableTitle = ({ value, onRename, 'aria-label': label, placeholde
     value: draft ?? value,
     placeholder,
     enterKeyHint: 'done',
-    onFocus: () => setDraft(value),
+    autoFocus,
+    onFocus: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      setDraft(value)
+      if (autoFocus) event.currentTarget.select()
+    },
     onBlur: settle,
     onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       if (event.key === 'Enter') event.currentTarget.blur()

@@ -22,7 +22,7 @@ None of ours. Inherited from the scaffold: an optional `limit` on `getChatHistor
 9. Automations, read only. **Done.**
 10. ⌘K search **(done)** and right-click menus (**deferred**, see below).
 
-Deferred, wanted later: right-click menus on library rows and cards, skills and templates, each the same as a ⋯ menu the item would gain (Open, Open in new tab, Copy link, Share…, Remove from Library, Delete gadget…), as the prototype has. Main only has a gadget's right-click Delete; the scaffold's lists have no per-item menu yet, so this is a design addition for Balint to agree, not a port.
+Library rows and cards now have a ⋯ menu, as chats and workspaces do: Open, Open in new tab, Copy link, then for whoever builds in its workspace Rename (in place), Share…, Gadget settings and Delete… (asked first). The gadget pane's More menu gained Rename and Delete… too. Deferred, wanted later: right-click itself, on library rows and cards, skills and templates, opening the same menu the item's ⋯ has, as the prototype has; skills and templates have no ⋯ menu yet. It is a design addition for Balint to agree, not a port.
 
 Main merged in (Nov 17), the scaffold's base (Oct 27) having predated it. That made sharing a
 gadget on its own real, and the gadget runtime main's (`UiBundle` modules, `main(gadget, host)`).
@@ -54,7 +54,7 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | A gadget is shared to use, never only to view: no "Can view" and no "what people see" snapshot | main's grants are to edit the workspace or use a gadget | `viewOnly` grants, `sharedViewsAvailable`, `GadgetClient.openView`, `viewTakenAt` |
 | Someone with access can only be removed, not moved from Can edit to using a gadget (being let edit is an invite) | there is no call to narrow access | a set-access call on the Overseer |
 | Someone who can only use a workspace doesn't see who else has access | `listCollaborators()` refuses them | `listCollaborators` for users |
-| Skills aren't shared from here, and no Share in the chat header or on Library cards | skill sharing needs the Context Library's own sharing; the scaffold's header and cards have no menu slot | none |
+| Skills aren't shared from here, and no Share in the chat header | skill sharing needs the Context Library's own sharing; the scaffold's header has no menu slot | none |
 | Only the viewer's own link is turned on and off; links others made, extra ones and their notes aren't shown | each sharer has one default link for what they share, which is all the dialog offers | none |
 | A gadget's settings have no "allow everything" or "ask again" for its permissions | not on the scaffold's `GadgetClient` | `setAutoApprove`, `disallowActionKind` |
 | A gadget's agents show among its bindings with their model, but without their runs, and it has no Automations tab | no `listAgentSpawners` | `listAgentSpawners` |
@@ -75,3 +75,6 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | A gadget's kind (app or doc) can't be changed, and it has no icon picker | `setKind` is ours | `setKind` |
 | Code is read only: nothing is edited beside a chat yet, and a chat's changes not yet kept don't show in View code | editing goes through `submitCodeChange` and the old app's OT client, still to port | none |
 | View code has no link to a file or its lines; the settings page's Code tab has the file only | the item's address has no place for them | none |
+| A Library item's ⋯ menu has no Remove from Library, only Delete…, and no View code | the library lists what the workspaces made, with no way to hide one; View code is the pane's own state, which an address doesn't carry | a per-user hide on the output index |
+| On a narrow screen a Library row or card has no ⋯ menu; its own page's More menu has the same | the line has no room for it beside the time and the star, as a workspace's row hasn't | none |
+| What is renamed or deleted elsewhere shows on the Library page only once it is read again | `listOutputs()` is read, not subscribed to | a subscription to the output index |

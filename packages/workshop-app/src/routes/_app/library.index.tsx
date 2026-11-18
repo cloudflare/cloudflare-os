@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { itemPage } from '@/aside/asideItems'
+import { itemPage, itemPageId } from '@/aside/asideItems'
 import { LibraryPane } from '@/library/LibraryPane'
 
 /**
@@ -31,6 +31,9 @@ function Library() {
       // Something is made by a chat started on the home page, which starts with the format asked for.
       onNew={(format) => navigate({ to: '/', search: { format: format?.id } })}
       onExplore={() => navigate({ to: '/library/templates' })}
+      // A gadget's settings, a document's as well, whose way back is to the gadget itself.
+      onOpenSettings={({ workspaceId, workpieceId, title }) =>
+        navigate({ to: '/app/$itemId/settings', params: { itemId: itemPageId(workspaceId, { kind: 'output', workpieceId }) }, search: {}, state: { gadgetTitle: title } })}
     />
   )
 }

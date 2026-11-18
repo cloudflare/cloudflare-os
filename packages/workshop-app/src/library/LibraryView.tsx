@@ -1,6 +1,7 @@
 import { CirclesFourIcon, CompassIcon, LayoutIcon, PlusIcon } from '@phosphor-icons/react'
 import type { BlueprintOutput, OutputSummary } from '@gadgets/workshop-shared/api'
 import { LibraryCard } from '@/blocks/LibraryCard'
+import type { LibraryMoreActions } from '@/blocks/LibraryMoreMenu'
 import { LibraryRow } from '@/blocks/LibraryRow'
 import { ListToolbar } from '@/blocks/ListToolbar'
 import { Button } from '@/components/Button'
@@ -59,6 +60,13 @@ export type LibraryViewProps = {
   looks?: WorkspaceLooksById
   /** The user, whose picture a card of their own has, as one shared with them has its owner's. */
   me?: { name: string; avatarUrl?: string }
+  /**
+   * What else can be done to an output from its more menu, besides opening it, which is only what
+   * the viewer may: renaming it, sharing it, its settings and deleting it.
+   */
+  actionsOf?: (output: OutputSummary) => LibraryMoreActions | undefined
+  /** Why the last thing asked for from a more menu was not done. */
+  problem?: string
 }
 
 /**
@@ -69,6 +77,7 @@ export type LibraryViewProps = {
  */
 export const LibraryView = ({
   tab, onTabChange, library, list, formats, stars, onStarsChange, hideStarred, onHideStarredChange, onOpenOutput, outputHref, onOpenWorkspace, workspaceHref, onNew, onExplore, looks, me,
+  actionsOf, problem,
 }: LibraryViewProps) => {
   const narrow = useNarrowScreen()
   const all = library.status === 'ready' ? library.outputs : []
@@ -112,6 +121,7 @@ export const LibraryView = ({
     onStarredChange: (on: boolean) => onStarsChange(withStar(stars, outputKey(output), on)),
     href: outputHref?.(output),
     onSelect: () => onOpenOutput(output),
+    more: actionsOf?.(output),
   })
 
   // The starred and each type have a tab, so the menu has the other filters, and on every tab but
@@ -190,6 +200,7 @@ export const LibraryView = ({
         <Tabs value={current} onValueChange={onTabChange} tabs={tabs} aria-label="Library" scrolls align="start" end={narrow ? undefined : toolbar} className="gap-4">
           {/* The one panel, whichever tab it is of: the list is the same one, of what the tab has. */}
           <Tabs.Panel value={current} className="flex flex-col gap-4">
+            {problem && <p role="alert" className="px-4 text-center text-base text-kumo-subtle">{problem}</p>}
             {library.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the library…</p>}
             {library.status === 'failed' && (
               <p className={note}>
