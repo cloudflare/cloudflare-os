@@ -31,8 +31,13 @@ describe('keepChangeLines', () => {
   })
 
   it('names what a binding reaches by its resource’s title where it is known', () => {
-    expect(keepChangeLines(ask({ bindings: [{ gadgetId: 3, name: 'TEST_DOC', target: 30 }] }), titleOf, (gadgetId, name) => (gadgetId === 3 && name === 'TEST_DOC' ? 'Q3 plan' : undefined)))
+    expect(keepChangeLines(ask({ bindings: [{ gadgetId: 3, name: 'TEST_DOC', target: 30 }] }), titleOf, (gadgetId, name) => (gadgetId === 3 && name === 'TEST_DOC' ? { title: 'Q3 plan' } : undefined)))
       .toEqual(['Connects “Tip Jar” to “Q3 plan”'])
+  })
+
+  it('says a model as what the gadget may use, by the model’s name', () => {
+    expect(keepChangeLines(ask({ bindings: [{ gadgetId: 3, name: 'LLM', target: 30 }] }), titleOf, () => ({ title: 'Claude Haiku', model: true })))
+      .toEqual(['Lets “Tip Jar” use Claude Haiku'])
   })
 
   it('counts the files left with conflicts', () => {

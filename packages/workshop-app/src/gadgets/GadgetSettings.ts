@@ -6,6 +6,7 @@ import {
   type GadgetClient,
   type GadgetSummary,
   type GatekeeperCreationSpec,
+  type ModelKind,
   type WorkpieceSummary,
   type WorkpiecesSubscriber,
   validateBindingName,
@@ -21,6 +22,8 @@ export type GadgetBinding = GadgetBindingInfo & {
   kind: 'service' | 'agent' | 'model'
   /** The model an agent thinks with, or the model itself, by name; absent where it has none. */
   model?: string
+  /** Which of the user's models a model is (`listModels()`), to name it as they know it and to change it. */
+  modelId?: string
 }
 
 /** One of the lists a gadget's settings show, as far as it has got. */
@@ -41,7 +44,7 @@ export type GadgetSettingsSnapshot =
     }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'unbind' | 'renameBinding'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'bind' | 'unbind' | 'renameBinding' | 'getBlueprintAnnotation' | 'setBlueprintAnnotation'> & Disposable
 
 /** The part of a connection the settings use, to say what it is, and the lease that must be disposed. */
 export type SettingsGatekeeper = { getCreationSpec(): Promise<GatekeeperCreationSpec> } & Disposable
@@ -50,6 +53,8 @@ export type SettingsGatekeeper = { getCreationSpec(): Promise<GatekeeperCreation
 export type SettingsOverseer = {
   getGadget(id: number): SettingsGadget
   getGatekeeperById(id: number): SettingsGatekeeper
+  /** A connection to one of the user's models, made in the workspace and bound to nothing yet. */
+  newAiModelGatekeeper(modelId: string): { getId(): Promise<number> } & Disposable
   subscribeToWorkpieces(subscriber: WorkpiecesSubscriber & RpcTarget): Promise<Disposable>
   /** Calls `callback` once the workspace can no longer be reached through this, such as when it restarted. */
   onRpcBroken(callback: (error: unknown) => void): void
@@ -75,7 +80,7 @@ export const describeBinding = (binding: GadgetBindingInfo, spec?: GatekeeperCre
     case 'agentSpawner':
       return { ...binding, kind: 'agent', ...(spec.modelName ? { model: spec.modelName } : {}) }
     case 'aiModel':
-      return { ...binding, kind: 'model', model: spec.modelName }
+      return { ...binding, kind: 'model', model: spec.modelName, modelId: spec.modelId }
     default:
       return { ...binding, kind: 'service' }
   }
@@ -99,6 +104,21 @@ export const bindingNameProblem = (name: string, taken: readonly string[]): stri
   }
   if (taken.includes(name)) return `It already has env.${name}. Choose another name.`
   return undefined
+}
+
+/**
+ * The name a model is given in a gadget's code unless another is typed: the one the backend
+ * suggests for its kind (`describe().suggestedBindingName`), so that code written for one reads
+ * the same in every gadget.
+ */
+export const MODEL_BINDING_NAMES: Record<ModelKind, string> = { language: 'LLM', decision: 'DECISION_MODEL' }
+
+/** `name`, or the first of `NAME_2`, `NAME_3`… the gadget has nothing by (`taken`). */
+export const freeBindingName = (name: string, taken: readonly string[]) => {
+  if (!taken.includes(name)) return name
+  let count = 2
+  while (taken.includes(`${name}_${count}`)) count++
+  return `${name}_${count}`
 }
 
 /** A gadget's bindings as its settings list them: the services it reaches, then the agents it starts. */
@@ -227,12 +247,64 @@ export class GadgetSettings {
    * `InvalidBindingName`, asking nothing, where the name cannot be one (`bindingNameProblem`).
    */
   renameBinding = async (name: string, next: string) => {
-    const current = this.#snapshot
-    const taken = current.status === 'ready' && current.bindings.status === 'ready' ? current.bindings.items.map((binding) => binding.name) : []
-    const problem = bindingNameProblem(next, taken.filter((each) => each !== name))
+    const problem = bindingNameProblem(next, this.#listed().map((binding) => binding.name).filter((each) => each !== name))
     if (problem) throw new InvalidBindingName(problem)
     await this.#with((gadget) => gadget.renameBinding(name, next))
     this.#readBindings(this.#run)
+  }
+
+  /**
+   * Gives its code one of the user's models, as `env.<name>`, kept at once: it is the user's own
+   * doing, not a chat's. Refused with an `InvalidBindingName`, asking nothing, as a rename is.
+   */
+  addModel = async (modelId: string, name: string) => {
+    const problem = bindingNameProblem(name, this.#listed().map((binding) => binding.name))
+    if (problem) throw new InvalidBindingName(problem)
+    const target = await this.#newModel(modelId)
+    await this.#with((gadget) => gadget.bind(name, target))
+    this.#readBindings(this.#run)
+  }
+
+  /**
+   * Has a model binding reach another of the user's models under the same name, so its code goes
+   * on as it was. There is no call to point a binding elsewhere, so a connection to the new model
+   * replaces it, with the blueprint annotation it had; if that cannot be bound, the old one is put
+   * back. The old connection stays in the workspace, as one taken away does.
+   */
+  changeModel = async (name: string, modelId: string) => {
+    const binding = this.#listed().find((each) => each.name === name)
+    if (!binding) throw new Error(`It no longer has env.${name}.`)
+    if (binding.modelId === modelId) return
+    const target = await this.#newModel(modelId)
+    await this.#with(async (gadget) => {
+      const annotation = await gadget.getBlueprintAnnotation(name).catch(() => null)
+      await gadget.unbind(name)
+      try {
+        await gadget.bind(name, target)
+      } catch (error) {
+        await gadget.bind(name, binding.target).catch(() => {})
+        throw error
+      }
+      // Only what it says when published as a template, which the binding works without.
+      if (annotation) await gadget.setBlueprintAnnotation(name, annotation).catch(() => {})
+    })
+    this.#readBindings(this.#run)
+  }
+
+  #listed() {
+    const current = this.#snapshot
+    return current.status === 'ready' && current.bindings.status === 'ready' ? current.bindings.items : []
+  }
+
+  // A new connection to the model, as its id, which is pipelined on the asking.
+  async #newModel(modelId: string) {
+    if (!this.#overseer) throw new Error('The gadget is still loading.')
+    const gatekeeper = this.#overseer.newAiModelGatekeeper(modelId)
+    try {
+      return await gatekeeper.getId()
+    } finally {
+      gatekeeper[Symbol.dispose]()
+    }
   }
 
   #with<T>(call: (gadget: SettingsGadget) => Promise<T>) {

@@ -8,6 +8,7 @@ import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } 
 import { InvalidBindingName } from './GadgetSettings'
 import { templateUpdateStatus } from './templateUpdate'
 import { UpdateFromTemplate } from './UpdateFromTemplate'
+import { useBindableModels } from './useBindableModels'
 import { useBlueprintInfo, useGadgetSettings, useServices } from './useGadgetSettings'
 
 export type GadgetSettingsPaneProps = {
@@ -31,7 +32,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 /**
  * A gadget's settings page (`GadgetSettingsView`) over what it shows: the gadget, live, what it is
- * bound to, its code as it was last kept, read once the Code tab is shown, and what its template
+ * bound to, the user's models its code can be given, its code as it was last kept, read once the Code tab is shown, and what its template
  * says of it, with whether it has a newer version to update it from (`UpdateFromTemplate`).
  */
 export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onUpdateProposed }: GadgetSettingsPaneProps) => {
@@ -40,6 +41,7 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const look = useWorkspaceLooks()[workspaceId]
   const services = useServices()
+  const models = useBindableModels()
   const connection = useConnectionNotice()
   const gadget = snapshot.status === 'ready' ? snapshot.gadget : undefined
   const title = gadget?.title ?? initialTitle
@@ -95,6 +97,16 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
           } catch (error) {
             return { saved: false, problem: error instanceof InvalidBindingName ? error.message : `Couldn’t rename env.${name}: ${messageOf(error)}` }
           }
+        }}
+        models={models ?? {}}
+        // Said in the dialog, which stays open under why. Over a lost connection nothing is tried.
+        onAddModel={async ({ modelId, name }) => {
+          if (connection?.blocked()) return false
+          await settings.addModel(modelId, name)
+        }}
+        onChangeModel={async (name, modelId) => {
+          if (connection?.blocked()) return false
+          await settings.changeModel(name, modelId)
         }}
         onDelete={() => attempt('delete the gadget', async () => {
           await settings.remove()

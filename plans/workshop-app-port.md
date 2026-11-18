@@ -59,7 +59,9 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | A gadget's settings have no "allow everything" or "ask again" for its permissions | not on the scaffold's `GadgetClient` | `setAutoApprove`, `disallowActionKind` |
 | A gadget's agents show among its bindings with their model, but without their runs, and it has no Automations tab | no `listAgentSpawners` | `listAgentSpawners` |
 | A gadget's description is its template's, read only | there is no call to set one | a description setter on the gadget |
-| Nothing is connected to a gadget from its settings, an account isn't managed from a binding, and it has no access, publishing or exports there | bindings name a gatekeeper, not an account; scope | none |
+| No service is connected to a gadget from its settings (an AI model is), an account isn't managed from a binding, and it has no access, publishing or exports there | bindings name a gatekeeper, not an account; scope | none |
+| The agent can't give a gadget an AI model: it is told to ask the user to add one from the gadget's settings, and only when a template's code expects one | `requestConnection` takes no model; the prompt says AI-model bindings can't be created from chat | an `ai-model` connection id for `requestConnection` (as `agent-spawner` is), whose card asks for the model, and a line in the agent's prompt |
+| Changing a model binding's model replaces its connection (unbind, then bind a new one under the same name), not atomically, leaving the old connection in the workspace | there is no call to point a binding at another target | a rebind on `GadgetClient`, or a model setter on the model's gatekeeper |
 | Templates have no use counts: "Most used" is the organisation's first, then the newest | `BlueprintPublicInfo` has no count | a use count on `BlueprintPublicInfo` |
 | A template is always made in a new workspace | the base has no `createGadgetFromBlueprint` | `createGadgetFromBlueprint` |
 | Publishing a template takes the app's title only, no description or screenshot step | scope | none |

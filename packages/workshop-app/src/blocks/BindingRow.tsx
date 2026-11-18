@@ -1,7 +1,9 @@
-import { BrainIcon, LinkBreakIcon, RobotIcon } from '@phosphor-icons/react'
+import { ArrowsLeftRightIcon, BrainIcon, LinkBreakIcon, RobotIcon } from '@phosphor-icons/react'
+import { Button } from '@/components/Button'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { Tag } from '@/components/Tag'
+import { Tooltip } from '@/components/Tooltip'
 import { CardAction } from './CardAction'
 import { LIST_ACTION } from './StarButton'
 import { useEditedField, type SaveOutcome } from './useEditedField'
@@ -15,7 +17,7 @@ export type BindingRowProps = {
   service?: { name: string; logoUrl?: string; color?: string }
   /** It is an agent the gadget starts, or a model its code calls, rather than a service's. */
   kind?: 'agent' | 'model'
-  /** The model an agent thinks with, or the model itself, by name. */
+  /** The model an agent thinks with, by name. A model is named by its `title`. */
   model?: string
   /** Proposed in a chat and not accepted yet, so it is only there in that chat. */
   pending?: boolean
@@ -23,6 +25,8 @@ export type BindingRowProps = {
   onRemove?: () => void
   /** Gives it another name in the gadget's code. Left out where it cannot be. */
   onRename?: (name: string) => Promise<SaveOutcome>
+  /** Has a model reach another of the user's models under the same name. Left out where it cannot. */
+  onChangeModel?: () => void
 }
 
 const KIND_ICON = { agent: RobotIcon, model: BrainIcon }
@@ -40,12 +44,12 @@ const NOT_RENAMED = Promise.resolve<SaveOutcome>({ saved: false })
  * could not be kept stays in it, with why under the line, until it is put right or Escape puts
  * the name back.
  */
-export const BindingRow = ({ title, name, service, kind, model, pending = false, onRemove, onRename }: BindingRowProps) => {
+export const BindingRow = ({ title, name, service, kind, model, pending = false, onRemove, onRename, onChangeModel }: BindingRowProps) => {
   const { field: { onValueChange, invalid, ...field }, problem } = useEditedField({ value: name, onSave: (next) => (onRename ? onRename(next) : NOT_RENAMED) })
   const Glyph = kind && KIND_ICON[kind]
   const through = kind === 'agent'
     ? (model ? `Agent · thinks with ${model}` : 'Agent')
-    : kind === 'model' ? (model ?? 'Model') : service?.name
+    : kind === 'model' ? 'AI model' : service?.name
   return (
     <li className="group relative flex items-center gap-3 rounded-2xl py-2.5 pr-1.5 pl-3 text-base hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5">
       {Glyph
@@ -79,18 +83,26 @@ export const BindingRow = ({ title, name, service, kind, model, pending = false,
       </span>
       {/* Only the chat it was proposed in has it until its changes are kept. */}
       {pending && <Tag className="shrink-0">Waiting in a chat</Tag>}
-      {onRemove && (
+      {/* One corner, the actions side by side in it. */}
+      {(onChangeModel || onRemove) && (
         <CardAction>
-          <ConfirmMenu
-            icon={LinkBreakIcon}
-            aria-label={`Remove ${title} from the gadget`}
-            triggerVariant="ghost"
-            triggerClassName={LIST_ACTION}
-            title={`Remove ${title}?`}
-            description={`The gadget’s code loses env.${name}. The connection stays in the workspace, for whatever else uses it.`}
-            confirmLabel="Remove"
-            onConfirm={onRemove}
-          />
+          {onChangeModel && (
+            <Tooltip content="Change model">
+              <Button variant="ghost" icon={ArrowsLeftRightIcon} aria-label={`Change the model of env.${name}`} className={LIST_ACTION} onClick={onChangeModel} />
+            </Tooltip>
+          )}
+          {onRemove && (
+            <ConfirmMenu
+              icon={LinkBreakIcon}
+              aria-label={`Remove ${title} from the gadget`}
+              triggerVariant="ghost"
+              triggerClassName={LIST_ACTION}
+              title={`Remove ${title}?`}
+              description={`The gadget’s code loses env.${name}. The connection stays in the workspace, for whatever else uses it.`}
+              confirmLabel="Remove"
+              onConfirm={onRemove}
+            />
+          )}
         </CardAction>
       )}
     </li>

@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { ListGroup } from '@/blocks/ListGroup'
+import { ModelBindingDialog, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { UpdateFromTemplateDialog, type UpdateFromTemplateOutcome, type UpdateTemplate } from '@/blocks/UpdateFromTemplateDialog'
 import { Button } from '@/components/Button'
-import type { GadgetBinding, Listed } from '@/gadgets/GadgetSettings'
+import { bindingNameProblem, freeBindingName, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from '@/gadgets/GadgetSettings'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import { useReport } from './previewState'
 import { Section } from './Section'
@@ -16,12 +17,54 @@ const SERVICES = new Map([
 const BINDINGS: GadgetBinding[] = [
   { name: 'GITHUB', target: 3, resourceTitle: 'cloudflare/gadgets', vendorId: 'github', kind: 'service' },
   { name: 'CALENDAR', target: 4, resourceTitle: 'Team calendar', vendorId: 'google', kind: 'service', chatId: 12 },
-  { name: 'SUMMARY_MODEL', target: 5, resourceTitle: 'Claude Haiku', kind: 'model', model: 'Claude Haiku' },
+  { name: 'SUMMARY_MODEL', target: 5, resourceTitle: 'Claude Haiku', kind: 'model', model: 'claude-haiku-4-5', modelId: 'haiku' },
   { name: 'TRIAGE', target: 6, resourceTitle: 'Triage', kind: 'agent', model: 'Claude Sonnet' },
 ]
 
 const TEMPLATE: UpdateTemplate = { title: 'Tip jar', description: 'Counts tips for the team lunch, and shows everyone the total.', version: 4, status: 'available' }
 const MODELS = [{ id: 'sonnet', name: 'Claude Sonnet' }, { id: 'haiku', name: 'Claude Haiku' }]
+const MODEL_CHOICES: ModelChoice[] = [...MODELS.map((model) => ({ ...model, kind: 'language' as const })), { id: 'triage', name: 'Triage classifier', kind: 'decision' }]
+
+// The ways the model dialog is opened, and what giving the model ends in.
+const MODEL_DIALOGS: Record<string, { label: string; models?: ModelChoice[]; changing?: string; initial?: string; fails?: boolean }> = {
+  add: { label: 'Add', models: MODEL_CHOICES, initial: 'sonnet' },
+  change: { label: 'Change', models: MODEL_CHOICES, changing: 'SUMMARY_MODEL', initial: 'haiku' },
+  fails: { label: 'Refused', models: MODEL_CHOICES, initial: 'sonnet', fails: true },
+  none: { label: 'No models', models: [] },
+  loading: { label: 'Loading' },
+}
+
+/** Giving a gadget's code a model, and changing one's model, opened in each of the ways it can go. */
+const ModelDialogPreview = () => {
+  const { report, say, later } = useReport()
+  const [shown, setShown] = useState<string>()
+  const [open, setOpen] = useState(false)
+  const dialog = shown ? MODEL_DIALOGS[shown] : undefined
+  const taken = ['GITHUB', 'LLM']
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1.5">
+        {Object.entries(MODEL_DIALOGS).map(([key, { label }]) => <Button key={key} onClick={() => { setShown(key); setOpen(true) }}>{label}</Button>)}
+      </div>
+      <ModelBindingDialog
+        open={open}
+        onOpenChange={setOpen}
+        gadget="“Tip jar”"
+        models={dialog?.models}
+        initialModel={dialog?.initial}
+        changing={dialog?.changing}
+        suggestName={(kind) => freeBindingName(MODEL_BINDING_NAMES[kind], taken)}
+        nameProblem={(name) => bindingNameProblem(name, taken)}
+        onSubmit={async ({ modelId, name }) => {
+          await later()
+          if (dialog?.fails) throw new Error('This model can’t be used right now.')
+          say(dialog?.changing ? `env.${dialog.changing} now uses ${modelId}` : `added ${modelId} as env.${name}`)
+        }}
+      />
+      <p role="status" className="text-sm text-kumo-subtle">{report}</p>
+    </div>
+  )
+}
 
 // What asking for the update ends in, in each of the dialog's previews.
 const UPDATES: Record<string, { label: string; template?: UpdateTemplate | null; models?: typeof MODELS; outcome: (allowUnrelated: boolean) => UpdateFromTemplateOutcome }> = {
@@ -101,13 +144,13 @@ export const GadgetSettingsPreview = () => {
 
   return (
     <>
-      <Section title="BindingRow (a service’s resource with its logo; one only in the chat that proposed it; a model its code calls; an agent it starts, with the model it thinks with; one with no logo, the service’s first letter; pointed at, the way to take it away, which asks first; its name renamed in place, the first refusing what is typed with why)">
+      <Section title="BindingRow (a service’s resource with its logo; one only in the chat that proposed it; a model its code calls, whose model can be changed; an agent it starts, with the model it thinks with; one with no logo, the service’s first letter; pointed at, the way to take it away, which asks first; its name renamed in place, the first refusing what is typed with why)">
         <div className="w-full max-w-3xl">
           <ListGroup label="Connected to">
             <ul className="flex flex-col">
               <BindingRow title="cloudflare/gadgets" name="GITHUB" service={{ name: 'GitHub', logoUrl: '/favicon.svg' }} onRemove={() => say('GITHUB removed')} onRename={async () => ({ saved: false, problem: 'It already has env.CALENDAR. Choose another name.' })} />
               <BindingRow title="Team calendar" name="CALENDAR" service={{ name: 'Google', color: '#ffffff' }} pending onRemove={() => say('CALENDAR removed')} />
-              <BindingRow title="Claude Haiku" name="SUMMARY_MODEL" kind="model" model="Claude Haiku" onRemove={() => say('SUMMARY_MODEL removed')} />
+              <BindingRow title="Claude Haiku" name="SUMMARY_MODEL" kind="model" onRemove={() => say('SUMMARY_MODEL removed')} onChangeModel={() => say('change the model of SUMMARY_MODEL')} />
               <BindingRow title="Triage" name="TRIAGE" kind="agent" model="Claude Sonnet" onRemove={() => say('TRIAGE removed')} />
               <BindingRow title="Inbox" name="INBOX" kind="agent" />
               <BindingRow title="Web Search" name="SEARCH" service={{ name: 'Web Search' }} />
@@ -115,10 +158,13 @@ export const GadgetSettingsPreview = () => {
           </ListGroup>
         </div>
       </Section>
+      <Section title="ModelBindingDialog (giving a gadget’s code one of the user’s models, starting on their default, under a name it has nothing by, with how its code calls it; changing a model binding’s model; refused, with why; with no models; and while they are read)">
+        <ModelDialogPreview />
+      </Section>
       <Section title="UpdateFromTemplateDialog (proposing a gadget’s update from its template in a new chat: with a newer version, already up to date, unrelated and warned of first, one that can’t be merged, one that couldn’t be asked with the way to try again, its template gone, and while it is read)">
         <UpdatePreview />
       </Section>
-      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, and one for where it is from, updating it from its template, and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
+      <Section title="GadgetSettingsView (a gadget’s settings page: its title renamed in place and what its template says it is for; a tab for what it is connected to, with its agents apart, where a model is added and changed, and one for where it is from, updating it from its template, and deleting it, which asks first; while it loads, with nothing connected or its connections not read; and in place of all that, for someone it was shared with to use, once it is deleted, for someone with no access, and when it could not be loaded)">
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(STATES).map(([key, label]) => (
@@ -143,6 +189,18 @@ export const GadgetSettingsPreview = () => {
               }}
               bindings={listed}
               services={SERVICES}
+              models={{ models: MODEL_CHOICES, initial: 'sonnet' }}
+              onAddModel={async ({ modelId, name }) => {
+                await later()
+                const model = MODEL_CHOICES.find(({ id }) => id === modelId)!
+                setBindings((current) => [...current, { name, target: 50 + current.length, resourceTitle: model.name, kind: 'model', modelId }])
+                say(`added ${model.name} as env.${name}`)
+              }}
+              onChangeModel={async (name, modelId) => {
+                await later()
+                setBindings((current) => current.map((binding) => (binding.name === name ? { ...binding, modelId } : binding)))
+                say(`env.${name} now uses ${modelId}`)
+              }}
               onRenameBinding={async (name, next) => {
                 await later()
                 if (bindings.some((binding) => binding.name === next)) return { saved: false, problem: `It already has env.${next}. Choose another name.` }
