@@ -11,7 +11,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
-  requireTextFiles, type BytesRef, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
+  requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -2844,46 +2844,37 @@ class OverseerImpl implements AgentHooks {
   // bumps the generation or is caught by the revision check, and chat deletion clears it via
   // destroyLiveChat.
   #chatContentCache = new Map<number, {generation: number, revision: number,
-                                       content: CodeContent}>();
+                                       content: CodeContent,
+                                       touched?: {sequence: number, paths: Map<WorkpieceId, Set<string>>}}>();
 
   invalidateChatContent(chatId: number): void {
     this.#chatContentCache.delete(chatId);
   }
 
-  async getWorktreeFileInfo(chatId: number, binding: string, path: string): Promise<BytesRef | undefined> {
-    this.getChatMetaOrThrow(chatId);
-    const context = this.getChatAgentContext(chatId);
-    let id = context.bindings?.[binding];
-    if (context.scratch?.bindingName === binding) id = context.scratch.worktreeId;
-    const compacted = this.getActiveChatCompaction(chatId)?.chatBindings
-        .find(([name]) => name === binding)?.[1];
-    if (compacted?.type === "workpiece") id = compacted.id;
-    for (const message of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
-      if (message.type !== "changes") continue;
-      for (const created of message.createdWorktrees ?? []) {
-        if (created.bindingName === binding) id = created.worktreeId;
-      }
-    }
-    // Worktree content is a lazy overlay, so absence from its map can mean either an untouched
-    // base file or a deletion. Use the same touched-path fold as accept, including live rows.
+  async getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string): Promise<string | undefined> {
+    // Worktree content is a lazy overlay: an absent path can mean an untouched base or a deletion.
     for (let attempt = 0; ; attempt++) {
-      const record = id === undefined ? undefined : this.storage.gadgets.get(id);
+      const record = this.storage.gadgets.get(id);
       if (record?.type !== "worktree" || record.chatId !== chatId) {
-        throw new Error(`No worktree binding: ${binding}`);
+        throw new Error(`No worktree in this chat: ${id}`);
       }
       const meta = this.getChatMetaOrThrow(chatId);
       const position = JSON.stringify(meta.codeBase);
       const sequence = this.nextChatSequencePeek(chatId);
       const content = await this.getCurrentChatContent(chatId, meta);
-      const messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
-      const touched = this.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
-          this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation))
-          .get(record.id) ?? new Set<string>();
-      const value = content.get(record.id)?.get(path);
+      const cached = this.#chatContentCache.get(chatId);
+      let touched = cached?.content === content ? cached.touched : undefined;
+      if (touched?.sequence !== sequence) {
+        const messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+        touched = {sequence, paths: this.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
+            this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation))};
+        if (cached?.content === content) cached.touched = touched;
+      }
+      const value = content.get(id)?.get(path);
       const result = value !== undefined
-          ? typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)) : value
-          : touched.has(path) ? undefined : await this.gitCache.fileBytesAtCommit(
-              this.worktreePinBases(meta).get(record.id) ?? record.pinBase, path);
+          ? typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)).oid : value.oid
+          : touched.paths.get(id)?.has(path) ? undefined : await this.gitCache.fileOidAtCommit(
+              this.worktreePinBases(meta).get(id) ?? record.pinBase, path);
       if (position === JSON.stringify(this.getChatMetaOrThrow(chatId).codeBase) &&
           sequence === this.nextChatSequencePeek(chatId)) return result;
       if (attempt >= 4) throw new Error("The chat is changing too quickly; please retry.");

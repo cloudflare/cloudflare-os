@@ -1795,6 +1795,13 @@ describe("worktree read/write helpers", () => {
     expect(t.pulls.some(pull => pull.oids.includes(main))).toBe(false);  // the blob: never read
     expect(t.cache.hasLocalObject(main)).toBe(false);
 
+    // A saved message needs only this OID: the existing metadata survives the path changing,
+    // and the download RPC's openBlob pulls the exact bytes when the viewer clicks.
+    expect(t.storage.gitObjectMetadata.get(main)!.pullableFrom).toContain(G1);
+    let reader = await t.cache.openBlob(main);
+    expect(reader.read(0, reader.size)).toEqual(fixture(main).payload);
+    expect(t.pulls.some(pull => pull.oids.includes(main))).toBe(true);
+
     // Commit 2 rewrote README.md and left src/main.js alone: the freshness question an edit
     // asks, answered per file by oid equality.
     await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_2).payload);

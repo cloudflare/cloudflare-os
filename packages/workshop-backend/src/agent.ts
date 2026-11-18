@@ -1,6 +1,6 @@
 import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
-  validateCodeChangeContent, type BytesRef, type FileContent, type CodeContent, type CodeChange,
+  validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { snapshotChatEmbeds } from './chat-embeds';
@@ -342,8 +342,8 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   overseer.ts?
  */
 export interface AgentHooks {
-  /** In-process metadata lookup for pinning output images; never exposed to the agent or UI. */
-  getWorktreeFileInfo(chatId: number, binding: string, path: string): Promise<BytesRef | undefined>;
+  /** In-process metadata lookup for pinning output files; never exposed to the agent or UI. */
+  getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -4283,8 +4283,10 @@ async function runAgentPass(
   let answerText = "";
   let embeds: ChatEmbeds = {};
   const snapshotEmbeds = (text: string, streaming: boolean) => snapshotChatEmbeds(
-      text, embeds, async (binding, path) =>
-        (await hooks.getWorktreeFileInfo(chatId, binding, path))?.oid, streaming);
+      text, embeds, async (binding, path) => {
+        const entry = chatBindings.get(binding);
+        return entry?.type === "workpiece" ? hooks.getWorktreeFileOid(chatId, entry.id, path) : undefined;
+      }, streaming);
 
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {

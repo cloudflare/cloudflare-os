@@ -5,6 +5,19 @@ import { snapshotChatEmbeds } from "../src/chat-embeds";
 const A = "a".repeat(40), B = "b".repeat(40);
 
 describe("host-pinned answer files", () => {
+  it.each([
+    '[Download](worktree&#58;//OUTPUTS/report.csv)',
+    '<inline-html>\n<img src="worktree&#58;//OUTPUTS/report.csv">\n</inline-html>',
+    '[Download](&#119;orktree://OUTPUTS/report.csv)',
+    '[Download](worktree\\://OUTPUTS/report.csv)',
+  ])("pins normalized schemes in %s", async text => {
+    const snapshots: ChatEmbeds = {};
+    const resolve = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    await snapshotChatEmbeds(text, snapshots, resolve);
+    expect(snapshots).toEqual({"worktree://OUTPUTS/report.csv": A});
+    expect(resolve).toHaveBeenCalledExactlyOnceWith("OUTPUTS", "report.csv");
+  });
+
   it.each(["[Download]", "![Preview]"])("pins %s inside GFM footnotes", async label => {
     const snapshots: ChatEmbeds = {};
     const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);

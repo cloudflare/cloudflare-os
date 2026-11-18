@@ -7,7 +7,8 @@ export async function snapshotChatEmbeds(
     text: string, snapshots: ChatEmbeds,
     resolve: (binding: string, path: string) => Promise<string | undefined>,
     streaming = false): Promise<ChatEmbeds | undefined> {
-  if (!text.includes("worktree://")) return;
+  // Character references and Markdown escapes can encode parts of the scheme.
+  if (!text.includes("worktree://") && !text.includes("&") && !text.includes("\\")) return;
   const sources = new Set<string>();
   for (const part of parseInlineHtmlBlocks(text, {streaming})) {
     if (part.kind === "text") {
