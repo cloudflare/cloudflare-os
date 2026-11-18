@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { HANDOFF_KEY, openConnectWindow, parsePopupHandoff, readPopupHandoff, ticketFromHandoffFragment } from './connectHandoff'
+import { HANDOFF_KEY, openConnectWindow, openHandoffWindow, parsePopupHandoff, readPopupHandoff, ticketFromHandoffFragment } from './connectHandoff'
 
 const TICKET = 'a'.repeat(64)
 const NONCE = 'b'.repeat(64)
@@ -36,7 +36,7 @@ const opening = (popup: ReturnType<typeof fakePopup> | null) => {
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('openConnectWindow', () => {
+describe('openConnectWindow, openHandoffWindow', () => {
   it('opens an empty popup, disowns it and gives it the nonce before sending it to the flow', () => {
     const popup = fakePopup()
     const open = opening(popup)
@@ -67,6 +67,17 @@ describe('openConnectWindow', () => {
     expect(() => openConnectWindow(FLOW)).toThrow(/pop-up was blocked/)
   })
 
+  it('gives a sign-in popup its own kind and name', () => {
+    const popup = fakePopup()
+    const open = opening(popup)
+
+    expect(openHandoffWindow(FLOW.url, { kind: 'login', nonce: NONCE })).toBe(popup)
+
+    expect(open.mock.calls[0][1]).toMatch(/^gadgets-login-[0-9a-f]{32}$/)
+    expect(popup.openerWhenSent).toBeNull()
+    expect(parsePopupHandoff(popup.sessionStorage.kept.get(HANDOFF_KEY)!)).toEqual({ kind: 'login', nonce: NONCE })
+  })
+
   it('starts nothing when the popup cannot keep the nonce', () => {
     const popup = fakePopup({ storage: false })
     opening(popup)
@@ -92,12 +103,13 @@ describe('ticketFromHandoffFragment', () => {
 })
 
 describe('parsePopupHandoff', () => {
-  it('reads a connect and its nonce', () => {
+  it('reads a connect or a sign-in, and its nonce', () => {
     expect(parsePopupHandoff(JSON.stringify({ kind: 'connect', nonce: NONCE }))).toEqual({ kind: 'connect', nonce: NONCE })
+    expect(parsePopupHandoff(JSON.stringify({ kind: 'login', nonce: NONCE }))).toEqual({ kind: 'login', nonce: NONCE })
   })
 
   it('takes nothing else: no record, another kind of flow, or a nonce that is not one', () => {
-    for (const raw of [null, '', 'null', '[]', '{', JSON.stringify({ kind: 'login', nonce: NONCE }), JSON.stringify({ kind: 'connect' }), JSON.stringify({ kind: 'connect', nonce: 'b' })]) {
+    for (const raw of [null, '', 'null', '[]', '{', JSON.stringify({ kind: 'native', nonce: NONCE }), JSON.stringify({ kind: 'connect' }), JSON.stringify({ kind: 'login', nonce: 'b' })]) {
       expect(parsePopupHandoff(raw)).toBeNull()
     }
   })

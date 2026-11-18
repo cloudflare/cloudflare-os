@@ -60,6 +60,21 @@ and layouts take plain typed props and callbacks.
 Put protocol logic in plain classes and functions with no React (like `ChatSession`), so it can be
 tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs the tests.
 
+Signing in is `RpcGate`'s. A signed-out user is shown the sign-in page (`SignInPane`, drawn by
+`SignInForm`) in place of the page, at the address they were going to, so that signing in shows
+them what they were going to. It offers what the deployment allows (`rpc/signInMethods.ts`, plain
+and tested, from `getServerConfig()`), and nothing until that has been read: a password, a new
+account where it takes them (in place, or at `/signup`, where the old app had it, which goes home
+once signed in), and a button for each service that can be signed in with. A service is signed in
+with in a window of its own (`GatekeeperSignIn`, plain and tested, ported from the old app's
+`OAuthButtons`), which ends on `/connect/handoff` as a connect does, but confirms its ticket over
+the public API, as it has no session (`SignInHandoffPane`); the page meanwhile asks its attempt for
+the token. The token is kept under the old app's key (`token.ts`), so the two share a sign-in on one
+origin. Built with `VITE_CF_ACCESS_MODE=true`, as the old app is for a deployment behind Cloudflare
+Access, which the server does not say, it signs in as whoever Access says, never shows the page,
+and signs out of Access (`rpc/cfAccess.ts`). The gallery has the page in each of its states
+(`SignInPreview`).
+
 A lost connection leaves the app as it is. Only the first connection has the page to itself;
 after that `RpcGate` keeps rendering what it did, with `ApiSession.reconnecting` set, and signs in
 again on the new connection, whose `api` replaces the old. Whatever holds stubs starts over on the

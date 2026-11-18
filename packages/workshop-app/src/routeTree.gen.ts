@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppConnectionsRouteImport } from './routes/_app/connections'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
@@ -37,6 +38,11 @@ const AppRoute = AppRouteImport.update({
 const GalleryRoute = GalleryRouteImport.update({
   id: '/gallery',
   path: '/gallery',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -139,6 +145,7 @@ const AppWorkspaceWorkspaceIdChatChatIdSettingsRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
+  '/signup': typeof SignupRoute
   '/connections': typeof AppConnectionsRoute
   '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
@@ -159,6 +166,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
+  '/signup': typeof SignupRoute
   '/connections': typeof AppConnectionsRoute
   '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
@@ -182,6 +190,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
+  '/signup': typeof SignupRoute
   '/_app/connections': typeof AppConnectionsRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
@@ -206,6 +215,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/gallery'
+    | '/signup'
     | '/connections'
     | '/settings'
     | '/workspaces'
@@ -226,6 +236,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/gallery'
+    | '/signup'
     | '/connections'
     | '/settings'
     | '/workspaces'
@@ -248,6 +259,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/gallery'
+    | '/signup'
     | '/_app/connections'
     | '/_app/settings'
     | '/_app/workspaces'
@@ -271,6 +283,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   GalleryRoute: typeof GalleryRoute
+  SignupRoute: typeof SignupRoute
   ConnectHandoffRoute: typeof ConnectHandoffRoute
   MockScenarioRoute: typeof MockScenarioRoute
   MockIndexRoute: typeof MockIndexRoute
@@ -290,6 +303,13 @@ declare module '@tanstack/react-router' {
       path: '/gallery'
       fullPath: '/gallery'
       preLoaderRoute: typeof GalleryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -464,6 +484,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   GalleryRoute: GalleryRoute,
+  SignupRoute: SignupRoute,
   ConnectHandoffRoute: ConnectHandoffRoute,
   MockScenarioRoute: MockScenarioRoute,
   MockIndexRoute: MockIndexRoute,
