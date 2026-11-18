@@ -820,7 +820,7 @@ change to its files in that chat, the chat's changes being accepted or thrown aw
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
 the one shown is connected: going to another tab and back starts it over.
 
-Code, a gadget's or a worktree's, is read only, in CodeMirror (`components/CodeEditor`): found
+Code, a gadget's or a worktree's, is shown in CodeMirror (`components/CodeEditor`): found
 with the app's own find bar and go to line (`codePanels`), folded, its indentation guided, lines
 picked from the gutter for a link to them, and its scroll kept per file. Its colours are the
 `--color-code-*` tokens of `theme.css` (`codeEditorTheme`), so it follows the theme with no
@@ -835,6 +835,26 @@ only what changed then, each file as a diff from the commit before (`@codemirror
 or side by side, `prefs/codePrefs`), with what was compared over it and the way back. Reads are
 kept by commit, which never changes (`gadgets/codeReads`). A gadget's first commit, which it was
 made with and is empty, is not listed.
+
+A gadget's View code is edited as `plans/code-editing.md` designs it, with nothing asked of the
+kernel: what is typed, and its files made (a `/` in the name makes folders), renamed or moved,
+duplicated, deleted and put back from the tree's ⋯ menus and +, is a draft per gadget
+(`gadgets/codeDrafts`, tested, kept for the tab's life, a `beforeunload` warning while any is
+left) that is saved or discarded by hand, never on its own. Each file of it is dotted in the tree
+and quick open, and the status line counts it beside Discard (which asks) and Save. Saving
+(`gadgets/saveCode`, tested) reads the head first and stops, naming the files, where someone
+changed one the draft changed since it was read, offering to discard the draft's or save it
+anyway; otherwise it is one `submitCodeChange` of whole files (`toChange`), at the chat's place in
+its stream and pinned at the head unless the chat pins the gadget already, then `mergeChanges`.
+A stale keep is taken back out of the chat (`revertChanges`) and checked again, once. Beside a
+chat it goes through that chat; on its own the last chat this device made for it is reused
+(`prefs/editChats`) while it can take it, else a chat is made with the agent off, saying what was
+edited, titled "Edits to …". It can't be edited while that chat's agent works or the chat proposes
+changes not kept yet, or while a past version is compared, and the status line says why
+(`gadgets/useCodeEditing`, which ties it to `CodeBrowser`). Undo is per file and outlives switching
+files (`historyKey`). The `output` scenario's gadget can be edited and saved, and its scenario menu
+has someone else change its client.js, for a conflict; the gallery has each state. A worktree's code
+stays read only.
 
 A worktree (a repository an agent checked out, `WorktreeSummary`) is shown as its code
 (`WorktreeView` over `CodeBrowser`, read by `aside/useWorktree`): as kept (`pinBase`), opening on

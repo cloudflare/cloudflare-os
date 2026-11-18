@@ -73,7 +73,10 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | No model picker in the composer, only in settings | user decision, matches the scaffold's owner | none |
 | Templates keeps the scaffold's name, not Blueprints | user decision | none |
 | A gadget's kind (app or doc) can't be changed, and it has no icon picker | `setKind` is ours | `setKind` |
-| Code is read only: nothing is edited beside a chat yet, and a chat's changes not yet kept don't show in View code | editing goes through `submitCodeChange` and the old app's OT client, still to port | none |
+| A gadget's code is edited only in View code, not on the settings page's Code tab, and a draft isn't previewed until it is saved | the design (`plans/code-editing.md`) saves by hand, with nothing asked of the kernel | none |
+| Saving edits on a gadget's own page makes a chat for them, with a line saying what was edited | changes are kept only through a chat | a kernel call to keep edits without a chat |
+| Files that aren't text, and links or other projects in the tree, can only be deleted, and an executable loses its mode when renamed so isn't; a worktree's code is read only | `submitCodeChange` sets whole text files | none |
+| A chat's changes not yet kept don't show in View code, and its code can't be edited until they are kept or discarded | the old app's OT client is not ported | none |
 | View code has no link to a file or its lines; the settings page's Code tab has the file only | the item's address has no place for them | none |
 | A gadget's page offers recent chats to carry on in, never the one it was made in, and "had it open" is this browser's (`lastShown`) | the backend doesn't record which chat made a gadget, or what was beside a chat | an origin chat on the gadget |
 | A Library item's ⋯ menu has no Remove from Library, only Delete…, and no View code | the library lists what the workspaces made, with no way to hide one; View code is the pane's own state, which an address doesn't carry | a per-user hide on the output index |
