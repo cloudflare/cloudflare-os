@@ -31,7 +31,7 @@ export type ShareWorkspaceDialogProps = {
   onOpenChange: (open: boolean) => void
   /**
    * It is shared from one of its gadgets, which is what it shares to start with: people added can
-   * use that gadget alone. The whole workspace can be shared instead, from the same dialog.
+   * use that gadget alone.
    */
   gadget?: { id: number; title: string }
 }
@@ -40,13 +40,11 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 type ContentProps = Omit<ShareWorkspaceDialogProps, 'open' | 'onOpenChange' | 'gadget'> & {
   target: ShareTarget
-  /** Shares all of the workspace in place of the gadget it was opened from. */
-  onShareWorkspace?: () => void
 }
 
 // What the dialog holds, which is only there while it is open: the workspace is read as it opens,
 // let go of as it closes, and what was typed starts over each time.
-const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWorkspace }: ContentProps) => {
+const ShareContent = ({ workspaceId, title: knownTitle, page, target }: ContentProps) => {
   const { user } = useApi()
   const connection = useConnectionNotice()
   const config = useServerConfig()
@@ -119,16 +117,8 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
           <Dialog.Title className="text-lg font-medium wrap-anywhere text-kumo-default">Share “{gadget?.title ?? title}”</Dialog.Title>
           <Dialog.Description className="text-sm text-kumo-subtle">
             {gadget
-              ? <>People you add can use {gadget.title}, but won’t see its chats or anything else in {title}.</>
+              ? 'People you add can use it, but won’t see the chats or anything else in its workspace.'
               : 'People you add become members. They can see its chats, start their own, and use and change its gadgets.'}
-            {gadget && onShareWorkspace && standing?.canShare && (
-              <>
-                {' '}
-                <button type="button" onClick={onShareWorkspace} className="cursor-pointer rounded-sm font-medium text-kumo-default underline decoration-kumo-line underline-offset-3 outline-none hover:decoration-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-ring">
-                  Share the whole workspace instead
-                </button>
-              </>
-            )}
           </Dialog.Description>
         </div>
         <Dialog.Close render={(props) => <Button {...props} variant="ghost" icon={<XIcon weight="bold" />} aria-label="Close" className="text-kumo-subtle hover:text-kumo-default focus-visible:text-kumo-default" />} />
@@ -242,27 +232,16 @@ const ShareContent = ({ workspaceId, title: knownTitle, page, target, onShareWor
 /**
  * Who a workspace, or one of its gadgets, is shared with, and the way to share it with more, over
  * the page. A workspace's people can edit everything in it; a gadget's can use that gadget alone,
- * under whoever can edit the workspace, and the dialog opened from a gadget can share the whole
- * workspace instead. Whoever may share it invites people one at a time, by name or email, turns
+ * under whoever can edit the workspace. Whoever may share it invites people one at a time, by name or email, turns
  * their own link on or off, and takes access away from a person's row, having been told what that
  * does to whom. What its data asks of anyone it is shared with is said before they are invited.
  */
 export const ShareWorkspaceDialog = ({ open, onOpenChange, gadget, ...props }: ShareWorkspaceDialogProps) => {
-  const [whole, setWhole] = useState(false)
-  const target: ShareTarget = gadget && !whole ? { kind: 'gadget', gadgetId: gadget.id, title: gadget.title } : { kind: 'workspace' }
+  const target: ShareTarget = gadget ? { kind: 'gadget', gadgetId: gadget.id, title: gadget.title } : { kind: 'workspace' }
   return (
-    <Dialog open={open} onOpenChange={(next) => {
-      onOpenChange(next)
-      // Opened again, it starts on the gadget it is opened from.
-      if (!next) setWhole(false)
-    }}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       {/* Keyed, so that another workspace, or what is shared of it, is read afresh. */}
-      <ShareContent
-        key={`${props.workspaceId} ${props.page} ${target.kind === 'gadget' ? target.gadgetId : ''}`}
-        {...props}
-        target={target}
-        onShareWorkspace={gadget && !whole ? () => setWhole(true) : undefined}
-      />
+      <ShareContent key={`${props.workspaceId} ${props.page} ${gadget?.id ?? ''}`} {...props} target={target} />
     </Dialog>
   )
 }

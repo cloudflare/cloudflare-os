@@ -294,7 +294,7 @@ const RemovalPreview = () => {
 /** Sharing a workspace: the dialog over fake workspaces, and each of the blocks it is made of. */
 export const SharingPreview = () => (
   <>
-    <Section title="ShareWorkspaceDialog (invite by username, grace or katherine, say, to edit everything in it; a name that changes nothing says why without asking; what its connections ask of whoever joins; remove from a person's menu, which asks first and lists who they let in; your own link, on or off, and Copy link follows it; from a gadget, people added use that gadget alone, under one line for everyone who can edit, and it can share all of the workspace instead; restricted data and owner-only cautions; someone who can only use it is told they can't share; one that can't be read says so with Try again)">
+    <Section title="ShareWorkspaceDialog (invite by username, grace or katherine, say, to edit everything in it; a name that changes nothing says why without asking; what its connections ask of whoever joins; remove from a person's menu, which asks first and lists who they let in; your own link, on or off, and Copy link follows it; from a gadget, people added use that gadget alone, under one line for everyone who can edit; restricted data and owner-only cautions; someone who can only use it is told they can't share; one that can't be read says so with Try again)">
       {Object.keys(SETUPS).map((setup) => <DialogDemo key={setup} setup={setup} />)}
     </Section>
     <RowsPreview />

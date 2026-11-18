@@ -705,7 +705,7 @@ people are Members and its link lets anyone with it join; a gadget's people and 
 and the line for the workspace's members Can edit it, as changing a gadget is editing it. A
 gadget's Share (a button in its pane's header, where Copy link is otherwise) shares that gadget:
 its people are those who use it, under one line for everyone who can
-edit the workspace, and the dialog can share all of the workspace instead. Its page's header has
+edit the workspace; the workspace itself is shared from its own page. Its page's header has
 who has access, which goes to the members, and Share, for whoever may
 (`workspaces/sharingRules.ts`, plain and tested): the owner, and whoever can edit until its data
 says only the owner may let anyone in (`ownerInvitesOnly`). Someone who can only use it is not
