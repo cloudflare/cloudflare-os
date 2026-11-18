@@ -159,6 +159,8 @@ const reportHeight = () =>
 
 let started = false;
 const images = new Map();
+// Remember logical sources without retaining detached nodes or their revoked Blob resources.
+const detachedImages = new WeakMap();
 const reportImageErrors = () =>
   host.reportImageError([...images.values()].find(state => state.error)?.error ?? null).catch(() => {});
 const loadImage = async (image, state) => {
@@ -198,6 +200,9 @@ const scanImages = () => {
     if (image.isConnected && source === state.source) {
       if (state.url) image.src = state.url;
     } else if (!image.isConnected || source !== state.url) {
+      if (!image.isConnected && source === state.url) {
+        detachedImages.set(image, { source: state.source, url: state.url });
+      }
       if (state.url) URL.revokeObjectURL(state.url);
       images.delete(image);
       delete image.dataset.blobOid;
@@ -206,7 +211,12 @@ const scanImages = () => {
     }
   }
   for (const image of document.querySelectorAll("img[src]")) {
-    const source = image.getAttribute("src");
+    let source = image.getAttribute("src");
+    const detached = detachedImages.get(image);
+    if (detached) {
+      detachedImages.delete(image);
+      if (source === detached.url) image.src = source = detached.source;
+    }
     const previous = images.get(image);
     if (!previous && source.startsWith("worktree://")) {
       const state = { source, controller: new AbortController() };

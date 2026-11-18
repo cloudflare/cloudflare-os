@@ -169,6 +169,27 @@ it.each(['remove', 'replace', 'clear'])('cancels an in-progress image download w
   expect(errors).toEqual([])
 })
 
+it.each([false, true])('restores a detached image while respecting an explicit source change: %s', async changed => {
+  const source = 'worktree://OUTPUTS/image.png', sent: string[] = []
+  const replacement = changed ? 'worktree://OUTPUTS/replacement.png' : source
+  const readImage = vi.fn<NonNullable<UiBlockHostOptions['readImage']>>(async () =>
+    ({oid: 'a'.repeat(40), stream: byteStream(png('cyan'))}))
+  await openBlock(`<img width="1600" src="${source}" onerror="agent.send('error')" onload="
+    if (!this.dataset.detached) {
+      this.dataset.detached = '1';
+      this.dataset.width = this.getBoundingClientRect().width;
+      this.remove();
+      requestAnimationFrame(() => { ${changed ? `this.src = '${replacement}';` : ''} document.body.append(this); });
+    } else agent.send(this.dataset.width + ':' + this.getBoundingClientRect().width);
+  ">`, {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {}, readImage,
+  })
+  await expect.poll(() => readImage.mock.calls.length).toBe(2)
+  await expect.poll(() => sent.some(message => /^([0-9.]+):\1$/.test(message))).toBe(true)
+  expect(sent).not.toContain('error')
+  expect(readImage.mock.calls.map(([url]) => url)).toEqual([source, replacement])
+})
+
 it.each(['pending', 'loaded'])('preserves a %s image when the view resets its pinned source', async phase => {
   const source = 'worktree://OUTPUTS/image.png', trigger = 'worktree://OUTPUTS/trigger.png'
   const reading = Promise.withResolvers<void>(), loaded = Promise.withResolvers<void>()
