@@ -21,6 +21,9 @@ documented on `AdminApi`, `AdminWorkspaceView` and `AdminUserView` in
 | User inspection: `openAdminUserView` and the view it mints (`AdminUserViewImpl`) | `packages/workshop-backend/src/admin-user-view.ts` |
 | Reads that never pull (`readLocalCommitTree`, `readLocalFileAtCommitIfExists`, `localPathEntryAtCommit`, `changedLocalFilePathsBetween`, `readCommitLog` with `stopAtMissing`) | `packages/workshop-backend/src/git-cache.ts` |
 | The admin panel's Audit tab | `packages/workshop-frontend/src/features/admin-audit/` |
+| What an agent may do with each `AdminApi` method (`ADMIN_AGENT_KINDS`) | `packages/workshop-shared/src/admin-agent.ts` |
+| Lending a workspace owner's Admin API to the admin gatekeeper (`lendAdminApi`, `restrictAdminApi`) | `packages/workshop-backend/src/overseer.ts`, `packages/workshop-backend/src/admin-agent.ts` |
+| The admin gatekeeper | `packages/gatekeeper-instanceadmin/` |
 
 ## Entry points
 
@@ -40,9 +43,16 @@ a user's account (see [User inspection](#user-inspection)) alike.
   lifetime, under the deployment's one level.
 - **The audit log**: `listAdminAudit()` and `getAdminAuditStats()`.
 
-Each record's `via` (`AdminVia`) comes from the session's User-Agent: `"cli"` when the `/api`
-upgrade names `cf-os api` (`cf-os-api/<version>`), `"api"` for any other client, the Workshop's
-admin panel included. A client can send any User-Agent, so it labels records and grants nothing.
+An admin reaches it three ways: from the Workshop's admin panel, from `cf-os api`, and through an
+agent, in a workspace the admin owns and has added the admin gatekeeper's connection to (see
+[Through an agent](#through-an-agent)). The third is not a session of `getAdminApi()`: the
+workspace lends the gatekeeper its owner's Admin API, less the methods an agent is not given.
+
+Each record's `via` (`AdminVia`) says which. For a session it comes from the User-Agent: `"cli"`
+when the `/api` upgrade names `cf-os api` (`cf-os-api/<version>`), `"api"` for any other client,
+the Workshop's admin panel included. A client can send any User-Agent, so it labels records and
+grants nothing. `"gatekeeper"` is not a client's claim: only a workspace sets it, on the Admin API
+it lends the admin gatekeeper (see [The audit](#the-audit)).
 Each capability mints a random `sessionId`, so every record made through one `getAdminApi()` call,
 settings and inspections alike, shares its `via` and `sessionId` and can be read as one session.
 
@@ -126,13 +136,20 @@ never empty while rows remain), and cursors and owner filters take any length.
 admin, reads the access policy from the authoritative `AdminSettings` config (not the KV mirror: a
 mirror still saying `"metadata"` after an admin turned access off must not mint a view), and then
 calls `OverseerDurableObject.openForAdmin(adminId, reason, sessionId, terms)`. The terms carry the
-session's `via` and the view's expiry (`expiresAt`).
+caller's `via` and, for a call made through the admin gatekeeper, where it came from (`agent`), and
+the view's expiry (`expiresAt`).
 
 `AdminApiImpl` checks an open of either kind, `inspectWorkspace()` or `inspectUser()`, with
 `#openTerms()`, in the order the API documents: the reason and the lifetime, that the caller is
 still an admin, the method's own check of the id it was given, and only then the deployment's
 level, against the committed config. While that level is `"off"`, each method records its own
 refused open and refuses (see [Which refusals are recorded](#which-refusals-are-recorded)).
+
+Neither a workspace nor an account checks the terms it is opened with, so `AdminApiImpl` does
+before it sends them. The label it puts on the terms and on its own record of a refused open is
+what `adminCallerTerms()` returns for the capability's caller: `"api"` or `"cli"` with no
+origin, or `"gatekeeper"` with the workspace and, when there is one, the chat, and a `TypeError`
+for anything else.
 
 `openForAdmin()`:
 
@@ -378,6 +395,71 @@ A connected account whose gatekeeper is no longer bound is left out, of the list
 `describe()`'s count, as the user's own listing leaves it out. A restart of the account's Durable
 Object ends the view; inspect again.
 
+## Through an agent
+
+A deployment admin can give the agents of a workspace they own this API, through the admin
+gatekeeper (`packages/gatekeeper-instanceadmin`, vendor `instanceadmin`). The gatekeeper is part
+of every deployment, with its mode Disabled until an admin chooses another; only deployment
+admins hold its account, and its holder adds its connection ("Deployment admin") to the
+workspaces that need it. Its design record is
+[the package's README](../packages/gatekeeper-instanceadmin/README.md).
+
+**What an agent can do.** Every `AdminApi` method has one kind (`ADMIN_AGENT_KINDS`; the
+[README's table](../packages/gatekeeper-instanceadmin/README.md#what-each-kind-does) lists
+them):
+
+- **Read**: the listings, the settings getters, the audit log and its statistics, and
+  `inspectWorkspace()` and `inspectUser()` with every method of the view each returns. A read
+  runs at once, and a view reads metadata alone, as it does for any admin (see
+  [Inspection](#inspection) and [User inspection](#user-inspection)).
+- **Omitted**: every setter and every other method that changes a setting, the gateway tests,
+  `checkForUpdates()` and `getUpdateStatus()`. They are absent from what the agent is told and
+  refused.
+
+**Every call is the workspace owner's.** The gatekeeper Worker holds no credential: the workspace
+lends it its owner's Admin API, and each call is checked and recorded as any admin's is, with
+`via: "gatekeeper"` and where it came from.
+
+**The lend.** A session is lent the read methods for at most `ADMIN_AGENT_LEND_SECONDS` (15
+minutes), and a view it opens ends with it. The Workshop asks at each lend whether the owner
+still holds the account, and before every call whether the owner is still a deployment admin and
+the gatekeeper is still turned on.
+
+**The workspace admits only deployment admins.** While a workspace has the connection, nobody
+but its owner and users who are deployment admins at that moment can open it, in any role or by
+any share link; other admins may collaborate there. Once the workspace has read anything through
+the binding it stays so for good, with or without the connection, because its chats hold what
+was read.
+
+**Reads mark the workspace as holding restricted data.** Every read through the binding sets the
+platform's restricted-data latch on the workspace, in this version. From then on no rule applies
+anything there, so every action waits for a person, and web fetches reach only the hosts the
+deployment trusts.
+
+**Where the person behind a call is found.** Every record names the owner, so:
+
+- for an agent's turn, the chat the record names says who prompted it;
+- for a session opened directly from the connection, it is the owner: no other member is lent
+  one.
+
+**What the audit log holds of an agent.** View opens and view calls, of a workspace and of a
+user's account, carry `via: "gatekeeper"` and the origin (`agent`). Listings of users and
+workspaces, settings and the audit log itself leave no audit record, for an agent as for any
+admin: their only trace is the observation in the activity of the workspace that called, which
+goes with that workspace.
+
+**Removing the account.** Disconnecting the deployment admin account from Connectors ends every
+connection made with it, in every workspace its holder owns, at the next session, and adding it
+again restores them. In mode Enabled it cannot be removed.
+
+**Limits**, each described in the README:
+
+- [The restricted-data mark is the gatekeeper Worker's own
+  declaration](../packages/gatekeeper-instanceadmin/README.md#what-a-worker-that-keeps-everything-could-do):
+  it holds against agents and gadgets, not against the Worker.
+- [The latch does not hold back reads through the workspace's other
+  connections](../packages/gatekeeper-instanceadmin/README.md#what-the-latch-does-not-hold-back).
+
 ## Access levels and their bounds
 
 ### The levels
@@ -476,23 +558,41 @@ settings across deploys, while a variable only bounds what an admin session can 
 ### Three kinds of record
 
 - **`AdminAccessRecord`** (`kind: "workspace"`): one admin call into a workspace, the open or a view
-  method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `workspaceId`,
-  the workspace's owner (`workspaceOwner`, resolved when the view opens; from the directory for an
-  open refused before it reaches the workspace; a username is unbounded, so a long one keeps its
-  start and a digest of the whole id, which keeps long ids apart), the workspace's title at the
-  time, `method`, the call's arguments by name, the `reason` given at the open, the deployment's
-  `access` level when the call ran (`"metadata"`, or `"off"` for a call refused for that), and
-  `refused` when the level refused it.
+  method. It holds `at` (when the record was written), `admin`, `sessionId`, `via`, `agent` (for a
+  call made through the admin gatekeeper, see below), `workspaceId`, the workspace's owner
+  (`workspaceOwner`, resolved when the view opens; from the directory for an open refused before
+  it reaches the workspace; a username is unbounded, so a long one keeps its start and a digest
+  of the whole id, which keeps long ids apart), the workspace's title at the time, `method`, the
+  call's arguments by name, the `reason` given at the open, the deployment's `access` level when
+  the call ran (`"metadata"`, or `"off"` for a call refused for that), and `refused` when the
+  level refused it.
 - **`AdminUserAccessRecord`** (`kind: "user"`): one admin call into a user's account, the open or a
-  view method. It holds `at`, `admin`, `sessionId`, `via`, the user whose account it is (`userId`,
-  by canonical user id, kept as `workspaceOwner` is: a long one keeps its start and a digest of the
-  whole id; for an open refused before it reaches the account, the id the admin gave), `method`,
+  view method. It holds `at`, `admin`, `sessionId`, `via`, `agent` (for a call made through the
+  admin gatekeeper, see below), the user whose account it is (`userId`, by canonical user id,
+  kept as `workspaceOwner` is: a long one keeps its start and a digest of the whole id; for an
+  open refused before it reaches the account, the id the admin gave), `method`,
   the `reason` given at the open, `access` and `refused`, each as an `AdminAccessRecord` holds it,
   and its own `args`: only the open records one (`expiresAt`), since no user view method takes an
   argument.
 - **`AdminSettingRecord`** (`kind: "setting"`): one `AdminApi` setter's change. It holds `at`,
   `admin`, `sessionId`, `via`, `method`, and `changes`, each naming a setting, an entry `key` for a
   map or list setting, and its value `before` and `after`.
+
+**`via` and `agent`.** `via` is `"api"`, `"cli"` or `"gatekeeper"`. The first two come from the
+session's User-Agent, the client's own claim. `"gatekeeper"` marks a call made through the admin
+gatekeeper's connection of a workspace the record's admin owns, and such a record carries
+`agent` (`AdminAgentOrigin`): the workspace whose connection made the call and, when the
+workspace ties the caller to one, the chat. Only the workspace sets them, when it lends the
+gatekeeper its owner's Admin API (`OverseerImpl.lendAdminApi()`): no client, header, argument or
+gatekeeper Worker can claim the value or set the workspace or the chat. They name the lend the
+call was made on; that the gatekeeper used each lend for the caller it was made for is the
+gatekeeper's word (see
+[its README](../packages/gatekeeper-instanceadmin/README.md#what-a-worker-that-keeps-everything-could-do)).
+An access record, of a workspace or of a user's account, can carry them. A setting record never
+says `"gatekeeper"`: no setter is open to an agent. The Audit tab names such a record's `via`
+"Admin connection", since the record says the call came through the connection, not that an
+agent made it (gadget code and a session the owner opened from it say `"gatekeeper"` too), and
+shows the workspace and the chat it came from.
 
 `listAdminAudit()` filters by kind, admin, method, workspace, the user a call's target belongs to
 (`owner`) and time; `getAdminAuditStats()` by kind. The method and that user stay in a record's
@@ -742,6 +842,29 @@ Unit suites, in `packages/workshop-backend/__tests__/`:
   directory and both feeds. The last includes a deletion that parks a sync on a real call to another
   Durable Object and checks that the deletion still completes.
 
+The admin gatekeeper adds these, in the same directory (its own suites are listed in
+[its README](../packages/gatekeeper-instanceadmin/README.md#tests)):
+
+- `admin-agent-kinds.test.ts`: every `AdminApi` method classified, and the constants.
+- `admin-agent.test.ts`: the membrane. What `adminAgentRefusal()` refuses; `restrictAdminApi()`'s
+  checks in their order, a lend that ended or ran out; and a view behind it, of a workspace or of
+  a user's account, which answers its own methods and no other name, ends with the lend and lives
+  no longer than the lend has left.
+- `admin-agent-lend.test.ts`: `lendAdminApi()` on a real workspace. A session's reads and what
+  each records, with `via` `"gatekeeper"`, the workspace and the chat, a view of a user's
+  account included; who is lent nothing (the vendor off, an owner who is not an admin or holds
+  no account, a member's direct session); and a spawned chat without the binding named.
+- `admin-workspace-admission.test.ts`: the admission rule at each gate, for a workspace with the
+  connection, for one that had it and read nothing, and for one that read through it, a
+  non-admin kept in the sharing list included.
+- `provisioning-policy.test.ts` and `user-ambient-accounts.test.ts`: the gatekeeper's mode,
+  Disabled until an admin chooses, and its account offered, provisioned and listed for
+  deployment admins alone, in each mode.
+- `admin-access.test.ts`, `admin-api-impl.test.ts`, `admin-audit.test.ts`,
+  `admin-workspace-view.test.ts` and `admin-user-view.test.ts` also cover a caller's `via` and
+  `agent` checked in one place, before any terms reach a workspace or an account, and kept on
+  each record.
+
 Integration suites, in `packages/integration-tests/__tests__/`:
 
 - `workshop-admin-inspection.test.ts`: every admin method this surface adds refused to a non-admin;
@@ -768,6 +891,10 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   invalid cap failing closed) and demotes an admin. The redeploy ends every session, the demoted
   admin's view among them, so the per-call re-check that stops a live view once its admin is demoted
   is covered by `admin-workspace-view.test.ts`.
+- `admin-gatekeeper.test.ts`: the admin gatekeeper end to end, with a scripted model. Who is
+  offered it; an agent's view calls recorded as made through the gatekeeper; the admins-only
+  workspace, while it has the connection and after; the methods an agent is not given; the
+  vendor turned off; the account removed; a blueprint; and a demoted owner.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
