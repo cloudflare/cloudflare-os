@@ -2809,6 +2809,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  // Each account's latest markCredentialsRestored. Only its description is written: an earlier
+  // one's describe() may have read credentials that a reconnect has replaced since.
+  #restores = new Map<number, object>();
+
   async markCredentialsRestored(accountId: number, expiresAt?: Date) {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
@@ -2821,14 +2825,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // the credentials are live either way, and a record still showing as expired over a failed
     // describe() would send the user back through a reconnect that changes nothing. Written over
     // the row as it is after the call, which a disconnect may have deleted meanwhile.
+    let restore = {};
+    this.#restores.set(accountId, restore);
     try {
       let description = await record.account.describe();
       let current = this.storage.connectedAccounts.get(accountId);
-      if (current) this.storage.connectedAccounts.put({ ...current, description });
+      if (current && this.#restores.get(accountId) === restore) {
+        this.storage.connectedAccounts.put({ ...current, description });
+      }
     } catch (err) {
       logger.warn("failed to refresh the description of a restored account", {
         event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
       });
+    } finally {
+      if (this.#restores.get(accountId) === restore) this.#restores.delete(accountId);
     }
   }
 

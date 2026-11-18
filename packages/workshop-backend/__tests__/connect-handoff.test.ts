@@ -258,6 +258,30 @@ describe("connect handoff", () => {
     });
   });
 
+  it("keeps a later restore's description over an earlier one's that arrives after it", async () => {
+    const { inDo } = freshUser();
+    await inDo(async user => {
+      const first = fakeAccount(user, "before-reconnect", { holdDescribe: true });
+      user.storage.nextAccountId.put(1);
+      user.storage.connectedAccounts.put({
+        id: 0, account: first.account, vendorId: "github", description: { displayName: "old" },
+        credentialsExpired: true,
+      });
+      const earlier = user.markCredentialsRestored(0);
+      await vi.waitFor(async () => expect(await first.calls()).toEqual(["describe"]));
+
+      // A reconnect replaces the credentials, and its restore describes them first.
+      const row = user.storage.connectedAccounts.get(0)!;
+      user.storage.connectedAccounts.put({ ...row, account: fakeAccount(user, "after-reconnect").account });
+      await user.markCredentialsRestored(0);
+      await first.releaseDescribe();
+      await earlier;
+      expect(user.storage.connectedAccounts.get(0)?.description).toEqual(expect.objectContaining({
+        displayName: "after-reconnect",
+      }));
+    });
+  });
+
   it("stages a new connect although an old pending record cannot be listed", async () => {
     // A record whose stub no longer deserializes (its Worker was unbound) fails every listing, and
     // cannot be deleted without one. Staging must not depend on it, and the sweep must keep retrying
