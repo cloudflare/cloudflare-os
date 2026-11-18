@@ -392,6 +392,14 @@ describe("native Google content API safety", () => {
       expect(cutOff).toBeInstanceOf(GoogleApiError);
       expect(cutOff).toMatchObject({ providerReasons: [], providerErrorRead: false });
       expect(warn.mock.calls[0]?.[0]).not.toHaveProperty("providerErrorRead");
+
+      // A body that parses but never ends is cut off all the same.
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"error": {"code": 403}}')); },
+      }), { status: 403 })));
+      const stalled = new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await stalled).toMatchObject({ providerReasons: [], providerErrorRead: false });
     } finally {
       vi.useRealTimers();
     }

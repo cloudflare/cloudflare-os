@@ -94,12 +94,17 @@ async function readProviderDiagnostics(
 ): Promise<GoogleProviderDiagnostics> {
   // Google's error bodies are small and arrive at once. One that never ends must not hold up the
   // failure it belongs to, so the body is cancelled after a short wait. It is cancelled through
-  // the reader that holds it, which is what ends a read still waiting on the body in workerd.
+  // the reader that holds it, which is what ends a read still waiting on the body in workerd. The
+  // read then ends as if the body had, so what arrived before the deadline is not taken for all of
+  // it, even when it parses.
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let cutOff = false;
   try {
     let reader = response.body?.getReader();
-    timer = setTimeout(
-      () => void reader?.cancel().catch(() => undefined), PROVIDER_ERROR_READ_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      cutOff = true;
+      void reader?.cancel().catch(() => undefined);
+    }, PROVIDER_ERROR_READ_TIMEOUT_MS);
     let body = reader === undefined ? null : new ReadableStream<Uint8Array>({
       async pull(controller) {
         let { done, value } = await reader.read();
@@ -109,7 +114,7 @@ async function readProviderDiagnostics(
     });
     let text = await readBoundedText(
       new Response(body, { headers: response.headers }), MAX_PROVIDER_ERROR_BYTES, provider);
-    return parseProviderDiagnostics(text);
+    return cutOff ? {} : parseProviderDiagnostics(text);
   } catch {
     return {};
   } finally {
