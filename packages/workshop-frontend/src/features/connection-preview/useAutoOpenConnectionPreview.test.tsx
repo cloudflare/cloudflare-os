@@ -41,14 +41,14 @@ const mount = async () => {
   }) as RpcStub<Overseer>
   const offersPreview = previewOffers(async () => [])
   const opened: ConnectionPreview[] = []
-  let dismiss: (gatekeeperId: WorkpieceId) => void = () => {}
+  let dismiss: (preview: Pick<ConnectionPreview, 'gatekeeperId' | 'item'>) => void = () => {}
   const Probe = ({ workspace }: { workspace: string }) => {
     dismiss = useAutoOpenConnectionPreview(overseer, workspace, preview => opened.push(preview), offersPreview)
     return null
   }
   const enter = (workspace: string) => view.render(<Probe workspace={workspace} />)
   await enter('a')
-  return { server, opened, described, enter, answer, dismiss: (id: WorkpieceId) => dismiss(id) }
+  return { server, opened, described, enter, answer, dismiss: (gatekeeperId: WorkpieceId, item?: string) => dismiss({ gatekeeperId, item }) }
 }
 
 it('opens a connection at its first read and at each change queued after', async () => {
@@ -110,6 +110,32 @@ it('leaves closed a draft that is discarded while it is asked for its preview', 
   await server.emit(entry(2))
 
   expect(opened).toEqual([])
+})
+
+it('opens an item of a connection when a change to it is queued, and keeps one that was dismissed closed', async () => {
+  const { server, opened, described, dismiss } = await mount()
+  const onFile = (id: string) => ({
+    gatekeeperId: PLAIN,
+    description: { title: 'Edit', description: '', previewOf: { id, title: `File ${id}`, url: `https://docs.example/${id}` } },
+  })
+
+  // A read names no item, and its connection offers no preview of itself.
+  await server.emit(read(1, { gatekeeperId: PLAIN }))
+  expect(opened).toEqual([])
+
+  await server.emit(entry(2, onFile('a')))
+  await server.emit(entry(3, onFile('b')))
+  expect(opened).toEqual([
+    { gatekeeperId: PLAIN, item: 'a', title: 'File a', url: 'https://docs.example/a' },
+    { gatekeeperId: PLAIN, item: 'b', title: 'File b', url: 'https://docs.example/b' },
+  ])
+
+  dismiss(PLAIN, 'a')
+  await server.emit(entry(4, onFile('a')))
+  await server.emit(entry(5, onFile('b')))
+  expect(opened.map(preview => preview.item)).toEqual(['a', 'b', 'b'])
+  // The change itself is the offer: only the read asked the connection.
+  expect(described).toEqual([PLAIN])
 })
 
 it('starts afresh in another workspace, where the same numbers name other things', async () => {

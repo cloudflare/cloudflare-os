@@ -5,9 +5,11 @@ import type {
 import { findResourceType } from '@gadgets/workshop-shared/gatekeeper'
 import { safeExternalUrl } from '../../utils/safeExternalUrl'
 
-/** A connection whose content can be drawn beside the chat. */
+/** A connection's content, or one item of it, that can be drawn beside the chat. */
 export type ConnectionPreview = {
   gatekeeperId: WorkpieceId
+  /** The one item drawn, by its gatekeeper's name for it: a file of a folder connection. */
+  item?: string
   title: string
   /** The real file, for the pane's link out. */
   url?: string
@@ -21,15 +23,33 @@ export type ListVendors = () => PromiseLike<GatekeeperVendorInfo[]>
 /** What a connection that offers a preview says of it: its file as it is now, not as a change waiting recorded it. */
 export type PreviewOffer = Pick<ConnectionPreview, 'iconUrl' | 'url'>
 
-/** The preview `offer`ed by the connection `entry` was logged on. */
+/** The item `entry` says it changes, when its gatekeeper can draw that item by itself. */
+export const itemOf = (entry: ActionLogEntry) =>
+  entry.type === 'action' ? entry.description.previewOf : undefined
+
+/** The preview `offer`ed for `entry`: of the item it changes, or else of the connection it was logged on. */
 export const previewOf = (
   gatekeeperId: WorkpieceId, entry: ActionLogEntry, offer?: PreviewOffer,
-): ConnectionPreview => ({
-  gatekeeperId,
-  title: entry.resourceTitle,
-  url: safeExternalUrl(entry.resourceUrl) ?? undefined,
-  iconUrl: offer?.iconUrl,
-})
+): ConnectionPreview => {
+  const item = itemOf(entry)
+  return {
+    gatekeeperId,
+    item: item?.id,
+    title: item?.title ?? entry.resourceTitle,
+    url: safeExternalUrl(item?.url ?? entry.resourceUrl) ?? undefined,
+    iconUrl: offer?.iconUrl,
+  }
+}
+
+/**
+ * What the session of a connection whose actions name items offers: the session an item's
+ * preview draws from, in place of the connection's own.
+ */
+export type ItemPreviews = { openPreview(item: string): RpcStub<object> }
+
+/** What tells one preview from another: its connection and, of a connection with several, its item. */
+export const previewKey = ({ gatekeeperId, item = '' }: Pick<ConnectionPreview, 'gatekeeperId' | 'item'>) =>
+  `${gatekeeperId} ${item}`
 
 /** The icon the vendor gives the connection's type of resource. */
 const typeIcon = (spec: GatekeeperCreationSpec, vendors: GatekeeperVendorInfo[]) => {
@@ -38,9 +58,9 @@ const typeIcon = (spec: GatekeeperCreationSpec, vendors: GatekeeperVendorInfo[])
   return findResourceType(types, spec.resourceTypeId, spec.typeUrlPattern)?.icon?.url
 }
 
-/** What a connection offers of a preview, if it offers one. Rejects when it could not be asked. */
+/** What is offered of a preview, if one is. Rejects when its connection could not be asked. */
 export type OffersPreview = (
-  overseer: RpcStub<Overseer>, gatekeeperId: WorkpieceId,
+  overseer: RpcStub<Overseer>, preview: Pick<ConnectionPreview, 'gatekeeperId' | 'item'>,
 ) => Promise<PreviewOffer | undefined>
 
 /**
@@ -73,7 +93,9 @@ export const previewOffers = (listVendors: ListVendors): OffersPreview => {
     }
   }
 
-  return (overseer, gatekeeperId) => {
+  return (overseer, { gatekeeperId, item }) => {
+    // An action that names an item is itself the offer of that item's preview.
+    if (item !== undefined) return Promise.resolve({})
     let offer = known.get(gatekeeperId)
     if (!offer) {
       known.set(gatekeeperId, offer = describes(overseer, gatekeeperId))

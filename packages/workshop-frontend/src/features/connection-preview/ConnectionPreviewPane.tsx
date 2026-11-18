@@ -2,14 +2,14 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { Button } from '@cloudflare/kumo'
 import { CaretUp } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
-import type { Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 import { entryFields } from '../../components/ActionFields'
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from '../../components/IncompleteDescriptionNotice'
 import GadgetUI, { type GadgetUiSource } from '../../GadgetUI'
 import { useActions } from '../../useActions'
 import { useResolveAction } from '../../useResolveAction'
 import { ChangeFields, ChangeProse } from './ChangeDetail'
-import { previewOf, type ConnectionPreview } from './connectionPreview'
+import { itemOf, previewOf, type ConnectionPreview, type ItemPreviews } from './connectionPreview'
 import { useNewActionEntries } from './useNewActionEntries'
 
 // Long enough to fold a burst of queued edits into one redraw.
@@ -33,18 +33,35 @@ type ConnectionPreviewPaneProps = {
 export const ConnectionPreviewPane = (
   { overseer, preview, restricted, onCreated, onDiscarded }: ConnectionPreviewPaneProps,
 ) => {
-  const { gatekeeperId } = preview
+  const { gatekeeperId, item } = preview
 
   // Wrapped, since a stub is callable and useState would call it for the state.
   const [source, setSource] = useState<{ gadget: GadgetUiSource } | null>(null)
   useEffect(() => {
     const client = overseer.getGatekeeperById(gatekeeperId)
-    setSource({ gadget: client })
+    setSource({
+      getUiBundle: () => client.getPreviewUi(item),
+      connectToGadget: async () => {
+        if (item === undefined) return client.openSession()
+        // The frame is given the item's session alone, which outlives the one it was opened from.
+        // A session's type is its gatekeeper's own: this much of it is the convention.
+        const session = client.openSession() as unknown as RpcStub<ItemPreviews>
+        try {
+          return await session.openPreview(item)
+        } finally {
+          session[Symbol.dispose]()
+        }
+      },
+    })
     return () => {
       setSource(null)
       client[Symbol.dispose]()
     }
-  }, [overseer, gatekeeperId])
+  }, [overseer, gatekeeperId, item])
+
+  // What is drawn here: the connection's changes, or those of the one item.
+  const drawn = (entry: ActionLogEntry): entry is Extract<ActionLogEntry, { type: 'action' }> =>
+    entry.type === 'action' && entry.gatekeeperId === gatekeeperId && itemOf(entry)?.id === item
 
   const [refreshSignal, setRefreshSignal] = useState(0)
   const refreshTimer = useRef<number | undefined>(undefined)
@@ -52,7 +69,7 @@ export const ConnectionPreviewPane = (
   useNewActionEntries(overseer, entry => {
     // Actions only: the preview's own reads are logged on this connection as observations, so
     // refreshing on those would never stop.
-    if (entry.type !== 'action' || entry.gatekeeperId !== gatekeeperId) return
+    if (!drawn(entry)) return
     // Creating the resource restarts its connection on the real one, which ends this pane's
     // session: the pane is opened anew on what was created.
     if (entry.creation && entry.state === 'approved') return onCreated(previewOf(gatekeeperId, entry, preview))
@@ -63,7 +80,7 @@ export const ConnectionPreviewPane = (
   useEffect(() => () => window.clearTimeout(refreshTimer.current), [])
 
   const { pending } = useActions(overseer)
-  const waiting = pending.filter(entry => entry.type === 'action' && entry.gatekeeperId === gatekeeperId)
+  const waiting = pending.filter(drawn)
   // Oldest first, the order the connection applies them in.
   const next = waiting[0]
   // The buttons act on the one change the card describes, which its count says when others wait behind it.
