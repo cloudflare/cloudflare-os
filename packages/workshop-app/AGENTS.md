@@ -405,15 +405,14 @@ row has one, and left out on a narrow screen, where the output's own page has th
 in new tab and Copy link, then for whoever builds in its workspace (`library/libraryEdits.ts`'s
 `mayChange`, plain and tested: the workspace list's role where it is listed, else the role the
 library kept, which a shared one must say) Rename, typed where the title is (`EditableTitle`'s
-`autoFocus`), Share… (`ShareWorkspaceDialog` for the gadget, as the pane's), Gadget settings, and
+`autoFocus`), Share… (`ShareWorkspaceDialog` for the gadget, as the pane's), App settings, and
 Delete…, asked first (`DeleteGadgetDialog`). Docs and sheets are gadgets too, and have the same.
 A rename and a deletion go through the gadget (`gadgets/gadgetChanges.ts`: `getGadget()` pipelined
 on `openWorkspace()`, both let go of after) and show at once, over the library as it was read
 (`libraryEdits`): a renamed one under its new title while it still reads as the old, put back if it
-was refused, and a deleted one gone, with its star. The gadget pane's More menu has Rename, in its
-title's bubble, and Delete… too (`useGadgetEdits`), only for whoever may, and Delete… only where
-there is somewhere to go once it is gone. The scripted chats' fake workspace renames and deletes its
-gadget, for trying the pane without a backend.
+was refused, and a deleted one gone, with its star. The gadget pane renames and deletes from its
+settings page (see A gadget's settings), only for whoever may. The scripted chats' fake workspace
+renames and deletes its gadget, for trying the pane without a backend.
 
 The header ends in Explore templates (Explore, on a narrow screen) and New, whose menu ends in the templates too. The templates
 (`/library/templates`, `TemplateStoreView`) are what the backend calls blueprints, the way a store
@@ -850,17 +849,34 @@ gallery has it as "GadgetAsk". The design record, with what the backend can't sa
 
 ## A gadget's settings
 
-A gadget's More menu, beside a chat or as its own page, has View code for whoever may build in
-its workspace, which shows its code in the gadget's place in the pane (`GadgetCodeView`), over the
-gadget, which keeps running under it: the title becomes a trail, the gadget's name (a button back,
-as is the menu's item for it then) and Code after it, growing out of the bubble. The code opened
-again is at the file it was left at. The menu also has Gadget settings for whoever may build there,
-which goes to its settings page (`/app/<id>/settings`, `GadgetSettingsPane`), laid out as a skill's
+A gadget's header, beside a chat or as its own page, starts with a switch for whoever may build in
+its workspace between what it looks like and its code (`IconSwitch`: a preview icon and a code icon,
+and a thumb that slides under the one that is on). It is first, ahead of the workspace's crumb, so
+that it stays where it is whatever follows, and apart from what can be done with the gadget. On a
+phone it is not in the header but in more, as Show the code or Show the app, first in it.
+Switching to the code shows it in the gadget's place in the pane (`GadgetCodeView`), at once and
+with nothing of the gadget showing, which is hidden rather than gone, so that it keeps running. The
+title says nothing of it: the switch is the one place that shows which is on. The code opened again
+is at the file it was left at. The pull tab only has the header to do with. The menu is only Reload
+and, beside a chat, Expand, then after a separator, at its foot, App settings for whoever may build
+there (a file has Download in place of the settings). That goes to its settings page
+(`/app/<id>/settings`, `GadgetSettingsPane`), as does the title's bubble, a button ending in a
+chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting, publishing,
+updating and deleting it, is on that page, and copying its link is in Share.
+The page is laid out as a skill's
 page is: what it is drawn as, its title, renamed where it is, and what its template says it is for,
 which is the template's and only read here. The way back to the gadget goes back where it was
 opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in the history):
 
-- Connections, which is the first: what it is bound to (`GadgetSettings`, plain and tested,
+- Settings, which is the first (`DEFAULT_GADGET_SETTINGS_TAB`, which an address leaves out):
+  updating it from its template, publishing it as a template, exporting it, and deleting
+  it, as rows on cards with no titles of their own (no row says which workspace or template it is
+  from). Publishing is Publish as template until its workspace has published a template, then
+  Publish changes while one has changes to publish (`library/publishState.ts`, plain and tested,
+  read by `usePublishState` from `Overseer.listBlueprints()`, which does not say which gadget each
+  template is of), both through the More menu's `PublishTemplate`. Export is the More menu's
+  (`ExportItems`) in a menu of its own.
+- Connections: what it is bound to (`GadgetSettings`, plain and tested,
   `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
   binding says only its service, so one with none is asked what it is (`getCreationSpec()`): an
   agent and the model it thinks with, or a model. One is taken away from the gadget, asked for
@@ -876,13 +892,16 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   connection replaces it under the same name, its blueprint annotation kept, the old one bound
   again if that fails. A chat proposing a model says so in plain words when its changes wait to be
   kept ("Lets “Tip jar” use Claude Haiku", `useBindingTitles`).
-- Settings: where it is from, updating it from its template, and deleting it.
+
+There is one settings page. As the page itself it is the route; beside the page the same page
+(`GadgetSettingsPane`, never a second layout) takes the whole pane's place, header and all, from the
+title's bubble or the More menu, with Back to app as its header. The pane stays mounted and
+hidden behind it, so that the gadget keeps running.
 
 A gadget that follows a template is updated from it (`UpdateFromTemplate`, over
-`UpdateFromTemplateDialog`). Its Settings tab always has the way, saying whether there is a newer
-version where that can be told (`templateUpdateStatus`: a template or a gadget that names no
-release says nothing), and its More menu has it, marked New version, only while there is one. The
-update is proposed in a new chat (`applyBlueprint()`, through `proposeTemplateUpdate`, plain and
+`UpdateFromTemplateDialog`). Its Settings tab has the way, or says it is up to date, where that can
+be told (`templateUpdateStatus`: a template or a gadget that names no release says nothing, and
+keeps the way). The update is proposed in a new chat (`applyBlueprint()`, through `proposeTemplateUpdate`, plain and
 tested), which is then gone to with the gadget beside it: it is tried and accepted there, and
 nothing changes until it is. It is reviewed by the model the user's messages are answered by,
 unless another, or No agent, is chosen. Where nothing was proposed the dialog says why: it was up
@@ -896,12 +915,12 @@ the `output` scenario's document follows a template a version behind, whose upda
 in the scenario's own chat.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
-here (who has access, publishing it as a template, its automations, changing what it is drawn as,
+here (who has access, its automations, changing what it is drawn as,
 switching it to another template, and updating one whose template is not known) is not here yet.
 
-The More menu also has Export, for everyone it is shown to, as the backend lets whoever can use a
-gadget export it (`useGadgetExports`, over `GadgetExports`, plain and tested): it opens to what the
-gadget can be exported as (`ExportSubmenu`), read each time it opens, with the chat's changes where
+The settings also have Export, as the backend lets whoever can use a gadget export it
+(`useGadgetExports`, over `GadgetExports`, plain and tested): it opens to what the gadget can be
+exported as (`ExportItems`), read each time it opens, with the chat's changes where
 it is shown from one, each saved to the device when chosen, one at a time (`files/saveStream.ts`:
 into the browser's save window where it has one, or else downloaded as plain bytes). Then, for
 whoever may build in its workspace, as in the old app, the kinds of file a connected service makes
@@ -1071,13 +1090,16 @@ the chat's own. Files sent in the chat are not listed for now, though one opened
 is shown as before.
 
 The card (`SidePane`) is a header, then what is shown on a tinted surface that fills the rest of the
-card out to its sides and bottom, with rounded top corners and a line along its top only. With more
-than one thing open the header starts with their count, which opens to the list of them and the way
-to close them all. Then the name of the one shown, which grows a button when pointed at that closes
-it (`SidePaneTitle`). At its far end: who else has the workspace open, more (reload, close), Share
-where the one shown can be shared, its link then copied from more, or else a link to copy, full
-screen, and the arrow. The bar at the top of the surface, in the middle, pushes the
-header up out of the way and pulls it back down (`Grabber`); clicking it does the same. Its bar is
+card out to its sides and bottom, with rounded top corners and a line along its top only. The header
+starts with the name of the one shown (`SidePaneTitle`). At its far end: who else has the workspace
+open, more (reload, expand, its settings), Share where the one shown can be shared, or else a link
+to copy, full screen, and the arrow. Where the header is crammed (narrower than `CRAMPED_BELOW`,
+measured, as the menu is drawn outside it) Share is in more instead, first in it, and the name is
+left the room. The bar at the top of the surface, in the middle, pushes the
+header up out of the way and pulls it back down (`Grabber`); clicking it does the same. People
+pull down on it whatever it does, so with the header all the way out a tug down stretches the
+header a little and rolls it up when let go, however short the tug, or at once at the most it can be
+pulled (`TUG_AT`), as a cord is pulled, while pulling up still follows the finger. Its bar is
 the divider's pill, always out and staying put: it grows, darkens and springs as the pill does when
 taken hold of (`pill.ts` holds what the two share).
 
@@ -1101,8 +1123,16 @@ script, and a language's parser loads the first time a file in it is shown (`cod
 Every `@codemirror/*` package must resolve to the one `@codemirror/view` that `workshop-frontend`
 uses too, or the editor's extensions fail its `instanceof` checks: check the lockfile after adding
 one. `CodeBrowser` lays it out by its own width (container queries, not the window's): the files
-as a tree beside the code (`CodeFileTree`, arrow keys and all), a drawer the file's header opens
-where it is narrow, Cmd or Ctrl with P to go to a file (`CodeQuickOpen`), and a status line. Its
+as a tree beside the code (`CodeFileTree`, arrow keys and all) from 56rem wide, and under that a row
+of tabs along its top (`CodeFileStrip`, with Go to file before them, New file after and the shown
+file's menu inside its tab, which `CodeFileMenu` shares with the tree; a new file is a tab at once,
+after the others, with its name typed in it until Enter, and a file is renamed in its own tab; the
+tree does the same in a row at the end of its folder, both by `useCodeNaming` and `CodeNameField`).
+The code is not a card on the surface it is on: a line (`kumo-contrast` at 12%, stronger than the
+hairline, so that the files read as apart from it) sets it off from the files: under the tabs where
+they are along its top, and beside it where they are the tree, never both. Its controls are the
+app's size (`--control-size`, `--control-text`), and nothing in it is under `text-sm` but a key
+cap or a change's letter. Cmd or Ctrl with P to go to a file (`CodeQuickOpen`), and a status line. Its
 history (`useCodeHistory`, `getCommitLog()`) lists each time the code was kept; picking one shows
 only what changed then, each file as a diff from the commit before (`@codemirror/merge`, unified
 or side by side, `prefs/codePrefs`), with what was compared over it and the way back. Reads are
@@ -1113,7 +1143,10 @@ A gadget's View code is edited as `plans/code-editing.md` designs it, with nothi
 kernel: what is typed, and its files made (a `/` in the name makes folders), renamed or moved,
 duplicated, deleted and put back from the tree's ⋯ menus and +, is a draft per gadget
 (`gadgets/codeDrafts`, tested, kept for the tab's life, a `beforeunload` warning while any is
-left) that is saved or discarded by hand, never on its own. Each file of it is dotted in the tree
+left) that is saved or discarded by hand, never on its own. Renaming or deleting the file the
+gadget is built from (`client.*`, `server.*`) asks first, in a dialog (`CodeFileCautionDialog`,
+held by `CodeFileMenu`, so that the tree and the tabs have it alike) that says what stops working,
+and the menu says nothing of it. Each file of it is dotted in the tree
 and quick open, and the status line counts it beside Discard (which asks) and Save. Saving
 (`gadgets/saveCode`, tested) reads the head first and stops, naming the files, where someone
 changed one the draft changed since it was read, offering to discard the draft's or save it
