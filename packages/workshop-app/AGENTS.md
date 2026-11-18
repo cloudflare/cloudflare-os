@@ -216,6 +216,12 @@ that opens in place with a field to find one by. The menu is a `DropdownMenu` th
 workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
 to the page.
 
+Under all of that, the home page offers a few things to start with (`StarterTasks`), as the old
+home page did and in its words (`chat/starterTasks.ts`, plain and tested): three of them, chosen
+for the visit, so that the others are seen another time. Choosing one writes it in the composer
+in place of the draft (`ComposerHandle.fillDraft`), to be changed before it is sent; it is not
+sent. A chat started with a format has none, as each says what it makes.
+
 ## The Workspaces page
 
 `/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the

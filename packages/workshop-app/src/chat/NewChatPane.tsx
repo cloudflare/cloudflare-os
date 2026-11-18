@@ -29,6 +29,8 @@ export type NewChatPaneProps = {
   format?: StartFormat & { onRemove: () => void }
   /** The workspace the conversation starts in, where that is still to choose, under the greeting's composer. */
   workspace?: ChatStartProps['workspace']
+  /** Work to start from, under the greeting's composer, which choosing one writes in. */
+  starters?: ChatStartProps['starters']
   /**
    * Starts the conversation with its first message and the files it carries, `formats` saying
    * where the message names a format; or with a skill and the words it is given (see
@@ -44,7 +46,7 @@ export type NewChatPaneProps = {
  * can start with one of the user's skills, which there is no workspace to list yet, so they are
  * offered from the Library, and found in the workspace the message goes to as it is sent.
  */
-export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, workspace, starters, start, onStarted }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const skills = useSkills()
   const commands = useMemo(() => orderCommands(skills.map(skillCommandOf)), [skills])
@@ -91,7 +93,7 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} workspace={workspace} autoFocus />
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} format={format} problem={composerProblem} workspace={workspace} starters={starters} autoFocus />
       </StartLayout>
     )
   }
