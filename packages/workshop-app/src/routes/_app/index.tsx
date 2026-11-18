@@ -5,6 +5,7 @@ import { NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
 import { useApi } from '@/rpc/ApiContext'
+import { UpdateNotice } from '@/settings/admin/UpdateNotice'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -36,6 +37,8 @@ function Home() {
   const startsIn = startable.some(({ id }) => id === chosenId) ? chosenId : undefined
   return (
     <NewChatPane
+      // A newer release of the deployment, said to its admins where main's home page said it.
+      header={<UpdateNotice onOpen={() => navigate({ to: '/settings', search: { section: 'admin-updates' } })} />}
       greeting={greeting(user.name)}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
       workspace={{
