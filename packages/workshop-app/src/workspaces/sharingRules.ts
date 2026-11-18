@@ -165,34 +165,62 @@ export const signInServices = (requirements: readonly ObserverBindingNeed[], ven
   return [...new Set(names)]
 }
 
-/** One of what a workspace reads that someone given it must be able to see with their own account. */
+/**
+ * One of what a workspace reads that someone given it must be able to see with their own account,
+ * with the connections that read it (`needs`): several often read the same one, which is the one
+ * thing to see.
+ */
 export type ProtectedResource = {
-  key: number
+  /** Which it is (`resourceIdentity`). */
+  key: string
   title: string
   url?: string
+  vendorId: string
   service: { name: string; logoUrl?: string; color?: string }
+  needs: ObserverBindingNeed[]
 }
+
+/**
+ * Which resource a connection reads, the same for every connection that reads it: its service and
+ * its address, or, without one, its title.
+ */
+export const resourceIdentity = ({ vendorId, resourceUrl, resourceTitle }: Pick<ObserverBindingNeed, 'vendorId' | 'resourceUrl' | 'resourceTitle'>) =>
+  `${vendorId.toLowerCase()} ${resourceUrl ? `url:${resourceUrl}` : `title:${resourceTitle}`}`
 
 /**
  * What someone given it must be able to see with their own account before they can open it, by
  * name, in the order its connections were made: those of its connections that need a sign-in, as
- * `signInServices` has them, each once. Undefined until the services are known.
+ * `signInServices` has them, each resource once however many of its connections read it. Undefined
+ * until the services are known.
+ *
+ * With `every`, it is every one of them, for confirming access, where each connection has to be
+ * answered: those whose service sets up an account by itself, and any of a service not known here,
+ * named by its id.
  */
-export const protectedResources = (requirements: readonly ObserverBindingNeed[], vendors: readonly GatekeeperVendorInfo[] | undefined): ProtectedResource[] | undefined => {
+export const protectedResources = (requirements: readonly ObserverBindingNeed[], vendors: readonly GatekeeperVendorInfo[] | undefined, { every = false } = {}): ProtectedResource[] | undefined => {
   if (!vendors) return undefined
   const byId = new Map(vendors.map((vendor) => [vendor.id.toLowerCase(), vendor.description]))
-  const seen = new Set<number>()
-  return requirements.flatMap(({ gatekeeperId, vendorId, resourceTitle, resourceUrl }) => {
-    const vendor = byId.get(vendorId.toLowerCase())
-    if (!vendor || vendor.autoProvisionsAccount || seen.has(gatekeeperId)) return []
-    seen.add(gatekeeperId)
-    return [{
-      key: gatekeeperId,
-      title: resourceTitle || vendor.displayName,
-      ...(resourceUrl ? { url: resourceUrl } : {}),
+  const resources = new Map<string, ProtectedResource>()
+  for (const need of requirements) {
+    const known = byId.get(need.vendorId.toLowerCase())
+    if (!every && (!known || known.autoProvisionsAccount)) continue
+    const vendor = known ?? { displayName: need.vendorId, logo: undefined, color: undefined }
+    const key = resourceIdentity(need)
+    const listed = resources.get(key)
+    if (listed) {
+      if (!listed.needs.some(({ gatekeeperId }) => gatekeeperId === need.gatekeeperId)) listed.needs.push(need)
+      continue
+    }
+    resources.set(key, {
+      key,
+      title: need.resourceTitle || vendor.displayName,
+      ...(need.resourceUrl ? { url: need.resourceUrl } : {}),
+      vendorId: need.vendorId,
       service: { name: vendor.displayName, logoUrl: vendor.logo?.url, color: vendor.color },
-    }]
-  })
+      needs: [need],
+    })
+  }
+  return [...resources.values()]
 }
 
 /** Names as a sentence lists them: "Google", "Google and Slack", "Google, Slack and GitHub". */
