@@ -1297,8 +1297,11 @@ export interface Gatekeeper<Session> extends DurableObject {
    * It runs as a gadget's UI does, with a session from `startSession()` in place of the gadget's
    * server. It therefore holds no more than a gadget bound to this resource would, and its reads
    * and actions go through the approval queue like any other.
+   *
+   * With `previewOf`, the ID of an `ActionDescription.previewOf`, returns the code that draws
+   * that item instead, and throws for an ID that names nothing it can draw.
    */
-  getPreviewUi?(): Promise<UiFile[]>;
+  getPreviewUi?(previewOf?: string): Promise<UiFile[]>;
 
   /**
    * Stream a self-contained Git pack containing the requested objects and related objects
@@ -1834,6 +1837,21 @@ export type ActionKind = {
   label: string;
 };
 
+/** An item of a resource that its gatekeeper can draw by itself. See `ActionDescription.previewOf`. */
+export type PreviewItem = {
+  /**
+   * The gatekeeper's own name for the item, opaque to everyone else and handed back to
+   * `Gatekeeper.getPreviewUi()`.
+   */
+  id: string;
+
+  /** The item's name, shown to people. */
+  title: string;
+
+  /** Where a person opens the item itself. */
+  url?: string;
+};
+
 /**
  * Describes an action submitted to the action approval queue. This contains all the information
  * needed to:
@@ -1859,6 +1877,13 @@ export type ActionDescription = {
    * rendered as Markdown, so a value needs no escaping to display as exactly itself.
    */
   fields?: ActionField[];
+
+  /**
+   * The one item of the resource this action changes, when the gatekeeper can draw that item by
+   * itself: a file in a folder. Display only: it grants and checks nothing, and is unrelated to
+   * `ObservationDescription.subresources`.
+   */
+  previewOf?: PreviewItem;
 
   /**
    * The gatekeeper's assertion that `description` and `fields` together reproduce, verbatim, every

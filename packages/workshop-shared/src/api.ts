@@ -7809,9 +7809,10 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
   /**
    * Get the code that draws this resource: the files its gatekeeper supplies, bundled as a
    * gadget's UI files are, to run as one with a session from `openSession()` as its `gadget`.
-   * Only available if `describe()` reports `hasPreview`.
+   * Only available if `describe()` reports `hasPreview`, or, with the ID of an action's
+   * `description.previewOf`, for the item that action changes.
    */
-  getPreviewUi(): Promise<UiBundle>;
+  getPreviewUi(previewOf?: string): Promise<UiBundle>;
 
   /** Get the creation spec describing how this gatekeeper was originally created. */
   getCreationSpec(): Promise<GatekeeperCreationSpec>;

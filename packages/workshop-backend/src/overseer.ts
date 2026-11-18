@@ -15369,11 +15369,12 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
         this.joinedAs);
   }
 
-  async getPreviewUi(): Promise<UiBundle> {
-    // getPreviewUi is optional on Gatekeeper; a caller checks describe().hasPreview first.
+  async getPreviewUi(previewOf?: string): Promise<UiBundle> {
+    // getPreviewUi is optional on Gatekeeper; a caller is offered a preview first, by
+    // describe().hasPreview or by an action's previewOf.
     this.impl.assertGatekeeperUsable(this.id);
     let files = await (this.facet as Fetcher<Gatekeeper<Session> &
-        Required<Pick<Gatekeeper<Session>, "getPreviewUi">>>).getPreviewUi();
+        Required<Pick<Gatekeeper<Session>, "getPreviewUi">>>).getPreviewUi(previewOf);
     let bundle = buildUiBundle(new Map(files.map(({path, code}) => [path, code])));
     // A preview is new code, which nothing obliges to run as a legacy UI does.
     if (!bundle || !("modules" in bundle)) {
