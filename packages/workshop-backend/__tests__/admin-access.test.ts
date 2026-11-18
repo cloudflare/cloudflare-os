@@ -19,7 +19,7 @@ import {
   redactAdminAuditArgs,
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent, withholdChatContent,
   withholdChatStateContent, withholdCommitContent, withholdCreationContent, withholdHookContent,
-  workpieceHoldsContent,
+  workpieceHoldsContent, adminCallerTerms,
   type AdminViewTerms,
 } from "../src/admin-access.js";
 import { serializeAdminConfig } from "../src/admin-config.js";
@@ -379,6 +379,70 @@ describe("validators", () => {
     expect(adminAuditStatsDays(undefined)).toBe(7);
     expect(adminAuditStatsDays(366)).toBe(366);
     for (let bad of [0, 367, 0.5]) expect(() => adminAuditStatsDays(bad)).toThrow("from 1 to 366");
+  });
+});
+
+describe("adminCallerTerms", () => {
+  const WORKSPACE = "a".repeat(64);
+
+  it.each(["api", "cli"] as const)("keeps %s as its via alone", via => {
+    expect(adminCallerTerms({ via })).toStrictEqual({ via });
+    // Whatever else the value carried is not copied.
+    let terms = adminCallerTerms(
+        { via, access: "content", admin: "mallory" } as { via: unknown });
+    expect(terms).toStrictEqual({ via });
+    expect(Object.keys(terms)).toStrictEqual(["via"]);
+  });
+
+  it("keeps a gatekeeper's origin: its workspace, and its chat when it has one", () => {
+    expect(adminCallerTerms({ via: "gatekeeper", agent: { workspaceId: WORKSPACE } }))
+        .toStrictEqual({ via: "gatekeeper", agent: { workspaceId: WORKSPACE } });
+    expect(adminCallerTerms({ via: "gatekeeper", agent: { workspaceId: WORKSPACE, chatId: 0 } }))
+        .toStrictEqual({ via: "gatekeeper", agent: { workspaceId: WORKSPACE, chatId: 0 } });
+    expect(adminCallerTerms({ via: "gatekeeper", agent: { workspaceId: WORKSPACE, chatId: 7 } }))
+        .toStrictEqual({ via: "gatekeeper", agent: { workspaceId: WORKSPACE, chatId: 7 } });
+    let longest = "w".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(adminCallerTerms({ via: "gatekeeper", agent: { workspaceId: longest } }).agent)
+        .toStrictEqual({ workspaceId: longest });
+  });
+
+  it("returns a fresh object that copies no other key", () => {
+    let agent = { workspaceId: WORKSPACE, chatId: 3, admin: "mallory", insiders: ["ada"] };
+    let caller = { via: "gatekeeper", agent, insiders: ["ada"], sessionId: "s" };
+    let terms = adminCallerTerms(caller);
+    expect(terms).toStrictEqual({ via: "gatekeeper", agent: { workspaceId: WORKSPACE, chatId: 3 } });
+    expect(Object.keys(terms)).toStrictEqual(["via", "agent"]);
+    expect(Object.keys(terms.agent!)).toStrictEqual(["workspaceId", "chatId"]);
+    expect(terms.agent).not.toBe(agent);
+    // An absent chat adds no key, undefined or otherwise.
+    expect(Object.keys(adminCallerTerms(
+        { via: "gatekeeper", agent: { workspaceId: WORKSPACE, chatId: undefined } }).agent!))
+        .toStrictEqual(["workspaceId"]);
+  });
+
+  it.each([
+    ["a via that is not one", { via: "browser" }],
+    ["a via with other casing", { via: "CLI" }],
+    ["no via", { via: undefined }],
+    ["a via that is not a string", { via: ["gatekeeper"] }],
+    ["a gatekeeper without an origin", { via: "gatekeeper" }],
+    ["a gatekeeper whose origin is null", { via: "gatekeeper", agent: null }],
+    ["a gatekeeper whose origin is a string", { via: "gatekeeper", agent: "a".repeat(64) }],
+    ["an origin under api", { via: "api", agent: { workspaceId: "a".repeat(64) } }],
+    ["an origin under cli", { via: "cli", agent: { workspaceId: "a".repeat(64) } }],
+    ["a null origin under cli", { via: "cli", agent: null }],
+    ["an origin without a workspace", { via: "gatekeeper", agent: {} }],
+    ["an empty workspace id", { via: "gatekeeper", agent: { workspaceId: "" } }],
+    ["a workspace id that is not a string", { via: "gatekeeper", agent: { workspaceId: 7 } }],
+    ["an over-long workspace id",
+      { via: "gatekeeper", agent: { workspaceId: "w".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 1) } }],
+    ["a negative chat", { via: "gatekeeper", agent: { workspaceId: "w", chatId: -1 } }],
+    ["a fractional chat", { via: "gatekeeper", agent: { workspaceId: "w", chatId: 1.5 } }],
+    ["a chat that is not a number", { via: "gatekeeper", agent: { workspaceId: "w", chatId: "1" } }],
+    ["a null chat", { via: "gatekeeper", agent: { workspaceId: "w", chatId: null } }],
+    ["a chat that is not finite", { via: "gatekeeper", agent: { workspaceId: "w", chatId: NaN } }],
+  ])("refuses %s", (_name, caller) => {
+    expect(() => adminCallerTerms(caller)).toThrow(TypeError);
   });
 });
 
