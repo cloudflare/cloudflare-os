@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useNavigate, useRouterState } from '@tanstack/react-router'
 import { greeting } from '@/chat/greeting'
 import { NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
@@ -26,6 +26,8 @@ function Home() {
   const { api, user } = useApi()
   const navigate = useNavigate()
   const { format: formatId } = Route.useSearch()
+  // Written in the composer as the page opens, where the page before had something to ask for.
+  const draft = useRouterState({ select: ({ location }) => location.state.draft })
   // One the deployment does not offer starts nothing.
   const format = startableFormats(useOutputFormats(formatId !== undefined)).find(({ id }) => id === formatId)
   const workspaces = useWorkspaces()
@@ -59,6 +61,7 @@ function Home() {
         value: startsIn,
         onValueChange: setChosenId,
       }}
+      initialText={draft}
       connectsIn={startIn}
       makeConnectable={makeConnectable}
       start={(text, files, modelId, command, formats, capsules) =>

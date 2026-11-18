@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, PuzzlePieceIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
@@ -37,6 +37,8 @@ export type SidebarProps = {
   library?: { current: boolean; onOpen: () => void; waiting?: number }
   /** The page listing every workspace, and whether it is the one showing. */
   workspacesPage?: { current: boolean; onOpen: () => void }
+  /** The page listing everything that runs by itself, across workspaces, and whether it is the one showing. */
+  automationsPage?: { current: boolean; onOpen: () => void }
   /** The page listing what is connected and what could be, and whether it is the one showing. */
   connectionsPage?: { current: boolean; onOpen: () => void }
   /**
@@ -143,6 +145,7 @@ export const Sidebar = ({
   connections,
   library,
   workspacesPage,
+  automationsPage,
   connectionsPage,
   settingsPage,
   onSearch,
@@ -187,6 +190,15 @@ export const Sidebar = ({
       {waiting > 0 && <WaitingCount count={waiting} className="pointer-events-none absolute -top-1 -right-1 ring-2 ring-kumo-canvas" />}
     </span>
   )
+  const automationsButton = (
+    <Button
+      icon={LightningIcon}
+      aria-label="Automations"
+      aria-current={automationsPage?.current ? 'page' : undefined}
+      onClick={automationsPage?.onOpen}
+      className="aria-[current=page]:bg-kumo-tint"
+    />
+  )
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" onClick={onSearch} />
   const account = (
     <Button
@@ -223,6 +235,7 @@ export const Sidebar = ({
         <footer className="mt-5 flex flex-col items-center gap-1.5">
           {workspacesButton}
           {libraryButton}
+          {automationsButton}
           <Button
             icon={PuzzlePieceIcon}
             aria-label="Connections"
@@ -261,6 +274,7 @@ export const Sidebar = ({
               onClick={library?.onOpen}
               waiting={waiting}
             />
+            <NavRow icon={<LightningIcon />} label="Automations" current={automationsPage?.current} onClick={automationsPage?.onOpen} />
             <NavRow icon={<PuzzlePieceIcon />} label="Connections" current={connectionsPage?.current} onClick={connectionsPage?.onOpen} />
             <NavRow
               icon={<Avatar name={user.name} src={user.avatarUrl} />}
@@ -285,6 +299,7 @@ export const Sidebar = ({
           <div className="flex flex-col gap-1.5">
             {search}
             {libraryButton}
+            {automationsButton}
             {workspacesButton}
           </div>
           <RailDivider />
@@ -304,6 +319,7 @@ export const Sidebar = ({
         <div className="mr-auto flex">{home}</div>
         {workspacesButton}
         {libraryButton}
+        {automationsButton}
         {search}
       </header>
       {said}

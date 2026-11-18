@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { ClockIcon, LightningIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
@@ -20,6 +21,8 @@ export type AutomationRowProps = {
   resource?: ResourceLinkProps
   /** The gadget whose code it runs, which opens it. */
   gadget?: { title: string; href?: string; onOpen: () => void }
+  /** The workspace it is in, under its icon, where it is listed among others': it opens the workspace. */
+  workspace?: { title: string; icon: ReactNode; href?: string; onOpen: () => void }
   enabled: boolean
   /** Absent for whoever may not change it, who sees whether it is on. */
   onEnabledChange?: (enabled: boolean) => ActionResult
@@ -30,9 +33,10 @@ export type AutomationRowProps = {
 /**
  * One automation in a list of them: a clock or a bolt, its name, when it runs and when next (or
  * Paused, or why it stopped), what it does, what it watches and the gadget it runs, which opens
- * it. Its switch is at the end, held while the workspace answers.
+ * it, and, among other workspaces', the workspace it is in. Its switch is at the end, held while
+ * the workspace answers.
  */
-export const AutomationRow = ({ kind, title, when, standing, description, resource, gadget, enabled, onEnabledChange, problem }: AutomationRowProps) => {
+export const AutomationRow = ({ kind, title, when, standing, description, resource, gadget, workspace, enabled, onEnabledChange, problem }: AutomationRowProps) => {
   const [pending, run] = usePending()
   const Glyph = kind === 'schedule' ? ClockIcon : LightningIcon
   // Paused says so in place of when it runs next, which it no longer does.
@@ -53,8 +57,14 @@ export const AutomationRow = ({ kind, title, when, standing, description, resour
           </span>
         )}
         {description && <div className="line-clamp-2 text-sm text-kumo-subtle"><Markdown>{description}</Markdown></div>}
-        {(resource || gadget) && (
+        {(resource || gadget || workspace) && (
           <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            {workspace && (
+              <LinkButton href={workspace.href} onClick={workspace.onOpen} className="flex min-w-0 items-center gap-1.5 text-sm text-kumo-default hover:underline underline-offset-2 [&>svg]:shrink-0">
+                {workspace.icon}
+                <span className="truncate">{workspace.title}</span>
+              </LinkButton>
+            )}
             {resource && <ResourceLink {...resource} />}
             {gadget && (
               <LinkButton href={gadget.href} onClick={gadget.onOpen} className="min-w-0 truncate text-sm text-kumo-default underline underline-offset-2">

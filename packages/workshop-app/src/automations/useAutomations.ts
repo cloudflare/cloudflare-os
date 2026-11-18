@@ -22,7 +22,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * The account's schedules, across its workspaces, from the scheduler's management app. None when
  * there is no scheduler or it cannot be read: the automations still show, without when they run.
  */
-const readSchedules = async (open: () => RpcPromise<unknown>): Promise<ManagementSchedule[]> => {
+export const readSchedules = async (open: () => RpcPromise<unknown>): Promise<ManagementSchedule[]> => {
   let frame: (RpcPromise<unknown> & Partial<Disposable>) | undefined
   try {
     // Pipelined, so the frame's HTML, which is not wanted, never comes.

@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { CirclesFourIcon, FolderIcon, GearIcon, NotePencilIcon, PuzzlePieceIcon, StorefrontIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, GearIcon, LightningIcon, NotePencilIcon, PuzzlePieceIcon, StorefrontIcon } from '@phosphor-icons/react'
 import { SearchDialog, type SearchEntry } from '@/blocks/SearchDialog'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -36,6 +36,7 @@ export const AppSearch = ({ open, onOpenChange }: { open: boolean; onOpenChange:
     { key: 'workspaces', group: 'Go to', title: 'Workspaces', icon: <FolderIcon />, onSelect: () => void navigate({ to: '/workspaces' }) },
     { key: 'library', group: 'Go to', title: 'Library', keywords: ['apps', 'gadgets', 'files', 'skills'], icon: <CirclesFourIcon />, onSelect: () => void navigate({ to: '/library' }) },
     { key: 'templates', group: 'Go to', title: 'Templates', keywords: ['store', 'discover', 'blueprints'], icon: <StorefrontIcon />, onSelect: () => void navigate({ to: '/library/templates' }) },
+    { key: 'automations', group: 'Go to', title: 'Automations', keywords: ['scheduled tasks', 'schedules', 'triggers', 'hooks'], icon: <LightningIcon />, onSelect: () => void navigate({ to: '/automations' }) },
     { key: 'connections', group: 'Go to', title: 'Connections', keywords: ['accounts', 'services'], icon: <PuzzlePieceIcon />, onSelect: () => void navigate({ to: '/connections' }) },
     { key: 'settings', group: 'Go to', title: 'Settings', keywords: ['profile', 'models', 'preferences'], icon: <GearIcon />, onSelect: () => void navigate({ to: '/settings' }) },
   ]

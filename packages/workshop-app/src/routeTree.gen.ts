@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppAutomationsRouteImport } from './routes/_app/automations'
 import { Route as AppConnectionsRouteImport } from './routes/_app/connections'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppWorkspacesRouteImport } from './routes/_app/workspaces'
@@ -50,6 +51,11 @@ const SignupRoute = SignupRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAutomationsRoute = AppAutomationsRouteImport.update({
+  id: '/automations',
+  path: '/automations',
   getParentRoute: () => AppRoute,
 } as any)
 const AppConnectionsRoute = AppConnectionsRouteImport.update({
@@ -160,6 +166,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
   '/signup': typeof SignupRoute
+  '/automations': typeof AppAutomationsRoute
   '/connections': typeof AppConnectionsRoute
   '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
@@ -183,6 +190,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
   '/signup': typeof SignupRoute
+  '/automations': typeof AppAutomationsRoute
   '/connections': typeof AppConnectionsRoute
   '/settings': typeof AppSettingsRoute
   '/workspaces': typeof AppWorkspacesRoute
@@ -209,6 +217,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
   '/signup': typeof SignupRoute
+  '/_app/automations': typeof AppAutomationsRoute
   '/_app/connections': typeof AppConnectionsRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
@@ -236,6 +245,7 @@ export interface FileRouteTypes {
     | '/'
     | '/gallery'
     | '/signup'
+    | '/automations'
     | '/connections'
     | '/settings'
     | '/workspaces'
@@ -259,6 +269,7 @@ export interface FileRouteTypes {
   to:
     | '/gallery'
     | '/signup'
+    | '/automations'
     | '/connections'
     | '/settings'
     | '/workspaces'
@@ -284,6 +295,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/gallery'
     | '/signup'
+    | '/_app/automations'
     | '/_app/connections'
     | '/_app/settings'
     | '/_app/workspaces'
@@ -343,6 +355,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/automations': {
+      id: '/_app/automations'
+      path: '/automations'
+      fullPath: '/automations'
+      preLoaderRoute: typeof AppAutomationsRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/connections': {
@@ -482,6 +501,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppAutomationsRoute: typeof AppAutomationsRoute
   AppConnectionsRoute: typeof AppConnectionsRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
@@ -502,6 +522,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppAutomationsRoute: AppAutomationsRoute,
   AppConnectionsRoute: AppConnectionsRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,

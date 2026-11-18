@@ -40,8 +40,8 @@ src/
                 read and write of the user's account
   skills/       The user's skills (`SkillStore`, over their Context Library), the list of them in
                 the settings (`SkillLibrary`) and one skill's page (`SkillPane`)
-  automations/  What runs by itself in a workspace (`useAutomations`), and the tab that lists it
-                (`AutomationsTab`); its agents (`WorkspaceAgents`), their tab (`AgentsTab`) and
+  automations/  What runs by itself in a workspace (`useAutomations`), the tab that lists it
+                (`AutomationsTab`) and the page of every workspace's (`AutomationsPane`); its agents (`WorkspaceAgents`), their tab (`AgentsTab`) and
                 one agent's page (`AgentPane`)
   gadgets/      One gadget's settings page (`GadgetSettingsPane`): what it is bound to, its code,
                 and what can be done to it
@@ -742,6 +742,17 @@ clock opens with how many the chat has (`AutomationsTab`, `AutomationRow`): the 
 then the rest, each with when it runs and when next or why it stopped, what it does, what it
 watches and the gadget it runs, which opens beside the page.
 
+Every workspace's are on a page of their own too (`/automations`, `AutomationsPane` over
+`AutomationsView`), between Library and Connections in the sidebar: under the list's controls
+(`automationList.ts`, plain and tested), by how each stands (what needs seeing to, a schedule that
+stopped or is trying again, first; then the scheduled, soonest first; then what an event sets off;
+then what is paused), by workspace or by name, narrowed to a kind, on or paused, and a workspace,
+each row saying which workspace it is in (`AutomationRow`'s `workspace`). Nothing lists hooks
+across workspaces, so `useAllAutomations` reads the account's schedules once and opens each
+workspace the user builds in, three at a time, the most recently active first, the list filling in
+as they answer. With none at all it says what an automation is and offers a few things to ask for
+(`AutomationsEmpty`), each going home with it written in the composer (the history state's `draft`).
+
 When a schedule runs is the scheduler's to say, from its management app
 (`getGatekeeperApp('scheduler')`, whose `ui` lists the account's schedules), and it is matched to
 its hook by the title, description and gadget it was enabled with (`automations/automations.ts`,
@@ -1187,7 +1198,7 @@ as it does for a pointer that is only beside one.
 Narrower than `md` (`hooks/useNarrowScreen.ts`), such as a phone, there is room for one thing at
 a time, and `_app` lays the frame out with `NarrowShell` instead of `AppShell`: edge to edge, with
 no cards, clear of the system's safe areas. The pages are the same, home included. The sidebar is
-beneath the page, on the backdrop. On the pages it goes to (home, a workspace, Library,
+beneath the page, on the backdrop. On the pages it goes to (home, a workspace, Library, Automations,
 Workspaces and Connections), a button at the start of the header (which leaves it the room, `--header-lead`)
 moves the page aside to the far edge, where what stays in sight of it is tapped to put the sidebar
 away again, as is Escape. It is not swiped. Going anywhere puts it away: like full screen, it is

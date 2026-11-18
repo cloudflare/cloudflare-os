@@ -124,6 +124,7 @@ const AppFrame = () => {
   const templatesPage = useMatch({ from: '/_app/library/templates/', shouldThrow: false })
   const templatePage = useMatch({ from: '/_app/library/templates/$templateId', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
+  const automationsPage = useMatch({ from: '/_app/automations', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const settingsPage = useMatch({ from: '/_app/settings', shouldThrow: false })
   // A skill's page is part of the settings, where the skills are listed.
@@ -360,6 +361,13 @@ const AppFrame = () => {
           void navigate({ to: '/workspaces' })
         },
       }}
+      automationsPage={{
+        current: automationsPage !== undefined,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/automations' })
+        },
+      }}
       connectionsPage={{
         current: connectionsPage !== undefined,
         onOpen: () => {
@@ -425,7 +433,7 @@ const AppFrame = () => {
           // On the pages the sidebar goes to. Those further in have their way up already, such as
           // a chat's workspace crumb, or an item's own back button.
           // The settings' list of parts is one of them; a part has its way back to the list.
-          button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage, settingsPage?.search.section === undefined ? settingsPage : undefined].some((match) => match !== undefined),
+          button: [homePage, workspacePage, libraryPage, workspacesPage, automationsPage, connectionsPage, settingsPage?.search.section === undefined ? settingsPage : undefined].some((match) => match !== undefined),
         }}
         status={status}
         aside={pageItem ? undefined : asideElement}

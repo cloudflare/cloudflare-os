@@ -50,6 +50,8 @@ export type NewChatPaneProps = {
    * connection is added once it is. Rejects with why it could not.
    */
   makeConnectable?: () => Promise<void>
+  /** What the composer starts with written in it, to be changed before it is sent. */
+  initialText?: string
   /** The conversation exists: open it. */
   onStarted: (chat: StartedChat) => Promise<unknown>
 }
@@ -59,7 +61,7 @@ export type NewChatPaneProps = {
  * can start with one of the user's skills, which there is no workspace to list yet, so they are
  * offered from the Library, and found in the workspace the message goes to as it is sent.
  */
-export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn, makeConnectable }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn, makeConnectable, initialText }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const skills = useSkills()
   // Until they are read, the + menu keeps their room.
@@ -73,7 +75,7 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
   const [problem, setProblem] = useState<string>()
   // A message that did not go, for the greeting's composer, which is gone while it is sent, to
   // start from when it comes back.
-  const [unsent, setUnsent] = useState<{ text: string; files: File[]; command?: ComposerCommand }>()
+  const [unsent, setUnsent] = useState<{ text: string; files: File[]; command?: ComposerCommand } | undefined>(() => initialText ? { text: initialText, files: [] } : undefined)
   useDocumentTitle('New chat')
   // Add a connection is open; and the connections made for the draft, by their line's key.
   const composer = useRef<ComposerHandle>(null)

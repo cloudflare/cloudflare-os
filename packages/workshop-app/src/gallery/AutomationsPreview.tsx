@@ -1,8 +1,11 @@
 import { useState } from 'react'
+import { AUTOMATION_EXAMPLES } from '@/automations/AutomationsView'
 import { AutomationRow } from '@/blocks/AutomationRow'
+import { AutomationsEmpty } from '@/blocks/AutomationsEmpty'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { ListGroup } from '@/blocks/ListGroup'
 import { Button } from '@/components/Button'
+import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
@@ -98,6 +101,28 @@ export const AutomationsPreview = () => {
             <AutomationRow kind="schedule" title="Nightly backup" gadget={{ title: 'Backups', onOpen: () => say('opened Backups') }} enabled={false} />
           </ListGroup>
           <p role="status" className="text-sm text-kumo-subtle">{report}</p>
+        </div>
+      </Section>
+      <Section title="AutomationRow on the Automations page (among every workspace’s, so it says which it is in, under its icon, which opens it)">
+        <div className="w-full max-w-2xl">
+          <ListGroup label="Scheduled">
+            <AutomationRow
+              kind="schedule"
+              title="Morning brief"
+              when="Every weekday at 9:00 AM"
+              standing={{ words: 'next tomorrow at 9:00 AM', tone: 'quiet' }}
+              description="Gather today’s meetings and what changed overnight, and post a short brief."
+              workspace={{ title: 'Q3 Forecast', icon: <WorkspaceIcon label="QF" small />, onOpen: () => say('opened Q3 Forecast') }}
+              gadget={{ title: 'Morning brief', onOpen: () => say('opened Morning brief') }}
+              enabled
+              onEnabledChange={async () => {}}
+            />
+          </ListGroup>
+        </div>
+      </Section>
+      <Section title="AutomationsEmpty (the Automations page with nothing on it: what an automation does, and things to ask for, each starting a chat with it written in the composer)">
+        <div className="w-full max-w-2xl">
+          <AutomationsEmpty examples={AUTOMATION_EXAMPLES} onTry={(prompt) => say(`started a chat with “${prompt}”`)} />
         </div>
       </Section>
       <Section title="ChatHeader with automations (a clock with how many, after the title, once the chat has set something up to run by itself; it opens the chat’s Automations tab)">

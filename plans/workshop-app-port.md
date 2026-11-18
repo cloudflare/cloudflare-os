@@ -9,7 +9,7 @@ scaffold's style, without changing the kernel (`workshop-backend`, `workshop-sha
 What is ported: connection requests and creations set up from their cards, keeping changes,
 slash commands and skills, inline views and file previews, sharing a workspace or a gadget and
 confirming access to one, gadget settings and View code (with editing), templates, skills and
-their collections, automations (read only), agents and their runs, what waits on the user, unread
+their collections, automations (read only, on a workspace's tab and on a page of every workspace's), agents and their runs, what waits on the user, unread
 and notifications, ⌘K search, and the Library's Recent tab. `packages/workshop-app/AGENTS.md`
 says how each works.
 
@@ -29,6 +29,7 @@ Most costly first. "(scaffold)" marks what came with Balint's scaffold rather th
 | What a gadget asks is tied to the gadget by what it reaches | two gadgets on one resource both show an ask that has no chat; none says who asked | `gadgetId` and an initiator on `ActionLogEntry` |
 | What is the user's is kept in one browser: workspace icons (scaffold), Library stars and their order (scaffold), Library's Recent, the skills chosen last, which chats had a gadget beside them (scaffold), the chat a gadget's code edits go through, and the file an export last saved to | none of it follows the user to another browser or device (a workspace's icon chosen in Chrome isn't there in Safari) | a `look` on `WorkspaceMetadata`, a star on outputs as workspaces have, and a small per-user preferences store for the rest |
 | The Workspaces page asks each workspace for its members, a few at a time (scaffold) | a round trip, and a wake, per workspace | the first few members and a count on `listWorkspaces()` |
+| The Automations page opens every workspace the user builds in, three at a time, to list its hooks, then matches them to the account's schedules; a shared workspace whose access isn't confirmed yet is left out | a wake per workspace each time the page opens, the list filling in as they answer; one not confirmed is missing | hooks listed across the user's workspaces (`listHooks` on the user's API, or the hook on each schedule) |
 | Schedules are matched to their hooks by title, description and gadget, a scheduled hook is told from an event's by its `scheduler:` address, and a chat's automations are the hooks its loaded cards show | two alike can be mismatched; a chat's list is only as long as the history loaded | `hookId` on `ManagementSchedule`, `vendorId` and `chatId` on `BoundHookInfo`, and a shared type for the scheduler's management API |
 | Code saved from View code is kept through a chat made for it ("Edits to …", agent off), after reading the head to look for conflicts, and taken back out if it was stale | chats nobody wrote in; the conflict check can race | keeping a gadget's code without a chat, checked against the commit it was edited from |
 | Two things that should each be one step are two: a skill moved to another collection is copied and deleted, and a model binding's model is changed by unbinding and binding again | a failure halfway leaves a copy, an empty collection, or the old connection in the workspace | a move in `gatekeeper-context`; a rebind on `GadgetClient` |

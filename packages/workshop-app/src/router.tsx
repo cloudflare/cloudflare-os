@@ -50,5 +50,7 @@ declare module '@tanstack/react-router' {
      * it, or of the gadget a new chat is started beside, which greets the user by it.
      */
     gadgetTitle?: string
+    /** What a new chat's composer starts with written in it, to be changed before it is sent, such as something to ask for picked from the Automations page. */
+    draft?: string
   }
 }
