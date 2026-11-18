@@ -48,6 +48,7 @@ import { SharingPreview } from '@/gallery/SharingPreview'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
+import { WorkspaceRemovalPreview } from '@/gallery/WorkspaceRemovalPreview'
 
 export const Route = createFileRoute('/gallery')({
   component: () => (
@@ -362,6 +363,7 @@ function Gallery() {
       <AddConnectionPreview />
       <GadgetSettingsPreview />
       <SharingPreview />
+      <WorkspaceRemovalPreview />
       <SettingsPreview />
       <SearchPreview />
       <HeaderPreview />

@@ -556,6 +556,21 @@ const connectionLost: Scenario = {
   ],
 }
 
+const sharedWorkspace: Scenario = {
+  id: 'shared-workspace',
+  title: 'Hiring plan',
+  description:
+    'A workspace Grace Hopper owns and shared with you. Open its page from the crumb: its More menu offers to ' +
+    'remove it from your list, not to delete it, which is hers to do. Removing it goes back to the scenarios, ' +
+    'standing in for home. Any other scenario is your own, and its page offers to delete it.',
+  owner: { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' },
+  history: history([
+    user('What is left to decide on the hiring plan?'),
+    agent({ text: 'Only the platform lead’s start date: Grace suggested January, and the budget allows it from February.' }),
+  ]),
+  script: when('onSend', turn(say(agent({ text: 'Noted. I’ve put it in the plan.' })))),
+}
+
 const steerSlash: Scenario = {
   id: 'steer-slash',
   title: 'Release notes',
@@ -643,6 +658,7 @@ export const SCENARIOS: Scenario[] = [
   sendRefused,
   workspaceRestart,
   connectionLost,
+  sharedWorkspace,
   untrustedContent,
   steerSlash,
   longHistory,

@@ -607,6 +607,18 @@ does to whom (`RemovalDialog`); from a gadget, they lose that gadget alone. The 
 the page it was copied on, its key in the fragment, which `ShareLinkGate` redeems before anything
 is shown. Turned off, whoever came in by it keeps what it gave them.
 
+A workspace goes from the user's list from its More menu (`WorkspaceMoreMenu`), on its page's
+header before New chat and on its row or card on the Workspaces page, which have it beside the
+star; the sidebar's rows have no menu. Its owner deletes it (`deleteSelf`), with everything in it
+and for everyone; someone it was shared with only removes it from their own list
+(`dismissSharedWorkspace`), keeping their access, so that opening it again brings it back. Which
+is offered is whose it is (`workspaces/workspaceRemoval.ts`, plain and tested: a workspace that
+names no `owner` is the viewer's). Either asks first (`RemoveWorkspaceDialog`), deleting saying
+what goes and for how many besides the viewer, as far as its members are known, and that it
+cannot be undone. Once done, `WorkspacesProvider` drops it from the list, which nothing else would
+tell it, and its page goes home. The `shared-workspace` scenario's page offers the removal, and
+any other's the deletion: the crumb opens it there.
+
 A workspace's icon is a folder with its initials until the user gives it a look: one of the shapes
 and colours in `components/workspaceLook.ts`. On its page the icon is a button, as its title is a
 field (`WorkspaceIconPicker`): it opens a menu of the shapes and, under them, the colours

@@ -1,9 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
 import { useApi } from '@/rpc/ApiContext'
 import { WorkspaceLooks } from './WorkspaceLooks'
 import { WorkspaceMemberships } from './WorkspaceMemberships'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
+import { removeWorkspace } from './workspaceRemoval'
 
 /**
  * Loads the user's workspaces when mounted, and again on `refresh()`. The list has no live updates
@@ -76,6 +78,10 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
       throw error
     }
   }
+  const remove = async (id: string, removal: WorkspaceRemoval) => {
+    await removeWorkspace(api, id, removal)
+    setState((current) => (current.status === 'ready' ? { ...current, workspaces: current.workspaces.filter((workspace) => workspace.id !== id) } : current))
+  }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setMuted, memberships, looks }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setMuted, remove, memberships, looks }}>{children}</WorkspacesContext>
 }

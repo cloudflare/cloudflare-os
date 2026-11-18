@@ -4,7 +4,7 @@ import type { WorkspaceLook } from '@/components/workspaceLook'
 import { MemberAvatars, type ListedMember } from './MemberAvatars'
 import { RowAction } from './RowAction'
 import { LIST_ACTION, StarButton } from './StarButton'
-import { WorkspaceMoreMenu } from './WorkspaceMoreMenu'
+import { WorkspaceMoreMenu, type WorkspaceMoreMenuProps } from './WorkspaceMoreMenu'
 
 export type WorkspaceRowProps = {
   workspaceLabel: string
@@ -19,6 +19,8 @@ export type WorkspaceRowProps = {
   onStarredChange: (starred: boolean) => void
   /** The workspace's address, so that it can be opened in another tab. */
   href?: string
+  /** How the viewer may take it out of their list, from its more menu. */
+  removal?: WorkspaceMoreMenuProps['removal']
   onSelect: () => void
 }
 
@@ -29,7 +31,7 @@ export type WorkspaceRowProps = {
  * screen the line has room for less: the time and more are left out, which the workspace's own
  * page has.
  */
-export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, members, starred, onStarredChange, href, onSelect }: WorkspaceRowProps) => (
+export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, members, starred, onStarredChange, href, removal, onSelect }: WorkspaceRowProps) => (
   <div className="group relative flex items-center rounded-2xl pr-1.5 hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5">
     <LinkButton
       href={href}
@@ -46,7 +48,7 @@ export const WorkspaceRow = ({ workspaceLabel, workspaceLook, title, time, membe
       <span className="contents max-md:hidden">
         <RowAction>
           <span className="relative flex">
-            <WorkspaceMoreMenu title={title} href={href} triggerClassName={LIST_ACTION} />
+            <WorkspaceMoreMenu title={title} href={href} removal={removal} triggerClassName={LIST_ACTION} />
           </span>
         </RowAction>
       </span>

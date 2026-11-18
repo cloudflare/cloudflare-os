@@ -1,5 +1,6 @@
 import { createContext, useContext } from 'react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceRemoval } from '@/blocks/WorkspaceMoreMenu'
 import type { WorkspaceLooks } from './WorkspaceLooks'
 import type { WorkspaceMemberships } from './WorkspaceMemberships'
 
@@ -21,6 +22,11 @@ export type WorkspacesContextValue = {
    * undone if the server refuses.
    */
   setMuted: (id: string, muted: boolean) => Promise<void>
+  /**
+   * Deletes a workspace or removes it from the list (see `removeWorkspace`), and drops it from the
+   * list once the server has done it, as neither can be shown at once and undone.
+   */
+  remove: (id: string, removal: WorkspaceRemoval) => Promise<void>
   /** Who has access to each workspace, as far as the workspaces have been asked. */
   memberships: WorkspaceMemberships
   /** How each workspace's icon is drawn, which is this device's to say. */
@@ -52,6 +58,12 @@ export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWor
  * its finished tasks then notify no tab or device. Rejects with why, once it is undone.
  */
 export const useSetWorkspaceMuted = (): WorkspacesContextValue['setMuted'] => useWorkspacesContext().setMuted
+
+/**
+ * Deletes a workspace, as its owner (`deleteSelf`), or removes one shared with the user from their
+ * list (`dismissSharedWorkspace`), dropping it from the list once done. Rejects with why.
+ */
+export const useRemoveWorkspace = (): WorkspacesContextValue['remove'] => useWorkspacesContext().remove
 
 /** What is known of who has access to each workspace, kept from one page to the next (see `useWorkspaceMemberships`). */
 export const useMembershipsStore = (): WorkspaceMemberships => useWorkspacesContext().memberships

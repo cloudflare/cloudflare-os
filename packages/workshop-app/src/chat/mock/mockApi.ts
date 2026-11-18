@@ -1,15 +1,14 @@
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import type { ApiSession } from '@/rpc/ApiContext'
 import { exampleSkillsBackend } from '@/skills/MemorySkillsBackend'
-import { MockOverseer } from './MockOverseer'
+import { MOCK_WORKSPACE_ID, MockOverseer } from './MockOverseer'
 import { AGENT, VIEWER, type Scenario } from './scenario'
 
-/** The one workspace the fake API lists. */
-export const MOCK_WORKSPACE_ID = 'mock'
+export { MOCK_WORKSPACE_ID }
 
 /**
  * A signed-in API for one scenario, to provide through `ApiContext` where the real one would be.
- * Only what a chat needs is implemented; any other call throws, so a screen that starts depending
+ * Only what a chat and its workspace's page need is implemented; any other call throws, so a screen that starts depending
  * on more says so instead of hanging.
  */
 export const createMockApi = (scenario: Scenario): { session: ApiSession; overseer: MockOverseer } => {
@@ -20,12 +19,19 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     created: new Date(0),
     lastActive: new Date(),
     containsRestrictedData: scenario.restricted,
+    owner: scenario.owner,
   }
+  // Removed from the viewer's list, as one shared with them can be; they keep their access.
+  let dismissed = false
   const implemented: Record<string | symbol, unknown> = {
     openWorkspace: () => overseer.open(),
     listModels: async () => [AGENT],
     getPreferredModel: async () => null,
-    listWorkspaces: async () => [workspace],
+    // Until it has deleted itself or been removed from the list.
+    listWorkspaces: async () => (overseer.deleted || dismissed ? [] : [workspace]),
+    dismissSharedWorkspace: async () => {
+      dismissed = true
+    },
     // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.
     listOutputs: async () => ({ outputs: [], catchingUp: false }),
     // The example skills, kept as the Context Library would keep them, for a new chat's composer.

@@ -8,12 +8,14 @@ import type {
   AiChatSubscriber,
   ChatAttachmentHandle,
   ChatAttachmentRef,
+  CollaboratorInfo,
   CommitInfo,
   FileAtCommit,
   PresenceSubscriber,
   SlashCommandRequest,
   TreeNode,
   WorkpiecesSubscriber,
+  WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, UI_CODE, type Handle } from './MockGadget'
@@ -27,6 +29,9 @@ const COLLABORATORS = [
 ] as const
 
 const CHAT_ID = 0
+
+/** The one workspace there is, which the fake API lists. */
+export const MOCK_WORKSPACE_ID = 'mock'
 
 type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream'>
 type ActionEvents = Pick<ActionsSubscriber, 'entry'>
@@ -122,6 +127,9 @@ export class MockOverseer {
   #blobs = new Map<GitOid, Uint8Array>()
   #refusals: string[]
   #sendDelay: number
+  #title: string
+  #owner: Scenario['owner']
+  #restricted: boolean
   #handles = new Set<Handle>()
   // Bumped by each restart, as the server's stream generation is.
   #generation = 1
@@ -141,6 +149,9 @@ export class MockOverseer {
     this.#messages = [...scenario.history]
     this.#refusals = [...(scenario.refusals ?? [])]
     this.#sendDelay = scenario.sendDelay ?? 0
+    this.#title = scenario.title
+    this.#owner = scenario.owner
+    this.#restricted = scenario.restricted === true
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#worktrees = scenario.worktrees ?? {}
@@ -291,6 +302,26 @@ export class MockOverseer {
   subscribeToPresence(subscriber: PresenceSubscriber) {
     subscriber.init([VIEWER, ...COLLABORATORS].map((user) => ({ key: user.id, user, role: 'build' })))
     return lease(() => {})
+  }
+
+  /** The workspace as its page reads it: the viewer's own, unless the scenario names its owner. */
+  async getMetadata(): Promise<WorkspaceMetadata> {
+    return { id: MOCK_WORKSPACE_ID, title: this.#title, owner: this.#owner, role: 'build', containsRestrictedData: this.#restricted }
+  }
+
+  /** Everyone with access but the owner: whoever else is there, each let in by the owner to edit. */
+  async listCollaborators(): Promise<CollaboratorInfo[]> {
+    const owner = this.#owner ?? VIEWER
+    return [VIEWER, ...COLLABORATORS]
+      .filter(({ id }) => id !== owner.id)
+      .map((profile) => ({ profile, addedBy: [{ type: 'user', sharer: owner.id, created: new Date(0) }], access: { role: 'build' } }))
+  }
+
+  /** Set once the workspace has deleted itself, which takes it out of the list. */
+  deleted = false
+
+  async deleteSelf() {
+    this.deleted = true
   }
 
   async listChats(): Promise<AiChatMetadata[]> {

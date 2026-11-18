@@ -3,7 +3,9 @@ import { NotePencilIcon, UserPlusIcon } from '@phosphor-icons/react'
 import type { AsideItem } from '@/aside/asideItems'
 import { AutomationsTab } from '@/automations/AutomationsTab'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
+import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceIconPicker } from '@/blocks/WorkspaceIconPicker'
+import { WorkspaceMoreMenu } from '@/blocks/WorkspaceMoreMenu'
 import { AvatarStack } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
 import { EditableTitle } from '@/components/EditableTitle'
@@ -18,12 +20,14 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
 import { shareStanding } from './sharingRules'
 import { useSharing } from './useSharing'
+import { useWorkspaceRemoval } from './useWorkspaceRemoval'
 import { WorkspaceChatList } from './WorkspaceChatList'
 import { WorkspaceLibraryList } from './WorkspaceLibraryList'
 import { WorkspaceMemberList } from './WorkspaceMemberList'
 import { useRenameWorkspace, useWorkspaces } from './WorkspacesContext'
 import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
+import { removalOf } from './workspaceRemoval'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
 
 /** What a workspace's page shows beneath its title. */
@@ -50,15 +54,18 @@ export type WorkspacePaneProps = {
   onNewChat: () => void
   /** The workspace's address, which inviting people copies and its link lets anyone in to. Left out, nobody is invited from here. */
   link?: string
+  /** Leaves the page once the workspace has been deleted, or removed from the viewer's list. */
+  onRemoved: () => void
 }
 
 /**
  * One workspace: its title, which can be renamed, the way to start a chat in it, who it is shared
- * with and the way to invite more, and, a tab each, its chats, what it has made, what runs in it by
+ * with and the way to invite more, its More menu, which deletes it, or removes it from the list
+ * where it is someone else's, and, a tab each, its chats, what it has made, what runs in it by
  * itself and who has access to it. The chats, the library and what runs load what they list once
  * chosen; who has access is read with the page, for its header.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenItem, itemHref, onNewChat, link }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenItem, itemHref, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -75,6 +82,13 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const people = standing ? workspaceMembers(standing.owner, shared.collaborators).map(({ profile }) => profile) : []
   // Until its own metadata is read, the list's role says whether the viewer could.
   const canInvite = link !== undefined && (standing ? standing.canShare : workspace !== undefined && workspace.role !== 'use')
+
+  // Whether the viewer owns it, from its own metadata once read and the list's until then.
+  const metadata = shared?.metadata ?? workspace
+  const removal = metadata && removalOf(metadata)
+  const removing = useWorkspaceRemoval({ onRemoved })
+  // The first of the header's buttons is pushed to its end, after the crumb.
+  const first = people.length > 1 ? 'members' : canInvite ? 'share' : removal ? 'more' : 'new'
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
@@ -108,13 +122,25 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             </HeaderBubble>
           )}
           {canInvite && (
-            <HeaderBubble className={people.length > 1 ? undefined : 'ms-auto'}>
+            <HeaderBubble className={first === 'share' ? 'ms-auto' : undefined}>
               {narrow
                 ? <Button icon={UserPlusIcon} aria-label="Share" title="Share" onClick={() => setInviting(true)} />
                 : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Share</Button>}
             </HeaderBubble>
           )}
-          <HeaderBubble className={people.length > 1 || canInvite ? undefined : 'ms-auto'}>
+          {removal && (
+            <HeaderBubble className={first === 'more' ? 'ms-auto' : undefined}>
+              <WorkspaceMoreMenu
+                title={title || 'Workspace'}
+                triggerVariant="secondary"
+                removal={{
+                  kind: removal,
+                  onSelect: () => removing.ask({ id: workspaceId, title: title ?? '', removal, others: standing ? people.length - 1 : undefined }),
+                }}
+              />
+            </HeaderBubble>
+          )}
+          <HeaderBubble className={first === 'new' ? 'ms-auto' : undefined}>
             {/* Its icon alone on a narrow screen, which leaves the workspace's title the room. */}
             {narrow
               ? <Button variant="primary" icon={NotePencilIcon} aria-label="New chat" title="New chat" onClick={onNewChat} />
@@ -159,6 +185,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           </Tabs.Panel>
         </Tabs>
       </div>
+      {removing.dialog && <RemoveWorkspaceDialog {...removing.dialog} />}
       {canInvite && (
         <ShareWorkspaceDialog
           workspaceId={workspaceId}

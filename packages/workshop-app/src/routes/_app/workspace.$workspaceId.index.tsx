@@ -51,6 +51,8 @@ function Workspace() {
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open: carriedOpen(open) } })}
       // Its own address, whole, as it is copied to be opened elsewhere.
       link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
+      // Deleted, or out of the viewer's list, it is left for home, as there is nothing here to go back to.
+      onRemoved={() => navigate({ to: '/' })}
     />
   )
 }

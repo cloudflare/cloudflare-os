@@ -17,6 +17,7 @@ import { SplitLayout } from '@/layouts/SplitLayout'
 import { ApiContext } from '@/rpc/ApiContext'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'
 import { ConnectionNoticeContext } from '@/rpc/ConnectionNoticeContext'
+import { WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 
 /** One scripted chat: the real `ChatPane` over a fake backend, so it needs no server. */
@@ -49,7 +50,7 @@ function MockRoute() {
 const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   scenario: Scenario
   onSelectScenario: (id: string) => void
-  /** The list of scenarios stands in for the workspace's page, which the fake backend does not have. */
+  /** The list of scenarios stands in for home, where deleting the workspace, or removing it from the list, goes. */
   onOpenScenarios: () => void
   onRestart: () => void
 }) => {
@@ -144,6 +145,13 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   // The chat's settings, in the chat's place, with nothing beside them.
   const [settings, setSettings] = useState(false)
   const [settingsTab, setSettingsTab] = useState<ChatSettingsTab>('library')
+  // The workspace's page, in the chat's place, which its crumb goes to.
+  const [workspace, setWorkspace] = useState(false)
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('chats')
+  const openWorkspace = () => {
+    setSettings(false)
+    setWorkspace(true)
+  }
   // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
   const [expanded, setExpanded] = useState(false)
   // Made once, so the chat's rows are not rendered again for them.
@@ -185,13 +193,23 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   }
   const page = (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {asPage ? null : settings ? (
+      {asPage ? null : workspace ? (
+        <WorkspacePane
+          workspaceId={CHAT.workspaceId}
+          tab={workspaceTab}
+          onTabChange={setWorkspaceTab}
+          onOpenChat={() => setWorkspace(false)}
+          onOpenItem={(item) => setOpen(item.key)}
+          onNewChat={() => setWorkspace(false)}
+          onRemoved={onOpenScenarios}
+        />
+      ) : settings ? (
         <ChatSettingsPane
           {...CHAT}
           tab={settingsTab}
           onTabChange={setSettingsTab}
           onBack={() => setSettings(false)}
-          onOpenWorkspace={onOpenScenarios}
+          onOpenWorkspace={openWorkspace}
           onOpenItem={(item) => {
             setOpen(item.key)
             setSettings(false)
@@ -200,7 +218,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       ) : (
         <ChatPane
           {...CHAT}
-          onOpenWorkspace={onOpenScenarios}
+          onOpenWorkspace={openWorkspace}
           onOpenSettings={(tab) => {
             setSettingsTab(tab ?? 'library')
             setSettings(true)
@@ -211,7 +229,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           onAlwaysApprove={onAlwaysApprove}
         />
       )}
-      {children}
+      {/* The player is the chat's, and would cover the end of the workspace page's header. */}
+      {!workspace && children}
     </div>
   )
 

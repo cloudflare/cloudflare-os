@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent } from '@gadgets/workshop-shared/api'
+import { createMockApi } from './mockApi'
 import { MockOverseer } from './MockOverseer'
 import { action, agent, connectionRequest, history, turn, user, when, type Scenario } from './scenario'
 
@@ -104,5 +105,19 @@ describe('MockOverseer', () => {
 
     expect(seen.messages).toMatchObject([{ sequence: 0, type: 'connectionRequest', state: 'denied' }])
     await expect(overseer.denyConnectionRequest(request.requestId)).rejects.toThrow('No such pending request.')
+  })
+
+  it('lists the workspace until it deletes itself, or one shared with the viewer is removed from their list', async () => {
+    const own = createMockApi(scenario({}))
+    expect(await own.overseer.getMetadata()).toMatchObject({ owner: undefined })
+    await own.session.api.openWorkspace('mock').deleteSelf()
+    expect(await own.session.api.listWorkspaces()).toEqual([])
+
+    const grace = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
+    const shared = createMockApi(scenario({ owner: grace }))
+    expect(await shared.session.api.listWorkspaces()).toMatchObject([{ owner: grace }])
+    expect((await shared.overseer.listCollaborators()).map(({ profile }) => profile.name)).toEqual(['Ada Lovelace', 'Alan Turing'])
+    await shared.session.api.dismissSharedWorkspace('mock')
+    expect(await shared.session.api.listWorkspaces()).toEqual([])
   })
 })

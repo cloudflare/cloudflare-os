@@ -5,7 +5,7 @@ import type { WorkspaceLook } from '@/components/workspaceLook'
 import { CardAction } from './CardAction'
 import { MemberAvatars, type ListedMember } from './MemberAvatars'
 import { LIST_ACTION, StarButton } from './StarButton'
-import { WorkspaceMoreMenu } from './WorkspaceMoreMenu'
+import { WorkspaceMoreMenu, type WorkspaceMoreMenuProps } from './WorkspaceMoreMenu'
 
 export type WorkspaceCardProps = {
   workspaceLabel: string
@@ -20,6 +20,8 @@ export type WorkspaceCardProps = {
   onStarredChange: (starred: boolean) => void
   /** The workspace's address, so that it can be opened in another tab. */
   href?: string
+  /** How the viewer may take it out of their list, from its more menu. */
+  removal?: WorkspaceMoreMenuProps['removal']
   onSelect: () => void
 }
 
@@ -30,7 +32,7 @@ const HIGHLIGHT = 'group-hover:bg-kumo-contrast/5 group-has-focus-visible:bg-kum
  * at most, then on one line when it was last active and, at its end, who has access to it. Pointed at, more and its star show in its corner; a starred
  * one keeps its star.
  */
-export const WorkspaceCard = ({ workspaceLabel, workspaceLook, title, time, members, starred, onStarredChange, href, onSelect }: WorkspaceCardProps) => (
+export const WorkspaceCard = ({ workspaceLabel, workspaceLook, title, time, members, starred, onStarredChange, href, removal, onSelect }: WorkspaceCardProps) => (
   <div className="group relative flex flex-col rounded-3xl bg-kumo-tint">
     <LinkButton
       href={href}
@@ -51,7 +53,7 @@ export const WorkspaceCard = ({ workspaceLabel, workspaceLook, title, time, memb
     <span className="absolute top-2 right-2 flex">
       {href && (
         <CardAction>
-          <WorkspaceMoreMenu title={title} href={href} triggerClassName={LIST_ACTION} />
+          <WorkspaceMoreMenu title={title} href={href} removal={removal} triggerClassName={LIST_ACTION} />
         </CardAction>
       )}
       <CardAction shown={starred}>

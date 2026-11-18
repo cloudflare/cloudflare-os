@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { FolderIcon } from '@phosphor-icons/react'
 import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { ListToolbar } from '@/blocks/ListToolbar'
+import { RemoveWorkspaceDialog } from '@/blocks/RemoveWorkspaceDialog'
 import { WorkspaceCard } from '@/blocks/WorkspaceCard'
 import { WorkspaceRow } from '@/blocks/WorkspaceRow'
 import { Button } from '@/components/Button'
@@ -21,6 +22,8 @@ import { orderStarred } from './starredOrder'
 import { workspaceLabel } from './workspaceLabel'
 import { useWorkspaceLooks } from './useWorkspaceLooks'
 import { useWorkspaceMemberships } from './useWorkspaceMemberships'
+import { useWorkspaceRemoval } from './useWorkspaceRemoval'
+import { removalOf } from './workspaceRemoval'
 import { workspaceList, workspaceTitle } from './workspaceList'
 
 export type WorkspacesPaneProps = {
@@ -50,6 +53,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   const all = workspaces.status === 'ready' ? workspaces.workspaces : []
   const memberships = useWorkspaceMemberships(all)
   const looks = useWorkspaceLooks()
+  const removing = useWorkspaceRemoval()
   const list = useListView('workspaces', workspaceList(all, memberships, user.id))
   // Every starred one's place is kept, whichever of them the search and the filters leave.
   const starredIds = orderStarred(all.filter(({ pinned }) => pinned), starOrder).map(({ id }) => id)
@@ -90,6 +94,13 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
     starred: workspace.pinned === true,
     onStarredChange: (on: boolean) => star(workspace.id, on),
     href: workspaceHref?.(workspace.id),
+    removal: {
+      kind: removalOf(workspace),
+      onSelect: () => {
+        const members = memberships.get(workspace.id)
+        removing.ask({ id: workspace.id, title: workspace.title, removal: removalOf(workspace), others: members && members.length - 1 })
+      },
+    },
     onSelect: () => onOpenWorkspace(workspace.id),
   })
 
@@ -157,6 +168,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
           </div>
         )}
       </div>
+      {removing.dialog && <RemoveWorkspaceDialog {...removing.dialog} />}
     </PageLayout>
   )
 }

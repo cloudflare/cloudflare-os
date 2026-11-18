@@ -286,6 +286,8 @@ export type Scenario = {
   refusals?: string[]
   /** How long a message takes to be sent, in milliseconds, so that one on its way can be seen. */
   sendDelay?: number
+  /** Whose the workspace is, where it is not the viewer's own but shared with them to edit. */
+  owner?: AiChatAuthorInfo
 }
 
 const CHUNK_DELAY = 45
