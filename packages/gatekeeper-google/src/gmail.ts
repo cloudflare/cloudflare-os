@@ -67,8 +67,8 @@ import {
 } from "./gmail-hooks";
 import {gmailHooksConfigured, type PushHooksEnv} from "./pubsub-push";
 import {
-  GMAIL_PDF, pdfConverter, releasedAtEnd, TranscriptionRefusal, type PdfConverter, type PdfRangeReader,
-  type PdfRead,
+  GMAIL_PDF, pdfConverter, pdfUpload, releasedAtEnd, TranscriptionRefusal, type PdfConverter,
+  type PdfRangeReader, type PdfRead,
 } from "./drive-pdf";
 import {forwardRangeReader, type PdfOpener} from "./pdf-forward-reader";
 import TYPES_CODE from "./types.txt";
@@ -3999,35 +3999,26 @@ class GmailAttachmentStub extends ApprovalQueueRpcTarget implements GmailAttachm
     // The checks after the conversion must cover everything the text is converted from, and
     // Gmail's bytes are known to be the snapshot's only at their end, so a conversion that
     // answers before they have ended is refused.
-    let downloaded = false;
+    const upload = pdfUpload(download, () => {
+      // Only a read that is outstanding is timed: the conversion takes the bytes at the pace of
+      // its own upload.
+      let clock!: ReturnType<typeof setTimeout>;
+      const stalled = new Promise<never>((_, reject) => {
+        clock = setTimeout(() => reject(new Error(ATTACHMENT_STALLED)), PDF_FIRST_READ.idleMs);
+      });
+      return Promise.race([download.read(), stalled]).finally(() => clearTimeout(clock));
+    });
     let converted: PdfRead | undefined;
     try {
       // A refusal to transcribe says what the attachment's content is like, so it discloses
       // something too and has to be authorized: it rides back as a value, and is thrown only
       // once the read has been reported.
-      const outcome = await convert(new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          // Only a read that is outstanding is timed: the conversion takes the bytes at the pace
-          // of its own upload.
-          let clock!: ReturnType<typeof setTimeout>;
-          const stalled = new Promise<never>((_, reject) => {
-            clock = setTimeout(() => reject(new Error(ATTACHMENT_STALLED)), PDF_FIRST_READ.idleMs);
-          });
-          const chunk = await Promise.race([download.read(), stalled]).finally(() => clearTimeout(clock));
-          if (chunk.done) {
-            downloaded = true;
-            controller.close();
-          } else {
-            controller.enqueue(chunk.value);
-          }
-        },
-        cancel: reason => download.cancel(reason),
-      }, {highWaterMark: 0}), readRange).catch((error: unknown) => {
+      const outcome = await convert(upload.pdf, readRange).catch((error: unknown) => {
         if (error instanceof TranscriptionRefusal) return {refusal: error};
         throw error;
       });
       if (!("refusal" in outcome)) converted = outcome;
-      if (!downloaded) throw new Error(GMAIL_PDF.conversionFailed);
+      if (!upload.whole()) throw new Error(GMAIL_PDF.conversionFailed);
       this.#validate?.();
       await this.#ctx.approvalQueue.authorizeObservation({
         title: "Read Gmail attachment text",
