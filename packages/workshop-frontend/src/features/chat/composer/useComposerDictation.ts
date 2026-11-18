@@ -16,13 +16,12 @@ type Recognition = EventTarget & {
 };
 
 type LanguagePackOptions = { langs: string[]; processLocally: true };
+type LanguagePackAvailability = "available" | "downloadable" | "downloading" | "unavailable";
 type RecognitionConstructor = {
   new (): Recognition;
-  available?: (options: LanguagePackOptions) => Promise<"available" | "downloadable" | "downloading" | "unavailable">;
+  available?: (options: LanguagePackOptions) => Promise<LanguagePackAvailability>;
   install?: (options: LanguagePackOptions) => Promise<boolean>;
 };
-
-const dictationLanguage = "en-US";
 
 const getLocalRecognitionConstructor = () => {
   if (typeof window === "undefined") return;
@@ -36,9 +35,11 @@ const getLocalRecognitionConstructor = () => {
   );
 };
 
+// The browser's language first, then English (US) for locales with no on-device language pack.
+const candidateLanguages = () => [...new Set([navigator.language, "en-US"].filter(Boolean))];
+
 const recognitionUnavailable = "Voice typing is unavailable. You can still type your message.";
 const downloadFailed = "Couldn’t download the voice typing language pack. Try again later.";
-const downloadTimeoutMs = 3 * 60 * 1000;
 
 const recognitionError = (error: string) => {
   switch (error) {
@@ -55,14 +56,31 @@ const recognitionError = (error: string) => {
   }
 };
 
+/** Joins dictated words onto `text`, separated by a space unless `text` already ends in one. */
+export const appendDictatedText = (text: string, dictated: string) =>
+  text + (dictated && text && !/\s$/.test(text) ? " " : "") + dictated;
+
 export type DictationStatus = "idle" | "starting" | "downloading" | "listening" | "stopping";
 
+type Session = {
+  recognition: Recognition;
+  listeners: AbortController;
+  started: boolean;
+  transcript: string;
+  interim: string;
+};
+
+/**
+ * Holds what the user says outside the draft until dictation ends, then hands the words shown to
+ * `onTranscript` in one piece, or drops them when the user cancels or the draft changes identity.
+ */
 export const useComposerDictation = ({
   disabled,
   chatKey,
   draftStorageKey,
   seedNonce,
   onTranscript,
+  onReady,
   onError,
 }: {
   disabled: boolean;
@@ -70,54 +88,61 @@ export const useComposerDictation = ({
   draftStorageKey: string | undefined;
   seedNonce: number | undefined;
   onTranscript: (text: string) => void;
+  onReady: () => void;
   onError: (message: string) => void;
 }) => {
   const [status, setStatus] = useState<DictationStatus>("idle");
-  const [interimText, setInterimText] = useState("");
-  const active = useRef<{
-    recognition: Recognition;
-    listeners: AbortController;
-    startRequested: boolean;
-  } | null>(null);
+  const [text, setText] = useState("");
+  const active = useRef<Session | null>(null);
   const RecognitionConstructor = getLocalRecognitionConstructor();
 
-  const release = () => {
+  // Detached listeners can't deliver a late transcript to a draft that has moved on.
+  const detach = () => {
     const session = active.current;
+    if (!session) return;
     active.current = null;
-    session?.listeners.abort();
+    session.listeners.abort();
+    setStatus("idle");
+    setText("");
     return session;
   };
 
-  const abort = () => {
-    const session = release();
-    if (session?.startRequested) session.recognition.abort();
+  // abort(), unlike stop(), keeps the browser from finalizing words the caller already has.
+  const discard = () => {
+    const session = detach();
+    if (session?.started) session.recognition.abort();
+    return session;
   };
 
-  const reset = () => {
-    setStatus("idle");
-    setInterimText("");
+  const keep = (session: Session | undefined) => {
+    const words = session && appendDictatedText(session.transcript, session.interim);
+    if (words) onTranscript(words);
   };
 
-  const finish = () => {
-    release();
-    reset();
+  /** Ends dictation, keeping the words it shows. */
+  const finish = () => keep(discard());
+
+  /** Ends dictation, dropping the words it shows. */
+  const cancel = () => {
+    discard();
   };
 
-  // Invalidate browser callbacks before a new chat or draft can receive the old transcript.
+  // Layout effects, so a new chat or draft never renders with the old one's words.
+  useLayoutEffect(() => cancel, [chatKey, draftStorageKey, seedNonce]);
+  // Whatever disables dictation (a send, a resource flow, a blocked composer) keeps the words shown.
   useLayoutEffect(() => {
-    reset();
-    return abort;
-  }, [disabled, chatKey, draftStorageKey, seedNonce]);
+    if (disabled) finish();
+  }, [disabled]);
 
   const toggle = async () => {
     if (!RecognitionConstructor || disabled || status === "stopping") return;
     const current = active.current;
     if (current) {
-      if (!current.startRequested) {
-        finish();
+      if (!current.started) {
+        discard();
         return;
       }
-      // stop() lets the browser return its last words; abort() would discard them.
+      // stop() lets the browser return its last words, which the end event then keeps.
       setStatus("stopping");
       current.recognition.stop();
       return;
@@ -131,15 +156,15 @@ export const useComposerDictation = ({
         onError(recognitionUnavailable);
         return;
       }
-    } catch {
+    } catch (error) {
+      console.warn("Couldn't create a local speech recognizer:", error);
       onError(recognitionUnavailable);
       return;
     }
     const listeners = new AbortController();
     const { signal } = listeners;
-    const session = { recognition, listeners, startRequested: false };
+    const session: Session = { recognition, listeners, started: false, transcript: "", interim: "" };
     active.current = session;
-    recognition.lang = dictationLanguage;
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.addEventListener("start", () => {
@@ -153,80 +178,80 @@ export const useComposerDictation = ({
       // preview because the browser can revise or remove any interim word.
       for (let index = 0; index < results.length; index++) {
         const result = results[index];
-        const text = result[0].transcript.trim();
-        if (!text) continue;
-        if (!result.isFinal) interim.push(text);
-        else if (index >= resultIndex) finalized.push(text);
+        const words = result[0].transcript.trim();
+        if (!words) continue;
+        if (!result.isFinal) interim.push(words);
+        else if (index >= resultIndex) finalized.push(words);
       }
-      setInterimText(interim.join(" "));
-      if (finalized.length) onTranscript(finalized.join(" "));
+      session.transcript = appendDictatedText(session.transcript, finalized.join(" "));
+      session.interim = interim.join(" ");
+      setText(appendDictatedText(session.transcript, session.interim));
     }, { signal });
-    recognition.addEventListener("end", finish, { signal });
+    recognition.addEventListener("end", () => keep(detach()), { signal });
     recognition.addEventListener("error", (event) => {
       const { error } = event as Event & { error: string };
-      finish();
+      keep(detach());
       const message = recognitionError(error);
       if (message) onError(message);
     }, { signal });
 
     setStatus("starting");
+    const languages = candidateLanguages();
+    recognition.lang = languages[0];
     if (RecognitionConstructor.available) {
-      const options: LanguagePackOptions = { langs: [recognition.lang], processLocally: true };
       let setupError = recognitionUnavailable;
       try {
-        const availability = await RecognitionConstructor.available(options);
-        if (signal.aborted) return;
+        let availability: LanguagePackAvailability = "unavailable";
+        for (const lang of languages) {
+          availability = await RecognitionConstructor.available({ langs: [lang], processLocally: true });
+          if (signal.aborted) return;
+          recognition.lang = lang;
+          if (availability !== "unavailable") break;
+        }
         if (availability === "unavailable") {
-          finish();
-          onError("Voice typing isn’t available for English (US) in this browser.");
+          discard();
+          onError("Voice typing isn’t available for your language in this browser.");
           return;
         }
         if (availability !== "available") {
           setupError = downloadFailed;
           setStatus("downloading");
-          // The browser owns the download. Timing out invalidates this session, not the download.
-          const timeout = setTimeout(() => {
-            finish();
-            onError("The voice typing download is taking longer than expected. Try again in a moment.");
-          }, downloadTimeoutMs);
-          const clearDownloadTimeout = () => clearTimeout(timeout);
-          signal.addEventListener("abort", clearDownloadTimeout, { once: true });
-          let installed: boolean | undefined;
-          try {
-            installed = await RecognitionConstructor.install?.(options);
-          } finally {
-            clearDownloadTimeout();
-            signal.removeEventListener("abort", clearDownloadTimeout);
-          }
+          // The mic stays off until the user asks again, however long the browser's download takes.
+          const installed = await RecognitionConstructor.install?.(
+            { langs: [recognition.lang], processLocally: true },
+          );
           if (signal.aborted) return;
-          if (!installed) {
-            finish();
-            onError(downloadFailed);
-            return;
-          }
+          discard();
+          if (installed) onReady();
+          else onError(downloadFailed);
+          return;
         }
-      } catch {
+      } catch (error) {
         if (signal.aborted) return;
-        finish();
+        console.warn("Couldn't prepare on-device speech recognition:", error);
+        discard();
         onError(setupError);
         return;
       }
     }
 
-    setStatus("starting");
     try {
-      session.startRequested = true;
       recognition.start();
-    } catch {
-      finish();
-      onError("Couldn’t start voice typing. Check your browser’s microphone permissions.");
+      session.started = true;
+    } catch (error) {
+      console.warn("Couldn't start speech recognition:", error);
+      discard();
+      onError("Couldn’t start voice typing. Try again.");
     }
   };
 
-  const cancel = () => {
-    abort();
-    reset();
+  return {
+    supported: Boolean(RecognitionConstructor),
+    status,
+    /** The words dictation shows but the draft doesn't hold yet. */
+    text,
+    toggle,
+    finish,
+    cancel,
   };
-
-  return { supported: Boolean(RecognitionConstructor), status, interimText, toggle, cancel };
 };

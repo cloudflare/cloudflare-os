@@ -6,14 +6,15 @@ const announcements: Record<DictationStatus, string> = {
   idle: "",
   starting: "Starting voice typing…",
   downloading: "Downloading the voice typing language pack…",
-  listening: "Listening…",
+  listening: "Listening… Press Escape to discard what you said.",
   stopping: "Finishing voice typing…",
 };
 
-export const ComposerDictationButton = ({ status, disabled, onToggle }: {
+export const ComposerDictationButton = ({ status, disabled, onToggle, onCancel }: {
   status: DictationStatus;
   disabled: boolean;
   onToggle: () => void;
+  onCancel: () => void;
 }) => {
   const listening = status === "listening";
   const preparing = status === "starting" || status === "downloading";
@@ -44,6 +45,13 @@ export const ComposerDictationButton = ({ status, disabled, onToggle }: {
           />
         )}
         onClick={onToggle}
+        onKeyDown={(e) => {
+          // Clicking the mic leaves focus here, so Escape discards from the button as well as from
+          // the textarea.
+          if (e.key !== "Escape" || status === "idle") return;
+          e.preventDefault();
+          onCancel();
+        }}
       >
         {listening && (
           <span

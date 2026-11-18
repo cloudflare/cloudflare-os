@@ -235,11 +235,12 @@ export const resolveComposerSlashCommand = (
   };
 };
 
-const findTextEdit = (
-  oldText: string,
+export const applyComposerTextEdit = (
+  document: ComposerDocument,
   newText: string,
   editCursorPosition?: number,
-) => {
+): ComposerTextEditTransition => {
+  const oldText = document.text;
   let editStart = 0;
   while (editStart < oldText.length && editStart < newText.length &&
       oldText[editStart] === newText[editStart]) {
@@ -267,28 +268,6 @@ const findTextEdit = (
     }
   }
 
-  return { editStart, oldEnd, newEnd };
-};
-
-/** Applies a manual edit to the confirmed draft without committing the temporary dictation suffix. */
-export const editWithDictationPreview = (
-  draft: string,
-  displayedText: string,
-  editedText: string,
-  cursor: number,
-) => {
-  const { editStart, oldEnd, newEnd } = findTextEdit(displayedText, editedText, cursor);
-  const start = Math.min(editStart, draft.length);
-  const inserted = editedText.slice(editStart, newEnd);
-  return { text: draft.slice(0, start) + inserted + draft.slice(oldEnd), caret: start + inserted.length };
-};
-
-export const applyComposerTextEdit = (
-  document: ComposerDocument,
-  newText: string,
-  editCursorPosition?: number,
-): ComposerTextEditTransition => {
-  const { editStart, oldEnd, newEnd } = findTextEdit(document.text, newText, editCursorPosition);
   const isPureInsertion = oldEnd === editStart;
   if (isPureInsertion && document.capsules.some((capsule) =>
       editStart > capsule.start && editStart < capsule.start + capsule.length)) {

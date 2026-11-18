@@ -64,8 +64,9 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   value: string;
   tokens: readonly MirrorToken[];
   disabled: boolean;
-  interimStart?: number;
-}>(({value, tokens, disabled, interimStart}, ref) => {
+  /** Where dictated words the draft doesn't hold yet begin; they run to the end of `value`. */
+  dictationStart?: number;
+}>(({value, tokens, disabled, dictationStart}, ref) => {
   const [hoveredToken, setHoveredToken] = useState<number | null>(null);
   const [tooltipToken, setTooltipToken] = useState<number | null>(null);
   const tooltipTokenRef = useRef<number | null>(null);
@@ -193,7 +194,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   }, []);
 
   const boundaries = new Set([0, value.length]);
-  if (interimStart !== undefined) boundaries.add(interimStart);
+  if (dictationStart !== undefined) boundaries.add(dictationStart);
   for (const token of tokens) {
     boundaries.add(token.start);
     boundaries.add(token.start + token.length);
@@ -214,7 +215,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
       segments.push(
         <span
           key={start}
-          className={interimStart !== undefined && start >= interimStart ? "text-kumo-subtle" : undefined}
+          className={dictationStart !== undefined && start >= dictationStart ? "text-kumo-subtle" : undefined}
           data-text-start={start}
           data-text-end={end}
         >
