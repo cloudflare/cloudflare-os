@@ -201,6 +201,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
         <ChatPane
           {...CHAT}
           onOpenWorkspace={onOpenScenarios}
+          // The list of scenarios stands in for the workspace's page here too.
+          onDeleted={onOpenScenarios}
           onOpenSettings={(tab) => {
             setSettingsTab(tab ?? 'library')
             setSettings(true)

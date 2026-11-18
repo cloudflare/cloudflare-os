@@ -1461,4 +1461,41 @@ describe('ChatSession', () => {
       await vi.waitFor(() => expect(ready(session).items).toHaveLength(1))
     })
   })
+
+  describe('deleted', () => {
+    it('says so once the workspace says the chat was deleted, and nothing after', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi')) })
+      const session = await started(fake)
+
+      // Another of the workspace's chats going changes nothing here.
+      fake.server().deleted(1)
+      expect(session.getSnapshot().status).toBe('ready')
+
+      fake.server().deleted(0)
+      expect(session.getSnapshot()).toEqual({ status: 'deleted' })
+      fake.server().message(agentMessage(1, 'too late'))
+      fake.server().metadata(chat(0, 'Renamed', 2))
+      expect(session.getSnapshot()).toEqual({ status: 'deleted' })
+    })
+
+    it('is not connected to again once it is gone', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = await started(fake)
+      fake.server().deleted(0)
+
+      fake.breaks()
+      session.reconnect()
+      await flush()
+
+      expect(fake.subscribeToChat).toHaveBeenCalledOnce()
+      expect(session.getSnapshot()).toEqual({ status: 'deleted' })
+    })
+
+    it('says whether its notifications wait for the viewer to take part, from its metadata', async () => {
+      const fake = fakeOverseer(Promise.resolve([{ ...chat(0, 'Chat', 1), notificationsRequireParticipation: true }]))
+      const session = await started(fake)
+
+      expect(ready(session).notificationsRequireParticipation).toBe(true)
+    })
+  })
 })

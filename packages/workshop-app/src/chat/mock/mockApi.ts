@@ -23,6 +23,9 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
   }
   const implemented: Record<string | symbol, unknown> = {
     openWorkspace: () => overseer.open(),
+    // The viewer's notifications for the one chat, which its header's more changes.
+    subscribeToUnreadState: (_scope: unknown, subscriber: Parameters<MockOverseer['subscribeToReadState']>[1]) =>
+      overseer.subscribeToReadState(MOCK_WORKSPACE_ID, subscriber),
     listModels: async () => [AGENT],
     getPreferredModel: async () => null,
     listWorkspaces: async () => [workspace],

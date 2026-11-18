@@ -216,6 +216,19 @@ that opens in place with a field to find one by. The menu is a `DropdownMenu` th
 workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
 to the page.
 
+A chat's header ends in more (`ChatMoreMenu`), and so does its row in the workspace's Chats tab,
+which slides it out when pointed at, for whoever may build in the workspace: someone who can only
+use it has no chats of it. It turns the chat's notifications on or mutes them for the viewer, as
+the old app's menu did (`chat/ChatNotifications.ts`, plain and tested): what the workspace says of
+each chat comes from the viewer's read state scoped to it (`subscribeToUnreadState()`), and a chat
+it says nothing of goes by the default, which is off only in one that waits for the viewer to take
+part (`notificationsRequireParticipation`). A change shows at once and is put back if refused. It
+also deletes the chat, asked first in a `DeleteChatDialog`, as the question cannot grow out of a
+menu's item as a `ConfirmMenu`'s does. A deleted chat leaves its row at once; one that is open
+says so (`ChatSession`'s `deleted`, whoever deleted it), and the page goes to its workspace in
+its place in the history. The list is read once, so a chat someone else deletes stays in it until
+it is read again.
+
 ## The Workspaces page
 
 `/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the

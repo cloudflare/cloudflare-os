@@ -34,6 +34,12 @@ export type ChatSnapshot =
       /** Undefined until the chat's metadata arrives, which can be after its messages. */
       title: string | undefined
       /**
+       * Its notifications are off for whoever has not taken part in it yet, as for a chat an
+       * automation started (`AiChatMetadata.notificationsRequireParticipation`). False until the
+       * metadata arrives.
+       */
+      notificationsRequireParticipation: boolean
+      /**
        * The conversation as rows, without the open turn's artefacts (`pinned`): the committed
        * messages, then the messages sent to the running agent that it has not read yet. The
        * array is unchanged while only streaming text moves.
@@ -75,6 +81,8 @@ export type ChatSnapshot =
       historyError: string | undefined
     }
   | { status: 'failed'; message: string }
+  /** The chat was deleted while it was open, by the viewer or by anyone else in the workspace. */
+  | { status: 'deleted' }
 
 type Calls =
   | 'listChats'
@@ -165,6 +173,7 @@ const liveEntry = (call: LiveCall, reasoning: string | undefined): ToolEntry => 
 })
 
 const LOADING: ChatSnapshot = { status: 'loading' }
+const DELETED: ChatSnapshot = { status: 'deleted' }
 const HISTORY_PAGE_SIZE = 50
 /** How many earlier pages are fetched in search of the message a reply quotes. */
 const QUOTE_SEARCH_PAGES = 20
@@ -210,6 +219,10 @@ export class ChatSession {
   #early: Array<() => void> = []
 
   #title: string | undefined
+  #requiresParticipation = false
+  // Set once the workspace says the chat was deleted: nothing it does after that is shown, and it
+  // is not connected to again.
+  #deleted = false
   #agentActive = false
   // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
   #liveMetadata = false
@@ -291,7 +304,7 @@ export class ChatSession {
    * place, so a reader keeps their place. Nothing, for a session that is not started.
    */
   reconnect() {
-    if (!this.#started) return
+    if (!this.#started || this.#deleted) return
     this.#retryDelay = 0
     this.#reconnect(0)
   }
@@ -323,7 +336,7 @@ export class ChatSession {
    * stays as it is until it has been read again; one that is not says why it could not be.
    */
   #lost(run: number, error: unknown) {
-    if (run !== this.#run) return
+    if (run !== this.#run || this.#deleted) return
     // What is shown, or that it is loading, stays until the connection is back.
     if (this.options.connection?.down) return
     if (this.#snapshot.status !== 'ready') return this.#fail(messageOf(error))
@@ -619,6 +632,8 @@ export class ChatSession {
     this.#loaded = false
     this.#early = []
     this.#title = undefined
+    this.#requiresParticipation = false
+    this.#deleted = false
     this.#agentActive = false
     this.#liveMetadata = false
     this.#messages = new Map()
@@ -648,16 +663,19 @@ export class ChatSession {
   }
 
   #fail(message: string) {
+    if (this.#deleted) return
     this.#failure = message
     this.#publish({ status: 'failed', message })
   }
 
   #publishReady() {
+    if (this.#deleted) return this.#publish(DELETED)
     if (this.#failure !== undefined) return this.#publish({ status: 'failed', message: this.#failure })
     const working = this.#agentActive || this.#streaming !== ''
     this.#publish({
       status: 'ready',
       title: this.#title,
+      notificationsRequireParticipation: this.#requiresParticipation,
       items: this.#feed.items,
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
@@ -751,7 +769,13 @@ export class ChatSession {
       metadata: (chat) => live(() => this.#applyMetadata(run, chat)),
       message: (message) => live(() => this.#applyMessage(message)),
       stream: (chatId, event) => live(() => this.#applyStream(chatId, event)),
-      deleted: () => {},
+      // Not held for the history, which is beside the point once the chat is gone.
+      deleted: (chatId) => {
+        if (run !== this.#run || chatId !== this.chatId) return
+        this.#deleted = true
+        clearTimeout(this.#keepTimer)
+        this.#publish(DELETED)
+      },
     }
   }
 
@@ -877,6 +901,7 @@ export class ChatSession {
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    this.#requiresParticipation = chat.notificationsRequireParticipation === true
     this.#agentActive = chat.activeAgent !== undefined
     this.#compactedTo = chat.compactedTo
     const { viewerId } = this.options

@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { hooksShownIn } from '@/automations/automations'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import { DeleteChatDialog } from '@/blocks/DeleteChatDialog'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
@@ -18,6 +19,7 @@ import { messageOf } from '@/settings/useAttempt'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { notificationChoices, notificationsOf } from './ChatNotifications'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
@@ -28,7 +30,9 @@ import { slashRequestFor, missingCommand } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { withCapsules } from './capsules'
 import { useLinkConnections } from './useLinkConnections'
+import { useChatNotifications } from './useChatNotifications'
 import { useChatSession } from './useChatSession'
+import { useDeleteChat } from './useDeleteChat'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 
 export type ChatPaneProps = {
@@ -55,6 +59,11 @@ export type ChatPaneProps = {
    * it is approved as any other, which the workspace refuses. Rejects with why it was not made.
    */
   onApproveCreation?: (action: ActionItem & { creation: { gatekeeperId: number } }) => Promise<void>
+  /**
+   * The chat was deleted, here or by anyone else in the workspace: go somewhere else, in place of
+   * it in the history, so that going back does not come back to it.
+   */
+  onDeleted: () => void
 }
 
 const LIVE_WORK = 'live:work'
@@ -64,7 +73,7 @@ const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
   items.find((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)?.title
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -101,6 +110,23 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Making a connection in the workspace is building in it, which those who only use it cannot.
   const builds = workspace !== undefined && workspace.role !== 'use'
   const pasteLinks = useLinkConnections(builds ? workspaceId : undefined, composer, added)
+  // Its notifications and deleting it are for whoever builds there too: someone who can only use
+  // the workspace has no chats of it.
+  const notifications = useChatNotifications(workspaceId, builds)
+  const deleteChat = useDeleteChat(workspaceId)
+  const [deleting, setDeleting] = useState(false)
+  // Left once, whether the workspace says it was deleted first or the call returns first.
+  const left = useRef(false)
+  const leave = () => {
+    if (left.current) return
+    left.current = true
+    onDeleted()
+  }
+  const gone = chat.status === 'deleted'
+  // The workspace's word, which is also how a chat deleted by someone else is left.
+  useEffect(() => {
+    if (gone) leave()
+  })
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
@@ -206,6 +232,17 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           title={title}
           onOpenSettings={onOpenSettings && (() => onOpenSettings())}
           automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}
+          more={builds && chat.status === 'ready' ? {
+            notifications: {
+              choices: notificationChoices(notificationsOf(notifications.rows.get(chatId), chat.notificationsRequireParticipation)),
+              onChange: (enabled) => {
+                setNotice(undefined)
+                if (connection?.blocked()) return
+                notifications.setEnabled(chatId, enabled).catch((error: unknown) => setNotice(`Couldn’t change the chat’s notifications: ${messageOf(error)}`))
+              },
+            },
+            onDelete: () => setDeleting(true),
+          } : undefined}
         />
       )}
       composer={(
@@ -289,13 +326,25 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         <MessageList messages={[]}>
           {chat.status === 'failed'
             ? <MessageBubble role="error">{chat.message}</MessageBubble>
-            : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
+            : gone
+              ? <span role="status" className="text-sm text-kumo-subtle">This chat was deleted.</span>
+              : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
       {/* Only while it is open, as what it lists is read afresh for it. */}
       {adding && (
         <AddConnection workspaceId={workspaceId} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />
       )}
+      <DeleteChatDialog
+        open={deleting && !gone}
+        onOpenChange={setDeleting}
+        title={title || 'Untitled chat'}
+        onConfirm={async () => {
+          if (connection?.blocked()) return
+          await deleteChat(chatId)
+          leave()
+        }}
+      />
     </ChatLayout>
   )
 }
