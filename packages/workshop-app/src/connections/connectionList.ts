@@ -107,6 +107,9 @@ export const missingAccess = (connection: Connection & { kind: 'account' }): Con
 export const isGranted = (granted: readonly string[] | undefined, urlPattern: string) =>
   granted === undefined || granted.includes(urlPattern)
 
+/** Whether a kind is offered to connect one that exists (`SupportedResource.connectable`), rather than only made. */
+export const isConnectable = (resource: SupportedResource) => resource.connectable !== false
+
 // The kind a kind of resource is shown with: itself, unless it is shown with another.
 const leadOf = (resource: SupportedResource) => resource.groupedWith ?? resource.urlPattern
 
@@ -119,7 +122,7 @@ export const groupedKinds = (resources: readonly SupportedResource[], urlPattern
   const resource = resources.find((candidate) => candidate.urlPattern === urlPattern)
   if (!resource) return [urlPattern]
   const lead = leadOf(resource)
-  return resources.filter((candidate) => leadOf(candidate) === lead).map((candidate) => candidate.urlPattern)
+  return resources.filter((candidate) => leadOf(candidate) === lead && (candidate === resource || isConnectable(candidate))).map((candidate) => candidate.urlPattern)
 }
 
 /**
@@ -130,13 +133,13 @@ export const newAccountOf = (accounts: readonly ConnectedAccount[], vendorId: st
   accounts.find((account) => account.vendorId === vendorId && !before.has(account.id))
 
 /**
- * A service's kinds of resource a group each, as it shows them (`SupportedResource.groupedWith`):
+ * A service's kinds of resource that can be connected, a group each, as it shows them (`SupportedResource.groupedWith`):
  * Google Drive, with a folder, a file and a Doc in it, which one form chooses among. In the order
  * of each group's first kind, each led by the kind it is named after.
  */
 export const resourceGroups = (resources: readonly SupportedResource[]) => {
   const groups = new Map<string, SupportedResource[]>()
-  for (const resource of resources) {
+  for (const resource of resources.filter(isConnectable)) {
     const members = groups.get(leadOf(resource))
     if (members) members.push(resource)
     else groups.set(leadOf(resource), [resource])
@@ -145,9 +148,11 @@ export const resourceGroups = (resources: readonly SupportedResource[]) => {
 }
 
 /** The kind among `resources` that `url` is: one of its own before any web page (`https://*`). */
-export const resourceOfUrl = (resources: readonly SupportedResource[], url: string) =>
-  resources.find(({ urlPattern }) => urlPattern !== 'https://*' && matchesResourceUrlPattern(urlPattern, url))
-  ?? resources.find(({ urlPattern }) => urlPattern === 'https://*')
+export const resourceOfUrl = (all: readonly SupportedResource[], url: string) => {
+  const resources = all.filter(isConnectable)
+  return resources.find(({ urlPattern }) => urlPattern !== 'https://*' && matchesResourceUrlPattern(urlPattern, url))
+    ?? resources.find(({ urlPattern }) => urlPattern === 'https://*')
+}
 
 /**
  * The account to create a resource of `typeUrlPattern` in without asking: the user's only one on

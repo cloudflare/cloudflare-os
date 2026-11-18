@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { narrowList } from '@/components/listView'
-import { accessChoices, accountLabel, connectionList, connectionsOf, creationAccountOf, groupedKinds, isGranted, missingAccess, newAccountOf, unreachableServices, type ConnectedAccount, type Connection } from './connectionList'
+import { accessChoices, accountLabel, connectionList, connectionsOf, creationAccountOf, groupedKinds, isGranted, resourceGroups, resourceOfUrl, missingAccess, newAccountOf, unreachableServices, type ConnectedAccount, type Connection } from './connectionList'
 
 const resource = (title: string, grantable = false): SupportedResource => ({ urlPattern: `https://${title.toLowerCase()}.example/*`, title, description: '', grantable })
 const vendor = (id: string, displayName: string, rest: Partial<GatekeeperVendorInfo['description']> = {}, supportedResources: SupportedResource[] = []): GatekeeperVendorInfo => ({
@@ -143,6 +143,13 @@ describe('setting up a connection', () => {
     expect(groupedKinds(resources, 'drive/doc')).toEqual(['drive', 'drive/file', 'drive/doc'])
     expect(groupedKinds(resources, 'calendar')).toEqual(['calendar'])
     expect(groupedKinds(resources, 'unknown')).toEqual(['unknown'])
+  })
+
+  it('offers to connect only kinds that can be, not those that can only be made', () => {
+    const resources = [kind('drive'), kind('drive/new', { groupedWith: 'drive', connectable: false }), kind('https://*'), kind('slides', { connectable: false })]
+    expect(groupedKinds(resources, 'drive')).toEqual(['drive'])
+    expect(resourceGroups(resources).map(({ lead }) => lead.urlPattern)).toEqual(['drive', 'https://*'])
+    expect(resourceOfUrl([kind('https://docs.example/*', { connectable: false }), kind('https://*')], 'https://docs.example/a')?.urlPattern).toBe('https://*')
   })
 
   it('takes an account that says nothing of what it may reach to reach everything', () => {

@@ -14,7 +14,7 @@ export type LinkAccount = { account: ConnectedAccount; resource: SupportedResour
 export const linkAccount = (accounts: readonly ConnectedAccount[], url: string): LinkAccount | undefined => {
   const candidates = accounts.flatMap((account): LinkAccount[] => {
     if (!account.credentialsValid || account.vendor.autoProvisionsAccount) return []
-    const resource = account.supportedResources.find(({ urlPattern }) => urlPattern !== 'https://*' && matchesResourceUrlPattern(urlPattern, url))
+    const resource = account.supportedResources.find((kind) => kind.connectable !== false && kind.urlPattern !== 'https://*' && matchesResourceUrlPattern(kind.urlPattern, url))
     return resource ? [{ account, resource }] : []
   })
   const granted = candidates.filter(({ account, resource }) => {
