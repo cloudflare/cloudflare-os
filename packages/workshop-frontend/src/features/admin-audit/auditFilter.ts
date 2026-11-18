@@ -1,4 +1,5 @@
 import {
+  ADMIN_GRANT_METHODS,
   ADMIN_SETTING_METHODS,
   ADMIN_USER_METHODS,
   ADMIN_WORKSPACE_METHODS,
@@ -11,7 +12,7 @@ import {
 export type AuditMethod = AdminAuditRecord['method']
 
 /** The kinds of record, as the filter lists them. */
-export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'write', 'setting']
+export const AUDIT_KINDS: readonly AdminAuditKind[] = ['workspace', 'user', 'write', 'grant', 'setting']
 
 /**
  * The user `record` targets, as the owner filter matches them: the owner of the workspace a call was
@@ -49,6 +50,7 @@ export type AuditFilter = {
 export const AUDIT_METHOD_GROUPS: { label: string; methods: readonly AuditMethod[] }[] = [
   { label: 'Inspection calls', methods: [...new Set([...ADMIN_WORKSPACE_METHODS, ...ADMIN_USER_METHODS])] },
   { label: 'Workspace writes', methods: ADMIN_WRITE_ACTIONS },
+  { label: 'Content grants', methods: ADMIN_GRANT_METHODS },
   { label: 'Settings changes', methods: ADMIN_SETTING_METHODS },
 ]
 

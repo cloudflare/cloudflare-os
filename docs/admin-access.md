@@ -603,6 +603,7 @@ settings across deploys, while a variable only bounds what an admin session can 
   them), `method` (the action, named as on the other records so that one filter covers every
   kind), the write's `args` by name and its `reason`. It says what was asked for, not what came of
   it (see [When a write fails](#when-a-write-fails)).
+  | --- | --- | --- | --- |
 
 `listAdminAudit()` filters by kind, admin, method, workspace, the user a call's or a write's target
 belongs to (`owner`) and time; `getAdminAuditStats()` by kind. The method and that user stay in a

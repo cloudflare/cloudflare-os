@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminAccessRecord, type AdminAuditRecord, type AdminSettingRecord,
-  type AdminUserAccessRecord, type AdminWriteRecord,
+  type AdminGrantRecord, type AdminUserAccessRecord,
+  type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { auditOwnerId, cutAdminAuditText } from "../src/admin-access.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
@@ -53,6 +54,15 @@ function setting(overrides: Partial<AdminSettingRecord> = {}): AdminSettingRecor
     kind: "setting", at: new Date(), admin: "ada", sessionId: "session-1", via: "cli",
     method: "setSiteName", changes: [{ setting: "siteName", before: "Old", after: "New" }],
     ...overrides,
+  };
+}
+
+function grant(overrides: Partial<AdminGrantRecord> = {}): AdminGrantRecord {
+  return {
+    kind: "grant", at: new Date(), admin: "ada", sessionId: "session-1", via: "api",
+    workspaceId: "w1", workspaceOwner: "owner-1", workspaceTitle: "Plans",
+    reason: "the owner cannot be reached", method: "requestContentAccess", requestId: "request-1",
+    requestedBy: "ada", ...overrides,
   };
 }
 
@@ -185,6 +195,59 @@ describe("AdminAuditDurableObject.list", () => {
     expect(await list({ workspace: "w7", kind: "write", admin: "linus" })).toEqual([approved]);
     expect(await list({ owner: "grace" })).toEqual([approved, requested, read]);
     expect(await list({ owner: "grace", kind: "write" })).toEqual([approved, requested]);
+  });
+
+  it("returns a grant step as appended, and finds it by kind, method, workspace and owner",
+      async () => {
+    let log = auditLog();
+    let requested = grant();
+    let approved = grant({ method: "approveContentAccess", admin: "linus", grantId: "grant-1" });
+    let ended = grant({
+      method: "endWorkspaceGrant", admin: "linus", grantId: "grant-1", endReason: "done",
+    });
+    for (let record of [access(), write(), requested, approved, ended]) {
+      await log.append(record, RETENTION);
+    }
+    let rows = await sql<{ kind: string; workspace_id: string | null; exposed: string | null }>(
+        log, "SELECT kind, workspace_id, exposed FROM admin_audit WHERE kind = 'grant'");
+    expect(rows).toEqual(
+        Array.from({ length: 3 }, () => ({ kind: "grant", workspace_id: "w1", exposed: null })));
+
+    let list = async (query: object) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    // Strictly, so that a step gains no field it was not given.
+    expect(await list({ kind: "grant" })).toStrictEqual([ended, approved, requested]);
+    expect(await list({ method: "approveContentAccess" })).toStrictEqual([approved]);
+    expect(await list({ owner: "owner-1", kind: "grant", admin: "linus" }))
+        .toStrictEqual([ended, approved]);
+    expect((await log.stats({ days: 7, kind: "grant" }, RETENTION)).totalEvents).toBe(3);
+  });
+
+  it("finds only the given requests' requestContentAccess records by requestIds", async () => {
+    let log = auditLog();
+    let first = grant({ requestId: "request-1" });
+    let second = grant({ requestId: "request-2", admin: "linus", requestedBy: "linus" });
+    let third = grant({ requestId: "request-3" });
+    let records: AdminAuditRecord[] = [
+      first, second, third,
+      // Another step of a listed request, and records that are not grant steps at all.
+      grant({ requestId: "request-1", method: "denyContentAccess", admin: "linus" }),
+      access(), write(),
+    ];
+    for (let record of records) await log.append(record, RETENTION);
+
+    let list = (query: object) => log.list({ limit: 50, ...query }, RETENTION);
+    let ids = ["request-1", "request-2", "request-3"];
+    expect((await list({ requestIds: ids })).records).toStrictEqual([third, second, first]);
+    expect((await list({ requestIds: ["request-2"] })).records).toStrictEqual([second]);
+    expect((await list({ requestIds: ids, admin: "ada" })).records)
+        .toStrictEqual([third, first]);
+    expect((await list({ requestIds: [] })).records).toEqual([]);
+
+    let page = await list({ requestIds: ids, limit: 2 });
+    expect(page.records).toStrictEqual([third, second]);
+    expect((await list({ requestIds: ids, cursor: page.nextCursor })).records)
+        .toStrictEqual([first]);
   });
 
   it("combines the kind, admin, workspace and since filters", async () => {
@@ -980,8 +1043,8 @@ describe("AdminAuditDurableObject's table rebuild", () => {
     expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual(listed);
   });
 
-  it("reads a log that a build without content reads wrote, copying nothing, and takes a content " +
-      "read after it", async () => {
+  it("rebuilds a log that a build without content reads or grant records wrote, keeping its rows, " +
+      "and takes a content read after it", async () => {
     let log = auditLog();
     let at = new Date();
     // One row of each kind as that build stores it: an access record's JSON holds neither
@@ -991,9 +1054,8 @@ describe("AdminAuditDurableObject's table rebuild", () => {
       access: "metadata",
     };
     let step = {
-      sessionId: "session-1", via: "cli", requestId: "request-1", event: "approved",
-      workspaceOwner: "owner-1", method: "stopAgent", args: { chatId: 4 }, reason: "a stuck turn",
-      requestedBy: "grace", passkey: "credential-1",
+      sessionId: "session-1", via: "cli", workspaceOwner: "owner-1", method: "stopAgent",
+      args: { chatId: 4 }, reason: "a stuck turn",
     };
     let change = {
       sessionId: "session-1", via: "cli", method: "setSiteName",
@@ -1018,10 +1080,11 @@ describe("AdminAuditDurableObject's table rebuild", () => {
       construct(instance, state);
       return [start, snapshot(db)];
     });
-    // That build's table is the current one, so a start copies nothing and writes nothing.
+    // That build's table knows no grant record, so a start rebuilds it, row for row.
     expect(planted.rows.map(row => [row.seq, row.kind])).toEqual(
         [[1, "workspace"], [2, "user"], [3, "setting"], [4, "write"]]);
-    expect(constructed).toEqual(planted);
+    expect(constructed.rows).toEqual(planted.rows);
+    expect(tableDefinition(constructed.schema)).not.toBe(tableDefinition(planted.schema));
 
     let columns = { at, admin: "ada" };
     let workspace = { workspaceId: "w1", workspaceTitle: "Plans" };
@@ -1078,7 +1141,7 @@ describe("AdminAuditDurableObject's table rebuild", () => {
       let db = state.storage.sql;
       let current = tableDefinition(snapshot(db).schema);
       let later = current.replace(
-          "'user', 'setting', 'write')", "'user', 'setting', 'write', 'later')");
+          "'setting', 'write', 'grant')", "'setting', 'write', 'grant', 'later')");
       expect(later).not.toBe(current);
       db.exec("DROP TABLE admin_audit");
       db.exec(`CREATE TABLE admin_audit ${later}`);

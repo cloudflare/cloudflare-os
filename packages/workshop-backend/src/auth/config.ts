@@ -47,6 +47,16 @@ export function isDeploymentAdmin(env: Cloudflare.Env, name: string | undefined)
   return admins.some(admin => typeof admin === "string" && asciiLowerCase(admin) === lowered);
 }
 
+/**
+ * Whether two user names are one deployment admin: equal once the case of ASCII letters is
+ * folded, which is how isDeploymentAdmin() matches a name against the ADMINS list. An account is
+ * named by its email as the identity provider spelled it, so two accounts whose names differ
+ * only by case match one entry of the list and count as one admin wherever two are required.
+ */
+export function sameDeploymentAdmin(a: string, b: string): boolean {
+  return asciiLowerCase(a) === asciiLowerCase(b);
+}
+
 // Only ASCII letters are folded: toLowerCase() also folds some other characters onto ASCII ones,
 // such as the Kelvin sign onto "k", which would let a look-alike name match an admin's.
 const asciiLowerCase = (text: string) => text.replace(/[A-Z]/g, letter => letter.toLowerCase());
