@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { RpcTarget, type RpcStub } from 'capnweb'
 import { useRouterState } from '@tanstack/react-router'
 import type { AuthenticatedApi, GatekeeperVendorInfo, ObserverAccountChoice, ObserverBindingNeed, ObserverConfigCallback } from '@gadgets/workshop-shared/api'
@@ -76,11 +76,20 @@ export const viewedWorkspace = (pathname: string): string | undefined => {
 
 const NOT_CONFIRMED = 'You didn’t confirm your access, so it can’t be opened.'
 
+/** Whether an open failed only for the user's access not being confirmed, which asking again can put right. */
+export const accessNotConfirmed = (message: string) => message.includes(NOT_CONFIRMED)
+
+// Forgets what the user cancelled, so that the next open asks them again.
+const AskAgainContext = createContext<() => void>(() => {})
+
+/** Call before opening again what the user cancelled confirming their access to, so that it is asked again. */
+export const useAskAccessAgain = () => use(AskAgainContext)
+
 /**
  * Beneath `RpcGate`: the API for everything below, ready to ask the user to confirm their access
  * (`withObserverAccess`), and the dialog that asks (`ConfirmAccess`), one question at a time. What
- * the user cancels is not asked again until the app is opened again, as it is opened again and
- * again in the background.
+ * the user cancels is not asked again, as it is opened again and again in the background, until
+ * they ask for it (`useAskAccessAgain`).
  */
 export const ObserverAccessProvider = ({ children }: { children: ReactNode }) => {
   const session = useApi()
@@ -115,14 +124,18 @@ export const ObserverAccessProvider = ({ children }: { children: ReactNode }) =>
     setAsking(queue.current[0])
   }
 
+  const askAgain = useCallback(() => declined.current.clear(), [])
+
   const { api } = session
   const wrapped = useMemo(() => withObserverAccess(api, (what, workspaceId) => new ObserverConfig((needs) => ask(what, workspaceId, needs)) as unknown as RpcStub<ObserverConfigCallback>), [api, ask])
   const value = useMemo(() => ({ ...session, api: wrapped }), [session, wrapped])
 
   return (
     <ApiContext value={value}>
-      {children}
-      {asking && <ConfirmAccess key={asking.key} what={asking.what} needs={asking.needs} onAnswer={answer} />}
+      <AskAgainContext value={askAgain}>
+        {children}
+        {asking && <ConfirmAccess key={asking.key} what={asking.what} needs={asking.needs} onAnswer={answer} />}
+      </AskAgainContext>
     </ApiContext>
   )
 }

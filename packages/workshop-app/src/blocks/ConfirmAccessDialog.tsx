@@ -124,10 +124,10 @@ export const ConfirmAccessDialog = ({ open, what, again = false, rows, problem, 
       <Dialog.Description className="text-sm text-pretty text-kumo-subtle">
         {again
           ? `Some of what ${what} reads couldn’t be confirmed with the accounts chosen. Sign in again, choose another account, or ask whoever shared it for access.`
-          : `To open ${what}, confirm that your own accounts can see what it reads.`}
+          : `${what[0].toUpperCase()}${what.slice(1)} was shared with you and reads what’s below. To open it, confirm that your own accounts can see these too.`}
       </Dialog.Description>
     </header>
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-1">
+    <div className="flex min-h-0 grow flex-col overflow-y-auto px-6 pb-1">
       {rows
         ? <ListGroup label="Protected resources">{rows.map((row) => <Row key={row.key} row={row} onChoose={onChoose} />)}</ListGroup>
         : <p role="status" className="appears-late grid min-h-24 place-items-center text-base text-kumo-subtle">Loading your accounts…</p>}
@@ -135,6 +135,10 @@ export const ConfirmAccessDialog = ({ open, what, again = false, rows, problem, 
     <footer className="flex flex-col gap-3 p-6">
       {problem && <Banner title={problem} />}
       <div className="flex items-center justify-end gap-2">
+        {/* Why it cannot be confirmed yet, where nothing else says so. */}
+        {rows && !rows.every(({ ready }) => ready) && !problem && (
+          <p className="me-auto text-sm text-kumo-subtle">{rows.some(({ accounts }) => accounts.length === 0) ? 'Connect an account to go on' : 'Choose an account that will do'}</p>
+        )}
         <Button onClick={onCancel}>Cancel</Button>
         <Button variant="primary" disabled={!rows || !rows.every(({ ready }) => ready)} onClick={onConfirm}>
           {again ? 'Confirm again' : 'Confirm and open'}

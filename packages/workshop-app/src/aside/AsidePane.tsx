@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { FileDashedIcon, LockSimpleIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
@@ -8,6 +8,7 @@ import { PaneStatus } from '@/blocks/PaneStatus'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { accessNotConfirmed, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
 import type { CodeLines } from '@/components/CodeEditor'
 import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
@@ -99,6 +100,7 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
 export const AsidePane = (props: AsidePaneProps) => {
   const { item, link, onFullScreenChange, narrow, onOpenSettings, onUpdateProposed, onDeleted } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
+  const askAccessAgain = useAskAccessAgain()
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
@@ -173,7 +175,7 @@ export const AsidePane = (props: AsidePaneProps) => {
   ) : (
     <>
       <div inert={viewingCode} className="flex min-h-0 flex-1 flex-col">
-        <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
+        <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} onAskAccess={connection && (() => { askAccessAgain(); connection.reconnect() })} />
       </div>
       <AnimatePresence initial={false}>
         {viewingCode && gadget && (
@@ -346,11 +348,13 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
   </SidePane>
 )
 
-const GadgetView = ({ title, ui, frame, onReload }: {
+const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
   title: string
   ui: GadgetUi
   frame: RefObject<HTMLIFrameElement | null>
   onReload?: () => void
+  /** Opens it again, asking the user to confirm their access, which they did not. */
+  onAskAccess?: () => void
 }) => {
   switch (ui.status) {
     case 'loading':
@@ -358,6 +362,16 @@ const GadgetView = ({ title, ui, frame, onReload }: {
     case 'none':
       return <PaneNotice icon={SmileyMehIcon} title="No UI yet" description="When the gadget builds one, it will show here." />
     case 'failed':
+      // Shared with the user, it reads what is kept at other services, which they confirm their
+      // own accounts can see before it opens: cancelled, it is offered again rather than failed.
+      if (onAskAccess && accessNotConfirmed(ui.message)) return (
+        <PaneNotice
+          icon={LockSimpleIcon}
+          title={`Confirm your access to open ${title}`}
+          description="It was shared with you and reads things kept in other services, such as a Google doc. Before it opens, confirm that your own accounts can see them too."
+          action={{ label: 'Confirm access', onClick: onAskAccess }}
+        />
+      )
       return (
         <PaneNotice
           icon={WarningCircleIcon}
