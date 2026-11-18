@@ -180,8 +180,8 @@ export const CardBlocksPreview = () => {
       <Section title="KeepChangesCard (a chat's changes that couldn't be kept on their own, at the end of the conversation: what they do and why they wait, Keep, and Discard, which asks again; a gadget given a connection, a blueprint's update with conflicts, and code in a workspace others work in too)">
         <Column>
           <KeepChangesCard
-            changes={['Makes “Standup notes”', 'Lets “Standup notes” use “Jira · Platform board”']}
-            reason="What a gadget can reach is yours to decide."
+            changes={['Creates “Standup notes”', 'Connects “Standup notes” to “Jira · Platform board”']}
+            reason="Connecting a gadget to something needs your OK."
             onKeep={after('kept')}
             onDiscard={() => void after('discarded')()}
           />

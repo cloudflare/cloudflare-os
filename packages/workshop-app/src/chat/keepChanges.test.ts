@@ -13,33 +13,33 @@ describe('keepChangeLines', () => {
       created: [{ gadgetId: 9, title: 'Standup notes' }],
       bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }, { gadgetId: 9, name: 'SLACK', target: 31 }],
     }), titleOf)).toEqual([
-      'Makes “Standup notes”',
-      'Gives “Tip Jar” access to env.JIRA',
-      'Gives “Standup notes” access to env.SLACK',
+      'Creates “Standup notes”',
+      'Connects “Tip Jar” to JIRA',
+      'Connects “Standup notes” to SLACK',
     ])
   })
 
   it('says what is given by its name, to a spawner as to a gadget', () => {
     expect(keepChangeLines(ask({
       bindings: [{ gadgetId: 3, name: 'JOKE_WRITER', target: 20 }, { gadgetId: 20, name: 'PAUL_PIERCE_DOC', target: 21 }],
-    }), titleOf)).toEqual(['Lets “Tip Jar” use “Joke”', 'Lets “Joke” use “Paul Pierce”'])
+    }), titleOf)).toEqual(['Connects “Tip Jar” to “Joke”', 'Connects “Joke” to “Paul Pierce”'])
   })
 
   it('says “a gadget” for one it knows nothing of, and says a line once', () => {
     expect(keepChangeLines(ask({ bindings: [{ gadgetId: 4, name: 'JIRA', target: 30 }, { gadgetId: 4, name: 'JIRA', target: 30 }] }), titleOf))
-      .toEqual(['Gives a gadget access to env.JIRA'])
+      .toEqual(['Connects a gadget to JIRA'])
   })
 
   it('counts the files left with conflicts', () => {
     expect(keepChangeLines(ask({ mainline: true, conflicts: ['a.ts', 'b.ts'] }), titleOf))
-      .toEqual(['Brings in what was kept elsewhere since', 'Leaves 2 files with conflicts'])
+      .toEqual(['Brings in changes kept elsewhere since this chat began', 'Leaves 2 files with conflicts to fix'])
   })
 })
 
 describe('keepReason', () => {
   it('gives the weightiest reason', () => {
     expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }], conflicts: ['a.ts'] }))).toMatch(/conflicts/)
-    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }] }, true))).toMatch(/yours to decide/)
+    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }] }, true))).toMatch(/needs your OK/)
     expect(keepReason(ask({}, true))).toMatch(/Others/)
   })
 })

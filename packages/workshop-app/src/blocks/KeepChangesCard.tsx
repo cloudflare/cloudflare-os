@@ -6,7 +6,7 @@ import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { usePending, type ActionResult } from './usePending'
 
 export type KeepChangesCardProps = {
-  /** What the changes do, one line each: "Gives “Tip Jar” access to env.JIRA". */
+  /** What the changes do, one line each: "Connects “Tip Jar” to JIRA". */
   changes: string[]
   /** Why they wait for the user, rather than being kept as a turn's changes are. */
   reason: string
