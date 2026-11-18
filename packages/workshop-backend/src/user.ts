@@ -2819,10 +2819,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     // Re-fetch the description since the user may have re-authed with different info. Best-effort:
     // the credentials are live either way, and a record still showing as expired over a failed
-    // describe() would send the user back through a reconnect that changes nothing.
+    // describe() would send the user back through a reconnect that changes nothing. Written over
+    // the row as it is after the call, which a disconnect may have deleted meanwhile.
     try {
-      record.description = await record.account.describe();
-      this.storage.connectedAccounts.put(record);
+      let description = await record.account.describe();
+      let current = this.storage.connectedAccounts.get(accountId);
+      if (current) this.storage.connectedAccounts.put({ ...current, description });
     } catch (err) {
       logger.warn("failed to refresh the description of a restored account", {
         event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
