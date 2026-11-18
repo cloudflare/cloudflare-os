@@ -23,7 +23,7 @@ export const APP: BlueprintOutput = { id: 'app', noun: 'App', plural: 'Apps', ic
 export const outputTitle = ({ title }: { title: string }) => title || 'Untitled'
 
 /** Tells an output from every other, across workspaces. */
-export const outputKey = ({ workspaceId, workpieceId }: OutputSummary) => `${workspaceId}/${workpieceId}`
+export const outputKey = ({ workspaceId, workpieceId }: Pick<OutputSummary, 'workspaceId' | 'workpieceId'>) => `${workspaceId}/${workpieceId}`
 
 /** What an output is: the format it was made as, or an app. */
 const outputType = ({ output }: OutputSummary): BlueprintOutput => output ?? APP

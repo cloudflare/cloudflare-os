@@ -15,6 +15,8 @@ import { templateUpdateStatus } from '@/gadgets/templateUpdate'
 import { UpdateFromTemplate } from '@/gadgets/UpdateFromTemplate'
 import { useBlueprintInfo } from '@/gadgets/useGadgetSettings'
 import { useGadgetEdits } from '@/gadgets/useGadgetEdits'
+import { outputKey } from '@/library/libraryList'
+import { recordLibraryOpen } from '@/prefs/libraryOpened'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -102,6 +104,12 @@ export const AsidePane = (props: AsidePaneProps) => {
   const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
   // A gadget's, which a worktree, with no settings of its own, is not.
   const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
+  // Opened, beside a chat or a workspace or on its own page, for the Library's Recent tab: here,
+  // as wherever it is opened from shows it here.
+  const opened = gadget && outputKey(gadget)
+  useEffect(() => {
+    if (opened) recordLibraryOpen(opened)
+  }, [opened])
   // A gadget's settings, connections and code are its workspace's, which whoever it was shared
   // with to use does not build in, rename or delete there.
   const workspaces = useWorkspaces()

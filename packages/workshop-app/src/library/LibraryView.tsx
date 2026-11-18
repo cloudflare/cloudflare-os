@@ -17,15 +17,14 @@ import { PageLayout } from '@/layouts/PageLayout'
 import { formatActivity } from '@/workspaces/formatActivity'
 import type { WorkspaceLooksById } from '@/workspaces/WorkspaceLooks'
 import { APP, outputDetail, outputKey, outputTitle, outputWorkspace, type LibraryOrder } from './libraryList'
+import { needingYou, recentOutputs } from './libraryRecent'
 import { withStar, withStarOrder } from './libraryStars'
 import type { LibraryState } from './useLibrary'
 
-/** The tab of the starred, and the tab of everything. The others are a type's id each. */
-export const STARRED_TAB = 'starred'
+/** The tab of what needs the user and what they opened last, and the tab of everything. The others are a type's id each. */
+export const RECENT_TAB = 'recent'
 export const ALL_TAB = 'all'
 
-// The filter that leaves the starred out of the other tabs, as the menu has it.
-const HIDE_STARRED = 'hide-starred'
 const TYPE = 'type:'
 
 const typeOf = (output: OutputSummary) => (output.output ?? APP).id
@@ -42,9 +41,8 @@ export type LibraryViewProps = {
   /** The keys of the starred outputs, in their order. */
   stars: string[]
   onStarsChange: (stars: string[]) => void
-  /** The starred are left out of every tab but their own, where they would otherwise come first. */
-  hideStarred: boolean
-  onHideStarredChange: (hide: boolean) => void
+  /** The keys of the outputs opened last on this device, latest first, which the Recent tab lists. */
+  opened: readonly string[]
   onOpenOutput: (output: OutputSummary) => void
   /** An output's page, for its row to link to so that it can be opened in another tab. */
   outputHref?: (output: OutputSummary) => string
@@ -72,19 +70,20 @@ export type LibraryViewProps = {
 }
 
 /**
- * The Library page: everything the user's workspaces have made, a tab each for the starred, for
- * all of it, and for each type something has been made as, under the controls a list has. The
- * starred come first in every tab, unless the filter that hides them is on. Its header ends in
- * the way to the templates and the way to start something new.
+ * The Library page: everything the user's workspaces have made, a tab each for what is recent, for
+ * all of it, and for each type something has been made as, under the controls a list has. Recent
+ * is what waits on the user, then what they opened last. Every other tab has what waits on the
+ * user first too, then the starred, which they can drag into an order of their own on All, then
+ * the rest. Its header ends in the way to the templates and the way to start something new.
  */
 export const LibraryView = ({
-  tab, onTabChange, library, list, formats, stars, onStarsChange, hideStarred, onHideStarredChange, onOpenOutput, outputHref, onOpenWorkspace, workspaceHref, onNew, onExplore, looks, me,
+  tab, onTabChange, library, list, formats, stars, onStarsChange, opened, onOpenOutput, outputHref, onOpenWorkspace, workspaceHref, onNew, onExplore, looks, me,
   actionsOf, waitingOf, problem,
 }: LibraryViewProps) => {
   const narrow = useNarrowScreen()
   const all = library.status === 'ready' ? library.outputs : []
   const starredKeys = new Set(stars)
-  const byKey = new Map(all.map((output) => [outputKey(output), output]))
+  const waitingCount = (output: OutputSummary) => waitingOf?.(output) ?? 0
 
   // A tab for each type something has been made as, in the order the filters have the types: one
   // for none would only be empty, and one alone would be all there is over again.
@@ -93,27 +92,43 @@ export const LibraryView = ({
   const typeTabs = filter.options
     .filter(({ facet, id }) => facet === 'type' && made.has(id.slice(TYPE.length)))
     .map(({ id, label }) => ({ value: id.slice(TYPE.length), label }))
-  const tabs = [{ value: STARRED_TAB, label: 'Starred' }, { value: ALL_TAB, label: 'All' }, ...(typeTabs.length > 1 ? typeTabs : [])]
+  const tabs = [{ value: RECENT_TAB, label: 'Recent' }, { value: ALL_TAB, label: 'All' }, ...(typeTabs.length > 1 ? typeTabs : [])]
   const current = tabs.some(({ value }) => value === tab) ? tab : ALL_TAB
-  const onStarred = current === STARRED_TAB
+  const onRecent = current === RECENT_TAB
 
   // What the tab has, then what the search and the filters leave of it.
-  const inTab = onStarred
-    ? stars.flatMap((key) => byKey.get(key) ?? [])
+  const recent = onRecent ? recentOutputs(all, opened, waitingCount) : undefined
+  const inTab = recent
+    ? [...recent.needsYou, ...recent.opened]
     : current === ALL_TAB ? all : all.filter((output) => typeOf(output) === current)
   const shown = list.narrow(inTab)
+  const shownKeys = new Set(shown.map(outputKey))
   const timeOf = (output: OutputSummary) => formatActivity(list.order.at(output))
-  const starredShown = onStarred ? shown : hideStarred ? [] : stars.flatMap((key) => shown.find((output) => outputKey(output) === key) ?? [])
+  const entriesOf = (outputs: readonly OutputSummary[]) => outputs.map((output) => ({ value: output, time: timeOf(output) }))
+  // What waits on the user comes first wherever it is, then on Recent what they opened last, and
+  // on every other tab the starred, in their order, then the rest in the order chosen.
+  const needsYou = recent ? recent.needsYou.filter((output) => shownKeys.has(outputKey(output))) : needingYou(shown, waitingCount)
+  const waitingKeys = new Set(needsYou.map(outputKey))
+  const notWaiting = shown.filter((output) => !waitingKeys.has(outputKey(output)))
+  const starredShown = recent ? [] : stars.flatMap((key) => notWaiting.find((output) => outputKey(output) === key) ?? [])
   const groups = [
-    ...(starredShown.length > 0 ? [{ key: 'starred', label: 'Starred', entries: starredShown.map((output) => ({ value: output, time: timeOf(output) })) }] : []),
-    ...(onStarred ? [] : list.arrange(shown.filter((output) => !starredKeys.has(outputKey(output))))).map(({ key, label, entries }) => ({
-      key: `${list.order.id}:${key}`,
-      label,
-      entries: entries.map(({ value, time }) => ({ value, time: time ?? timeOf(value) })),
-    })),
+    ...(needsYou.length > 0 ? [{ key: 'waiting', label: 'Needs you', entries: entriesOf(needsYou) }] : []),
+    ...(recent
+      ? notWaiting.length > 0 ? [{ key: 'opened', label: 'Opened lately', entries: entriesOf(notWaiting) }] : []
+      : [
+          ...(starredShown.length > 0 ? [{ key: 'starred', label: 'Starred', entries: entriesOf(starredShown) }] : []),
+          ...list.arrange(notWaiting.filter((output) => !starredKeys.has(outputKey(output)))).map(({ key, label, entries }) => ({
+            key: `${list.order.id}:${key}`,
+            label,
+            entries: entries.map(({ value, time }) => ({ value, time: time ?? timeOf(value) })),
+          })),
+        ]),
   ]
-  // Only with all of the starred there: putting some of them in order would lose the others' places.
-  const reorderStarred = list.narrowed || !(onStarred || current === ALL_TAB) ? undefined : (order: string[]) => onStarsChange(withStarOrder(stars, order))
+  // Only with all of the starred there, on All: putting some of them in order would lose the
+  // others' places, as it would with one of them up among what needs the user.
+  const reorderStarred = list.narrowed || current !== ALL_TAB || starredShown.length < stars.filter((key) => all.some((output) => outputKey(output) === key)).length
+    ? undefined
+    : (order: string[]) => onStarsChange(withStarOrder(stars, order))
 
   // What a row and a card are both given.
   const propsOf = (output: OutputSummary) => ({
@@ -127,9 +142,8 @@ export const LibraryView = ({
     waiting: waitingOf?.(output),
   })
 
-  // The starred and each type have a tab, so the menu has the other filters, and on every tab but
-  // the starred's, the one that leaves the starred out.
-  const others = filter.options.filter(({ facet, id }) => facet !== 'type' && id !== 'starred')
+  // Each type has a tab, so the menu has the other filters, Starred among them.
+  const others = filter.options.filter(({ facet }) => facet !== 'type')
   const othersOn = filter.value.filter((id) => others.some((option) => option.id === id))
   // Under the list on a narrow screen, in reach of a thumb, and otherwise on the tabs' line, after
   // them, its search a button with the others until it is opened into the room between.
@@ -139,12 +153,9 @@ export const LibraryView = ({
       {...list.controls}
       filter={{
         ...filter,
-        options: onStarred ? others : [{ id: HIDE_STARRED, label: 'Hide starred' }, ...others],
-        value: hideStarred && !onStarred ? [HIDE_STARRED, ...othersOn] : othersOn,
-        onChange: (ids) => {
-          if (!onStarred) onHideStarredChange(ids.includes(HIDE_STARRED))
-          filter.onChange(ids.filter((id) => id !== HIDE_STARRED))
-        },
+        options: others,
+        value: othersOn,
+        onChange: filter.onChange,
       }}
       at={narrow ? 'bottom' : 'top'}
       inline={!narrow}
@@ -217,17 +228,16 @@ export const LibraryView = ({
                 <Button variant="ghost" onClick={onExplore}>Explore templates</Button>
               </p>
             )}
-            {all.length > 0 && inTab.length === 0 && <p className={note}>Nothing starred yet. Star what you want to keep at hand.</p>}
+            {all.length > 0 && inTab.length === 0 && (
+              <p className={note}>
+                {onRecent ? 'Nothing here yet. What needs you, and what you open, shows here.' : 'Nothing here yet.'}
+                <Button variant="ghost" onClick={() => onTabChange(ALL_TAB)}>Show all</Button>
+              </p>
+            )}
             {inTab.length > 0 && shown.length === 0 && (
               <p className={note}>
                 Nothing matches.
                 <Button variant="ghost" onClick={list.showAll}>Show all</Button>
-              </p>
-            )}
-            {shown.length > 0 && groups.length === 0 && (
-              <p className={note}>
-                Everything here is starred.
-                <Button variant="ghost" onClick={() => onHideStarredChange(false)}>Show starred</Button>
               </p>
             )}
             {groups.length > 0 && (
@@ -250,8 +260,6 @@ export const LibraryView = ({
                         groups={groups.map(({ key, label, entries }) => ({
                           key,
                           label,
-                          // The tab's own name over again.
-                          labelHidden: onStarred,
                           cards: entries.map(({ value, time }) => ({ key: outputKey(value), content: <LibraryCard {...propsOf(value)} kind={(value.output ?? APP).noun} workspace={{ ...outputWorkspace(value, looks), href: workspaceHref?.(value), onSelect: () => onOpenWorkspace(value) }} owner={value.owner ?? (me && { ...me, you: true })} time={time} /> })),
                           onReorder: key === 'starred' ? reorderStarred : undefined,
                         }))}

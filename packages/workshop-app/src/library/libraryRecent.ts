@@ -1,0 +1,26 @@
+import type { OutputSummary } from '@gadgets/workshop-shared/api'
+import { outputKey } from './libraryList'
+
+/** How many of those opened last the Recent tab shows, after what needs the user. */
+export const RECENT_SHOWN = 12
+
+/** What waits on the user of `outputs` (`waitingOf`): the most waiting first, then the latest active. */
+export const needingYou = (outputs: readonly OutputSummary[], waitingOf: (output: OutputSummary) => number = () => 0) =>
+  outputs
+    .filter((output) => waitingOf(output) > 0)
+    .toSorted((a, b) => waitingOf(b) - waitingOf(a) || b.lastActive.getTime() - a.lastActive.getTime())
+
+/**
+ * What the Recent tab has of `outputs`: what waits on the user (`needingYou`), then what they
+ * opened last (`opened`, their keys, latest first) that does not, as many as `RECENT_SHOWN`. One
+ * opened that is no longer there is passed over.
+ */
+export const recentOutputs = (outputs: readonly OutputSummary[], opened: readonly string[], waitingOf?: (output: OutputSummary) => number) => {
+  const needsYou = needingYou(outputs, waitingOf)
+  const waiting = new Set(needsYou.map(outputKey))
+  const byKey = new Map(outputs.map((output) => [outputKey(output), output]))
+  return {
+    needsYou,
+    opened: opened.flatMap((key) => (waiting.has(key) ? [] : byKey.get(key) ?? [])).slice(0, RECENT_SHOWN),
+  }
+}

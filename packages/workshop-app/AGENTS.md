@@ -378,12 +378,16 @@ workspace, each a menu of its own) and searched.
 It has a tab each (`?tab=`, kept in place in the history, at the start of the line, with the
 list's controls at its end (`Tabs`' `end`, `ListToolbar`'s `inline`, whose search is a button
 until it is opened into the room between), and scrolled along it where it is too short for both;
-on a narrow screen the controls are under the list): Starred, All, and one for each
-type something has been made as, once there is more than one. It starts at Starred for whoever has
-anything starred, and at All otherwise. Every tab is the same list under the same controls, of what
-the tab has, so the starred and the types are tabs rather than filters, and the filter menu has
-the rest, with Hide starred, which leaves the starred to their own tab rather than first in every
-other. They are reordered on their tab and on All. `LibraryPane` reads what the page shows and
+on a narrow screen the controls are under the list): Recent, All, and one for each type something
+has been made as, once there is more than one. Recent is what waits on the user (the "N waiting"
+its row and card say), under Needs you, most waiting first, then what they opened last on this
+device (`prefs/libraryOpened.ts`, plain and tested, recorded where `AsidePane` shows a gadget, whichever page it is
+opened from; `library/libraryRecent.ts`, plain and tested), the twelve latest. It starts at Recent
+for whoever has opened anything here, and at All otherwise. Every tab is the same list under the
+same controls, of what the tab has, so the types are tabs rather than filters, and the filter menu
+has the rest, Starred among them. On every tab but Recent, what waits on the user comes first, then
+the starred, in their order, which is dragged on All while nothing narrows them and none of them
+waits, then the rest in the order chosen. `LibraryPane` reads what the page shows and
 `LibraryView` draws it from plain props, which is what the gallery renders over fake outputs.
 
 Each row and card has a more menu (`LibraryMoreMenu`), slid out beside its star as a workspace's

@@ -5,13 +5,14 @@ import { useRefreshedWaitingAsks, useWaitingAsks } from '@/gadgets/WaitingAsksPr
 import { useApi } from '@/rpc/ApiContext'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useListView } from '@/hooks/useListView'
+import { readLibraryOpened } from '@/prefs/libraryOpened'
 import { readLibraryStars, writeLibraryStars } from '@/prefs/libraryStars'
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { withEdits } from './libraryEdits'
 import { libraryList, outputKey } from './libraryList'
 import { withStar } from './libraryStars'
-import { ALL_TAB, LibraryView, STARRED_TAB } from './LibraryView'
+import { ALL_TAB, LibraryView, RECENT_TAB } from './LibraryView'
 import { useLibrary } from './useLibrary'
 import { useLibraryActions } from './useLibraryActions'
 import { startableFormats, useOutputFormats } from './useOutputFormats'
@@ -50,10 +51,11 @@ export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpen
   const offers = useOutputFormats()
   // The keys of the starred, in their order.
   const [stars, setStars] = useState(readLibraryStars)
-  // The starred, for whoever has any, and everything otherwise: as it was when the page was come
-  // to, so that starring the first thing does not go to another tab.
-  const [startsAt] = useState(() => (stars.length > 0 ? STARRED_TAB : ALL_TAB))
-  const [hideStarred, setHideStarred] = useState(false)
+  // What was opened last on this device, as the page was come to.
+  const [opened] = useState(readLibraryOpened)
+  // Recent, for whoever has opened anything here, and everything otherwise. What waits on the user
+  // is first on either.
+  const startsAt = opened.length > 0 ? RECENT_TAB : ALL_TAB
   useDocumentTitle('Library')
   // What each asks of the user, read again as the page is come to.
   useRefreshedWaitingAsks(WAITING_MAX_AGE)
@@ -88,8 +90,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpenOutput, outputHref, onOpen
         formats={startableFormats(offers)}
         stars={stars}
         onStarsChange={changeStars}
-        hideStarred={hideStarred}
-        onHideStarredChange={setHideStarred}
+        opened={opened}
         onOpenOutput={onOpenOutput}
         outputHref={outputHref}
         onOpenWorkspace={onOpenWorkspace}
