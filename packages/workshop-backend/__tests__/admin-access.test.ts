@@ -15,6 +15,9 @@ import {
   withholdCommitContent, withholdCreationContent, withholdHookContent,
   type AdminViewTerms,
 } from "../src/admin-access.js";
+import { serializeAdminConfig } from "../src/admin-config.js";
+import { getServerConfig } from "../src/deployment-config.js";
+import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
 // `.env` file gives strings, a JSON binding any JSON value.
@@ -51,15 +54,21 @@ describe("maxAdminWorkspaceAccess", () => {
         .toBe("metadata");
     expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "\tMetadata\n" })))
         .toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "content" })))
+        .toBe("content");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "CONTENT " })))
+        .toBe("content");
   });
 
   // A value meant to turn inspection off must never grant the default, and neither must one that
   // names more than a level gives.
   it("fails closed to off for anything that is not a level, logging each value once", () => {
     let logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    let values = ["none", "false", "of", "disabled", "1", "full", "FULL", " full "];
+    // A JSON binding is no string, whatever its text: ["content"] and [] grant nothing either.
+    let values: unknown[] = ["none", "false", "of", "disabled", "1", "full", "FULL", " full ",
+      ["content"], [], { level: "content" }, 1];
     for (let value of [...values, ...values]) {
-      expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: value })), value)
+      expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: value })), String(value))
           .toBe("off");
     }
     let entries = logged.mock.calls.map(([entry]) => entry as { event?: unknown });
@@ -88,6 +97,16 @@ describe("minAdminAuditRetentionDays", () => {
     }
     expect(minAdminAuditRetentionDays(envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "5000" })))
         .toBe(MAX_ADMIN_AUDIT_RETENTION_DAYS);
+  });
+
+  it("falls back for a JSON binding, even one whose toString is not a function", () => {
+    let logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (let value of [[120], { days: 120 }, { toString: 1, valueOf: 2 }, true]) {
+      expect(minAdminAuditRetentionDays(envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: value })))
+          .toBe(DEFAULT_ADMIN_AUDIT_RETENTION_DAYS);
+    }
+    logged.mockRestore();
+    expect(minAdminAuditRetentionDays(envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: 120 }))).toBe(120);
   });
 });
 
@@ -156,6 +175,10 @@ describe("adminAccessPolicy", () => {
     expect(lowerAdminWorkspaceAccess("off", "metadata")).toBe("off");
     expect(lowerAdminWorkspaceAccess("metadata", "metadata")).toBe("metadata");
     expect(lowerAdminWorkspaceAccess("off", "off")).toBe("off");
+    expect(lowerAdminWorkspaceAccess("content", "metadata")).toBe("metadata");
+    expect(lowerAdminWorkspaceAccess("metadata", "content")).toBe("metadata");
+    expect(lowerAdminWorkspaceAccess("content", "off")).toBe("off");
+    expect(lowerAdminWorkspaceAccess("content", "content")).toBe("content");
   });
 
   it("holds the admins' choices within the environment's bounds", () => {
@@ -172,6 +195,62 @@ describe("adminAccessPolicy", () => {
     expect(adminAccessPolicy({ adminWorkspaceAccess: "off", adminAuditRetentionDays: 400 },
         envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "metadata" })))
         .toEqual({ access: "off", retentionDays: 400 });
+  });
+
+  // Content is in force only where the operator's cap and the admins' choice both say so.
+  it.each([
+    [undefined, "content", "metadata"],
+    ["", "content", "metadata"],
+    ["metadata", "content", "metadata"],
+    ["off", "content", "off"],
+    ["content", "off", "off"],
+    ["content", "metadata", "metadata"],
+    ["content", "content", "content"],
+    ["CONTENT ", "content", "content"],
+    ["full", "content", "off"],
+  ])("with the cap %j and %j chosen, enforces %j", (cap, chosen, access) => {
+    expect(adminAccessPolicy(
+        { adminWorkspaceAccess: chosen as never, adminAuditRetentionDays: 90 },
+        envWith({ ADMIN_WORKSPACE_ACCESS_MAX: cap })).access).toBe(access);
+  });
+});
+
+// What a member's client reads of the admin configuration: one flag, and only while content can
+// be granted.
+describe("getServerConfig", () => {
+  function serverConfig(chosen: string, cap?: string) {
+    let mirror = serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, adminWorkspaceAccess: chosen as never });
+    return getServerConfig(envWith(
+        { ADMIN_WORKSPACE_ACCESS_MAX: cap, BLUEPRINTS: { get: async () => mirror } }));
+  }
+
+  it("says that content can be granted only while the level in force is content", async () => {
+    expect((await serverConfig("content", "content")).adminContentGrants).toBe(true);
+    expect((await serverConfig("content", " Content ")).adminContentGrants).toBe(true);
+  });
+
+  it.each([
+    ["metadata", "content"],
+    ["off", "content"],
+    ["content", undefined],
+    ["content", "metadata"],
+    ["content", "off"],
+    ["content", "full"],
+    ["full", "content"],
+    ["metadata", undefined],
+  ])("carries no key with %j chosen under the cap %j", async (chosen, cap) => {
+    let logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let config = await serverConfig(chosen, cap);
+    logged.mockRestore();
+    expect(config).not.toHaveProperty("adminContentGrants");
+  });
+
+  it("says nothing else about the admin access settings", async () => {
+    let allowed = await serverConfig("content", "content");
+    let { adminContentGrants: _flag, ...rest } = allowed;
+    expect(rest).toEqual(await serverConfig("metadata", "content"));
+    expect(JSON.stringify(allowed)).not.toMatch(/adminWorkspaceAccess|adminAuditRetention/);
   });
 });
 

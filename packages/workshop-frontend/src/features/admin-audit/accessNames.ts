@@ -4,6 +4,7 @@ import { ADMIN_ACCESS_ERROR_CODES, type AdminAccessRecord, type AdminWorkspaceAc
 export const ACCESS_LEVEL_NAMES: Record<AdminWorkspaceAccess, string> = {
   off: 'Off',
   metadata: 'Metadata',
+  content: 'Content',
 }
 
 /** What the Audit tab calls each reason an admin call into a workspace or a user's account was

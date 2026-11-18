@@ -36,27 +36,32 @@ const reportedInvalidAccessMax = new Set<unknown>();
 const reportedInvalidRetentionMin = new Set<unknown>();
 const reportedInvalidWrites = new Set<unknown>();
 
+// Never String(raw) of a value that is neither a string nor a number: that throws for a JSON
+// binding whose toString is not a function.
 function isBlank(raw: unknown): boolean {
-  return raw === undefined || raw === null || String(raw).trim() === "";
+  return raw === undefined || raw === null || (typeof raw === "string" && raw.trim() === "");
 }
 
-/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off" or "metadata", in any
- * case and trimmed; "metadata" while it is unset or blank. Any other value misconfigures a
- * security bound, so it fails closed to "off" and is logged as an error (once per isolate per
+/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off", "metadata" or "content",
+ * a string in any case and trimmed; "metadata" while it is unset or a blank string, so content is
+ * allowed only where the variable says so. Anything else, a JSON binding included, misconfigures
+ * a security bound, so it fails closed to "off" and is logged as an error (once per isolate per
  * value, never the value itself). */
 export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAccess {
   let raw: unknown = env.ADMIN_WORKSPACE_ACCESS_MAX;
-  if (isBlank(raw)) return "metadata";
-  let level = String(raw).trim().toLowerCase();
-  if (isAdminWorkspaceAccess(level)) return level;
+  if (raw === undefined || raw === null) return "metadata";
+  // Never String(raw): that reads a JSON binding of ["content"] as "content" and of [] as blank.
+  let level = typeof raw === "string" ? raw.trim().toLowerCase() : undefined;
+  if (level === "") return "metadata";
+  if (level !== undefined && isAdminWorkspaceAccess(level)) return level;
 
   // This bounds a security setting, so a value meant to turn inspection off ("none", "false", a
   // typo of "off") must fail closed, never grant the default.
   if (!reportedInvalidAccessMax.has(raw)) {
     reportedInvalidAccessMax.add(raw);
     logger.error(
-        "ADMIN_WORKSPACE_ACCESS_MAX is not off or metadata, so admin access to workspaces and " +
-            "users is off",
+        "ADMIN_WORKSPACE_ACCESS_MAX is not off, metadata or content, so admin access to " +
+            "workspaces and users is off",
         { event: "admin.access.config.invalid" });
   }
   return "off";
@@ -69,7 +74,7 @@ export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAcce
 export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
   let raw: unknown = env.ADMIN_AUDIT_RETENTION_MIN_DAYS;
   if (isBlank(raw)) return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
-  let days = Number(String(raw).trim());
+  let days = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
   if (Number.isSafeInteger(days) && days >= 1) {
     return Math.min(days, MAX_ADMIN_AUDIT_RETENTION_DAYS);
   }
