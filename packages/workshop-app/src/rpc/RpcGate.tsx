@@ -14,6 +14,7 @@ import { CF_ACCESS_MODE } from './cfAccess'
 import type { Connection } from './Connection'
 import { ConnectionNotice } from './ConnectionNotice'
 import { ConnectionNoticeContext } from './ConnectionNoticeContext'
+import { setReportedUserId } from './errorReporting'
 import { useServerConfig } from './serverConfig'
 import { SignInPane } from './SignInPane'
 import { clearToken, readToken, storeToken } from './token'
@@ -76,7 +77,10 @@ export const RpcGate = ({ connection, startsAt, children }: RpcGateProps) => {
     let cancelled = false
     let api: RpcStub<AuthenticatedApi> | undefined
     const finish = (session: Session) => {
-      if (!cancelled) setState({ owner: publicApi, session })
+      if (cancelled) return
+      // A label on what goes wrong from here on, never anything decided by.
+      if (session.phase !== 'failed') setReportedUserId(session.phase === 'ready' ? session.value.user.id : undefined)
+      setState({ owner: publicApi, session })
     }
 
     const signIn = async () => {

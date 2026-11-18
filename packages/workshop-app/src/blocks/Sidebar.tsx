@@ -5,6 +5,7 @@ import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { LogoIcon } from '@/components/LogoIcon'
+import { Markdown } from '@/components/Markdown'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
@@ -18,6 +19,13 @@ export type SidebarProps = {
   onSelectWorkspace: (id: string) => void
   /** The logo was clicked: go to the start of a new chat. */
   onGoHome?: () => void
+  /** The deployment's own logo, in place of the app's mark. */
+  logoUrl?: string
+  /**
+   * What the deployment says to everyone (`ServerConfig.announcement`), as Markdown, under the
+   * logo while there is room for it: not on the rail.
+   */
+  announcement?: string
   /** Shown in place of the list when there is nothing to list, e.g. "No workspaces yet." */
   notice?: string
   /** Logos of the connected apps, shown in the connect button, which only `icons` has for now. */
@@ -129,6 +137,8 @@ export const Sidebar = ({
   selectedWorkspaceId,
   onSelectWorkspace,
   onGoHome,
+  logoUrl,
+  announcement,
   notice,
   connections,
   library,
@@ -141,7 +151,20 @@ export const Sidebar = ({
 }: SidebarProps) => {
   const narrow = useNarrowScreen()
   const rows = layout === 'rows'
-  const home = <Button icon={<LogoIcon />} aria-label="Home" onClick={onGoHome} className="[&>svg]:size-[1.5em]" />
+  const home = (
+    <Button
+      icon={logoUrl ? <img src={logoUrl} alt="" className="size-[1.5em] object-contain" /> : <LogoIcon />}
+      aria-label="Home"
+      onClick={onGoHome}
+      className="[&>svg]:size-[1.5em]"
+    />
+  )
+  // In from the edge as a workspace's title is, and quiet, as it is said to everyone all along.
+  const said = announcement && (
+    <div role="note" aria-label="Announcement" className="shrink-0 px-2 text-sm leading-snug text-kumo-subtle wrap-break-word [&_a]:font-medium [&_a]:text-kumo-default">
+      <Markdown>{announcement}</Markdown>
+    </div>
+  )
   const workspacesButton = (
     <Button
       icon={FolderIcon}
@@ -225,6 +248,7 @@ export const Sidebar = ({
             </Button>
           )}
         </header>
+        {said}
         {nav}
         <footer className="mt-0.5 -mb-1.5">
           <NavRows>
@@ -282,6 +306,7 @@ export const Sidebar = ({
         {libraryButton}
         {search}
       </header>
+      {said}
       {nav}
       <footer className="flex items-center justify-between">
         {account}

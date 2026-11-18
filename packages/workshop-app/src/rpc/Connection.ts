@@ -49,6 +49,16 @@ export class Connection {
   /** Tries again now, rather than when the next attempt is due. Nothing while one is under way. */
   retryNow = () => this.#wake?.()
 
+  /**
+   * Drops the connection that is up and makes a new one, as if it had broken: for a socket still
+   * talking to a backend that a deploy replaced (`useStaleBackendReconnect`). Nothing while there is
+   * none up.
+   */
+  reconnect = () => {
+    const { publicApi } = this.#snapshot
+    if (publicApi) this.#onBroken(publicApi)
+  }
+
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener)
     return () => {

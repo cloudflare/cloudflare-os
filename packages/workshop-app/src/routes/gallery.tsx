@@ -51,6 +51,7 @@ import { ListViewPreview } from '@/gallery/ListViewPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
+import { OnboardingPreview } from '@/gallery/OnboardingPreview'
 import { Section } from '@/gallery/Section'
 import { AddConnectionPreview, SetUpConnectionPreview } from '@/gallery/SetUpConnectionPreview'
 import { SearchPreview } from '@/gallery/SearchPreview'
@@ -388,6 +389,7 @@ function Gallery() {
       <AdminAuditPreview />
       <AdminUpdatesPreview />
       <SignInPreview />
+      <OnboardingPreview />
       <SearchPreview />
       <HeaderPreview />
       <AutomationsPreview />
