@@ -14,6 +14,11 @@ export type GoogleProviderDiagnostics = {
   providerCode?: number;
   providerStatus?: string;
   providerReasons?: string[];
+  /**
+   * Set only when Google's error body was read to the end and parsed as `{error: {...}}`, so that
+   * reasons missing from it are reasons Google didn't give, not ones that were never read.
+   */
+  providerErrorRead?: true;
 };
 
 type GoogleJsonResponseOptions = {
@@ -31,6 +36,8 @@ export class GoogleApiError extends Error {
     message: string,
     readonly providerStatus: string | undefined,
     readonly providerReasons: readonly string[] = [],
+    /** Whether Google's error body was read and parsed; see `GoogleProviderDiagnostics`. */
+    readonly providerErrorRead: boolean = false,
   ) {
     super(message);
   }
@@ -75,7 +82,7 @@ function parseProviderDiagnostics(text: string): GoogleProviderDiagnostics {
   addProviderReasons(providerError.errors, reasons);
   addProviderReasons(providerError.details, reasons);
 
-  let diagnostics: GoogleProviderDiagnostics = {};
+  let diagnostics: GoogleProviderDiagnostics = {providerErrorRead: true};
   if (providerCode !== undefined) diagnostics.providerCode = providerCode;
   if (providerStatus !== undefined) diagnostics.providerStatus = providerStatus;
   if (reasons.size > 0) diagnostics.providerReasons = [...reasons];
@@ -150,7 +157,8 @@ export async function readGoogleJson<T>(
   if (!response.ok) {
     let diagnostics = await reportGoogleRequestFailure(response, provider, operation);
     throw new GoogleApiError(`${provider} ${operation} failed [http=${response.status}]`,
-      diagnostics.providerStatus, diagnostics.providerReasons);
+      diagnostics.providerStatus, diagnostics.providerReasons,
+      diagnostics.providerErrorRead === true);
   }
 
   let text = await readBoundedText(response, maxBytes, provider);

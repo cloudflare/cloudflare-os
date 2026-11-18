@@ -1428,8 +1428,9 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
  * Whether the account behind `getToken` can open a native file in the API that reads it (Docs,
  * Sheets or Slides): false when Google refuses it without giving a reason (403) or doesn't hold it
  * for the account (404), and a throw for any other failure. Google gives a reason for the refusals
- * that say nothing about the account's access, such as a missing scope or a disabled API, and a
- * 401 that survives a fresh token means the credentials, not the file.
+ * that say nothing about the account's access, such as a missing scope or a disabled API, so a
+ * refusal whose reasons couldn't be read throws; a 401 that survives a fresh token means the
+ * credentials, not the file.
  */
 async function hasNativeFileAccess(
     getToken: (opts?: AccessTokenRequest) => Promise<string>,
@@ -1444,7 +1445,8 @@ async function hasNativeFileAccess(
   } catch (error) {
     let status = httpStatusFromError(error);
     if (error instanceof GoogleApiError &&
-        (status === 404 || (status === 403 && error.providerReasons.length === 0))) {
+        (status === 404 ||
+          (status === 403 && error.providerErrorRead && error.providerReasons.length === 0))) {
       return false;
     }
     throw error;
