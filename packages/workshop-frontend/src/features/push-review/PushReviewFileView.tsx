@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import type { RpcStub } from 'capnweb'
 import { Loader } from '@cloudflare/kumo'
 import type { Overseer } from '@gadgets/workshop-shared/api'
+import { MAX_BUFFERED_BLOB_SIZE } from '@gadgets/workshop-shared/gatekeeper'
 import { ExactText } from '../../components/ExactText'
 import { formatSize } from '../../components/ActionFields'
 import { WorkshopButton } from '../../components/WorkshopControls'
@@ -14,6 +15,7 @@ import {
   ROOT_LABEL, comparableParent, pathChange, pathNotes, shortOid,
   type CommitRow, type DirectoryState, type PathNotesContext, type PathRow,
 } from './pushReviewModel'
+import { usePushReviewEarlier } from './usePushReviewEarlier'
 import type { PushFileState } from './usePushReviewFiles'
 
 const headingClass = 'm-0 text-[12px] font-semibold leading-4 text-kumo-default'
@@ -58,7 +60,9 @@ const notShown = (file: Exclude<CommitFile, { kind: 'text' }>): ReactNode =>
 
 /**
  * One path of a commit: what it is, in plain statements, and its content when that is text. A
- * file the push sends shows as a diff against a parent's version, or whole when there is none; a
+ * file the push sends shows as soon as its text is in: whole at first, and as a diff once a
+ * parent's version has been read to set it against. That version is context and is never
+ * waited for; one too large to arrive as text is not fetched, and the file stays whole. A
  * deleted file shows what is removed, and so does a directory where a parent has a file. A
  * directory the push sends shows its own entries (`directory`). What the push sends is the
  * review's own read (`state`); the parent's side, and a file the push does not send, are read
@@ -86,15 +90,22 @@ export const PushReviewFileView = ({ overseer, commit, row, beneath, state, dire
   const sentText = typeof state === 'object' && 'text' in state ? state.text : undefined
   const paths = [row.path]
 
-  // The parent's version is read once there is something to set it against.
   const chosen = parentIndex === undefined ? undefined : row.parents[parentIndex]
   const hasFile = chosen?.kind === 'file' || chosen?.kind === 'executable' || chosen?.kind === 'symlink'
-  const comparing = hasFile && (removes || sentText !== undefined)
-  const parentRead = useFilesAtCommit(
-    overseer, comparing ? commit.parents[parentIndex!] : undefined, paths, retryToken)
-  const earlier = comparing ? parentRead.files.get(row.path) : undefined
-  const earlierFailed = comparing && (parentRead.error !== null || earlier?.kind === 'absent')
-  const earlierLoading = comparing && earlier === undefined && parentRead.error === null
+  const parentCommit = hasFile ? commit.parents[parentIndex!] : undefined
+
+  // What is removed is the parent's version itself, read whole as the code view reads a file.
+  const removedRead = useFilesAtCommit(overseer, removes ? parentCommit : undefined, paths, retryToken)
+  const removed = removes && hasFile ? removedRead.files.get(row.path) : undefined
+  const removedFailed = removes && hasFile && (removedRead.error !== null || removed?.kind === 'absent')
+  const removedLoading = removes && hasFile && removed === undefined && removedRead.error === null
+
+  // What a sent file is compared with is read beside it, from the moment the file is, and
+  // only as far as one read returns it.
+  const earlier = usePushReviewEarlier(
+    overseer, !removes && (sentText !== undefined || state === 'loading') ? parentCommit : undefined, row.path,
+    retryToken)
+  const earlierText = typeof earlier === 'object' && 'kind' in earlier && earlier.kind === 'text' ? earlier.text : null
 
   const canShow = row.entry && !row.sent &&
     (row.entry.kind === 'file' || row.entry.kind === 'executable' || row.entry.kind === 'symlink')
@@ -102,39 +113,49 @@ export const PushReviewFileView = ({ overseer, commit, row, beneath, state, dire
   const own = shown ? ownRead.files.get(row.path) : undefined
 
   const editorKey = `${row.commit}:${row.path}:${parentIndex}`
-  const earlierNote = earlierFailed ? (
-    <Failure
-      message="The earlier version could not be read."
-      onRetry={parentRead.error !== null ? retryRead : undefined}
-    />
-  ) : earlier?.kind === 'text' ? (
+  const earlierNote = earlier === undefined ? null : earlier === 'loading' ? (
+    <p role="status" className={statementClass}>
+      The file is shown whole while its earlier version loads to compare with.
+    </p>
+  ) : 'failed' in earlier ? (
+    <Failure message="The earlier version could not be read." onRetry={retryRead} />
+  ) : earlier.kind === 'absent' ? (
+    <Failure message="The earlier version could not be read." />
+  ) : earlier.kind === 'text' ? (
     <p className={statementClass}>
       Removed lines are the earlier version&apos;s, not sent; long ones are cut at the edge.
     </p>
-  ) : earlier ? (
+  ) : earlier.kind === 'blob' && earlier.blob.byteLength > MAX_BUFFERED_BLOB_SIZE ? (
+    <p className={statementClass}>
+      The file is shown whole: its earlier version, {formatSize(earlier.blob.byteLength)}, is too large to compare
+      with.
+    </p>
+  ) : (
     <p className={statementClass}>The earlier version is not text, so the whole file is shown.</p>
-  ) : null
+  )
 
   let content: ReactNode = null
   if (removes) {
-    if (earlierLoading) {
+    if (removedLoading) {
       content = <Loader aria-label="Loading the removed file" />
-    } else if (earlierFailed) {
-      content = <Failure message="The removed file could not be read." onRetry={parentRead.error !== null ? retryRead : undefined} />
-    } else if (earlier?.kind === 'text') {
-      content = <ReadOnlyDiff editorKey={editorKey} path={row.path} original={earlier.text} text="" />
-    } else if (earlier && earlier.kind !== 'absent') {
-      content = <p className={statementClass}>The removed file: {notShown(earlier)}</p>
+    } else if (removedFailed) {
+      content = <Failure message="The removed file could not be read." onRetry={removedRead.error !== null ? retryRead : undefined} />
+    } else if (removed?.kind === 'text') {
+      content = <ReadOnlyDiff editorKey={editorKey} path={row.path} original={removed.text} text="" />
+    } else if (removed && removed.kind !== 'absent') {
+      content = <p className={statementClass}>The removed file: {notShown(removed)}</p>
     } else if (comparableParent(row) !== undefined) {
       content = <p className={statementClass}>This parent has no file at this path.</p>
     }
   } else if (sentText !== undefined) {
-    content = earlierLoading ? <Loader aria-label="Loading the earlier version" /> : (
+    // The diff is a fresh editor, as it is for another parent: the one showing the file whole
+    // is not handed an original.
+    content = (
       <>
         <ReadOnlyDiff
-          editorKey={editorKey}
+          editorKey={`${editorKey}:${earlierText === null ? 'whole' : 'diff'}`}
           path={row.path}
-          original={earlier?.kind === 'text' ? earlier.text : null}
+          original={earlierText}
           text={sentText}
         />
         {earlierNote}
