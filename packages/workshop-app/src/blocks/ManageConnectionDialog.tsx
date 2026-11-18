@@ -127,7 +127,7 @@ const ManageConnectionDialogContent = ({ name, logoUrl, color, tagline, descript
 
       <footer className="flex flex-col gap-3 p-6">
         {problem && <Banner title={problem} />}
-        {/* Its three buttons go on to another line where there is no room for them. A button that says the service's name is cut short instead, as the name may be longer than any line. */}
+        {/* Where there is no room for its three buttons, Disconnect goes on a line of its own, above the two that end the dialog. A button that says the service's name is cut short instead, as the name may be longer than any line. */}
         <div className={cn('flex items-center justify-end gap-2', adding.length === 0 && 'flex-wrap')}>
           {adding.length > 0 ? (
             <>
@@ -140,13 +140,14 @@ const ManageConnectionDialogContent = ({ name, logoUrl, color, tagline, descript
           ) : (
             <>
               <ConfirmMenu {...disconnect} label={waiting('disconnect') ? 'Disconnecting…' : 'Disconnect'} align="start" />
-              <span className="flex-1" />
-              {onConnectAnother && (
-                <Button icon={UserPlusIcon} disabled={pending} onClick={() => ask('another', onConnectAnother)}>
-                  {waiting('another') ? 'Opening…' : 'Add account'}
-                </Button>
-              )}
-              <Dialog.Close render={(props) => <Button {...props} variant="primary" disabled={pending}>Done</Button>} />
+              <span className="ms-auto flex items-center gap-2">
+                {onConnectAnother && (
+                  <Button icon={UserPlusIcon} disabled={pending} onClick={() => ask('another', onConnectAnother)}>
+                    {waiting('another') ? 'Opening…' : 'Add account'}
+                  </Button>
+                )}
+                <Dialog.Close render={(props) => <Button {...props} variant="primary" disabled={pending}>Done</Button>} />
+              </span>
             </>
           )}
         </div>
