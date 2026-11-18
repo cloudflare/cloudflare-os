@@ -25,6 +25,7 @@ import {
   useGadget,
   user,
   VIEWER,
+  webFetchRequest,
   type MessageDraft,
 } from './mock/scenario'
 import { SCENARIOS } from './mock/scenarios'
@@ -408,6 +409,26 @@ describe('toChatFeed', () => {
         ['connected', 'ClickHouse cluster'], ['denied', 'ClickHouse cluster'], ['pending', 'ClickHouse cluster'],
       ])
       expect(result.pinned).toMatchObject([{ kind: 'connection', state: 'pending' }])
+    })
+
+    it('keeps page fetches waiting under the answer, the last of several offering to approve the others with it', () => {
+      const result = feed(
+        user('compare the prices'),
+        webFetchRequest('https://a.example/p', 'approved'),
+        webFetchRequest('https://b.example/p'),
+        webFetchRequest('https://c.example/p'),
+        agent({ text: 'Waiting on you.' }),
+      )
+      expect(kinds(result)).toEqual(['user', 'webFetch', 'assistant', 'webFetch', 'webFetch'])
+      const [decided, first, last] = only(result, 'webFetch')
+      expect(decided).toMatchObject({ state: 'approved', url: 'https://a.example/p' })
+      expect(first!.others).toBeUndefined()
+      expect(last!.others).toEqual([first!.requestId])
+    })
+
+    it('offers no approve-all for one fetch waiting', () => {
+      const [item] = only(feed(user('go'), webFetchRequest('https://a.example/p')), 'webFetch')
+      expect(item).toMatchObject({ state: 'pending', others: undefined })
     })
   })
 

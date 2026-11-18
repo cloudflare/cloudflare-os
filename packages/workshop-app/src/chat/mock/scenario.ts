@@ -172,6 +172,17 @@ export const connectionRequest = (
   ...extra,
 })
 
+let fetchCount = 0
+
+/** The agent asking to fetch a page the restricted workspace refuses it. */
+export const webFetchRequest = (url: string, state: Body<'webFetchRequest'>['state'] = 'pending'): Authored<'webFetchRequest'> => ({
+  type: 'webFetchRequest',
+  requestId: `fetch-${++fetchCount}`,
+  url,
+  state,
+  author: AGENT,
+})
+
 /** Saved edits. Authored by the viewer unless `extra.author` says otherwise. */
 export const changes = (extra: Partial<Authored<'changes'>> = {}): Authored<'changes'> => ({
   type: 'changes',

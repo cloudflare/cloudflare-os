@@ -84,6 +84,8 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     approveAction: vi.fn<Overseer['approveAction']>(async () => {}),
     rejectAction: vi.fn<Overseer['rejectAction']>(async () => {}),
     denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
+    approveWebFetchRequest: vi.fn<Overseer['approveWebFetchRequest']>(async () => {}),
+    denyWebFetchRequest: vi.fn<Overseer['denyWebFetchRequest']>(async () => {}),
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
     disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
     setChatTitle: vi.fn<Overseer['setChatTitle']>(async () => {}),
@@ -879,6 +881,17 @@ describe('ChatSession', () => {
 
       expect(fake.retryAgent).toHaveBeenCalledExactlyOnceWith(4, 'model-1')
       expect(fake.denyConnectionRequest).toHaveBeenCalledExactlyOnceWith('request-1')
+    })
+
+    it('approves each page fetch asked, in order, and denies one', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(4, 'Chat', 1)]))
+      const session = await started(fake, 4)
+
+      await session.approveWebFetches(['fetch-1', 'fetch-2'])
+      await session.denyWebFetch('fetch-3')
+
+      expect(fake.approveWebFetchRequest.mock.calls).toEqual([['fetch-1'], ['fetch-2']])
+      expect(fake.denyWebFetchRequest).toHaveBeenCalledExactlyOnceWith('fetch-3')
     })
 
     it('shows a new title at once, and puts the old one back when it is refused', async () => {

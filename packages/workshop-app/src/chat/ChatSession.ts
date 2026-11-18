@@ -96,6 +96,8 @@ type Calls =
   | 'approveAction'
   | 'rejectAction'
   | 'denyConnectionRequest'
+  | 'approveWebFetchRequest'
+  | 'denyWebFetchRequest'
   | 'enableHook'
   | 'disableHook'
   | 'setChatTitle'
@@ -454,6 +456,13 @@ export class ChatSession {
   rejectAction = (actionId: number) => this.#ask((overseer) => overseer.rejectAction(actionId))
 
   denyConnection = (requestId: string) => this.#ask((overseer) => overseer.denyConnectionRequest(requestId))
+
+  /** Approves each of the agent's requests to fetch a page, one after another. */
+  approveWebFetches = (requestIds: readonly string[]) => this.#ask(async (overseer) => {
+    for (const requestId of requestIds) await overseer.approveWebFetchRequest(requestId)
+  })
+
+  denyWebFetch = (requestId: string) => this.#ask((overseer) => overseer.denyWebFetchRequest(requestId))
 
   setHookEnabled = (hookId: number, enabled: boolean) =>
     this.#ask((overseer) => (enabled ? overseer.enableHook(hookId) : overseer.disableHook(hookId)))

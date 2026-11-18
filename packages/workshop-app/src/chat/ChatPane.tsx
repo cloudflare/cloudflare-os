@@ -171,6 +171,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onHookEnabledChange: actions.setHookEnabled,
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
       onDenyConnection: actions.denyConnection,
+      onApproveWebFetch: actions.approveWebFetches,
+      onDenyWebFetch: actions.denyWebFetch,
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       onContinue: () => setCreditsShown((shown) => ({ ...shown, open: true })),
     }

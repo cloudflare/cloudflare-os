@@ -140,6 +140,18 @@ export type ConnectionItem = Row & {
   reason: string
   state: 'pending' | 'connected' | 'denied'
 }
+/**
+ * The agent asking to fetch a page that the workspace, having read sensitive data, does not let it
+ * reach on its own. The agent goes on only once every request it made is decided.
+ */
+export type WebFetchItem = Row & {
+  kind: 'webFetch'
+  requestId: string
+  url: string
+  state: 'pending' | 'approved' | 'denied'
+  /** On the last of several waiting, the others, so all can be approved at once. */
+  others?: readonly string[]
+}
 export type NoticeItem = Row & {
   kind: 'notice'
   notice: 'callback' | 'unknown'
@@ -164,7 +176,7 @@ export type ErrorItem = Row & {
  * What an answer produced, or is waiting on the user for. These are shown under the answer, not
  * where they happened. An approval or a connection request is one only until it is decided.
  */
-export type ArtefactItem = OutputItem | HookItem | ActionItem | ConnectionItem
+export type ArtefactItem = OutputItem | HookItem | ActionItem | ConnectionItem | WebFetchItem
 
 /** One row of the conversation. */
 export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem
@@ -477,6 +489,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     ...(previous?.items ?? []).flatMap((item) => (item.kind === 'assistant' ? item.trace : [])),
   ])
   const creationState = creationStates(messages)
+  const waitingFetches = messages.flatMap((message) => (message.type === 'webFetchRequest' && message.state === 'pending' ? [message.requestId] : []))
   const { viewerId, compactedTo } = context
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
 
@@ -671,6 +684,23 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           resourceUrl: message.resourceUrl,
           reason: message.reason,
           state: message.state === 'accepted' ? 'connected' : message.state,
+        }))
+        if (item.state === 'pending') pinned.push(item)
+        else items.push(item)
+        break
+      }
+
+      case 'webFetchRequest': {
+        carryOn()
+        const { requestId } = message
+        const others = waitingFetches.length > 1 && waitingFetches.at(-1) === requestId ? waitingFetches.slice(0, -1) : undefined
+        const item = emit<WebFetchItem>(`webFetch:${id}`, [message, others?.join(' ')], () => ({
+          kind: 'webFetch',
+          id,
+          requestId,
+          url: message.url,
+          state: message.state,
+          others,
         }))
         if (item.state === 'pending') pinned.push(item)
         else items.push(item)

@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { ActionCard } from '@/blocks/ActionCard'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
+import { WebFetchRequestCard } from '@/blocks/WebFetchRequestCard'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { HookCard } from '@/blocks/HookCard'
@@ -33,6 +34,8 @@ export type ChatItemHandlers = {
   /** Sets up what an agent asked to be connected to (`SetUpConnection`). */
   onSetUpConnection: (request: ConnectionItem) => ActionResult
   onDenyConnection: (requestId: string) => ActionResult
+  onApproveWebFetch: (requestIds: readonly string[]) => ActionResult
+  onDenyWebFetch: (requestId: string) => ActionResult
   onRetry: () => ActionResult
   onContinue: () => ActionResult
 }
@@ -155,6 +158,20 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           />
         )
         : <ConnectionRequestCard {...request} state={item.state} />
+    }
+    case 'webFetch': {
+      if (item.state !== 'pending') return <WebFetchRequestCard url={item.url} state={item.state} />
+      const { requestId, others } = item
+      return (
+        <WebFetchRequestCard
+          url={item.url}
+          state="pending"
+          restricted={restricted}
+          onApprove={() => handlers.onApproveWebFetch([requestId])}
+          onDeny={() => handlers.onDenyWebFetch(requestId)}
+          approveAll={others && { count: others.length + 1, onApprove: () => handlers.onApproveWebFetch([...others, requestId]) }}
+        />
+      )
     }
     case 'notice':
       return <SystemRow icon={NOTICE_ICONS[item.notice]} detail={item.detail}>{item.text}</SystemRow>

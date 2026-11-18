@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { FileTextIcon, ImageIcon, WaveformIcon } from '@phosphor-icons/react'
 import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
+import { WebFetchRequestCard } from '@/blocks/WebFetchRequestCard'
 import { HookCard } from '@/blocks/HookCard'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { OutputCard } from '@/blocks/OutputCard'
@@ -215,6 +216,21 @@ export const CardBlocksPreview = () => {
           <ConnectionRequestCard vendorName="Cloudflare" logoUrl="/favicon.svg" scope="Workers account" reason="To read last week’s error rates." state="pending" onSetUp={after('set up')} onDeny={after('connection denied')} />
           <ConnectionRequestCard vendorName="Cloudflare" logoUrl="/favicon.svg" scope="Workers account" reason="To read last week’s error rates." state="connected" />
           <ConnectionRequestCard vendorName="Grafana" logoUrl="/missing.svg" scope="Grafana dashboard" reason="To overlay deploy markers on the error-rate chart." state="denied" />
+        </Column>
+      </Section>
+      <Section title="WebFetchRequestCard (pending, restricted with approve all, approved, denied)">
+        <Column>
+          <WebFetchRequestCard url="https://status.example.com/history?since=2026-11-01" state="pending" onApprove={after('fetch approved')} onDeny={after('fetch denied')} />
+          <WebFetchRequestCard
+            url="https://prices.example.com/compare?sku=A-1042&region=eu"
+            state="pending"
+            restricted
+            onApprove={after('fetch approved')}
+            onDeny={after('fetch denied')}
+            approveAll={{ count: 3, onApprove: after('3 fetches approved') }}
+          />
+          <WebFetchRequestCard url="https://docs.example.com/api/v2" state="approved" />
+          <WebFetchRequestCard url="https://tracker.example.net/pixel" state="denied" />
         </Column>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>

@@ -543,6 +543,22 @@ export class MockOverseer {
     this.player.fire('onDenyConnection')
   }
 
+  async approveWebFetchRequest(requestId: string) {
+    this.#resolveFetch(requestId, 'approved')
+  }
+
+  async denyWebFetchRequest(requestId: string) {
+    this.#resolveFetch(requestId, 'denied')
+  }
+
+  #resolveFetch(requestId: string, state: 'approved' | 'denied') {
+    const request = this.#messages.find((message) => message.type === 'webFetchRequest' && message.requestId === requestId)
+    if (request?.type !== 'webFetchRequest' || request.state !== 'pending') throw new Error('No such pending request.')
+    const resolved = { ...request, state }
+    this.#replace(resolved)
+    this.#deliver(resolved)
+  }
+
   #run(step: ScriptStep) {
     if ('restart' in step) this.#restart(step.restart)
     else if ('disconnect' in step) this.#disconnect(step.disconnect)
