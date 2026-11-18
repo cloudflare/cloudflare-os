@@ -810,16 +810,30 @@ test("an unknown command or option says which was meant: a near name, or where t
   real(["list-worksapces"], /Did you mean list-workspaces\? /);
 });
 
-test("an admin's view of a workspace has seventeen commands, and none reads content", () => {
+test("an admin's view of a workspace has twenty-two commands, five of which read content", () => {
   assert.deepEqual(Object.keys(realTable.nodes.AdminWorkspaceView.commands).toSorted(), [
-    "describe", "get-chat-state", "get-commit-log", "get-diagnostics", "list-actions", "list-auto-approvals",
-    "list-blueprints", "list-changed-paths", "list-chat-attachments", "list-chats", "list-files",
-    "list-files-at-commit", "list-gatekeepers", "list-observer-requirements", "list-observers",
-    "list-pending-changes", "list-share-links",
+    "describe", "get-chat", "get-chat-state", "get-commit-log", "get-diagnostics", "list-actions",
+    "list-auto-approvals", "list-blueprints", "list-changed-paths", "list-chat-attachments", "list-chats",
+    "list-files", "list-files-at-commit", "list-gatekeepers", "list-observer-requirements", "list-observers",
+    "list-pending-changes", "list-share-links", "read-chat-attachment", "read-file", "read-file-at-commit",
+    "read-pending-file",
   ]);
-  for (const name of ["get-chat", "read-chat-attachment", "read-file", "read-file-at-commit", "read-pending-file"]) {
-    assert.throws(() => parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", name]),
-      (error: Error) => error instanceof UsageError && error.message.startsWith(`AdminWorkspaceView has no command "${name}"`));
+  const view = (...tokens: string[]) =>
+    names(parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", ...tokens]).hops);
+  for (const [name, ...args] of [
+    ["get-chat", "1"], ["read-chat-attachment", "1", "a"], ["read-file", "1", "p"], ["read-file-at-commit", "c", "p"],
+    ["read-pending-file", "1", "1", "p"],
+  ]) {
+    assert.deepEqual(view(name, ...args), ["get-admin-api", "inspect-workspace", name]);
+  }
+  // The optional parameter is a flag.
+  assert.deepEqual(view("get-chat", "1", "--before-sequence", "5"), ["get-admin-api", "inspect-workspace", "get-chat"]);
+  // A file read answers with an object that holds a stream, and an attachment read with a stream.
+  const { commands } = realTable.nodes.AdminWorkspaceView;
+  assert.equal(commands["read-chat-attachment"]!.returns.kind, "stream");
+  for (const name of ["read-file", "read-file-at-commit", "read-pending-file"]) {
+    const { returns } = commands[name]!;
+    assert.ok(returns.kind === "value" && returns.stream === true && returns.type.startsWith("AdminFileContent = "), name);
   }
 });
 

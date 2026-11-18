@@ -3,15 +3,17 @@ import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_WORKSPACE_METHODS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
   MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
   MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
-  type ActionLogEntry, type AdminChatState, type AiChatMetadata, type BlueprintGadgetSummary,
-  type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec, type WorkpieceSummary,
+  type ActionLogEntry, type AdminChatState, type AdminFileContent, type AdminWorkspaceAccess,
+  type AiChatHistoryPage, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
+  type CommitInfo, type GatekeeperCreationSpec, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy,
-  adminAuditStatsDays, adminAuditValue, adminCommitLogDepth, adminListLimit, adminSettingChange,
-  adminViewLifetimeMs, adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId,
-  blueprintHoldsContent, chatHoldsContent, chatStateHoldsContent, commitHoldsContent,
-  creationHoldsContent, cutAdminAuditText, hookHoldsContent, lowerAdminWorkspaceAccess,
+  adminAuditStatsDays, adminAuditValue, adminCommitLogDepth, adminContentRefusal, adminListLimit,
+  adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, assertAdminViewLive,
+  auditOwnerId, blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent,
+  chatStateHoldsContent, commitHoldsContent, creationHoldsContent, cutAdminAuditText,
+  fileHoldsContent, hookHoldsContent, lowerAdminWorkspaceAccess,
   maxAdminWorkspaceAccess, minAdminAuditRetentionDays, namedUser, redactAdminAuditArgs,
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent, withholdChatContent,
   withholdChatStateContent, withholdCommitContent, withholdCreationContent, withholdHookContent,
@@ -313,8 +315,11 @@ describe("view calls", () => {
   it("classifies every recorded method, the open as one that answers with metadata alone", () => {
     expect(Object.keys(ADMIN_METHOD_ANSWERS).toSorted())
         .toStrictEqual([...ADMIN_WORKSPACE_METHODS].toSorted());
-    // The open and the seventeen view methods.
-    expect(Object.keys(ADMIN_METHOD_ANSWERS)).toHaveLength(18);
+    // The open and the twenty-two view methods.
+    expect(Object.keys(ADMIN_METHOD_ANSWERS)).toHaveLength(23);
+    for (let method of ADMIN_WORKSPACE_METHODS) {
+      expect(["metadata", "mixed", "content"], method).toContain(ADMIN_METHOD_ANSWERS[method]);
+    }
     // A view is opened for content without a grant being looked for.
     expect(ADMIN_METHOD_ANSWERS.inspectWorkspace).toBe("metadata");
     let mixed = Object.entries(ADMIN_METHOD_ANSWERS)
@@ -323,8 +328,29 @@ describe("view calls", () => {
       "describe", "getChatState", "getCommitLog", "listActions", "listBlueprints", "listChats",
       "listGatekeepers",
     ]);
-    expect(new Set(Object.values(ADMIN_METHOD_ANSWERS)))
-        .toStrictEqual(new Set(["metadata", "mixed"]));
+    // The five reads that answer with content alone.
+    let content = Object.entries(ADMIN_METHOD_ANSWERS)
+        .filter(([, answer]) => answer === "content").map(([method]) => method);
+    expect(content.toSorted()).toStrictEqual(
+        ["getChat", "readChatAttachment", "readFile", "readFileAtCommit", "readPendingFile"]);
+  });
+
+  it("refuses content to a view opened for metadata, then below the content level", () => {
+    let policy = (access: AdminWorkspaceAccess) => ({ access, retentionDays: 90 });
+    let { contentNotRequested, contentOff } = ADMIN_ACCESS_ERROR_CODES;
+    // What the view was opened for is checked first, whatever the level in force.
+    let forMetadata = { ...terms(), access: "metadata" } as const;
+    for (let access of ["off", "metadata", "content"] as const) {
+      expect(adminContentRefusal(forMetadata, policy(access)), access).toBe(contentNotRequested);
+    }
+    let forContent = { ...terms(), access: "content" } as const;
+    expect(adminContentRefusal(forContent, policy("off"))).toBe(contentOff);
+    expect(adminContentRefusal(forContent, policy("metadata"))).toBe(contentOff);
+    expect(adminContentRefusal(forContent, policy("content"))).toBeUndefined();
+    // It reads neither the view's expiry nor its admin: those are assertAdminViewLive()'s.
+    expect(adminContentRefusal(
+        { ...terms({ expiresAt: new Date(0) }), access: "content" }, policy("content")))
+        .toBeUndefined();
   });
 });
 
@@ -615,6 +641,26 @@ describe("whether an answer holds content", () => {
     expect(workpieceHoldsContent(gadgetSummary())).toBe(false);
     expect(workpieceHoldsContent({ id: "w", type: "worktree", title: "W" } as WorkpieceSummary))
         .toBe(false);
+  });
+
+  it("finds a message or a compaction summary in a chat's page", () => {
+    let message = { type: "message", message: "hello" } as AiChatHistoryPage["messages"][number];
+    expect(chatPageHoldsContent({ messages: [message] })).toBe(true);
+    expect(chatPageHoldsContent({ messages: [], compacted: { to: 4, summary: "so far" } }))
+        .toBe(true);
+    expect(chatPageHoldsContent({ messages: [] })).toBe(false);
+    expect(chatPageHoldsContent({ messages: [], compacted: undefined })).toBe(false);
+  });
+
+  it("finds any file a read found, an unreadable one too", () => {
+    let files: AdminFileContent[] = [
+      { kind: "text", text: "" },
+      { kind: "stream", byteLength: 0, content: new Blob([]).stream() },
+      // Its message can quote the file: a symlink's quotes its target.
+      { kind: "unreadable", message: "link.md is a symlink to README.md" },
+    ];
+    for (let file of files) expect(fileHoldsContent(file), file.kind).toBe(true);
+    expect(fileHoldsContent({ kind: "absent" })).toBe(false);
   });
 });
 
