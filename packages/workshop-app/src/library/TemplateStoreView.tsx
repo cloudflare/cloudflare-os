@@ -3,7 +3,6 @@ import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { ListToolbar } from '@/blocks/ListToolbar'
 import { PromoCarousel } from '@/blocks/PromoCarousel'
 import { TemplateCard } from '@/blocks/TemplateCard'
-import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { CardGrid } from '@/components/CardGrid'
 import { HeaderBubble } from '@/components/HeaderBubble'
@@ -38,8 +37,6 @@ export type TemplateStoreViewProps = {
   templates: Template[]
   /** Said in place of the templates while there are none to show yet: still being read, or why they could not be. */
   status?: { loading: true } | { failed: string; onRetry: () => void }
-  /** Why the last thing asked for, such as publishing, could not be done. */
-  problem?: string
   /** How they are listed: the order, the filters and what they are searched for. */
   list: ListView<Template, ListOrder<Template>>
   /** The ids of the starred ones, in their order. */
@@ -74,7 +71,7 @@ const promoted = (templates: Template[]) => {
  * them, and one each those of a kind, under the controls a list has; a search or a filter lists
  * what it leaves in place of the front.
  */
-export const TemplateStoreView = ({ tab, onTabChange, templates, status, problem, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onPublish }: TemplateStoreViewProps) => {
+export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, stars, onStarsChange, onOpenTemplate, templateHref, onBack, apps, onPublish }: TemplateStoreViewProps) => {
   const narrow = useNarrowScreen()
   const kinds = templatesByType(templates)
   const tabs = [
@@ -146,7 +143,6 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, problem
           {/* The one panel, whichever tab it is of, so that what is typed in the search is not let go of from one to the next. */}
           <Tabs.Panel value={current} className="flex flex-col gap-6">
             {!narrow && toolbar}
-            {problem && <Banner title={problem} />}
             {status && 'loading' in status && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading templates…</p>}
             {status && 'failed' in status && (
               <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
