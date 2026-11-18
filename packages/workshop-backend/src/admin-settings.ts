@@ -14,7 +14,7 @@ import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatew
 import { AgentTurnError, completeText } from './ai-invoke.js';
 import { gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel } from './ai-models.js';
 import { SITE_LOGO_R2_KEY, siteLogoImage, validateSiteLogo } from './site-logo.js';
-import { ambientGatekeeperMode, DEFAULT_AMBIENT_GATEKEEPER_MODE } from './provisioning-policy.js';
+import { ambientGatekeeperMode, defaultAmbientGatekeeperMode } from './provisioning-policy.js';
 import { buildGatekeeperVendorMap } from './auth/auth-vendors.js';
 import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
@@ -1403,7 +1403,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   /**
    * Set a gatekeeper's availability atomically (read-modify-write within the DO). Routes by kind: an
    * auto-provisioning ("ambient") gatekeeper stores its three-state mode in ambientGatekeeperModes
-   * (default stored as absence); an ordinary gatekeeper stores a binary enabled/disabled in
+   * (the vendor's default stored as absence); an ordinary gatekeeper stores a binary enabled/disabled in
    * disabledGatekeepers and rejects the ambient-only 'optional'.
    */
   async setGatekeeperMode(vendorId: string, mode: AmbientGatekeeperMode, actor: AdminSettingActor)
@@ -1414,7 +1414,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     if (autoProvisions) {
       await this.#mutateAdminConfig(actor, config => {
         let modes = { ...config.ambientGatekeeperModes };
-        if (mode === DEFAULT_AMBIENT_GATEKEEPER_MODE) delete modes[vendorId]; else modes[vendorId] = mode;
+        if (mode === defaultAmbientGatekeeperMode(vendorId)) delete modes[vendorId]; else modes[vendorId] = mode;
         return { ...config, ambientGatekeeperModes: modes };
       });
     } else {
