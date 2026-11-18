@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { Banner } from '@/components/Banner'
 import { Button } from '@/components/Button'
 import { Dialog } from '@/components/Dialog'
@@ -111,9 +112,15 @@ export const SetUpConnectionDialog = ({
         {resource && <Dialog.Description className="text-sm text-kumo-subtle">{resource}</Dialog.Description>}
       </ServiceDialogHeader>
 
-      <div className="flex min-h-0 flex-col gap-5 overflow-y-auto px-6">
+      <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto px-6">
         {reason && <blockquote className="rounded-(--surface-radius) bg-kumo-tint px-4 py-3 text-base/5 text-kumo-default">{reason}</blockquote>}
-        {accounts === undefined && <p role="status" className="appears-late text-kumo-subtle">Reading your accounts…</p>}
+        {/* In about the room the account and the service's form will take, so that the dialog
+            neither shrinks to this line on its way to them nor jumps much once they are there. */}
+        {accounts === undefined && (
+          <p role="status" className={cn('appears-late text-kumo-subtle', configurator ? 'min-h-[calc(8.375rem+var(--control-size))]' : 'min-h-[calc(1.625rem+var(--control-size))]')}>
+            Reading your accounts…
+          </p>
+        )}
         {none && (
           <p className="text-base/5 text-kumo-subtle">
             {noAccount ?? `Connect your ${name} account first. Then choose what the agent can reach through it.`}

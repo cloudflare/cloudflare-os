@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import { PAGE_SHIFT, pageMotion } from './dialogPageMotion'
 
-const list = { width: 544, height: 600 }
-const form = { width: 640, height: 340 }
+const list = 544
+const form = 640
 const of = (animations: ReturnType<typeof pageMotion>, target: string) => animations.filter((each) => each.target === target)
 
 describe('pageMotion', () => {
-  it('takes the surface from one page’s size to the other’s', () => {
+  it('takes the surface from one page’s width to the other’s', () => {
     const [surface] = of(pageMotion({ from: list, to: form, forward: true, reduced: false }), 'surface')
-    expect(surface?.keyframes).toEqual([{ width: '544px', height: '600px' }, { width: '640px', height: '340px' }])
+    expect(surface?.keyframes).toEqual([{ width: '544px' }, { width: '640px' }])
   })
 
-  it('leaves the surface alone where the pages are one size', () => {
+  it('leaves the surface alone where the pages are one width', () => {
     expect(of(pageMotion({ from: list, to: list, forward: true, reduced: false }), 'surface')).toEqual([])
   })
 
@@ -28,7 +28,7 @@ describe('pageMotion', () => {
     for (const { options } of of(pageMotion({ from: list, to: form, forward: true, reduced: false }), 'outgoing')) expect(options.fill).toBe('forwards')
   })
 
-  it('only fades the pages with reduced motion, over a surface already at its size', () => {
+  it('only fades the pages with reduced motion, over a surface already at its width', () => {
     const reduced = pageMotion({ from: list, to: form, forward: true, reduced: true })
     expect(of(reduced, 'surface')).toEqual([])
     expect(reduced.flatMap(({ keyframes }) => keyframes.flatMap(Object.keys))).toEqual(['opacity', 'opacity', 'opacity', 'opacity'])

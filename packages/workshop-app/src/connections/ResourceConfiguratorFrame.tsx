@@ -12,8 +12,12 @@ export type ResourceConfiguratorFrameProps = Omit<ConfiguratorSetup, 'ui' | 'onR
   onCollect: (collect: (() => Promise<string>) | undefined) => void
 }
 
-// The room kept while the form opens: a line, for what `opening` says.
+// The frame's height until its form says how tall it is: a line, for what `opening` says.
 const OPENING_HEIGHT = 24
+// The room kept while the form opens: about what a form of a field or two takes, its label and
+// a line under it, so that the dialog it is in neither shrinks to the line nor jumps much once the
+// form is drawn.
+const OPENING_ROOM = 88
 // The runtime keeps its form this far in from the frame's sides, for its focus rings. The frame is
 // that much wider than its room, so the form lines up with what is beside it in the dialog.
 const FORM_INSET = 2
@@ -36,8 +40,9 @@ const readMode = () => (document.documentElement.dataset.mode === 'dark' ? 'dark
 
 /**
  * A gatekeeper's resource configurator (`ResourceConfiguratorSession`), in place in what it is in,
- * as tall as its form says once it is drawn, and until then `opening`, the frame kept out of sight
- * so that nothing half-drawn shows. The room grows to the form rather than jumping to it.
+ * as tall as its form says once it is drawn, and until then `opening`, in about the room a form
+ * takes, the frame kept out of sight so that nothing half-drawn shows. The room takes the form's
+ * height at once: a dialog it is in glides to it (`Dialog`).
  *
  * The frame itself is fixed to the window over that room (`placeFrame`), placed again each frame
  * as what it is in scrolls or moves, so that a menu in the form draws past what it is in, over
@@ -142,8 +147,8 @@ export const ResourceConfiguratorFrame = ({ frame, opening, onCollect, ...setup 
     <div
       ref={roomRef}
       // Not shrunk in a column that scrolls, as nothing in it is laid out to say how tall it is.
-      className="relative shrink-0 transition-[height] duration-200 ease-out motion-reduce:transition-none"
-      style={{ height: size?.layout ?? OPENING_HEIGHT }}
+      className="relative shrink-0"
+      style={{ height: size?.layout ?? OPENING_ROOM }}
     >
       {!size && opening}
       {current && (
