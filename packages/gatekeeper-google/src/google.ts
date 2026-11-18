@@ -880,12 +880,16 @@ export class UserAccount extends DurableObject<Env> {
     await this.#holdGrant();
     // Google refused the new credentials meanwhile, and the Workshop, told so, records a reconnect
     // that returns as working. The refusal is forgotten as told, so the next refresh asks Google
-    // again and tells the Workshop of it.
-    if (kv.get<string>("credentialsId") === credentialsId &&
-        kv.get<string>(REFRESH_REFUSED_KEY) !== undefined) {
+    // again and tells the Workshop of it: once the notices queued before have been sent, or one of
+    // them would record it as told again.
+    let refused = () => kv.get<string>("credentialsId") === credentialsId &&
+        kv.get<string>(REFRESH_REFUSED_KEY) !== undefined;
+    if (!refused()) return;
+    await this.#notices.run(() => {
+      if (!refused()) return;
       this.#mintFailure = undefined;
       clearCredentialExpiryLatch(kv);
-    }
+    });
   }
 
   // How many recordings of this object as a grant holder are under way (see #holdGrant).
