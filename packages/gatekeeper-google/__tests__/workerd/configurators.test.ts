@@ -1212,7 +1212,7 @@ describe("BigQuery picker", () => {
    */
   function bigQuery() {
     const calls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
       const path = decodeURIComponent(url.pathname.replace("/bigquery/v2", ""));
       calls.push(path);
@@ -1240,7 +1240,10 @@ describe("BigQuery picker", () => {
         case "/projects/granted/datasets":
           return Response.json({ datasets: [dataset("granted", "reports")] });
         case "/projects/granted/jobs":
-          return Response.json({ status: { state: "DONE" } });
+          // Accepts only a dry run: a probe that ran a real job, billed to the project, fails here.
+          return init?.method === "POST" && JSON.parse(String(init.body)).configuration?.dryRun === true
+            ? Response.json({ status: { state: "DONE" } })
+            : Response.json({ error: { code: 400, message: "Not a dry run", errors: [{ reason: "invalid" }] } }, { status: 400 });
         case "/projects/flaky/datasets":
           return Response.json({ datasets: [dataset("flaky", "logs")] });
         case "/projects/flaky/jobs":
