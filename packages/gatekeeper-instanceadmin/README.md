@@ -552,7 +552,11 @@ whether the agent's turn pauses for a decision; before each apply; by the lend i
 the power is handed over; and by the lend once more as it makes the action's call, in the
 step that sends the write, since this Worker is called and calls back in between. A call
 refused there is refused `needsPerson` with nothing done, and this Worker leaves its action
-pending, neither failed nor of unknown outcome, so a person can still approve it.
+pending, neither failed nor of unknown outcome, so a person can still approve it. That step
+is the last the workspace's object takes: the Admin API and the report store run outside it,
+and a read that lands once the write has left is after the write. Nothing of such a read is in
+the write either. An action's text is fixed when it is queued, and a rule applies only one
+queued while this connection's reads alone had marked the workspace.
 
 - A reply drafted, or a session opened, before the first read waits for a person after it.
 - A note queued before the first read is applied by its rule after it, once nothing ahead of
