@@ -625,8 +625,16 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   (`BindingRow`'s `onRename`, `renameBinding()`): one the code could not reach it by, or that the
   gadget has another by, is refused with why before anything is asked (`bindingNameProblem`, by the
   API's own `validateBindingName()`), and stays in the field under why until it is put right or
-  Escape puts it back. One waiting in a chat is that chat's, and is not renamed here. Nothing is
-  added here: the agent asks for what it needs in a chat.
+  Escape puts it back. One waiting in a chat is that chat's, and is not renamed here. A service is
+  not added here: the agent asks for what it needs in a chat. An AI model is, as the agent cannot
+  ask for one (`ModelBindingDialog`, Add model): one of the user's models (`useBindableModels`,
+  language then decision models, starting on their default), under a name its code has nothing by
+  (`LLM` or `DECISION_MODEL`, numbered where taken), with the line its code calls it by under them,
+  kept at once (`newAiModelGatekeeper()`, then `bind()`). A model's row is titled by its model's
+  name and changes model in place (`changeModel`): there is no call to point a binding elsewhere,
+  so the new model's connection replaces it under the same name, its blueprint annotation kept,
+  the old one bound again if that fails. A chat proposing a model says so in plain words when its
+  changes wait to be kept ("Lets “Tip jar” use Claude Haiku", `useBindingTitles`).
 - Settings: where it is from, updating it from its template, and deleting it.
 
 A gadget that follows a template is updated from it (`UpdateFromTemplate`, over

@@ -1,6 +1,8 @@
-import { CaretLeftIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { useState } from 'react'
+import { CaretLeftIcon, PlusIcon, ShareNetworkIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
 import { ListGroup } from '@/blocks/ListGroup'
+import { ModelBindingDialog, type ModelBindingSetup, type ModelChoice } from '@/blocks/ModelBindingDialog'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SettingRow } from '@/blocks/SettingRow'
 import { SettingsGroup } from '@/blocks/SettingsGroup'
@@ -16,7 +18,7 @@ import { Tag } from '@/components/Tag'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceLook } from '@/components/workspaceLook'
 import { PageLayout } from '@/layouts/PageLayout'
-import { groupBindings, type GadgetBinding, type Listed } from './GadgetSettings'
+import { bindingNameProblem, freeBindingName, groupBindings, MODEL_BINDING_NAMES, type GadgetBinding, type Listed } from './GadgetSettings'
 import type { BindingService } from './useGadgetSettings'
 
 /** What a gadget's settings page shows beneath its name. */
@@ -69,6 +71,15 @@ export type GadgetSettingsViewProps = {
   onUnbind: (name: string) => void
   /** Gives a binding another name in its code: how that went, and why where it did not. */
   onRenameBinding: (name: string, next: string) => Promise<SaveOutcome>
+  /**
+   * The user's models its code can be given, and the one to start on; the models undefined while
+   * they are read. A model binding is named by its model's name as they know it, where it is one.
+   */
+  models?: { models?: readonly ModelChoice[]; initial?: string }
+  /** Gives its code one of the user's models, rejecting with why it could not; `false` where it was not tried. */
+  onAddModel: (setup: ModelBindingSetup) => Promise<boolean | void>
+  /** Has a model binding reach another of the user's models, as `onAddModel`. */
+  onChangeModel: (name: string, modelId: string) => Promise<boolean | void>
   /** Deletes it, for everyone it is shared with, asked for twice. */
   onDelete: () => void
   /** Back to the gadget itself. */
@@ -82,13 +93,16 @@ const Message = ({ children }: { children: string }) => <p className="appears px
 /**
  * A gadget's settings page, laid out as a skill's is: what it is drawn as, its title, renamed
  * where it is, and what its template says it is for, then a tab each (`?tab=`): what it is
- * connected to, with the agents it can start apart, and its
+ * connected to, with the agents it can start apart, where an AI model is added and changed, and its
  * settings, which are where it is from, updating it from its template, and deleting it. Only whoever may build in its workspace
  * gets here: anyone it was shared with to use is told that its settings are not theirs.
  */
 export const GadgetSettingsView = ({
-  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, onDelete, onBack, onOpenWorkspace,
+  state, title, icon, description, template, templateUpdate, workspace, tab, onTabChange, onRename, problem, bindings, services, onUnbind, onRenameBinding, models, onAddModel, onChangeModel, onDelete, onBack, onOpenWorkspace,
 }: GadgetSettingsViewProps) => {
+  // What the model dialog was opened for, kept as it closes so that it does not change meanwhile.
+  const [modelDialog, setModelDialog] = useState<{ open: boolean; changing?: string; initial?: string }>({ open: false })
+
   const header = (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
       {workspace && <WorkspaceCrumb id={workspace.id} title={workspace.title} label={workspace.label} look={workspace.look} onOpen={onOpenWorkspace} />}
@@ -121,11 +135,15 @@ export const GadgetSettingsView = ({
     )
   }
 
-  const { connections, agents } = groupBindings(bindings.status === 'ready' ? bindings.items : [])
+  const listed = bindings.status === 'ready' ? bindings.items : []
+  const { connections, agents } = groupBindings(listed)
+  const taken = listed.map(({ name }) => name)
+  // A model by the name the user knows it by now, else as it was called when it was given.
+  const modelName = (binding: GadgetBinding) => models?.models?.find(({ id }) => id === binding.modelId)?.name
   const row = (binding: GadgetBinding) => (
     <BindingRow
       key={binding.name}
-      title={binding.resourceTitle || binding.name}
+      title={(binding.kind === 'model' && modelName(binding)) || binding.resourceTitle || binding.name}
       name={binding.name}
       service={binding.vendorId === undefined ? undefined : services.get(binding.vendorId)}
       kind={binding.kind === 'service' ? undefined : binding.kind}
@@ -134,6 +152,7 @@ export const GadgetSettingsView = ({
       onRemove={() => onUnbind(binding.name)}
       // One waiting in a chat is that chat's until its changes are kept.
       onRename={binding.chatId === undefined ? (next) => onRenameBinding(binding.name, next) : undefined}
+      onChangeModel={binding.kind === 'model' && binding.chatId === undefined ? () => setModelDialog({ open: true, changing: binding.name, initial: binding.modelId }) : undefined}
     />
   )
 
@@ -159,11 +178,16 @@ export const GadgetSettingsView = ({
         {state.status === 'ready' && (
           <Tabs value={tab} onValueChange={onTabChange} tabs={GADGET_SETTINGS_TABS} aria-label="Gadget" className="gap-6">
             <Tabs.Panel value="connections" className="flex flex-col gap-12">
-              <SettingsGroup title="Connected to" description="What its code can reach, by the name it knows each by. Click a name to change it." plain>
+              <SettingsGroup
+                title="Connected to"
+                description="What its code can reach, by the name it knows each by. Click a name to change it."
+                action={<Button icon={PlusIcon} disabled={bindings.status !== 'ready'} onClick={() => setModelDialog({ open: true, initial: models?.initial })}>Add model</Button>}
+                plain
+              >
                 {bindings.status === 'loading' && <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading its connections…</p>}
                 {bindings.status === 'failed' && <Message>{`Couldn’t load its connections: ${bindings.message}`}</Message>}
                 {bindings.status === 'ready' && (connections.length === 0
-                  ? <Message>Nothing yet. Ask the agent in a chat to connect it to a service.</Message>
+                  ? <Message>Nothing yet. Ask the agent in a chat to connect it to a service, or add an AI model for its code to call.</Message>
                   : (
                       <ListGroup label="Connected to">
                         <ul className="flex flex-col">{connections.map(row)}</ul>
@@ -226,6 +250,17 @@ export const GadgetSettingsView = ({
           </Tabs>
         )}
       </div>
+      <ModelBindingDialog
+        open={modelDialog.open}
+        onOpenChange={(open) => setModelDialog((current) => ({ ...current, open }))}
+        gadget={title ? `“${title}”` : 'The gadget'}
+        models={models?.models}
+        initialModel={modelDialog.initial}
+        changing={modelDialog.changing}
+        suggestName={(kind) => freeBindingName(MODEL_BINDING_NAMES[kind], taken)}
+        nameProblem={(name) => bindingNameProblem(name, taken)}
+        onSubmit={({ modelId, name }) => (modelDialog.changing === undefined ? onAddModel({ modelId, name }) : onChangeModel(modelDialog.changing, modelId))}
+      />
     </PageLayout>
   )
 }
