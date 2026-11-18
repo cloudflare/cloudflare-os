@@ -23,6 +23,8 @@ type Asking = {
   name: string
   logoUrl?: string
   resource?: string
+  /** What the agent suggested it be (`GatekeeperCreationSpec.configuration`), which the form opens on. */
+  configuration?: string
   open: boolean
 }
 
@@ -64,7 +66,7 @@ export const useApproveCreation = (workspaceId: string) => {
       overseer[Symbol.dispose]()
     }
     if (spec.type !== 'gatekeeper') throw new Error('This can’t be created from here.')
-    const { vendorId, typeUrlPattern } = spec
+    const { vendorId, typeUrlPattern, configuration } = spec
     const known = latest.current
     const listed = known.status === 'ready' ? known.connections.filter((each) => each.vendorId === vendorId) : []
     const accounts = listed.flatMap((each) => (each.kind === 'account' ? [each.account] : []))
@@ -74,7 +76,7 @@ export const useApproveCreation = (workspaceId: string) => {
     if (accountId !== undefined) return approve(action.actionId, { accountId })
     const vendor = listed[0]?.vendor
     if (!vendor) throw new Error('This service isn’t offered here anymore.')
-    setAsking({ action, vendorId, typeUrlPattern, name: vendor.displayName, logoUrl: vendor.logo?.url, resource: kind?.title, open: true })
+    setAsking({ action, vendorId, typeUrlPattern, name: vendor.displayName, logoUrl: vendor.logo?.url, resource: kind?.title, configuration, open: true })
   }, [api, connection, workspaceId, approve])
 
   const dialog = asking && (
@@ -87,6 +89,7 @@ export const useApproveCreation = (workspaceId: string) => {
       logoUrl={asking.logoUrl}
       resourceUrlPattern={asking.typeUrlPattern}
       resource={asking.resource}
+      resourceUrl={asking.configuration}
       create={{
         title: asking.action.title,
         onCreate: (accountId, configuration) => approve(asking.action.actionId, { accountId, configuration }),
