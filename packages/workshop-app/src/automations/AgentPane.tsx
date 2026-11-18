@@ -121,10 +121,11 @@ const FILTERS: { value: RunFilter; label: string }[] = [
 ]
 
 /**
- * What an agent is, drawn from plain props: its mark, there to be played with as the home page's is, and its name, what of it wants the user (a run
- * waiting on them, or a latest run that failed) with the way to that run, then the gadget that
- * starts it, the model it thinks with, when it runs and how often it has, then its runs by when,
- * each saying how it stands and opening its conversation, which is where what it did is seen.
+ * What an agent is, drawn from plain props: its mark, there to be played with as the home page's
+ * is, and its name, what of it wants the user (a run waiting on them, or a latest run that failed)
+ * with the way to that run, then the gadget that starts it, the model it thinks with, when it runs
+ * and how often it has, then its runs by when, each saying how it stands and opening its
+ * conversation, which is where what it did is seen.
  *
  * An agent can run hundreds of times, so its runs are narrowed by how they stand (a tab each, for
  * those it has), listed a page at a time, and a run that finished the same way as the one after it,

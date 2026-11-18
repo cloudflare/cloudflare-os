@@ -29,7 +29,10 @@ const emotionOf = (state: AgentMarkProps['state'], greeting: boolean): MascotEmo
  */
 export const AgentMark = ({ state = 'idle', greeting = false, interactive = false, size = 'medium', className }: AgentMarkProps) => {
   const { tile, mascot } = SIZES[size]
-  const figure = <Mascot emotion={emotionOf(state, greeting)} interactive={interactive} reach={interactive ? 3 : 0.4} className={mascot} />
-  if (size === 'small') return <span className={cn('grid shrink-0 place-items-center', tile, className)}>{figure}</span>
-  return <span className={cn('grid shrink-0 place-items-center bg-kumo-fill', tile, className)}>{figure}</span>
+  // Small, it stands alone, as an icon does; otherwise on a tile.
+  return (
+    <span className={cn('grid shrink-0 place-items-center', size !== 'small' && 'bg-kumo-fill', tile, className)}>
+      <Mascot emotion={emotionOf(state, greeting)} interactive={interactive} reach={interactive ? 3 : 0.4} className={mascot} />
+    </span>
+  )
 }

@@ -23,9 +23,10 @@ import { useNow } from '@/hooks/useNow'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useUnread } from '@/notifications/UnreadContext'
 import { useApi } from '@/rpc/ApiContext'
+import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
-import { shareStanding } from './sharingRules'
+import { listed, shareStanding } from './sharingRules'
 import { useSharing } from './useSharing'
 import { useWorkspaceRemoval } from './useWorkspaceRemoval'
 import { WorkspaceChatList } from './WorkspaceChatList'
@@ -36,7 +37,6 @@ import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
 import { removalOf } from './workspaceRemoval'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
-import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 import { gadgetsWaitingIn } from './waitingWords'
 
 /** What a workspace's page shows beneath its title. */
@@ -303,7 +303,7 @@ const waitingBanner = ({ runs, failed, gadgets, chats }: WaitingBannerOf): {
       gadgets > 0 && (gadgets === 1 ? 'a gadget' : `${gadgets} gadgets`),
       chats > 0 && (chats === 1 ? 'a chat' : `${chats} chats`),
     ].filter((part): part is string => typeof part === 'string')
-    const what = `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
+    const what = listed(parts)
     return {
       tone: 'warning',
       title: `${runs.length + gadgets + chats} things are waiting on you`,

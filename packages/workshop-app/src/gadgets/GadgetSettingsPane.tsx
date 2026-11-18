@@ -1,6 +1,6 @@
+import { useState } from 'react'
 import { agentByKey, agentKeyOf, attentionWords } from '@/automations/agents'
 import { useWorkspaceAgents } from '@/automations/useWorkspaceAgents'
-import { useState } from 'react'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
