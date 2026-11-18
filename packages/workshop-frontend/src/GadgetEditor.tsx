@@ -77,7 +77,7 @@ import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
 import { ConnectionPreviewPane } from './features/connection-preview/ConnectionPreviewPane'
-import { previewOffers, type ConnectionPreview } from './features/connection-preview/connectionPreview'
+import { previewKey, previewOffers, type ConnectionPreview } from './features/connection-preview/connectionPreview'
 import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
 import { usePendingConnectionPreviews } from './features/connection-preview/usePendingConnectionPreviews'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
@@ -1091,9 +1091,9 @@ export default function GadgetEditor() {
   }, offersPreview)
 
   // A preview that is closed while its connection has changes waiting can be opened again.
-  const shownPreviewId = showingActivity ? connectionPreview?.gatekeeperId : undefined
+  const shownPreview = showingActivity && connectionPreview ? previewKey(connectionPreview) : undefined
   const closedPreviews = usePendingConnectionPreviews(overseerStub, offersPreview)
-    .filter(preview => preview.gatekeeperId !== shownPreviewId)
+    .filter(preview => previewKey(preview) !== shownPreview)
 
   const closeWorkspacePane = useCallback(() => {
     if (!showingActivity) {
@@ -1101,7 +1101,7 @@ export default function GadgetEditor() {
       return
     }
     // Only a preview being shown is closed: one left behind for an app is not dismissed with it.
-    if (connectionPreview) dismissConnectionPreview(connectionPreview.gatekeeperId)
+    if (connectionPreview) dismissConnectionPreview(connectionPreview)
     setWorkspaceTransitionEnabled(true)
     const returnView = activityReturnViewRef.current
     const returnShowsPane = hasVisibleWorkpieces && (returnView?.mode === 'app'
@@ -1987,7 +1987,7 @@ export default function GadgetEditor() {
 
           {closedPreviews.map(preview => (
             <WorkshopIconButton
-              key={preview.gatekeeperId}
+              key={previewKey(preview)}
               onClick={() => openConnectionPreview(preview)}
               title={`Preview ${preview.title}`}
               aria-label={`Preview ${preview.title}`}
@@ -2463,7 +2463,7 @@ export default function GadgetEditor() {
             {panePreview && overseer && (
               <div className="min-h-0 flex-1">
                 <ConnectionPreviewPane
-                  key={`${panePreview.gatekeeperId} ${panePreview.url}`}
+                  key={`${previewKey(panePreview)} ${panePreview.url}`}
                   overseer={overseer.stub}
                   preview={panePreview}
                   onCreated={setConnectionPreview}

@@ -3,43 +3,42 @@ import type { RpcStub } from 'capnweb'
 import type { Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { useActions } from '../../useActions'
 import {
-  previewOf, type ConnectionPreview, type OffersPreview, type PreviewOffer,
+  previewKey, previewOf, type ConnectionPreview, type OffersPreview, type PreviewOffer,
 } from './connectionPreview'
 
-/** The previews of the connections that have changes waiting, oldest change first. */
+/** The previews of what has changes waiting, oldest change first: one for each connection, or each item of one. */
 export const usePendingConnectionPreviews = (
   overseer: RpcStub<Overseer> | null, offersPreview: OffersPreview,
 ): ConnectionPreview[] => {
   const { pending } = useActions(overseer)
-  const waiting = new Map<WorkpieceId, ConnectionPreview>()
+  const waiting = new Map<string, ConnectionPreview>()
   // The connections whose resource is yet to be created: each is asked again once it is.
   const drafts = new Set<WorkpieceId>()
   for (const entry of pending) {
-    const { gatekeeperId } = entry
-    if (entry.type !== 'action' || gatekeeperId === undefined) continue
-    if (entry.creation) drafts.add(gatekeeperId)
-    if (!waiting.has(gatekeeperId)) waiting.set(gatekeeperId, previewOf(gatekeeperId, entry))
+    if (entry.type !== 'action' || entry.gatekeeperId === undefined) continue
+    if (entry.creation) drafts.add(entry.gatekeeperId)
+    const preview = previewOf(entry.gatekeeperId, entry)
+    if (!waiting.has(previewKey(preview))) waiting.set(previewKey(preview), preview)
   }
 
   // Kept with what gave them: another workspace numbers its connections from one again.
-  const [offered, setOffered] = useState<{ by?: OffersPreview, offers: ReadonlyMap<WorkpieceId, PreviewOffer> }>(
+  const [offered, setOffered] = useState<{ by?: OffersPreview, offers: ReadonlyMap<string, PreviewOffer> }>(
     { offers: new Map() })
   const failures = useRef(0)
   const [retried, retry] = useReducer((count: number) => count + 1, 0)
-  const ids = [...waiting.keys()].join()
-  const drafted = [...drafts].join()
+  const keys = [...waiting].map(([key, { gatekeeperId }]) => `${key} ${drafts.has(gatekeeperId)}`).join('\n')
   useEffect(() => {
-    if (!overseer || !ids) return
+    if (!overseer || !keys) return
     let stale = false
     let timer: number | undefined
-    const asked = ids.split(',').map(Number)
-    void Promise.allSettled(asked.map(id => offersPreview(overseer, id))).then(answers => {
+    const asked = [...waiting]
+    void Promise.allSettled(asked.map(([, preview]) => offersPreview(overseer, preview))).then(answers => {
       if (stale) return
       setOffered({
         by: offersPreview,
-        offers: new Map(asked.flatMap((id, index) => {
+        offers: new Map(asked.flatMap(([key], index) => {
           const answer = answers[index]
-          return answer.status === 'fulfilled' && answer.value ? [[id, answer.value]] : []
+          return answer.status === 'fulfilled' && answer.value ? [[key, answer.value]] : []
         })),
       })
       // A connection that could not be asked still has changes waiting, so it is asked again,
@@ -51,12 +50,13 @@ export const usePendingConnectionPreviews = (
       stale = true
       window.clearTimeout(timer)
     }
-    // `drafted` is not read: a connection whose resource was created has a new answer to give.
-  }, [overseer, ids, drafted, offersPreview, retried])
+    // `keys` names everything `waiting` holds that the offers depend on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overseer, keys, offersPreview, retried])
 
   const offers = offered.by === offersPreview ? offered.offers : undefined
-  return [...waiting.values()].flatMap(preview => {
-    const offer = offers?.get(preview.gatekeeperId)
+  return [...waiting].flatMap(([key, preview]) => {
+    const offer = offers?.get(key)
     return offer ? [{ ...preview, ...offer }] : []
   })
 }

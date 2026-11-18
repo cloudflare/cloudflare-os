@@ -109,9 +109,9 @@ it('asks a connection again after a lookup that failed, and no more once it has 
   } as unknown as RpcStub<Overseer>
   const offersPreview = previewOffers(listVendors)
 
-  await expect(offersPreview(overseer, DOC)).rejects.toThrow('Google is busy')
-  expect(await offersPreview(overseer, DOC)).toEqual({ iconUrl: undefined })
-  await offersPreview(overseer, DOC)
+  await expect(offersPreview(overseer, { gatekeeperId: DOC })).rejects.toThrow('Google is busy')
+  expect(await offersPreview(overseer, { gatekeeperId: DOC })).toEqual({ iconUrl: undefined })
+  await offersPreview(overseer, { gatekeeperId: DOC })
   expect(asked).toBe(2)
 })
 

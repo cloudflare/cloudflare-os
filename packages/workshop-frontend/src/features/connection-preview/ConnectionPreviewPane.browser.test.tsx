@@ -37,7 +37,7 @@ const DRAFTED = '- **Playoff résumé**: the all\\-time leader in playoff points
 
 const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
-type Doc = { saved: string, markdown: string, changes: object[], calls: string[] }
+type Doc = { saved: string, markdown: string, changes: object[], calls: string[], folder?: true }
 
 const action = (id: number, over: Partial<ActionLogEntry> = {}) => ({
   id,
@@ -101,16 +101,33 @@ class DocSession extends RpcTarget {
   }
 }
 
+/** The session of a connection that reaches several documents, which opens one for its preview. */
+class FolderSession extends RpcTarget {
+  constructor(private doc: Doc) {
+    super()
+  }
+
+  openPreview(item: string) {
+    this.doc.calls.push(`openPreview ${item}`)
+    return new DocSession(this.doc)
+  }
+
+  [Symbol.dispose]() {
+    this.doc.calls.push('dispose folder')
+  }
+}
+
 class DocConnection extends RpcTarget {
   constructor(private doc: Doc) {
     super()
   }
 
   openSession() {
-    return new DocSession(this.doc)
+    return this.doc.folder ? new FolderSession(this.doc) : new DocSession(this.doc)
   }
 
-  getPreviewUi() {
+  getPreviewUi(item?: string) {
+    if (item !== undefined) this.doc.calls.push(`getPreviewUi ${item}`)
     return DOCS_PREVIEW_BUNDLE
   }
 }
@@ -123,13 +140,14 @@ afterEach(() => {
   container?.remove()
 })
 
-const renderPane = (pending: ActionLogEntry[]) => {
+const renderPane = (pending: ActionLogEntry[], item?: string) => {
   // One change is already pending when the pane opens: a bullet reworded.
   const doc: Doc = {
     saved: SAVED,
     markdown: SAVED.replace(DURABILITY, LONGEVITY),
     changes: [{ id: 11, type: 'replaceText', oldMarkdown: DURABILITY, newMarkdown: LONGEVITY }],
     calls: [],
+    ...(item === undefined ? {} : { folder: true }),
   }
   const resolved: string[] = []
   const created: ConnectionPreview[] = []
@@ -156,7 +174,7 @@ const renderPane = (pending: ActionLogEntry[]) => {
     <Toasty>
       <ConnectionPreviewPane
         overseer={overseer}
-        preview={{ gatekeeperId: DOC_ID, title: 'Paul Pierce' }}
+        preview={{ gatekeeperId: DOC_ID, item, title: 'Paul Pierce' }}
         restricted={false}
         onCreated={preview => created.push(preview)}
         onDiscarded={discarded}
@@ -289,4 +307,30 @@ it('closes when the document it draws is discarded uncreated, which removes its 
   emit(action(2, { creation: true, state: 'rejected' }))
   expect(discarded).toHaveBeenCalledOnce()
   expect(created).toEqual([])
+})
+
+it('draws one item of a connection from a session of that item, with only its changes on the card', async () => {
+  await page.viewport(1100, 800)
+  const on = (id: string, n: number) => ({
+    description: {
+      title: 'Edit Google Doc', description: `Change ${n}`, implementsRevert: false, autoApprovable: true,
+      previewOf: { id, title: id },
+    },
+  } as Partial<ActionLogEntry>)
+  const { doc, resolved, emit } = renderPane([action(1, on('other', 1)), action(2, on('file', 2))], 'file')
+
+  // The frame is handed the item's session, and the one it was opened from is let go.
+  await expect.poll(() => doc.calls).toContain('getPendingChanges')
+  expect(doc.calls).toEqual(expect.arrayContaining(['getPreviewUi file', 'openPreview file', 'dispose folder']))
+  await expect.element(page.getByText('1 change waiting')).toBeVisible()
+  await expect.element(page.getByText('Change 2')).toBeVisible()
+
+  // A change to another item of the connection is not this pane's to redraw for or to apply.
+  await expect.poll(() => doc.calls).toContain('readImage photo')
+  const reads = doc.calls.length
+  emit(action(3, on('other', 3)))
+  await new Promise(done => setTimeout(done, 600))
+  expect(doc.calls).toHaveLength(reads)
+  await page.getByRole('button', { name: 'Apply' }).click()
+  await expect.poll(() => resolved).toEqual(['approve 2'])
 })
