@@ -190,21 +190,19 @@ describe('signInServices', () => {
 
 describe('protectedResources', () => {
   const vendors = [vendor('google', 'Google'), vendor('scheduler', 'Scheduled Tasks', true)]
-  const google = { name: 'Google', logoUrl: undefined, color: undefined }
+  const doc = { ...need(6, 'google'), resourceTitle: 'Plan', resourceUrl: 'https://docs.google.com/d/1' }
 
-  it('lists what needs a sign-in once, however many connections reach it, by its address or else its title', () => {
-    const doc = 'https://docs.google.com/d/1'
-    expect(protectedResources([
-      need(2, 'scheduler'),
-      need(5, 'Google'),
-      need(5, 'google'),
-      { ...need(6, 'google'), resourceTitle: 'Connection 5' },
-      { ...need(7, 'google'), resourceUrl: doc },
-      { ...need(8, 'google'), resourceTitle: 'Renamed', resourceUrl: doc },
-    ], vendors)).toEqual([
-      { key: 'google title:Connection 5', gatekeeperIds: [5, 6], title: 'Connection 5', service: google },
-      { key: `google url:${doc}`, gatekeeperIds: [7, 8], title: 'Connection 7', url: doc, service: google },
+  it('lists each resource once, by its title, with its service and every connection that reads it', () => {
+    const resources = protectedResources([need(2, 'scheduler'), need(5, 'Google'), need(5, 'google'), doc, { ...doc, gatekeeperId: 7 }, { ...doc, gatekeeperId: 8, resourceTitle: 'Plan, renamed' }], vendors)
+    expect(resources?.map(({ title, url, needs }) => [title, url, needs.map(({ gatekeeperId }) => gatekeeperId)])).toEqual([
+      ['Connection 5', undefined, [5]],
+      ['Plan', 'https://docs.google.com/d/1', [6, 7, 8]],
     ])
+    expect(resources?.[0]?.service).toEqual({ name: 'Google', logoUrl: undefined, color: undefined })
+  })
+
+  it('tells resources without an address apart by their titles, and waits for the services', () => {
+    expect(protectedResources([need(1, 'google'), need(2, 'google'), { ...need(3, 'google'), resourceTitle: 'Connection 1' }], vendors)?.map(({ needs }) => needs.length)).toEqual([2, 1])
     expect(protectedResources([need(5, 'google')], undefined)).toBeUndefined()
   })
 })

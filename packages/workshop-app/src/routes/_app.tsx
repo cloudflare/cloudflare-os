@@ -42,6 +42,7 @@ import { formatActivity } from '@/workspaces/formatActivity'
 import { useLiveWorkspace } from '@/workspaces/useLiveWorkspace'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { ObserverAccessProvider } from '@/connections/ObserverAccessProvider'
 import { AppSearch } from './-AppSearch'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
@@ -49,25 +50,28 @@ export const Route = createFileRoute('/_app')({
   component: () => (
     <SiteFrame>
       <RpcGate connection={sharedConnection()}>
-        <FeatureFlagsProvider>
-          {/* A new user is set up before anything else is read for them. */}
-          <OnboardingGate>
-            {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
-            <ShareLinkGate>
-              <WorkspacesProvider>
-                <UnreadProvider>
-                  <AgentsWaitingProvider>
-                    <ChatSessionsProvider>
-                      <WaitingAsksProvider>
-                        <AppFrame />
-                      </WaitingAsksProvider>
-                    </ChatSessionsProvider>
-                  </AgentsWaitingProvider>
-                </UnreadProvider>
-              </WorkspacesProvider>
-            </ShareLinkGate>
-          </OnboardingGate>
-        </FeatureFlagsProvider>
+        {/* Outermost, so that whatever opens a workspace asks the user to confirm their access where it must. */}
+        <ObserverAccessProvider>
+          <FeatureFlagsProvider>
+            {/* A new user is set up before anything else is read for them. */}
+            <OnboardingGate>
+              {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
+              <ShareLinkGate>
+                <WorkspacesProvider>
+                  <UnreadProvider>
+                    <AgentsWaitingProvider>
+                      <ChatSessionsProvider>
+                        <WaitingAsksProvider>
+                          <AppFrame />
+                        </WaitingAsksProvider>
+                      </ChatSessionsProvider>
+                    </AgentsWaitingProvider>
+                  </UnreadProvider>
+                </WorkspacesProvider>
+              </ShareLinkGate>
+            </OnboardingGate>
+          </FeatureFlagsProvider>
+        </ObserverAccessProvider>
       </RpcGate>
     </SiteFrame>
   ),
