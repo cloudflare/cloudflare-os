@@ -855,12 +855,23 @@ export class UserAccount extends DurableObject<Env> {
           staged.subject !== undefined && staged.subject === kv.get<string>(GRANT_SUBJECT_KEY);
       if (sameAccount && recorded) {
         kv.put<string>(GRANT_CREDENTIALS_KEY, credentialsId);
-      } else if (sameAccount) {
+        return;
+      }
+      if (sameAccount) {
         kv.delete(GRANT_CREDENTIALS_KEY);
       } else {
         await this.#forgetGrant().catch(error => {
           logger.warn("failed to stop holding the Google grant a reconnect replaced", {
             event: "google.grant.forget.failed", error,
+          });
+        });
+      }
+      // The stage read which Google account signed in, so the new credentials are recorded under
+      // it now; #holdGrant asks Google only when it could not, or when this fails.
+      if (staged.subject !== undefined) {
+        await this.#recordHolder(staged.subject, credentialsId).catch(error => {
+          logger.warn("failed to record a Google grant's holder", {
+            event: "google.grant.hold.failed", error,
           });
         });
       }
@@ -906,13 +917,8 @@ export class UserAccount extends DurableObject<Env> {
         // A reconnect may have signed in as another Google account. The grant recorded before is
         // let go first, and the new one is named before its registry lists this object, so that
         // the registry this object names is the only one it tells it holds a grant in.
-        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) {
-          await this.#forgetGrant();
-          kv.put<string>(GRANT_SUBJECT_KEY, sub);
-        }
-        await this.#grantRegistry(sub).add(this.ctx.id.toString());
-        // Written last: until it names the installed credentials, a token refresh records again.
-        kv.put<string>(GRANT_CREDENTIALS_KEY, installed);
+        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) await this.#forgetGrant();
+        await this.#recordHolder(sub, installed);
       });
     } catch (error) {
       logger.warn("failed to record a Google grant's holder", {
@@ -922,6 +928,19 @@ export class UserAccount extends DurableObject<Env> {
     } finally {
       this.#holdingGrant--;
     }
+  }
+
+  /**
+   * Records this object as holding the grant of the Google account `subject` with the credentials
+   * `installed`: named first, then listed by its registry, then marked as recorded for those
+   * credentials, which until then a token refresh records again. Called with the credentials mutex
+   * held.
+   */
+  async #recordHolder(subject: string, installed: string): Promise<void> {
+    let kv = this.ctx.storage.kv;
+    kv.put<string>(GRANT_SUBJECT_KEY, subject);
+    await this.#grantRegistry(subject).add(this.ctx.id.toString());
+    kv.put<string>(GRANT_CREDENTIALS_KEY, installed);
   }
 
   /**

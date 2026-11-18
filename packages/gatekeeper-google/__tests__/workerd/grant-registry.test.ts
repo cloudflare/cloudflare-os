@@ -368,14 +368,31 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-adas"]);
   });
 
+  it("holds the grant of the Google account its reconnect staged, without asking Google again", async () => {
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const moved = await connection(google, "moved", ada);
+    google.profileFails = true;
+    await reconnect(google, moved, "moved-again", grace);
+    expect(await moved.stored("grantSubject")).toBe(grace);
+    expect(await moved.stored("grantCredentialsId")).toBe(await moved.stored("credentialsId"));
+
+    // Recorded at once, so disconnecting another connection of the second account spares it.
+    google.profileFails = false;
+    const graces = await connection(google, "graces", grace);
+    await graces.disconnect();
+    expect(google.revoked).toEqual([]);
+  });
+
   it("records a reconnect as another Google account at its next refresh when it could not at once", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada, grace} = googleAccounts();
     const moved = await connection(google, "moved", ada);
     const graces = await connection(google, "graces", grace);
+    // Neither the stage nor Google can say which account signed in.
     google.profileFails = true;
-    await reconnect(google, moved, "moved-again", grace);
+    await reconnect(google, moved, "moved-again", grace, false);
     expect(await moved.stored("grantSubject")).toBeUndefined();
 
     google.profileFails = false;
