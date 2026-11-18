@@ -5,6 +5,8 @@
 // the model to read; a larger one has its page images sent as they are stored. A PDF that has
 // text keeps it, and the pages of it that have none are rendered and read the same way, each
 // under a line that says so. A deployment can turn the model's reading off: see pdfConverter().
+// A Gmail attachment's PDF is read the same way, in words and under log names of its own: see
+// PdfSource.
 
 import type { Logger } from "@gadgets/observability/logger";
 import {
@@ -83,11 +85,21 @@ function component(name: PdfSource["name"]): string {
 /** Each source's logger, under a component of its own. */
 const loggers: Record<PdfSource["name"], PdfLogger> = {
   drive: obsContext.createLogger({ component: component("drive"), vendorId: "google" }),
+  gmail: obsContext.createLogger({ component: component("gmail"), vendorId: "google" }),
 };
 
-/** What logs `source`'s lines. */
+/**
+ * What logs `source`'s lines. Every line is written in this file as Drive's, which is how Drive's
+ * is logged; Gmail's has its event under `google.gmail.pdf.` and says "Gmail PDF attachment"
+ * where Drive's says "Drive PDF".
+ */
 function log(source: PdfSource): Pick<PdfLogger, "info" | "warn"> {
-  return loggers[source.name];
+  if (source.name === "drive") return loggers.drive;
+  let named = (level: "info" | "warn"): PdfLogger["info"] => (message, details) =>
+    loggers.gmail[level](message.replace("Drive PDF", "Gmail PDF attachment"), {
+      ...details, event: details.event.replace("google.drive.pdf.", "google.gmail.pdf."),
+    });
+  return { info: named("info"), warn: named("warn") };
 }
 
 /** How a call ended, as it is summed: all that is counted of it but who made it, to what and for what. */
@@ -235,8 +247,8 @@ export const TRANSCRIPTION_FAILED = "Google Drive's PDF could not be transcribed
 
 /** Where a PDF is read from: the words its failures are given in, and what its log lines are named. */
 export type PdfSource = {
-  /** Events are `google.<name>.pdf.*`, the logger's component `gatekeeper.google.<name>.pdf`. */
-  name: "drive";
+  /** `drive` or `gmail`: events are `google.<name>.pdf.*`, the logger's component `gatekeeper.google.<name>.pdf`. */
+  name: "drive" | "gmail";
   /** What a failed conversion is reported with. */
   conversionFailed: string;
   /** What a failed transcription is reported with. */
@@ -249,6 +261,14 @@ export type PdfSource = {
 export const DRIVE_PDF: PdfSource = {
   name: "drive", conversionFailed: CONVERSION_FAILED, transcriptionFailed: TRANSCRIPTION_FAILED,
   changed: FILE_CHANGED,
+};
+
+/** A PDF read from a Gmail attachment. */
+export const GMAIL_PDF: PdfSource = {
+  name: "gmail",
+  conversionFailed: "The Gmail attachment could not be converted from PDF.",
+  transcriptionFailed: "The Gmail attachment's PDF could not be transcribed.",
+  changed: "The Gmail attachment changed while it was being read; read it again.",
 };
 
 /**

@@ -64,6 +64,7 @@ export default defineConfig({
       "__tests__/workerd/gmail-actions.test.ts",
       "__tests__/workerd/gmail-hooks.test.ts",
       "__tests__/workerd/gmail-observers.test.ts",
+      "__tests__/workerd/gmail-pdf.test.ts",
       "__tests__/workerd/gmail-state.test.ts",
       "__tests__/workerd/pdf-rendering.test.ts",
       "__tests__/workerd/workspace-observers.test.ts",

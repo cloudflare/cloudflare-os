@@ -222,6 +222,117 @@ queued before that upgrade keep their unprefixed fingerprints and still apply, i
 whose response was lost, which is reconciled rather than sent again. See
 `plans/gmail-simulation.md` for how they are verified.
 
+### Gmail PDF attachments
+
+Every `GmailAttachment` has `readPdf()`: a message's, a pending message's, a draft's, and those
+of the message a hook delivers. It takes no argument and returns `{text, hasText, transcribed}`
+as Drive's `readPdf(fileId)` does, from the same reader (`pdfToText()` in `src/drive-pdf.ts`,
+built by `pdfConverter(env, GMAIL_PDF)`). What [Google Drive bindings](#google-drive-bindings)
+says of that reader holds here: the conversion, pages drawn and read in bands, page images sent
+as stored, pages read ahead of the reader, the notes on a page, the idle minute, what is billed,
+the `AI` and `PDF_RENDERER` bindings, `PDF_OCR` and `PDF_OCR_CALLS`. Its failures are in Gmail's words (`The Gmail attachment could not be
+converted from PDF.`, `The Gmail attachment's PDF could not be transcribed.`, `The Gmail
+attachment changed while it was being read; read it again.`), and its log lines are
+`google.gmail.pdf.*` under the component `gatekeeper.google.gmail.pdf`. A part is read when its
+MIME type is `application/pdf`, parameters and case aside, or its filename ends in `.pdf` in any
+case; any other is refused with `This attachment is not a PDF.` before anything is fetched. What
+differs from Drive is how the bytes are had.
+
+Gmail gives an attachment only whole, as a JSON object whose `data` member holds the bytes in
+base64url (`users.messages.attachments.get`), and has no ranged read.
+`GmailApi.openAttachmentContent()` asks for it with `?fields=data` and resolves once Gmail has
+begun its answer, having read none of it. `gmailAttachmentBytes()` (both in `src/google-api.ts`)
+decodes `data` as it arrives: a chunk of the answer is read only when the stream is, decoded and
+handed on, and nothing is kept of it but the parser's place and the bits of an unfinished
+quartet. It takes whitespace, other members around `data` (strings, numbers, `true`, `false`,
+`null`), either base64 alphabet, padding or none, and a base64 character written as a JSON
+escape. Any other answer, one with a nested member, a second `data` or an early end included,
+errors the stream with `Gmail returned an invalid attachment response.`, and one without `data`
+with `Attachment content is no longer available.` The bytes must number the `size` the message's
+listing gave: the stream errors with `Attachment content no longer matches the authorized
+snapshot.` at the end of the chunk that takes it past `size`, and at the string's end when there
+are fewer. Cancelling the stream cancels Gmail's answer. A part whose data came inside the
+listing is decoded from that string, 65,535 bytes at a time, once its length has been checked.
+Only the wait for an answer to begin is timed, at 60 seconds over all of `fetchWithAuthRetry`'s
+attempts together (a backoff sleep in progress, of up to 10 seconds, is not interrupted), so a
+long attachment is not cut off. Its body is timed by what reads it: the pass described below,
+the idle minute while it streams into the renderer, and during `readPdf()` itself, while it
+streams into the conversion, a minute for each read of it that is outstanding (the conversion
+takes the bytes at the pace of its own upload, which is not counted). An attachment that stops
+arriving then fails `readPdf()` with `The attachment stopped arriving while it was being read;
+read it again.`, having reported nothing and let its approval queue go.
+
+`readPdf()` has no size limit of its own for bytes Gmail holds (a message's attachment, and a
+draft's part that Gmail stores) and does not go by `readable`; `getContent()` and its 10 MiB
+limit are unchanged. Bytes this binding stores (a pending message's part, and a draft's uploaded
+file, inline part or forward source) are read whole at each open, one copy, and handed on 64 KiB
+at a time. A forward copies its source's parts under the whole message's 25 MiB limit alone, so
+such a part can be over 10 MiB: it is then refused before it is read, with `This attachment
+exceeds the 10485760-byte safe limit for a PDF read from a pending message or a draft.`, and can
+be read from the forwarded message instead.
+
+A text with pages to transcribe reads the attachment again as it is read. A PDF whose pages are
+drawn is fetched whole once more, for the first page drawn, and streamed into the renderer, as
+Drive's second download is. Page images sent as stored are what Drive reads by range;
+`forwardRangeReader()` (`src/pdf-forward-reader.ts`) serves them from one pass over a single
+open answer instead. The bytes before an image are read and dropped, each chunk of them moving
+the idle clock; the image's own are read only as the model's request takes them; and the pass
+then stays open, unread, for the next image, with nothing of the file kept but the rest of the
+chunk the last image ended in. Pages are read ahead here as on Drive, and the pass is why an
+image is asked for only once the one before it has been read to its end: the next is then taken
+from the pass while the answers before it arrive. So a scan read as stored costs one more fetch
+of the attachment, as far as its last page image, however many pages it has, and reading ahead
+adds no reported read to that one. A pass breaks when a read of it fails
+or it ends before the image does, and stalls when a read of it has waited 15 seconds for a
+chunk; the time between two images, while the model answers, is not counted. Either way the pass
+is let go and the attachment opened again from its start, once for each image, which goes on
+from where it had got to. A second break or stall under the same image fails the text: with what
+the read failed with, as a changed attachment when it ended short, or with `The PDF stopped
+arriving while a page was being read; read it again.` An open that fails is not tried again. An
+image that a later update to the file defined again lies after the images of later pages, so its
+range starts before the pass's place and a new pass is opened for it: four times for one text,
+after which the text fails as a failed transcription. A page whose call the model's service
+refused has its image asked for again, for which a new pass is opened too, as one is for the
+next image when the refused call had not taken all of its own: each is one more reported read,
+`…from page image N on`, and neither is counted among the four.
+
+`readPdf()` reports one observation, `Read Gmail attachment text`, after the conversion and
+before anything is returned or a refusal to transcribe thrown, since such a refusal says what
+the content is like. A conversion that answers before the bytes have ended is refused: they are
+known to be the listed ones only at their end. Every later open (the whole read for the
+renderer, a pass, a pass opened again) is an observation of its own under the same title, its
+description saying which read it is, authorized once the attachment is open and before any of
+it is used; a refusal lets what was opened go and fails the text. A text that may read the
+attachment again keeps its approval queue and its pass until it ends, whether by its end, a
+cancel, an error or the idle minute; any other lets both go before it is returned. A draft
+attachment's capability is checked for staleness when `readPdf()` starts and at each open, not
+while a pass already open is read, so the text of a draft that has changed fails at its next
+open. In the workerd tests a text returned over RPC was pulled before its reader read anything,
+so the first later read, and its observation, can follow `readPdf()` at once.
+
+The tests fake Gmail at the fetch layer (`__tests__/workerd/gmail-pdf.test.ts`) and test the
+decoder on answers built for it. What they assume of Gmail was checked once against the real
+API, on four generated PDFs of 362,648 to 20,897,581 bytes inserted into a mailbox as
+attachments, over HTTP/1.1 from a workstation and not from a Worker:
+
+- `attachments.get?fields=data` answers with one pretty-printed object, `{"data": "…"}`, sent
+  chunked, its `data` in the base64url alphabet with `=` padding and no whitespace inside it.
+- The `size` a message's listing gives for a part was the count of the decoded bytes, and the
+  bytes were the file's, for all four.
+- An answer left unread was still good after 30 and 45 seconds and had been reset by Google
+  after 60, 75, 90 and 240. A pass is left unread while the model reads a page, so it can break
+  under a slow page, at about the moment the text's own idle minute ends it; opening again is
+  what covers it.
+- A message read twice lists a different attachment id each time. An id went on working 25
+  minutes after it was listed, which is as long as it was tried, so opening again with the id a
+  listing gave holds over the time a text is read.
+
+Not checked: the same from a Worker's `fetch`, which may hold more of an answer before it stops
+taking it; that the runtime does not draw in an answer nobody reads, seen only against a faked
+fetch; and the decode's cost as a Worker's CPU (about 50 ms for 10 MiB in Node). A pass stops at
+the last page image, short of the answer's end where the byte count is checked, so on a pass an
+attachment that ends short of an image fails as changed and no other change of size is noticed.
+
 ## Google Chat and Gmail new-message hooks (optional)
 
 Gadgets can watch a Chat conversation for new messages (see `docs/google-chat-capabilities.md`),
@@ -768,7 +879,7 @@ A deployment can have no PDF page read by a vision model by setting `PDF_OCR` on
 
 A deployment can count the calls this Worker makes to the services behind it, by giving the Worker the `METRICS` Analytics Engine binding and setting `SUBSERVICE_METRICS` on it to `true`. The value is read with surrounding spaces trimmed and in any case; unset, empty or anything else counts nothing, as does a Worker without the binding, and then nothing else changes either. Neither is in this Worker's config, on the admin page or asked for by the deploy wizard, and `pnpm dev-server` passes neither through: a deployment adds both itself. What is written is the `subservice/v1` family of the metrics dataset, whose columns, limits and example queries are in the [observability README](../observability/README.md#subservice-calls). A point is a count under closed words, with an HTTP status, the service's numeric error code, bytes sent and milliseconds where there are any. Nothing of a document, a message or a request is recorded: no file name, file or message ID, URL, query, address, token, prompt, model output or error message. Counting never fails, delays or changes the call it counts.
 
-For a PDF, `pdfToText()` sums what one text asks of Workers AI, of the renderer and of the file, and writes the sums once, when the text ends: read to its end, cancelled, failed, idle for its minute, or refused before it began. A call that was still in flight then is written when it ends, as a point of its own. The source of these points is the component of the text's log lines, `gatekeeper.google.drive.pdf`.
+For a PDF, `pdfToText()` sums what one text asks of Workers AI, of the renderer and of the file, and writes the sums once, when the text ends: read to its end, cancelled, failed, idle for its minute, or refused before it began. A call that was still in flight then is written when it ends, as a point of its own. The source of these points is the component of the text's log lines, `gatekeeper.google.drive.pdf` for a Drive file and `gatekeeper.google.gmail.pdf` for a Gmail attachment.
 
 | Service | Operation | What is counted | Outcome, reason and detail |
 |---|---|---|---|
@@ -779,7 +890,7 @@ For a PDF, `pdfToText()` sums what one text asks of Workers AI, of the renderer 
 | `pdf-renderer` | `reopen` | Opening it again, after the open document was lost. | As `open`, with why the document was lost as the detail: `call` when a `renderPage` threw, as it does when the call ran out of CPU time or the renderer's isolate went away, and `released` when the renderer had taken the document's room back. |
 | `pdf-renderer` | `render-page` | Each `renderPage`. | `success`. `refused` with the renderer's word as the reason. `error` with reason `call` when it threw. |
 
-The renderer's words are `RenderRefusalReason` in its `src/api.ts`: `start`, `released`, `file-size`, `size-mismatch`, `room`, `encrypted`, `unreadable`, `page-count`, `empty-work`, `page-size`, `page-load`, `image-pixels`, `steps`, `work`, `memory`, `abort`, `trap` and `render`. The renderer itself counts each document it lets go, as [its README](../pdf-renderer/README.md#metrics) says, and `reopen` by its detail beside that Worker's `cut-off` is how a deployment sees whether the renderer's CPU time is enough. The reads of the file a text makes, the second download and each page image's range, have their Google requests summed with the text's other calls, under the source and words given next: those made as the read begins, and those made only as its bytes are read. The download the conversion reads is made before the text exists, so its requests are written at once. A text that makes more than 48 kinds of call has the rest summed under the operation `other`, all but its conversion, which is always a `to-markdown` point of its own, and a word that is not one is written as `invalid`, as the observability README says.
+The renderer's words are `RenderRefusalReason` in its `src/api.ts`: `start`, `released`, `file-size`, `size-mismatch`, `room`, `encrypted`, `unreadable`, `page-count`, `empty-work`, `page-size`, `page-load`, `image-pixels`, `steps`, `work`, `memory`, `abort`, `trap` and `render`. The renderer itself counts each document it lets go, as [its README](../pdf-renderer/README.md#metrics) says, and `reopen` by its detail beside that Worker's `cut-off` is how a deployment sees whether the renderer's CPU time is enough. The reads of the file a text makes, the second download and each page image's range, have their Google requests summed with the text's other calls, under the source and words given next: those made as the read begins, and those made only as its bytes are read (a Gmail attachment opened again partway). The download the conversion reads is made before the text exists, so its requests are written at once. A text that makes more than 48 kinds of call has the rest summed under the operation `other`, all but its conversion, which is always a `to-markdown` point of its own, and a word that is not one is written as `invalid`, as the observability README says.
 
 Every request made through `fetchWithAuthRetry()` (`src/auth-retry.ts`), which is how the gatekeeper's clients call Google's APIs, is counted under the source `gatekeeper.google.api`: one point for each HTTP attempt, a retry and a request replayed with another token included, written at once unless a PDF's text is summing it. The service is taken from the URL's host, and for `www.googleapis.com` from the first segment of its path, by a closed table (`googleService()` in `src/call-metrics.ts`):
 
