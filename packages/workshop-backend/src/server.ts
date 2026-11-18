@@ -102,7 +102,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
       userId: DurableObjectId,
       private abortSession: (reason: Error) => void,
-      private via: AdminVia,
+      private via: Exclude<AdminVia, "gatekeeper">,
       private accessSession?: { jwt: string; expiresAt: number }) {
     super();
 
@@ -712,7 +712,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let adminUserId = this.#userId.name!;
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
     //     system doesn't know this.
-    return new AdminApiImpl(this.ctx, this.env, adminUserId, this.via);
+    return new AdminApiImpl(this.ctx, this.env, adminUserId, { via: this.via });
   }
 }
 
@@ -756,7 +756,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       private abortSession: (reason: Error) => void,
       private accessSession: { payload: JWTPayload; jwt: string } | undefined,
       private cliAdminsOnly: boolean,
-      private via: AdminVia) {
+      private via: Exclude<AdminVia, "gatekeeper">) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }

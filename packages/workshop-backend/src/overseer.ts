@@ -14404,6 +14404,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       admin: this.#adminId,
       sessionId: this.#sessionId,
       via: this.#terms.via,
+      ...(this.#terms.agent && {agent: this.#terms.agent}),
       // A title has no length limit of its own, and an uncut one could overflow the
       // deployment-wide row and so refuse every investigation of this workspace.
       workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
