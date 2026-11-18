@@ -55,6 +55,8 @@ const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
 /** Nodes per picker page, within the hierarchy picker's limit of 200. */
 const BIGQUERY_PICKER_PAGE_SIZE = 100;
+/** How long the picker waits on a dry run, so a stalled one doesn't hold up browsing. */
+const BIGQUERY_PROBE_TIMEOUT_MS = 10_000;
 /** Must equal `ROOT_ID` in configurator/bigquery-configurator-ui.tsx. */
 const BIGQUERY_ROOT_ID = "bigquery";
 
@@ -353,12 +355,14 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
    * Whether this account may run query jobs in `projectId`, which BigQuery requires of every query.
    * A project BigQuery lists is taken to allow them. The list can omit a project that does, so any
    * other is asked once per picker with a dry-run job, which is free. A dry run that fails for any
-   * reason answers no, as before the check, rather than failing the lookup.
+   * reason, or has no answer within BIGQUERY_PROBE_TIMEOUT_MS, answers no, as before the check,
+   * rather than failing or holding up the lookup.
    */
   async #runsQueries(projectId: string): Promise<boolean> {
     if ((await this.#heldProjects()).has(projectId)) return true;
-    return cachedBigQuery(this, `runsQueries:${projectId}`, async () =>
-      (await bigQueryApi(this)).dryRun(projectId, "SELECT 1").then(() => true, () => false));
+    return cachedBigQuery(this, `runsQueries:${projectId}`, async () => (await bigQueryApi(this))
+      .dryRun(projectId, "SELECT 1", { timeoutMs: BIGQUERY_PROBE_TIMEOUT_MS })
+      .then(() => true, () => false));
   }
 
   async listProjects(query: string): Promise<ConfiguratorOption[]> {

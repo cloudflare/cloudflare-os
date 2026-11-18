@@ -259,6 +259,7 @@ async function callRest<T>(
   url: string,
   init: RequestInit,
   getAccessToken: AccessTokenProvider,
+  timeoutMs = REQUEST_ABORT_TIMEOUT_MS,
 ): Promise<T> {
   let headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
@@ -269,7 +270,7 @@ async function callRest<T>(
   let response = await fetchWithAuthRetry(url, {
     ...init,
     headers,
-  }, getAccessToken, { timeoutMs: REQUEST_ABORT_TIMEOUT_MS, retries: 1 });
+  }, getAccessToken, { timeoutMs, retries: 1 });
 
   let contentType = response.headers.get("Content-Type") ?? "";
   let isJson = contentType.includes("application/json");
@@ -433,11 +434,14 @@ export class BigQueryApi {
     };
   }
 
-  /** Validate `sql` and estimate its cost as a dry-run job in `billingProject`. */
+  /**
+   * Validate `sql` and estimate its cost as a dry-run job in `billingProject`, failing once
+   * `timeoutMs` passes without an answer (by default, as long as any request).
+   */
   async dryRun(
     billingProject: string,
     sql: string,
-    opts: Pick<BigQueryJobOptions, "defaultDataset" | "params"> = {},
+    opts: Pick<BigQueryJobOptions, "defaultDataset" | "params"> & { timeoutMs?: number } = {},
   ): Promise<BigQueryDryRunResult & {
     statementType?: string;
     ddlOperationPerformed?: string;
@@ -468,7 +472,7 @@ export class BigQueryApi {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }, this.getAccessToken);
+    }, this.getAccessToken, opts.timeoutMs);
 
     if (resp.status?.errorResult) {
       throw new Error(
