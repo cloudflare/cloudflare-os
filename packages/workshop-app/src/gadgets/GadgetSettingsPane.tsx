@@ -5,6 +5,7 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { GadgetSettingsView, type GadgetSettingsState, type GadgetSettingsTab } from './GadgetSettingsView'
+import { InvalidBindingName } from './GadgetSettings'
 import { useBlueprintInfo, useGadgetSettings, useServices } from './useGadgetSettings'
 
 export type GadgetSettingsPaneProps = {
@@ -73,6 +74,16 @@ export const GadgetSettingsPane = ({ workspaceId, workpieceId, initialTitle, tab
       bindings={snapshot.status === 'ready' ? snapshot.bindings : { status: 'loading' }}
       services={services}
       onUnbind={(name) => attempt(`remove env.${name}`, () => settings.unbind(name))}
+      // Said under the name, which keeps what was typed until it is put right.
+      onRenameBinding={async (name, next) => {
+        if (connection?.blocked()) return { saved: false }
+        try {
+          await settings.renameBinding(name, next)
+          return { saved: true }
+        } catch (error) {
+          return { saved: false, problem: error instanceof InvalidBindingName ? error.message : `Couldn’t rename env.${name}: ${messageOf(error)}` }
+        }
+      }}
       onDelete={() => attempt('delete the gadget', async () => {
         await settings.remove()
         onDeleted()

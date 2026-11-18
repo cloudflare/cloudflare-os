@@ -47,11 +47,11 @@ export const GadgetSettingsPreview = () => {
 
   return (
     <>
-      <Section title="BindingRow (a service’s resource with its logo; one only in the chat that proposed it; a model its code calls; an agent it starts, with the model it thinks with; one with no logo, the service’s first letter; pointed at, the way to take it away, which asks first)">
+      <Section title="BindingRow (a service’s resource with its logo; one only in the chat that proposed it; a model its code calls; an agent it starts, with the model it thinks with; one with no logo, the service’s first letter; pointed at, the way to take it away, which asks first; its name renamed in place, the first refusing what is typed with why)">
         <div className="w-full max-w-3xl">
           <ListGroup label="Connected to">
             <ul className="flex flex-col">
-              <BindingRow title="cloudflare/gadgets" name="GITHUB" service={{ name: 'GitHub', logoUrl: '/favicon.svg' }} onRemove={() => say('GITHUB removed')} />
+              <BindingRow title="cloudflare/gadgets" name="GITHUB" service={{ name: 'GitHub', logoUrl: '/favicon.svg' }} onRemove={() => say('GITHUB removed')} onRename={async () => ({ saved: false, problem: 'It already has env.CALENDAR. Choose another name.' })} />
               <BindingRow title="Team calendar" name="CALENDAR" service={{ name: 'Google', color: '#ffffff' }} pending onRemove={() => say('CALENDAR removed')} />
               <BindingRow title="Claude Haiku" name="SUMMARY_MODEL" kind="model" model="Claude Haiku" onRemove={() => say('SUMMARY_MODEL removed')} />
               <BindingRow title="Triage" name="TRIAGE" kind="agent" model="Claude Sonnet" onRemove={() => say('TRIAGE removed')} />
@@ -85,6 +85,14 @@ export const GadgetSettingsPreview = () => {
               }}
               bindings={listed}
               services={SERVICES}
+              onRenameBinding={async (name, next) => {
+                await later()
+                if (bindings.some((binding) => binding.name === next)) return { saved: false, problem: `It already has env.${next}. Choose another name.` }
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(next)) return { saved: false, problem: 'Binding names must be JavaScript identifiers (letters, digits, and \'_\', not starting with a digit).' }
+                setBindings((current) => current.map((binding) => (binding.name === name ? { ...binding, name: next } : binding)))
+                say(`env.${name} renamed to env.${next}`)
+                return { saved: true }
+              }}
               onUnbind={(name) => {
                 void later().then(() => {
                   setBindings((current) => current.filter((binding) => binding.name !== name))

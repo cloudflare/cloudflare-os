@@ -531,8 +531,12 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
   `listBindings()`), by the name its code knows each by, with the agents it can start apart. A
   binding says only its service, so one with none is asked what it is (`getCreationSpec()`): an
   agent and the model it thinks with, or a model. One is taken away from the gadget, asked for
-  twice, and stays in the workspace. Nothing is added here: the agent asks for what it needs in a
-  chat.
+  twice, and stays in the workspace. Its name is renamed where it is, as a title is
+  (`BindingRow`'s `onRename`, `renameBinding()`): one the code could not reach it by, or that the
+  gadget has another by, is refused with why before anything is asked (`bindingNameProblem`, by the
+  API's own `validateBindingName()`), and stays in the field under why until it is put right or
+  Escape puts it back. One waiting in a chat is that chat's, and is not renamed here. Nothing is
+  added here: the agent asks for what it needs in a chat.
 - Settings: where it is from, and deleting it.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
