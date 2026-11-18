@@ -1422,6 +1422,31 @@ describe("lazy walker reads", () => {
     expect(t.pulls).toHaveLength(1);
   });
 
+  it("pins a file in a cold tree without fetching any blobs, leaving its bytes for a click", async () => {
+    const t = makeCache();
+    t.sources.set(G1, async (oids, hints) => {
+      const objects = hints.filterTreeDepth !== undefined || hints.type === "blob"
+          ? oids.map(fixture)
+          : FIXTURE_OBJECTS.filter(o => PACKED_OIDS.includes(o.oid))
+              .map(o => ({type: o.type, payload: b64Bytes(o.payload)}));
+      for (const object of objects) {
+        if (object.type === "blob" && hints.filterBlobSize !== undefined &&
+            object.payload.byteLength >= hints.filterBlobSize) continue;
+        await t.cache.putFromGatekeeper(G1, object.type, object.payload);
+      }
+    });
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+    const oid = await t.cache.fileOidAtCommit(COMMIT_1, "src/util.js");
+    expect(oid).toBeDefined();
+    expect(t.pulls.every(pull => pull.hints.type === "tree")).toBe(true);
+    expect(FIXTURE_OBJECTS.filter(o => o.type === "blob").map(o => t.cache.hasLocalObject(o.oid)))
+        .not.toContain(true);
+    expect(t.storage.gitObjectMetadata.get(oid!)!.pullableFrom).toContain(G1);
+    const reader = await t.cache.openBlob(oid!);
+    expect(reader.read(0, reader.size)).toEqual(fixture(oid!).payload);
+    expect(t.pulls.at(-1)!.oids).toEqual([oid]);
+  });
+
   it("surfaces all five entry kinds from the fixture tree", async () => {
     let t = makeCache();
     t.sources.set(G1, fixtureSource(t, G1));

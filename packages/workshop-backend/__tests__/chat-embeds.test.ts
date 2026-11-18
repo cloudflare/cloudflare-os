@@ -128,6 +128,19 @@ describe("host-pinned answer files", () => {
     expect(snapshots).toEqual({"worktree://OUTPUTS/report.csv": A, "worktree://OUTPUTS/image.png": A});
   });
 
+  it("drops a streamed view's pins if its saved block never closes", async () => {
+    const source = "worktree://OUTPUTS/image.png", snapshots: ChatEmbeds = {};
+    const read = vi.fn<(binding: string, path: string) => Promise<string | undefined>>().mockResolvedValue(A);
+    const text = '<inline-html>\n<img src="' + source + '">\n';
+    await snapshotChatEmbeds(text, snapshots, read, true);
+    expect(snapshots).toEqual({[source]: A});
+    expect(await snapshotChatEmbeds(text, snapshots, read)).toEqual({[source]: null});
+    expect(snapshots).toEqual({});
+    expect(read).toHaveBeenCalledTimes(1);
+    await snapshotChatEmbeds(text + '</inline-html>', snapshots, read);
+    expect(snapshots).toEqual({[source]: A});
+  });
+
   it.each([
     ["a&amp;b.png", "a&b.png"],
     ["a&#38;b.png", "a&b.png"],

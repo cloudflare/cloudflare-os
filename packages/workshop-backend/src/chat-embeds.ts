@@ -14,7 +14,7 @@ export async function snapshotChatEmbeds(
   for (const part of parseInlineHtmlBlocks(text, {streaming})) {
     if (part.kind === "text") {
       for (const url of markdownFileUrls(part.text, streaming)) sources.add(url);
-    } else {
+    } else if (streaming || part.kind === "block") {
       // HTMLRewriter preserves character references in attributes; decode once to match the
       // browser's getAttribute() before pinning the URL or resolving its path.
       try {
