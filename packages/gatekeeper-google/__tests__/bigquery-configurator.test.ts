@@ -153,8 +153,11 @@ describe("the query project", () => {
     frame.autocomplete().onChange("other");
     expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events?queryProject=other");
-    // Another choice in the same project keeps it; one in a project of the account's own drops it.
+    // Another choice in the same project keeps it, even after nothing was chosen for a moment, as
+    // while the user opens a location or searches; one in a project of the account's own drops it.
     frame.clearFields.mockClear();
+    frame.picker().onChange(null, null);
+    expect(frame.values()).toEqual({ target: null, queryProject: "other" });
     frame.picker().onChange("project:theirs", null);
     expect(frame.values()).toEqual({ target: "project:theirs", queryProject: "other" });
     expect(frame.clearFields).not.toHaveBeenCalled();
@@ -184,15 +187,22 @@ describe("the query project", () => {
   });
 
   it("keeps a pre-filled query project while the choice moves within its data project, and drops it on leaving", async () => {
-    const frame = await open({ target: "dataset:mine/sales", queryProject: "other" });
-    frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", runsQueries: true });
-    await frame.load("dataset:mine/sales");
-    frame.picker().onChange("table:mine/sales/orders");
+    const frame = await open({ target: "project:mine", queryProject: "other" });
+    frame.ui.getNode.mockResolvedValueOnce({ ...MINE, runsQueries: true });
+    await frame.load("project:mine");
+    // Opening a dataset lets go of the project before the dataset, or a table in it, is chosen.
+    frame.picker().onChange(null, null);
+    expect(frame.values()).toEqual({ target: null, queryProject: "other" });
+    expect(frame.fields()).toEqual(["What to connect"]);
+    frame.picker().onChange("dataset:mine/sales", null);
+    frame.picker().onChange("table:mine/sales/orders", null);
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);
     expect(frame.autocomplete()).toMatchObject({ value: "other", optional: true });
     expect(frame.url()).toBe("https://bigquery.googleapis.com/mine/sales/orders?queryProject=other");
-    frame.picker().onChange("dataset:yours/web");
+    frame.picker().onChange(null, null);
+    frame.picker().onChange("dataset:yours/web", null);
     expect(frame.values()).toEqual({ target: "dataset:yours/web", queryProject: null });
+    expect(frame.clearFields).toHaveBeenCalledWith("queryProject");
     expect(frame.url()).toBe("https://bigquery.googleapis.com/yours/web");
   });
 

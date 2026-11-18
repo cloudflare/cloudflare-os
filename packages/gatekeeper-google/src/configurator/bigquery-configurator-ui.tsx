@@ -123,6 +123,16 @@ let suggestedFor: string | null = null;
  * mid-edit and narrowing the choice does not change where its queries are billed.
  */
 let overrideFor: string | null = null;
+/**
+ * The choice the picker let go of when the user opened a location or searched, which leaves
+ * nothing chosen for a moment: a choice back in its data project keeps the query project it had.
+ */
+let letGo: string | null = null;
+
+/** The data project of a pre-filled query project, while `target` is the choice it arrived with. */
+function overriddenProject(target: string | null): string | undefined {
+  return sharedProject(target) === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
+}
 
 /** Fills in the query project a choice in a shared project needs, when the account has only one. */
 function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
@@ -180,7 +190,7 @@ export default {
   render(context) {
     const { values: { target = null, queryProject = null }, setValues, clearFields, ui } = context;
     const shared = sharedProject(target);
-    const override = shared === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
+    const override = overriddenProject(target);
     return <Section>
       <Field label="What to connect">
         <HierarchyPicker
@@ -215,14 +225,22 @@ export default {
             return item;
           }}
           onChange={next => {
+            // Opening a location or searching lets go of the choice; the query project waits for the next.
+            if (next === null) {
+              letGo = target;
+              setValues({ target: null });
+              return;
+            }
             // A query project stays while the choice moves within the data project it was picked
             // for: the one a shared project needs, or one a pre-filled choice arrived with.
-            const held = shared ?? override;
-            const keep = held !== undefined && next !== null && refOf(next)?.projectId === held;
+            const from = target ?? letGo;
+            const overridden = overriddenProject(from);
+            const held = sharedProject(from) ?? overridden;
+            const keep = held !== undefined && refOf(next)?.projectId === held;
             if (!keep) {
               clearFields("queryProject");
               overrideFor = null;
-            } else if (override !== undefined) {
+            } else if (overridden !== undefined) {
               overrideFor = next;
             } else if (suggestedFor !== null) {
               suggestedFor = next;
