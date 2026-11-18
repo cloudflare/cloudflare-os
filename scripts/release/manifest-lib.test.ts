@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ADMIN_GATEKEEPER_VENDOR_ID } from "../../packages/workshop-shared/src/admin-agent.ts";
 import { collectAssets, collectModules, stableStringify } from "./hash-lib.ts";
 import {
   generateManifest, readDeployablePackages, readDeployInputs, releaseShortName,
@@ -192,6 +193,14 @@ test("worker entries carry the deploy contract", () => {
   assert.equal(workers["gatekeeper-mcp"].singleton, true);
   assert.equal(workers["gatekeeper-mcp-portal"].singleton, true);
   assert.equal(workers["gatekeeper-homeassistant"].singleton, true);
+  // So is the admin gatekeeper, for the same reason: it is preinstalled but not ambient (its
+  // account declares no agent singleton), and it takes no inputs and no bindings, since the
+  // Worker holds no power of its own.
+  const instanceAdmin = workers["gatekeeper-instanceadmin"];
+  assert.equal(instanceAdmin.singleton, true);
+  assert.equal(instanceAdmin.preinstall, true);
+  assert.deepEqual(instanceAdmin.inputs, []);
+  assert.deepEqual(instanceAdmin.bindings, []);
 
   // Module blobs are content-addressed.
   for (const [name, entry] of Object.entries(workers)) {
@@ -334,6 +343,17 @@ test("releaseShortName rejects names that don't fold to a legal slug", () => {
   }
   // The cap itself is inclusive.
   assert.equal(releaseShortName(`gatekeeper-${"a".repeat(20)}`), "a".repeat(20));
+});
+
+// A workspace lends its owner's Admin API to whatever Worker is bound as GATEKEEPER_INSTANCEADMIN,
+// so only the admin gatekeeper's own package may fold to that slug.
+test("releaseShortName reserves the admin gatekeeper's slug for its package", () => {
+  assert.equal(releaseShortName("gatekeeper-instanceadmin"), ADMIN_GATEKEEPER_VENDOR_ID);
+  for (const pkgName of ["gatekeeper-instance-admin", "gatekeeper-instance.admin"]) {
+    assert.throws(() => releaseShortName(pkgName),
+        /folds to "instanceadmin", which is reserved for gatekeeper-instanceadmin/,
+        `expected ${pkgName} to be rejected`);
+  }
 });
 
 test("every gatekeeper shortName is unique", () => {

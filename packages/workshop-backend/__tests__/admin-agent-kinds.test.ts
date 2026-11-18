@@ -22,8 +22,8 @@ describe("ADMIN_AGENT_KINDS", () => {
   it("reads exactly the listings, the getters that hold no secret, and views", () => {
     expect(methodsOfKind("read")).toEqual([
       "getAdminAuditStats", "getIssueReport", "getSettings", "inspectUser", "inspectWorkspace",
-      "isBlueprintFeatured", "listAdminAudit", "listIssueReports", "listUsers", "listWorkspaces",
-      "readIssueReportImage", "whoami",
+      "listAdminAudit", "listIssueReports", "listUsers", "listWorkspaces", "readIssueReportImage",
+      "whoami",
     ]);
   });
 

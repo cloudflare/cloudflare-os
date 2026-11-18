@@ -55,7 +55,7 @@ export type AdminAgentKind = "read" | "omitted";
  * Omitted, by rule: every setter and every other method that changes a deployment setting; the
  * gateway tests, which send requests the deployment pays for; checkForUpdates(), which calls out
  * and stores what it learns, and getUpdateStatus(), whose answer holds the link that opens the
- * deploy flow.
+ * deploy flow; isBlueprintFeatured(), which repairs the featured catalog's mirror as it reads.
  *
  * A "read" method that returns a view (inspectWorkspace(), inspectUser()) also needs the
  * Workshop's table of what its view answers: see AdminAgentKind. A view of a user's account is a
@@ -64,11 +64,11 @@ export type AdminAgentKind = "read" | "omitted";
  */
 export const ADMIN_AGENT_KINDS = {
   // Reads.
-  getSettings: "read", isBlueprintFeatured: "read",
+  getSettings: "read",
   listUsers: "read", listWorkspaces: "read", inspectWorkspace: "read", inspectUser: "read",
   listAdminAudit: "read", getAdminAuditStats: "read",
   // Omitted.
-  getUpdateStatus: "omitted",
+  getUpdateStatus: "omitted", isBlueprintFeatured: "omitted",
   setSignupsEnabled: "omitted", setUserSearchEnabled: "omitted",
   setSnapshotSharingEnabled: "omitted", setSiteName: "omitted",
   setSiteLogo: "omitted", setInstanceInstructions: "omitted",
