@@ -1,5 +1,6 @@
-import { CaretRightIcon } from '@phosphor-icons/react'
+import { CaretRightIcon, SignOutIcon } from '@phosphor-icons/react'
 import { Avatar } from '@/components/Avatar'
+import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { LinkButton } from '@/components/LinkButton'
 import type { SettingsNavGroup } from './SettingsSidebar'
 
@@ -8,6 +9,8 @@ export type SettingsMenuProps = {
   user: { name: string; detail?: string; avatarUrl?: string }
   groups: SettingsNavGroup[]
   onSelect: (id: string) => void
+  /** Signs out of this browser, asked first, after the parts. */
+  onSignOut?: () => void
 }
 
 /**
@@ -15,7 +18,7 @@ export type SettingsMenuProps = {
  * whose they are, then each group on a surface of its own, a part to a row with what is in it
  * under its name and a chevron at its end, as it is gone into.
  */
-export const SettingsMenu = ({ user, groups, onSelect }: SettingsMenuProps) => (
+export const SettingsMenu = ({ user, groups, onSelect, onSignOut }: SettingsMenuProps) => (
   <nav aria-label="Settings" className="appears mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8">
     <div className="flex flex-col items-center gap-2 py-4 text-center">
       <Avatar name={user.name} src={user.avatarUrl} className="size-16 text-xl" />
@@ -43,5 +46,19 @@ export const SettingsMenu = ({ user, groups, onSelect }: SettingsMenuProps) => (
         ))}
       </section>
     ))}
+    {onSignOut && (
+      <div className="flex justify-center">
+        <ConfirmMenu
+          label="Sign out"
+          icon={SignOutIcon}
+          triggerVariant="ghost"
+          side="top"
+          title="Sign out?"
+          description="You’ll need to sign in again to use the Workshop in this browser."
+          confirmLabel="Sign out"
+          onConfirm={onSignOut}
+        />
+      </div>
+    )}
   </nav>
 )

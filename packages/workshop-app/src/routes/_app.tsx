@@ -14,6 +14,7 @@ import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useApi } from '@/rpc/ApiContext'
+import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
@@ -257,6 +258,7 @@ const AppFrame = () => {
       }}
       onClose={toggleSettings}
       collapsed={collapsed}
+      onSignOut={signOut}
     />
   )
   const sidebar = (collapsed: boolean) => (

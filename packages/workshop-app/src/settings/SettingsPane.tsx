@@ -19,6 +19,7 @@ import { FIRST_SECTION, sectionInfo, settingsNavGroups, type SettingsSection } f
 import { SkillSettings } from './SkillSettings'
 import { UsageSettings } from './UsageSettings'
 import { useOwnAvatar } from './useOwnAvatar'
+import { signOut } from '@/rpc/signOut'
 
 export type SettingsPaneProps = {
   /** The part the address names, or none. */
@@ -104,6 +105,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
               groups={settingsNavGroups(sectionHref)}
               // The ids are the parts' own, which the block knows only as strings.
               onSelect={(id) => onSectionChange(id as SettingsSection)}
+              onSignOut={signOut}
             />
           )}
     </PageLayout>

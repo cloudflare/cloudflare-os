@@ -1,7 +1,8 @@
 import { Fragment, useRef } from 'react'
-import { ArrowLeftIcon, type Icon } from '@phosphor-icons/react'
+import { ArrowLeftIcon, SignOutIcon, type Icon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
+import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { LinkButton } from '@/components/LinkButton'
 import { Tooltip } from '@/components/Tooltip'
 import { RailDivider } from './Sidebar'
@@ -31,6 +32,8 @@ export type SettingsSidebarProps = {
   onClose: () => void
   /** Drawn as a rail one button wide: the same buttons in a column, each part its icon. */
   collapsed?: boolean
+  /** Signs out of this browser, asked first, from the foot of the sidebar. */
+  onSignOut?: () => void
 }
 
 const underlay = 'pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded-2xl bg-kumo-fill'
@@ -77,7 +80,7 @@ const PartGroup = ({ group, current, onSelect }: { group: SettingsNavGroup; curr
  * the logo is, and the settings' parts under it, each group under its name. Nothing of the app's
  * own sidebar stays, the user's button included: the way out is the one at the top.
  */
-export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed = false }: SettingsSidebarProps) => {
+export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed = false, onSignOut }: SettingsSidebarProps) => {
   const scrollRef = useRef<HTMLElement>(null)
   useScrollFadeFallback(scrollRef)
   const back = <Button icon={ArrowLeftIcon} aria-label="Close settings" title="Close settings" onClick={onClose} />
@@ -111,6 +114,11 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
             </Fragment>
           ))}
         </nav>
+        {onSignOut && (
+          <footer className="flex shrink-0 pt-2">
+            <ConfirmMenu icon={SignOutIcon} aria-label="Sign out" triggerVariant="ghost" side="top" align="start" title="Sign out?" description="You’ll need to sign in again to use the Workshop in this browser." confirmLabel="Sign out" onConfirm={onSignOut} />
+          </footer>
+        )}
       </div>
     )
   }
@@ -124,6 +132,22 @@ export const SettingsSidebar = ({ groups, current, onSelect, onClose, collapsed 
       <nav ref={scrollRef} aria-label="Settings" className="chat-fade sidebar-fade flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pt-1 [scrollbar-width:none]">
         {groups.map((group) => <PartGroup key={group.label} group={group} current={current} onSelect={onSelect} />)}
       </nav>
+      {onSignOut && (
+        <footer className="flex shrink-0">
+          <ConfirmMenu
+            label="Sign out"
+            icon={SignOutIcon}
+            triggerVariant="ghost"
+            triggerClassName="w-full justify-start"
+            side="top"
+            align="start"
+            title="Sign out?"
+            description="You’ll need to sign in again to use the Workshop in this browser."
+            confirmLabel="Sign out"
+            onConfirm={onSignOut}
+          />
+        </footer>
+      )}
     </div>
   )
 }
