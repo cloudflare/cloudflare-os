@@ -24,6 +24,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** What Google says of an admin's restriction, which can name more than the restriction. */
+const BLOCKED_DESCRIPTION = "Blocked for ada@example.com by policy 42";
+
 /**
  * Google as far as an account object uses it. A refresh token `refresh-x` mints the access token
  * `access-x`, an authorization code `x` is exchanged for both, and `subjects` says which Google
@@ -47,6 +50,10 @@ function fakeGoogle() {
      * refused with none is dead: Google does not take its revocation either.
      */
     refused: new Map<string, string | null>(),
+    /** The refresh tokens an admin's restriction keeps Google from refreshing. */
+    blocked: new Set<string>(),
+    /** Whether Google answers, about which account an access token belongs to, that it is no good. */
+    profileUnauthorized: false,
   };
   const json = (body: unknown, status = 200) => Response.json(body, {status});
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -56,6 +63,9 @@ function fakeGoogle() {
       const subtype = google.refused.get(form.get("refresh_token") ?? "");
       if (subtype !== undefined) {
         return json({error: "invalid_grant", ...(subtype !== null ? {error_subtype: subtype} : {})}, 400);
+      }
+      if (google.blocked.has(form.get("refresh_token") ?? "")) {
+        return json({error: "admin_policy_enforced", error_description: BLOCKED_DESCRIPTION}, 400);
       }
       const name = form.get("code") ?? form.get("refresh_token")!.replace(/^refresh-/, "");
       return json({
@@ -71,6 +81,7 @@ function fakeGoogle() {
         while (google.profileHeld) await new Promise(resolve => setTimeout(resolve, 1));
         google.profilesWaiting--;
       }
+      if (google.profileUnauthorized) return json({error: "invalid_token"}, 401);
       const sub = google.subjects.get(token);
       return sub === undefined ? json({error: "invalid_token"}, 500) : json({sub});
     }
@@ -549,6 +560,25 @@ describe("Google grants shared by several connections", () => {
 
     await working.disconnect();
     expect(google.revoked).toEqual(["refresh-working"]);
+  });
+
+  it("does not log Google's description of a restriction that refused the refresh a recording needed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const blocked = await storedAccount(google, "blocked", ada);
+    google.profileHeld = true;
+    await blocked.refresh();
+    await vi.waitFor(() => expect(google.profilesWaiting).toBe(1), {timeout: 5000});
+
+    // The profile says the token is no good, and the refresh it asks for is refused.
+    google.profileUnauthorized = true;
+    google.blocked.add("refresh-blocked");
+    google.profileHeld = false;
+    await vi.waitFor(() => expect(warn.mock.calls.map(([entry]) => entry)).toContainEqual(
+      expect.objectContaining({event: "google.grant.hold.failed", outcome: "refreshRefused"}),
+    ), {timeout: 5000});
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(BLOCKED_DESCRIPTION);
   });
 
   it("stops counting a refused connection whose removal the registry never received", async () => {

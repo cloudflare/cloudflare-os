@@ -623,6 +623,13 @@ function isCloudSessionExpiry(failure: RefreshFailure): boolean {
       (failure.subtype === "invalid_rapt" || failure.subtype === "rapt_required");
 }
 
+/**
+ * Google refused for good to refresh the account's access token. Its message, which callers are
+ * told, can quote Google's description of an admin's restriction, so it is not logged; the
+ * refusal is, as `google.token.mint.refused`.
+ */
+class RefreshRefusedError extends Error {}
+
 /** What a caller is told when Google permanently refuses to refresh the account's access token. */
 function refreshFailureMessage(failure: RefreshFailure): string {
   if (failure.reason === "policyBlocked") {
@@ -909,7 +916,8 @@ export class UserAccount extends DurableObject<Env> {
       });
     } catch (error) {
       logger.warn("failed to record a Google grant's holder", {
-        event: "google.grant.hold.failed", error,
+        event: "google.grant.hold.failed",
+        ...(error instanceof RefreshRefusedError ? { outcome: "refreshRefused" } : { error }),
       });
     } finally {
       this.#holdingGrant--;
@@ -1183,7 +1191,7 @@ export class UserAccount extends DurableObject<Env> {
         });
         // All are permanent, so all mark the connection dead. They differ in the remedy:
         // re-authenticating fixes a revoked grant but cannot grant a scope an admin has blocked.
-        let error = new Error(refreshFailureMessage(result));
+        let error = new RefreshRefusedError(refreshFailureMessage(result));
         // Recorded before notifying so only the first caller of a burst does either.
         this.#mintFailure = { error, at: Date.now() };
         let refusal = crypto.randomUUID();
