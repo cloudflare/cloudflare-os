@@ -62,8 +62,10 @@ content access, grant and issue report methods, which check on every call (see [
 - **Grants**: `endWorkspaceGrant(workspaceId, grantId, reason)` ends a grant a second admin
   approved (see [Grants](#grants)). It answers whatever the level and while writes are off.
 - **The audit log**: `listAdminAudit()` and `getAdminAuditStats()`.
-- **Issue reports**: the listing, a report with its thread, an entry, the status, the links and
-  an image's bytes. None of these is audited: see [issue-reports.md](issue-reports.md).
+- **Issue reports**: the listing, a report with its thread, an entry, the status, a claim and a
+  release of a report (`claimIssueReport()`, `releaseIssueReport()`), the links and an image's
+  bytes, with `whoami()`, which names the caller as a report names its assignee. None of these
+  is audited: see [issue-reports.md](issue-reports.md).
 - **Writes**, while the deployment's `ADMIN_WORKSPACE_WRITES` is `on`:
   `writeWorkspace(workspaceId, action, args, reason)`.
 
@@ -1251,11 +1253,11 @@ chokepoint records `diffAdminConfig(current, next)` before `storage.adminConfig.
 Not recorded: reads (`getSettings`, `isBlueprintFeatured`, `getUpdateStatus`,
 `listContentAccessRequests`, `getContentAccessRequest`, the listings and the audit log itself), the
 gateway tests, `checkForUpdates`, the deployment's own promotion of its bundled formats, which
-no admin made, and the issue report methods, the three that write to a report included
-(`addIssueReportEntry`, `setIssueReportStatus`, `setIssueReportLinks`): a report's thread is its
-own record, of its entries and status changes; replacing a report's links keeps no author and no
-time. The content access requests and `endWorkspaceGrant` are recorded, as grant records and not
-setting records.
+no admin made, and the issue report methods, the five that write to a report included
+(`addIssueReportEntry`, `setIssueReportStatus`, `claimIssueReport`, `releaseIssueReport`,
+`setIssueReportLinks`): a report's thread is its own record, of its entries, its status changes
+and its changes of assignee; replacing a report's links keeps no author and no time. The content
+access requests and `endWorkspaceGrant` are recorded, as grant records and not setting records.
 
 ### Text bounds
 
