@@ -1,4 +1,4 @@
-import { useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { animate, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
@@ -31,7 +31,8 @@ const HOVER_OPACITY = 0.4
  *
  * Its bar is the divider's pill (`ResizeHandle`), always out and staying put: it grows a little
  * and strengthens when pointed at, springs longer and stronger when taken hold of, and lightens
- * while dragged fast. Focused from the keyboard, it is as if held.
+ * while dragged fast. Focused from the keyboard, it is as if held. While it is held nothing on the
+ * page can be selected, so that a drag does not highlight whatever the pointer crosses.
  */
 export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, onDragEnd, onToggle, className }: GrabberProps) => {
   const drag = useRef<{ pointerId: number; from: number; moved: boolean }>(undefined)
@@ -69,8 +70,29 @@ export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, on
     else animate(hover, at ? 1 : 0, { type: 'spring', ...SMOOTH })
   }
 
+  // While it is held, nothing on the page is selected by the pointer going over it, and what was
+  // selected before is let go of, as a drag would otherwise highlight whatever it crosses.
+  const selection = useRef<{ plain: string; webkit: string }>(undefined)
+  const lockSelection = () => {
+    const { style } = document.body
+    selection.current ??= { plain: style.userSelect, webkit: style.getPropertyValue('-webkit-user-select') }
+    style.userSelect = 'none'
+    style.setProperty('-webkit-user-select', 'none')
+    window.getSelection()?.removeAllRanges()
+  }
+  const unlockSelection = () => {
+    const was = selection.current
+    if (!was) return
+    selection.current = undefined
+    document.body.style.userSelect = was.plain
+    document.body.style.setProperty('-webkit-user-select', was.webkit)
+  }
+  // Not left locked if it goes while it is held.
+  useEffect(() => unlockSelection, [])
+
   const take = (event: ReactPointerEvent<HTMLButtonElement>) => {
     if (drag.current || event.button !== 0) return
+    lockSelection()
     event.currentTarget.setPointerCapture(event.pointerId)
     pointerX.jump(event.clientX)
     pointerY.jump(event.clientY)
@@ -95,6 +117,7 @@ export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, on
     if (held?.pointerId !== event.pointerId) return
     drag.current = undefined
     dragged.current = held.moved
+    unlockSelection()
     if (!focused.current) setGrip(false)
     if (held.moved) onDragEnd(event.clientY - held.from)
   }
@@ -105,7 +128,7 @@ export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, on
       aria-label={label}
       aria-expanded={expanded}
       className={cn(
-        'relative h-4 w-12 cursor-grab touch-none outline-none active:cursor-grabbing',
+        'relative h-4 w-12 cursor-grab touch-none outline-none select-none [-webkit-touch-callout:none] active:cursor-grabbing',
         className,
       )}
       onPointerDown={take}
