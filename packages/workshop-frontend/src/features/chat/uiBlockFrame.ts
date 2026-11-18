@@ -278,8 +278,8 @@ const frameHead = (theme: UiBlockTheme) => `${SANDBOX_HEAD.replace('img-src data
     }
     button, input, select, textarea { font: inherit; letter-spacing: inherit; }
     code, kbd, pre, samp { font-family: var(--font-mono); }
-    img[data-blob-oid] { max-width: 100%; }
-    img[data-blob-oid]:not([height]) { height: auto; }
+    :where(img[data-blob-oid]) { max-width: 100%; }
+    :where(img[data-blob-oid]:not([height])) { height: auto; }
   </style>`
 
 /**

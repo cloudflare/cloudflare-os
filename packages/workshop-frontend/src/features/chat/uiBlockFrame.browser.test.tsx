@@ -274,3 +274,14 @@ it.each(['data', 'worktree'])('preserves dimensions authored on %s images in exi
   })
   await expect.poll(() => sent).toEqual(['60x20'])
 })
+
+
+it('lets a view override responsive image defaults with its own stylesheet', async () => {
+  const sent: string[] = []
+  await openBlock('<style>.thumb { width: 60px; height: 20px; max-width: 40px; }</style>' +
+    '<img class="thumb" src="worktree://OUTPUTS/image.png" onload="const r = this.getBoundingClientRect(); agent.send(r.width + \'x\' + r.height)">', {
+    onMessageRequest: message => sent.push(message), onResize: () => {}, onError: () => {},
+    readImage: async () => ({oid: 'a'.repeat(40), stream: byteStream(png('cyan'))}),
+  })
+  await expect.poll(() => sent).toEqual(['40x20'])
+})
