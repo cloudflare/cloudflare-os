@@ -101,7 +101,8 @@ export const ShareSnapshotPreview = ({
 
   return (
     <div>
-      <div className="flex h-12 items-center justify-between gap-3 border-b border-kumo-line/70 pl-3 pr-1.5">
+      {/* Covered in full screen, where the dialog keeps focus inside the overlay (see ShareModal). */}
+      <div inert={fullscreen ? true : undefined} className="flex h-12 items-center justify-between gap-3 border-b border-kumo-line/70 pl-3 pr-1.5">
         <GadgetUseTitle workspaceTitle={workspaceTitle} ownerName={ownerName} withLogo={false} />
         {ready && (
           <div className="flex flex-shrink-0 items-center gap-0.5">
@@ -146,6 +147,7 @@ export const ShareSnapshotPreview = ({
             <GadgetUI
               key={ready.refreshedAt?.getTime()}
               gadget={ready.stub}
+              renderMode="snapshot"
               height="100%"
               onIframeEscape={fullscreen ? () => onFullscreenChange(false) : undefined}
             />

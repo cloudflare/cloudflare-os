@@ -126,6 +126,15 @@ import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
 const LEGACY_RUNTIME_URL = runtimeUrl(false)
 const MAIN_RUNTIME_URL = runtimeUrl(true)
 
+/** How the frame runs the gadget, as `globalThis.gadgetRenderMode` tells its code; unset live. */
+export type GadgetRenderMode = 'snapshot'
+
+// A module script of its own, ahead of the runtime and so of every gadget module, which keeps the
+// runtime's URLs, embedding Cap'n Web, encoded once at load rather than per mode on each render.
+const RENDER_MODE_URLS: Record<GadgetRenderMode, string> = {
+  snapshot: `data:text/javascript;charset=utf-8,${encodeURIComponent('globalThis.gadgetRenderMode = "snapshot";')}`,
+}
+
 type OpenAgentChat = (chatToken: string) => Promise<void>
 
 // The Workshop as a gadget UI's host.
@@ -185,7 +194,7 @@ class GadgetFrameRoot extends RpcTarget {
   }
 }
 
-const createSandboxedHtml = (page: UiPage): string => {
+const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefined): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -193,6 +202,7 @@ const createSandboxedHtml = (page: UiPage): string => {
   <script type="importmap">${page.importMap}</script>
 </head>
 <body>
+    ${renderMode ? `<script type="module" src="${RENDER_MODE_URLS[renderMode]}"></script>` : ''}
     <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
     <script type="module" src="${page.entryUrl}"></script>
 </body>
@@ -205,6 +215,8 @@ interface GadgetUIProps {
   reloadTrigger?: number
   isVisible?: boolean
   chatId?: number
+  // Set for a snapshot, which the gadget's code reads as `globalThis.gadgetRenderMode`.
+  renderMode?: GadgetRenderMode
   onConsoleLog?: (log: ConsoleLogEvent) => void
   // Fires when the user presses Escape while the gadget iframe has focus. Sandboxed iframes
   // capture keydown events, so we forward Escape explicitly from inside the iframe.
@@ -227,7 +239,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
@@ -413,7 +425,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (bundle) {
           const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
           pathsByUrlRef.current = page.pathsByUrl
-          setSandboxedHtml(createSandboxedHtml(page))
+          setSandboxedHtml(createSandboxedHtml(page, renderMode))
         } else {
           setSandboxedHtml(null)
         }
@@ -443,7 +455,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     }
   // LSP reports an error here, but tsc does not.
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
-  }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, retryNonce])
+  }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, renderMode, retryNonce])
 
   // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
   const frameEvents: FrameEvents = {

@@ -163,6 +163,7 @@ export default function GadgetUseView({
               // A refreshed snapshot is a new copy, running the gadget's code as of the refresh.
               key={snapshot ? `${selectedGadgetId}@${snapshot.refreshedAt.getTime()}` : selectedGadgetId}
               gadget={gadget}
+              renderMode={snapshot ? 'snapshot' : undefined}
               height="100%"
               isVisible={true}
             />

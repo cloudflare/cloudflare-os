@@ -82,8 +82,9 @@ A snapshot is how people the user shares a Gadget with can view it without acces
 * The copy has no bindings: its \`this.env\` is empty and it cannot make network requests. RPC stubs the Gadget stored, including persistent stubs, fail to load.
 * So the snapshot shows only what the Gadget saved. Anything the Gadget fetches through a binding when the UI asks for it is missing from the snapshot. Save data read through bindings to storage when it is read, so the snapshot can show it.
 * The copy may write to its storage, but those writes are discarded when the snapshot is refreshed with a new copy of the Gadget's storage. A snapshot is refreshed every time the viewer opens it, and whenever they choose to refresh it. Never rely on a snapshot keeping anything it writes.
+* Viewers can also download the snapshot through the Gadget's export formats. These exports run against the snapshot's copy too: a browser-mode export renders client.js against it, and \`ExportHandler\` in server.js runs in the copy, with an empty \`this.env\`.
 
-When running as a snapshot, the Gadget should present a read-only version of its UI, so viewers do not make changes that are silently lost on refresh. server.js can tell it is running as a snapshot from a binding it normally has being missing from \`this.env\`; let client.js ask server.js which it is. Make sure that every method client.js calls still works, or fails with a clear message, when the bindings are missing.`
+client.js can tell it is running as a snapshot, including in a browser-mode export, from \`globalThis.gadgetRenderMode === "snapshot"\`; when it is not a snapshot, \`gadgetRenderMode\` is not defined. In a snapshot, present a read-only version of the UI, so viewers do not make changes that are silently lost on refresh. Make sure that every method client.js calls, and every export format \`getExportFormats()\` lists, still works, or fails with a clear message, when the bindings are missing.`
 
 function withRecipient(list: StagedRecipient[], recipient: StagedRecipient): StagedRecipient[] {
   return list.some(entry => entry.id === recipient.id) ? list : [...list, recipient]
@@ -647,6 +648,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     : null
   // Derived, so leaving the snapshot page can't leave the dialog set up for full screen.
   const previewFullscreen = previewFullscreenRequested && shownSubpage === 'snapshot'
+  // What the full-screen preview covers, kept out of the dialog's focus order and accessibility tree.
+  const coveredByPreview = previewFullscreen ? true : undefined
   const ownerData = isOwner ? 'your' : `${metadata.owner?.name ?? 'the owner'}’s`
   const removeTarget = confirmationTarget?.kind === 'remove' ? confirmationTarget : null
   const revokeTarget = confirmationTarget?.kind === 'revoke' ? confirmationTarget : null
@@ -1080,8 +1083,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     setAskingAgent(true)
     try {
       const models = await overseer.listModels()
-      const chatId = await overseer.newChat(
-        snapshotFixPrompt(target.title), getStoredSelectedModel(currentUser?.id, models))
+      // The fix needs an agent, so a saved "No agent" choice falls back to the first model.
+      const modelId = getStoredSelectedModel(currentUser?.id, models) ?? models[0]?.id
+      if (modelId === undefined) {
+        toasts.add({ title: 'No AI models are available to fix the gadget.', variant: 'error' })
+        return
+      }
+      const chatId = await overseer.newChat(snapshotFixPrompt(target.title), modelId)
       onClose()
       navigate({
         to: '/workspace/$id',
@@ -1198,7 +1206,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         className={`responsive-dialog !z-[1000] !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !w-[min(640px,calc(100vw-32px))] !-translate-y-0 flex-col overflow-hidden bg-kumo-base p-0 !outline-none ${previewFullscreen ? 'dialog-hosts-fullscreen' : ''}`}
         size="lg"
       >
-        <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
+        <div inert={coveredByPreview} className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
           {shownSubpage ? (
             <div className="flex min-w-0 items-center gap-1.5">
               <WorkshopIconButton ref={backButtonRef} aria-label="Back to sharing" onClick={closeSubpage}>
@@ -1254,7 +1262,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         )}
         {shownSubpage === 'snapshot' && gadgetId !== undefined && (
           <div className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6">
-            <p className="mb-4 text-[14px] leading-5 tracking-[-0.2px] text-kumo-subtle">
+            <p inert={coveredByPreview} className="mb-4 text-[14px] leading-5 tracking-[-0.2px] text-kumo-subtle">
               Viewers open a read-only snapshot of this gadget with {ownerData} stored data. Snapshots come
               with no connections and any writes stay in the viewer’s own copy.
             </p>
@@ -1269,7 +1277,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 onFullscreenChange={setPreviewFullscreen}
               />
             </div>
-            <div className="mt-3 flex items-center justify-end gap-3 px-1">
+            <div inert={coveredByPreview} className="mt-3 flex items-center justify-end gap-3 px-1">
               <p className="text-[13px] leading-[18px] tracking-[-0.15px] text-kumo-subtle">Snapshot broken?</p>
               <WorkshopButton
                 tone="primary"

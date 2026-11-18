@@ -66,15 +66,16 @@ afterEach(async () => {
 
 const renderModal = (
   link = FROZEN_LINK, initiallyOpen = true, metadata = {}, requirements: ObserverBindingNeed[] = [],
-  target: ShareTarget = { kind: 'workspace' },
+  target: ShareTarget = { kind: 'workspace' }, snapshot?: object,
 ) => {
   const overseer = {
     listCollaborators: async () => [BEA],
     listShareLinks: async () => [link],
     listObserverRequirements: async () => requirements,
-    // The snapshot page's preview, which these tests leave taking its snapshot.
-    getGadgetSnapshot: () =>
-      Object.assign(Promise.withResolvers<never>().promise, { [Symbol.dispose]: () => {} }),
+    // The snapshot page's preview, left taking its snapshot unless the test gives one.
+    getGadgetSnapshot: () => Object.assign(
+      snapshot ? Promise.resolve(snapshot) : Promise.withResolvers<never>().promise,
+      { [Symbol.dispose]: () => {} }),
   } as unknown as RpcStub<Overseer>
   const Harness = () => {
     const [open, setOpen] = useState(initiallyOpen)
@@ -155,6 +156,32 @@ it('moves focus into the snapshot page and back to its card', async () => {
   await expect.element(page.getByRole('button', { name: 'Back to sharing' })).toHaveFocus()
   await userEvent.keyboard('{Enter}')
   await expect.element(card).toHaveFocus()
+})
+
+it('keeps focus inside the full-screen preview, off the dialog it covers', async () => {
+  const viewLink: ShareLinkInfo = {
+    linkId: 'link-view', created: new Date(), createdBy: OWNER, role: 'use', gadgetId: 0, mode: 'view',
+  }
+  // A snapshot with no UI, so the preview holds no frame to tab into.
+  const snapshot: object = {
+    dup: () => snapshot,
+    getUiBundle: async () => null,
+    getExportFormats: async () => [],
+    [Symbol.dispose]: () => {},
+  }
+  renderModal(viewLink, true, {}, [], { kind: 'gadget', gadgetId: 0, title: 'Packing list' }, snapshot)
+  await userEvent.click(page.getByRole('button', { name: /Viewers can see a snapshot/ }))
+  await userEvent.click(page.getByRole('button', { name: 'Enter full screen' }))
+  const overlay = page.getByRole('dialog', { name: 'Snapshot full screen' })
+  await expect.element(overlay).toHaveFocus()
+
+  for (let i = 0; i < 4; i++) {
+    await userEvent.keyboard('{Tab}')
+    expect(overlay.element().contains(document.activeElement)).toBe(true)
+  }
+  await userEvent.click(page.getByRole('button', { name: 'Exit full screen' }))
+  await expect.element(page.getByRole('button', { name: 'Enter full screen' })).toHaveFocus()
+  await expect.element(page.getByRole('button', { name: 'Ask agent to fix' })).toBeVisible()
 })
 
 const isOnTop = (element: Element) => {

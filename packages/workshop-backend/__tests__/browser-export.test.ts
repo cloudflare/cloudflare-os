@@ -248,6 +248,7 @@ function render(
   closePdf = true,
   contentType = "application/pdf",
   bundle: UiBundle = {jsCode: "export default {}"},
+  renderMode?: "snapshot",
 ) {
   let { gadget, harness } = makeHarness(pdfChunks, closePdf);
   let stream = renderGadgetInBrowser(
@@ -262,6 +263,7 @@ function render(
       contentType,
       fileExtension: ".test",
     },
+    renderMode,
   );
   return { stream, harness };
 }
@@ -368,6 +370,17 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.exportDocumentCsp()).toContain("img-src data: blob:");
     expect(harness.exportDocumentCsp()).toContain("media-src data: blob:");
     expect(harness.blobRequestContinued()).toBe(true);
+  });
+
+  it("tells a snapshot's client it is one, and leaves gadgetRenderMode unset for a live gadget", async () => {
+    let live = render();
+    await collect(await live.stream);
+    expect(live.harness.exportDocument()).not.toContain("gadgetRenderMode");
+
+    let snapshot = render(undefined, true, "application/pdf", undefined, "snapshot");
+    await collect(await snapshot.stream);
+    expect(snapshot.harness.exportDocument())
+        .toContain("globalThis.gadgetRenderMode%20%3D%20%22snapshot%22");
   });
 
   it("lets the page copy and dispose its gadget stub, then releases the stub", async () => {

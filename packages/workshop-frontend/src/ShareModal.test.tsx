@@ -21,6 +21,7 @@ import type {
   UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 import { ServerConfigContext } from './ServerConfigContext'
+import { NO_AGENT_OPTION_VALUE } from './modelSelection'
 
 const toastAdd = vi.hoisted(() => vi.fn<(toast: unknown) => void>())
 
@@ -178,6 +179,8 @@ type OverseerOverrides = {
   removeCollaborator?: Overseer['removeCollaborator']
   previewRevokeShareLink?: Overseer['previewRevokeShareLink']
   revokeShareLink?: Overseer['revokeShareLink']
+  listModels?: Overseer['listModels']
+  newChat?: Overseer['newChat']
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -196,6 +199,11 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     removeCollaborator: overrides.removeCollaborator ?? (async () => []),
     previewRevokeShareLink: overrides.previewRevokeShareLink ?? (async () => []),
     revokeShareLink: overrides.revokeShareLink ?? (async () => []),
+    listModels: overrides.listModels ?? (async () => []),
+    newChat: overrides.newChat ?? (async () => 1),
+    // The snapshot page's preview, which these tests leave taking its snapshot.
+    getGadgetSnapshot: () =>
+      Object.assign(Promise.withResolvers<never>().promise, { [Symbol.dispose]: () => {} }),
   } as unknown as RpcStub<Overseer>
 }
 
@@ -1923,6 +1931,38 @@ describe('ShareModal', () => {
       container?.remove()
       // People who can use it open it live or not at all, so protected resources alone offer none.
       expect(card(await renderGadget(fakeOverseer({ requirements: [DOC_REQUIREMENT] })))).toBeUndefined()
+    })
+
+    describe('asking the agent to fix the snapshot', () => {
+      const SONNET: AiChatAuthorInfo = { type: 'agent', id: 'sonnet', name: 'Sonnet' }
+      const openSnapshotPage = async (overseer: RpcStub<Overseer>) => {
+        const rendered = await renderGadget(overseer)
+        await click([...rendered.querySelectorAll('button')]
+          .find(candidate => candidate.textContent?.startsWith('Viewers can see a snapshot'))!)
+        return rendered
+      }
+
+      afterEach(() => localStorage.clear())
+
+      it('starts the chat on an agent even when the user last chose none', async () => {
+        localStorage.setItem(`lastSelectedModel:${CURRENT_USER.id}`, NO_AGENT_OPTION_VALUE)
+        const newChat = vi.fn<Overseer['newChat']>(async () => 4)
+        const rendered = await openSnapshotPage(fakeOverseer({
+          collaborators: [VIEWER], listModels: async () => [SONNET], newChat,
+        }))
+        await click(button(rendered, 'Ask agent to fix'))
+        expect(newChat).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('"Itinerary"'), 'sonnet')
+      })
+
+      it('says so, starting no chat, when no model is available', async () => {
+        const newChat = vi.fn<Overseer['newChat']>(async () => 4)
+        const rendered = await openSnapshotPage(fakeOverseer({ collaborators: [VIEWER], newChat }))
+        await click(button(rendered, 'Ask agent to fix'))
+        expect(newChat).not.toHaveBeenCalled()
+        expect(toastAdd).toHaveBeenCalledWith({
+          title: 'No AI models are available to fix the gadget.', variant: 'error',
+        })
+      })
     })
   })
 })

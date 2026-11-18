@@ -364,12 +364,14 @@ type GadgetSnapshot = {
 };
 
 // What an export runs: a gadget's files, the worker they load as, and its facet (a gadget's or a
-// snapshot's). The worker and facet are loaded only for a gadget with a server.
+// snapshot's). The worker and facet are loaded only for a gadget with a server. `renderMode` is
+// set only for a snapshot, which a browser-mode export tells the client as `gadgetRenderMode`.
 type GadgetExportSource = {
   gadgetId: WorkpieceId;
   files: ReadonlyMap<string, string>;
   worker(): WorkerStub;
   facet(): Promise<RpcStub<any>>;
+  renderMode?: "snapshot";
 };
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
@@ -5641,6 +5643,7 @@ class OverseerImpl implements AgentHooks {
       files: this.gitCache.readCommitFiles(snapshot.commitId),
       worker: () => this.#loadSnapshotWorker(snapshot),
       facet: async () => this.getSnapshotFacet(snapshot),
+      renderMode: "snapshot",
     };
   }
 
@@ -5668,7 +5671,8 @@ class OverseerImpl implements AgentHooks {
       let bundle = buildUiBundle(source.files);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
       let title = this.getGadgetRecord(source.gadgetId).title;
-      return renderGadgetInBrowser(browser, bundle, title, exportGadget.dup(), format);
+      return renderGadgetInBrowser(
+          browser, bundle, title, exportGadget.dup(), format, source.renderMode);
     }
   }
 
