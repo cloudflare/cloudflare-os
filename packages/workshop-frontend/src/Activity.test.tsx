@@ -215,6 +215,43 @@ describe('Activity rule offers in a restricted workspace', () => {
     expect(alwaysApproveButtons()).toHaveLength(1)
   })
 
+  it('offers no rule until the stored rules are read', async () => {
+    const list = deferred<Awaited<ReturnType<Overseer['listAutoApprovedActionKinds']>>>()
+    await renderRestricted([request(1, 'Close report 12', STATUS)], 'review',
+      { listAutoApprovedActionKinds: () => list.promise })
+    expect(alwaysApproveButtons()).toHaveLength(0)
+
+    await list.resolve([])
+    expect(alwaysApproveButtons()).toHaveLength(1)
+  })
+
+  it('takes back a confirmation whose rule another surface turned on meanwhile', async () => {
+    const server = makeOverseer()
+    const stored = vi.fn<Overseer['listAutoApprovedActionKinds']>(async () => [])
+    const setAutoApprovedActionKind = vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {})
+    Object.assign(server.overseer, { listAutoApprovedActionKinds: stored, setAutoApprovedActionKind })
+    const render = (reloadTrigger: number) => view.render(
+      <Activity overseer={server.overseer} restricted={false} view="review" onViewChange={() => {}}
+        autoApproval={{ reloadTrigger, changed: () => {} }} />,
+    )
+    await render(0)
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [request(1, 'Close report 12', STATUS)] })
+    flushFrames()
+    await act(async () => {})
+    await act(async () => alwaysApproveButtons()[0].click())
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+
+    // Confirming now would store the rule again, under this admin's name.
+    stored.mockResolvedValue([{ gatekeeperId: 7, actionKind: STATUS }])
+    await render(1)
+    await act(async () => {})
+
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(alwaysApproveButtons()).toHaveLength(0)
+    expect(setAutoApprovedActionKind).not.toHaveBeenCalled()
+  })
+
   it('does not read the catalog for requests no rule could apply under the latch', async () => {
     // The catalog starts every gatekeeper it lists: another vendor's restricted workspace must
     // not pay for that to be told no.

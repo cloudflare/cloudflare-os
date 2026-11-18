@@ -464,10 +464,11 @@ export default function Activity({
     <div className="flex h-full flex-col bg-kumo-base">
       {renderActivityContent()}
 
-      {/* The kind stopped applying: the affordance is gone and confirming could only store a
-          rule that does nothing. */}
+      {/* The kind stopped applying, or its rule was enabled meanwhile: the affordance is gone,
+          and confirming could only store a rule that does nothing or replace who enabled one. */}
       {confirmAutoApprove &&
-          rules.applies(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) && (
+          rules.applies(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) &&
+          !rules.isEnabled(confirmAutoApprove.gatekeeperId, confirmAutoApprove.actionKind.tag) && (
         <AutoApproveConfirmDialog
           open
           actionLabel={confirmAutoApprove.actionKind.label}

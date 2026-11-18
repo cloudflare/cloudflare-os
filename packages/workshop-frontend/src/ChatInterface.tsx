@@ -7018,10 +7018,11 @@ function ChatInterface({
         onConfirm={handleDeleteConfirm}
       />
 
-      {/* The kind stopped applying: the affordance is gone and confirming could only store a
-          rule that does nothing. */}
+      {/* The kind stopped applying, or its rule was enabled meanwhile: the affordance is gone,
+          and confirming could only store a rule that does nothing or replace who enabled one. */}
       {autoApproveConfirm &&
-          autoApprovalRules.applies(autoApproveConfirm.gatekeeperId, autoApproveConfirm.actionKind.tag) && (
+          autoApprovalRules.applies(autoApproveConfirm.gatekeeperId, autoApproveConfirm.actionKind.tag) &&
+          !autoApprovalRules.isEnabled(autoApproveConfirm.gatekeeperId, autoApproveConfirm.actionKind.tag) && (
         <AutoApproveConfirmDialog
           open
           actionLabel={autoApproveConfirm.actionKind.label}
