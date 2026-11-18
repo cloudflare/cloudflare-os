@@ -6,6 +6,7 @@ import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import { MessageList } from '@/blocks/MessageList'
 import { UserMessage, type UserMessagePart } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -14,15 +15,35 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useSkills, useSkillsState } from '@/skills/useSkills'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { withCapsules } from './capsules'
+import { handOverFirstMessage, type FirstMessage } from './firstMessage'
 import { orderCommands, skillCommandOf } from './slashCommands'
 import { startWithFormat, type StartFormat } from './startWithFormat'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 
+// As the message will be drawn: the skill or the format as what it is, then what was written.
+const shownOf = ({ text, files, command, format }: { text: string; files: File[]; command?: ComposerCommand; format?: StartFormat }): FirstMessage => {
+  const lead: UserMessagePart | undefined = command
+    ? { type: 'command', name: command.name }
+    : format && { type: 'format', noun: format.noun, icon: format.icon }
+  return {
+    parts: [...(lead ? [lead] : []), ...(text ? [{ type: 'text' as const, text: lead ? ` ${text}` : text }] : [])],
+    attachments: files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type })),
+  }
+}
+
 /** Where a conversation that was started is. */
 export type StartedChat = { workspaceId: string; chatId: number }
 
+/** What a chat is called until it is given a title. */
+export const NEW_CHAT_TITLE = 'New Chat'
+
 export type NewChatPaneProps = {
   header?: ReactNode
+  /**
+   * Over the message while it is sent, where `header` is for the greeting: as the chat's header
+   * will be, so that nothing moves as it opens.
+   */
+  sendingHeader?: ReactNode
   /** Greet with this and the composer in the middle of the page until the first message is sent. */
   greeting?: string
   /**
@@ -61,7 +82,7 @@ export type NewChatPaneProps = {
  * can start with one of the user's skills, which there is no workspace to list yet, so they are
  * offered from the Library, and found in the workspace the message goes to as it is sent.
  */
-export const NewChatPane = ({ header, greeting, format, workspace, start, onStarted, connectsIn, makeConnectable, initialText }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, sendingHeader = header, greeting, format, workspace, start, onStarted, connectsIn, makeConnectable, initialText }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const skills = useSkills()
   // Until they are read, the + menu keeps their room.
@@ -114,6 +135,8 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
       const { text: written, capsules } = withCapsules(message.text, given)
       const started = await start(written, files, model.id, command, message.formats, capsules.length ? capsules : undefined)
       refreshWorkspaces()
+      // Drawn by the chat as it is here until its history is read, so it doesn't blink out.
+      handOverFirstMessage(started.workspaceId, started.chatId, shownOf({ text, files, command, format: asked }))
       await onStarted(started)
       return true
     } catch (error) {
@@ -137,30 +160,14 @@ export const NewChatPane = ({ header, greeting, format, workspace, start, onStar
     )
   }
 
-  // As the message will be drawn: the skill or the format as what it is, then what was written.
-  const lead: UserMessagePart | undefined = pending?.command
-    ? { type: 'command', name: pending.command.name }
-    : pending?.format && { type: 'format', noun: pending.format.noun, icon: pending.format.icon }
-  const pendingParts: UserMessagePart[] = pending
-    ? [
-        ...(lead ? [lead] : []),
-        ...(pending.text ? [{ type: 'text' as const, text: lead ? ` ${pending.text}` : pending.text }] : []),
-      ]
-    : []
-
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={header} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
-      {/* Spaced like the conversation this becomes. */}
-      <div className="flex flex-col gap-2">
-        {pending && (
-          <UserMessage
-            parts={pendingParts}
-            attachments={pending.files.map((file, index) => ({ id: String(index), name: file.name || 'Attached file', mimeType: file.type }))}
-          />
-        )}
+    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
+      {/* In the conversation's own list, so it is where the conversation this becomes will be. */}
+      <MessageList messages={[]}>
+        {pending && <UserMessage {...shownOf(pending)} />}
         <AssistantPresence working={Boolean(pending)} status="Thinking…" />
-      </div>
+      </MessageList>
     </ChatLayout>
   )
 }

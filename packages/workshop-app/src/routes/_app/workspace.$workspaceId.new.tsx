@@ -4,7 +4,7 @@ import { rememberShown } from '@/aside/lastShown'
 import { carryAside } from '@/aside/useAsideNavigation'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { greeting } from '@/chat/greeting'
-import { NewChatPane } from '@/chat/NewChatPane'
+import { NEW_CHAT_TITLE, NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { useApi } from '@/rpc/ApiContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -48,7 +48,7 @@ function NewChat() {
             // What is shown beside the chat to be stays beside the workspace.
             onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(open, { workspaceId }) } }),
           }}
-          title="New chat"
+          title={NEW_CHAT_TITLE}
         />
       )}
       start={(text, files, modelId, command, formats, capsules) =>
@@ -58,7 +58,7 @@ function NewChat() {
       // In its place, so that going back goes to the workspace rather than to an empty chat.
       onStarted={({ chatId }) => {
         if (open) rememberShown(workspaceId, chatId, open)
-        return navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open }, replace: true })
+        return navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open }, state: { chatTitle: NEW_CHAT_TITLE }, replace: true })
       }}
     />
   )

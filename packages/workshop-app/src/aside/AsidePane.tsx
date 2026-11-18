@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { FileDashedIcon, LockSimpleIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { FileDashedIcon, LockSimpleIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
+import { UiUnderway } from '@/blocks/UiUnderway'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PaneStatus } from '@/blocks/PaneStatus'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
@@ -360,7 +361,7 @@ const GadgetView = ({ title, ui, frame, onReload, onAskAccess }: {
     case 'loading':
       return <PaneNotice title="Loading…" />
     case 'none':
-      return <PaneNotice icon={SmileyMehIcon} title="No UI yet" description="When the gadget builds one, it will show here." />
+      return <UiUnderway title="Its UI shows here" description="As soon as the gadget builds one." />
     case 'failed':
       // Shared with the user, it reads what is kept at other services, which they confirm their
       // own accounts can see before it opens: cancelled, it is offered again rather than failed.

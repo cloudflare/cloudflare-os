@@ -11,6 +11,7 @@ import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
+import { UserMessage } from '@/blocks/UserMessage'
 import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useHandler } from '@/hooks/useHandler'
@@ -38,6 +39,7 @@ import { useChatSession } from './useChatSession'
 import { useDeleteChat } from './useDeleteChat'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
 import { useCapturedLogs } from './useCapturedLogs'
+import { firstMessageOf } from './firstMessage'
 import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 
 export type ChatPaneProps = {
@@ -98,6 +100,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const [reply, setReply] = useState<{ key: string; quote: string }>()
   const composer = useRef<ComposerHandle>(null)
   const list = useRef<MessageListHandle>(null)
+  const [sentFirst] = useState(() => firstMessageOf(workspaceId, chatId))
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
   const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
@@ -437,7 +440,10 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             ? <MessageBubble role="error">{chat.message}</MessageBubble>
             : gone
               ? <span role="status" className="text-sm text-kumo-subtle">This chat was deleted.</span>
-              : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
+              : sentFirst
+                // Just sent from the page before, drawn as it was there while the history is read.
+                ? <><UserMessage {...sentFirst} /><AssistantPresence working status="Thinking…" /></>
+                : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
       {/* Only while it is open, as what it says is read afresh for it. */}

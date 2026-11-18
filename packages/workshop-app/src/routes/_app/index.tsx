@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { createFileRoute, useNavigate, useRouterState } from '@tanstack/react-router'
 import { greeting } from '@/chat/greeting'
-import { NewChatPane } from '@/chat/NewChatPane'
+import { ChatHeader } from '@/blocks/ChatHeader'
+import { NEW_CHAT_TITLE, NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { startableFormats, useOutputFormats } from '@/library/useOutputFormats'
 import { useApi } from '@/rpc/ApiContext'
@@ -50,10 +51,18 @@ function Home() {
     }
   }
   const startIn = startsIn ?? made
+  const chosen = startable.find(({ id }) => id === startsIn)
   return (
     <NewChatPane
       // A newer release of the deployment, said to its admins where main's home page said it.
       header={<UpdateNotice onOpen={() => navigate({ to: '/settings', search: { section: 'admin-updates' } })} />}
+      // As the chat's will be, in the workspace chosen for it; a new one is named once it is listed.
+      sendingHeader={(
+        <ChatHeader
+          workspace={chosen && { id: chosen.id, title: workspaceTitle(chosen), label: workspaceLabel(chosen.title), look: looks[chosen.id], onOpen: () => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: chosen.id } }) }}
+          title={NEW_CHAT_TITLE}
+        />
+      )}
       greeting={greeting(user.name)}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
       workspace={{
@@ -66,7 +75,7 @@ function Home() {
       makeConnectable={makeConnectable}
       start={(text, files, modelId, command, formats, capsules) =>
         startConversation(() => (startIn === undefined ? api.newWorkspace() : api.openWorkspace(startIn)), text, files, modelId, command, formats, capsules)}
-      onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
+      onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, state: { chatTitle: NEW_CHAT_TITLE } })}
     />
   )
 }

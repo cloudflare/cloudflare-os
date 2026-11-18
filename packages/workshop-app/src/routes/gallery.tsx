@@ -49,6 +49,7 @@ import { LibraryPagePreview } from '@/gallery/LibraryPagePreview'
 import { TemplateStorePreview } from '@/gallery/TemplateStorePreview'
 import { ListViewPreview } from '@/gallery/ListViewPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
+import { UiUnderwayPreview } from '@/gallery/UiUnderwayPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { OnboardingPreview } from '@/gallery/OnboardingPreview'
@@ -444,6 +445,7 @@ function Gallery() {
       </Section>
       <MascotPreview />
       <AssistantPresencePreview />
+      <UiUnderwayPreview />
       <Section title="MessageBubble, MessageActions (a run of messages tucks together; point at a message, or tab to it, for its actions)">
         <div className="flex w-full flex-col gap-2">
           <MessageBubble role="user">Create a dashboard showcasing my jira stats</MessageBubble>
