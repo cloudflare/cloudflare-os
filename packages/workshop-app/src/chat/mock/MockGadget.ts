@@ -1,8 +1,17 @@
 import { RpcTarget } from 'capnweb'
-import type { UiBundle } from '@gadgets/workshop-shared/api'
+import type { GadgetExportFormat, UiBundle } from '@gadgets/workshop-shared/api'
 
 // What a gadget's UI takes to load, so that loading can be seen.
 const LOAD_TIME = 500
+// What an export takes, so that it can be seen under way.
+const EXPORT_TIME = 1200
+
+/** What the gadget exports as: its tasks as a checklist or a table, and a PDF that cannot be made here, to see a failure. */
+export const MOCK_EXPORT_FORMATS: GadgetExportFormat[] = [
+  { id: 'markdown', label: 'Markdown', mode: 'server', contentType: 'text/markdown', fileExtension: '.md' },
+  { id: 'csv', label: 'CSV', mode: 'server', contentType: 'text/csv', fileExtension: '.csv' },
+  { id: 'pdf', label: 'PDF', mode: 'browser', contentType: 'application/pdf', fileExtension: '.pdf' },
+]
 
 /** What a handle's calls fail with once the workspace has restarted under it. */
 export const RESTARTED = new Error('The workspace restarted.')
@@ -72,8 +81,9 @@ render(await gadget.getDocument())
 `
 
 /**
- * A gadget in the fake workspace, whatever its id: a review's to-do list. `backUp` waits for a
- * workspace that is restarting to be back.
+ * A gadget in the fake workspace, whatever its id: a review's to-do list, which exports as a
+ * checklist or a table (`MOCK_EXPORT_FORMATS`). `backUp` waits for a workspace that is restarting
+ * to be back.
  */
 export class MockGadget {
   #document: { title: string; tasks: Task[] }
@@ -102,6 +112,23 @@ export class MockGadget {
         await reachable()
         await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
         return { jsCode: UI_CODE }
+      },
+      getExportFormats: async () => {
+        await reachable()
+        await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
+        return MOCK_EXPORT_FORMATS
+      },
+      export: async (id: string) => {
+        await reachable()
+        await new Promise((resolve) => setTimeout(resolve, EXPORT_TIME))
+        const { title, tasks } = this.#document
+        const text = id === 'markdown'
+          ? `# ${title}\n\n${tasks.map(({ text: task, done }) => `- [${done ? 'x' : ' '}] ${task}`).join('\n')}\n`
+          : id === 'csv'
+            ? `Task,Done\n${tasks.map(({ text: task, done }) => `"${task.replaceAll('"', '""')}",${done ? 'yes' : 'no'}`).join('\n')}\n`
+            : undefined
+        if (text === undefined) throw new Error('Browser rendering isn’t available in a scripted chat.')
+        return new Blob([text]).stream()
       },
       connectToGadget: async () => {
         await reachable()

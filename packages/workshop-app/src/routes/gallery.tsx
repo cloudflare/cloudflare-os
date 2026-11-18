@@ -31,6 +31,7 @@ import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { CodePreview } from '@/gallery/CodePreview'
+import { ExportPreview } from '@/gallery/ExportPreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
@@ -365,6 +366,7 @@ function Gallery() {
       <SetUpConnectionPreview />
       <AddConnectionPreview />
       <GadgetSettingsPreview />
+      <ExportPreview />
       <SharingPreview />
       <WorkspaceRemovalPreview />
       <SettingsPreview />

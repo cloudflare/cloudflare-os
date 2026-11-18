@@ -567,8 +567,24 @@ opened from it (`fromItem`). Under them, a tab each (`?tab=`, kept in place in t
 - Settings: where it is from, and deleting it.
 
 Someone it was shared with to use is told its settings are not theirs. What the old app also had
-here (who has access, publishing it as a template, its exports and automations, changing what it
-is drawn as) is not here yet.
+here (who has access, publishing it as a template, its automations, changing what it is drawn as)
+is not here yet.
+
+The More menu also has Export, for everyone it is shown to, as the backend lets whoever can use a
+gadget export it (`useGadgetExports`, over `GadgetExports`, plain and tested): it opens to what the
+gadget can be exported as (`ExportSubmenu`), read each time it opens, with the chat's changes where
+it is shown from one, each saved to the device when chosen, one at a time (`files/saveStream.ts`:
+into the browser's save window where it has one, or else downloaded as plain bytes). Then, for
+whoever may build in its workspace, as in the old app, the kinds of file a connected service makes
+from one of those formats (`saveTargetsOf`: a kind with a creation form whose `savableFrom` names
+the format). Save to one asks in `ConnectResource`'s `save`: the account, the file's name, then
+where, in the service's creation form opened for saving; the export is handed to `saveFile()`
+unawaited, so that it goes straight to the service. The file the last save made is kept on this
+device (`prefs/savedExports.ts`), as the backend keeps no record of it, and Update saves over it
+after asking (`UpdateFileDialog`). What became of an export floats over the foot of the pane
+(`PaneStatus`): under way, saved with the way to open it, or why it failed. The `output`
+scenario's gadget exports as Markdown and CSV, and fails as a PDF; the scripted chats offer no
+service to save to.
 
 ## Lists
 
