@@ -1,3 +1,4 @@
+import { Button } from '@cloudflare/kumo'
 import { ArrowSquareOut, CaretRight, Lightning } from '@phosphor-icons/react'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
@@ -38,6 +39,7 @@ export const PendingChangeGroupRow = ({
   onToggle,
   actions,
   bulk,
+  onPreview,
 }: {
   group: PendingChangeGroup
   vendorId?: string
@@ -50,21 +52,28 @@ export const PendingChangeGroupRow = ({
   actions: PendingChangeActions
   /** Absent for a group nothing here can resolve in bulk, such as one holding a pending creation. */
   bulk?: { onApplyAll: () => void, onDiscardAll: () => void, disabled: boolean }
+  /** Opens the connection's content beside the chat. Absent when it has none to draw. */
+  onPreview?: () => void
 }) => {
   const autoApprovedCount = group.entries.filter(entry => isAutoApproved(entry, rules)).length
   // Nothing in this group is something the open chat asked for, so the row says so once rather
   // than every request inside it repeating the same sentence. This is also why the group sorts
   // below the ones this conversation did ask for.
   const allElsewhere = isFromElsewhere(group)
+  // The preview button does not shrink, so in a narrow pane the badges leave the row to it: there
+  // they had no room for more than their icons, and those ran under the button.
+  const badgeClass = `flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive ${onPreview ? '@max-xs:hidden' : ''}`
 
   return (
-    <div className="border-t border-kumo-line/70 first:border-t-0">
-      <div className="flex items-center gap-2.5 px-3.5 py-2">
+    <div className="@container border-t border-kumo-line/70 first:border-t-0">
+      <div className="relative flex items-center gap-2.5 px-3.5 py-2">
+        {/* The whole row opens the group, the caret after the preview button included: the
+            button's own box ends before them, so its click target is stretched over the row. */}
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2.5 text-left after:absolute after:inset-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
         >
           <GatekeeperIcon
             vendorId={vendorId}
@@ -84,13 +93,13 @@ export const PendingChangeGroupRow = ({
             // Gives way to the connection's name rather than taking its width: at the narrowest
             // pane these badges together left the title nothing, and the name is what tells the
             // user which service is waiting. Both badges are repeated inside the group.
-            <span className="flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive">
+            <span className={badgeClass}>
               <ArrowSquareOut size={11} className="flex-shrink-0" aria-hidden="true" />
               <span className="truncate">Asked elsewhere</span>
             </span>
           )}
           {autoApprovedCount > 0 && (
-            <span className="flex min-w-0 shrink items-center gap-1 text-[11.5px] leading-4 text-kumo-inactive">
+            <span className={badgeClass}>
               <Lightning size={11} weight="fill" className="flex-shrink-0" aria-hidden="true" />
               <span className="truncate">
                 {autoApprovedCount === group.entries.length
@@ -99,13 +108,24 @@ export const PendingChangeGroupRow = ({
               </span>
             </span>
           )}
-          <CaretRight
-            size={12}
-            weight="bold"
-            aria-hidden="true"
-            className={`ml-auto flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
-          />
         </button>
+        {onPreview && (
+          <Button
+            variant="secondary"
+            size="xs"
+            onClick={onPreview}
+            aria-label={`Preview ${group.title}`}
+            className="relative flex-shrink-0"
+          >
+            Preview
+          </Button>
+        )}
+        <CaretRight
+          size={12}
+          weight="bold"
+          aria-hidden="true"
+          className={`flex-shrink-0 text-kumo-inactive transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+        />
       </div>
 
       {open && (

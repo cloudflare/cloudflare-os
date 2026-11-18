@@ -100,13 +100,18 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
+  props: {
+    restricted?: boolean
+    selectedChatId?: number
+    connectionPreviews?: Parameters<typeof ChatInterface>[0]['connectionPreviews']
+  } = {},
 ) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
+      connectionPreviews={props.connectionPreviews}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
@@ -412,6 +417,33 @@ describe('pending queue failure', () => {
     expect(document.body.textContent).not.toContain('requests waiting')
     expect(document.querySelector('[role="alert"]')?.textContent)
       .toContain('"Send email" failed: The provider failed.')
+  })
+
+  it('opens the preview of a connection\'s oldest request from its row, when one is offered', async () => {
+    // A folder connection: each request names the file it changes, and each file is a preview.
+    const file = (id: number) => entry(id, {
+      description: {
+        title: `Edit ${id}`, description: '', implementsRevert: false, autoApprovable: false,
+        previewOf: { id: `file-${id}`, title: `File ${id}` },
+      },
+    })
+    const older = { gatekeeperId: 1, item: 'file-1', title: 'File 1' }
+    const newer = { gatekeeperId: 1, item: 'file-2', title: 'File 2' }
+    const onOpen = vi.fn<(preview: unknown) => void>()
+    const preview = () => [...document.querySelectorAll('button')].find(b => b.textContent === 'Preview')
+
+    const server = makeOverseer()
+    withChatApi(server)
+    // Only the newer file's preview is offered, and the row opens the older one or nothing.
+    await renderChat(server.overseer, { connectionPreviews: { offered: [newer], onOpen } })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [file(1), file(2)] })
+    expect(document.body.textContent).toContain('2 requests')
+    expect(preview()).toBeUndefined()
+
+    await renderChat(server.overseer, { connectionPreviews: { offered: [newer, older], onOpen } })
+    await act(async () => preview()!.click())
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(older)
   })
 
   it('leaves the decision to the tray once the queue has loaded', async () => {

@@ -72,6 +72,7 @@ async function render(options: {
   ready?: boolean
   bulk?: BulkResolve
   actions?: Partial<PendingChangeActions>
+  previewFor?: (group: PendingChangeGroup) => (() => void) | undefined
 }) {
   const calls: string[] = []
   const actions: PendingChangeActions = {
@@ -97,6 +98,7 @@ async function render(options: {
       vendorBranding={new Map()}
       actions={actions}
       bulk={options.bulk ?? noBulk}
+      previewFor={options.previewFor}
     />,
   ))
   return { calls, container }
@@ -293,6 +295,41 @@ describe('PendingChangesTray', () => {
     // run is sequential to avoid.
     expect(buttons().filter(b => b.textContent === 'Approve').every(b => b.disabled)).toBe(true)
     expect(buttons().filter(b => b.textContent === 'Deny').every(b => b.disabled)).toBe(true)
+  })
+
+  it('offers a preview on the rows whose connection has one, beside the row\'s own button', async () => {
+    const opened: number[] = []
+    await render({
+      groups: [
+        group([request(1)], { title: 'Paul Pierce' }),
+        group([request(2, { gatekeeperId: 2 })], { title: 'Team calendar' }),
+      ],
+      previewFor: ({ gatekeeperId }) => gatekeeperId === 1 ? () => opened.push(gatekeeperId) : undefined,
+    })
+
+    const previews = buttons().filter(b => b.textContent === 'Preview')
+    expect(previews.map(b => b.getAttribute('aria-label'))).toEqual(['Preview Paul Pierce'])
+    // A button inside the row's button would be invalid, and pressing it would toggle the group.
+    expect(previews[0].closest('[aria-expanded]')).toBeNull()
+
+    await click(previews[0])
+    expect(opened).toEqual([1])
+    expect(document.querySelector('[aria-expanded="true"]')).toBeNull()
+
+    await openGroup()
+    expect(document.querySelector('[aria-expanded="true"]')?.textContent).toContain('Paul Pierce')
+  })
+
+  it('keeps the preview open to a click while a bulk run locks the decisions', async () => {
+    const onPreview = vi.fn<() => void>()
+    await render({
+      groups: [group([request(1), request(2)])],
+      bulk: { ...noBulk, progress: { decision: 'approve', done: 0, total: 2 } },
+      previewFor: () => onPreview,
+    })
+
+    await click(button('Preview'))
+    expect(onPreview).toHaveBeenCalledOnce()
   })
 
   it('warns when one connection is close to filling its queue', async () => {
