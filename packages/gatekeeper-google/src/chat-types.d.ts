@@ -398,21 +398,28 @@ export interface ChatSession extends RpcTarget {
    * Find people in your Google Workspace organization's directory whose name or email address
    * starts with `query`, such as `ada` or `ada.lovelace@`. Contacts and people outside the
    * organization are never returned.
+   *
+   * Throws when your account has no access to the directory, as when your organization doesn't
+   * share it. {@link sendDirectMessage} still takes email addresses then.
    */
   searchPeople(query: string): Promise<Cursor<ChatPerson>>;
 
   /**
    * Send a message to one person, in your direct message with them, or to several, in the group
-   * chat with exactly them and you. Each person is `users/{user}` or an email address; leave
-   * yourself out. At most 49 people. `text` is formatted as for `ChatSpace.post()`.
+   * chat with exactly them and you. Each person is a `users/{user}` ID, an email address, or
+   * `users/{email}`; leave yourself out. At most 49 people. `text` is formatted as for
+   * `ChatSpace.post()`.
    *
    * When that conversation already exists the message goes there. Otherwise sending also creates
-   * it. An email address must be in your organization's directory (see {@link searchPeople}); a
-   * known `users/{user}` ID can also start one because Google accepts IDs only for people in the
-   * same Workspace organization. Conversations with people outside your organization cannot be
-   * started this way. A group chat that also holds anyone else, Chat apps and Google Groups
-   * included, doesn't count, and if anyone joins it before the message is approved, nothing is
-   * posted.
+   * it, only with people in your organization. A known `users/{user}` ID can start one because
+   * Google accepts IDs only for people in the same Workspace organization. An email address is
+   * looked up in your organization's directory (see {@link searchPeople}). `users/{email}`, or any
+   * email address when your account can't search the directory, is instead accepted at your
+   * organization's primary domain, and Google Chat checks that the person exists when the
+   * conversation is created; if it then names someone also named another way, or you, nothing is
+   * posted. Conversations with people outside your organization cannot be started this way. A
+   * group chat that also holds anyone else, Chat apps and Google Groups included, doesn't count,
+   * and if anyone joins it before the message is approved, nothing is posted.
    *
    * Until its conversation exists, a message that creates it has a temporary `spaceId`, and until
    * it is committed it can be edited but not replied to.

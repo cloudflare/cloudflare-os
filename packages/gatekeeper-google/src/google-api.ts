@@ -213,6 +213,8 @@ export type GoogleAccountProfile = {
   /** The stable Google account ID; also the `{user}` in Chat's `users/{user}` names. */
   sub: string;
   email?: string;
+  /** The primary domain of the account's Google Workspace organization; absent for a consumer account. */
+  hd?: string;
   name?: string;
   picture?: string;
 };

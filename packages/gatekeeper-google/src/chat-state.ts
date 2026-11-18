@@ -41,7 +41,10 @@ export type ChatSendMessageAction = ChatActionBase & {
 
 /** A direct message or group chat that a queued send creates. */
 export type ChatNewConversation = {
-  /** Everyone besides the connected user, as a known Chat id or a directory profile. */
+  /**
+   * Everyone besides the connected user, as a known Chat id, a directory profile, or a
+   * `users/{email}` alias that Chat resolves itself.
+   */
   members: Array<{ id: string; name?: string; email?: string }>;
   /** Makes creating the conversation idempotent across a retried apply. */
   requestId: string;

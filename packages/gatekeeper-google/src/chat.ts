@@ -38,7 +38,8 @@ import type {
   ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ChatApi, ChatApiError, ChatPage, DeletedChatMessageError, MAX_CHAT_MESSAGE_BYTES, isChatNoAccessError,
+  ChatApi, ChatApiError, ChatDirectoryUnavailableError, ChatPage, DeletedChatMessageError,
+  MAX_CHAT_MESSAGE_BYTES, isChatNoAccessError,
   chatAttachmentInfoFromRaw, chatAttachmentMediaName, chatMessageInfoFromRaw, chatMessageParts,
   chatMessagesSearchFilter,
   chatSpaceId, chatSpaceNameFromIdOrUrl, chatThreadParts, chatUserName, validateChatEmoji,
@@ -355,6 +356,10 @@ type ChatContext = {
   queue: SharedApprovalQueue;
   store: ChatStore;
   self: ChatUser;
+  /** The connected account's email address, lowercased. */
+  readonly selfEmail?: string;
+  /** The primary domain of the connected account's Workspace organization, lowercased; absent for a consumer account. */
+  readonly orgDomain?: string;
   /** Set for a single-conversation binding: the only space any capability may reach. */
   readonly boundSpace?: string;
   /** Immutable thread boundary inherited by every capability descended from a thread. */
@@ -803,20 +808,31 @@ const personLabel = (person: ChatNewConversation["members"][number]) => person.n
   ? person.email ? `${person.name} <${person.email}>` : `${person.name} (${person.id})`
   : person.email ?? person.id;
 
+/** The domain of a plain `local@domain` address, or undefined for anything else. */
+function emailDomain(email: string): string | undefined {
+  return /^[^@]+@([^@]+)$/.exec(email)?.[1];
+}
+
 /**
  * Queue a message to exactly these people, in their existing direct message or group chat, or
- * else in one created when the message is approved. An email address must resolve in the connected
- * account's directory; Google accepts an opaque user id for a new conversation only when that user
- * belongs to the same Workspace organization.
+ * else in one created when the message is approved. A new conversation holds only people in the
+ * connected account's organization. Google accepts an opaque user id for one only when that user
+ * belongs to it. An email address must resolve in the organization's directory, or, when it came
+ * as Chat's `users/{email}` alias or the account can't search the directory, be at the
+ * organization's primary domain; Chat then resolves the alias itself.
  */
 async function queueDirectMessage(
   ctx: ChatContext, people: readonly string[], text: string,
 ): Promise<ChatMessageInfo> {
   const body = validateMessageText(text);
+  const aliases = new Set<string>();
   // Chat matches email addresses case-insensitively, so naming someone twice must not count twice.
   const users = [...new Set(people.map(person => {
     const name = chatUserName(person.trim());
-    return name.includes("@") ? name.toLowerCase() : name;
+    if (!name.includes("@")) return name;
+    const email = name.toLowerCase();
+    if (person.trim().startsWith("users/")) aliases.add(email);
+    return email;
   }))];
   if (users.length === 0 || users.length > MAX_CONVERSATION_PEOPLE) {
     throw new Error(`Name between 1 and ${MAX_CONVERSATION_PEOPLE} people.`);
@@ -840,17 +856,36 @@ async function queueDirectMessage(
   const members: ChatNewConversation["members"] = users
     .filter(user => !user.includes("@"))
     .map(id => ({ id }));
-  const emails = users.filter(user => user.includes("@")).map(user => user.slice("users/".length));
   const outside: string[] = [];
+  const foreign: string[] = [];
+  let searchable = true;
+  let checked = 0;
   // One at a time: up to 49 concurrent lookups would burst the People API's per-user quota.
-  for (const email of emails) {
-    const person = await ctx.api.findDirectoryPerson(email);
-    if (!person) outside.push(email);
-    else if (!members.some(member => member.id === person.id)) members.push(person);
+  for (const user of users.filter(name => name.includes("@"))) {
+    const email = user.slice("users/".length);
+    if (searchable && !aliases.has(user)) {
+      try {
+        const person = await ctx.api.findDirectoryPerson(email);
+        checked++;
+        if (!person) outside.push(email);
+        else if (!members.some(member => member.id === person.id)) members.push(person);
+        continue;
+      } catch (error) {
+        if (!(error instanceof ChatDirectoryUnavailableError)) throw error;
+        logger.info("Google directory refused; checking recipients by domain", {
+          event: "chat.directory.unavailable", error,
+        });
+        searchable = false;
+      }
+    }
+    // The directory would have named you by your user ID.
+    if (email === ctx.selfEmail) throw new Error(LEAVE_YOURSELF_OUT);
+    if (ctx.orgDomain === undefined || emailDomain(email) !== ctx.orgDomain) foreign.push(email);
+    else members.push({ id: user, email });
   }
-  if (emails.length > 0) {
+  if (checked > 0) {
     await observe(ctx, "Look up people in the Google Workspace directory",
-      `Checked whether ${emails.length} email address(es) belong to people in the organization's ` +
+      `Checked whether ${checked} email address(es) belong to people in the organization's ` +
       `directory; ${outside.length} did not.`,
       // Reachable only from a whole-account binding, which reports the account (see #context).
       []);
@@ -858,6 +893,13 @@ async function queueDirectMessage(
   if (outside.length > 0) {
     throw new Error(`${outside.join(", ")} ${outside.length === 1 ? "is" : "are"} not in your organization's ` +
       "directory, and new Google Chat conversations can only include people who are.");
+  }
+  if (foreign.length > 0) {
+    const named = `${foreign.join(", ")} ${foreign.length === 1 ? "is" : "are"}`;
+    throw new Error((ctx.orgDomain !== undefined
+      ? `${named} not at your organization's domain (${ctx.orgDomain})`
+      : `Couldn't confirm that ${named} in your organization: Google reports no Workspace domain for this account`) +
+      ", and new Google Chat conversations can only include people in your organization.");
   }
   if (members.length !== users.length) {
     throw new Error("Name each person once, using either their email address or users/{id}, not both.");
@@ -896,13 +938,14 @@ async function queueDirectMessage(
  * or else the one Google's lookup finds, or else a new one.
  */
 async function openConversation(
-  api: ChatApi, store: ChatStore, actionId: number, people: string, { members, requestId }: ChatNewConversation,
+  api: ChatApi, store: ChatStore, actionId: number, self: string, people: string,
+  { members, requestId }: ChatNewConversation,
 ): Promise<string> {
   const ids = members.map(member => member.id);
   const known = store.conversationWith(people);
   if (known !== undefined) {
     // Unless it is gone, or someone has joined or left it since.
-    const unchanged = await hasExactly(api, known, ids).catch((error: unknown) => {
+    const unchanged = await hasExactly(api, known, self, ids).catch((error: unknown) => {
       if (isChatNoAccessError(error)) return false;
       throw error;
     });
@@ -920,20 +963,44 @@ async function openConversation(
   // Google leaves out of a group chat anyone who blocks the caller, and a replayed setup returns the
   // group as it is now, so posting could reach other people than were approved.
   const present = await api.audienceIn(spaceName);
-  const missing = members.filter(member => !present.has(member.id));
-  if (missing.length === 0 && present.size <= ids.length + 1) return spaceName;
+  const missing: typeof members = [];
+  // An email alias names whoever Chat resolves it to, who may be someone also named by id, or you:
+  // Google drops a repeated membership, so the approved number of places would leave one for anyone.
+  const resolved = new Map<string, typeof members>();
+  // One at a time, as Chat allows 15 reads a second per space.
+  for (const member of members) {
+    const id = await api.idIn(spaceName, member.id, present);
+    if (id === undefined) missing.push(member);
+    else resolved.set(id, [...resolved.get(id) ?? [], member]);
+  }
+  const repeated = [...resolved].filter(([id, named]) => id !== self && named.length > 1);
+  if (missing.length === 0 && repeated.length === 0 && !resolved.has(self) &&
+      present.size === resolved.size + 1) {
+    return spaceName;
+  }
   // Replaying its setup would return this same conversation.
   store.settleSetupWith(people);
   throw new Error(`${missing.length > 0
     ? `Google Chat left ${peopleNames(missing)} out of the new conversation, perhaps because they block you`
+    : resolved.has(self)
+    ? `${peopleNames(resolved.get(self)!)} turned out to be you, so the conversation isn't the one approved`
+    : repeated.length > 0
+    ? `${repeated.map(([, named]) => peopleNames(named)).join("; ")} turned out to be the same person, so the ` +
+      "conversation isn't the one approved"
     : "Someone who wasn't approved is already in the new Google Chat conversation"}, so nothing was posted. ` +
     "Reject this message.");
 }
 
-/** Whether exactly the connected user and the people with `ids` are in `spaceName`, with nobody else. */
-async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[]): Promise<boolean> {
-  const present = await api.audienceIn(spaceName);
-  return present.size === ids.length + 1 && ids.every(id => present.has(id));
+/**
+ * Whether exactly the connected user `self` and the people `ids` name, by `users/{user}` id or email
+ * alias, are in `spaceName`, with nobody else.
+ */
+async function hasExactly(
+  api: ChatApi, spaceName: string, self: string, ids: readonly string[],
+): Promise<boolean> {
+  // An alias that resolves to you would leave your own place to someone not named.
+  const found = await api.onlyIn(spaceName, ids);
+  return found !== null && !found.includes(self);
 }
 
 /**
@@ -1522,6 +1589,8 @@ export class GoogleChatGatekeeperImpl
     extends DurableObject<Env, GoogleChatGatekeeperImplProps>
     implements Gatekeeper<ChatSession | ChatSpace | ChatThread> {
   #self?: ChatUser;
+  /** The rest of what the connected account is known by, loaded with {@link #self}. */
+  #identity: Pick<ChatContext, "selfEmail" | "orgDomain"> = {};
   /** Actions whose apply or undo is in flight: a reject then could not stop a write already sent. */
   #inFlight = new Set<number>();
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
@@ -1542,6 +1611,10 @@ export class GoogleChatGatekeeperImpl
     }
     if (pinned === undefined) this.ctx.storage.kv.put("chat:accountSubject", profile.sub);
     this.#self = { id: `users/${profile.sub}`, ...(profile.name ? { name: profile.name } : {}), type: "human" };
+    const email = profile.email?.toLowerCase();
+    // Google says to identify a Workspace organization by `hd`, never by the domain of `email`.
+    const orgDomain = profile.hd?.toLowerCase();
+    this.#identity = { ...(email ? { selfEmail: email } : {}), ...(orgDomain ? { orgDomain } : {}) };
     return token;
   });
 
@@ -1674,6 +1747,7 @@ export class GoogleChatGatekeeperImpl
       queue,
       store: new ChatStore(this.ctx.storage),
       self,
+      ...this.#identity,
       ...(boundSpace !== undefined ? { boundSpace } : {}),
       subscribe: (spaceName, threadName, hook, options) =>
         this.#subscribe(queue, self, spaceName, threadName, hook, options),
@@ -1737,13 +1811,14 @@ export class GoogleChatGatekeeperImpl
    * send posts only while they are exactly who else is in the conversation.
    */
   async #conversationFor(
-    api: ChatApi, store: ChatStore, actionId: number, action: ChatSendMessageAction, recipients: readonly string[],
+    api: ChatApi, store: ChatStore, actionId: number, self: ChatUser, action: ChatSendMessageAction,
+    recipients: readonly string[],
   ): Promise<{ spaceName: string; posted?: ChatMessageInfo }> {
     const { spaceName, newConversation: conversation } = action;
     if (conversation && pendingSpaceRequestId(spaceName) !== undefined) {
       const people = recipients.toSorted().join(",");
       const created = await this.#settingUp.run(people,
-        () => openConversation(api, store, actionId, people, conversation));
+        () => openConversation(api, store, actionId, self.id, people, conversation));
       store.setConversation(conversation.requestId, people, created);
       // A send that joined another's setup still carries any mark from its own earlier attempt.
       store.clearAttempt(actionId);
@@ -1762,7 +1837,7 @@ export class GoogleChatGatekeeperImpl
       if (posted) return { spaceName, posted };
     }
     // A retry may follow a post that landed, so it leaves the attempt mark as it is.
-    if (!await hasExactly(api, spaceName, recipients)) {
+    if (!await hasExactly(api, spaceName, self.id, recipients)) {
       throw new Error("This Google Chat conversation no longer holds exactly the people this message is for, " +
         `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
         "Deny this message to clear it.");
@@ -1797,7 +1872,7 @@ export class GoogleChatGatekeeperImpl
         }
         const recipients = action.newConversation?.members.map(member => member.id) ?? action.recipients;
         const { spaceName, posted } = recipients
-          ? await this.#conversationFor(api, store, actionId, action, recipients)
+          ? await this.#conversationFor(api, store, actionId, self, action, recipients)
           : { spaceName: action.spaceName, posted: undefined };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
