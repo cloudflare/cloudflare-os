@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { NotePencilIcon } from '@phosphor-icons/react'
+import { CodeIcon, EyeIcon, GearSixIcon, NotePencilIcon } from '@phosphor-icons/react'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
+import { IconSwitch } from '@/components/IconSwitch'
 import { Section } from './Section'
 
 const WORKSPACES = [
@@ -21,6 +22,7 @@ export const HeaderPreview = () => {
   const [page, setPage] = useState<{ workspaceId: string; chat?: string }>({ workspaceId: 'notes', chat: WORKSPACES[0].chat })
   const workspace = WORKSPACES.find(({ id }) => id === page.workspaceId)!
   const [chatTitle, setChatTitle] = useState('Refactor conditional rendering logic')
+  const [code, setCode] = useState(false)
   const [said, setSaid] = useState('Turn a transcript into decisions, owners and next steps, with whatever was left open at the end of the meeting.')
 
   return (
@@ -32,6 +34,14 @@ export const HeaderPreview = () => {
         <div className="flex max-w-md justify-center text-base font-normal text-kumo-subtle">
           <EditableTitle multiline value={said} onRename={setSaid} aria-label="What it is for" className="text-center" />
         </div>
+      </div>
+    </Section>
+    <Section title="IconSwitch (two views of one thing, each an icon at an end of a pill as tall as the header’s buttons; the thumb slides under the one that is on, and clicking it anywhere switches it. Here, what an app looks like and its code, beside a button to show they are the same height)">
+      <div className="flex items-center gap-2">
+        <IconSwitch aria-label="Show the code" title={code ? 'Show the app' : 'Show the code'} icons={{ off: EyeIcon, on: CodeIcon }} checked={code} onCheckedChange={setCode} />
+        <Button icon={GearSixIcon} aria-label="Settings" />
+        <Button>A button</Button>
+        <span className="text-sm text-kumo-subtle">{code ? 'Code' : 'Preview'}</span>
       </div>
     </Section>
     <Section title="ChatHeader, WorkspaceCrumb, HeaderBubble (between a workspace and its chat the crumb stays, growing its title or drawing it in; going to another workspace swaps the bubbles, which pop out and in. A workspace's page has a New chat button, which opens a chat that starts with the first message)">
