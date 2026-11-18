@@ -12,7 +12,7 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, RefreshFailure, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -458,7 +458,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
           "Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, and BigQuery. Build " +
           "agents that triage email, draft and edit documents, spreadsheets and presentations, " +
-          "search Drive and read native Docs and Sheets, find focus time, " +
+          "search Drive and read its Docs, Sheets, Slides, PDFs and other files, find focus time, " +
           "schedule meetings, follow and post to Chat conversations, or run analytics queries on " +
           "your data.",
       providesAuth: true,
@@ -579,6 +579,22 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
     default:
       throw new Error("Not a Google subresource.");
   }
+}
+
+/** What a caller is told when Google permanently refuses to refresh the account's access token. */
+function refreshFailureMessage(failure: RefreshFailure): string {
+  if (failure.reason === "policyBlocked") {
+    return "A Google Workspace admin has restricted access this connection needs " +
+        `(${failure.detail}). Ask your administrator to allow it — re-authenticating will not help.`;
+  }
+  // The account's organization limits how long a sign-in lasts for Google Cloud, which a connection
+  // holding a Cloud scope such as BigQuery's is subject to. Only signing in again renews it. Google
+  // names the condition with either subtype.
+  if (failure.subtype === "invalid_rapt" || failure.subtype === "rapt_required") {
+    return "Google needs this account to sign in again: its organization requires a new sign-in " +
+        "for Google Cloud access (such as BigQuery) every so often. Please re-authenticate.";
+  }
+  return "Google credentials have expired or been revoked. Please re-authenticate.";
 }
 
 export class UserAccount extends DurableObject<Env> {
@@ -942,14 +958,18 @@ export class UserAccount extends DurableObject<Env> {
       let result = await getAccessToken(refreshToken, clientId, clientSecret,
           AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS));
       if (!result.ok) {
-        // Both are permanent, so both mark the connection dead. They differ in the remedy:
+        // Google's codes only, never its prose: they tell a revoked or expired grant
+        // (`invalid_grant`) from a Google Cloud session that ran out (`invalid_rapt` or
+        // `rapt_required`).
+        logger.warn("Google refused to refresh an access token", {
+          event: "google.token.mint.refused",
+          providerError: result.reason === "policyBlocked" ? "admin_policy_enforced" : "invalid_grant",
+          ...(result.reason === "revoked" && result.subtype !== undefined
+              ? { providerSubtype: result.subtype } : {}),
+        });
+        // All are permanent, so all mark the connection dead. They differ in the remedy:
         // re-authenticating fixes a revoked grant but cannot grant a scope an admin has blocked.
-        let error = new Error(
-            result.reason === "policyBlocked"
-                ? "A Google Workspace admin has restricted access this connection needs " +
-                  `(${result.detail}). Ask your administrator to allow it — re-authenticating ` +
-                  "will not help."
-                : "Google credentials have expired or been revoked. Please re-authenticate.");
+        let error = new Error(refreshFailureMessage(result));
         // Recorded before notifying so only the first caller of a burst does either.
         this.#mintFailure = { error, at: Date.now() };
         this.#notifyCredentialsDead();
@@ -1428,8 +1448,9 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
  * Whether the account behind `getToken` can open a native file in the API that reads it (Docs,
  * Sheets or Slides): false when Google refuses it without giving a reason (403) or doesn't hold it
  * for the account (404), and a throw for any other failure. Google gives a reason for the refusals
- * that say nothing about the account's access, such as a missing scope or a disabled API, and a
- * 401 that survives a fresh token means the credentials, not the file.
+ * that say nothing about the account's access, such as a missing scope or a disabled API, so a
+ * refusal whose reasons couldn't be read throws; a 401 that survives a fresh token means the
+ * credentials, not the file.
  */
 async function hasNativeFileAccess(
     getToken: (opts?: AccessTokenRequest) => Promise<string>,
@@ -1444,7 +1465,8 @@ async function hasNativeFileAccess(
   } catch (error) {
     let status = httpStatusFromError(error);
     if (error instanceof GoogleApiError &&
-        (status === 404 || (status === 403 && error.providerReasons.length === 0))) {
+        (status === 404 ||
+          (status === 403 && error.providerErrorRead && error.providerReasons.length === 0))) {
       return false;
     }
     throw error;

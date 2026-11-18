@@ -10,6 +10,7 @@ import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
 import type {Attachment as PostalAttachment} from "postal-mime";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { reportGoogleRequestFailure, safeProviderCode } from "./google-response";
 
 /**
  * Internal type for parsed message info with raw label IDs (not yet resolved
@@ -151,7 +152,8 @@ export async function exchangeAuthCode(
 }
 
 export type RefreshFailure =
-  | { ok: false; reason: "revoked" }
+  /** Google's `invalid_grant`. `subtype` is its `error_subtype`, such as `invalid_rapt`, when it sends one. */
+  | { ok: false; reason: "revoked"; subtype?: string }
   | { ok: false; reason: "policyBlocked"; detail: string };
 
 export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | RefreshFailure;
@@ -179,9 +181,12 @@ export async function getAccessToken(
     let isJson = contentType && contentType.startsWith("application/json");
 
     if (isJson) {
-      let body = await response.json<{error?: string, error_description?: string}>();
+      let body = await response.json<{
+        error?: string, error_description?: string, error_subtype?: unknown,
+      }>();
       if (body.error === "invalid_grant") {
-        return { ok: false, reason: "revoked" };
+        let subtype = safeProviderCode(body.error_subtype);
+        return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
       }
       if (body.error === "admin_policy_enforced") {
         return { ok: false, reason: "policyBlocked",
@@ -1929,21 +1934,56 @@ async function readErrorText(response: Response, maxBytes = 4096): Promise<strin
   return new TextDecoder().decode(bytes);
 }
 
-/** A status-only provider error that is safe to use for retry decisions and server logs. */
+// Google's reasons for a request it limited rather than refused, on a 403 or a 429. The limit is
+// the user's, or for `dailyLimitExceeded` the Google Cloud project's.
+const GMAIL_RATE_LIMIT_REASONS: ReadonlySet<string> = new Set([
+  "rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded", "RATE_LIMIT_EXCEEDED",
+]);
+
+// Google's reasons for a token that lacks the scope a request needs.
+const GMAIL_SCOPE_REASONS: ReadonlySet<string> = new Set([
+  "insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+]);
+
+/** What the caller can do about a failure Google gave one of these reasons for, if anything. */
+function gmailFailureRemedy(status: number, reasons: readonly string[]): string {
+  if (status === 429 || reasons.some(reason => GMAIL_RATE_LIMIT_REASONS.has(reason))) {
+    // A 429 and `rateLimitExceeded` are a per-minute quota or a daily limit alike, so no wait is
+    // promised, and the limit can be the project's, so it is not said to be this account's.
+    return " Gmail is limiting requests. Try again later, with fewer or smaller requests: " +
+      "a short-term limit lifts within a minute or so, but a daily limit, such as the one on sending mail, can take hours.";
+  }
+  if (reasons.some(reason => GMAIL_SCOPE_REASONS.has(reason))) {
+    return " The Google connection lacks a permission this needs: reconnect the Google account and allow the access it asks for.";
+  }
+  return "";
+}
+
+/**
+ * A provider error carrying Google's status and reason codes, never its prose, so it is safe to
+ * use for retry decisions and server logs.
+ */
 export class GmailApiError extends Error {
-  constructor(public readonly status: number, operation: string) {
-    super(`Gmail API ${operation} failed [http=${status}]`);
+  constructor(
+    public readonly status: number,
+    operation: string,
+    /** Google's reason codes for the failure, such as `rateLimitExceeded`; empty when it gave none. */
+    public readonly reasons: readonly string[] = [],
+  ) {
+    super(
+      `Gmail API ${operation} failed [http=${status}${reasons.length > 0 ? ` reason=${reasons.join(",")}` : ""}]` +
+      gmailFailureRemedy(status, reasons));
   }
 }
 
 async function gmailApiFailure(operation: string, response: Response): Promise<never> {
-  // Gmail error prose can reflect query and header values. Keep thrown errors safe to log.
-  try {
-    await response.body?.cancel();
-  } catch {
-    // Cancellation is best-effort; the HTTP status remains authoritative.
-  }
-  throw new GmailApiError(response.status, operation);
+  // Gmail error prose can reflect query and header values, so only Google's reason codes are kept:
+  // they tell a rate limit from a missing permission, which the status alone does not.
+  // A 404 is an answer callers expect and handle (a message, draft or label that is gone), so it
+  // is logged as information, not as a warning.
+  let { providerReasons } = await reportGoogleRequestFailure(
+      response, "Gmail", operation, response.status === 404 ? "info" : "warn");
+  throw new GmailApiError(response.status, operation, providerReasons);
 }
 
 function headerValue(

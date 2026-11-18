@@ -1,8 +1,9 @@
 // Read-only extraction of what Chat apps show in message cards, both the current `cardsV2` and the
-// legacy `cards`. The two formats share their header, section, text paragraph, image, and openLink
-// shapes, and their other widget keys don't collide, so one walker reads either.
+// legacy `cards`, and in the buttons under a message (`accessoryWidgets`). The two card formats
+// share their header, section, text paragraph, image, and openLink shapes, and their other widget
+// keys don't collide, so one walker reads either; accessory widgets are `cardsV2` button lists.
 //
-// Cards are app-authored and loosely shaped, so every field is read as unknown and kept only when
+// All of it is app-authored and loosely shaped, so every field is read as unknown and kept only when
 // it has the expected type. Nothing here follows a link or runs a card action: action callbacks,
 // form inputs, and widgets with nothing to read are dropped, and only http(s) links are kept.
 
@@ -40,19 +41,23 @@ class CardReader {
     }
   }
 
-  /** An `onClick` that opens a URL, directly or from an overflow menu; other actions are dropped. */
+  /**
+   * An `onClick` that opens a URL, directly or from an overflow menu; other actions, and menu items
+   * that are disabled, are dropped.
+   */
   onClick(value: unknown, label: unknown): void {
     const onClick = record(value);
     this.#link(record(onClick?.openLink)?.url, label);
     for (const item of list(record(onClick?.overflowMenu)?.items)) {
+      if (item.disabled === true) continue;
       this.#link(record(record(item.onClick)?.openLink)?.url, item.text);
     }
   }
 
-  /** A `cardsV2` button, or a legacy `textButton` / `imageButton` wrapper. */
+  /** A `cardsV2` button, or a legacy `textButton` / `imageButton` wrapper; a disabled one opens nothing. */
   button(value: unknown): void {
     const button = record(value);
-    if (button === undefined) return;
+    if (button === undefined || button.disabled === true) return;
     const legacy = record(button.textButton) ?? record(button.imageButton);
     if (legacy !== undefined) {
       this.onClick(legacy.onClick, legacy.text ?? legacy.name);
@@ -83,7 +88,9 @@ class CardReader {
     const image = record(widget.image);
     if (image) this.onClick(image.onClick, image.altText);
 
-    for (const chip of list(record(widget.chipList)?.chips)) this.onClick(chip.onClick, chip.label);
+    for (const chip of list(record(widget.chipList)?.chips)) {
+      if (chip.disabled !== true) this.onClick(chip.onClick, chip.label);
+    }
 
     const grid = record(widget.grid);
     if (grid) {
@@ -143,4 +150,12 @@ export function chatCardsFromRaw(raw: { cards?: unknown; cardsV2?: unknown }): C
     ...(Array.isArray(raw.cards) ? raw.cards : []),
   ];
   return cards.flatMap(card => chatCardFromRaw(card) ?? []);
+}
+
+/** The links the buttons under a message open (its `accessoryWidgets`); buttons that run an action are left out. */
+export function chatButtonsFromRaw(raw: { accessoryWidgets?: unknown }): ChatCardLink[] {
+  const reader = new CardReader();
+  // Accessory widgets are button lists only, so nothing nested is followed.
+  reader.widgets(raw.accessoryWidgets, true);
+  return reader.links;
 }

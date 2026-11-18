@@ -1117,9 +1117,8 @@ testGmailPrototype.runTestOperation = async function(
   const [id, value, extra, options] = args;
   try {
     switch (operation) {
-  case "session.hasMailboxMethods":
-    return ["send", "createDraft", "listLabels", "createLabel", "renameLabel", "deleteLabel"]
-      .every(method => method in session);
+  case "session.listLabels":
+    return await session.listLabels();
   case "session.getMailboxAddress":
     return await session.getMailboxAddress();
   case "session.send":

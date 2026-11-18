@@ -995,6 +995,18 @@ Your CLIENT_ID or CLIENT_SECRET is incorrect. Double-check the values in your `.
 
 This is normal for apps in Testing mode. Click "Advanced" and then "Go to [app name] (unsafe)" to proceed. This warning only appears for test users during development.
 
+### Connections keep asking to re-authenticate
+
+When Google permanently refuses to refresh an account's access token, the connection shows as expired and the Worker logs `google.token.mint.refused` with Google's own codes: `providerError` (`invalid_grant` or `admin_policy_enforced`) and, when Google sends one, `providerSubtype`. Common causes:
+- **The OAuth app is in Testing**: Google expires a Testing app's refresh tokens after 7 days. Publish the app to production to stop it.
+- **Google's own limits on refresh tokens**: a password change expires the refresh tokens that carry Gmail scopes, a token unused for six months expires, and Google keeps at most 100 refresh tokens for one Google account and OAuth client, dropping the oldest without notice when another is issued.
+- **The same Google account is connected more than once**: disconnecting a Google account, or dropping a connection that was never finished or that repeats an account the same user already connected, revokes its grant, and Google revokes a grant for every OAuth client in the project at once. That expires every other connection of the same Google account: any on this deployment, the user's own or another user's, which then has to be reconnected, and those on any other deployment that uses the same Google Cloud project, so give each deployment its own project.
+- **`providerSubtype` is `invalid_rapt` or `rapt_required`**: the account's Google Workspace sets a session length for Google Cloud, and a grant that includes a Cloud scope, which BigQuery's is, must sign in again each time it runs out. Consents add to what the account granted before (`include_granted_scopes`), so this reaches every Google connection of an account that has connected BigQuery. A Workspace admin can lengthen the session or exempt the app.
+
+### Gmail requests fail
+
+A failed Gmail request logs `google.api.request.failed` with Google's reason codes (`providerReasons`), as Docs, Sheets and Slides requests do (as information when it is a 404, which callers expect and handle, and as a warning otherwise), and its error names them, since a 403 can be a usage limit (`rateLimitExceeded`, `userRateLimitExceeded`, or `dailyLimitExceeded` for the Google Cloud project's own quota), where the error says to try again later, a missing permission (`insufficientPermissions`), where it says to reconnect, or another refusal such as `domainPolicy` (a Workspace administrator has blocked the app), where the error names the reason only. A 429 gets the rate-limit advice whatever its reason; the codes do not tell a per-minute quota from a daily limit such as the one on sending mail, which can take hours to lift, so the error promises no wait. Google's own error text is never logged or returned: it can repeat a search query or a header. A Gmail connection limited to a search or a label has no `send()`, `createDraft()` or label methods; an agent that calls one is told so, what the connection offers instead, and that connecting Gmail as **All Gmail** has it.
+
 ### "This app is blocked" or quota errors
 
 You may have hit rate limits or your project may have issues. Check the [Google Cloud Console](https://console.cloud.google.com/) for any alerts or quota warnings on your project.

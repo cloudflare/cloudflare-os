@@ -2761,6 +2761,23 @@ function gmailRestrictedThreadCursor(
   }), ctx.approvalQueue);
 }
 
+/**
+ * What a search- or label-scoped binding answers a whole-mailbox method with: which connection
+ * has the method, and how the user makes one. `instead` names what this binding offers in its
+ * place, when it offers anything.
+ */
+function wholeMailboxOnlyError(method: string, instead = ""): Error {
+  return new Error(
+    `${method}() needs a whole-mailbox Gmail connection, and this one is limited to a search or a ` +
+    `label.${instead} To use ${method}(), connect Gmail again with "All Gmail" as its mailbox ` +
+    "scope (https://mail.google.com/mail/).");
+}
+
+const REPLY_INSTEAD_OF_SEND =
+  " To answer a message this connection can read, use that message's reply() or replyAll().";
+const REPLY_DRAFT_INSTEAD_OF_DRAFT =
+  " To draft an answer to a message this connection can read, use that message's createReplyDraft().";
+
 @validateRpc()
 class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
   #ctx: GmailContext;
@@ -2883,8 +2900,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
   async send(
       to: string[], subject: string, body: string, options: GmailComposeOptions = {}): Promise<string> {
     if (this.#ctx.restricted) {
-      throw new Error(
-        "send() is unavailable on a search- or label-scoped binding. Use a message capability.");
+      throw wholeMailboxOnlyError("send", REPLY_INSTEAD_OF_SEND);
     }
     const message = this.#ctx.api.buildSendRaw(to, subject, body, options);
     validateOutboundFields(message, message.subject, message.body, message.html);
@@ -2922,7 +2938,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async createDraft(input: GmailDraftInput): Promise<GmailDraft> {
     if (this.#ctx.restricted) {
-      throw new Error("createDraft() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("createDraft", REPLY_DRAFT_INSTEAD_OF_DRAFT);
     }
     const message = this.#ctx.api.buildSendRaw(
       input.to ?? [], input.subject ?? "", input.text ?? "", input);
@@ -2931,7 +2947,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async listLabels(): Promise<GmailLabel[]> {
     if (this.#ctx.restricted) {
-      throw new Error("listLabels() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("listLabels");
     }
     const labels = await currentLabels(this.#ctx);
     await this.#ctx.approvalQueue.authorizeObservation({
@@ -2946,7 +2962,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async createLabel(name: string): Promise<GmailCustomLabel> {
     if (this.#ctx.restricted) {
-      throw new Error("createLabel() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("createLabel");
     }
     validateGmailLabelName(name);
     const existing = (await currentLabels(this.#ctx)).labels.some(
@@ -2964,7 +2980,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async renameLabel(label: GmailCustomLabel, name: string): Promise<GmailCustomLabel> {
     if (this.#ctx.restricted) {
-      throw new Error("renameLabel() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("renameLabel");
     }
     validateGmailLabelName(name);
     let generation: number;
@@ -2989,7 +3005,7 @@ class GmailSessionImpl extends ApprovalQueueRpcTarget implements GmailSession {
 
   async deleteLabel(label: GmailCustomLabel): Promise<void> {
     if (this.#ctx.restricted) {
-      throw new Error("deleteLabel() is only available on a whole-mailbox Gmail binding.");
+      throw wholeMailboxOnlyError("deleteLabel");
     }
     const canonical = await resolveMutableLabel(this.#ctx, label);
     if (canonical.type !== "custom") throw new Error("System Gmail labels cannot be deleted.");
@@ -3037,6 +3053,20 @@ class GmailScopedSessionImpl extends ApprovalQueueRpcTarget implements GmailScop
   subscribeNewMessages(hook: RpcStub<GmailMessageHookTarget>): Promise<void> {
     return this.#mailbox.subscribeNewMessages(hook);
   }
+
+  // The whole-mailbox methods, which GmailScopedSession does not declare. A caller used to a
+  // whole-mailbox binding calls them all the same, and "no such method" tells it nothing, so each
+  // refuses here, whatever it is passed, and says which connection has it. None reaches #mailbox.
+  async send(..._args: unknown[]): Promise<void> {
+    throw wholeMailboxOnlyError("send", REPLY_INSTEAD_OF_SEND);
+  }
+  async createDraft(..._args: unknown[]): Promise<void> {
+    throw wholeMailboxOnlyError("createDraft", REPLY_DRAFT_INSTEAD_OF_DRAFT);
+  }
+  async listLabels(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("listLabels"); }
+  async createLabel(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("createLabel"); }
+  async renameLabel(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("renameLabel"); }
+  async deleteLabel(..._args: unknown[]): Promise<void> { throw wholeMailboxOnlyError("deleteLabel"); }
 
   [Symbol.dispose](): void {
     this.#mailbox[Symbol.dispose]();
