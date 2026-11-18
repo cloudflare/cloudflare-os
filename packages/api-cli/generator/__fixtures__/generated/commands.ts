@@ -39,6 +39,35 @@ export const table: ApiTable = {
           ],
           returns: { kind: "value", type: "void" },
         },
+        "export-note": {
+          method: "exportNote",
+          doc: "A note's text, or a byte stream inside the result for a note too long to return whole.",
+          args: [{ name: "id", index: 0, encoding: "string", type: "string", doc: "" }],
+          returns: {
+            kind: "value",
+            type: "NoteExport = { kind: \"text\"; text: string } | { byteLength: number; content: ReadableStream; kind: \"stream\" }",
+            stream: true,
+          },
+        },
+        "export-notes": {
+          method: "exportNotes",
+          doc: "Each note's export, in order: a result that may hold several byte streams.",
+          args: [
+            {
+              name: "ids",
+              index: 0,
+              encoding: "json",
+              shape: { kind: "array", element: { kind: "string" } },
+              type: "string[]",
+              doc: "",
+            },
+          ],
+          returns: {
+            kind: "value",
+            type: "NoteExport[], where NoteExport = { kind: \"text\"; text: string } | { byteLength: number; content: ReadableStream; kind: \"stream\" }",
+            stream: true,
+          },
+        },
         "find-notes": {
           method: "findNotes",
           doc: "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
