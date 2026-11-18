@@ -176,8 +176,10 @@ describe("telling the admin gatekeeper of a filed report", () => {
     let [[event]] = await sent();
     expect(Object.keys(event).toSorted()).toStrictEqual(
         ["at", "id", "kind", "priority", "reportId"]);
-    expect(JSON.stringify(event)).not.toContain(report.text);
-    expect(JSON.stringify(event)).not.toContain(ADA.id);
+    // The two ids are random, and say nothing of the report: the rest holds neither.
+    let { id: _id, reportId: _reportId, ...rest } = event;
+    expect(JSON.stringify(rest)).not.toContain(report.text);
+    expect(JSON.stringify(rest)).not.toContain(ADA.id);
   });
 });
 
