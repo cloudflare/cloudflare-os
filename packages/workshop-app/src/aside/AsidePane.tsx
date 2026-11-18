@@ -13,6 +13,7 @@ import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
 import { templateUpdateStatus } from '@/gadgets/templateUpdate'
 import { UpdateFromTemplate } from '@/gadgets/UpdateFromTemplate'
+import { PublishTemplate } from '@/library/PublishTemplate'
 import { useBlueprintInfo } from '@/gadgets/useGadgetSettings'
 import { useGadgetEdits } from '@/gadgets/useGadgetEdits'
 import { outputKey } from '@/library/libraryList'
@@ -231,6 +232,13 @@ export const AsidePane = (props: AsidePaneProps) => {
     />
   )
   const hasUpdate = update && templateUpdateStatus(follows, template) === 'available'
+  // Published as a template from what it has kept, by whoever builds in its workspace. Not there
+  // until it is first asked for, as it reads the templates.
+  const [publishing, setPublishing] = useState<boolean>()
+  const mayPublish = readsCode && gadget !== undefined
+  const publish = mayPublish && publishing !== undefined && (
+    <PublishTemplate gadget={{ workspaceId: gadget.workspaceId, workpieceId: gadget.workpieceId, title }} open={publishing} onOpenChange={setPublishing} />
+  )
   // As its own page, a gadget names the workspace it is in and leads to a chat there with it
   // beside it, for whoever builds there: someone given it alone to use has no chats in it.
   const ownPage = props.placement === 'page' ? props : undefined
@@ -269,6 +277,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     viewingCode,
     onShare: share ? () => setSharing(true) : undefined,
     onUpdate: hasUpdate ? () => setUpdating(true) : undefined,
+    onPublish: mayPublish ? () => setPublishing(true) : undefined,
     onRename: edits.onRename,
     onDelete: edits.onDelete,
     narrow,
@@ -288,6 +297,7 @@ export const AsidePane = (props: AsidePaneProps) => {
       {share}
       {exports.dialogs}
       {update}
+      {publish}
       {edits.dialog}
     </SidePane>
   ) : (
@@ -297,6 +307,7 @@ export const AsidePane = (props: AsidePaneProps) => {
       {share}
       {exports.dialogs}
       {update}
+      {publish}
       {edits.dialog}
     </SidePane>
   )

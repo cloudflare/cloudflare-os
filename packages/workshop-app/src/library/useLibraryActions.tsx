@@ -8,6 +8,7 @@ import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { mayChange, NO_EDITS, withDeletion, withoutRename, withRename, type LibraryEdits } from './libraryEdits'
 import { outputKey, outputTitle } from './libraryList'
+import { PublishTemplate } from './PublishTemplate'
 
 export type LibraryActionsOptions = {
   /** The outputs as they were read, which a rename is made over. */
@@ -36,7 +37,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * What can be done to the outputs a list shows from their more menus, wherever the list is (the
  * Library page, a workspace's Library tab, a chat's): rename one, which shows at once and is put
- * back if it is refused; share it from its own page; go to its settings; and delete it, which asks
+ * back if it is refused; share it from its own page; go to its settings; publish it as a template; and delete it, which asks
  * first and leaves the list once it is gone. Only for whoever builds in its workspace
  * (`mayChange`); the server checks again.
  */
@@ -49,6 +50,7 @@ export const useLibraryActions = ({ read, outputHref, onOpenSettings, onDeleted 
   // The one being asked about or shared, kept as the dialog closes so that it does not change as it goes.
   const [deleting, setDeleting] = useState<{ output: OutputSummary; open: boolean }>()
   const [sharing, setSharing] = useState<{ output: OutputSummary; open: boolean }>()
+  const [publishing, setPublishing] = useState<{ output: OutputSummary; open: boolean }>()
 
   const rename = (output: OutputSummary, title: string) => {
     setProblem(undefined)
@@ -77,6 +79,7 @@ export const useLibraryActions = ({ read, outputHref, onOpenSettings, onDeleted 
       // Shared from its own page, which is what its link lets anyone in to.
       onShare: outputHref && (() => setSharing({ output, open: true })),
       onOpenSettings: onOpenSettings && (() => onOpenSettings(output)),
+      onPublish: () => setPublishing({ output, open: true }),
       onDelete: () => setDeleting({ output, open: true }),
     }
   }
@@ -102,6 +105,14 @@ export const useLibraryActions = ({ read, outputHref, onOpenSettings, onDeleted 
           gadget={{ id: sharing.output.workpieceId, title: outputTitle(sharing.output) }}
           open={sharing.open}
           onOpenChange={(open) => setSharing((current) => current && { ...current, open })}
+        />
+      )}
+      {publishing && (
+        <PublishTemplate
+          key={outputKey(publishing.output)}
+          gadget={{ workspaceId: publishing.output.workspaceId, workpieceId: publishing.output.workpieceId, title: outputTitle(publishing.output) }}
+          open={publishing.open}
+          onOpenChange={(open) => setPublishing((current) => current && { ...current, open })}
         />
       )}
     </>

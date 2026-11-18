@@ -409,8 +409,11 @@ The header ends in Explore templates (Explore, on a narrow screen) and New, whos
 (`/library/templates`, `TemplateStoreView`) are what the backend calls blueprints, the way a store
 lists apps, with Publish at the header's end (`PublishMenu`: the user's own apps, `ownApps`,
 under a field to find one by; choosing one publishes it under its own title,
-`GadgetClient.createBlueprint()`, and goes to its page: there is no step yet for a description or a
-screenshot), and a banner of the organization's
+`GadgetClient.createBlueprint()`, and goes to its page). A gadget is also published from its own
+More menu and the Library's, Publish as template… (`PublishTemplate` over `PublishTemplateDialog`):
+a title and what it is for, or, where its workspace has published before (`Overseer.listBlueprints()`),
+those templates first, each publishing what the gadget has kept since as its next version
+(`updateBlueprint` with `updateCode`); there is no step for a screenshot. And a banner of the organization's
 own over everything else (`PromoCarousel`, in the workspace colours, moving on by itself while it
 is not pointed at or focused, and not with reduced motion): a tab each (`?tab=`) for its front (Discover: the most used on one line that is
 scrolled along (`ScrollRow`), the latest published two to a line, then some of each kind they

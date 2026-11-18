@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { PublishTemplateDialog, type PublishTemplateDialogProps } from '@/blocks/PublishTemplateDialog'
 import { UseTemplateDialog, type UseTemplateNeed } from '@/blocks/UseTemplateDialog'
 import { Button } from '@/components/Button'
 import { useListView } from '@/hooks/useListView'
@@ -65,8 +66,62 @@ export const TemplateStorePreview = () => (
   <>
     <TemplateStorePages />
     <UseTemplatePreview />
+    <PublishTemplatePreview />
   </>
 )
+
+const PUBLISHED: Record<string, { label: string; published: PublishTemplateDialogProps['published'] }> = {
+  first: { label: 'Never published', published: { status: 'ready', templates: [] } },
+  before: {
+    label: 'Published before',
+    published: { status: 'ready', templates: [{ id: 'tpl-counter', title: 'Counter', version: 3, changes: true }, { id: 'tpl-tally', title: 'Tally for teams', version: 1 }] },
+  },
+  checking: { label: 'Still checking', published: { status: 'loading' } },
+  failed: { label: 'Couldn’t check', published: { status: 'failed', message: 'The workspace could not be reached.' } },
+}
+
+// Publishing is slow enough to see held, and one called “Taken” is refused.
+const later = <T,>(value: () => T) => new Promise<T>((resolve, reject) => setTimeout(() => {
+  try {
+    resolve(value())
+  } catch (error) {
+    reject(error)
+  }
+}, 700))
+
+/** `PublishTemplateDialog` in each way it opens: a first template, one published before, still checking, and couldn’t check. */
+const PublishTemplatePreview = () => {
+  const { report, say } = useReport()
+  const [open, setOpen] = useState<string>()
+  return (
+    <Section title="PublishTemplateDialog (a gadget’s More menu › Publish as template…: a first template is a title, its own to start with, and what it is for; one published before starts at its templates, each publishing the gadget’s changes as its next version where it has any, or a new one; once published it says so, with the way to the template; one called Taken is refused)">
+      <div className="flex flex-wrap gap-2">
+        {Object.entries(PUBLISHED).map(([key, { label }]) => <Button key={key} onClick={() => setOpen(key)}>{label}</Button>)}
+      </div>
+      <p role="status" className="text-sm text-kumo-subtle">{report}</p>
+      {Object.entries(PUBLISHED).map(([key, { published }]) => (
+        <PublishTemplateDialog
+          key={key}
+          open={open === key}
+          onOpenChange={(next) => setOpen(next ? key : undefined)}
+          title="Counter"
+          published={published}
+          onPublish={({ title }) => later(() => {
+            if (title === 'Taken') throw new Error('A template by that name is being published already.')
+            say(`published “${title}”`)
+            return 'tpl-new'
+          })}
+          onPublishChanges={(id) => later(() => say(`published the changes to ${id}`))}
+          onViewTemplate={(id) => {
+            say(`went to ${id}`)
+            setOpen(undefined)
+          }}
+          templateHref={() => '#'}
+        />
+      ))}
+    </Section>
+  )
+}
 
 const TemplateStorePages = () => {
   const { report, say } = useReport()

@@ -1,4 +1,4 @@
-import { AppWindowIcon, ArrowSquareOutIcon, DotsThreeIcon, GearSixIcon, LinkIcon, PencilSimpleIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { AppWindowIcon, ArrowSquareOutIcon, DotsThreeIcon, GearSixIcon, LinkIcon, PencilSimpleIcon, StackPlusIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
 import type { ButtonProps } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 
@@ -10,6 +10,8 @@ export type LibraryMoreActions = {
   onShare?: () => void
   /** Goes to its settings. */
   onOpenSettings?: () => void
+  /** Publishes it as a template, or its changes to one. */
+  onPublish?: () => void
   /** Asks whether to delete it. */
   onDelete?: () => void
 }
@@ -36,9 +38,9 @@ const copyLink = (href: string) => {
 /**
  * What else can be done with an output on the Library page: open it, here or from its address in
  * another tab, and copy its link; then, for whoever builds in its workspace, rename it, share it
- * and go to its settings; and after a line, delete it, which asks first.
+ * go to its settings and publish it as a template; and after a line, delete it, which asks first.
  */
-export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onShare, onOpenSettings, onDelete, triggerVariant = 'ghost', triggerClassName }: LibraryMoreMenuProps) => (
+export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onShare, onOpenSettings, onPublish, onDelete, triggerVariant = 'ghost', triggerClassName }: LibraryMoreMenuProps) => (
   <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${title}`} triggerVariant={triggerVariant} triggerClassName={triggerClassName} align="end">
     <DropdownMenu.Item icon={AppWindowIcon} onSelect={onOpen}>Open</DropdownMenu.Item>
     {href && (
@@ -47,10 +49,11 @@ export const LibraryMoreMenu = ({ title, href, onOpen, onRename, onShare, onOpen
         <DropdownMenu.Item icon={LinkIcon} onSelect={() => copyLink(href)}>Copy link</DropdownMenu.Item>
       </>
     )}
-    {(onRename || onShare || onOpenSettings) && <DropdownMenu.Separator />}
+    {(onRename || onShare || onOpenSettings || onPublish) && <DropdownMenu.Separator />}
     {onRename && <DropdownMenu.Item icon={PencilSimpleIcon} onSelect={onRename}>Rename</DropdownMenu.Item>}
     {onShare && <DropdownMenu.Item icon={UserPlusIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
     {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
+    {onPublish && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onPublish}>Publish as template…</DropdownMenu.Item>}
     {onDelete && <DropdownMenu.Separator />}
     {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
   </DropdownMenu>

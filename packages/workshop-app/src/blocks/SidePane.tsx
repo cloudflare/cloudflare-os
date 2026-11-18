@@ -1,10 +1,6 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
-import {
-  AppWindowIcon, ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, LinkIcon, PencilSimpleIcon, TrashIcon,
-  UserPlusIcon,
-} from '@phosphor-icons/react'
+import { AppWindowIcon, ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon, CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, GearSixIcon, LayoutIcon, LinkIcon, PencilSimpleIcon, StackPlusIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
@@ -74,6 +70,8 @@ export type SidePaneProps = Placement & {
   onShare?: () => void
   /** Updates the one shown, a gadget, from the newer version its template has, for whoever may. */
   onUpdate?: () => void
+  /** Publishes the one shown, a gadget, as a template, or its changes to one, for whoever may. */
+  onPublish?: () => void
   /** Gives the one shown, a gadget, another title, typed where its name is, for whoever may. */
   onRename?: (title: string) => void
   /** Asks whether to delete the one shown, a gadget, for whoever may. */
@@ -116,7 +114,7 @@ const copyLink = (link: string) => void navigator.clipboard.writeText(link).catc
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, onRename, onDelete, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onShare, onUpdate, onPublish, onRename, onDelete, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
   // The one whose name is being typed where it is, so that another shown meanwhile is not.
@@ -211,7 +209,7 @@ export const SidePane = (props: SidePaneProps) => {
                 <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate || onRename || onDelete))) && (
+            {(beside || (active && (onReload || onDownload || exports || onOpenSettings || onViewCode || (onShare && link) || onUpdate || onPublish || onRename || onDelete))) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
@@ -229,6 +227,7 @@ export const SidePane = (props: SidePaneProps) => {
                       <span className="shrink-0 text-(length:--menu-detail-text) text-kumo-brand">New version</span>
                     </DropdownMenu.Item>
                   )}
+                  {onPublish && <DropdownMenu.Item icon={StackPlusIcon} onSelect={onPublish}>Publish as template…</DropdownMenu.Item>}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
                   {onDelete && <DropdownMenu.Separator />}
                   {onDelete && <DropdownMenu.Item icon={TrashIcon} danger onSelect={onDelete}>Delete…</DropdownMenu.Item>}
