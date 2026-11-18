@@ -1096,7 +1096,7 @@ const driveFacets = new Set<string>();
 const FACET_HOOKS = new Set([
   "submitAppend", "submitReplace", "submitEdit", "callsDuringTableRead", "readMetadata",
   "readContent", "listTabs", "applyAction", "rejectAction", "callDoc", "describe",
-  "docAutoApprovable",
+  "docAutoApprovable", "readPendingChanges", "readImages", "previewUi",
 ]);
 
 /** `fields` without the two a Drive binding's card names the file by, which it checks. */
@@ -3900,6 +3900,34 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     };
   }
 
+  it("names the Doc an edit changes, serves that Doc's preview, and the reads it draws from", async () => {
+    let docs = draft();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    let facet = "drive-preview";
+
+    let id = await hooks().submitAppend(facet, "added");
+    let previewOf = await hooks().lastActionPreviewOf;
+    expect(previewOf).toEqual({
+      id: "docs:doc-1", title: "Test document", url: "https://docs.google.com/document/d/doc-1/edit",
+    });
+    // The Doc's own preview, and none of the connection: it reaches many files.
+    expect(await hooks().describe(facet)).not.toHaveProperty("hasPreview");
+    let files = await hooks().previewUi(facet, previewOf!.id);
+    expect(files.map(({ path }) => path)).toEqual(PREVIEW_PATHS);
+    expect(files[0].code).toContain("gadget.getPendingChanges(");
+    await expect(hooks().previewUi(facet)).rejects.toThrow("none of itself");
+    await expect(hooks().previewUi(facet, "docs:../doc-1")).rejects.toThrow("no preview by that name");
+
+    expect(await hooks().readPendingChanges(facet, MAIN_TAB)).toMatchObject({
+      savedMarkdown: "\\[Image\\]\n",
+      changes: [{ id, type: "appendText", markdown: "added" }],
+    });
+    expect((await hooks().callDoc(facet, "readDrawing" as keyof GoogleDocSession, [MAIN_TAB])).value)
+      .toMatchObject({ objects: { photo: { readable: true } } });
+    expect((await hooks().readImages(facet, MAIN_TAB, ["photo"], true)).read)
+      .toEqual([{ mimeType: "image/png", text: "bytes of photo" }]);
+  });
+
   // The write has landed and the action set has retired the record, so nothing replays the
   // append; its marker is still in the document. Reads are made from inside the marker's deletion
   // and inside the read of the new revision that follows it, as an overlapping read would land.
@@ -4084,7 +4112,10 @@ describe("Google Doc edits through a read and write Drive binding", () => {
       replaceText: ["Draft", "Final"],
       appendText: ["More"],
     };
-    let reads = new Set(["constructor", "getMetadata", "listTabs", "getContent"]);
+    let reads = new Set([
+      "constructor", "getMetadata", "listTabs", "getContent",
+      "getPendingChanges", "listImages", "readImage", "readFont", "readDrawing", "getRenderingTypes",
+    ]);
     let writes = Object.getOwnPropertyNames(GoogleDocEditSessionImpl.prototype)
       .filter(name => !reads.has(name));
     expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());

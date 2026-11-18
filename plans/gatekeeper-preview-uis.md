@@ -319,8 +319,8 @@ listImages(tabId: string): Promise<GoogleDocImage[]>;    // one for each [Image]
 ```
 
 - `getPendingChanges()` follows section 2: the changes are `replaceText` and `appendText`, and
-  the two copies are Markdown. It is on the read-write session only; a Doc opened through Drive
-  has no pending changes and no preview. A tab still to be added reads as saved and empty, with
+  the two copies are Markdown. It is on the sessions that edit: the Doc's own, and the one a read
+  and write Drive binding opens (see the Drive section). A tab still to be added reads as saved and empty, with
   every edit to it listed.
 - `readDrawing()` (`docs-drawing.ts`) is the saved tab resolved to what a renderer needs and no
   more: the page, its sections with their margins, columns and the headers and footers each
@@ -739,6 +739,34 @@ readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
 - Each preview: a worker suite for its reads, the client in a same-origin frame in real
   Chromium, and a live pass against the real file. Slides adds the thumbnail comparison.
 
+## Files reached through Google Drive
+
+A Drive connection (a whole Drive, a folder or one file) edits Docs, Sheets and presentations
+through the same sessions as their own connections, so their previews draw them unchanged. What
+differs is which file, which section 1a answers:
+
+- **Each edit names its file.** `previewOf` is `{ id, title, url }`, set where the edit's card
+  gets its "File" fields. `id` is the file's kind, the folders between the connected one and the
+  file, and the file: `docs:<folder>/<folder>/<file>`. A folder session opens only its direct
+  children, so the way in is part of the name; nothing but the gatekeeper reads it.
+- **`getPreviewUi(previewOf)`** returns the files of that kind's preview, from one list the three
+  gatekeepers share (`previews/files.ts`). It asks Google nothing. A Drive connection reports no
+  `hasPreview`: it has no preview of itself.
+- **`openPreview(previewOf)`** on the Drive session walks the folders and opens the file with
+  `openGoogleDoc()` and its siblings, so the file's place in the binding's scope is proven as it
+  is for an agent. The session convention is in the write-gatekeeper skill. It is not in the
+  agent's types.
+- **The Workshop** tells previews apart by connection and item. It asks for the item's code,
+  opens the connection's session, calls `openPreview()` on it and hands the frame only the
+  result, letting the Drive session go: the frame holds one file, not the binding. The card and
+  the refresh take only actions that name the same item, which matches Drive ordering approvals
+  by file. An item's preview opens when a change to it is queued, never on a read: a preview's
+  reads are recorded against the workspace, and an agent skims many files.
+- **The Doc a Drive binding opens** gains the four preview reads on its edit session.
+- Not built: a read-only binding (its sessions have none of the reads), comments, shares and
+  moves naming their file, and an icon for each file: the pane's icon is that of the
+  connection's type of resource, and a file's kind is known only to the gatekeeper.
+
 ## Pull requests
 
 1. **The framework's kernel half.** `Let a gatekeeper supply code that draws its resource`:
@@ -764,6 +792,12 @@ readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
   the pending store lives in the connection, and `newWorkspaceFromBlueprint` creates a new
   connection with an empty one. The Workshop would relay refresh by the gadget's
   `listBindings()`. A gadget server passing its binding's session through to its UI is untested.
+  A fork is of a kind of file, not of one file: the clients take a session and name no file. To
+  use one for an item of a connection (a Doc in a folder), the Workshop must learn the item's
+  kind, which `previewOf.id` hides on purpose: either a kind beside `id` and `title`, or the
+  gatekeeper naming the type of session `openPreview()` returns, as `describe().tsType` does for
+  a connection. Such a gadget is bound to the folder's connection, so it also calls
+  `openPreview()` itself.
 - **Change notification beyond the Workshop frame.** Either a live callback on the session (no
   precedent for a non-persistent callback; lost when the gatekeeper is evicted) or a hook through
   `bindHook()` (persistent stub, user approval, one logged read per delivery). Open: whether a

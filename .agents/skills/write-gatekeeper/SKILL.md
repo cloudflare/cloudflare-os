@@ -282,6 +282,20 @@ Keep in mind that the agent calling the API (or the agent writing a gadget to ca
 
 For concrete examples, see the Google gatekeeper's Google Docs simulation/cache handling and BigQuery dry-run scope enforcement.
 
+#### Previewing one item of a resource
+
+A gatekeeper whose resource holds several things it can draw one at a time (files in a folder)
+names the one an action changes, and its preview is of that (reference: the Google Drive
+gatekeeper):
+
+- Set `previewOf: { id, title, url? }` on the action's description. `id` is the gatekeeper's own
+  name for the item, enough to find it again and nothing anyone else reads; parse it strictly.
+- `getPreviewUi(id)` returns the code that draws the item and asks the provider nothing. Do not
+  report `hasPreview` unless the resource as a whole also has a preview.
+- The session implements `openPreview(id)`, returning the session that code reads through,
+  independent of the session it was opened from. It checks access as any open does. The Workshop
+  calls it and gives the frame the result alone.
+
 #### Revealing pending changes
 
 A session may let its caller see what is still pending, for a preview that draws what is about to

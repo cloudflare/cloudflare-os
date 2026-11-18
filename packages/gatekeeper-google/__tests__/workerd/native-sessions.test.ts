@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type { PdfRendering } from "@gadgets/pdf-renderer/api";
+import type { GoogleDocReadSession } from "../../src/docs-types";
 import type {
   ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
   ObservationDescription,
@@ -2130,6 +2131,30 @@ describe("folder-scoped native sessions", () => {
     using ownedDoc = doc;
 
     await expect(Promise.resolve(ownedDoc.getContent())).resolves.toBe("");
+  });
+
+  it("opens the file a preview is of through the folders its name gives, and no other way", async () => {
+    const nodes = subtree();
+    nodes.set("nested", {
+      id: "nested", mimeType: FOLDER_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canListChildren: true },
+    });
+    nodes.set("nested-doc", {
+      id: "nested-doc", mimeType: DOC_MIME, parents: ["nested"], trashed: false,
+    });
+    installFolderProvider(nodes);
+    using session = folderSession(nodes).session;
+
+    using doc = await session.openPreview("docs:nested/nested-doc") as unknown as GoogleDocReadSession & Disposable;
+    expect(await doc.getContent()).toBe("");
+    using direct = await session.openPreview("docs:doc-1") as unknown as GoogleDocReadSession & Disposable;
+    expect((await direct.getMetadata()).title).toBe("doc-1");
+
+    // A folder opens only its direct children, and a name is not a path to follow.
+    for (const name of ["docs:nested-doc", "sheets:nested/nested-doc", "docs:nested/../doc-1", "nested-doc"]) {
+      const refused = await Promise.resolve(session.openPreview(name)).then(() => undefined, error => error);
+      expect(refused, name).toBeInstanceOf(Error);
+    }
   });
 
   it("reads a direct-child PDF, checking its place around the download", async () => {
