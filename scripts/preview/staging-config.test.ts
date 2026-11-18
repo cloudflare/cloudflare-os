@@ -9,15 +9,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   gatekeeperShortName, isGatekeeperPackage, readDeployablePackages, type BindingDecl,
+  type ServiceBinding,
 } from "../release/manifest-lib.ts";
 import {
   MAX_PREVIEW_NAME_LENGTH,
   PACKAGES_DIR,
   R2_MAX_BUCKET_NAME_LENGTH,
   backendSecrets,
+  bindInternalPreviews,
   buildPreviewConfigs,
   gatekeeperBindingName,
+  previewDeletionOrder,
   previewPullRequestNumber,
+  previewTier,
   resolveAccess,
   resolveAdminConfigSeed,
   resolveAiGateway,
@@ -204,8 +208,9 @@ test("every deployable package gets a preview config, on the configured account"
   const { packages, configs } = buildAll();
 
   assert.equal(configs.size, packages.length);
-  assert.ok(configs.has("router") && configs.has("workshop-backend"),
-      "the router and backend are the two non-gatekeeper deployables");
+  assert.deepEqual([...configs.keys()].filter((name) => !isGatekeeperPackage(name)),
+      ["pdf-renderer", "router", "workshop-backend"],
+      "the renderer, the router and the backend are the non-gatekeeper deployables");
   for (const [name, config] of configs) {
     assert.equal(config.account_id, ACCOUNT_ID, name);
     assert.equal(config.routes, undefined, `${name}: a preview cannot be served from a zone`);
@@ -436,6 +441,123 @@ test("each preview's context collections are namespaced to that preview", () => 
   // Previews share one baseline gatekeeper-context worker; the sharingDomain is the only thing
   // keeping one PR's collections out of another's.
   assert.deepEqual(context.props, { sharingDomain: BASE_URL });
+});
+
+test("the renderer's preview is told nothing of the instance, and is built as committed", () => {
+  const { packages, configs } = buildAll();
+  const committed = packages.find((pkg) => pkg.name === "pdf-renderer")?.config;
+  const config = configs.get("pdf-renderer");
+  assert.ok(committed && config, "pdf-renderer is not a deployable package");
+
+  // It is reached over a gatekeeper's binding alone, so it has no mount for a BASE_URL to name.
+  assert.deepEqual(Object.keys(previewsOf(configs, "pdf-renderer")), ["observability"]);
+  assert.equal(config.vars, undefined);
+  // Its WebAssembly reaches the bundle through the build and the module rules.
+  for (const key of ["main", "build", "rules"] as const) {
+    assert.ok(committed[key], `the committed config has no ${key}`);
+    assert.deepEqual(config[key], committed[key], key);
+  }
+});
+
+test("a preview is deleted dependents first, the reverse of the order it deploys in", () => {
+  const { packages, configs } = buildAll();
+  const order = previewDeletionOrder(packages).map((group) => group.map((pkg) => pkg.name));
+  assert.deepEqual(order, [
+    ["router"],
+    ["workshop-backend"],
+    packages.map((pkg) => pkg.name).filter(isGatekeeperPackage),
+    ["pdf-renderer"],
+  ]);
+  // The tier preview.ts deploys first, ahead of the gatekeepers that bind it.
+  assert.equal(previewTier("pdf-renderer"), "internal");
+
+  const position = new Map(order.flatMap((group, index) => group.map((name) => [name, index])));
+  for (const [name, config] of configs) {
+    // A binding the previews block lacks is not one preview.ts can point at a sibling preview.
+    assert.deepEqual(config.previews?.services, config.services, `${name}: services`);
+    for (const { binding, service } of config.services ?? []) {
+      // Deleted after the worker that binds it, so deployed before it: the sibling's preview has
+      // to exist before this worker's does, for its id to be given to the binding.
+      assert.ok((position.get(service) ?? -1) > (position.get(name) ?? Infinity),
+          `${name}'s ${binding} names ${service}, which is not deployed before it`);
+    }
+  }
+
+  // The sweep deletes a preview from the workers that carry it, which need not be all of them.
+  const carrying = [{ name: "pdf-renderer" }, { name: "gatekeeper-google" }, { name: "router" }];
+  assert.deepEqual(previewDeletionOrder(carrying),
+      [[{ name: "router" }], [{ name: "gatekeeper-google" }], [{ name: "pdf-renderer" }]]);
+  assert.deepEqual(previewDeletionOrder([]), []);
+});
+
+/** The config built for a Google gatekeeper that binds `services`, beside the renderer. */
+function buildGoogleBinding(services: ServiceBinding[]): StagingConfig | undefined {
+  return buildPreviewConfigs({
+    previewName: PREVIEW_NAME,
+    accountId: ACCOUNT_ID,
+    workersDevHost: WORKERS_DEV_HOST,
+    packages: [
+      { name: "pdf-renderer", config: { name: "pdf-renderer" } },
+      { name: "gatekeeper-google", config: { name: "gatekeeper-google", services } },
+    ],
+  }).get("gatekeeper-google");
+}
+
+test("a gatekeeper may bind the renderer, and no worker deployed beside or after it", () => {
+  const renderer = { binding: "PDF_RENDERER", service: "pdf-renderer", entrypoint: "PdfRenderer" };
+  const google = buildGoogleBinding([renderer]);
+  // The baseline binds the baseline renderer; the preview's copy is what preview.ts gives the
+  // renderer preview's id.
+  assert.deepEqual(google?.services, [renderer]);
+  assert.deepEqual(google?.previews?.services, [renderer]);
+
+  // Neither has a preview when the gatekeepers deploy, so the binding would be left on a baseline.
+  for (const service of ["gatekeeper-github", "workshop-backend"]) {
+    assert.throws(() => buildGoogleBinding([renderer, { binding: "OTHER", service }]),
+        new RegExp(`gatekeeper-google binds ${service}, which is not deployed before`));
+  }
+});
+
+test("a gatekeeper's preview binds the renderer's preview, and never its baseline", () => {
+  const { packages, configs } = buildAll();
+  const internalIds = Object.fromEntries(packages.map((pkg) => pkg.name)
+      .filter((name) => previewTier(name) === "internal").map((name) => [name, `id-of-${name}`]));
+  assert.deepEqual(internalIds, { "pdf-renderer": "id-of-pdf-renderer" });
+
+  const google = configs.get("gatekeeper-google");
+  assert.ok(google, "gatekeeper-google is not a deployable package");
+  const bound = bindInternalPreviews("gatekeeper-google", google, internalIds);
+  assert.deepEqual(bound.previews?.services, [{
+    binding: "PDF_RENDERER",
+    service: "pdf-renderer",
+    entrypoint: "PdfRenderer",
+    preview_id: "id-of-pdf-renderer",
+  }]);
+  // Nothing else is touched, in the result or in what was handed over: the baseline keeps
+  // binding the baseline renderer.
+  const unbound = google.previews?.services;
+  assert.deepEqual(unbound, google.services);
+  assert.deepEqual({ ...bound, previews: { ...bound.previews, services: unbound } }, google);
+
+  for (const [name, config] of configs) {
+    if (!isGatekeeperPackage(name)) continue;
+    const services: PreviewOverrides["services"] =
+        bindInternalPreviews(name, config, internalIds).previews?.services;
+    // Every binding a gatekeeper has is given an id, and one that binds no worker gains none.
+    assert.deepEqual(services?.map((service) => service.binding),
+        config.services?.map((service) => service.binding), name);
+    for (const service of services ?? []) {
+      assert.ok(service.preview_id, `${name}'s ${service.binding} is left on a baseline`);
+    }
+  }
+
+  // A binding with no id is not an error to Wrangler: it resolves to the baseline worker.
+  const without: Record<string, string>[] =
+      [{}, { "pdf-renderer": "" }, { "gatekeeper-github": "another-preview" }];
+  for (const ids of without) {
+    assert.throws(() => bindInternalPreviews("gatekeeper-google", google, ids),
+        /gatekeeper-google's PDF_RENDERER names pdf-renderer, which has no preview/);
+  }
 });
 
 test("a worker whose name diverges from its package directory is rejected", () => {
