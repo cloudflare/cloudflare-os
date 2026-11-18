@@ -179,9 +179,10 @@ reads one. It also carries `cards`, what a Chat app's cards show (current `cards
 as one `text` string, and the http(s) links its buttons, chips, images and clickable text open,
 with their labels. Card text keeps the app's own markup. This content never appears in `text` or
 `formattedText`, which keep their meaning. Cards are read-only data: form inputs, action
-callbacks, and other links are dropped, and the gatekeeper never fetches a card's links or runs
-its actions. The buttons a Chat app puts under a message (`accessoryWidgets`) are read the same
-way into `buttons`: the http(s) links they open, with their labels.
+callbacks, disabled buttons, chips and menu items, and other links are dropped, and the
+gatekeeper never fetches a card's links or runs its actions. The buttons a Chat app puts under a
+message (`accessoryWidgets`) are read the same way into `buttons`: the http(s) links they open,
+with their labels.
 A message that quotes or forwards another carries `quotedMessage`: the quoted
 message's ID and, when Chat's snapshot of it in the quoting message has them, its sender's name
 and its text, and `forwarded` when it was forwarded. The gatekeeper never fetches the quoted message, which

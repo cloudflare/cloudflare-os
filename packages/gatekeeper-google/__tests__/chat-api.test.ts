@@ -303,7 +303,10 @@ describe("Chat response mapping", () => {
                       text: "More",
                       onClick: {
                         overflowMenu: {
-                          items: [{ text: "Dashboard", onClick: { openLink: { url: "https://example.com/dash" } } }],
+                          items: [
+                            { text: "Dashboard", onClick: { openLink: { url: "https://example.com/dash" } } },
+                            { text: "Retired", disabled: true, onClick: { openLink: { url: "https://example.com/retired" } } },
+                          ],
                         },
                       },
                     },
@@ -371,7 +374,7 @@ describe("Chat response mapping", () => {
   });
 
   // An app's "View incident" or "Open runbook" button sits under the message, outside any card.
-  it("maps the links of the buttons under a message, dropping actions and non-web links", () => {
+  it("maps the links of the buttons under a message, dropping actions, non-web links and disabled buttons", () => {
     const info = chatMessageInfoFromRaw({
       name: "spaces/AAAA/messages/BBB",
       sender: { name: "users/app", displayName: "Alerts", type: "BOT" },
@@ -383,6 +386,7 @@ describe("Chat response mapping", () => {
             buttons: [
               { text: "View deploy", onClick: { openLink: { url: "https://example.com/deploy/1" } } },
               { text: "Roll back", onClick: { action: { function: "rollback" } } },
+              { text: "Approve", disabled: true, onClick: { openLink: { url: "https://example.com/approve" } } },
               { text: "Script", onClick: { openLink: { url: "javascript:alert(1)" } } },
               { altText: "Logs", icon: { materialIcon: { name: "list" } }, onClick: { openLink: { url: "http://example.com/logs" } } },
             ],
@@ -469,7 +473,10 @@ describe("Chat response mapping", () => {
           sections: [{
             widgets: [
               { grid: { title: "Hosts", items: [{ title: "host-1", subtitle: "up" }] } },
-              { chipList: { chips: [{ label: "Docs", onClick: { openLink: { url: "https://example.com/docs" } } }] } },
+              { chipList: { chips: [
+                { label: "Docs", onClick: { openLink: { url: "https://example.com/docs" } } },
+                { label: "Archive", disabled: true, onClick: { openLink: { url: "https://example.com/archive" } } },
+              ] } },
               { columns: { columnItems: [{ widgets: [
                 { textParagraph: { text: "left" } },
                 { columns: { columnItems: [{ widgets: [{ textParagraph: { text: "too deep" } }] }] } },

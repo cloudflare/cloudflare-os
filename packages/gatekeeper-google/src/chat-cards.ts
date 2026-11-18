@@ -41,19 +41,23 @@ class CardReader {
     }
   }
 
-  /** An `onClick` that opens a URL, directly or from an overflow menu; other actions are dropped. */
+  /**
+   * An `onClick` that opens a URL, directly or from an overflow menu; other actions, and menu items
+   * that are disabled, are dropped.
+   */
   onClick(value: unknown, label: unknown): void {
     const onClick = record(value);
     this.#link(record(onClick?.openLink)?.url, label);
     for (const item of list(record(onClick?.overflowMenu)?.items)) {
+      if (item.disabled === true) continue;
       this.#link(record(record(item.onClick)?.openLink)?.url, item.text);
     }
   }
 
-  /** A `cardsV2` button, or a legacy `textButton` / `imageButton` wrapper. */
+  /** A `cardsV2` button, or a legacy `textButton` / `imageButton` wrapper; a disabled one opens nothing. */
   button(value: unknown): void {
     const button = record(value);
-    if (button === undefined) return;
+    if (button === undefined || button.disabled === true) return;
     const legacy = record(button.textButton) ?? record(button.imageButton);
     if (legacy !== undefined) {
       this.onClick(legacy.onClick, legacy.text ?? legacy.name);
@@ -84,7 +88,9 @@ class CardReader {
     const image = record(widget.image);
     if (image) this.onClick(image.onClick, image.altText);
 
-    for (const chip of list(record(widget.chipList)?.chips)) this.onClick(chip.onClick, chip.label);
+    for (const chip of list(record(widget.chipList)?.chips)) {
+      if (chip.disabled !== true) this.onClick(chip.onClick, chip.label);
+    }
 
     const grid = record(widget.grid);
     if (grid) {
