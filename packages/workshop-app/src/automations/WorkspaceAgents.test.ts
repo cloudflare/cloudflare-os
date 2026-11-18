@@ -97,6 +97,18 @@ describe('WorkspaceAgents', () => {
     expect(ready(agents).agents[0].runs[0].status).toBe('done')
   })
 
+  it('says which of people’s chats wait on them, apart from the runs, as they change', async () => {
+    const pending = { id: 3, chatId: 2, state: 'pending', type: 'action' } as ActionLogEntry
+    const { overseer, events } = fake({ chats: [chat(1, 5, { spawnerId: 40, awaitingDecision: true }), chat(2, 6), chat(4, 7, { awaitingDecision: true }), chat(5, 8)], pending: [pending] })
+    const agents = new WorkspaceAgents(() => overseer)
+    agents.start()
+    await vi.waitFor(() => expect([...ready(agents).chatsWaiting].toSorted()).toEqual([2, 4]))
+    events.chat!.metadata(chat(4, 9))
+    events.chat!.metadata(chat(5, 10, { awaitingDecision: true }))
+    events.actions!.entry({ ...pending, state: 'approved' })
+    expect([...ready(agents).chatsWaiting]).toEqual([5])
+  })
+
   it('finds the run an action that does not say its chat was made from, by the run’s messages', async () => {
     const pending = { id: 3, state: 'pending', type: 'action' } as ActionLogEntry
     const named = { chatId: 1, sequence: 4, timestamp: at(0), author: { type: 'agent', id: 'm', name: 'M' }, type: 'action', actionId: 3 } as AiChatMessage

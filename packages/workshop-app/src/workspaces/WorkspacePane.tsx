@@ -36,6 +36,8 @@ import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
 import { removalOf } from './workspaceRemoval'
 import { useSetWorkspaceLook, useWorkspaceLooks } from './useWorkspaceLooks'
+import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
+import { gadgetsWaitingIn } from './waitingWords'
 
 /** What a workspace's page shows beneath its title. */
 export type WorkspaceTab = 'chats' | 'agents' | 'library' | 'automations' | 'members'
@@ -110,7 +112,17 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const now = useNow()
   const wanting = agents.state.status === 'ready' ? runsWantingAttention(agents.state.agents) : []
   const waiting = wanting.filter(({ run }) => run.status === 'waiting')
-  const tabs = WORKSPACE_TABS.map((each) => (each.value === 'agents' && waiting.length > 0 ? { ...each, count: { value: waiting.length, label: 'waiting on you' } } : each))
+  // What else waits on the viewer: its gadgets that ask something, and the chats people had with
+  // its agent stopped on a decision or an action, each counted on the tab that lists it.
+  const asks = useWaitingAsks()
+  const gadgetsWaiting = gadgetsWaitingIn(workspaceId, asks.byGadget)
+  const chatsWaiting = agents.state.status === 'ready' ? agents.state.chatsWaiting : undefined
+  const counts: Partial<Record<WorkspaceTab, number>> = { chats: chatsWaiting?.size ?? 0, agents: waiting.length, library: gadgetsWaiting }
+  const tabs = WORKSPACE_TABS.map((each) => {
+    const value = counts[each.value] ?? 0
+    return value > 0 ? { ...each, count: { value, label: 'waiting on you' } } : each
+  })
+  const banner = waitingBanner({ runs: waiting, failed: wanting, gadgets: gadgetsWaiting, chats: chatsWaiting?.size ?? 0 })
   const openRun = (run: { chatId: number; title: string }) => onOpenChat({ id: run.chatId, title: run.title })
 
   const renameWorkspace = useRenameWorkspace()
@@ -203,24 +215,20 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           </h1>
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
         </div>
-        {/* What its agents want of the viewer, over every tab but theirs, which lists it first. */}
-        {tab !== 'agents' && wanting.length > 0 && (
+        {/* What waits on the viewer, over every tab but the one that lists it, which lists it first. */}
+        {banner && banner.tab !== tab && (
           <Banner
-            tone={waiting.length > 0 ? 'warning' : 'danger'}
-            title={waiting.length > 0
-              ? waiting.length === 1 ? `${waiting[0].agent.name} is waiting on you` : `${waiting.length} agent runs are waiting on you`
-              : wanting.length === 1 ? `${wanting[0].agent.name}’s latest run failed` : `${wanting.length} agents’ latest runs failed`}
-            description={waiting.length > 1 ? 'Their runs stopped for your approval or a connection.'
-              : waiting.length === 1 ? 'Its run stopped for your approval or a connection.'
-                : 'Open the run to see what went wrong.'}
-            action={wanting.length === 1
-              ? { label: 'Open run', onSelect: () => openRun(wanting[0].run) }
-              : { label: 'Review', onSelect: () => onTabChange('agents') }}
+            tone={banner.tone}
+            title={banner.title}
+            description={banner.description}
+            action={banner.open
+              ? { label: 'Open run', onSelect: () => openRun(banner.open!) }
+              : { label: 'Review', onSelect: () => onTabChange(banner.tab) }}
           />
         )}
         <Tabs value={tab} onValueChange={onTabChange} tabs={tabs} aria-label="Workspace" className="gap-6">
           <Tabs.Panel value="chats" className="flex flex-col gap-8">
-            <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} />
+            <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} builds={workspace !== undefined && workspace.role !== 'use'} waiting={chatsWaiting} />
           </Tabs.Panel>
           <Tabs.Panel value="agents" className="flex flex-col gap-8">
             <AgentsTab
@@ -265,4 +273,77 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
       )}
     </PageLayout>
   )
+}
+
+type WaitingBannerOf = {
+  /** Its agents' runs waiting on the viewer, each with its agent. */
+  runs: ReturnType<typeof runsWantingAttention>
+  /** Those, and its agents whose latest run failed. */
+  failed: ReturnType<typeof runsWantingAttention>
+  gadgets: number
+  chats: number
+}
+
+/**
+ * What a workspace's banner says of what waits on the viewer, where anything does, and the tab
+ * that lists it, or the run to open where it is one: of one kind, it says which and why; of
+ * several, how many, and of what. A failed run is said only where nothing waits.
+ */
+const waitingBanner = ({ runs, failed, gadgets, chats }: WaitingBannerOf): {
+  tone: 'warning' | 'danger'
+  title: string
+  description: string
+  tab: WorkspaceTab
+  open?: { chatId: number; title: string }
+} | undefined => {
+  const kinds = [runs.length, gadgets, chats].filter((n) => n > 0).length
+  if (kinds > 1) {
+    const parts = [
+      runs.length > 0 && (runs.length === 1 ? 'an agent run' : `${runs.length} agent runs`),
+      gadgets > 0 && (gadgets === 1 ? 'a gadget' : `${gadgets} gadgets`),
+      chats > 0 && (chats === 1 ? 'a chat' : `${chats} chats`),
+    ].filter((part): part is string => typeof part === 'string')
+    const what = `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`
+    return {
+      tone: 'warning',
+      title: `${runs.length + gadgets + chats} things are waiting on you`,
+      description: `${what.charAt(0).toUpperCase()}${what.slice(1)}.`,
+      tab: runs.length > 0 ? 'agents' : 'library',
+    }
+  }
+  if (gadgets > 0) {
+    return {
+      tone: 'warning',
+      title: gadgets === 1 ? 'A gadget is waiting on you' : `${gadgets} gadgets are waiting on you`,
+      description: gadgets === 1 ? 'Open it to answer what it asks.' : 'Open them to answer what they ask.',
+      tab: 'library',
+    }
+  }
+  if (chats > 0) {
+    return {
+      tone: 'warning',
+      title: chats === 1 ? 'A chat is waiting on you' : `${chats} chats are waiting on you`,
+      description: chats === 1 ? 'It stopped for your approval or a connection.' : 'They stopped for your approval or a connection.',
+      tab: 'chats',
+    }
+  }
+  if (runs.length > 0) {
+    return {
+      tone: 'warning',
+      title: runs.length === 1 ? `${runs[0].agent.name} is waiting on you` : `${runs.length} agent runs are waiting on you`,
+      description: runs.length === 1 ? 'Its run stopped for your approval or a connection.' : 'Their runs stopped for your approval or a connection.',
+      tab: 'agents',
+      ...(runs.length === 1 ? { open: runs[0].run } : {}),
+    }
+  }
+  if (failed.length > 0) {
+    return {
+      tone: 'danger',
+      title: failed.length === 1 ? `${failed[0].agent.name}’s latest run failed` : `${failed.length} agents’ latest runs failed`,
+      description: 'Open the run to see what went wrong.',
+      tab: 'agents',
+      ...(failed.length === 1 ? { open: failed[0].run } : {}),
+    }
+  }
+  return undefined
 }

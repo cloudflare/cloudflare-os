@@ -1,8 +1,14 @@
 import type { ActionLogEntry, AiChatMetadata } from '@gadgets/workshop-shared/api'
 import { isAgentRun } from './agents'
 
-/** Reads how many of one workspace's agents' runs are waiting on a person. */
-export type LoadWaiting = (workspaceId: string) => Promise<number>
+/**
+ * What in a workspace is waiting on a person: its agents' runs, and the chats people had with its
+ * agent, each stopped on a decision or with an action waiting to be approved.
+ */
+export type WorkspaceWaiting = { runs: number; chats: number }
+
+/** Reads what in one workspace is waiting on a person. */
+export type LoadWaiting = (workspaceId: string) => Promise<WorkspaceWaiting>
 
 // How many workspaces are asked at a time. Each is a round trip of its own that wakes the workspace.
 const AT_ONCE = 3
@@ -14,13 +20,24 @@ const FRESH = 2 * 60_000
  * waiting to be approved: a run stopped on a decision (`awaitingDecision`), or with an action of
  * its own waiting.
  */
-export const runsWaiting = (chats: readonly AiChatMetadata[], pending: readonly ActionLogEntry[]) => {
-  const withActions = new Set(pending.filter(({ state }) => state === 'pending').map(({ chatId }) => chatId))
-  return chats.filter((chat) => isAgentRun(chat) && (chat.awaitingDecision || withActions.has(chat.id))).length
-}
+export const runsWaiting = (chats: readonly AiChatMetadata[], pending: readonly ActionLogEntry[]) => waitingOf(chats, pending).runs
 
 /**
- * How many of each workspace's agents' runs are waiting on a person, for the sidebar. Nothing
+ * What in a workspace is waiting on a person, from its chats and the actions waiting to be
+ * approved: a chat stopped on a decision (`awaitingDecision`), or with an action of its own
+ * waiting, counted among its agents' runs or the chats people had, as it is either.
+ */
+export const waitingOf = (chats: readonly AiChatMetadata[], pending: readonly ActionLogEntry[]): WorkspaceWaiting => {
+  const withActions = new Set(pending.filter(({ state }) => state === 'pending').map(({ chatId }) => chatId))
+  const waiting = chats.filter((chat) => chat.awaitingDecision || withActions.has(chat.id))
+  const runs = waiting.filter(isAgentRun).length
+  return { runs, chats: waiting.length - runs }
+}
+
+const NOTHING: WorkspaceWaiting = { runs: 0, chats: 0 }
+
+/**
+ * What in each workspace is waiting on a person (`WorkspaceWaiting`), for the sidebar. Nothing
  * says so of the user's workspaces as a whole, so each is asked for its own, a few at a time, in
  * the order they are wanted in, and what it said is kept for a while; a workspace that is open
  * says so as it changes (`report`). One that could not be read is left unknown, and is asked
@@ -28,7 +45,7 @@ export const runsWaiting = (chats: readonly AiChatMetadata[], pending: readonly 
  */
 export class AgentsWaiting {
   // Replaced, never changed, so that it can be a snapshot.
-  private waiting: ReadonlyMap<string, number> = new Map()
+  private waiting: ReadonlyMap<string, WorkspaceWaiting> = new Map()
   private readonly readAt = new Map<string, number>()
   private readonly loading = new Set<string>()
   private queue: string[] = []
@@ -42,7 +59,7 @@ export class AgentsWaiting {
     return () => this.listeners.delete(listener)
   }
 
-  /** How many runs wait in each workspace that has said, by its id. */
+  /** What waits in each workspace that has said, by its id. */
   snapshot = () => this.waiting
 
   /**
@@ -58,9 +75,9 @@ export class AgentsWaiting {
   }
 
   /** What a workspace that is open says, as it changes, which is fresher than anything asked. */
-  report(workspaceId: string, count: number) {
+  report(workspaceId: string, waiting: WorkspaceWaiting) {
     this.readAt.set(workspaceId, this.now())
-    this.set(workspaceId, count)
+    this.set(workspaceId, waiting)
   }
 
   /** Asks no more workspaces, as when the connection is lost. Those being asked are let answer. */
@@ -68,9 +85,10 @@ export class AgentsWaiting {
     this.queue = []
   }
 
-  private set(workspaceId: string, count: number) {
-    if ((this.waiting.get(workspaceId) ?? 0) === count && this.waiting.has(workspaceId)) return
-    this.waiting = new Map(this.waiting).set(workspaceId, count)
+  private set(workspaceId: string, waiting: WorkspaceWaiting) {
+    const was = this.waiting.get(workspaceId) ?? NOTHING
+    if (this.waiting.has(workspaceId) && was.runs === waiting.runs && was.chats === waiting.chats) return
+    this.waiting = new Map(this.waiting).set(workspaceId, waiting)
     for (const listener of this.listeners) listener()
   }
 
@@ -81,11 +99,11 @@ export class AgentsWaiting {
       const asked = this.now()
       this.load!(id)
         .then(
-          (count) => {
+          (waiting) => {
             // What an open workspace said meanwhile is fresher.
             if ((this.readAt.get(id) ?? -Infinity) > asked) return
             this.readAt.set(id, this.now())
-            this.set(id, count)
+            this.set(id, waiting)
           },
           // Left unknown.
           () => {},

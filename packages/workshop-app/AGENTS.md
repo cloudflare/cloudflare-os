@@ -774,7 +774,10 @@ The sidebar has the user's other workspaces asked how many of their agents' runs
 past week that they build in, a few at a time, every two minutes, each by its chats and the actions
 waiting, as nothing says it of the workspaces as a whole. An open workspace says so as it changes.
 It only counts an action that names its chat, so the open workspace's page knows more than the
-sidebar of the rest. The `agents` scenario has a workspace whose gadgets start four agents, and the
+sidebar of the rest. The same reading counts the chats people had that wait on them
+(stopped on a decision, or with an action waiting), and the gadgets that ask something come from
+`WaitingAsks`; a workspace's line says all three at once (`waitingWords`), and its page counts each
+on the tab that lists it (Chats, Agents, Library) with one banner over the others. The `agents` scenario has a workspace whose gadgets start four agents, and the
 gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## A gadget's own page

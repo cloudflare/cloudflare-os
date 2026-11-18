@@ -21,8 +21,8 @@ const STATES = ['ready', 'loading', 'failed', 'empty'] as const
 const stateOf = (which: (typeof STATES)[number], setups: readonly AgentSetup[] = EXAMPLE_AGENT_SETUPS): WorkspaceAgentsSnapshot =>
   which === 'loading' ? { status: 'loading' }
     : which === 'failed' ? { status: 'failed', message: 'The workspace could not be reached.' }
-      : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true }
-        : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true }
+      : which === 'empty' ? { status: 'ready', agents: [], setUpRead: true, chatsWaiting: new Set() }
+        : { status: 'ready', agents: agentsOf(EXAMPLE_AGENT_CHATS, EXAMPLE_SIGNALS, setups), setUpRead: true, chatsWaiting: new Set() }
 
 // An agent run on a schedule, many times over: the same digest every few hours, now and then
 // failing, waiting on the user or leaving changes.

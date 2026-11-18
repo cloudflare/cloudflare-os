@@ -8,6 +8,8 @@ import { Button } from '@/components/Button'
 import { withEdits } from '@/library/libraryEdits'
 import { useLibrary } from '@/library/useLibrary'
 import { useLibraryActions } from '@/library/useLibraryActions'
+import { gadgetKey } from '@/gadgets/WaitingAsks'
+import { useWaitingAsks } from '@/gadgets/WaitingAsksProvider'
 
 export type WorkspaceLibraryListProps = {
   workspaceId: string
@@ -34,6 +36,9 @@ export const WorkspaceLibraryList = ({ workspaceId, onOpenItem, itemHref, output
     const output = item.kind === 'output' ? outputs.find(({ workpieceId }) => workpieceId === item.output.workpieceId) : undefined
     return output && actionsOf(output)
   }
+  // What each gadget asks of the user, which its own pane asks when it is opened.
+  const asks = useWaitingAsks()
+  const waitingOf = (item: AsideItem) => (item.kind === 'output' ? asks.byGadget.get(gadgetKey(workspaceId, item.output.workpieceId)) ?? 0 : 0)
   const groups = groupByTime(items.map((item) => ({ value: item, at: item.at })))
 
   return (
@@ -60,6 +65,7 @@ export const WorkspaceLibraryList = ({ workspaceId, onOpenItem, itemHref, output
               href={itemHref?.(item)}
               onSelect={() => onOpenItem(item)}
               more={moreOf(item)}
+              waiting={waitingOf(item)}
             />
           ))}
         </ListGroup>

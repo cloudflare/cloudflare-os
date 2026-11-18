@@ -12,6 +12,8 @@ export type ChatListItemProps = {
   time?: string
   /** How many of its messages the viewer has not read, marked by a dot while there are any. */
   unread?: number
+  /** It stopped on a decision only a person can make, or with an action waiting to be approved. */
+  waiting?: boolean
   /** The chat's address, so that it can be opened in another tab. */
   href?: string
   onSelect: () => void
@@ -21,10 +23,11 @@ export type ChatListItemProps = {
 
 /**
  * One chat in a workspace's list of chats, on one line: its title, and when it was last active,
- * after a dot while it has anything the viewer has not read. Pointed at, more slides out at the
+ * after a dot while it has anything the viewer has not read, and after that it is waiting on
+ * them, in the colour of something to look at, where it is. Pointed at, more slides out at the
  * end, where there is anything in it for the viewer.
  */
-export const ChatListItem = ({ title, time, unread = 0, href, onSelect, more }: ChatListItemProps) => {
+export const ChatListItem = ({ title, time, unread = 0, waiting = false, href, onSelect, more }: ChatListItemProps) => {
   const hasMore = more !== undefined && (more.read !== undefined || Boolean(more.notifications?.choices.length) || more.onDelete !== undefined)
   return (
     <div className={cn('group relative flex items-center rounded-2xl hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5', hasMore && 'pr-1.5')}>
@@ -37,7 +40,8 @@ export const ChatListItem = ({ title, time, unread = 0, href, onSelect, more }: 
         <ChatCircleIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-default" />
         <span className="min-w-0 flex-1 truncate font-medium text-kumo-default">{title}</span>
         {unread > 0 && <UnreadDot count={unread} />}
-        {time && <span className="shrink-0 text-kumo-subtle">{time}</span>}
+        {waiting && <span className="shrink-0 text-kumo-warning">Waiting on you</span>}
+        {time && <span className={cn('shrink-0 text-kumo-subtle', waiting && 'max-md:hidden')}>{time}</span>}
       </LinkButton>
       {hasMore && (
         <RowAction>

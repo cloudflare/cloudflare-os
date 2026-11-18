@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useApi } from '@/rpc/ApiContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
-import { AgentsWaiting, runsWaiting } from './AgentsWaiting'
+import { AgentsWaiting, waitingOf } from './AgentsWaiting'
 import { AgentsWaitingContext } from './AgentsWaitingContext'
 
 // Only workspaces active this recently are asked: a run waiting on a person was active when it stopped.
@@ -11,7 +11,7 @@ const AGAIN = 2 * 60_000
 
 /**
  * Asks the user's recently active workspaces, those they may build in, how many of their agents'
- * runs are waiting on them, for the sidebar: on opening, and again every little while. Each is
+ * runs and of their chats are waiting on them, for the sidebar: on opening, and again every little while. Each is
  * read through its chats and the actions waiting, both asked of it at once.
  */
 export const AgentsWaitingProvider = ({ children }: { children: ReactNode }) => {
@@ -28,7 +28,7 @@ export const AgentsWaitingProvider = ({ children }: { children: ReactNode }) => 
         const overseer = api.openWorkspace(id)
         try {
           const [chats, pending] = await Promise.all([overseer.listChats(), overseer.listActions({ filter: 'pending' })])
-          return runsWaiting(chats, pending.entries)
+          return waitingOf(chats, pending.entries)
         } finally {
           overseer[Symbol.dispose]()
         }

@@ -21,6 +21,8 @@ export type WorkspaceChatListProps = {
    * use it, who has no read state.
    */
   builds?: boolean
+  /** The chats waiting on a person, by id: stopped on a decision, or with an action waiting. */
+  waiting?: ReadonlySet<number>
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -28,9 +30,9 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * A workspace's chats, most recently active first, grouped by when: those people started, as its
  * agents' runs are listed under each agent, on the Agents tab. Each is marked while it has anything
- * the viewer has not read. A chat deleted from here leaves the list once it is gone.
+ * the viewer has not read, and says so while it is waiting on them. A chat deleted from here leaves the list once it is gone.
  */
-export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false }: WorkspaceChatListProps) => {
+export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting }: WorkspaceChatListProps) => {
   const chats = useWorkspaceChats(workspaceId)
   const notifications = useChatNotifications(workspaceId, builds)
   const deleteChat = useDeleteChat(workspaceId)
@@ -79,6 +81,7 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
                 title={title}
                 time={time}
                 unread={unread}
+                waiting={waiting?.has(chat.id) || chat.awaitingDecision === true}
                 href={chatHref?.(chat.id)}
                 onSelect={() => onOpenChat({ id: chat.id, title: chat.title })}
                 more={builds ? {
