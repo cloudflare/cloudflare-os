@@ -3,6 +3,7 @@ import { FileTextIcon, ImageIcon, WaveformIcon } from '@phosphor-icons/react'
 import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { WebFetchRequestCard } from '@/blocks/WebFetchRequestCard'
+import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 import { HookCard } from '@/blocks/HookCard'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { OutputCard } from '@/blocks/OutputCard'
@@ -231,6 +232,13 @@ export const CardBlocksPreview = () => {
           />
           <WebFetchRequestCard url="https://docs.example.com/api/v2" state="approved" />
           <WebFetchRequestCard url="https://tracker.example.net/pixel" state="denied" />
+        </Column>
+      </Section>
+      <Section title="CapturedLogsChip (errors, one warning, logs)">
+        <Column>
+          <CapturedLogsChip count={3} severity="error" preview={'Console logs:\n[page error] TypeError: x is undefined'} onAdd={after('logs added')} onDiscard={after('logs put away')} />
+          <CapturedLogsChip count={1} severity="warning" onAdd={after('logs added')} onDiscard={after('logs put away')} />
+          <CapturedLogsChip count={12} severity="log" onAdd={after('logs added')} onDiscard={after('logs put away')} />
         </Column>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>

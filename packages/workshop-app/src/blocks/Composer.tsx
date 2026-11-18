@@ -26,6 +26,8 @@ export type ComposerHandle = {
   addConnection: (connection: ComposerConnection) => void
   /** Puts `replacement` in place of the first `text` in the draft, as a link made a connection is named in it. */
   replaceInDraft: (text: string, replacement: string) => void
+  /** Adds `text` to the end of the draft, as its own paragraph, such as the logs a gadget wrote. */
+  appendToDraft: (text: string) => void
 }
 
 export type ComposerProps = {
@@ -142,6 +144,10 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, format, p
       inputRef.current?.focus()
     },
     replaceInDraft: (find, replacement) => setText((current) => current.replace(find, () => replacement)),
+    appendToDraft: (added) => {
+      setText((current) => (current.trim() ? `${current.trimEnd()}\n\n${added}` : added))
+      inputRef.current?.focus()
+    },
   }), [])
 
   // Reads the slash at the cursor again, as the draft or the cursor moves.

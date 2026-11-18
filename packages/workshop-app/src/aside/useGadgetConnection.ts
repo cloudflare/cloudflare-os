@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } fr
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { AsideOutput } from './asideItems'
+import { capturedLogs, CapturedLogs } from '@/chat/capturedLogs'
 import { GadgetConnection, type GadgetSnapshot } from './GadgetConnection'
 
 const NOTHING: GadgetSnapshot = { ui: { status: 'loading' }, people: [] }
@@ -27,6 +28,10 @@ export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: (
           chatId: output.chatId,
           viewerId: user.id,
           onEscape,
+          // Beside a chat, what its page logs is the chat's to send to its agent.
+          onConsoleLog: output.chatId === undefined
+            ? undefined
+            : (log) => capturedLogs.add(CapturedLogs.key(output.workspaceId, output.chatId!), [{ ...log, source: 'page' }]),
           connection: notice ?? undefined,
         })
       : undefined

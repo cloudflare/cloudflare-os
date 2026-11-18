@@ -37,6 +37,8 @@ import { useChatNotifications } from './useChatNotifications'
 import { useChatSession } from './useChatSession'
 import { useDeleteChat } from './useDeleteChat'
 import { useOpenNewOutputs } from './useOpenNewOutputs'
+import { useCapturedLogs } from './useCapturedLogs'
+import { CapturedLogsChip } from '@/blocks/CapturedLogsChip'
 
 export type ChatPaneProps = {
   workspaceId: string
@@ -287,7 +289,20 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const agentActive = ready && chat.agentActive
   const waiting = ready ? chat.waiting : undefined
   const composerCommands = commands.commands
+  const { summary: logged, take: takeLogs, peek: peekLogs, discard: discardLogs } = useCapturedLogs(workspaceId, chatId)
+  const addLogs = useHandler(() => {
+    const text = takeLogs()
+    if (text) composer.current?.appendToDraft(text)
+  })
   const composerElement = useMemo(() => (
+    <div className="flex flex-col gap-2">
+    <CapturedLogsChip
+      count={logged.count}
+      severity={logged.severity}
+      preview={logged.count ? peekLogs() : undefined}
+      onAdd={addLogs}
+      onDiscard={discardLogs}
+    />
     <Composer
       ref={composer}
       onSend={sendMessage}
@@ -298,7 +313,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       problem={sendProblem === undefined ? undefined : { message: sendProblem, onDismiss: dismissProblem }}
       reply={reply && { quote: reply.quote, onShow: showReplied, onCancel: () => setReply(undefined) }}
     />
-  ), [sendMessage, composerCommands, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
+    </div>
+  ), [logged, peekLogs, discardLogs, addLogs, sendMessage, composerCommands, hasPasteLinks, onPasteLinks, builds, agentActive, waiting, stopAgent, sendProblem, dismissProblem, reply, showReplied])
 
   const confirmDelete = useHandler(async () => {
     if (connection?.blocked()) return
