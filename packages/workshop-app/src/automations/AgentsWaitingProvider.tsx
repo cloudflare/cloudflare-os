@@ -11,8 +11,8 @@ const AGAIN = 2 * 60_000
 
 /**
  * Asks the user's recently active workspaces, those they may build in, how many of their agents'
- * runs and of their chats are waiting on them, for the sidebar: on opening, and again every little while. Each is
- * read through its chats and the actions waiting, both asked of it at once.
+ * runs and of their chats are waiting on them, for the sidebar: on opening, and again every little
+ * while. Each is read through its chats and the actions waiting, both asked of it at once.
  */
 export const AgentsWaitingProvider = ({ children }: { children: ReactNode }) => {
   const { api, reconnecting } = useApi()

@@ -21,9 +21,9 @@ export type AgentRowProps = {
 }
 
 /**
- * An agent in a workspace's list of them: its mark, which smiles at the pointer or focus on the row, its name over what it is and has done, or over
- * what it wants of the user, with a dot on the mark's corner in the colour of that, or of a run
- * at work. The row opens the agent's page.
+ * An agent in a workspace's list of them: its mark, which smiles at the pointer or focus on the
+ * row, its name over what it is and has done, or over what it wants of the user, with a dot on the
+ * mark's corner in the colour of that, or of a run at work. The row opens the agent's page.
  */
 export const AgentRow = ({ name, detail, attention, running = false, href, onSelect }: AgentRowProps) => {
   const [greeting, setGreeting] = useState(false)
@@ -40,7 +40,7 @@ export const AgentRow = ({ name, detail, attention, running = false, href, onSel
     >
       <span aria-hidden="true" className="relative shrink-0">
         <AgentMark state={running ? 'working' : attention?.tone === 'danger' ? 'failed' : 'idle'} greeting={greeting} />
-        {dot && <span aria-hidden="true" className={cn('absolute -right-0.5 -bottom-0.5 size-3 rounded-full ring-2 ring-kumo-tint', dot, !attention && 'motion-safe:animate-pulse')} />}
+        {dot && <span className={cn('absolute -right-0.5 -bottom-0.5 size-3 rounded-full ring-2 ring-kumo-tint', dot, !attention && 'motion-safe:animate-pulse')} />}
       </span>
       <span className="flex min-w-0 flex-1 flex-col leading-snug">
         <span className="truncate font-medium text-kumo-default">{name}</span>

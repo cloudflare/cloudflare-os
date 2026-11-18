@@ -30,7 +30,8 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * A workspace's chats, most recently active first, grouped by when: those people started, as its
  * agents' runs are listed under each agent, on the Agents tab. Each is marked while it has anything
- * the viewer has not read, and says so while it is waiting on them. A chat deleted from here leaves the list once it is gone.
+ * the viewer has not read, and says so while it is waiting on them. A chat deleted from here
+ * leaves the list once it is gone.
  */
 export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false, waiting }: WorkspaceChatListProps) => {
   const chats = useWorkspaceChats(workspaceId)

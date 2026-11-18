@@ -81,7 +81,6 @@ export const Route = createFileRoute('/_app')({
 // Placeholder logos until real connected apps are wired in.
 const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
 
-
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
 /**
@@ -437,7 +436,6 @@ const AppFrame = () => {
         {pageItem ? asideElement : <Outlet />}
       </NarrowShell>
       {search}
-    {liveWaitingIn && <LiveWaiting key={liveWaitingIn} workspaceId={liveWaitingIn} />}
       {liveWaitingIn && <LiveWaiting key={liveWaitingIn} workspaceId={liveWaitingIn} />}
       </>
     )

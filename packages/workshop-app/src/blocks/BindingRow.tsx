@@ -39,19 +39,18 @@ export type BindingRowProps = {
   href?: string
 }
 
-
 const NOT_RENAMED = Promise.resolve<SaveOutcome>({ saved: false })
 
 /**
- * One of what a gadget is bound to: the service's logo, an agent's mark, or a model's brain, then what it reaches over
- * the name the code has for it and what it goes through, and, while it is pointed at or has the
+ * One of what a gadget is bound to: the service's logo, an agent's mark or a model's brain, then
+ * what it reaches over the name the code has for it and what it goes through, and, while it is pointed at or has the
  * focus, the way to take it away from the gadget, which asks first. Taking it away leaves the
  * connection in the workspace, for whatever else uses it.
  *
  * The name is renamed where it is (`onRename`), as a title is: it reads as the rest of the line
- * until pointed at or clicked into, and Enter or leaving it keeps what was typed. It is drawn as the code's name for it, in a token
- * of its own, which a pencil in it says can be edited, and which, clicked into, is a field. A name that
- * could not be kept stays in it, with why under the line, until it is put right or Escape puts
+ * until pointed at or clicked into, and Enter or leaving it keeps what was typed. It is drawn as
+ * the code's name for it, in a token of its own, which a pencil in it says can be edited, and
+ * which, clicked into, is a field. A name that could not be kept stays in it, with why under the line, until it is put right or Escape puts
  * the name back.
  */
 export const BindingRow = ({ title, name, service, kind, model, pending = false, onRemove, onRename, onChangeModel, onOpen, href, attention }: BindingRowProps) => {
