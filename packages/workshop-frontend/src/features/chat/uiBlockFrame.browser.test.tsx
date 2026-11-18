@@ -125,7 +125,7 @@ it.each([
   expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
 })
 
-it.each(['remove', 'replace'])('cancels an in-progress image download when the view chooses to %s it', async action => {
+it.each(['remove', 'replace', 'clear'])('cancels an in-progress image download when the view chooses to %s it', async action => {
   const source = 'worktree://REPO/pending.png', trigger = 'worktree://REPO/trigger.png'
   const replacement = 'worktree://REPO/replacement.png'
   const first = 'a'.repeat(40), second = 'b'.repeat(40), third = 'c'.repeat(40)
@@ -149,7 +149,8 @@ it.each(['remove', 'replace'])('cancels an in-progress image download when the v
     return byteStream(png('cyan'))
   })
   const sent: string[] = [], errors: string[] = []
-  const mutation = action === 'remove' ? 'target.remove()' : `target.src = '${replacement}'`
+  const mutation = action === 'remove' ? 'target.remove()'
+    : action === 'clear' ? "target.removeAttribute('src')" : `target.src = '${replacement}'`
   await openBlock(observedImage('target', source) +
     `<img src="${trigger}" onload="const target = document.getElementById('target'); ${mutation}; agent.send('evicted')">`, {
     onMessageRequest: message => {

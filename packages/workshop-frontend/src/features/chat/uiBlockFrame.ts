@@ -197,8 +197,7 @@ const scanImages = () => {
     const source = image.getAttribute("src");
     if (image.isConnected && source === state.source) {
       if (state.url) image.src = state.url;
-      else image.removeAttribute("src");
-    } else if (!image.isConnected || source !== (state.url ?? null)) {
+    } else if (!image.isConnected || source !== state.url) {
       if (state.url) URL.revokeObjectURL(state.url);
       images.delete(image);
       delete image.dataset.blobOid;
@@ -212,9 +211,6 @@ const scanImages = () => {
     if (!previous && source.startsWith("worktree://")) {
       const state = { source, controller: new AbortController() };
       images.set(image, state);
-      // Remove the unhandled scheme before yielding to RPC, so native error handlers don't
-      // replace a valid image while its bytes are still in transit.
-      image.removeAttribute("src");
       loadImage(image, state);
     }
   }
@@ -228,7 +224,7 @@ class Frame extends RpcTarget {
       images.set(image, state);
       previous.controller.abort();
       if (previous.url) URL.revokeObjectURL(previous.url);
-      image.removeAttribute("src");
+      image.src = state.source;
       loadImage(image, state);
     }
   }
@@ -239,6 +235,12 @@ class Frame extends RpcTarget {
       // The new document keeps this window, its globals, the port and the CSP. It drops the old
       // document's nodes, and every listener on the document and the window.
       document.open();
+      // The bridge supplies worktree bytes asynchronously. Suppress only the native scheme
+      // error, retaining src so an author clearing it still cancels the pending read.
+      window.addEventListener("error", event => {
+        const state = images.get(event.target);
+        if (state && event.target.getAttribute("src") === state.source) event.stopImmediatePropagation();
+      }, true);
       window.addEventListener("error", event => reportError(event.error?.message ?? event.message));
       window.addEventListener("unhandledrejection",
           event => reportError(event.reason?.message ?? event.reason));
