@@ -108,6 +108,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
                   player={overseer.player}
                   onSelectScenario={onSelectScenario}
                   onRestart={onRestart}
+                  onKeepElsewhere={() => overseer.keepElsewhere()}
                 />
               </MockLayout>
             </ChatSessionsProvider>

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent } from '@gadgets/workshop-shared/api'
 import { createMockApi } from './mockApi'
+import { withFile, type CodeDraft } from '@/gadgets/codeDrafts'
+import { saveCode, type SavingOverseer } from '@/gadgets/saveCode'
 import { MockOverseer } from './MockOverseer'
 import { action, agent, connectionRequest, history, turn, user, when, type Scenario } from './scenario'
 
@@ -141,7 +143,30 @@ describe('MockOverseer', () => {
     expect(() => workspace.getGadget(3)).toThrow('No gadget 3.')
   })
 
-    it('deletes the chat, which its subscribers hear of and the workspace no longer lists', async () => {
+  it('keeps edits saved through the chat, and holds them back once someone else changed their file', async () => {
+    const { overseer, session } = createMockApi(scenario({ history: history([user('hi')]) }))
+    const workspace = session.api.openWorkspace('mock')
+    workspace.getGadget(3)
+    const heads: Array<string | undefined> = []
+    const subscriber = { entry: ({ commitId }: { commitId?: string }) => void heads.push(commitId), removed: () => {}, ready: () => {} }
+    await workspace.subscribeToWorkpieces(subscriber as unknown as Parameters<typeof workspace.subscribeToWorkpieces>[0])
+    const head = heads.at(-1)!
+    const read = async (commit: string) => (await workspace.readFilesAtCommit(commit, ['client.js']))[0]![1]
+    const was = await read(head)
+    if (was.kind !== 'text') throw new Error('No client.js')
+    const save = (draft: CodeDraft) => saveCode(() => overseer.open() as unknown as SavingOverseer, { gadgetId: 3, draft, chat: { beside: 0 }, newClientId: () => 'client' })
+
+    expect((await save(withFile(undefined, head, 'client.js', was, 'h1 { font-size: 28px }')!)).status).toBe('saved')
+    const saved = heads.at(-1)!
+    expect(saved).not.toBe(head)
+    expect(await read(saved)).toEqual({ kind: 'text', text: 'h1 { font-size: 28px }' })
+    expect((await overseer.listChats())[0]?.proposedChangeWorkpieces).toBeUndefined()
+
+    overseer.keepElsewhere()
+    expect(await save(withFile(undefined, saved, 'client.js', { kind: 'text', text: 'h1 { font-size: 28px }' }, 'mine')!)).toEqual({ status: 'conflict', paths: ['client.js'] })
+  })
+
+  it('deletes the chat, which its subscribers hear of and the workspace no longer lists', async () => {
     const overseer = new MockOverseer(scenario({ history: history([user('hi')]) }))
     const seen = subscribed(overseer)
     const chatUpdated = vi.fn<(workspaceId: string, chatId: number, chat: unknown) => Promise<void>>(async () => {})
