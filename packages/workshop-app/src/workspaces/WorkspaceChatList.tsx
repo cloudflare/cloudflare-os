@@ -6,6 +6,7 @@ import { notificationChoices, notificationsOf } from '@/chat/ChatNotifications'
 import { groupByTime } from '@/chat/timeGroups'
 import { useChatNotifications } from '@/chat/useChatNotifications'
 import { useDeleteChat } from '@/chat/useDeleteChat'
+import { isAgentRun } from '@/automations/agents'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaceChats } from './useWorkspaceChats'
 
@@ -24,8 +25,9 @@ export type WorkspaceChatListProps = {
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
- * A workspace's chats, most recently active first, grouped by when. A chat deleted from here
- * leaves the list once it is gone.
+ * A workspace's chats, most recently active first, grouped by when: those people started, as its
+ * agents' runs are listed under each agent, on the Agents tab. A chat deleted from here leaves
+ * the list once it is gone.
  */
 export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = false }: WorkspaceChatListProps) => {
   const chats = useWorkspaceChats(workspaceId)
@@ -37,7 +39,7 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
   const [deleted, setDeleted] = useState<ReadonlySet<number>>(new Set())
   // Why the last change to a chat's notifications was not made.
   const [problem, setProblem] = useState<string>()
-  const listed = chats.status === 'ready' ? chats.chats.filter(({ id }) => !deleted.has(id)) : []
+  const listed = chats.status === 'ready' ? chats.chats.filter((chat) => !deleted.has(chat.id) && !isAgentRun(chat)) : []
   const groups = groupByTime(listed.map((chat) => ({ value: chat, at: chat.lastActive })))
 
   const setNotifications = (chatId: number, enabled: boolean) => {

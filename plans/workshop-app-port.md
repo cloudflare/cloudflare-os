@@ -27,9 +27,9 @@ Library rows and cards now have a ⋯ menu, as chats and workspaces do: Open, Op
 Main merged in (Nov 17), the scaffold's base (Oct 27) having predated it. That made sharing a
 gadget on its own real, and the gadget runtime main's (`UiBundle` modules, `main(gadget, host)`).
 It also makes these possible, still to do: unread state (`subscribeToUnreadState`, `markChatRead`,
-`getUnreadThreads`), inline-view agent support, a creation started from what the agent suggested
-(`GatekeeperCreationSpec.configuration`), and telling agents' runs apart (`spawnerId`) and waiting
-(`awaitingDecision`).
+`getUnreadThreads`), inline-view agent support, and a creation started from what the agent
+suggested (`GatekeeperCreationSpec.configuration`). Telling agents' runs apart (`spawnerId`) and
+waiting (`awaitingDecision`) are done: agents as entities, `plans/agents.md`.
 
 ## Sacrifices
 
@@ -42,7 +42,7 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | Skills are titled as the scaffold titles them ("Meeting Brief") | its `humanizeSkillName` | none |
 | A chat's automations are the hooks its cards show, as far as its history has loaded | no `chatId` on `BoundHookInfo` | `BoundHookInfo.chatId` |
 | A scheduled task is told from an event's hook by its `scheduler:` address, and matched to its schedule by title, description and gadget | no `vendorId` on `BoundHookInfo`, no `hookId` on schedules | `BoundHookInfo.vendorId`, `hookId` on `ManagementSchedule` |
-| Agents are listed only once they have run, by `spawnerName`; no agent page, model, callers or waiting runs; no agents menu in a chat's header | no `listAgentSpawners`, no `spawnerId`/`parentChatId`/`awaitingDecision` on chats | those, on `AiChatMetadata` and the Overseer |
+| Agents have a tab and a page of their own (`plans/agents.md`), read from every gadget's bindings and each run's last messages; the sidebar wakes recently active workspaces to count runs waiting; a failure is only seen on the latest runs; nothing says what an agent is for, or which hook starts it | no `listAgentSpawners`, no failed flag on chats, no per-workspace count of runs waiting, `chatId` missing on some actions | `listAgentSpawners`, `lastTurnFailed` on `AiChatMetadata`, a waiting count on the workspace list or unread summary, `chatId` on every action, a description on `AgentSpawnerConfig` |
 | The scheduler's management app is typed by a local `{ list }` | its class is the worker's and the shared API types a frame's `ui` loosely | a shared type for it |
 | Automations can't be created, edited or deleted here, only switched on and off | read only, by scope | none |
 | No inline views in answers | the agent support came in a later main | none once main is merged |
@@ -53,7 +53,7 @@ It also makes these possible, still to do: unread state (`subscribeToUnreadState
 | No Share in the chat header; skills are shared by their collection (`plans/skill-collections.md`), but not with a workspace, and git-backed and organization collections are managed only in the Context Library's own app | the scaffold's header has no menu slot; the Context Library shares with accounts, not workspaces | a workspace grant in gatekeeper-context |
 | Only the viewer's own link is turned on and off; links others made, extra ones and their notes aren't shown | each sharer has one default link for what they share, which is all the dialog offers | none |
 | A gadget's settings have no "allow everything" or "ask again" for its permissions | not on the scaffold's `GadgetClient` | `setAutoApprove`, `disallowActionKind` |
-| A gadget's agents show among its bindings with their model, but without their runs, and it has no Automations tab | no `listAgentSpawners` | `listAgentSpawners` |
+| A gadget's agents show among its bindings with their model, but without their runs (those are on the agent's page), and it has no Automations tab | no `listAgentSpawners` | `listAgentSpawners` |
 | A gadget's description is its template's, read only | there is no call to set one | a description setter on the gadget |
 | No service is connected to a gadget from its settings (an AI model is), an account isn't managed from a binding, and it has no access, publishing or exports there | bindings name a gatekeeper, not an account; scope | none |
 | The agent can't ask for an AI model itself. A person adds one to the chat (+ › Add a new connection › AI model) and the agent gives it to a gadget (`setGadgetBinding`), or adds it in the gadget's settings; the agent's prompt still says model bindings come from the gadget's settings, and only when a template expects one | `requestConnection` takes no model | an `ai-model` connection id for `requestConnection` (as `agent-spawner` is), whose card asks for the model, and a line in the agent's prompt |

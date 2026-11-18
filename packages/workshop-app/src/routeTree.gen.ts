@@ -29,6 +29,7 @@ import { Route as AppLibraryTemplatesTemplateIdRouteImport } from './routes/_app
 import { Route as AppSkillsCollectionsCollectionIdRouteImport } from './routes/_app/skills.collections.$collectionId'
 import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
 import { Route as AppWorkspaceWorkspaceIdNewRouteImport } from './routes/_app/workspace.$workspaceId.new'
+import { Route as AppWorkspaceWorkspaceIdAgentAgentKeyRouteImport } from './routes/_app/workspace.$workspaceId.agent.$agentKey'
 import { Route as AppWorkspaceWorkspaceIdChatChatIdRouteImport } from './routes/_app/workspace.$workspaceId.chat.$chatId'
 import { Route as AppWorkspaceWorkspaceIdChatChatIdSettingsRouteImport } from './routes/_app/workspace.$workspaceId.chat.$chatId_.settings'
 
@@ -136,6 +137,12 @@ const AppWorkspaceWorkspaceIdNewRoute =
     path: '/workspace/$workspaceId/new',
     getParentRoute: () => AppRoute,
   } as any)
+const AppWorkspaceWorkspaceIdAgentAgentKeyRoute =
+  AppWorkspaceWorkspaceIdAgentAgentKeyRouteImport.update({
+    id: '/workspace/$workspaceId/agent/$agentKey',
+    path: '/workspace/$workspaceId/agent/$agentKey',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppWorkspaceWorkspaceIdChatChatIdRoute =
   AppWorkspaceWorkspaceIdChatChatIdRouteImport.update({
     id: '/workspace/$workspaceId/chat/$chatId',
@@ -169,6 +176,7 @@ export interface FileRoutesByFullPath {
   '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/library/templates/': typeof AppLibraryTemplatesIndexRoute
   '/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
+  '/workspace/$workspaceId/agent/$agentKey': typeof AppWorkspaceWorkspaceIdAgentAgentKeyRoute
   '/workspace/$workspaceId/chat/$chatId': typeof AppWorkspaceWorkspaceIdChatChatIdRoute
   '/workspace/$workspaceId/chat/$chatId/settings': typeof AppWorkspaceWorkspaceIdChatChatIdSettingsRoute
 }
@@ -192,6 +200,7 @@ export interface FileRoutesByTo {
   '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/library/templates': typeof AppLibraryTemplatesIndexRoute
   '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdIndexRoute
+  '/workspace/$workspaceId/agent/$agentKey': typeof AppWorkspaceWorkspaceIdAgentAgentKeyRoute
   '/workspace/$workspaceId/chat/$chatId': typeof AppWorkspaceWorkspaceIdChatChatIdRoute
   '/workspace/$workspaceId/chat/$chatId/settings': typeof AppWorkspaceWorkspaceIdChatChatIdSettingsRoute
 }
@@ -217,6 +226,7 @@ export interface FileRoutesById {
   '/_app/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/_app/library/templates/': typeof AppLibraryTemplatesIndexRoute
   '/_app/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
+  '/_app/workspace/$workspaceId/agent/$agentKey': typeof AppWorkspaceWorkspaceIdAgentAgentKeyRoute
   '/_app/workspace/$workspaceId/chat/$chatId': typeof AppWorkspaceWorkspaceIdChatChatIdRoute
   '/_app/workspace/$workspaceId/chat/$chatId_/settings': typeof AppWorkspaceWorkspaceIdChatChatIdSettingsRoute
 }
@@ -242,6 +252,7 @@ export interface FileRouteTypes {
     | '/workspace/$workspaceId/new'
     | '/library/templates/'
     | '/workspace/$workspaceId/'
+    | '/workspace/$workspaceId/agent/$agentKey'
     | '/workspace/$workspaceId/chat/$chatId'
     | '/workspace/$workspaceId/chat/$chatId/settings'
   fileRoutesByTo: FileRoutesByTo
@@ -265,6 +276,7 @@ export interface FileRouteTypes {
     | '/workspace/$workspaceId/new'
     | '/library/templates'
     | '/workspace/$workspaceId'
+    | '/workspace/$workspaceId/agent/$agentKey'
     | '/workspace/$workspaceId/chat/$chatId'
     | '/workspace/$workspaceId/chat/$chatId/settings'
   id:
@@ -289,6 +301,7 @@ export interface FileRouteTypes {
     | '/_app/workspace/$workspaceId/new'
     | '/_app/library/templates/'
     | '/_app/workspace/$workspaceId/'
+    | '/_app/workspace/$workspaceId/agent/$agentKey'
     | '/_app/workspace/$workspaceId/chat/$chatId'
     | '/_app/workspace/$workspaceId/chat/$chatId_/settings'
   fileRoutesById: FileRoutesById
@@ -444,6 +457,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppWorkspaceWorkspaceIdNewRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/workspace/$workspaceId/agent/$agentKey': {
+      id: '/_app/workspace/$workspaceId/agent/$agentKey'
+      path: '/workspace/$workspaceId/agent/$agentKey'
+      fullPath: '/workspace/$workspaceId/agent/$agentKey'
+      preLoaderRoute: typeof AppWorkspaceWorkspaceIdAgentAgentKeyRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/workspace/$workspaceId/chat/$chatId': {
       id: '/_app/workspace/$workspaceId/chat/$chatId'
       path: '/workspace/$workspaceId/chat/$chatId'
@@ -476,6 +496,7 @@ interface AppRouteChildren {
   AppWorkspaceWorkspaceIdNewRoute: typeof AppWorkspaceWorkspaceIdNewRoute
   AppLibraryTemplatesIndexRoute: typeof AppLibraryTemplatesIndexRoute
   AppWorkspaceWorkspaceIdIndexRoute: typeof AppWorkspaceWorkspaceIdIndexRoute
+  AppWorkspaceWorkspaceIdAgentAgentKeyRoute: typeof AppWorkspaceWorkspaceIdAgentAgentKeyRoute
   AppWorkspaceWorkspaceIdChatChatIdRoute: typeof AppWorkspaceWorkspaceIdChatChatIdRoute
   AppWorkspaceWorkspaceIdChatChatIdSettingsRoute: typeof AppWorkspaceWorkspaceIdChatChatIdSettingsRoute
 }
@@ -495,6 +516,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppWorkspaceWorkspaceIdNewRoute: AppWorkspaceWorkspaceIdNewRoute,
   AppLibraryTemplatesIndexRoute: AppLibraryTemplatesIndexRoute,
   AppWorkspaceWorkspaceIdIndexRoute: AppWorkspaceWorkspaceIdIndexRoute,
+  AppWorkspaceWorkspaceIdAgentAgentKeyRoute:
+    AppWorkspaceWorkspaceIdAgentAgentKeyRoute,
   AppWorkspaceWorkspaceIdChatChatIdRoute:
     AppWorkspaceWorkspaceIdChatChatIdRoute,
   AppWorkspaceWorkspaceIdChatChatIdSettingsRoute:

@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { AgentRow } from '@/blocks/AgentRow'
 import { AutomationRow } from '@/blocks/AutomationRow'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -98,13 +97,6 @@ export const AutomationsPreview = () => {
             <AutomationRow kind="event" title="Build failed" description="Post the failing step." gadget={{ title: 'Builds', onOpen: () => say('opened Builds') }} enabled />
             <AutomationRow kind="schedule" title="Nightly backup" gadget={{ title: 'Backups', onOpen: () => say('opened Backups') }} enabled={false} />
           </ListGroup>
-          <section className="flex flex-col gap-2">
-            <h2 className="px-4 text-sm font-medium text-kumo-subtle">Agents</h2>
-            <ListGroup label="Agents">
-              <AgentRow name="Inbox helper" runs="12 runs · latest 5 min ago" href="#" onSelect={() => say('opened Inbox helper’s latest run')} />
-              <AgentRow name="Ticket summarizer with a name long enough to be cut off where the row ends" runs="One run · latest yesterday" onSelect={() => say('opened the summarizer’s run')} />
-            </ListGroup>
-          </section>
           <p role="status" className="text-sm text-kumo-subtle">{report}</p>
         </div>
       </Section>

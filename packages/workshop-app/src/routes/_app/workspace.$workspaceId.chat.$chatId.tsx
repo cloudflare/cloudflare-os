@@ -67,6 +67,7 @@ function WorkspaceChat() {
       onOpenWorkspace={() =>
         navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(router.state.location.search.open, { workspaceId }) } })
       }
+      onOpenAgent={(agentKey) => navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId, agentKey } })}
       // To its workspace's page, which lists what is left, in the deleted chat's place in the history.
       onDeleted={() =>
         navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { open: carryAside(router.state.location.search.open, { workspaceId }) }, replace: true })

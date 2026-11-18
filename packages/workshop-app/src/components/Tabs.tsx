@@ -15,6 +15,11 @@ export type TabsTab<Value extends string> = {
   onClose?: () => void
   /** Something in it has not been kept, which a dot says in place of the way to put it away. */
   unsaved?: boolean
+  /**
+   * How many things in it are waiting on the reader, shown after its label, with what they are
+   * for whoever cannot see it: "waiting on you". Nothing is shown for none.
+   */
+  count?: { value: number; label: string }
 }
 
 export type TabsProps<Value extends string> = {
@@ -68,7 +73,17 @@ const TabsRoot = <Value extends string>({ value, onValueChange, tabs, 'aria-labe
     >
       {tabs.map((tab) =>
         tab.onClose === undefined && !tab.unsaved
-          ? <BaseTabs.Tab key={tab.value} value={tab.value} title={tab.title} className={cn(TAB, 'data-active:bg-kumo-contrast/5')}>{tab.label}</BaseTabs.Tab>
+          ? (
+              <BaseTabs.Tab key={tab.value} value={tab.value} title={tab.title} className={cn(TAB, 'data-active:bg-kumo-contrast/5', tab.count?.value && 'inline-flex items-center gap-1.5')}>
+                {tab.label}
+                {Boolean(tab.count?.value) && (
+                  <>
+                    <span aria-hidden="true" className="min-w-5 rounded-full bg-kumo-warning-tint px-1.5 text-xs/5 text-kumo-default tabular-nums">{tab.count!.value}</span>
+                    <span className="sr-only">{`, ${tab.count!.value} ${tab.count!.label}`}</span>
+                  </>
+                )}
+              </BaseTabs.Tab>
+            )
           : (
               // The pill is around both, as a button cannot be inside the tab, which is one.
               <span key={tab.value} className="flex max-w-full min-w-0 items-center rounded-full has-data-active:bg-kumo-contrast/5">

@@ -1,12 +1,17 @@
 import { useState } from 'react'
 import { Badge } from '@cloudflare/kumo'
-import { PlugsIcon } from '@phosphor-icons/react'
+import { PlugsIcon, RobotIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Card } from '@/components/Card'
 import { usePending, type ActionResult } from './usePending'
 
 export type ConnectionRequestCardProps = {
   vendorName: string
+  /**
+   * It asks for an agent of a gadget's own, which is set up rather than connected: it says so,
+   * with a robot, whatever the service it is asked through is called.
+   */
+  agent?: boolean
   logoUrl?: string
   /** What is being asked for: the kind of resource, or its address. */
   scope?: string
@@ -21,7 +26,7 @@ export type ConnectionRequestCardProps = {
  * The agent asking for access to something the user has not connected. It stays a card once
  * answered, saying how, so the answer stands out in the conversation.
  */
-export const ConnectionRequestCard = ({ vendorName, logoUrl, scope, reason, ...props }: ConnectionRequestCardProps) => {
+export const ConnectionRequestCard = ({ vendorName, agent = false, logoUrl, scope, reason, ...props }: ConnectionRequestCardProps) => {
   const [pending, run] = usePending()
   const [logoFailed, setLogoFailed] = useState(false)
 
@@ -29,15 +34,17 @@ export const ConnectionRequestCard = ({ vendorName, logoUrl, scope, reason, ...p
     <Card>
       <div className="flex items-start gap-3">
         <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-full bg-kumo-fill text-kumo-default">
-          {logoUrl && !logoFailed
-            ? <img src={logoUrl} alt="" className="size-6 object-contain" onError={() => setLogoFailed(true)} />
-            : <PlugsIcon aria-hidden="true" className="size-5" />}
+          {agent
+            ? <RobotIcon aria-hidden="true" className="size-5" />
+            : logoUrl && !logoFailed
+              ? <img src={logoUrl} alt="" className="size-6 object-contain" onError={() => setLogoFailed(true)} />
+              : <PlugsIcon aria-hidden="true" className="size-5" />}
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium text-kumo-default">Connect {vendorName}</span>
+            <span className="font-medium text-kumo-default">{agent ? 'Set up an agent' : `Connect ${vendorName}`}</span>
             {scope && <Badge variant="outline">{scope}</Badge>}
-            {props.state === 'connected' && <Badge variant="success">Connected</Badge>}
+            {props.state === 'connected' && <Badge variant="success">{agent ? 'Set up' : 'Connected'}</Badge>}
             {props.state === 'denied' && <Badge variant="error">Denied</Badge>}
           </div>
           {reason && <p className="text-sm text-kumo-subtle">{reason}</p>}

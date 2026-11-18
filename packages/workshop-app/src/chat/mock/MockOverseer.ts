@@ -161,6 +161,7 @@ export class MockOverseer {
   #owner: Scenario['owner']
   #restricted: boolean
   #templateUpdate: boolean
+  #agents: NonNullable<Scenario['agents']>
   #handles = new Set<Handle>()
   // Bumped by each restart, as the server's stream generation is.
   #generation = 1
@@ -187,6 +188,11 @@ export class MockOverseer {
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#worktrees = scenario.worktrees ?? {}
+    this.#agents = scenario.agents ?? { setups: [], runs: [] }
+    // The gadgets that start them are listed from the start.
+    for (const { gadget } of this.#agents.setups) {
+      if (gadget) this.#gadgets.set(gadget.id, new MockGadget(gadget.title, () => this.#backUp()))
+    }
     this.#metadata = {
       id: CHAT_ID,
       title: scenario.title,
@@ -211,9 +217,23 @@ export class MockOverseer {
         if (name === 'onRpcBroken') {
           return (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : handle.onBroken.add(callback))
         }
+        if (name === 'getGatekeeperById') {
+          return (id: number) => ({
+            getCreationSpec: async () => {
+              const setup = this.#agents.setups.find(({ spawnerId }) => spawnerId === id)
+              if (!setup) throw new Error(`No connection ${id}.`)
+              return { type: 'agentSpawner', config: { displayName: setup.name, modelId: setup.model ?? null }, ...(setup.model ? { modelName: setup.model } : {}) }
+            },
+            [Symbol.dispose]: () => {},
+          })
+        }
         if (name === 'getGadget') {
           return (id: number) => ({
             ...this.#gadget(id).open(handle),
+            // The agents it starts, which are all it is bound to here.
+            listBindings: async () => this.#agents.setups
+              .filter(({ gadget }) => gadget?.id === id)
+              .map(({ spawnerId, name: title, gadget }) => ({ name: gadget!.bindingName, target: spawnerId, resourceTitle: title })),
             applyBlueprint: (blueprintId: string) => this.#proposeUpdate(id, blueprintId, handle),
             setTitle: (title: string) => this.#renameGadget(id, title, handle),
             remove: () => this.#removeGadget(id, handle),
@@ -491,7 +511,14 @@ export class MockOverseer {
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
-    return this.#deleted ? [] : [this.#metadata]
+    return [...(this.#deleted ? [] : [this.#metadata]), ...this.#agents.runs]
+  }
+
+  /** The actions waiting: here, one for each of the agents' runs that has one. */
+  async listActions() {
+    const entries = (this.#agents.pending ?? []).map((chatId, index) =>
+      ({ id: 9000 + index, type: 'action', chatId, state: 'pending', resourceTitle: 'Mail', createdAt: new Date() }) as unknown as ActionLogEntry)
+    return { entries }
   }
 
   /** Deletes the chat, which everyone subscribed hears of, as the server tells them. */
@@ -526,6 +553,10 @@ export class MockOverseer {
   }
 
   async getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage> {
+    // An agent's run that failed ends on its error, which is all of it that is kept here.
+    if (this.#agents.failed?.includes(chatId)) {
+      return { messages: [{ chatId, sequence: 1, timestamp: new Date(), author: AGENT, type: 'error', message: 'The model provider returned an error.' }] }
+    }
     const older = this.#messages.filter(({ sequence }) => beforeSequence === undefined || sequence < beforeSequence)
     if (chatId !== CHAT_ID || limit === undefined) return { messages: chatId === CHAT_ID ? older : [] }
     const messages = older.slice(-limit)

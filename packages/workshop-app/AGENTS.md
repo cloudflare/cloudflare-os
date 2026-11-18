@@ -41,7 +41,8 @@ src/
   skills/       The user's skills (`SkillStore`, over their Context Library), the list of them in
                 the settings (`SkillLibrary`) and one skill's page (`SkillPane`)
   automations/  What runs by itself in a workspace (`useAutomations`), and the tab that lists it
-                (`AutomationsTab`)
+                (`AutomationsTab`); its agents (`WorkspaceAgents`), their tab (`AgentsTab`) and
+                one agent's page (`AgentPane`)
   gadgets/      One gadget's settings page (`GadgetSettingsPane`): what it is bound to, its code,
                 and what can be done to it
 
@@ -604,9 +605,47 @@ one is a schedule by having one, or by the scheduler's resource (`scheduler://ta
 a paused one, which has no schedule, among the scheduled. Nor does it say which chat set it up: a
 chat's are those its cards show, as far as its conversation has been loaded.
 
-After the automations, the workspace's page lists the agents its gadgets call on, by their runs
-among its chats (`spawnerName`), each opening its latest run. An agent that has not run is not
-known, and nothing says what calls on it or what it thinks with, until the backend lists them.
+## Agents
+
+An agent is what the backend calls an agent spawner, which is never said to anyone: something a
+gadget starts with a task, such as answering each email that arrives, each time in a run of its
+own, a chat with no person in it. Runs are not chats people have, so they are not listed among a
+workspace's chats (`isAgentRun`, by `spawnerId` or `spawnerName`), nor offered to carry on in from
+a gadget's page. They are listed under their agent, on the workspace's Agents tab, after Chats
+(`AgentsTab`), and on the agent's own page (`/workspace/<id>/agent/<key>`, `AgentPane`, drawn by
+`AgentView`), each opening its conversation, which is where what it did is seen and where what it
+asks for is answered. The design record is `plans/agents.md`.
+
+What matters of a run is how it stands (`automations/agents.ts`, plain and tested): at work,
+waiting on a person, failed, done with changes to keep, or done. Waiting on a person is a run
+stopped on a decision (`awaitingDecision`) or with an action of its own waiting to be approved,
+and failed is a run whose last message is an error other than being stopped. What wants a person
+(a run waiting on them, or an agent's latest run that failed) is said where it is seen without
+looking for it: over the workspace page's tabs (a `Banner`, `warning` for waiting, with the way to
+the run, or to the tab where there are several), counted on the Agents tab (`Tabs`' `count`),
+first on the tab (Needs you) and on the agent's page, on the agent's row in the colour of it, and
+in the sidebar, in place of the workspace's subtitle (`WorkspaceListItem`'s `attention`). A run's
+header has its agent's crumb (`AgentCrumb`) after the workspace's, which goes to the agent's page.
+
+`WorkspaceAgents` (plain, tested, like `GadgetSettings`) keeps a workspace's agents live: its
+runs from `listChats()` and `subscribeToChat()`, the actions waiting from
+`listActions({ filter: 'pending' })` and `subscribeToActions()`, and the last few messages of the
+latest runs that ended, which say whether they failed and which actions are theirs, as an action
+does not always say which chat it was made from. What an agent is comes from the gadgets: each
+gadget's bindings to a connection with no service are asked how they were made
+(`getCreationSpec()`), which names an agent and its model, so an agent is known before it has run,
+with the gadget that starts it; one no gadget starts any more is asked by the id its runs name.
+When it runs is the automations of that gadget, as nothing says which of a gadget's hooks starts
+which agent. An agent's key is its spawner's id, which a run made before that was recorded does
+not have: such a run joins the agent whose latest run has its name.
+
+The sidebar has the user's other workspaces asked how many of their agents' runs wait
+(`AgentsWaiting`, plain and tested, held by `AgentsWaitingProvider` in `_app`): those active this
+past week that they build in, a few at a time, every two minutes, each by its chats and the actions
+waiting, as nothing says it of the workspaces as a whole. An open workspace says so as it changes.
+It only counts an action that names its chat, so the open workspace's page knows more than the
+sidebar of the rest. The `agents` scenario has a workspace whose gadgets start four agents, and the
+gallery has each block in each state (`AgentsPreview`, over `exampleAgents.ts`).
 
 ## A gadget's own page
 
@@ -743,9 +782,10 @@ below.
 
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
-in place in the history): its chats, what it has made (the library's, as beside a chat, opening
-beside the page), and its members, the owner first. The chats and the library load what they
-list once chosen; who has access is read with the page, for its header.
+in place in the history): its chats, its agents (see Agents), what it has made (the library's, as
+beside a chat, opening beside the page), what runs by itself, and its members, the owner first. The
+chats and the library load what they list once chosen; who has access is read with the page, for
+its header, and its agents too, for what of theirs waits on the viewer.
 
 A workspace is shared to join it, and a gadget to use, alone (`ShareWorkspaceDialog`, whose
 target is a `ShareTarget`). The words are for people who have never shared software: a workspace's

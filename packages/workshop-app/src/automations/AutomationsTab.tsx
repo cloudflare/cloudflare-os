@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { asideItemFor, type AsideItem } from '@/aside/asideItems'
 import { useChatLibrary } from '@/aside/useChatLibrary'
-import { AgentRow } from '@/blocks/AgentRow'
 import { AutomationRow } from '@/blocks/AutomationRow'
 import { ListGroup } from '@/blocks/ListGroup'
 import { Button } from '@/components/Button'
+import { useNow } from '@/hooks/useNow'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
-import { useWorkspaceChats } from '@/workspaces/useWorkspaceChats'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
-import { agentsOf, runsWords } from './agents'
 import type { Automation } from './automations'
 import { cadenceWords, scheduleStanding } from './cadence'
 import { useAutomations } from './useAutomations'
@@ -23,13 +21,6 @@ export type AutomationsTabProps = {
   onOpenItem: (item: AsideItem) => void
   /** Where an item opens, for its row to link to so that it can be opened in another tab. */
   itemHref?: (item: AsideItem) => string
-  /**
-   * Opens one of the workspace's chats: given, the agents its gadgets call on are listed after
-   * the automations, each opening its latest run.
-   */
-  onOpenChat?: (chat: { id: number; title: string }) => void
-  /** A chat's address, for an agent's row to link to so that it can be opened in another tab. */
-  chatHref?: (chatId: number) => string
   /** What the tab says while there is nothing to list. */
   empty: string
 }
@@ -44,10 +35,10 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * What runs by itself in a workspace, as a tab of a page: the scheduled tasks, then what an event
  * sets off, each saying when it runs and when next or why it stopped, what it does and the gadget
- * it runs, with its switch for whoever builds there. Then, where chats can be opened, the agents
- * its gadgets call on. The clock moves on while it is shown, so "next in 5 minutes" stays true.
+ * it runs, with its switch for whoever builds there. The agents those gadgets start have a tab of
+ * their own (`AgentsTab`). The clock moves on while it is shown, so "next in 5 minutes" stays true.
  */
-export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, onOpenChat, chatHref, empty }: AutomationsTabProps) => {
+export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHref, empty }: AutomationsTabProps) => {
   const { state, setEnabled } = useAutomations(workspaceId)
   const library = useChatLibrary({ workspaceId, chatId })
   const workspaces = useWorkspaces()
@@ -56,11 +47,7 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
   const connection = useConnectionNotice()
   // Why the last change to each, by its key, was refused.
   const [problems, setProblems] = useState<Record<string, string>>({})
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const tick = setInterval(() => setNow(Date.now()), 30_000)
-    return () => clearInterval(tick)
-  }, [])
+  const now = useNow()
 
   const shown = useMemo(
     () => (state.status === 'ready' ? (filter ? state.automations.filter(filter) : state.automations) : []),
@@ -93,7 +80,7 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
 
   return (
     <>
-      {shown.length === 0 && !onOpenChat && <p className="px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p>}
+      {shown.length === 0 && <p className="px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p>}
       {GROUPS.map(({ kind, label }) => {
         const rows = shown.filter((automation) => automation.kind === kind)
         if (rows.length === 0) return null
@@ -125,43 +112,6 @@ export const AutomationsTab = ({ workspaceId, chatId, filter, onOpenItem, itemHr
           </section>
         )
       })}
-      {onOpenChat && <WorkspaceAgents workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} now={now} empty={shown.length === 0 ? empty : undefined} />}
     </>
-  )
-}
-
-type WorkspaceAgentsProps = {
-  workspaceId: string
-  onOpenChat: (chat: { id: number; title: string }) => void
-  chatHref?: (chatId: number) => string
-  now: number
-  /** What is said when there are no agents either. */
-  empty?: string
-}
-
-/** The agents a workspace's gadgets call on, by their runs among its chats. */
-const WorkspaceAgents = ({ workspaceId, onOpenChat, chatHref, now, empty }: WorkspaceAgentsProps) => {
-  const chats = useWorkspaceChats(workspaceId)
-  const agents = useMemo(() => (chats.status === 'ready' ? agentsOf(chats.chats) : []), [chats])
-  if (chats.status === 'loading') return null
-  if (agents.length === 0) return empty ? <p className="px-4 text-center text-base text-pretty text-kumo-subtle">{empty}</p> : null
-  return (
-    <section className="flex flex-col gap-2">
-      <h2 className="px-4 text-sm font-medium text-kumo-subtle">Agents</h2>
-      <ListGroup label="Agents">
-        {agents.map((agent) => {
-          const [latest] = agent.runs
-          return (
-            <AgentRow
-              key={agent.key}
-              name={agent.name}
-              runs={runsWords(agent, new Date(now))}
-              href={chatHref?.(latest.chatId)}
-              onSelect={() => onOpenChat({ id: latest.chatId, title: latest.title })}
-            />
-          )
-        })}
-      </ListGroup>
-    </section>
   )
 }

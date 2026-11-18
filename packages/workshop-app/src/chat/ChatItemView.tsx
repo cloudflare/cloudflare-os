@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import { AGENT_SPAWNER_CONNECTION_ID } from '@gadgets/workshop-shared/api'
 import { ActionCard } from '@/blocks/ActionCard'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
@@ -147,7 +148,8 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       )
     }
     case 'connection': {
-      const request = { vendorName: item.vendorName, logoUrl: item.logoUrl, scope: item.scope, reason: item.reason }
+      // An agent is asked for as a connection is, under a name of the kernel's that nobody is told.
+      const request = { vendorName: item.vendorName, agent: item.vendorId === AGENT_SPAWNER_CONNECTION_ID, logoUrl: item.logoUrl, scope: item.scope, reason: item.reason }
       return item.state === 'pending'
         ? (
           <ConnectionRequestCard

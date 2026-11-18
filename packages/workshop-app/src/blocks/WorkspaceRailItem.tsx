@@ -6,7 +6,8 @@ import type { WorkspaceListItemProps } from './WorkspaceListItem'
 
 /**
  * One workspace on the collapsed sidebar's rail: its icon alone, with the unread dot on its
- * corner. Its title and subtitle are in a tooltip.
+ * corner, or the dot of what waits on the user in it. Its title and subtitle, or what waits, are
+ * in a tooltip.
  */
 export const WorkspaceRailItem = ({
   id,
@@ -15,6 +16,7 @@ export const WorkspaceRailItem = ({
   title,
   subtitle,
   unread,
+  attention,
   selected,
   href,
   onSelect,
@@ -24,7 +26,9 @@ export const WorkspaceRailItem = ({
     content={(
       <>
         <span className="block font-medium">{title}</span>
-        {subtitle && <span className="block text-kumo-subtle">{subtitle}</span>}
+        {attention
+          ? <span className="block text-kumo-warning">{attention}</span>
+          : subtitle && <span className="block text-kumo-subtle">{subtitle}</span>}
       </>
     )}
   >
@@ -32,7 +36,7 @@ export const WorkspaceRailItem = ({
       href={href}
       data-workspace-id={id}
       onClick={onSelect}
-      aria-label={unread ? `${title}, unread` : title}
+      aria-label={attention ? `${title}, ${attention.toLowerCase()}` : unread ? `${title}, unread` : title}
       aria-current={selected || undefined}
       className={cn(
         // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
@@ -42,7 +46,7 @@ export const WorkspaceRailItem = ({
       )}
     >
       <WorkspaceIcon label={workspaceLabel} {...workspaceLook} small />
-      {unread && <span aria-hidden="true" className="absolute right-1 bottom-1.5 size-2.5 rounded-full bg-kumo-brand ring-2 ring-kumo-canvas" />}
+      {(attention || unread) && <span aria-hidden="true" className={cn('absolute right-1 bottom-1.5 size-2.5 rounded-full ring-2 ring-kumo-canvas', attention ? 'bg-kumo-warning' : 'bg-kumo-brand')} />}
     </LinkButton>
   </Tooltip>
 )

@@ -5,6 +5,8 @@ import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown, rememberShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
+import { useAgentsWaiting } from '@/automations/AgentsWaitingContext'
+import { AgentsWaitingProvider } from '@/automations/AgentsWaitingProvider'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar } from '@/blocks/Sidebar'
@@ -35,9 +37,11 @@ export const Route = createFileRoute('/_app')({
       {/* Before the workspaces are listed, so that one a link let the user in to is among them. */}
       <ShareLinkGate>
         <WorkspacesProvider>
-          <ChatSessionsProvider>
-            <AppFrame />
-          </ChatSessionsProvider>
+          <AgentsWaitingProvider>
+            <ChatSessionsProvider>
+              <AppFrame />
+            </ChatSessionsProvider>
+          </AgentsWaitingProvider>
         </WorkspacesProvider>
       </ShareLinkGate>
     </RpcGate>
@@ -46,6 +50,10 @@ export const Route = createFileRoute('/_app')({
 
 // Placeholder logos until real connected apps are wired in.
 const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
+
+/** What a workspace's agents' runs waiting on the user say of it in the sidebar, where any do. */
+const agentsWaitingWords = (count: number) =>
+  count === 0 ? undefined : count === 1 ? 'An agent needs you' : `${count} agent runs need you`
 
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
@@ -64,6 +72,7 @@ const AppFrame = () => {
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
   const looks = useWorkspaceLooks()
+  const waiting = useAgentsWaiting()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -229,7 +238,7 @@ const AppFrame = () => {
     asideElement = <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={hideEmpty} narrow={narrow} />
   }
 
-  // Each workspace is listed by its title and when it was last active.
+  // Each workspace is listed by its title and when it was last active, or what waits on the user in it.
   const workspaces =
     workspacesState.status === 'ready'
       ? workspacesState.workspaces.map(({ id, title, lastActive }) => ({
@@ -238,6 +247,7 @@ const AppFrame = () => {
           workspaceLabel: workspaceLabel(title),
           workspaceLook: looks[id],
           subtitle: formatActivity(lastActive),
+          attention: agentsWaitingWords(waiting.get(id) ?? 0),
           href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
         }))
       : []
