@@ -4,7 +4,7 @@ import {
   MAX_ISSUE_REPORT_IMAGES, MAX_ISSUE_REPORT_IMAGE_BYTES, MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER,
   MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER, MAX_ISSUE_REPORT_LINKS, MAX_ISSUE_REPORT_LINK_LENGTH,
   MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_TEXT_LENGTH,
-  MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError,
+  MAX_ISSUE_REPORT_THREAD_ENTRIES, createIssueReportError, issueReportStatusForReporter,
   type AdminAccessGrant, type AdminIssueReport, type AdminIssueReportPage,
   type AdminIssueReportQuery, type AdminVia, type AiChatAuthorInfo, type IssueReport,
   type IssueReportAuthor, type IssueReportContext, type IssueReportEntry, type IssueReportGrant,
@@ -56,7 +56,7 @@ const REPORT_SELECT = `SELECT r.seq, r.id, r.filed_at, r.reporter_id, r.reporter
 const THREAD_KINDS = {
   replies: "visibility = 'public' AND via IS NULL",
   adminPublic: "visibility = 'public' AND via IS NOT NULL AND text <> ''",
-  adminOnly: "visibility = 'admins'",
+  adminOnly: "visibility = 'admins' AND text <> ''",
 } as const;
 
 type ReportRow = {
@@ -201,8 +201,13 @@ function reportOf(row: ReportRow): IssueReport {
 
 // A report as its reporter reads it: built from reportOf() and nothing of the admins' form, so
 // neither the links nor when its thread last grew (which an admins-only entry moves) is in it.
+// Its status is the one a reporter reads (issueReportStatusForReporter()).
 function ownReportOf(row: ReportRow): OwnIssueReport {
-  return { ...reportOf(row), unseen: row.last_admin_public > row.seen };
+  let report = reportOf(row);
+  return {
+    ...report, status: issueReportStatusForReporter(report.status),
+    unseen: row.last_admin_public > row.seen,
+  };
 }
 
 function adminReportOf(row: ReportRow): AdminIssueReport {
@@ -215,7 +220,8 @@ function adminReportOf(row: ReportRow): AdminIssueReport {
 
 // An entry as `reader` reads it. The reporter reads an entry the admins wrote (its row has a
 // `via`) without its author's id: an admin's id is their account name. The rule is the row's
-// `via`, never a comparison of ids, so it holds for an admin who filed the report too.
+// `via`, never a comparison of ids, so it holds for an admin who filed the report too. The
+// reporter reads a status as the reporter reads it.
 function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry {
   let author: IssueReportAuthor = reader === "reporter" && row.via !== null
       ? { name: row.author_name } : { id: row.author_id, name: row.author_name };
@@ -227,7 +233,10 @@ function entryOf(row: EntryRow, reader: "reporter" | "admins"): IssueReportEntry
     text: row.text,
   };
   if (row.via !== null) entry.via = row.via as AdminVia;
-  if (row.status !== null) entry.status = row.status as IssueReportStatus;
+  if (row.status !== null) {
+    let status = row.status as IssueReportStatus;
+    entry.status = reader === "reporter" ? issueReportStatusForReporter(status) : status;
+  }
   return entry;
 }
 
@@ -844,18 +853,25 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Sets a report's status, entered in its thread as a public line with no text that names
-   * `admin`. A status the report already has changes nothing. Never refused `threadFull`, so a
-   * full thread can still be closed, and it leaves the report as seen as it was. Throws
-   * (TypeError) for a status that is not one; refused `notFound`.
+   * Sets a report's status, entered in its thread as a line with no text that names `admin`:
+   * public, or for admins alone when the reporter reads the old status and the new one as the
+   * same. A status the report already has changes nothing. Never refused `threadFull`, so a full
+   * thread can still be closed, and it leaves the report as seen as it was. Throws (TypeError)
+   * for a status that is not one; refused `notFound`.
    */
   setStatus(admin: Pick<AiChatAuthorInfo, "id" | "name">, via: AdminVia, reportId: string,
       status: IssueReportStatus): void {
     let author = namedUser(admin);
     if (!ISSUE_REPORT_STATUSES.includes(status)) throw new TypeError("Invalid status.");
     let report = this.#reportSeq(reportId);
-    if (report.status !== status) this.#addEntry(report.seq, author, "public", via, "", status);
+    if (report.status === status) return;
+    // A move the reporter reads as no move is a line for the admins alone.
+    let reads = issueReportStatusForReporter;
+    let visibility: IssueReportEntry["visibility"] =
+        reads(report.status as IssueReportStatus) === reads(status) ? "admins" : "public";
+    this.#addEntry(report.seq, author, visibility, via, "", status);
   }
+
 
   /** Replaces a report's links with `links` as reportLinks() keeps them. Throws (TypeError) for
    * links that are not ones; refused `notFound`. */

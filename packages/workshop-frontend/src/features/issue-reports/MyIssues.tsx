@@ -17,6 +17,9 @@ const STATUS_VARIANTS: Record<IssueReportStatus, 'outline' | 'warning' | 'neutra
   answered: 'outline',
   waitingOnReporter: 'warning',
   withAdmin: 'outline',
+  fixSuggested: 'outline',
+  fixInProgress: 'outline',
+  fixProposed: 'outline',
   closed: 'neutral',
 }
 

@@ -7,13 +7,16 @@ import { ADMIN_ISSUE_STATUS_NAMES, ISSUE_PRIORITY_NAMES } from '../issue-reports
 import { isFiltered, type ReportFilter } from './reportFilter'
 import { GRANT_SCOPE_NAMES, grantStanding } from './reportGrant'
 
-// "New" and "With the admins" are the statuses that wait on an admin.
+// "New", "With the admins" and "Fix suggested" are the statuses that wait on an admin.
 const STATUS_VARIANTS: Record<IssueReportStatus, 'outline' | 'warning' | 'neutral'> = {
   new: 'warning',
   investigating: 'outline',
   answered: 'outline',
   waitingOnReporter: 'outline',
   withAdmin: 'warning',
+  fixSuggested: 'warning',
+  fixInProgress: 'outline',
+  fixProposed: 'outline',
   closed: 'neutral',
 }
 

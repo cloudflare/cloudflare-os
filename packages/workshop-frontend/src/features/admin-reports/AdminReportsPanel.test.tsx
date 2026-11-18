@@ -242,6 +242,13 @@ const rows = () => [...listing()?.querySelectorAll<HTMLElement>(':scope > li') ?
 const rowTitles = () => rows().map((item) => item.querySelector('a')?.textContent)
 const row = (id: string) => rows().find((item) => item.querySelector(`a[data-report-id="${id}"]`))!
 const rowLink = (id: string) => row(id).querySelector('a')!
+// The badge of a row's status, by the name it shows.
+const statusBadge = (id: string, name: string) => {
+  const found = [...row(id).querySelectorAll<HTMLElement>('*')]
+    .find((element) => element.children.length === 0 && element.textContent === name)
+  if (!found) throw new Error(`no ${name} on ${id}`)
+  return found
+}
 const heading = (name: string) =>
   [...container!.querySelectorAll<HTMLElement>('h2, h3')].find((element) => element.textContent === name)
 const detail = () => heading('Issue report')?.closest('section') ?? null
@@ -336,6 +343,21 @@ describe('the list', () => {
     expect(row('r-2').textContent).not.toContain('Updated')
   })
 
+  it('names the three fix statuses, and marks a suggested fix as waiting on an admin', async () => {
+    await renderPanel(fakeAdmin([
+      report('r-1', { status: 'fixSuggested' }),
+      report('r-2', { status: 'fixInProgress' }),
+      report('r-3', { status: 'fixProposed' }),
+      report('r-4', { status: 'withAdmin' }),
+    ]))
+
+    const waiting = statusBadge('r-4', 'With the admins').className
+    expect(statusBadge('r-1', 'Fix suggested').className).toBe(waiting)
+    expect(statusBadge('r-2', 'Fix in progress').className).not.toBe(waiting)
+    expect(statusBadge('r-3', 'Fix proposed').className)
+      .toBe(statusBadge('r-2', 'Fix in progress').className)
+  })
+
   it('counts a report’s images in its row, and shows no count for a report with none', async () => {
     await renderPanel(fakeAdmin([
       report('r-1', { images: [PNG, WEBP] }),
@@ -411,6 +433,25 @@ describe('the list', () => {
 
     expect(admin.listIssueReports).toHaveBeenLastCalledWith({ priority: 'high', limit: REPORT_PAGE_SIZE })
     expect(search()).toEqual({ tab: 'reports', priority: 'high' })
+  })
+
+  it.each([
+    ['fixSuggested', 'Fix suggested', 'Report r-1'],
+    ['fixInProgress', 'Fix in progress', 'Report r-2'],
+    ['fixProposed', 'Fix proposed', 'Report r-3'],
+  ] as const)('filters by %s, offered as "%s"', async (status, name, title) => {
+    const admin = await renderPanel(fakeAdmin([
+      report('r-1', { status: 'fixSuggested' }),
+      report('r-2', { status: 'fixInProgress' }),
+      report('r-3', { status: 'fixProposed' }),
+      report('r-4', { status: 'withAdmin' }),
+    ]))
+
+    await choose(filterSelect('status'), name)
+
+    expect(admin.listIssueReports).toHaveBeenLastCalledWith({ status, limit: REPORT_PAGE_SIZE })
+    expect(search()).toEqual({ tab: 'reports', status })
+    expect(rowTitles()).toEqual([title])
   })
 
   it('filters by a row’s reporter, by id, and names the chip that removes the filter after them', async () => {
@@ -581,6 +622,27 @@ describe('an open report', () => {
     expect(thread()[0].textContent).toBe(
       `Grace Admin set the status to Waiting on the reporter${formatFullTimestamp(new Date('2026-10-12T10:05:00Z'))}`)
     expect(statusSelect().textContent).toBe('Waiting on the reporter')
+  })
+
+  it('names and sets the three fix statuses in an open report', async () => {
+    const at = new Date('2026-10-12T10:05:00Z')
+    const admin = await renderPanel(fakeAdmin([report('r-1', { status: 'fixSuggested', entries: [
+      adminEntry('e-1', '', { status: 'fixSuggested', at }),
+    ] })]), '/admin?tab=reports&report=r-1')
+
+    expect(thread()[0].textContent).toBe(`Grace Admin set the status to Fix suggested${formatFullTimestamp(at)}`)
+    expect(statusSelect().textContent).toBe('Fix suggested')
+
+    await choose(statusSelect(), 'Fix in progress')
+    expect(statusSelect().textContent).toBe('Fix in progress')
+    await choose(statusSelect(), 'Fix proposed')
+    expect(statusSelect().textContent).toBe('Fix proposed')
+
+    expect(admin.setIssueReportStatus.mock.calls).toEqual([['r-1', 'fixInProgress'], ['r-1', 'fixProposed']])
+    expect(thread().slice(1).map((entry) => entry.textContent)).toEqual([
+      `Ada Admin set the status to Fix in progress${formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))}`,
+      `Ada Admin set the status to Fix proposed${formatFullTimestamp(new Date('2026-10-13T08:00:00Z'))}`,
+    ])
   })
 
   it('says when a status was set through the CLI', async () => {

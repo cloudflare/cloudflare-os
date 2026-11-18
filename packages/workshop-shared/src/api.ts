@@ -2620,15 +2620,31 @@ export type IssueReportPriority = typeof ISSUE_REPORT_PRIORITIES[number];
  *   - "waitingOnReporter": an admin asked the reporter something;
  *   - "withAdmin":         back in front of the admins: the reporter replied to a report that was
  *                          "answered" or "waitingOnReporter";
+ *   - "fixSuggested":      it needs a change to the code, which nobody has started;
+ *   - "fixInProgress":     a change to the code is being made;
+ *   - "fixProposed":       a change to the code was proposed, and waits for review;
  *   - "closed":            done. The reporter can no longer reply.
  * Admins set any status. A reporter sets none, except that their reply moves "answered" and
- * "waitingOnReporter" to "withAdmin".
+ * "waitingOnReporter" to "withAdmin"; it moves no other status. "fixSuggested" and
+ * "fixInProgress" are the admins' own: the reporter reads both as "withAdmin" (see
+ * issueReportStatusForReporter()).
  */
-export const ISSUE_REPORT_STATUSES =
-    ["new", "investigating", "answered", "waitingOnReporter", "withAdmin", "closed"] as const;
+export const ISSUE_REPORT_STATUSES = [
+  "new", "investigating", "answered", "waitingOnReporter", "withAdmin", "fixSuggested",
+  "fixInProgress", "fixProposed", "closed",
+] as const;
 
 /** One of ISSUE_REPORT_STATUSES. */
 export type IssueReportStatus = typeof ISSUE_REPORT_STATUSES[number];
+
+/**
+ * The status a report's reporter reads where the admins read `status`: "withAdmin" for
+ * "fixSuggested" and "fixInProgress", and `status` itself for every other. The one place that
+ * says so: the report store builds everything a reporter reads with it.
+ */
+export function issueReportStatusForReporter(status: IssueReportStatus): IssueReportStatus {
+  return status === "fixSuggested" || status === "fixInProgress" ? "withAdmin" : status;
+}
 
 /** The longest text of an issue report, and of one entry of its thread: UTF-16 code units (a
  * string's `length`) of the text once trimmed. */
@@ -2827,7 +2843,8 @@ export type IssueReportEntry = {
   /** Its text: at most MAX_ISSUE_REPORT_TEXT_LENGTH characters; "" for a bare change of status. */
   text: string;
   /** The status this entry set, when it set one: an admin's change of status, or "withAdmin" on
-   * the reporter's reply that reopened the report. Always "public". */
+   * the reporter's reply that reopened the report. As its reader reads it: the reporter never
+   * reads "fixSuggested" or "fixInProgress" here. */
   status?: IssueReportStatus;
 };
 
@@ -2845,7 +2862,8 @@ export type IssueReport = {
   priority: IssueReportPriority;
   /** Where the reporter was. */
   context: IssueReportContext;
-  /** Where it stands. */
+  /** Where it stands, as its reader reads it: a reporter never reads "fixSuggested" or
+   * "fixInProgress" (see issueReportStatusForReporter()). */
   status: IssueReportStatus;
   /** Its images, in the order they were added. */
   images: IssueReportImage[];
@@ -3474,9 +3492,10 @@ export interface AdminApi {
   addIssueReportEntry(reportId: string, text: string, visibility: IssueReportEntry["visibility"])
       : Promise<IssueReportEntry>;
 
-  /** Set an issue report's status, entered in its thread as a public line that names the caller
-   * (see IssueReportEntry). It does not raise the reporter's count of unseen reports, and a full
-   * thread does not refuse it. Setting the status it already has changes nothing. Refused
+  /** Set an issue report's status, entered in its thread as a line that names the caller (see
+   * IssueReportEntry): public, or for admins alone when the reporter reads the old status and
+   * the new one as the same. It does not raise the reporter's count of unseen reports, and a
+   * full thread does not refuse it. Setting the status it already has changes nothing. Refused
    * `notFound`. */
   setIssueReportStatus(reportId: string, status: IssueReportStatus): Promise<void>;
 
