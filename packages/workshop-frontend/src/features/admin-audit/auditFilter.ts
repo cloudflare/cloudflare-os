@@ -4,6 +4,7 @@ import {
   ADMIN_USER_METHODS,
   ADMIN_WORKSPACE_METHODS,
   ADMIN_WRITE_ACTIONS,
+  type AdminAccessExposure,
   type AdminAuditKind,
   type AdminAuditRecord,
 } from '@gadgets/workshop-shared/api'
@@ -24,6 +25,9 @@ export const targetUserOf = (record: AdminAuditRecord): string | undefined => {
   return (record.kind === 'user' ? record.userId : record.workspaceOwner) || undefined
 }
 
+/** What an admin's call can have exposed, as the filter lists them. */
+export const AUDIT_EXPOSURES: readonly AdminAccessExposure[] = ['content', 'metadata']
+
 /**
  * The Audit tab's filters, kept in the admin page's URL as search parameters of these names, so a
  * filtered view can be linked. Each is passed to AdminApi.listAdminAudit() as is.
@@ -40,6 +44,9 @@ export type AuditFilter = {
   /** Only records about this user's data: access to, or a write to, the workspaces they own, and
    * access to their account, by canonical user id. */
   owner?: string
+  /** Only records of calls whose answer exposed this: content, which only a call into a workspace
+   * can, or metadata alone, as every call into a user's account does. */
+  exposed?: AdminAccessExposure
 }
 
 /**
@@ -60,6 +67,9 @@ const isAuditMethod = (value: unknown): value is AuditMethod =>
 const isAuditKind = (value: unknown): value is AdminAuditKind =>
   (AUDIT_KINDS as readonly unknown[]).includes(value)
 
+const isAuditExposure = (value: unknown): value is AdminAccessExposure =>
+  (AUDIT_EXPOSURES as readonly unknown[]).includes(value)
+
 const text = (value: unknown) => typeof value === 'string' && value !== '' ? value : undefined
 
 /** The audit filters `search` holds, leaving out any that is malformed. */
@@ -73,6 +83,7 @@ export const auditFilterOf = (search: Record<string, unknown>): AuditFilter => {
   if (workspace !== undefined) filter.workspace = workspace
   const owner = text(search.owner)
   if (owner !== undefined) filter.owner = owner
+  if (isAuditExposure(search.exposed)) filter.exposed = search.exposed
   return filter
 }
 

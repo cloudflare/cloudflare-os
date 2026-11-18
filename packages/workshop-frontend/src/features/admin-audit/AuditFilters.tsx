@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { Button, Combobox, Select } from '@cloudflare/kumo'
 import { X } from '@phosphor-icons/react'
-import type { AdminAuditKind } from '@gadgets/workshop-shared/api'
+import type { AdminAccessExposure, AdminAuditKind } from '@gadgets/workshop-shared/api'
 import {
+  AUDIT_EXPOSURES,
   AUDIT_KINDS,
   AUDIT_METHOD_GROUPS,
   isFiltered,
@@ -20,12 +21,22 @@ const ACTION_GROUPS: ActionGroup[] =
 const ANY_KIND = 'any'
 type KindChoice = AdminAuditKind | typeof ANY_KIND
 
+const ANY_EXPOSURE = 'any'
+type ExposureChoice = AdminAccessExposure | typeof ANY_EXPOSURE
+const EXPOSURE_CHOICE_NAMES: Record<ExposureChoice, string> = {
+  [ANY_EXPOSURE]: 'Anything',
+  content: 'Content reads',
+  metadata: 'Metadata only',
+}
+
 /**
  * The Audit tab's filters. The admin and the target user (the owner of a workspace an admin called
  * into, or the user whose account one inspected) are typed, with `adminSuggestions` and
  * `targetSuggestions` offered, and apply on Enter or once a suggestion is picked. The action is
- * searched by typing, and the kind chosen; both apply at once. The workspace filter is set
- * from a record's details in the log, and shows as a chip named `workspaceLabel` that removes
+ * searched by typing, and the kind and what a call exposed chosen; all three apply at once. Only a
+ * call into a workspace can expose content, and a call into a user's account always exposed
+ * metadata, so a choice of what was exposed lists access records alone. The workspace filter is
+ * set from a record's details in the log, and shows as a chip named `workspaceLabel` that removes
  * it.
  */
 export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, workspaceLabel, onFilterChange }: {
@@ -48,7 +59,7 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
 
   return (
     <div className="space-y-3">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" role="search" aria-label="Filter admin activity">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5" role="search" aria-label="Filter admin activity">
         <div ref={adminField} data-filter-field="admin">
           <TypedFilterField
             label="Admin"
@@ -97,6 +108,21 @@ export const AuditFilters = ({ filter, adminSuggestions, targetSuggestions, work
           <Select.Option value={ANY_KIND}>Any kind</Select.Option>
           {AUDIT_KINDS.map((kind) => (
             <Select.Option key={kind} value={kind}>{KIND_NAMES[kind]}</Select.Option>
+          ))}
+        </Select>
+        <Select<ExposureChoice>
+          label="Exposed"
+          className="w-full"
+          value={filter.exposed ?? ANY_EXPOSURE}
+          onValueChange={(exposed) => {
+            if (exposed === null) return
+            onFilterChange({ ...filter, exposed: exposed === ANY_EXPOSURE ? undefined : exposed })
+          }}
+          renderValue={(exposed) => EXPOSURE_CHOICE_NAMES[exposed]}
+        >
+          <Select.Option value={ANY_EXPOSURE}>{EXPOSURE_CHOICE_NAMES[ANY_EXPOSURE]}</Select.Option>
+          {AUDIT_EXPOSURES.map((exposed) => (
+            <Select.Option key={exposed} value={exposed}>{EXPOSURE_CHOICE_NAMES[exposed]}</Select.Option>
           ))}
         </Select>
         <div data-filter-field="owner">

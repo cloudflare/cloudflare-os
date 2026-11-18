@@ -11,9 +11,10 @@ import type {
   AdminWriteRecord,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
-import { ACCESS_LEVEL_NAMES, REFUSAL_NAMES } from './accessNames'
+import { ACCESS_LEVEL_NAMES, REFUSAL_NAMES, openedForName } from './accessNames'
 import { targetUserOf, type AuditFilter } from './auditFilter'
 import { AuditValue } from './AuditValue'
+import { ExposureBadge } from './ExposureBadge'
 import { KindBadge } from './KindBadge'
 
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
@@ -127,23 +128,33 @@ const ArgumentsDetail = ({ args }: { args: AdminAccessRecord['args'] }) => {
   )
 }
 
+// A call into a workspace or a user's account. What a workspace's view was opened for is said
+// only when that is not metadata, and its grant only when the call ran under one: a record has
+// no line for a field it lacks.
 const AccessDetails = ({ record, onFilterBy }: {
   record: AdminAccessRecord | AdminUserAccessRecord
   onFilterBy: (filter: AuditFilter) => void
-}) => (
-  <dl className="space-y-2">
-    {record.kind === 'workspace'
-      ? <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
-      : <Detail term="Account">{record.userId || 'Unknown'}</Detail>}
-    <Detail term="Reason">{record.reason}</Detail>
-    <Detail term="Access">
-      {ACCESS_LEVEL_NAMES[record.access]}
-      {record.refused && <> · refused: {REFUSAL_NAMES[record.refused]}</>}
-    </Detail>
-    <ArgumentsDetail args={record.args} />
-    <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
-  </dl>
-)
+}) => {
+  const openedFor = record.kind === 'workspace' ? openedForName(record.requested) : undefined
+  return (
+    <dl className="space-y-2">
+      {record.kind === 'workspace'
+        ? <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+        : <Detail term="Account">{record.userId || 'Unknown'}</Detail>}
+      <Detail term="Reason">{record.reason}</Detail>
+      {openedFor !== undefined && <Detail term="Opened for">{openedFor}</Detail>}
+      <Detail term="Access">
+        {ACCESS_LEVEL_NAMES[record.access]}
+        {record.refused && <> · refused: {REFUSAL_NAMES[record.refused]}</>}
+      </Detail>
+      {record.kind === 'workspace' && record.grantId && (
+        <Detail term="Under grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
+      )}
+      <ArgumentsDetail args={record.args} />
+      <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+    </dl>
+  )
+}
 
 const WriteDetails = ({ record, onFilterBy }: {
   record: AdminWriteRecord
@@ -171,6 +182,9 @@ const GrantDetails = ({ record, onFilterBy }: {
     {/* The id the reads made under the grant carry (see "Under grant" on an access record). */}
     {record.grantId && (
       <Detail term="Grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
+    )}
+    {record.replacedGrantId && (
+      <Detail term="Ended grant"><span className="font-mono text-xs break-all">{record.replacedGrantId}</span></Detail>
     )}
     {record.endReason && <Detail term="Reason for ending">{record.endReason}</Detail>}
     <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
@@ -238,6 +252,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
         <Table.Cell>
           <span className="flex flex-wrap items-center gap-1.5">
             <KindBadge kind={record.kind} />
+            {record.kind === 'workspace' && <ExposureBadge exposed={record.exposed} />}
             {(record.kind === 'workspace' || record.kind === 'user') && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}

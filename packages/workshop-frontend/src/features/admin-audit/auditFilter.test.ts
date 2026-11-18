@@ -80,6 +80,16 @@ describe('auditFilterOf', () => {
     expect(auditFilterOf({ sensitivity: 'content' })).toEqual({})
   })
 
+  it.each(['content', 'metadata'] as const)('keeps what a call exposed, %s', (exposed) => {
+    expect(auditFilterOf({ tab: 'audit', exposed })).toEqual({ exposed })
+  })
+
+  it('leaves out an exposure that is not one', () => {
+    expect(auditFilterOf({ exposed: 'full' })).toEqual({})
+    expect(auditFilterOf({ exposed: ['content'] })).toEqual({})
+    expect(auditFilterOf({ exposed: '' })).toEqual({})
+  })
+
   it('keeps a write action as a method, and "write" as a kind', () => {
     for (const method of ADMIN_WRITE_ACTIONS) expect(auditFilterOf({ method })).toEqual({ method })
     expect(auditFilterOf({ kind: 'write' })).toEqual({ kind: 'write' })
