@@ -186,10 +186,12 @@ type DropdownMenuItemProps = {
   label?: string
   /** It takes something away, such as someone's access, which its colour says. */
   danger?: boolean
+  /** The menu stays open once it is chosen, for an item whose answer shows in the menu, such as Try again. */
+  keepOpen?: boolean
 }
 
-const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger }: DropdownMenuItemProps) => (
-  <Menu.Item onClick={onSelect} disabled={disabled} label={label} className={cn(ITEM_CLASS, danger && 'text-kumo-danger')}>
+const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger, keepOpen }: DropdownMenuItemProps) => (
+  <Menu.Item onClick={onSelect} closeOnClick={!keepOpen} disabled={disabled} label={label} className={cn(ITEM_CLASS, danger && 'text-kumo-danger')}>
     {Icon && <Icon aria-hidden="true" className="shrink-0" />}
     {children}
   </Menu.Item>

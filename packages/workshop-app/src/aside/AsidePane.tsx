@@ -4,11 +4,13 @@ import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@pho
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
+import { PaneStatus } from '@/blocks/PaneStatus'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import type { CodeLines } from '@/components/CodeEditor'
 import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
+import { useGadgetExports } from '@/gadgets/useGadgetExports'
 import { ShareWorkspaceDialog } from '@/workspaces/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { asideItemIcon } from './asideItemIcon'
@@ -147,12 +149,15 @@ export const AsidePane = (props: AsidePaneProps) => {
   )
   // Its code is its workspace's, which whoever it was shared with to use does not build in.
   const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
+  // Exported by whoever can use it, and saved to their accounts by whoever builds there.
+  const exports = useGadgetExports(gadget, title, { saves: readsCode })
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+    exports: exports.menu,
     onOpenSettings: gadget && onOpenSettings && (() => onOpenSettings(gadget, title)),
     onViewCode: readsCode ? () => setCode({ ...codeHere, key: item.key, open: !viewingCode }) : undefined,
     viewingCode,
@@ -170,12 +175,16 @@ export const AsidePane = (props: AsidePaneProps) => {
       onExpand={props.onExpand}
     >
       {content}
+      {exports.status && <PaneStatus {...exports.status} />}
       {share}
+      {exports.dialogs}
     </SidePane>
   ) : (
     <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
+      {exports.status && <PaneStatus {...exports.status} />}
       {share}
+      {exports.dialogs}
     </SidePane>
   )
 }

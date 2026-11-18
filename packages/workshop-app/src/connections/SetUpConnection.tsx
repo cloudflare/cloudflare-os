@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import type { RpcPromise } from 'capnweb'
 import { AGENT_SPAWNER_CONNECTION_ID, type GatekeeperClient } from '@gadgets/workshop-shared/api'
-import type { ResourceConfiguratorFrame as Frame } from '@gadgets/workshop-shared/gatekeeper'
+import { getResourceTypeId, type ResourceConfiguratorFrame as Frame } from '@gadgets/workshop-shared/gatekeeper'
 import { SetUpAgentDialog, type AgentModel } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog } from '@/blocks/SetUpConnectionDialog'
 import { useDefaultModel } from '@/chat/useDefaultModel'
@@ -126,9 +126,11 @@ type Making =
       /** Makes what was chosen, with the account it was chosen in. The dialog closes once it resolves. */
       onConnect: (accountId: number, resourceUrl: string) => Promise<void>
       create?: never
+      save?: never
     }
   | {
       onConnect?: never
+      save?: never
       /**
        * Creates, rather than connects, what an agent asked for (`ActionLogEntry.creation`): in the
        * account chosen and, for a kind with one, as its creation form chose (`configuration`).
@@ -137,6 +139,25 @@ type Making =
         /** What is created, as the dialog's title says it: "Create Document: Weekly notes". */
         title: string
         onCreate: (accountId: number, configuration: string | undefined) => Promise<void>
+      }
+    }
+  | {
+      onConnect?: never
+      create?: never
+      /**
+       * Saves a file, rather than connecting anything, as a kind of resource that is made from
+       * one (`SupportedResource.savableFrom`): in the account chosen, where the kind's creation
+       * form, opened for saving, chose (`destination`). Nothing else is asked of the account, as
+       * the form asks for what it needs itself.
+       */
+      save: {
+        /** What the dialog does: "Save to Google Doc". */
+        title: string
+        /** What else is asked, such as the file's name, before the form. */
+        fields?: ReactNode
+        /** What else is asked has been answered. */
+        ready: boolean
+        onSave: (accountId: number, destination: string) => Promise<void>
       }
     }
 
@@ -164,10 +185,11 @@ export type ConnectResourceProps = Making & {
  * connected first where there is none, with access to the kind of resource; then the service's own
  * form for which one; then `onConnect`, which makes it what the caller needs. Given `create`, it
  * creates one instead: the account, then where and how, in the service's creation form where the
- * kind has one (`SupportedResource.creationConfigurator`).
+ * kind has one (`SupportedResource.creationConfigurator`). Given `save`, it saves a file as one: the
+ * account, then where, in that form opened for saving.
  */
 export const ConnectResource = ({
-  open, onOpenChange, vendorId, name, logoUrl, resourceUrlPattern: pattern, resourceUrl, resource, reason, onBack, onConnect, create,
+  open, onOpenChange, vendorId, name, logoUrl, resourceUrlPattern: pattern, resourceUrl, resource, reason, onBack, onConnect, create, save,
 }: ConnectResourceProps) => {
   const { api, reconnecting } = useApi()
   const connection = useConnectionNotice()
@@ -177,9 +199,10 @@ export const ConnectResource = ({
   const vendor = listed?.[0]?.vendor
   const resources = listed?.[0]?.resources ?? []
   const kind = resources.find(({ urlPattern }) => urlPattern === pattern)
-  // The kinds its form may choose: those shown with it, or, created, just it.
-  const kinds = pattern === undefined ? [] : create ? [pattern] : groupedKinds(resources, pattern)
-  const grantable = resources.filter((candidate) => candidate.grantable && kinds.includes(candidate.urlPattern)).map(({ urlPattern }) => urlPattern)
+  // The kinds its form may choose: those shown with it, or, created or saved, just it.
+  const kinds = pattern === undefined ? [] : create || save ? [pattern] : groupedKinds(resources, pattern)
+  // A save only hands the account a file, so it is given no access to anything for it.
+  const grantable = save ? [] : resources.filter((candidate) => candidate.grantable && kinds.includes(candidate.urlPattern)).map(({ urlPattern }) => urlPattern)
 
   // The account chosen; until one is, the first that can be used.
   const [chosen, setChosen] = useState<number>()
@@ -206,13 +229,17 @@ export const ConnectResource = ({
   // A creation of a kind without a form needs nothing more than the account.
   const formless = create !== undefined && kind !== undefined && !kind.creationConfigurator
   // Only once the kind is known, as whether it has a creation form is.
-  const accountId = open && usable && !needsGrant && pattern && !formless && (!create || kind) ? usable.id : undefined
-  const creating = create !== undefined
+  const accountId = open && usable && !needsGrant && pattern && !formless && (!(create || save) || kind) ? usable.id : undefined
+  const purpose = save ? 'save' : create ? 'create' : 'connect'
+  // A save names the kind by its id, as `saveFile()` does.
+  const typeId = save && kind ? getResourceTypeId(kind) : pattern
   useEffect(() => {
-    if (accountId === undefined || pattern === undefined || reconnecting) return
+    if (accountId === undefined || typeId === undefined || reconnecting) return
     let current = true
     let started: Frame | undefined
-    const start = creating ? api.startCreationConfigurator(accountId, pattern) : api.startResourceConfigurator(accountId, pattern)
+    const start = purpose === 'connect'
+      ? api.startResourceConfigurator(accountId, typeId)
+      : api.startCreationConfigurator(accountId, typeId, purpose === 'save' ? 'save' : undefined)
     start.then(
       (next) => {
         started = next
@@ -230,7 +257,7 @@ export const ConnectResource = ({
       setReady(false)
     }
     // A new grant starts it again, as a form reads the kinds it may offer only when it starts.
-  }, [api, reconnecting, accountId, pattern, grantedKey, name, creating])
+  }, [api, reconnecting, accountId, typeId, grantedKey, name, purpose])
 
   const shown = frame && frame.accountId === accountId ? frame : undefined
   return (
@@ -240,9 +267,9 @@ export const ConnectResource = ({
       name={name}
       logoUrl={logoUrl ?? vendor?.logo?.url}
       color={vendor?.color}
-      title={create?.title}
-      accept={create && { label: 'Create', pending: 'Creating…' }}
-      noAccount={create && `Connect your ${name} account first. It’s created there.`}
+      title={create?.title ?? save?.title}
+      accept={save ? { label: 'Save', pending: 'Saving…' } : create && { label: 'Create', pending: 'Creating…' }}
+      noAccount={save ? `Connect your ${name} account first. It’s saved there.` : create && `Connect your ${name} account first. It’s created there.`}
       resource={resource}
       reason={reason}
       onBack={onBack}
@@ -256,8 +283,9 @@ export const ConnectResource = ({
       onConnectAccount={async () => {
         if (connection?.blocked()) return false
         setBefore(new Set(accounts?.map(({ id }) => id)))
-        // Only what its form may choose, where the service grants each kind on its own.
-        openConnectWindow(await api.connectAccount(vendorId, grantable.length > 0 ? grantable : undefined))
+        // Only what its form may choose, where the service grants each kind on its own; for a save,
+        // nothing, where none named would ask for everything.
+        openConnectWindow(await api.connectAccount(vendorId, save || grantable.length > 0 ? grantable : undefined))
         return true
       }}
       onReconnect={async (id) => {
@@ -271,6 +299,7 @@ export const ConnectResource = ({
         if (flow) openConnectWindow(flow)
         return true
       } : undefined}
+      fields={save?.fields}
       configurator={formless ? undefined : pattern === undefined ? (
         <p className="text-base/5 text-kumo-subtle">The agent didn’t say what kind of resource it wants. Ask it again.</p>
       ) : shown && 'problem' in shown ? (
@@ -293,10 +322,13 @@ export const ConnectResource = ({
       ) : (
         <p role="status" className="appears-late text-base text-kumo-subtle">Opening {name}’s form…</p>
       )}
-      ready={formless || (ready && collect !== undefined)}
+      ready={(save?.ready ?? true) && (formless || (ready && collect !== undefined))}
       onAccept={async () => {
         if (connection?.blocked() || !usable) return false
-        if (create) await create.onCreate(usable.id, collect && !formless ? await collect.collect() : undefined)
+        if (save) {
+          if (!collect) return false
+          await save.onSave(usable.id, await collect.collect())
+        } else if (create) await create.onCreate(usable.id, collect && !formless ? await collect.collect() : undefined)
         else if (collect) await onConnect(usable.id, await collect.collect())
         else return false
         onOpenChange(false)

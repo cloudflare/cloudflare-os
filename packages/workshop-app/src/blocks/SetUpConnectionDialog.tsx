@@ -47,6 +47,8 @@ export type SetUpConnectionDialogProps = {
   onReconnect: (id: number) => Promise<boolean>
   /** The account chosen has not given access to this kind of resource: asks it to, likewise. */
   onGrant?: () => Promise<boolean>
+  /** What else is asked of the user before the service's form, such as the name a file is saved under. */
+  fields?: ReactNode
   /** The service's own form for which one it is, once there is an account to choose it with. */
   configurator?: ReactNode
   /** What the form has chosen can be connected. */
@@ -61,14 +63,15 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 /**
  * What an agent asked to be connected to, set up (`ConnectionRequestCard`'s Set up); or, titled and
- * labelled so, something it asked to be created in one of the user's accounts. Which of the user's
+ * labelled so, something it asked to be created in one of the user's accounts, or a gadget saved
+ * as a file in one. Which of the user's
  * accounts on the service, connecting one first where there is none; then which one it is, in the
  * service's own form, filled in with as much as the agent knew. Each step that goes on in a window
  * of the service's waits for it, saying so, and can open it again.
  */
 export const SetUpConnectionDialog = ({
   open, onOpenChange, name, logoUrl, color, title, accept = { label: 'Connect', pending: 'Connecting…' }, noAccount, resource, reason, onBack,
-  accounts, selectedAccountId, onSelectAccount, onConnectAccount, onReconnect, onGrant, configurator, ready, onAccept,
+  accounts, selectedAccountId, onSelectAccount, onConnectAccount, onReconnect, onGrant, fields, configurator, ready, onAccept,
 }: SetUpConnectionDialogProps) => {
   const [pending, setPending] = useState<Step | 'accept'>()
   // A window of the service's was opened for this, and is waited for.
@@ -138,6 +141,7 @@ export const SetUpConnectionDialog = ({
             action={{ label: opening('grant', 'Give access'), disabled: pending !== undefined, onSelect: () => void run('grant', onGrant) }}
           />
         )}
+        {usable && !onGrant && fields}
         {usable && !onGrant && configurator}
         {waitingFor && <p role="status" className="appears text-base/5 text-kumo-default">Finish in the {name} window. If you closed it, open it again.</p>}
       </div>
