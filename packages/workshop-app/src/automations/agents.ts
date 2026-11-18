@@ -50,6 +50,8 @@ export type Agent = {
   running: number
   /** Its latest run ended on an error, which nothing has run since to put right. */
   failed: boolean
+  /** The keys of spawners it replaced, whose runs are its: a run's page names its agent by one. */
+  aliases?: string[]
 }
 
 /** What says how runs stand, beyond what each chat says of itself. */
@@ -104,15 +106,24 @@ export const agentsOf = (chats: readonly AiChatMetadata[], signals: RunSignals =
   for (const setup of setups) {
     if (!agents.has(agentKeyOf(setup.spawnerId))) add(agentKeyOf(setup.spawnerId), setup)
   }
-  // A run that names only its spawner's name joins the agent whose latest run has that name.
+  // A run joins its spawner's agent. One whose spawner is no longer set up (a chat that set the
+  // agent up again replaced it) joins the one set-up agent of its name, as people know it by its
+  // name; and a run that names only its spawner's name joins the agent whose latest run has that
+  // name.
+  const setUpByName = new Map<string, string | null>()
+  for (const { name, spawnerId } of setups) setUpByName.set(name, setUpByName.has(name) ? null : agentKeyOf(spawnerId))
   const keyByName = new Map<string, string>()
+  for (const [name, key] of setUpByName) if (key) keyByName.set(name, key)
   for (const chat of runs) {
     if (chat.spawnerId !== undefined && chat.spawnerName && !keyByName.has(chat.spawnerName)) keyByName.set(chat.spawnerName, agentKeyOf(chat.spawnerId))
   }
   for (const chat of runs) {
     const name = chat.spawnerName || 'Agent'
-    const key = chat.spawnerId !== undefined ? agentKeyOf(chat.spawnerId) : keyByName.get(name) ?? namedAgentKey(name)
+    const own = chat.spawnerId !== undefined ? agentKeyOf(chat.spawnerId) : undefined
+    const setUp = setUpByName.get(name)
+    const key = own ? (agents.has(own) || !setUp ? own : setUp) : keyByName.get(name) ?? namedAgentKey(name)
     const agent = agents.get(key) ?? add(key, { name, ...(chat.spawnerId !== undefined ? { spawnerId: chat.spawnerId } : {}) })
+    if (own && own !== key && !agent.aliases?.includes(own)) agent.aliases = [...(agent.aliases ?? []), own]
     const status = runStatus(chat, signals)
     if (agent.runs.length === 0) agent.failed = status === 'failed'
     agent.runs.push({ chatId: chat.id, title: chat.title || 'Untitled run', started: chat.started, lastActive: chat.lastActive, status })
@@ -125,6 +136,10 @@ export const agentsOf = (chats: readonly AiChatMetadata[], signals: RunSignals =
     || latest(b) - latest(a)
     || a.name.localeCompare(b.name))
 }
+
+/** The agent `key` names: its own key, or one of a spawner it replaced. */
+export const agentByKey = (agents: readonly Agent[], key: string) =>
+  agents.find((agent) => agent.key === key) ?? agents.find(({ aliases }) => aliases?.includes(key))
 
 /** The runs of a workspace's agents that want a person, latest first, each with its agent. */
 export const runsWantingAttention = (agents: readonly Agent[]) =>

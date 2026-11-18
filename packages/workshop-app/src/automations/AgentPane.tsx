@@ -14,7 +14,7 @@ import { PageLayout } from '@/layouts/PageLayout'
 import { useWorkspaceLooks } from '@/workspaces/useWorkspaceLooks'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { attentionWords, runsWords, STATUS_WORDS, type Agent, type AgentRun } from './agents'
+import { agentByKey, attentionWords, runsWords, STATUS_WORDS, type Agent, type AgentRun } from './agents'
 import { cadenceWords } from './cadence'
 import { useAutomations } from './useAutomations'
 import { useWorkspaceAgents } from './useWorkspaceAgents'
@@ -48,7 +48,7 @@ export const AgentPane = ({ workspaceId, agentKey, onOpenWorkspace, onOpenRun, r
   const now = useNow()
   // A run that predates its spawner's id names its agent by name, and may have joined one that has an id.
   const agent = state.status === 'ready'
-    ? state.agents.find(({ key }) => key === agentKey) ?? (agentKey.startsWith('name:') ? state.agents.find(({ name }) => `name:${name}` === agentKey) : undefined)
+    ? agentByKey(state.agents, agentKey) ?? (agentKey.startsWith('name:') ? state.agents.find(({ name }) => `name:${name}` === agentKey) : undefined)
     : undefined
   useDocumentTitle(agent?.name || 'Agent')
 

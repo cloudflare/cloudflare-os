@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMetadata } from '@gadgets/workshop-shared/api'
-import { agentsOf, attentionWords, runStatus, runsWantingAttention, runsWords, isAgentRun, isFailure } from './agents'
+import { agentByKey, agentsOf, type AgentSetup, attentionWords, runStatus, runsWantingAttention, runsWords, isAgentRun, isFailure } from './agents'
 
 const at = (minutes: number) => new Date(Date.UTC(2026, 10, 14, 12, minutes))
 const chat = (id: number, minutes: number, more: Partial<AiChatMetadata> = {}): AiChatMetadata =>
@@ -101,4 +101,15 @@ describe('agentsOf', () => {
     const [many] = agentsOf([chat(1, 0, { spawnerName: 'A' }), chat(2, 0, { spawnerName: 'A' })])
     expect(runsWords(many, new Date(at(0).getTime() + 2 * 3_600_000))).toBe('2 runs · latest 2 hours ago')
   })
+
+  it('folds the runs of a spawner set up again into the one set up now, by its name, which its old key still names', () => {
+    const setup: AgentSetup = { spawnerId: 9, name: 'Test', gadget: { id: 1, title: 'Hello World', bindingName: 'HELLO_AGENTS' } }
+    const old = { ...chat(4, 30), spawnerId: 7, spawnerName: 'Test' }
+    const agents = agentsOf([old], undefined, [setup])
+    expect(agents).toHaveLength(1)
+    expect(agents[0]).toMatchObject({ key: '9', gadget: setup.gadget, aliases: ['7'] })
+    expect(agents[0]!.runs.map(({ chatId }) => chatId)).toEqual([4])
+    expect(agentByKey(agents, '7')).toBe(agents[0])
+  })
+
 })
