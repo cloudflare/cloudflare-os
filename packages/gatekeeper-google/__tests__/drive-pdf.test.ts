@@ -12,7 +12,7 @@ import {
   type PdfRangeReader,
 } from "../src/drive-pdf";
 import { REFUSED_PAUSE } from "../src/pdf-bands";
-import { pixelsHeld, READ_AHEAD } from "../src/pdf-read-ahead";
+import { pixelRoom, pixelsHeld, READ_AHEAD } from "../src/pdf-read-ahead";
 import type { AiFetcher } from "../src/workers-ai-markdown";
 import { imagePdf, scanPage, type BuiltPdf } from "./pdf-fixture";
 import {
@@ -2389,6 +2389,24 @@ describe("a rendered PDF's pages, read ahead of its reader", () => {
     expect(await readOn(reader)).toBe("\n\n### Page 2\nband 21");
     expect(state.events).toEqual(["open", "render 1", "render 2", "disposed"]);
     expect(pixelsHeld()).toBe(0);
+  });
+
+  it("reads and draws nothing for a page given its room in the turn its text is cancelled in", async () => {
+    // The isolate's room is all taken, by a hold that is not a text's.
+    let blocker = await pixelRoom().reserve(READ_AHEAD.isolateBytes, new AbortController().signal, () => {});
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let { result, asked } = await rendering(FAX_SCAN, renderer);
+    let reader = result.text.getReader();
+    let page = reader.read();
+    await settled();
+    expect([asked, state.events]).toEqual([[], []]);
+
+    // The room comes free and the text is cancelled before the page it was given to goes on.
+    blocker.release();
+    await reader.cancel();
+    expect((await page).done).toBe(true);
+    await settled();
+    expect([asked, state.events, pixelsHeld()]).toEqual([[], [], 0]);
   });
 
   it("gives the pages before one whose band cannot be read, gives up at once the calls of the page after it, and fails the text when it is read up to there", async () => {

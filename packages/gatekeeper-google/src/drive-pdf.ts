@@ -1154,6 +1154,8 @@ function renderedPdf(
         // A page is drawn for calls that can soon be made, not to wait behind those that wait.
         await slots.wanting(BANDS, abort.signal);
         hold = await room.reserve(RENDER_LIMITS.pagePixels, abort.signal, moved);
+        // Room given in the turn the page was given up in is let go, with nothing read or drawn.
+        abort.signal.throwIfAborted();
         if (count === undefined) {
           let unopened = await open(abort.signal, stirred);
           if (unopened) return { unrendered: unopened };
