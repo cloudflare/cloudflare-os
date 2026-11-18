@@ -164,11 +164,12 @@ export type DrivePdfText = {
    *
    * A long PDF's text does not fit a model's context: do not print it or return it whole. To
    * keep all of it, pass `text` to a worktree's `writeBytes(path, text)`, creating an empty
-   * worktree with `createWorktree` when you have none, then read the file a window of lines at
-   * a time, or grep it. `writeBytes()` reads the text to its end, so every page without text
-   * of its own is read by the model, and billed, however little of the file you then read;
-   * when the text errors it fails with that error and stores nothing. To read only some pages,
-   * use a reader and cancel.
+   * worktree with `createWorktree` when you have none, and await it; then, from your next
+   * step on, read the file a window of lines at a time, or grep it: those tools refuse in the
+   * step a file was written in. `writeBytes()` reads the text to its end, so whatever pages a
+   * vision model reads for it are all read, and billed, however little of the file you then
+   * read; when the text errors, `writeBytes()` fails and the file is left as it was. To read
+   * only some pages, use a reader and cancel.
    *
    * A page without text of its own is read by a vision model (every page of a scan, and such
    * pages of a PDF that has text), and only once you read the text, then ahead of you: up to
