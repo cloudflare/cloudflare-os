@@ -1320,12 +1320,10 @@ describe("BigQuery picker", () => {
     expect(calls.filter(path => path.endsWith("/jobs"))).toEqual(["/projects/granted/jobs", "/projects/theirs/jobs"]);
   });
 
-  it("asks for a query project when a dry run fails for another reason than a refusal", async () => {
-    const { ui, calls } = bigQuery();
+  it("asks for a query project, without failing the lookup, when a dry run fails for another reason than a refusal", async () => {
+    const { ui } = bigQuery();
     expect(await ui.getNode("project:flaky")).toMatchObject({ id: "project:flaky", runsQueries: false });
     expect(await ui.listNodes("project:flaky", "", null)).toMatchObject({ nodes: [{ id: "dataset:flaky/logs", runsQueries: false }] });
-    // The failure is not remembered, so a later lookup asks again.
-    expect(calls.filter(path => path === "/projects/flaky/jobs")).toHaveLength(2);
   });
 
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {

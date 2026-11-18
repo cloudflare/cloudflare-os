@@ -352,20 +352,13 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
   /**
    * Whether this account may run query jobs in `projectId`, which BigQuery requires of every query.
    * A project BigQuery lists is taken to allow them. The list can omit a project that does, so any
-   * other is asked with a dry-run job, which is free. A dry run that fails for another reason than
-   * a refusal answers no, as before the check, and is asked again next time.
+   * other is asked once per picker with a dry-run job, which is free. A dry run that fails for any
+   * reason answers no, as before the check, rather than failing the lookup.
    */
   async #runsQueries(projectId: string): Promise<boolean> {
     if ((await this.#heldProjects()).has(projectId)) return true;
-    return cachedBigQuery(this, `runsQueries:${projectId}`, async () => {
-      try {
-        await (await bigQueryApi(this)).dryRun(projectId, "SELECT 1");
-        return true;
-      } catch (error) {
-        if (isBigQueryNotVisible(error)) return false;
-        throw error;
-      }
-    }).catch(() => false);
+    return cachedBigQuery(this, `runsQueries:${projectId}`, async () =>
+      (await bigQueryApi(this)).dryRun(projectId, "SELECT 1").then(() => true, () => false));
   }
 
   async listProjects(query: string): Promise<ConfiguratorOption[]> {
