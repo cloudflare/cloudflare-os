@@ -66,7 +66,9 @@ export const UiBlockCard = ({
     const collect = (content: DocumentFragment) => {
       for (const image of content.querySelectorAll('img[src]')) sources.add(image.getAttribute('src')!)
       // Template contents are separate fragments, which selectors on their parent do not visit.
-      for (const nested of content.querySelectorAll('template')) collect(nested.content)
+      for (const nested of content.querySelectorAll('template')) {
+        if (nested instanceof HTMLTemplateElement) collect(nested.content)
+      }
     }
     collect(template.content)
     return sources

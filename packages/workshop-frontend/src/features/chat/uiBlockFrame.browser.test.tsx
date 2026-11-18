@@ -248,14 +248,15 @@ it('does not invoke the image fallback while pinned bytes are still being read',
 })
 
 
-it('renders pinned literal images cloned from nested templates in an actual card', async () => {
+it.each(['', 'svg', 'math'])('renders nested template images alongside foreign %s markup in an actual card', async namespace => {
   const host = document.body.appendChild(document.createElement('div'))
   resources.push({ [Symbol.dispose]: () => host.remove() })
   const root = createRoot(host)
   roots.push(root)
   const source = 'worktree://OUTPUTS/template.png', oid = 'a'.repeat(40)
   const readBlob = vi.fn<Overseer['readBlob']>(async () => byteStream(png('cyan')))
-  const html = `<template id="outer"><template id="inner">${observedImage('picture', source)}</template></template>
+  const foreign = namespace ? `<${namespace}><template id="foreign"></template></${namespace}>` : ''
+  const html = foreign + `<template id="outer"><template id="inner">${observedImage('picture', source)}</template></template>
     <script>
       document.body.append(document.getElementById('outer').content.cloneNode(true));
       document.body.append(document.getElementById('inner').content.cloneNode(true));
