@@ -1336,6 +1336,28 @@ export interface AuthenticatedApi extends RpcTarget {
       vendorId: string, selectedUserId: string,
   ): Promise<GatekeeperUserSelection | null>;
 
+  // --- Admin access grants ---
+
+  /**
+   * The grant that lets deployment admins read the content of every workspace the caller owns,
+   * if they gave one: the live one, or the last one while it is still kept. Null when there is
+   * none. One record in the caller's account, never copied into a workspace.
+   */
+  getAccountAdminGrant(): Promise<AdminAccessGrant | null>;
+
+  /**
+   * Let deployment admins read the content of every workspace the caller owns, those made later
+   * included, for ADMIN_GRANT_LIFETIME_SECONDS: gives the account-wide grant, or moves the live
+   * one's end to that long from now, any number of times. A workspace learns of the grant when an
+   * admin next asks it for content. Refused `contentOff` (ADMIN_ACCESS_ERROR_CODES) as
+   * Overseer.grantAdminAccess() is.
+   */
+  grantAccountAdminAccess(): Promise<AdminAccessGrant>;
+
+  /** End the account-wide grant now. A workspace stops answering content calls under it within
+   * ADMIN_GRANT_ACCOUNT_CACHE_SECONDS. Changes nothing when there is no live one. */
+  revokeAccountAdminAccess(): Promise<void>;
+
   // --- Deployment admin ---
 
   /**

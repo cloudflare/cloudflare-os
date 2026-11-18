@@ -6,7 +6,7 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
+  AdminAccessGrant, AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
   WorkspaceMetadata, WorkpieceId, UserNotification, ChatTimelineHead,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
@@ -337,6 +337,11 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // Stores the current UTC day and the calls made that day; a stale `day` implicitly resets the
       // count. Folds the former standalone RateLimitDO into the user object.
       dailyLlmCount: <{ day: string; count: number } | null>null,
+
+      // The one grant that lets deployment admins read the content of every workspace this user
+      // owns: the live one, or the last one until it is pruned; null when none was given. It is
+      // kept here alone: a workspace asks this account for it and never holds a copy.
+      accountAdminGrant: <AdminAccessGrant | null>null,
 
       // `passwordHash` value as passed to `login()`, but with an extra round of SHA-256 applied.
       //
