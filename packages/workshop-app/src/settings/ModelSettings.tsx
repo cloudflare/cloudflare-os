@@ -1,4 +1,5 @@
-import { COMPACTION_TRIGGER_RATIO, type ReasoningLevel } from '@gadgets/workshop-shared/api'
+import { useState } from 'react'
+import { COMPACTION_TRIGGER_RATIO, type AiModelProvider, type ReasoningLevel } from '@gadgets/workshop-shared/api'
 import { ModelListItem } from '@/blocks/ModelListItem'
 import { SettingPresets } from '@/blocks/SettingPresets'
 import { SettingRow } from '@/blocks/SettingRow'
@@ -8,6 +9,8 @@ import { Select } from '@/components/Select'
 import { TextField } from '@/components/TextField'
 import { defaultModelOf } from '@/chat/defaultModel'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { ModelDialog } from './ModelDialog'
+import type { ModelSave } from './modelForm'
 import { contextWindowPresets, modelOptionsOf } from './modelOptions'
 import { SoonSelect } from './SoonControls'
 import { messageOf, useAttempt } from './useAttempt'
@@ -134,10 +137,43 @@ const CustomInstructions = () => (
   </SettingsGroup>
 )
 
+/** Which of the user's models the model dialog was opened for, and to do what. */
+type ModelDialogFor = { kind: 'add' } | { kind: 'edit' | 'duplicate'; id: string }
+
+type OwnModelDialogProps = {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  providers: AiModelProvider[]
+  gateway: boolean
+  onSave: (save: ModelSave) => Promise<boolean>
+}
+
+/** The model dialog for changing or copying one of the user's models, which it reads first. Keyed by what it is for. */
+const SourcedModelDialog = ({ kind, id, ...props }: OwnModelDialogProps & { kind: 'edit' | 'duplicate'; id: string }) => {
+  const { state } = useModelConfig(id)
+  const mode = state.status === 'ready'
+    ? { kind, source: { profile: state.profile, config: state.config } }
+    : { kind, reading: true as const, problem: state.status === 'failed' ? state.message : undefined }
+  return <ModelDialog mode={mode} {...props} />
+}
+
 /** Which model answers, how it goes about it and what it is always told, and the models there are. */
 export const ModelSettings = () => {
-  const { state, setPreferred, setQuick, remove } = useModelSettings()
+  const { state, setPreferred, setQuick, remove, save } = useModelSettings()
   const { problem, attempt } = useAttempt()
+  const notice = useConnectionNotice()
+  // What the dialog was last opened for, kept while it closes so that it goes as it was.
+  const [dialog, setDialog] = useState<ModelDialogFor>({ kind: 'add' })
+  const [dialogOpen, setDialogOpen] = useState(false)
+  // Each opening, so that a model is read afresh each time, as it may have been changed since.
+  const [opens, setOpens] = useState(0)
+  // Each change to a model of the user's, after which what is shown of it is read again.
+  const [saves, setSaves] = useState(0)
+  const openDialog = (next: ModelDialogFor) => {
+    setDialog(next)
+    setOpens((count) => count + 1)
+    setDialogOpen(true)
+  }
 
   if (state.status === 'loading') return <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading models…</p>
   if (state.status === 'failed') {
@@ -149,7 +185,19 @@ export const ModelSettings = () => {
     )
   }
 
-  const { models, preferred, quick, builtIn } = state
+  const { models, preferred, quick, builtIn, ownAllowed, gateway, providers } = state
+  const dialogProps: OwnModelDialogProps = {
+    open: dialogOpen,
+    onOpenChange: setDialogOpen,
+    providers,
+    gateway,
+    onSave: async (change) => {
+      if (notice?.blocked()) return false
+      await save(change)
+      setSaves((count) => count + 1)
+      return true
+    },
+  }
   const options = models.map(({ id, name }) => ({ id, label: name }))
   const answering = defaultModelOf(models, preferred)
 
@@ -168,7 +216,7 @@ export const ModelSettings = () => {
               onValueChange={(id) => void attempt('change the default model', () => setPreferred(id))}
             />
           </SettingRow>
-          {answering && <DefaultModelOptions key={answering.id} modelId={answering.id} own={!builtIn.has(answering.id)} />}
+          {answering && <DefaultModelOptions key={`${answering.id}:${saves}`} modelId={answering.id} own={!builtIn.has(answering.id)} />}
         </SettingsCard>
         <SettingsCard>
           <SettingRow title="Quick model" description="Used for small tasks, such as naming chats. With none, chats stay untitled.">
@@ -198,6 +246,8 @@ export const ModelSettings = () => {
                       name={name}
                       builtIn={builtIn.has(id)}
                       roles={[...(id === answering?.id ? ['default' as const] : []), ...(id === quick ? ['quick' as const] : [])]}
+                      onEdit={builtIn.has(id) || !ownAllowed ? undefined : () => openDialog({ kind: 'edit', id })}
+                      onDuplicate={builtIn.has(id) || !ownAllowed ? undefined : () => openDialog({ kind: 'duplicate', id })}
                       onRemove={builtIn.has(id) ? undefined : () => void attempt(`remove ${name}`, () => remove(id))}
                     />
                   ))}
@@ -205,14 +255,18 @@ export const ModelSettings = () => {
               )}
         </SettingsCard>
         <SettingsCard>
-          <SettingRow title="Custom models" description="Add a model from a provider you have an API key for." soon>
-            <Button>Add model</Button>
-          </SettingRow>
-          <SettingRow title="AI providers" description="Your API keys for OpenAI, Anthropic, Google and other providers, shared by all of their models." soon>
-            <Button>Manage providers</Button>
-          </SettingRow>
+          {ownAllowed
+            ? (
+                <SettingRow title="Your own models" description={gateway ? 'Add a model your organization’s providers have that isn’t listed here.' : 'Add a model from a provider you have an API key for.'}>
+                  <Button onClick={() => openDialog({ kind: 'add' })}>Add model</Button>
+                </SettingRow>
+              )
+            : <p className="py-4 text-kumo-subtle">Your administrator has turned off adding your own models.</p>}
         </SettingsCard>
       </SettingsGroup>
+      {ownAllowed && (dialog.kind === 'add'
+        ? <ModelDialog mode={dialog} {...dialogProps} />
+        : <SourcedModelDialog key={opens} kind={dialog.kind} id={dialog.id} {...dialogProps} />)}
     </>
   )
 }

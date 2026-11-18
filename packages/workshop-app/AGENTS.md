@@ -599,6 +599,14 @@ rules that always ask and rules that allow without asking (`ApprovalRules`), in 
 precedence, which the groups' descriptions say. `useStandingApprovals` is kept, unused, for when a
 workspace has settings of its own.
 
+The user's own models are added, edited and duplicated in `settings/ModelDialog` (Edit and
+Duplicate from a row's more menu, Remove beside it), its rules plain and tested in
+`settings/modelForm.ts`: what is asked for follows the provider, and nothing of keys with AI
+Gateway. A saved key or header is never had by the client: it reads as Saved, is sent as `null`
+to keep it only while the provider and address are unchanged, and a duplicate copies the
+original's (`copySecretsFrom`). Where the admin turned the user's models off, a line says so in
+place of Add model.
+
 ### Admin
 
 The deployment's own settings, main's Admin page, a tab to a part: an Admin group after the
