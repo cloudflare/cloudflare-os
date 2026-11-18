@@ -15,20 +15,20 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Section: "Section",
 }));
 
-const MINE: BigQueryNode = { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true };
-const SHARED_PROJECT: BigQueryNode = { id: "project:theirs", kind: "project", title: "theirs", listed: false };
+const MINE: BigQueryNode = { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", runsQueries: true };
+const SHARED_PROJECT: BigQueryNode = { id: "project:theirs", kind: "project", title: "theirs", runsQueries: false };
 const SHARED_DATASET: BigQueryNode = {
-  id: "dataset:theirs/events", kind: "dataset", title: "events", listed: false,
+  id: "dataset:theirs/events", kind: "dataset", title: "events", runsQueries: false,
   path: [{ id: "project:theirs", kind: "project", title: "theirs" }],
 };
 const VIEW: BigQueryNode = {
-  id: "table:mine/sales/daily", kind: "table", title: "daily", subtitle: "View", view: true, listed: true,
+  id: "table:mine/sales/daily", kind: "table", title: "daily", subtitle: "View", view: true, runsQueries: true,
   path: [{ id: "project:mine", kind: "project", title: "mine" }, { id: "dataset:mine/sales", kind: "dataset", title: "sales" }],
 };
 
 type Values = { target?: string | null; queryProject?: string | null };
 
-/** A fresh module, since it remembers which projects are listed at module level, and its frame. */
+/** A fresh module, since it remembers which projects run queries at module level, and its frame. */
 async function open(initial: Values = {}) {
   vi.resetModules();
   const spec = (await import("../src/configurator/bigquery-configurator-ui")).default as unknown as {
@@ -96,7 +96,7 @@ describe("listing", () => {
   it("keeps a looked-up table in view when its dataset cannot be listed", async () => {
     const frame = await open({ target: "table:theirs/events/clicks" });
     const clicks: BigQueryNode = {
-      id: "table:theirs/events/clicks", kind: "table", title: "clicks", listed: false,
+      id: "table:theirs/events/clicks", kind: "table", title: "clicks", runsQueries: false,
       path: [{ id: "project:theirs", kind: "project", title: "theirs" }, { id: "dataset:theirs/events", kind: "dataset", title: "events" }],
     };
     frame.ui.getNode.mockResolvedValueOnce(clicks);
@@ -166,7 +166,7 @@ describe("the query project", () => {
 
   it("keeps a pre-filled query project in view for a project of the account's own, until cleared", async () => {
     const frame = await open({ target: "dataset:mine/sales", queryProject: "other" });
-    frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", listed: true });
+    frame.ui.getNode.mockResolvedValueOnce({ id: "dataset:mine/sales", kind: "dataset", title: "sales", runsQueries: true });
     await frame.load("dataset:mine/sales");
     expect(frame.ready()).toBe(true);
     expect(frame.fields()).toEqual(["What to connect", "Run queries in"]);

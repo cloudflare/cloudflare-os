@@ -68,14 +68,14 @@ const CHOICES: Partial<Record<BigQueryNodeKind, { subtitle: string }>> = {
   dataset: { subtitle: "Every table in it, including ones added later" },
 };
 
-/** A project's badge, when the account holds no role in it and so reaches it only by its datasets. */
+/** A project's badge when the account can't run query jobs in it, as when only datasets in it were shared. */
 const SHARED = "Shared";
 
 /**
- * Whether each project seen is one the account holds a role in, from the nodes listed or looked up,
- * keyed by project id. Module state, as the runtime keeps none for a module.
+ * Whether query jobs can run in each project seen, from the nodes listed or looked up, keyed by
+ * project id. Module state, as the runtime keeps none for a module.
  */
-const listed = new Map<string, boolean>();
+const runsQueries = new Map<string, boolean>();
 
 /**
  * Nodes looked up by id, for a location that then cannot be listed: a table shared on its own can be
@@ -88,14 +88,14 @@ const toAncestor = ({ id, kind, title }: BigQueryCrumb): ConfiguratorUIHierarchy
 
 function toItem(node: BigQueryNode): ConfiguratorUIHierarchyItem {
   const ref = refOf(node.id);
-  if (ref) listed.set(ref.projectId, node.listed);
+  if (ref) runsQueries.set(ref.projectId, node.runsQueries);
   return {
     id: node.id,
     title: node.title,
     kind: node.kind === "table" ? "leaf" : "container",
     icon: node.view ? "view" : node.kind,
     subtitle: node.subtitle,
-    badge: node.kind === "project" && !node.listed ? SHARED : undefined,
+    badge: node.kind === "project" && !node.runsQueries ? SHARED : undefined,
     selectable: true,
     choice: CHOICES[node.kind],
     path: node.path?.map(toAncestor),
@@ -104,10 +104,10 @@ function toItem(node: BigQueryNode): ConfiguratorUIHierarchyItem {
 
 type Context = ConfiguratorUIRenderContext<BigQueryConfiguratorRpc, BigQueryConfiguratorValues>;
 
-/** The project of the chosen node when the account holds no role in it, so its queries need another. */
-function unlistedProject(target: string | null | undefined): string | undefined {
+/** The project of the chosen node when query jobs cannot run in it, so its queries need another. */
+function sharedProject(target: string | null | undefined): string | undefined {
   const ref = target ? refOf(target) : undefined;
-  return ref && listed.get(ref.projectId) === false ? ref.projectId : undefined;
+  return ref && runsQueries.get(ref.projectId) === false ? ref.projectId : undefined;
 }
 
 /** The account's one project, offered as the query project before the user has to look for it. */
@@ -125,7 +125,7 @@ let overrideFor: string | null = null;
 
 /** Fills in the query project a choice in a shared project needs, when the account has only one. */
 function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
-  suggestedFor = unlistedProject(target) === undefined ? null : target;
+  suggestedFor = sharedProject(target) === undefined ? null : target;
   if (suggestedFor === null) return;
   onlyProject ??= ui.listProjects("").then(
     options => options.length === 1 ? options[0]!.value : null,
@@ -157,10 +157,10 @@ export default {
   isReady({ values: { target, queryProject } }) {
     const ref = target ? refOf(target) : undefined;
     if (!ref) return false;
-    // Until the picker's lookup of a pre-filled choice says whether the account holds a role in its
-    // project, the form is not ready: a connection made before then might not be able to query.
-    const held = listed.get(ref.projectId);
-    return held === true || (held === false && typeof queryProject === "string" && queryProject.length > 0);
+    // Until the picker's lookup of a pre-filled choice says whether queries can run in its project,
+    // the form is not ready: a connection made before then might not be able to query.
+    const runs = runsQueries.get(ref.projectId);
+    return runs === true || (runs === false && typeof queryProject === "string" && queryProject.length > 0);
   },
 
   resourceUrl({ values: { target, queryProject } }) {
@@ -178,7 +178,7 @@ export default {
 
   render(context) {
     const { values: { target = null, queryProject = null }, setValues, clearFields, ui } = context;
-    const shared = unlistedProject(target);
+    const shared = sharedProject(target);
     const override = shared === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
     return <Section>
       <Field label="What to connect">
@@ -202,21 +202,21 @@ export default {
           loadItem={async id => {
             const node = await ui.getNode(id);
             if (!node) return null;
-            const known = listed.has(refOf(id)?.projectId ?? "");
+            const known = runsQueries.has(refOf(id)?.projectId ?? "");
             const item = toItem(node);
             lookedUp.set(id, item);
             // Whether a pre-filled choice can be connected is known only now.
             if (!known) {
               setValues({});
               if (queryProject === null) suggestQueryProject(context, id);
-              else if (listed.get(refOf(id)?.projectId ?? "") === true) overrideFor = id;
+              else if (runsQueries.get(refOf(id)?.projectId ?? "") === true) overrideFor = id;
             }
             return item;
           }}
           onChange={next => {
-            // A choice in a project the account holds a role in needs no query project; the one
-            // picked for a shared project stays while the choice moves within it.
-            const nextShared = unlistedProject(next);
+            // A choice in a project queries can run in needs no query project; the one picked for a
+            // shared project stays while the choice moves within it.
+            const nextShared = sharedProject(next);
             const keep = nextShared !== undefined && nextShared === shared;
             if (!keep) {
               clearFields("queryProject");
@@ -234,7 +234,7 @@ export default {
       {(shared !== undefined || override !== undefined) && <Field
         label="Run queries in"
         description={shared !== undefined
-          ? `You have no role in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`
+          ? `This account can't run query jobs in "${shared}", so its queries run in, and are billed to, a project of yours. They still read only what is chosen above.`
           : `Queries run in, and are billed to, this project rather than "${override}". Clear it to use "${override}".`}
       >
         <Autocomplete

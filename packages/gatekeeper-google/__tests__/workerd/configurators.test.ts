@@ -1206,7 +1206,10 @@ describe("BigQuery picker", () => {
   const table = (projectId: string, datasetId: string, tableId: string, type = "TABLE", friendlyName?: string) =>
     ({ tableReference: { projectId, datasetId, tableId }, type, friendlyName });
 
-  /** An account holding a role in `mine` only, which was shared `theirs.events`. */
+  /**
+   * An account BigQuery lists a role in `mine` for, which was shared `theirs.events`, and which may
+   * create query jobs in `granted` though BigQuery does not list it.
+   */
   function bigQuery() {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
@@ -1234,6 +1237,10 @@ describe("BigQuery picker", () => {
           return Response.json(table("theirs", "events", "clicks"));
         case "/projects/example.com:legacy/datasets/events/tables/clicks":
           return Response.json(table("example.com:legacy", "events", "clicks", "SNAPSHOT"));
+        case "/projects/granted/datasets":
+          return Response.json({ datasets: [dataset("granted", "reports")] });
+        case "/projects/granted/jobs":
+          return Response.json({ status: { state: "DONE" } });
       }
       return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
     }));
@@ -1243,11 +1250,11 @@ describe("BigQuery picker", () => {
   it("lists the projects the account holds a role in, and inside one its datasets and tables, by name", async () => {
     const { ui } = bigQuery();
     expect(await ui.listNodes("bigquery", "", null)).toEqual({ nodes: [
-      { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true },
-      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
+      { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", runsQueries: true },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, runsQueries: true },
     ] });
     expect(await ui.listNodes("project:mine", "", null)).toMatchObject({ nodes: [
-      { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", listed: true, path: [{ id: "project:mine", title: "mine" }] },
+      { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", runsQueries: true, path: [{ id: "project:mine", title: "mine" }] },
       { id: "dataset:mine/web", title: "web" },
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "dai", null)).toMatchObject({ nodes: [
@@ -1278,26 +1285,35 @@ describe("BigQuery picker", () => {
     const { ui, calls } = bigQuery();
     // Ahead of a listed project whose name merely contains the ID typed.
     expect(await ui.listNodes("bigquery", "theirs", null)).toEqual({ nodes: [
-      { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, listed: false },
-      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
+      { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, runsQueries: false },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, runsQueries: true },
     ] });
     expect(calls).toContain("/projects/theirs/datasets");
-    expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
+    expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", runsQueries: false }] });
     const console = "https://console.cloud.google.com/bigquery?project=mine&p=theirs&d=events&page=dataset";
     expect(await ui.listNodes("bigquery", console, null)).toMatchObject({ nodes: [
-      { id: "dataset:theirs/events", subtitle: "Shared events", listed: false, path: [{ id: "project:theirs" }] },
+      { id: "dataset:theirs/events", subtitle: "Shared events", runsQueries: false, path: [{ id: "project:theirs" }] },
     ] });
     expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`", null)).toMatchObject({ nodes: [
-      { id: "table:theirs/events/clicks", kind: "table", listed: false },
+      { id: "table:theirs/events/clicks", kind: "table", runsQueries: false },
     ] });
     // A legacy domain-scoped project ID parses as a URL, but is a reference all the same.
     expect(await ui.listNodes("bigquery", "example.com:legacy.events.clicks", null)).toMatchObject({ nodes: [
-      { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, listed: false },
+      { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, runsQueries: false },
     ] });
     expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?project=theirs", null)).toMatchObject({ nodes: [
-      { id: "project:theirs", listed: false },
+      { id: "project:theirs", runsQueries: false },
     ] });
-    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", listed: false });
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", runsQueries: false });
+  });
+
+  it("runs queries in a project BigQuery does not list when it lets the account create jobs there", async () => {
+    const { ui, calls } = bigQuery();
+    expect(await ui.getNode("project:granted")).toMatchObject({ id: "project:granted", runsQueries: true });
+    expect(await ui.listNodes("project:granted", "", null)).toMatchObject({ nodes: [{ id: "dataset:granted/reports", runsQueries: true }] });
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ runsQueries: false });
+    // Each project BigQuery does not list is asked once; one it lists, never.
+    expect(calls.filter(path => path.endsWith("/jobs"))).toEqual(["/projects/granted/jobs", "/projects/theirs/jobs"]);
   });
 
   it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
