@@ -853,6 +853,57 @@ describe('PushReviewDialog under the mark', () => {
       'The review lists no change at right.txt, but listing its commit shows it differs from every parent.')
   })
 
+  // One blob of the largest size checked as text, at five hundred paths of one commit and at
+  // one of the next: the kernel counts it once, so a restricted workspace queues such a push.
+  const oneBlobAtManyPaths = () => {
+    const same = { entry: entry('file', 'same-blob'), sent: text(MAX_BUFFERED_BLOB_SIZE) }
+    return [
+      commit('a'), root('a'), ...Array.from({ length: 500 }, (_, index) => path('a', `copy-${index}.txt`, same)),
+      commit('b', { parents: [oid('a')] }), root('b', [entry('dir', 'root-a')]),
+      path('b', 'again.txt', same), added('b', 'other.txt'),
+    ]
+  }
+
+  it('reads a blob once, however many paths and commits name it, and shows it at each of them', async () => {
+    const overseer = await open({
+      page: serve(oneBlobAtManyPaths()),
+      files: (_commitId, at) => ({ kind: 'text', text: at === 'other.txt' ? 'other\n' : 'the same megabyte\n' }),
+    }, { restricted: true })
+
+    // One read of the blob, at the first path that names it, and one of the other file.
+    expect(readPaths(overseer)).toEqual([fileKey('a', 'copy-0.txt'), fileKey('b', 'other.txt')])
+    expect(readiness()).toBe('The whole review has loaded: 2 commits and 2 files.')
+    expect(approve().disabled).toBe(false)
+
+    await press(row('copy-499.txt'))
+    expect(editor()).toMatchObject({ filename: 'copy-499.txt', text: 'the same megabyte\n' })
+    await press(row('again.txt'))
+    expect(editor()).toMatchObject({ filename: 'again.txt', text: 'the same megabyte\n' })
+    expect(overseer.readFilesAtCommit).toHaveBeenCalledTimes(2)
+    expect(readPaths(overseer)).toHaveLength(2)
+  })
+
+  it('counts a blob that could not be read once, says so at each of its paths, and reads it once more on Retry', async () => {
+    let failing = true
+    const overseer = await open({
+      page: serve(oneBlobAtManyPaths()),
+      files: (_commitId, at) => failing && at !== 'other.txt' ? busy() : { kind: 'text', text: 'text\n' },
+    }, { restricted: true })
+    expect(readiness()).toBe('1 file could not be read.')
+    expect(approve().disabled).toBe(true)
+    expect(row('copy-0.txt').textContent).toContain('could not be read')
+    expect(row('copy-499.txt').textContent).toContain('could not be read')
+    expect(row('again.txt').textContent).toContain('could not be read')
+
+    failing = false
+    await press(button('Retry'))
+    expect(readPaths(overseer)).toEqual([
+      fileKey('a', 'copy-0.txt'), fileKey('b', 'other.txt'), fileKey('a', 'copy-0.txt'),
+    ])
+    expect(readiness()).toBe('The whole review has loaded: 2 commits and 2 files.')
+    expect(approve().disabled).toBe(false)
+  })
+
   it('lets Deny through while the review is still loading', async () => {
     await open({ page: () => new Promise<PushReview>(() => {}) }, { restricted: true })
     expect(approve().disabled).toBe(true)

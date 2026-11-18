@@ -439,9 +439,10 @@ export type ReviewProgress = {
 }
 
 /**
- * How far the review's files have been read. `total` and `loaded` count the files the review
- * lists as text (`expectsText`); `pending`, `failed` and `mismatched` count every read, a
- * symbolic link's and a large file's included. `eager`: the dialog reads the files by itself.
+ * How far the review's files have been read, each blob counted once however many rows name
+ * it. `total` and `loaded` count the files the review lists as text (`expectsText`); `pending`,
+ * `failed` and `mismatched` count every read, a symbolic link's and a large file's included.
+ * `eager`: the dialog reads the files by itself.
  */
 export type FilesProgress = {
   total: number
