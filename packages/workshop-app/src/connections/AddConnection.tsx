@@ -3,6 +3,8 @@ import type { RpcPromise } from 'capnweb'
 import type { GatekeeperClient } from '@gadgets/workshop-shared/api'
 import type { ResourceDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
+import { ChatModelDialog } from '@/blocks/ChatModelDialog'
+import { useBindableModels } from '@/gadgets/useBindableModels'
 import { Dialog } from '@/components/Dialog'
 import { useApi } from '@/rpc/ApiContext'
 import { resourceGroups, resourceOfUrl } from './connectionList'
@@ -29,6 +31,17 @@ export type AddConnectionProps = {
   onAdded: (connection: AddedConnection) => Promise<void>
 }
 
+// One of the user's models, offered with the services, which has a page of its own.
+const MODEL_KEY = 'ai-model'
+const MODEL_SERVICE = { name: 'AI model' }
+const MODEL_CHOICE: ConnectionChoice = {
+  key: MODEL_KEY,
+  service: MODEL_SERVICE,
+  title: 'AI model',
+  description: 'One of your models, for a gadget’s code to use',
+  connected: true,
+}
+
 type Chosen = ConnectionChoice & {
   vendorId: string
   urlPattern: string
@@ -49,12 +62,13 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
   const { state } = useConnections()
   // What is being set up, whose form is the page shown, until Back. It stays after closing, so
   // that the page shown is the one that closes; each opening starts at choosing.
-  const [chosen, setChosen] = useState<Chosen>()
+  const [chosen, setChosen] = useState<Chosen | typeof MODEL_CHOICE>()
   const [wasOpen, setWasOpen] = useState(open)
   if (open !== wasOpen) {
     setWasOpen(open)
     if (open) setChosen(undefined)
   }
+  const models = useBindableModels()
 
   const choices = useMemo((): Chosen[] | undefined => {
     if (state.status !== 'ready') return undefined
@@ -77,19 +91,41 @@ export const AddConnection = memo(function AddConnection({ workspaceId, open, on
       })))
       .toSorted((a, b) => a.service.name.localeCompare(b.service.name) || a.title.localeCompare(b.title))
   }, [state])
+  const offered = useMemo(() => choices && [MODEL_CHOICE, ...choices], [choices])
 
   return (
     // One dialog that goes from the choice to its service's form and back as pages, rather than
     // one put away for another. Each kind is a page of its own, so its form starts afresh.
-    <Dialog open={open} onOpenChange={onOpenChange} wide={chosen !== undefined} page={chosen ? { key: chosen.key, depth: 1 } : { key: '', depth: 0 }}>
+    <Dialog open={open} onOpenChange={onOpenChange} wide={chosen !== undefined && 'vendorId' in chosen} page={chosen ? { key: chosen.key, depth: 1 } : { key: '', depth: 0 }}>
       {!chosen ? (
         <AddConnectionDialog
           open={open}
           onOpenChange={onOpenChange}
           to={to}
-          choices={choices}
+          choices={offered}
           problem={state.status === 'failed' ? `Couldn’t read your services: ${state.message}` : undefined}
-          onChoose={(choice) => setChosen(choices?.find(({ key }) => key === choice.key))}
+          onChoose={(choice) => setChosen(choice.key === MODEL_KEY ? MODEL_CHOICE : choices?.find(({ key }) => key === choice.key))}
+        />
+      ) : !('vendorId' in chosen) ? (
+        <ChatModelDialog
+          open={open}
+          onOpenChange={onOpenChange}
+          models={models?.models}
+          initialModel={models?.initial}
+          onBack={() => setChosen(undefined)}
+          onAdd={async (modelId) => {
+            // Disposed by hand: `using` is not lowered for every browser this runs in.
+            const overseer = api.openWorkspace(workspaceId)
+            const gatekeeper = overseer.newAiModelGatekeeper(modelId)
+            try {
+              const [gatekeeperId, description] = await Promise.all([gatekeeper.getId(), gatekeeper.describe()])
+              const name = models?.models.find(({ id }) => id === modelId)?.name ?? description.title
+              await onAdded({ gatekeeperId, description: { ...description, title: name }, vendorId: MODEL_KEY, service: MODEL_SERVICE, kind: 'AI model' })
+            } finally {
+              gatekeeper[Symbol.dispose]()
+              overseer[Symbol.dispose]()
+            }
+          }}
         />
       ) : (
         <ConnectResource
