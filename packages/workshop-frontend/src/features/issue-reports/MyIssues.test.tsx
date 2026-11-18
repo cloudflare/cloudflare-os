@@ -902,7 +902,12 @@ describe('the grant given with a report', () => {
     await renderPage(fakeApi({ opened: [withGrant(grant)] }), '/issues?report=r-1')
 
     expect(reportGrant()!.textContent).toContain(`This workspace, until ${until(grant)}`)
-    expect(reportGrant()!.textContent).toContain('admins can no longer read this workspace’s content from their next call.')
+    // It speaks of this grant only: another one, given with another report or for all
+    // workspaces, still lets admins read.
+    expect(reportGrant()!.textContent).toContain(
+      'End access ends this grant alone: admins can read nothing more under it from their next call. '
+        + 'Any other grant you gave stays until you end it too.')
+    expect(reportGrant()!.textContent).not.toContain('no longer')
   })
 
   it('renews a workspace’s grant on the workspace, disposes it, and reads the report again', async () => {
@@ -969,7 +974,8 @@ describe('the grant given with a report', () => {
       account: accountGrant(),
     }), '/issues?report=r-1')
     expect(reportGrant()!.textContent).toContain('All my workspaces, until')
-    expect(reportGrant()!.textContent).toContain('the content of all your workspaces within a minute.')
+    expect(reportGrant()!.textContent).toContain(
+      'End access ends this grant alone: admins can read nothing more under it within a minute.')
 
     await click(button('Renew', reportGrant()!))
     expect(api.grantAccountAdminAccess.mock.calls).toEqual([[]])

@@ -595,13 +595,21 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** One page of the reporter's reports, newest first, ISSUE_REPORT_PAGE_SIZE at most. Throws for
-   * a cursor that is not one. The page is filtered by the reporter whatever the cursor. */
+  /** One page of the reporter's reports, newest first, ISSUE_REPORT_PAGE_SIZE at most. The cursor
+   * is the id of the last report of the page before, which is the reporter's own: a report's
+   * number counts every report the deployment was sent, so it is never handed to a reporter or
+   * taken from one. Throws for a cursor that is not the id of a report `reporterId` filed. */
   listOwn(reporterId: string, cursor?: string): OwnIssueReportPage {
-    let { rows, nextCursor } = this.#page(
-        ["r.reporter_id = ?"], [auditOwnerId(reporterId)], cursor, ISSUE_REPORT_PAGE_SIZE);
+    let reporter = auditOwnerId(reporterId);
+    let before: number | undefined;
+    if (cursor !== undefined) {
+      before = this.#report("r.id = ? AND r.reporter_id = ?", cursor, reporter)?.seq;
+      if (before === undefined) throw new TypeError("Invalid cursor.");
+    }
+    let { rows, last } = this.#page(
+        ["r.reporter_id = ?"], [reporter], before, ISSUE_REPORT_PAGE_SIZE);
     let page: OwnIssueReportPage = { reports: rows.map(ownReportOf) };
-    if (nextCursor !== undefined) page.nextCursor = nextCursor;
+    if (last !== undefined) page.nextCursor = last.id;
     return page;
   }
 
@@ -788,9 +796,14 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
       where.push("r.workspace_id = ?");
       params.push(query.workspace);
     }
-    let { rows, nextCursor } = this.#page(where, params, query.cursor, limit);
+    let before: number | undefined;
+    if (query.cursor !== undefined) {
+      before = /^[0-9]+$/.test(query.cursor) ? Number(query.cursor) : NaN;
+      if (!Number.isSafeInteger(before)) throw new TypeError("Invalid cursor.");
+    }
+    let { rows, last } = this.#page(where, params, before, limit);
     let page: AdminIssueReportPage = { reports: rows.map(adminReportOf) };
-    if (nextCursor !== undefined) page.nextCursor = nextCursor;
+    if (last !== undefined) page.nextCursor = String(last.seq);
     return page;
   }
 
@@ -1086,22 +1099,19 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
     return row;
   }
 
-  // One page of the reports matching `where`, newest first, and the cursor of the next when
-  // there is one. Throws for a cursor that is not a report's number.
-  #page(where: string[], params: string[], cursor: string | undefined, limit: number)
-      : { rows: ReportRow[]; nextCursor?: string } {
+  // One page of the reports matching `where` that were filed before the report numbered
+  // `before`, newest first, with the page's last report when more follow it.
+  #page(where: string[], params: string[], before: number | undefined, limit: number)
+      : { rows: ReportRow[]; last?: ReportRow } {
     let values: (string | number)[] = [...params];
-    if (cursor !== undefined) {
-      let before = /^[0-9]+$/.test(cursor) ? Number(cursor) : NaN;
-      if (!Number.isSafeInteger(before)) throw new TypeError("Invalid cursor.");
+    if (before !== undefined) {
       where = [...where, "r.seq < ?"];
       values.push(before);
     }
     let filter = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     let rows = this.ctx.storage.sql.exec<ReportRow>(
         `${REPORT_SELECT} ${filter} ORDER BY r.seq DESC LIMIT ?`, ...values, limit + 1).toArray();
-    return rows.length > limit
-        ? { rows: rows.slice(0, limit), nextCursor: String(rows[limit - 1].seq) } : { rows };
+    return rows.length > limit ? { rows: rows.slice(0, limit), last: rows[limit - 1] } : { rows };
   }
 
   // A report's thread as `reader` reads it, oldest entry first: for the reporter the public

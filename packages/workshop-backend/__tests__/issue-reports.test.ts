@@ -963,16 +963,20 @@ describe("listing issue reports", () => {
     expect(pages.map(page => page.length)).toStrictEqual([ISSUE_REPORT_PAGE_SIZE, 50, 20]);
     expect(pages.flat()).toStrictEqual(filed.toReversed());
 
-    // A cursor is a position, not a permission: whatever it is, the page is the caller's own.
+    // A reporter's cursor is the id of one of their own reports. A report's number is none: it
+    // would place the reporter's reports among everybody's, and so count the others'.
+    let first = await run(reports => reports.listOwn("ada"));
+    expect(first.nextCursor).toBe(filed.at(-ISSUE_REPORT_PAGE_SIZE));
     let bens = await run(reports => reports.listOwn("ben"));
     expect(bens.reports).toHaveLength(24);
-    for (let position of ["1", "40", "100000"]) {
-      let page = await run(reports => reports.listOwn("ben", position));
-      expect(page.reports.every(report => report.reporter.id === "ben"), position).toBe(true);
-    }
-    for (let invalid of ["", "abc", "-1", "1.5", "1e3", " 7", "9".repeat(30)]) {
-      expect(await refusal(() => run(reports => reports.listOwn("ada", invalid))), invalid)
+    expect(bens.nextCursor).toBeUndefined();
+    let older = await run(reports => reports.listOwn("ben", bens.reports[0].id));
+    expect(older.reports).toStrictEqual(bens.reports.slice(1));
+    for (let invalid of ["", "abc", "-1", "1", "40", "100000", filed[0], crypto.randomUUID()]) {
+      expect(await refusal(() => run(reports => reports.listOwn("ben", invalid))), invalid)
           .toBe("TypeError");
+    }
+    for (let invalid of ["", "abc", "-1", "1.5", "1e3", " 7", "9".repeat(30), filed[0]]) {
       expect(await refusal(() => run(reports => reports.list({ cursor: invalid, limit: 10 }))),
           invalid).toBe("TypeError");
     }

@@ -246,6 +246,11 @@ it("files a report naming where its reporter was, and refuses one that points el
   const own = await reporter.api.listIssueReports();
   expect(own).toEqual({ reports: [home, report] });
   await expect(reporter.api.listIssueReports("not-a-cursor")).rejects.toThrow();
+  // A cursor is the id of one of the reporter's own reports: a report's number, which counts
+  // everybody's reports, is none, and neither is somebody else's report.
+  expect(await reporter.api.listIssueReports(home.id)).toEqual({ reports: [report] });
+  await expect(reporter.api.listIssueReports("1")).rejects.toThrow();
+  await expect(stranger.api.listIssueReports(home.id)).rejects.toThrow();
   expect(await stranger.api.listIssueReports()).toEqual({ reports: [] });
   expect(await reporter.api.getIssueReport(report.id)).toEqual({ ...report, entries: [] });
 

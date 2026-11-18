@@ -1409,7 +1409,7 @@ export interface AuthenticatedApi extends RpcTarget {
   /** The issue reports the caller filed that are still kept, newest first, a page of at most
    * ISSUE_REPORT_PAGE_SIZE at a time: a user can keep more reports than one answer holds.
    * `cursor` is the previous page's `nextCursor`; absent for the first page. Throws for a cursor
-   * that is not one this method returned. */
+   * that is not one this method returned to the caller. */
   listIssueReports(cursor?: string): Promise<OwnIssueReportPage>;
 
   /** One issue report the caller filed, with its public thread, oldest entry first. An admin's

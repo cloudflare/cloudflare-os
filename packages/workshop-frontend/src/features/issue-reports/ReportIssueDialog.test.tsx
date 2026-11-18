@@ -271,6 +271,97 @@ describe('what a report says of where its reporter was', () => {
   })
 })
 
+describe('what a report says of the app its reporter ran', () => {
+  it('names the frontend build the page runs before the backend it is connected to', async () => {
+    // The page's entry script, as a build names it.
+    const entry = document.head.appendChild(document.createElement('script'))
+    entry.type = 'module'
+    entry.setAttribute('src', '/assets/index-OLDBUILD.js')
+    try {
+      const fake = fakeApi()
+      // A newer backend than the page: the connection moved to it and the page was not reloaded.
+      await renderDialog(fake, HOME, { backendVersion: 'backend-new' } as ServerConfig)
+      await typeText('The export button does nothing')
+      await send()
+
+      expect(fake.api.submitIssueReport.mock.calls[0][0].context)
+        .toEqual({ appVersion: '/assets/index-OLDBUILD.js @ backend-new' })
+    } finally {
+      entry.remove()
+    }
+  })
+})
+
+describe('a report from an editor whose chat or gadget is gone', () => {
+  const gone = () => createIssueReportError(ISSUE_REPORT_ERROR_CODES.contextNotFound)
+
+  it('is filed for the workspace alone, with its images and its grant', async () => {
+    const fake = fakeApi()
+    fake.api.submitIssueReport.mockRejectedValueOnce(gone())
+    await renderDialog(fake, EDITOR)
+    await typeText('The export button does nothing')
+    await attach(imageFile('one.png', 1).file)
+    await send()
+
+    expect(fake.api.submitIssueReport.mock.calls.map(([input]) => input.context)).toEqual([
+      { workspaceId: 'w1', chatId: 7, gadgetId: 3, appVersion: '1.2.3' },
+      { workspaceId: 'w1', appVersion: '1.2.3' },
+    ])
+    expect(fake.api.addIssueReportImage).toHaveBeenCalledOnce()
+    expect(dialog().querySelector('textarea')).toBeNull()
+  })
+
+  it('stays a draft when the workspace is what cannot be opened', async () => {
+    const fake = fakeApi()
+    fake.api.submitIssueReport.mockRejectedValue(gone())
+    await renderDialog(fake, EDITOR)
+    await typeText('The export button does nothing')
+    await send()
+
+    expect(fake.api.submitIssueReport).toHaveBeenCalledTimes(2)
+    expect(dialog().querySelector('[role="alert"]')?.textContent)
+      .toBe('This report names a workspace, chat or gadget you cannot open.')
+    expect(dialog().querySelector('textarea')!.value).toBe('The export button does nothing')
+  })
+
+  it('is not sent again when it named neither', async () => {
+    const fake = fakeApi()
+    fake.api.submitIssueReport.mockRejectedValue(gone())
+    await renderDialog(fake, OWNED)
+    await typeText('The export button does nothing')
+    await send()
+
+    expect(fake.api.submitIssueReport).toHaveBeenCalledOnce()
+  })
+})
+
+describe('a capture whose prompt is still unanswered', () => {
+  it('is withdrawn when the dialog is unmounted without closing', async () => {
+    const stop = vi.fn<() => void>()
+    const stream = { getTracks: () => [{ stop, addEventListener: () => {} }] }
+    let answerPrompt!: (stream: unknown) => void
+    const getDisplayMedia = vi.fn<() => Promise<unknown>>(
+      () => new Promise((resolve) => { answerPrompt = resolve }))
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getDisplayMedia } })
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue()
+    try {
+      await renderDialog(fakeApi(), HOME)
+      await act(async () => { button('Capture this tab').click() })
+      expect(getDisplayMedia).toHaveBeenCalledOnce()
+
+      // The shell around the dialog is replaced: no close, so nothing else withdraws the press.
+      await act(async () => root!.unmount())
+      root = undefined
+      await act(async () => { answerPrompt(stream) })
+
+      expect(stop).toHaveBeenCalledOnce()
+      expect(play).not.toHaveBeenCalled()
+    } finally {
+      Reflect.deleteProperty(navigator, 'mediaDevices')
+    }
+  })
+})
+
 describe('sending', () => {
   it('files the report, then sends each image, then gives the grant with the report’s id', async () => {
     const fake = fakeApi()

@@ -36,7 +36,9 @@ An `IssueReport` holds:
 - **where the reporter was**, as ids only (`IssueReportContext`): the workspace, the open chat,
   the open gadget, each optional, and the app version their client ran. A report from the home
   page names no workspace. The version is a label, cut to 100 characters, and never read to make
-  a decision;
+  a decision. The Workshop sends the frontend build the page runs (its entry script) and then
+  the version of the backend it is connected to: a tab that outlived a deployment runs an older
+  build than the backend it reconnected to;
 - **up to five images** (see [Images](#images));
 - **its status** (see [Statuses](#statuses));
 - **the links admins attached**, which only admins read (see [Links](#links));
@@ -76,7 +78,9 @@ The reporter then has:
 
 - `listIssueReports(cursor?)`: their own reports that are still kept, newest first. The list is
   paged, `ISSUE_REPORT_PAGE_SIZE` (50) a page with a cursor, since a user can keep more reports
-  than one answer holds;
+  than one answer holds. The cursor is the id of one of the reporter's own reports and no other
+  value is taken: the admins' list is paged by a report's number, which counts every report the
+  deployment was sent, so a reporter is never handed one and cannot page by one;
 - `getIssueReport(reportId)`: one report with its public thread, oldest entry first;
 - `readIssueReportImage(reportId, imageId)`: one image's bytes, as a stream;
 - `replyToIssueReport(reportId, text)`;
@@ -371,7 +375,9 @@ log either; the report's copy of it is where admins see it.
 - **Report issue** is one component (`features/issue-reports/`), offered in the user menu, the
   workspace editor's top bar included, in the editor's phone menu and in a workspace's row menu.
   Opened from a workspace, it carries the workspace, the open chat and the open gadget as the
-  report's context.
+  report's context; the use-only view of a gadget carries the workspace and that gadget. A chat
+  or gadget that is gone by the time the report is sent (refused `contextNotFound`) does not hold
+  the report back: the dialog files it again for the workspace alone.
 - **The dialog** asks what went wrong, a priority, images, and what to give admins access to:
   Metadata only (the default, and no grant), or Content, for this workspace or for all my
   workspaces, for 72 hours, which the reporter can end sooner. The content options appear only
@@ -381,11 +387,15 @@ log either; the report's copy of it is where admins see it.
 - **Images in the dialog**: an opt-in Capture this tab button, which uses the browser's own
   screen-capture prompt (`getDisplayMedia`, preferring the current tab), takes one frame, stops
   the capture at once and shows the frame as a preview the user can remove; and images the user
-  picks, drops or pastes. Five in all. Where the browser has no screen capture the button is
+  picks, drops or pastes. Five in all. A capture that cannot take its frame within three seconds
+  of the prompt's answer (the page went to the background, or the capture delivers nothing) is
+  stopped with no picture, and a press whose prompt is still unanswered is withdrawn when the
+  dialog closes or goes away. Where the browser has no screen capture the button is
   absent, and nothing is captured without the press and the browser's prompt.
 - **My issues** (`/issues`, with a sidebar item that carries the count): the reporter's reports
   with their statuses, the public thread where they reply, the images they sent, and the grants
-  they gave, each with Renew and End access.
+  they gave, each with Renew and End access. End access ends that one grant, and the page says
+  so: any other grant the owner gave stays until it is ended too.
 - **The Reports tab** of the admin panel: the list with its filters, a report with its whole
   thread, a reply, an admins-only note, the links, the status, the images, the grant that came
   with it and its time left, the retention setting, and the way into the workspace's admin page.
