@@ -539,6 +539,17 @@ skill was given here while its name is still made from it. A user with no Contex
 so, with the way to turn it on where the deployment offers it. The examples (`exampleSkills.ts`)
 are kept the same way for the scripted chats (`exampleSkillsBackend`).
 
+A collection is also a thing of its own, since it is what is shared (`plans/skill-collections.md`).
+The settings list them under the skills (`SkillCollections`, rows as a skill's are), the user's own
+first, and make an empty one. A collection's page (`/skills/collections/<id>`, `CollectionPane`)
+is laid out as a skill's: its name and description edited in place by whoever may edit it, a
+Share button, then Skills (its rows, added to directly) and Settings (Delete for owners, Leave for
+whoever it was shared with). `ShareCollectionDialog` is the workspace dialog's twin: people by
+role, through `createGatekeeperUserSelection('context', …)` so the browser never names an account,
+and everyone in the deployment as one row. What the user may do comes from
+`getContextCollectionPermissions`, so a skill in a collection shared to edit is editable
+(`Skill.editable`); a collection whose permissions cannot be read is only read.
+
 A new chat's composer offers the user's skills from the Library, as there is no workspace yet to
 list them, by the id the workspace knows each by (`skillCommandOf`); the first message finds it in
 the workspace it goes to (`startConversation`), and says so where that workspace does not offer

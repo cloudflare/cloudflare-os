@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { AddCollectionDialog } from '@/blocks/AddCollectionDialog'
 import { ApprovalRules, type ApprovalRule } from '@/blocks/ApprovalRules'
 import { AddSkillDialog } from '@/blocks/AddSkillDialog'
 import { FilePreviewCard } from '@/blocks/FilePreviewCard'
@@ -73,6 +74,8 @@ export const SettingsPreview = () => {
   const [rules, setRules] = useState(RULES)
   const [quiet, setQuiet] = useState(['design'])
   const [addingSkill, setAddingSkill] = useState(false)
+  const [addingToCollection, setAddingToCollection] = useState(false)
+  const [makingCollection, setMakingCollection] = useState(false)
 
   return (
     <>
@@ -288,6 +291,39 @@ export const SettingsPreview = () => {
               if (skill.name.toLowerCase() === 'weekly report') throw new Error('A skill is already there.')
               say(`added “${skill.name}”${skill.tag ? `, tagged ${skill.tag}` : ''}`)
               setAddingSkill(false)
+            }}
+          />
+        </div>
+      </Section>
+      <Section title="Collections, a SkillRow each, as the Skills part of the settings lists them under the skills: the viewer’s own first, My skills ahead, one shared with others, one somebody shared with them, and the organization’s. AddCollectionDialog: a name, without which it cannot be made, and what it is for; held while it is made, and open under why where it could not be (one called Taken). AddSkillDialog from a collection’s page, which says where it goes in place of a tag">
+        <div className="flex w-full max-w-3xl flex-col gap-3">
+          <div className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
+            <SkillRow name="My skills" detail="4 skills" owner={{ kind: 'person', name: 'Ada Lovelace', you: true }} onSelect={() => say('opened My skills')} />
+            <SkillRow name="Design team" detail="2 skills · Shared" owner={{ kind: 'person', name: 'Ada Lovelace', you: true }} onSelect={() => say('opened Design team')} />
+            <SkillRow name="Support playbook" detail="No skills · Shared by Grace Hopper" owner={{ kind: 'person', name: 'Grace Hopper' }} onSelect={() => say('opened Support playbook')} />
+            <SkillRow name="Company" detail="12 skills · Organization" owner={{ kind: 'organization' }} onSelect={() => say('opened Company')} />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setMakingCollection(true)}>New collection</Button>
+            <Button onClick={() => setAddingToCollection(true)}>Add skill to Design team</Button>
+          </div>
+          <AddCollectionDialog
+            open={makingCollection}
+            onOpenChange={setMakingCollection}
+            onAdd={async ({ title }) => {
+              await new Promise((resolve) => setTimeout(resolve, 600))
+              if (title.toLowerCase() === 'taken') throw new Error('The Context Library refused it.')
+              say(`made “${title}”`)
+              setMakingCollection(false)
+            }}
+          />
+          <AddSkillDialog
+            open={addingToCollection}
+            onOpenChange={setAddingToCollection}
+            into="Design team"
+            onAdd={(skill) => {
+              say(`added “${skill.name}” to Design team`)
+              setAddingToCollection(false)
             }}
           />
         </div>

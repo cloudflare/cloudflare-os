@@ -1,6 +1,8 @@
 import type {
   ContextCollectionMember,
   ContextCollectionMetadata,
+  ContextCollectionPermissions,
+  ContextCollectionRole,
   ContextCollectionVisibility,
   ContextDocument,
   EnabledCollectionInfo,
@@ -12,7 +14,14 @@ import { isValidSkillName, skillNameFromTitle } from './skillName'
 import { readSkillUploadSource } from './skillUpload'
 import { SKILLS_APP, UNTAGGED, type SkillsApi, type SkillsBackend } from './SkillStore'
 
-type Collection = { info: EnabledCollectionInfo; documents: Map<string, ContextDocument>; members: ContextCollectionMember[] }
+type Collection = { info: EnabledCollectionInfo; documents: Map<string, ContextDocument>; members: ContextCollectionMember[]; everyoneCanView: boolean }
+
+/** What the viewer may do with a collection, from their role in it, as the Context Library works it out for someone who is not an admin. */
+const permissionsOf = ({ info }: Collection): ContextCollectionPermissions => {
+  const role = info.source === 'private' ? info.membership?.role : undefined
+  const canEdit = role === 'owner' || role === 'editor'
+  return { canEdit, canShare: canEdit, canManageOwners: role === 'owner', canDelete: role === 'owner' }
+}
 
 const isManifest = (path: string) => path === MANIFEST || path.endsWith(`/${MANIFEST}`)
 
@@ -37,10 +46,15 @@ export class MemorySkillsBackend implements SkillsBackend {
   /** A collection put there as it is, with whose it is. */
   seed(info: Omit<EnabledCollectionInfo, 'id' | 'lastUpdated' | 'description'>, documents: Array<Pick<ContextDocument, 'path' | 'body' | 'contentType'> & { lastUpdated?: Date }>, owner?: string) {
     const id = `collection-${(this.#made += 1)}`
+    const role = info.membership?.role
     const collection: Collection = {
       info: { ...info, id, description: '', lastUpdated: this.now() },
       documents: new Map(),
-      members: owner ? [{ memberId: 'owner', role: 'owner', displayName: owner, isViewer: false }] : [],
+      members: [
+        ...(owner ? [{ memberId: 'owner', role: 'owner' as const, displayName: owner, isViewer: false }] : []),
+        ...(info.source === 'private' && role ? [{ memberId: 'me', role, isViewer: true }] : []),
+      ],
+      everyoneCanView: false,
     }
     this.#collections.set(id, collection)
     for (const { lastUpdated, ...document } of documents) this.#put(collection, document.path, { description: '', ...document }, lastUpdated)
@@ -126,7 +140,68 @@ export class MemorySkillsBackend implements SkillsBackend {
     return { id, title, description, visibility, created: info.lastUpdated, lastUpdated: info.lastUpdated, documentCount: 0, content: { source: 'web' } }
   }
 
-  getContextCollectionSharing = async (collectionId: string) => ({ members: this.#collection(collectionId).members, everyoneCanView: false, hasOwner: true })
+  updateContextCollection = async (collectionId: string, { title, description }: { title?: string; description?: string }) => {
+    const collection = this.#editable(collectionId)
+    collection.info = { ...collection.info, title: title ?? collection.info.title, description: description ?? collection.info.description, lastUpdated: this.now() }
+  }
+
+  deleteContextCollection = async (collectionId: string) => {
+    if (!permissionsOf(this.#collection(collectionId)).canDelete) throw new Error('Only an owner can delete it.')
+    this.#collections.delete(collectionId)
+  }
+
+  getContextCollectionPermissions = async (collectionId: string) => permissionsOf(this.#collection(collectionId))
+
+  getContextCollectionSharing = async (collectionId: string) => {
+    const { members, everyoneCanView } = this.#collection(collectionId)
+    return { members: [...members], everyoneCanView, hasOwner: members.some(({ role }) => role === 'owner') }
+  }
+
+  /** Shares with whoever a ticket from `asApi().createGatekeeperUserSelection` names, by the id it was made for. */
+  shareContextCollection = async (collectionId: string, ticket: string, role: ContextCollectionRole) => {
+    const collection = this.#editable(collectionId)
+    const userId = ticket.replace(/^ticket:/, '')
+    collection.members = [...collection.members.filter(({ memberId }) => memberId !== userId), { memberId: userId, role, displayName: userId, isViewer: false }]
+    this.#markShared(collection)
+  }
+
+  setContextCollectionMemberRole = async (collectionId: string, memberId: string, role: ContextCollectionRole) => {
+    const collection = this.#editable(collectionId)
+    collection.members = collection.members.map((member) => (member.memberId === memberId ? { ...member, role } : member))
+  }
+
+  removeContextCollectionMember = async (collectionId: string, memberId: string) => {
+    const collection = this.#editable(collectionId)
+    collection.members = collection.members.filter((member) => member.memberId !== memberId)
+    this.#markShared(collection)
+  }
+
+  leaveContextCollection = async (collectionId: string) => {
+    const { members } = this.#collection(collectionId)
+    const me = members.find(({ isViewer }) => isViewer)
+    if (me?.role === 'owner' && !members.some((other) => other !== me && other.role === 'owner')) throw new Error('The last owner can’t leave.')
+    this.#collections.delete(collectionId)
+  }
+
+  setContextCollectionEveryoneCanView = async (collectionId: string, everyoneCanView: boolean) => {
+    const collection = this.#editable(collectionId)
+    collection.everyoneCanView = everyoneCanView
+    this.#markShared(collection)
+  }
+
+  #editable(collectionId: string) {
+    const collection = this.#collection(collectionId)
+    if (!permissionsOf(collection).canEdit) throw new Error('Collection not found or you don’t have access.')
+    return collection
+  }
+
+  /** Whether anyone besides the viewer can read it, as the library lists it. */
+  #markShared(collection: Collection) {
+    const { membership } = collection.info
+    if (!membership) return
+    const shared = collection.everyoneCanView || collection.members.some(({ isViewer }) => !isViewer)
+    collection.info = { ...collection.info, membership: { ...membership, shared } }
+  }
 
   /** As much of the user's API as the skills open it with, giving this. */
   asApi(): SkillsApi {
@@ -135,6 +210,8 @@ export class MemorySkillsBackend implements SkillsBackend {
       getGatekeeperApp: (async (id: string) => (id === SKILLS_APP ? frame : null)) as SkillsApi['getGatekeeperApp'],
       listAddableGatekeepers: (async () => []) as SkillsApi['listAddableGatekeepers'],
       provisionAmbientAccount: (async () => {}) as SkillsApi['provisionAmbientAccount'],
+      createGatekeeperUserSelection: (async (vendorId: string, userId: string) =>
+        vendorId === SKILLS_APP ? { ticket: `ticket:${userId}`, profile: { displayName: userId } } : null) as unknown as SkillsApi['createGatekeeperUserSelection'],
     }
   }
 }

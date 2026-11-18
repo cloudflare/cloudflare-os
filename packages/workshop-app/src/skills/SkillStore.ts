@@ -1,5 +1,12 @@
 import { stringify } from 'yaml'
-import type { ContextApi, ContextDocumentSummary, EnabledCollectionInfo } from '@gadgets/gatekeeper-context/src/context-types'
+import type {
+  ContextApi,
+  ContextCollectionPermissions,
+  ContextCollectionRole,
+  ContextCollectionSharing,
+  ContextDocumentSummary,
+  EnabledCollectionInfo,
+} from '@gadgets/gatekeeper-context/src/context-types'
 import type { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { MANIFEST, type SkillFile } from './skillFiles'
 import { humanizeSkillName, isValidSkillName, skillNameFromTitle } from './skillName'
@@ -18,6 +25,10 @@ export type Skill = {
   description: string
   /** What it is filed under, if anything: the collection it is in, but for the user's own first one. */
   tag?: string
+  /** The collection it is kept in (`SkillCollection.id`). */
+  collectionId: string
+  /** The user may change it: its collection is theirs, or was shared with them to edit. */
+  editable: boolean
   /** Whose it is: the user's own, somebody's who shared it with them, or the deployment's, for everyone. */
   source: { kind: 'mine' } | { kind: 'shared'; by: string } | { kind: 'organization' }
   updated: Date
@@ -30,8 +41,31 @@ export type Skill = {
   files?: SkillFile[]
 }
 
-/** A skill as it is written from nothing: what it is called, what it is for, and a tag, if any. */
-export type WrittenSkill = { name: string; description: string; tag?: string }
+/**
+ * A collection of skills, as the Context Library keeps them: what the skills' tags name, with who
+ * has it. It is shared whole, never one skill of it.
+ */
+export type SkillCollection = {
+  id: string
+  title: string
+  description: string
+  /** Whose it is: the user's own (which they may have shared), somebody's who shared it with them, or the organization's. */
+  source: Skill['source']
+  /** The user's role in it, for one that is not the organization's. */
+  role?: ContextCollectionRole
+  /** Somebody besides the user can read it: shared with someone, or with everyone. */
+  shared: boolean
+  /** What the user may do with it, as the Context Library says; nothing, where it could not say. */
+  permissions: ContextCollectionPermissions
+  /** It is the user's own first one, whose skills have no tag. */
+  untagged: boolean
+  /** How many skills are in it. */
+  skillCount: number
+  updated: Date
+}
+
+/** A skill as it is written from nothing: what it is called, what it is for, and a tag or a collection to put it in, if any. */
+export type WrittenSkill = { name: string; description: string; tag?: string; collectionId?: string }
 
 /** The skills, as far as they have been read. */
 export type SkillsState =
@@ -39,7 +73,7 @@ export type SkillsState =
   /** The user has no Context Library account to keep skills in: with `canTurnOn`, the deployment offers them one. */
   | { status: 'off'; canTurnOn: boolean }
   | { status: 'failed'; message: string }
-  | { status: 'ready'; skills: Skill[] }
+  | { status: 'ready'; skills: Skill[]; collections: SkillCollection[] }
 
 /** The part of the Context Library's management API (`ContextApi`) the skills are read and written through. */
 export type SkillsBackend = Pick<
@@ -53,11 +87,19 @@ export type SkillsBackend = Pick<
   | 'deleteContextSkill'
   | 'renameContextSkill'
   | 'createContextCollection'
+  | 'updateContextCollection'
+  | 'deleteContextCollection'
+  | 'getContextCollectionPermissions'
   | 'getContextCollectionSharing'
+  | 'shareContextCollection'
+  | 'setContextCollectionMemberRole'
+  | 'removeContextCollectionMember'
+  | 'leaveContextCollection'
+  | 'setContextCollectionEveryoneCanView'
 >
 
 /** The part of the user's API that opens the Context Library, or turns it on. */
-export type SkillsApi = Pick<AuthenticatedApi, 'getGatekeeperApp' | 'listAddableGatekeepers' | 'provisionAmbientAccount'>
+export type SkillsApi = Pick<AuthenticatedApi, 'getGatekeeperApp' | 'listAddableGatekeepers' | 'provisionAmbientAccount' | 'createGatekeeperUserSelection'>
 
 /** The Context Library's gatekeeper, whose management app holds the user's skills. */
 export const SKILLS_APP = 'context'
@@ -68,6 +110,9 @@ export const UNTAGGED = 'My skills'
 const MARKDOWN = 'text/markdown'
 const LOADING: SkillsState = { status: 'loading' }
 const NONE: Skill[] = []
+const NO_COLLECTIONS: SkillCollection[] = []
+/** What may be done with a collection whose permissions could not be read: nothing, as the Context Library's own app has it. */
+const READ_ONLY: ContextCollectionPermissions = { canEdit: false, canShare: false, canManageOwners: false, canDelete: false }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -116,6 +161,32 @@ const parentOf = (folder: string) => folder.replace(/[^/]+\/$/, '')
 /** A collection of the user's own, which they may write to. */
 const isOwn = (info: EnabledCollectionInfo) => info.source === 'private' && info.membership?.role === 'owner'
 
+/** Whose a collection is: the user's own, somebody's who shared it with them (by the name they had then), or the organization's. */
+const sourceOf = (info: EnabledCollectionInfo, by: string | undefined): Skill['source'] =>
+  isOwn(info) ? { kind: 'mine' } : info.source === 'public' ? { kind: 'organization' } : { kind: 'shared', by: by ?? 'Someone' }
+
+/** The user's own collection that their untagged skills are in. */
+const isUntagged = (info: EnabledCollectionInfo) => isOwn(info) && info.title === UNTAGGED
+
+const collectionOf = (info: EnabledCollectionInfo, by: string | undefined, permissions: ContextCollectionPermissions, skillCount: number): SkillCollection => ({
+  id: info.id,
+  title: info.title,
+  description: info.description,
+  source: sourceOf(info, by),
+  role: info.membership?.role,
+  shared: info.membership?.shared ?? false,
+  permissions,
+  untagged: isUntagged(info),
+  skillCount,
+  updated: new Date(info.lastUpdated),
+})
+
+const RANK = { mine: 0, shared: 1, organization: 2 } as const
+
+/** The user's own first, `My skills` ahead of the rest, then those shared with them, then the organization's, each by name. */
+export const collectionOrder = (a: SkillCollection, b: SkillCollection) =>
+  RANK[a.source.kind] - RANK[b.source.kind] || Number(b.untagged) - Number(a.untagged) || a.title.localeCompare(b.title)
+
 /** The skills a collection's documents make, each with the paths of its files, within its folder. */
 const skillsIn = (documents: ContextDocumentSummary[]) => {
   const manifests = documents.filter((document) => document.skillName !== undefined && (document.path === MANIFEST || document.path.endsWith(`/${MANIFEST}`)))
@@ -133,7 +204,8 @@ const skillsIn = (documents: ContextDocumentSummary[]) => {
  * The user's skills and their files, and what can be done to them, kept in the Context Library
  * (`gatekeeper-context`) through its management API, which the Workshop hands out as its app's
  * (`getGatekeeperApp`). Every collection the user can read is listed, the skills in each one flat,
- * the collection as a tag; a skill's files are read only once it is opened (`open`).
+ * the collection as a tag; a skill's files are read only once it is opened (`open`). The
+ * collections are listed too (`collections`), as they are what is made, shared and left whole.
  *
  * A skill's name and what it is for are kept twice, on the skill as the Context Library lists it,
  * and in its `SKILL.md`, which is what the assistant reads: a change to either is made to the
@@ -173,6 +245,15 @@ export class SkillStore {
     return this.skills.find((skill) => skill.id === id)
   }
 
+  /** The collections the user can read, once read: theirs first, then those shared with them, then the organization's. */
+  get collections() {
+    return this.#state.status === 'ready' ? this.#state.collections : NO_COLLECTIONS
+  }
+
+  collection(id: string) {
+    return this.collections.find((collection) => collection.id === id)
+  }
+
   /**
    * Reads the skills through `api`, and keeps them from then on. Another `api`, as a new connection
    * brings, reads them all again over it, with what was read before shown meanwhile.
@@ -197,13 +278,24 @@ export class SkillStore {
         return
       }
       const infos = await backend.listEnabledContextCollections()
-      const lists = await Promise.all(infos.map(async (info) => {
-        const [documents, by] = await Promise.all([backend.listContextDocuments(info.id), this.#sharedBy(backend, info)])
-        return skillsIn(documents).map(({ manifest }) => this.#skillOf(info, manifest, by))
+      const read = await Promise.all(infos.map(async (info) => {
+        const [documents, by, permissions] = await Promise.all([
+          backend.listContextDocuments(info.id),
+          this.#sharedBy(backend, info),
+          // A collection whose permissions cannot be read is only read, never changed, from here.
+          backend.getContextCollectionPermissions(info.id).catch(() => READ_ONLY),
+        ])
+        const skills = skillsIn(documents).map(({ manifest }) => this.#skillOf(info, manifest, by, permissions.canEdit))
+        return { skills, collection: collectionOf(info, by, permissions, skills.length) }
       }))
       if (run !== this.#run) return
       this.#collections = infos
-      this.#publish({ status: 'ready', skills: lists.flat() })
+      this.#publish({
+        status: 'ready',
+        // The files as they are now, which a skill opened while the list was read may have had read again.
+        skills: read.flatMap(({ skills }) => skills.map((skill) => ({ ...skill, files: this.#files.get(skill.id) }))),
+        collections: read.map(({ collection }) => collection).toSorted(collectionOrder),
+      })
     } catch (error) {
       // What was read stays up when reading it again fails.
       if (run === this.#run && this.#state.status !== 'ready') this.#publish({ status: 'failed', message: messageOf(error) })
@@ -238,10 +330,10 @@ export class SkillStore {
   }
 
   /** Adds a skill written from nothing, with a `SKILL.md` that says what it is, in the collection its tag names. Gives its id. */
-  async add({ name, description, tag }: WrittenSkill): Promise<string> {
+  async add({ name, description, tag, collectionId: into }: WrittenSkill): Promise<string> {
     const metadataName = this.#nameFor(name)
     const backend = await this.#ready()
-    const collectionId = await this.#collectionFor(backend, tag)
+    const collectionId = into ?? await this.#collectionFor(backend, tag)
     const path = `${metadataName}/${MANIFEST}`
     await backend.createContextSkill(collectionId, path, { description, body: manifestOf(metadataName, description, `# ${name}\n\n`) })
     const id = `${collectionId}/${path}`
@@ -252,14 +344,14 @@ export class SkillStore {
 
   /**
    * Adds the skills made out of files that were chosen (`prepareSkillUploads`), each with its
-   * `SKILL.md` and the files that came with it, untagged. One whose file says nothing of its name
+   * `SKILL.md` and the files that came with it, untagged, or in the collection `into`. One whose file says nothing of its name
    * or what it is for, or nothing that can be gone by, is given both from what it was called.
    * Gives their ids.
    */
-  async addUploads(candidates: SkillUploadCandidate[]): Promise<string[]> {
+  async addUploads(candidates: SkillUploadCandidate[], into?: string): Promise<string[]> {
     if (candidates.length === 0) return []
     const backend = await this.#ready()
-    const collectionId = await this.#collectionFor(backend, undefined)
+    const collectionId = into ?? await this.#collectionFor(backend, undefined)
     const ids: string[] = []
     try {
       for (const candidate of candidates) {
@@ -379,6 +471,75 @@ export class SkillStore {
     await this.reload()
   }
 
+  /** Makes a collection of the user's own, empty, to put skills in and share. Gives its id. */
+  async addCollection(title: string, description: string): Promise<string> {
+    const name = title.trim()
+    if (!name) throw new Error('A collection needs a name.')
+    const made = await (await this.#ready()).createContextCollection(name, description.trim(), 'private')
+    await this.reload()
+    return made.id
+  }
+
+  /** Calls a collection something else, or says something else of it. Its skills' tag is its name, so they are filed under the new one. */
+  async updateCollection(id: string, change: { title?: string; description?: string }) {
+    if (change.title !== undefined && !change.title.trim()) throw new Error('A collection needs a name.')
+    await (await this.#ready()).updateContextCollection(id, { title: change.title?.trim(), description: change.description?.trim() })
+    await this.reload()
+  }
+
+  /** Deletes a collection, with every skill in it, for everyone who has it. */
+  async removeCollection(id: string) {
+    await (await this.#ready()).deleteContextCollection(id)
+    this.#forgetIn(id)
+    await this.reload()
+  }
+
+  /** Gives up the user's place in a collection shared with them, which leaves their list with its skills. */
+  async leaveCollection(id: string) {
+    await (await this.#ready()).leaveContextCollection(id)
+    this.#forgetIn(id)
+    await this.reload()
+  }
+
+  /** Who has a collection, read as it is now. */
+  async sharing(id: string): Promise<ContextCollectionSharing> {
+    return (await this.#ready()).getContextCollectionSharing(id)
+  }
+
+  /**
+   * Shares a collection with someone in the deployment, by their user id, as the Context Library's
+   * own app does: the Workshop vouches for who they are with a ticket only the Context Library can
+   * redeem, so no account is ever named from here.
+   */
+  async share(id: string, userId: string, role: ContextCollectionRole) {
+    const backend = await this.#ready()
+    const selection = await this.#needApi().createGatekeeperUserSelection(SKILLS_APP, userId)
+    if (!selection) throw new Error('There’s nobody here by that name, other than you.')
+    await backend.shareContextCollection(id, selection.ticket, role)
+    await this.reload()
+  }
+
+  async setMemberRole(id: string, memberId: string, role: ContextCollectionRole) {
+    await (await this.#ready()).setContextCollectionMemberRole(id, memberId, role)
+    await this.reload()
+  }
+
+  async removeMember(id: string, memberId: string) {
+    await (await this.#ready()).removeContextCollectionMember(id, memberId)
+    await this.reload()
+  }
+
+  /** Lets everyone in the deployment use a collection's skills, without it being put in their list, or stops. */
+  async setEveryoneCanView(id: string, everyone: boolean) {
+    await (await this.#ready()).setContextCollectionEveryoneCanView(id, everyone)
+    await this.reload()
+  }
+
+  /** Lets go of what was known here of the skills in a collection that is gone. */
+  #forgetIn(collectionId: string) {
+    for (const skill of this.skills) if (skill.collectionId === collectionId) this.#forget(skill.id)
+  }
+
   #write(backend: SkillsBackend, place: NonNullable<ReturnType<typeof placeOf>>, file: SkillFile) {
     const manifest = file.path === MANIFEST
     return backend.putContextDocument(place.collectionId, `${place.folder}${file.path}`, {
@@ -463,15 +624,16 @@ export class SkillStore {
     return sharing?.members.find(({ role, isViewer }) => role === 'owner' && !isViewer)?.displayName ?? 'Someone'
   }
 
-  #skillOf(info: EnabledCollectionInfo, manifest: ContextDocumentSummary, by: string | undefined): Skill {
+  #skillOf(info: EnabledCollectionInfo, manifest: ContextDocumentSummary, by: string | undefined, editable: boolean): Skill {
     const id = `${info.id}/${manifest.path}`
-    const own = isOwn(info)
     return {
       id,
       name: titleFor(manifest.skillName!, this.#titles.get(id)),
       description: manifest.description,
-      tag: own && info.title === UNTAGGED ? undefined : info.title,
-      source: own ? { kind: 'mine' } : info.source === 'public' ? { kind: 'organization' } : { kind: 'shared', by: by ?? 'Someone' },
+      tag: isUntagged(info) ? undefined : info.title,
+      collectionId: info.id,
+      editable,
+      source: sourceOf(info, by),
       updated: new Date(manifest.lastUpdated),
       autoUse: this.#autoUse.get(id) ?? true,
       files: this.#files.get(id),
@@ -482,7 +644,7 @@ export class SkillStore {
   #update() {
     if (this.#state.status !== 'ready') return
     this.#publish({
-      status: 'ready',
+      ...this.#state,
       skills: this.#state.skills.map((skill) => {
         const files = this.#files.get(skill.id)
         const autoUse = this.#autoUse.get(skill.id) ?? true

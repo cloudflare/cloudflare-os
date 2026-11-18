@@ -35,6 +35,10 @@ export type SettingsPaneProps = {
   onOpenSkill: (id: string) => void
   /** A skill's page, so that it can be opened in another tab. */
   skillHref?: (id: string) => string
+  /** One of the collections listed under the skills was opened, which has a page of its own. */
+  onOpenCollection: (id: string) => void
+  /** A collection's page, so that it can be opened in another tab. */
+  collectionHref?: (id: string) => string
 }
 
 /**
@@ -44,7 +48,7 @@ export type SettingsPaneProps = {
  * for one thing at a time: the list of the parts is the page, and a part is gone into from it,
  * with the way back at the start of its header.
  */
-export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkill, skillHref }: SettingsPaneProps) => {
+export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkill, skillHref, onOpenCollection, collectionHref }: SettingsPaneProps) => {
   const { user } = useApi()
   const avatarUrl = useOwnAvatar()
   const narrow = useNarrowScreen()
@@ -58,7 +62,7 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
     usage: <UsageSettings />,
     models: <ModelSettings />,
     approvals: <ApprovalSettings />,
-    skills: <SkillSettings onOpenSkill={onOpenSkill} skillHref={skillHref} />,
+    skills: <SkillSettings onOpenSkill={onOpenSkill} skillHref={skillHref} onOpenCollection={onOpenCollection} collectionHref={collectionHref} />,
     preferences: <PreferenceSettings />,
     notifications: <NotificationSettings />,
     collaboration: <CollaborationSettings />,

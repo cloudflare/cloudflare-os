@@ -140,11 +140,72 @@ describe('SkillStore', () => {
     ])
   })
 
+  it('lists the collections, the user’s own first and My skills ahead of them, with who has each and what the user may do', async () => {
+    const backend = new MemorySkillsBackend(() => NOW)
+    backend.seed({ title: 'Team', source: 'private', membership: { role: 'editor', shared: true } }, skillFiles('theirs'), 'Grace Hopper')
+    backend.seed({ title: 'Company', source: 'public' }, skillFiles('everyones'))
+    backend.seed({ title: 'Reports', source: 'private', membership: { role: 'owner', shared: false } }, [])
+    backend.seed({ title: UNTAGGED, source: 'private', membership: { role: 'owner', shared: false } }, skillFiles('mine'))
+    const store = new SkillStore()
+    store.connect(backend.asApi())
+    await store.reload()
+    expect(store.collections.map(({ title, source, untagged, skillCount, permissions }) => [title, source.kind, untagged, skillCount, permissions.canDelete])).toEqual([
+      [UNTAGGED, 'mine', true, 1, true],
+      ['Reports', 'mine', false, 0, true],
+      ['Team', 'shared', false, 1, false],
+      ['Company', 'organization', false, 1, false],
+    ])
+    // Shared with them to edit, a skill can be changed; the organization's only read.
+    expect(store.skills.map(({ name, editable }) => [name, editable])).toEqual([['Theirs', true], ['Everyones', false], ['Mine', true]])
+  })
+
+  it('makes, renames, describes and deletes a collection, with the skills in it, which are filed under its name', async () => {
+    const { store, id, skill } = await made()
+    const collectionId = await store.addCollection('  Design  ', ' How we draw. ')
+    expect(store.collection(collectionId)).toMatchObject({ title: 'Design', description: 'How we draw.', skillCount: 0, source: { kind: 'mine' } })
+    await expect(store.addCollection(' ', '')).rejects.toThrow(/needs a name/)
+    const added = await store.add({ name: 'Logo rules', description: 'Where the logo goes.', collectionId })
+    expect(store.get(added)).toMatchObject({ tag: 'Design', collectionId })
+    await store.updateCollection(collectionId, { title: 'Brand' })
+    expect(store.get(added)!.tag).toBe('Brand')
+    await store.removeCollection(collectionId)
+    expect(store.get(added)).toBeUndefined()
+    expect(store.collection(collectionId)).toBeUndefined()
+    expect(skill().id).toBe(id())
+  })
+
+  it('shares a collection by a ticket the Workshop makes for the person, and says it is shared until nobody else has it', async () => {
+    const { store, skill } = await made()
+    const { collectionId } = skill()
+    await store.share(collectionId, 'grace', 'viewer')
+    expect(store.collection(collectionId)!.shared).toBe(true)
+    expect((await store.sharing(collectionId)).members).toContainEqual(expect.objectContaining({ memberId: 'grace', role: 'viewer', displayName: 'grace' }))
+    await store.setMemberRole(collectionId, 'grace', 'editor')
+    expect((await store.sharing(collectionId)).members.find(({ memberId }) => memberId === 'grace')!.role).toBe('editor')
+    await store.removeMember(collectionId, 'grace')
+    expect(store.collection(collectionId)!.shared).toBe(false)
+    await store.setEveryoneCanView(collectionId, true)
+    expect(store.collection(collectionId)!.shared).toBe(true)
+  })
+
+  it('leaves a collection shared with it, which takes its skills out of the list', async () => {
+    const backend = new MemorySkillsBackend(() => NOW)
+    const team = backend.seed({ title: 'Team', source: 'private', membership: { role: 'viewer', shared: true } }, skillFiles('theirs'), 'Grace Hopper')
+    const store = new SkillStore()
+    store.connect(backend.asApi())
+    await store.reload()
+    expect(store.collection(team)!.permissions).toMatchObject({ canEdit: false, canShare: false })
+    await store.leaveCollection(team)
+    expect(store.collections).toEqual([])
+    expect(store.skills).toEqual([])
+  })
+
   it('says skills are off for a user with no Context Library, and whether they can be turned on', async () => {
     const api: SkillsApi = {
       getGatekeeperApp: (async () => null) as SkillsApi['getGatekeeperApp'],
       listAddableGatekeepers: (async () => [{ id: 'context' }]) as unknown as SkillsApi['listAddableGatekeepers'],
       provisionAmbientAccount: (async () => {}) as SkillsApi['provisionAmbientAccount'],
+      createGatekeeperUserSelection: (async () => null) as unknown as SkillsApi['createGatekeeperUserSelection'],
     }
     const store = new SkillStore()
     store.connect(api)

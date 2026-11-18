@@ -95,7 +95,7 @@ const EXAMPLES: Example[] = [
 ]
 
 /** What the skills read like, for what has no Context Library to read them from (`exampleSkillsBackend`). */
-export const exampleSkills = (): Skill[] =>
+export const exampleSkills = (): Array<Omit<Skill, 'collectionId' | 'editable'>> =>
   EXAMPLES.map(({ days, instructions, files = [], ...skill }) => ({
     ...skill,
     updated: daysAgo(days),
