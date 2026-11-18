@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminIssueReport, AdminIssueReportPage, AdminIssueReportQuery, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiChatAuthorInfo, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, IssueReportEntry, IssueReportStatus, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminContentRequest, AdminFormat, AdminFormatPatch, AdminGrantMethod, AdminInspectOptions, AdminIssueReport, AdminIssueReportPage, AdminIssueReportQuery, AdminModel, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AiChatAuthorInfo, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, IssueReportClaimOptions, IssueReportEntry, IssueReportStatus, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ISSUE_REPORT_RETENTION_DAYS, MAX_PENDING_CONTENT_REQUESTS, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, NamedUser, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminGrantError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -21,7 +21,7 @@ import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
 import type { IssueReportsDurableObject } from './issue-reports.js';
-import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { type AdminGrantActor, type AdminSettingActor, type AdminWorkspaceViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, minIssueReportRetentionDays, namedUser, validateAdminAccessReason } from './admin-access.js';
 import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -2102,12 +2102,17 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
         { type: "user", id: this.adminUserId, name: this.adminUserId };
   }
 
+  async whoami(): Promise<NamedUser> {
+    this.#requireAdmin();
+    return namedUser(await this.#profile());
+  }
+
   async listIssueReports(options: AdminIssueReportQuery = {}): Promise<AdminIssueReportPage> {
     this.#requireAdmin();
     let limit = adminListLimit(options.limit);
-    let { status, priority, reporter, workspace, cursor } = options;
+    let { status, priority, reporter, workspace, assignee, unassigned, cursor } = options;
     return await this.issueReports.getByName("").list(
-        { status, priority, reporter, workspace, cursor, limit });
+        { status, priority, reporter, workspace, assignee, unassigned, cursor, limit });
   }
 
   async getIssueReport(reportId: string)
@@ -2127,6 +2132,17 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     this.#requireAdmin();
     await this.issueReports.getByName("").setStatus(
         await this.#profile(), this.via, reportId, status);
+  }
+
+  async claimIssueReport(reportId: string, options: IssueReportClaimOptions = {}): Promise<void> {
+    this.#requireAdmin();
+    await this.issueReports.getByName("").claim(
+        await this.#profile(), this.via, reportId, options.takeOverFrom);
+  }
+
+  async releaseIssueReport(reportId: string): Promise<void> {
+    this.#requireAdmin();
+    await this.issueReports.getByName("").release(await this.#profile(), this.via, reportId);
   }
 
   async setIssueReportLinks(reportId: string, links: string[]): Promise<void> {

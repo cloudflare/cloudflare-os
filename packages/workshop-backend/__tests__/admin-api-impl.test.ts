@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES,
   DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
@@ -8,6 +9,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import type { AdminWorkspaceViewTerms } from "../src/admin-access.js";
 import { AdminApiImpl } from "../src/admin-settings.js";
+import type { IssueReportsDurableObject } from "../src/issue-reports.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
   DEFAULT_ADMIN_CONFIG, type AdminConfig,
@@ -1030,6 +1032,8 @@ describe("AdminApiImpl issue reports", () => {
     get: { id: "report", entries: [] },
     addEntry: { id: "entry" },
     setStatus: undefined,
+    claim: undefined,
+    release: undefined,
     setLinks: undefined,
     readImage: IMAGE,
   };
@@ -1046,12 +1050,16 @@ describe("AdminApiImpl issue reports", () => {
       unknown[]][] = [
     ["listIssueReports", api => api.listIssueReports({ status: "new", limit: 3 }), "list",
       [{ status: "new", priority: undefined, reporter: undefined, workspace: undefined,
-         cursor: undefined, limit: 3 }]],
+         assignee: undefined, unassigned: undefined, cursor: undefined, limit: 3 }]],
     ["getIssueReport", api => api.getIssueReport("report"), "get", ["report"]],
     ["addIssueReportEntry", api => api.addIssueReportEntry("report", "Which chart?", "public"),
       "addEntry", [PROFILE, "cli", "report", "Which chart?", "public"]],
     ["setIssueReportStatus", api => api.setIssueReportStatus("report", "closed"), "setStatus",
       [PROFILE, "cli", "report", "closed"]],
+    ["claimIssueReport", api => api.claimIssueReport("report"), "claim",
+      [PROFILE, "cli", "report", undefined]],
+    ["releaseIssueReport", api => api.releaseIssueReport("report"), "release",
+      [PROFILE, "cli", "report"]],
     ["setIssueReportLinks", api => api.setIssueReportLinks("report", ["https://example.com/1"]),
       "setLinks", ["report", ["https://example.com/1"]]],
     ["readIssueReportImage", api => api.readIssueReportImage("report", "image"), "readImage",
@@ -1079,13 +1087,24 @@ describe("AdminApiImpl issue reports", () => {
     const api = mint(ADMIN, "api");
     await api.addIssueReportEntry("report", "A note", "admins");
     await api.setIssueReportStatus("report", "investigating");
+    await api.claimIssueReport("report", { takeOverFrom: "grace@example.test" });
+    await api.claimIssueReport("report", {});
+    await api.claimIssueReport("report");
+    await api.releaseIssueReport("report");
     // An admin whose account has no profile is named by their id.
     const byId = { type: "user", id: ADMIN, name: ADMIN };
-    expect(callsTo("users", "getByName").map(call => call.args)).toStrictEqual([[ADMIN], [ADMIN]]);
+    expect(callsTo("users", "getByName").map(call => call.args))
+        .toStrictEqual(Array.from({ length: 6 }, () => [ADMIN]));
     expect(callsTo("report", "addEntry")[0].args)
         .toStrictEqual([byId, "api", "report", "A note", "admins"]);
     expect(callsTo("report", "setStatus")[0].args)
         .toStrictEqual([byId, "api", "report", "investigating"]);
+    // The holder a take-over names is the caller's own word, passed as it was given.
+    expect(callsTo("report", "claim").map(call => call.args)).toStrictEqual([
+      [byId, "api", "report", "grace@example.test"],
+      [byId, "api", "report", undefined], [byId, "api", "report", undefined],
+    ]);
+    expect(callsTo("report", "release")[0].args).toStrictEqual([byId, "api", "report"]);
   });
 
   it("lists with the default page size, the query passed field by field",
@@ -1094,13 +1113,14 @@ describe("AdminApiImpl issue reports", () => {
     const api = mint();
     await api.listIssueReports();
     await api.listIssueReports({
-      status: "closed", priority: "low", reporter: "ada", workspace: "w1", cursor: "c",
+      status: "closed", priority: "low", reporter: "ada", workspace: "w1", assignee: "grace",
+      unassigned: true, cursor: "c",
     });
     expect(callsTo("report", "list").map(call => call.args[0])).toStrictEqual([
       { status: undefined, priority: undefined, reporter: undefined, workspace: undefined,
-        cursor: undefined, limit: 50 },
-      { status: "closed", priority: "low", reporter: "ada", workspace: "w1", cursor: "c",
-        limit: 50 },
+        assignee: undefined, unassigned: undefined, cursor: undefined, limit: 50 },
+      { status: "closed", priority: "low", reporter: "ada", workspace: "w1", assignee: "grace",
+        unassigned: true, cursor: "c", limit: 50 },
     ]);
     for (let limit of [0, 1.5, 201]) {
       expect(await rejection(api.listIssueReports({ limit }))).toBeInstanceOf(TypeError);
@@ -1116,5 +1136,62 @@ describe("AdminApiImpl issue reports", () => {
           .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
     }
     expect(calls).toStrictEqual([]);
+  });
+
+  it("names the calling admin as a thread names them", async () => {
+    // The store is the real one, so the ids compared are the ones an admin reads.
+    const reports = env.TEST_ISSUE_REPORTS.getByName(crypto.randomUUID());
+    const onStore = <T>(call: (store: IssueReportsDurableObject) => T | Promise<T>) =>
+        runInDurableObject(reports, call);
+    const report = await onStore(store => store.submit(
+        { id: "ada", name: "Ada" }, { text: "The export fails.", priority: "low" }, false));
+    type Store = IssueReportsDurableObject;
+    // An account whose id is longer than a record keeps: what whoami() returns is the id as the
+    // store cut it, never the account's own.
+    const long = `${"a".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}@example.test`;
+    const of = (adminUserId: string, name: string) => deployment({
+      vars: { ADMINS: [ADMIN, long] },
+      handlers: {
+        user: { whoamiIfExists: () => ({ ...PROFILE, id: adminUserId, name }) },
+        report: {
+          addEntry: (...args: Parameters<Store["addEntry"]>) =>
+              onStore(store => store.addEntry(...args)),
+          claim: (...args: Parameters<Store["claim"]>) => onStore(store => store.claim(...args)),
+          get: (id: string) => onStore(store => store.get(id)),
+        },
+      },
+    });
+
+    // Who holds the report, by the id a take-over names: the id whoami() gave its holder.
+    let holder: string | undefined;
+    for (let [adminUserId, name] of [[ADMIN, "Ada Admin"], [long, "Lo Ng"]]) {
+      const { mint, calls } = of(adminUserId, name);
+      const api = mint(adminUserId);
+      const me = await api.whoami();
+      // A NamedUser and nothing else of the profile, read from the caller's own account alone.
+      expect(Object.keys(me).toSorted()).toStrictEqual(["id", "name"]);
+      expect(me.name).toBe(name);
+      expect(named(calls)).toStrictEqual(["users.getByName", "user.whoamiIfExists"]);
+
+      const entry = await api.addIssueReportEntry(report.id, "Mine.", "admins");
+      await api.claimIssueReport(report.id, { takeOverFrom: holder });
+      const read = await api.getIssueReport(report.id);
+      expect(entry.author).toStrictEqual(me);
+      expect(read.assignee).toMatchObject(me);
+      expect(read.entries.at(-1)).toMatchObject({ author: me, assignment: expect.any(String) });
+      holder = me.id;
+    }
+    expect((await of(long, "Lo Ng").mint(long).whoami()).id).not.toBe(long);
+    expect((await of(ADMIN, "Ada Admin").mint().whoami()).id).toBe(ADMIN);
+
+    // An admin whose account has no profile is named by their id, as their entries are.
+    const bare = deployment({ handlers: { user: { whoamiIfExists: () => null } } });
+    expect(await bare.mint().whoami()).toStrictEqual({ id: ADMIN, name: ADMIN });
+
+    const former = reportDeployment();
+    expect(getAdminAccessErrorCode(
+        await rejection(former.mint("former-admin@example.test").whoami())))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    expect(former.calls).toStrictEqual([]);
   });
 });

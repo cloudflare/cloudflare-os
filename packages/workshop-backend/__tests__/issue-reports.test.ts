@@ -7,8 +7,8 @@ import {
   MAX_ISSUE_REPORTS_PER_DAY, MAX_ISSUE_REPORT_APP_VERSION_LENGTH, MAX_ISSUE_REPORT_LINKS,
   MAX_ISSUE_REPORT_LINK_LENGTH, MAX_ISSUE_REPORT_REPLIES_PER_DAY, MAX_ISSUE_REPORT_TEXT_LENGTH,
   MAX_ISSUE_REPORT_THREAD_ENTRIES, getIssueReportErrorCode,
-  type AiChatAuthorInfo, type IssueReportErrorCode, type IssueReportGrant,
-  type IssueReportInput, type PublicApi,
+  type AiChatAuthorInfo, type IssueReportEntry, type IssueReportErrorCode,
+  type IssueReportGrant, type IssueReportInput, type PublicApi,
 } from "@gadgets/workshop-shared/api";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import { IssueReportsDurableObject } from "../src/issue-reports.js";
@@ -778,6 +778,416 @@ describe("the fix statuses", () => {
         GRACE, "api", persons.id, "The 201st.", "admins")))).toBe(full);
     await run(reports => reports.setStatus(GRACE, "api", persons.id, "fixInProgress"));
 
+  });
+});
+
+// The schema step is the store's constructor, so a second instance over the same storage runs it
+// as the store's next start does: the pool gives a test no way to restart the object in place and
+// keep what it stored.
+function restart(state: DurableObjectState): IssueReportsDurableObject {
+  return new IssueReportsDurableObject(state, env);
+}
+
+describe("the assignee", () => {
+  const ASSIGNED = ISSUE_REPORT_ERROR_CODES.assigned;
+  const GRACE_ID = "grace@example.test";
+  const HEDY_ID = "hedy@example.test";
+  const IVY: Person = { id: "ivy@example.test", name: "Ivy (admin)" };
+
+  // What a report's thread says of its assignee, oldest first, as admins read it.
+  const assignments = (read: { entries: IssueReportEntry[] }) =>
+      read.entries.map(entry => entry.assignment).filter(assignment => assignment !== undefined);
+
+  it("has none until an admin claims it, and names who, since when and how", async () => {
+    let clock = fakeClock();
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    expect(await run(reports => reports.get(report.id))).not.toHaveProperty("assignee");
+    expect((await run(reports => reports.list({ limit: 10 }))).reports[0])
+        .not.toHaveProperty("assignee");
+
+    clock.advance(1000);
+    await run(reports => reports.claim(GRACE, "cli", report.id));
+    let read = await run(reports => reports.get(report.id));
+    expect(read.assignee).toStrictEqual(
+        { id: GRACE_ID, name: "Grace (admin)", at: new Date(Date.now()), via: "cli" });
+    expect(read.assignee!.at).toStrictEqual(read.entries[0].at);
+    expect((await run(reports => reports.list({ limit: 10 }))).reports[0].assignee)
+        .toStrictEqual(read.assignee);
+  });
+
+  it("leaves a report its caller already holds as it is", async () => {
+    let clock = fakeClock();
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.claim(GRACE, "cli", report.id));
+    let held = await run(reports => reports.get(report.id));
+
+    clock.advance(1000);
+    // However the second call arrived, and whoever it would take the report over from.
+    await run(async reports => {
+      await reports.claim(GRACE, "cli", report.id);
+      await reports.claim(GRACE, "api", report.id, HEDY_ID);
+      await reports.claim(GRACE, "api", report.id, GRACE_ID);
+    });
+    expect(await run(reports => reports.get(report.id))).toStrictEqual(held);
+    expect(assignments(held)).toStrictEqual(["claimed"]);
+  });
+
+  it("refuses another admin's claim with a code of its own", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.claim(GRACE, "cli", report.id));
+    let held = await run(reports => reports.get(report.id));
+
+    for (let caller of ["api", "cli"] as const) {
+      expect(await refusal(() => run(reports => reports.claim(HEDY, caller, report.id))))
+          .toBe(ASSIGNED);
+    }
+    // A caller tells it from every other refusal of a write to a report.
+    expect(new Set([ASSIGNED, NOT_FOUND, ISSUE_REPORT_ERROR_CODES.threadFull,
+      ISSUE_REPORT_ERROR_CODES.closed]).size).toBe(4);
+    expect(await refusal(() => run(reports => reports.claim(
+        HEDY, "api", crypto.randomUUID())))).toBe(NOT_FOUND);
+    expect(await run(reports => reports.get(report.id))).toStrictEqual(held);
+  });
+
+  it("lets exactly one of two racing claims win", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    let claims = [GRACE, HEDY].map(admin =>
+        run(reports => reports.claim(admin, "api", report.id)));
+    let outcomes = await Promise.allSettled(claims);
+
+    let won = outcomes.flatMap((outcome, index) => outcome.status === "fulfilled" ? [index] : []);
+    let lost = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    expect(won).toHaveLength(1);
+    expect(lost.map(getIssueReportErrorCode)).toStrictEqual([ASSIGNED]);
+    let read = await run(reports => reports.get(report.id));
+    expect(read.assignee!.id).toBe([GRACE_ID, HEDY_ID][won[0]]);
+    expect(assignments(read)).toStrictEqual(["claimed"]);
+  });
+
+  it("lets a person take a report over from the holder they name, and names it in the thread",
+      async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    // Nobody holds it, so there is nothing to take over: it is a claim, whoever was named.
+    await run(reports => reports.claim(GRACE, "api", report.id, HEDY_ID));
+    await run(reports => reports.claim(HEDY, "cli", report.id, GRACE_ID));
+
+    let read = await run(reports => reports.get(report.id));
+    expect(read.assignee).toMatchObject({ id: HEDY_ID, name: "Hedy (admin)", via: "cli" });
+    expect(assignments(read)).toStrictEqual(["claimed", "takenOver"]);
+    expect(read.entries[1]).toMatchObject(
+        { author: { id: HEDY_ID, name: "Hedy (admin)" }, via: "cli", assignment: "takenOver" });
+    expect(read.assignee!.at).toStrictEqual(read.entries[1].at);
+  });
+
+  it("refuses a take-over from anyone but the admin who holds the report", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.claim(GRACE, "api", report.id));
+    // Hedy took the report after Ivy read that Grace holds it.
+    await run(reports => reports.claim(HEDY, "api", report.id, GRACE_ID));
+    let held = await run(reports => reports.get(report.id));
+
+    // From Grace, who held it; from the caller; from nobody who is an admin.
+    for (let named of [GRACE_ID, IVY.id, "", "%"]) {
+      expect(await refusal(() => run(reports => reports.claim(
+          IVY, "api", report.id, named))), named).toBe(ASSIGNED);
+    }
+    expect(await run(reports => reports.get(report.id))).toStrictEqual(held);
+
+    await run(reports => reports.claim(IVY, "cli", report.id, HEDY_ID));
+    let read = await run(reports => reports.get(report.id));
+    expect(read.assignee).toMatchObject({ id: IVY.id, via: "cli" });
+    expect(assignments(read)).toStrictEqual(["claimed", "takenOver", "takenOver"]);
+  });
+
+  it("lets exactly one of two racing take-overs from one holder win", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.claim(GRACE, "api", report.id));
+    let claims = [HEDY, IVY].map(admin =>
+        run(reports => reports.claim(admin, "api", report.id, GRACE_ID)));
+    let outcomes = await Promise.allSettled(claims);
+
+    // The one that lost named Grace, who by then held nothing: it took the report from nobody.
+    let won = outcomes.flatMap((outcome, index) => outcome.status === "fulfilled" ? [index] : []);
+    let lost = outcomes.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+    expect(won).toHaveLength(1);
+    expect(lost.map(getIssueReportErrorCode)).toStrictEqual([ASSIGNED]);
+    let read = await run(reports => reports.get(report.id));
+    expect(read.assignee!.id).toBe([HEDY_ID, IVY.id][won[0]]);
+    expect(assignments(read)).toStrictEqual(["claimed", "takenOver"]);
+  });
+
+  it("releases by its holder alone", async () => {
+    let { run } = store();
+    for (let caller of ["api", "cli"] as const) {
+      let report = await run(reports => reports.submit(ADA, input(), false));
+      let filed = await run(reports => reports.get(report.id));
+      // A report nobody holds is left as it is.
+      await run(reports => reports.release(GRACE, caller, report.id));
+      expect(await run(reports => reports.get(report.id))).toStrictEqual(filed);
+
+      await run(reports => reports.claim(GRACE, caller, report.id));
+      let held = await run(reports => reports.get(report.id));
+      expect(await refusal(() => run(reports => reports.release(HEDY, caller, report.id))))
+          .toBe(ASSIGNED);
+      expect(await run(reports => reports.get(report.id))).toStrictEqual(held);
+
+      await run(reports => reports.release(GRACE, caller, report.id));
+      let released = await run(reports => reports.get(report.id));
+      expect(released).not.toHaveProperty("assignee");
+      expect(assignments(released)).toStrictEqual(["claimed", "released"]);
+      expect(released.entries[1]).toMatchObject(
+          { author: { id: GRACE_ID, name: "Grace (admin)" }, via: caller });
+      await run(reports => reports.release(GRACE, caller, report.id));
+      expect(await run(reports => reports.get(report.id))).toStrictEqual(released);
+
+      expect(await refusal(() => run(reports => reports.release(
+          GRACE, caller, crypto.randomUUID())))).toBe(NOT_FOUND);
+    }
+  });
+
+  it("keeps a holder who is no longer an admin, until an admin takes the report over",
+      async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.claim(GRACE, "api", report.id));
+
+    // A deployment whose admins no longer include the holder: the store asks nobody who is one.
+    let later = <T>(f: (reports: IssueReportsDurableObject) => T) => run(reports => {
+      reports["env"] = { ...env, ADMINS: [HEDY.id] } as unknown as Cloudflare.Env;
+      return f(reports);
+    });
+    expect((await later(reports => reports.get(report.id))).assignee)
+        .toMatchObject({ id: GRACE_ID, name: "Grace (admin)" });
+    expect((await later(reports => reports.list({ limit: 10, assignee: GRACE_ID }))).reports)
+        .toHaveLength(1);
+    expect(await refusal(() => later(reports => reports.claim(
+        HEDY, "api", report.id)))).toBe(ASSIGNED);
+    expect(await refusal(() => later(reports => reports.release(
+        HEDY, "api", report.id)))).toBe(ASSIGNED);
+
+    await later(reports => reports.claim(HEDY, "api", report.id, GRACE_ID));
+    let read = await later(reports => reports.get(report.id));
+    expect(read.assignee).toMatchObject({ id: HEDY_ID });
+    expect(assignments(read)).toStrictEqual(["claimed", "takenOver"]);
+  });
+
+  it("filters the list by assignee and by nobody", async () => {
+    let { run } = store();
+    let file = () => run(reports => reports.submit(ADA, input(), false));
+    let [a, b, c, d] = [await file(), await file(), await file(), await file()];
+    // An admin whose id is longer than the store keeps holds a report under the id it shows.
+    let long: Person =
+        { id: `${"l".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}@example.test`, name: "Lo" };
+    await run(async reports => {
+      await reports.claim(GRACE, "api", a.id);
+      await reports.claim(HEDY, "api", b.id);
+      await reports.claim(long, "api", d.id);
+      await reports.setStatus(GRACE, "api", b.id, "investigating");
+      await reports.setStatus(GRACE, "api", c.id, "investigating");
+    });
+    let shown = (await run(reports => reports.get(d.id))).assignee!.id;
+    expect(shown).not.toBe(long.id);
+
+    let listed = async (query: object) =>
+        (await run(reports => reports.list({ limit: 10, ...query }))).reports.map(r => r.id);
+    expect(await listed({ assignee: GRACE_ID })).toStrictEqual([a.id]);
+    expect(await listed({ assignee: HEDY_ID })).toStrictEqual([b.id]);
+    expect(await listed({ assignee: shown })).toStrictEqual([d.id]);
+    expect(await listed({ assignee: long.id })).toStrictEqual([d.id]);
+    expect(await listed({ assignee: "ada" })).toStrictEqual([]);
+    expect(await listed({ unassigned: true })).toStrictEqual([c.id]);
+    expect(await listed({ unassigned: false })).toStrictEqual([d.id, c.id, b.id, a.id]);
+    // The filters combine, so a report somebody holds and nobody holds is none.
+    expect(await listed({ assignee: GRACE_ID, unassigned: true })).toStrictEqual([]);
+    expect(await listed({ assignee: HEDY_ID, status: "investigating" })).toStrictEqual([b.id]);
+    expect(await listed({ assignee: HEDY_ID, status: "new" })).toStrictEqual([]);
+    expect(await listed({ unassigned: true, status: "investigating" })).toStrictEqual([c.id]);
+    expect(await listed({ unassigned: true, status: "new" })).toStrictEqual([]);
+
+    // A released report is nobody's again.
+    await run(reports => reports.release(GRACE, "api", a.id));
+    expect(await listed({ assignee: GRACE_ID })).toStrictEqual([]);
+    expect(await listed({ unassigned: true })).toStrictEqual([c.id, a.id]);
+
+    expect(await refusal(() => run(reports => reports.list(
+        { limit: 10, assignee: "a".repeat(1001) })))).toBe("TypeError");
+  });
+
+  it("writes each change as one admins-only line that names who and how", async () => {
+    let { run, sql } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(async reports => {
+      await reports.setStatus(GRACE, "api", report.id, "answered");
+      await reports.claim(GRACE, "cli", report.id);
+      await reports.claim(HEDY, "api", report.id, GRACE_ID);
+      await reports.release(HEDY, "cli", report.id);
+      await reports.claim(GRACE, "api", report.id);
+    });
+
+    let read = await run(reports => reports.get(report.id));
+    let grace = { id: GRACE_ID, name: "Grace (admin)" };
+    let hedy = { id: HEDY_ID, name: "Hedy (admin)" };
+    let line = { id: expect.any(String), at: expect.any(Date), visibility: "admins", text: "" };
+    expect(read.entries.slice(1)).toStrictEqual([
+      { ...line, author: grace, via: "cli", assignment: "claimed" },
+      { ...line, author: hedy, via: "api", assignment: "takenOver" },
+      { ...line, author: hedy, via: "cli", assignment: "released" },
+      { ...line, author: grace, via: "api", assignment: "claimed" },
+    ]);
+    for (let entry of read.entries.slice(1)) expect(entry).not.toHaveProperty("status");
+    expect(new Set(read.entries.map(entry => entry.id)).size).toBe(5);
+    // No change of assignee is a change of status, and the thread grew with each.
+    expect(read.status).toBe("answered");
+    expect(read.updatedAt).toStrictEqual(read.entries[4].at);
+    expect(await sql("SELECT status, assignment FROM entries ORDER BY n")).toStrictEqual([
+      { status: "answered", assignment: null }, { status: null, assignment: "claimed" },
+      { status: null, assignment: "takenOver" }, { status: null, assignment: "released" },
+      { status: null, assignment: "claimed" },
+    ]);
+  });
+
+  it("never shows an assignee or an assignment line to the reporter", async () => {
+    let { run } = store();
+    let report = await run(reports => reports.submit(ADA, input(), false));
+    await run(reports => reports.claim(GRACE, "api", report.id));
+    expect(await refusal(() => run(reports => reports.claim(HEDY, "api", report.id))))
+        .toBe(ASSIGNED);
+    await run(async reports => {
+      await reports.claim(HEDY, "cli", report.id, GRACE_ID);
+      await reports.release(HEDY, "cli", report.id);
+      await reports.claim(GRACE, "api", report.id);
+    });
+    expect(assignments(await run(reports => reports.get(report.id))))
+        .toStrictEqual(["claimed", "takenOver", "released", "claimed"]);
+
+    let reply = await run(reports => reports.reply(ADA, report.id, "Any news?"));
+    let again = await run(reports => reports.submit(ADA, input(), false));
+    let own = await run(reports => reports.getOwn("ada", report.id));
+    let page = await run(reports => reports.listOwn("ada"));
+    expect(own.entries).toStrictEqual([reply]);
+    expect(page.reports.map(listed => listed.id)).toStrictEqual([again.id, report.id]);
+    for (let read of [reply, again, own, ...page.reports]) {
+      expect(read).not.toHaveProperty("assignee");
+      expect(read).not.toHaveProperty("assignment");
+      expect(JSON.stringify(read)).not.toMatch(
+          /assign|claimed|takenOver|released|grace@example\.test|hedy@example\.test|wwww/);
+    }
+    // A change of assignee is no answer: the report stays seen.
+    expect(own.unseen).toBe(false);
+    expect(await run(reports => reports.unseenCount("ada"))).toBe(0);
+  });
+
+  it("gains its columns in a store made before them", async () => {
+    // The two tables as a store made without an assignee holds them.
+    const REPORTS_WITHOUT_ASSIGNEE = `CREATE TABLE reports (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        filed_at INTEGER NOT NULL,
+        reporter_id TEXT NOT NULL,
+        reporter_name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        workspace_id TEXT,
+        owns_workspace INTEGER NOT NULL,
+        context TEXT NOT NULL CHECK (json_valid(context)),
+        status TEXT NOT NULL,
+        links TEXT NOT NULL CHECK (json_valid(links)),
+        grant_id TEXT,
+        updated_at INTEGER NOT NULL,
+        last_admin_public INTEGER NOT NULL,
+        seen INTEGER NOT NULL
+      ) STRICT`;
+    const ENTRIES_WITHOUT_ASSIGNMENT = `CREATE TABLE entries (
+        report_seq INTEGER NOT NULL,
+        n INTEGER NOT NULL,
+        id TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        author_id TEXT NOT NULL,
+        author_name TEXT NOT NULL,
+        visibility TEXT NOT NULL CHECK (visibility IN ('public', 'admins')),
+        via TEXT,
+        text TEXT NOT NULL,
+        status TEXT,
+        PRIMARY KEY (report_seq, n)
+      ) STRICT`;
+    // Both tables' columns, by name: ALTER TABLE adds a column after the others, and every
+    // statement of the store names its columns, so their order is not compared.
+    const COLUMNS = `SELECT 'reports' AS tbl, name, type, "notnull", dflt_value, pk
+          FROM pragma_table_info('reports')
+        UNION ALL SELECT 'entries', name, type, "notnull", dflt_value, pk
+          FROM pragma_table_info('entries') ORDER BY 1, 2`;
+    const ADDED = ["assignee", "assignee_id", "assignment"];
+    const INDEX =
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'reports_assignee'";
+
+    let { run, sql } = store();
+    await run((_reports, state) => {
+      let db = state.storage.sql;
+      db.exec("DROP TABLE reports");
+      db.exec("DROP TABLE entries");
+      db.exec(REPORTS_WITHOUT_ASSIGNEE);
+      db.exec(ENTRIES_WITHOUT_ASSIGNMENT);
+      db.exec(
+        `INSERT INTO reports (id, filed_at, reporter_id, reporter_name, text, priority,
+           owns_workspace, context, status, links, updated_at, last_admin_public, seen)
+         VALUES ('report-1', 1000, 'ada', 'Ada', 'It broke.', 'low', 0, '{}', 'answered', '[]',
+           2000, 1, 0)`);
+      db.exec(
+        `INSERT INTO entries (report_seq, n, id, at, author_id, author_name, visibility, via,
+           text, status)
+         VALUES (1, 1, 'entry-1', 2000, 'grace@example.test', 'Grace (admin)', 'public', 'cli',
+           'Try again now.', NULL)`);
+    });
+    let columnNames = async () =>
+        (await sql<{ name: string }>(COLUMNS)).map(column => column.name);
+    for (let name of ADDED) expect(await columnNames()).not.toContain(name);
+    expect(await sql(INDEX)).toStrictEqual([]);
+
+    let migrated = await run(async (_reports, state) => {
+      let restarted = restart(state);
+      let kept = restarted.get("report-1");
+      await restarted.claim(HEDY, "cli", "report-1");
+      return { kept, held: restarted.get("report-1"), own: restarted.getOwn("ada", "report-1") };
+    });
+    let columns = await sql(COLUMNS);
+    expect(await columnNames()).toStrictEqual(expect.arrayContaining(ADDED));
+    expect(await sql(INDEX)).toStrictEqual([{ name: "reports_assignee" }]);
+    // What the store held reads as it did, with no assignee.
+    expect(migrated.kept).toStrictEqual({
+      id: "report-1", filedAt: new Date(1000), reporter: { id: "ada", name: "Ada" },
+      text: "It broke.", priority: "low", context: {}, status: "answered", images: [], links: [],
+      updatedAt: new Date(2000),
+      entries: [{ id: "entry-1", at: new Date(2000), visibility: "public", via: "cli",
+        author: { id: GRACE_ID, name: "Grace (admin)" }, text: "Try again now." }],
+    });
+    expect(migrated.held.assignee).toMatchObject({ id: HEDY_ID, via: "cli" });
+    expect(assignments(migrated.held)).toStrictEqual(["claimed"]);
+    expect(migrated.own.entries).toHaveLength(1);
+    expect(migrated.own.unseen).toBe(true);
+    expect(await run(reports => reports.list({ limit: 10, assignee: HEDY_ID })))
+        .toMatchObject({ reports: [{ id: "report-1" }] });
+
+    // A start that finds the columns changes nothing.
+    await run((_reports, state) => { restart(state); });
+    expect(await sql(COLUMNS)).toStrictEqual(columns);
+    expect((await run(reports => reports.get("report-1"))).assignee).toMatchObject({ id: HEDY_ID });
+
+    // A store made with the columns holds the same ones, and neither keeps a holder that is not
+    // JSON.
+    let fresh = store();
+    expect(await fresh.sql(COLUMNS)).toStrictEqual(columns);
+    await fresh.run(reports => reports.submit(ADA, input(), false));
+    for (let { sql: exec } of [{ sql }, fresh]) {
+      await expect(exec("UPDATE reports SET assignee_id = 'x', assignee = 'not json'"))
+          .rejects.toThrow(/CHECK constraint failed/);
+    }
   });
 });
 
