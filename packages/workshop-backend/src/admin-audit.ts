@@ -1,7 +1,8 @@
 import {
   MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminAccessExposure, type AdminAccessRecord, type AdminAuditPage, type AdminAuditQuery,
-  type AdminAuditRecord, type AdminAuditStats, type AdminAuditStatsQuery, type AdminWriteRecord,
+  type AdminAuditRecord, type AdminAuditStats, type AdminAuditStatsQuery, type AdminGrantRecord,
+  type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -19,8 +20,8 @@ const PRUNE_BATCH = 1000;
 // The longest admin or workspace filter list() takes; workspace ids are 64 characters.
 const MAX_FILTER_LENGTH = 1000;
 const TOP_LIMIT = 10;
-// A record's method, and the user an access or write record's target belongs to (the account's
-// user, or the workspace's owner), which stay in the JSON (see the schema below).
+// A record's method, and the user an access, write or grant record's target belongs to (the
+// account's user, or the workspace's owner), which stay in the JSON (see the schema below).
 const METHOD = "json_extract(record, '$.method')";
 const TARGET =
     "coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner'))";
@@ -35,15 +36,15 @@ const CONTENT_READS = "COUNT(*) FILTER (WHERE exposed = 'content')";
 const TABLE = `(
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   at INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
+  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write', 'grant')),
   admin TEXT NOT NULL,
   workspace_id TEXT,
   workspace_title TEXT,
   exposed TEXT CHECK (exposed IN ('metadata', 'content')),
   record TEXT NOT NULL CHECK (json_valid(record)),
-  CHECK ((kind IN ('workspace', 'write')) =
+  CHECK ((kind IN ('workspace', 'write', 'grant')) =
       (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
-  CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))
+  CHECK ((kind IN ('setting', 'write', 'grant')) = (exposed IS NULL))
 ) STRICT`;
 
 type AuditRow = {
@@ -64,25 +65,27 @@ type AuditRow = {
  * AdminApiImpl before it refuses an open that never reached the workspace. An
  * AdminUserAccessRecord is appended the same way, by the inspected account's Durable Object or by
  * AdminApiImpl. An AdminSettingRecord is appended by AdminSettings before its change takes effect.
- * An AdminWriteRecord is appended by the workspace before the write takes effect.
+ * An AdminWriteRecord is appended by the workspace before the write takes effect. An
+ * AdminGrantRecord is appended before its step takes effect: by AdminSettings for a content access
+ * request and its denial, by the workspace for an approval and the end of a grant.
  * Always addressed as getByName(""). Callers pass the retention they read for the call; whatever
  * they pass, a record is kept at least minAdminAuditRetentionDays() days. Each method given one
  * first deletes up to 1000 rows older than it, and never lists or counts one.
  *
  * Schema (the integration suite installs a trigger on the table by this name). Each field of a
- * record is stored once: kind, at (epoch ms), admin and, for access or a write to a workspace,
- * workspace_id and workspace_title are columns, and so is `exposed`, which holds what an access
- * record's answer exposed ('content' for a call made under a grant whose answer held content,
- * 'metadata' for any other) and is NULL for a record of another kind; the rest of the record is
- * JSON in `record`. The constructor rebuilds a table stored under another definition.
+ * record is stored once: kind, at (epoch ms), admin and, for access, a write or a grant step on a
+ * workspace, workspace_id and workspace_title are columns, and so is `exposed`, which holds what an
+ * access record's answer exposed ('content' for a call made under a grant whose answer held
+ * content, 'metadata' for any other) and is NULL for a record of another kind; the rest of the
+ * record is JSON in `record`. The constructor rebuilds a table stored under another definition.
  *   admin_audit(seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
- *     kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write')),
+ *     kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting', 'write', 'grant')),
  *     admin TEXT NOT NULL, workspace_id TEXT, workspace_title TEXT,
  *     exposed TEXT CHECK (exposed IN ('metadata', 'content')),
  *     record TEXT NOT NULL CHECK (json_valid(record)),
- *     CHECK ((kind IN ('workspace', 'write')) =
+ *     CHECK ((kind IN ('workspace', 'write', 'grant')) =
  *         (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
- *     CHECK ((kind IN ('setting', 'write')) = (exposed IS NULL))) STRICT;
+ *     CHECK ((kind IN ('setting', 'write', 'grant')) = (exposed IS NULL))) STRICT;
  *   indexes (at), (admin, seq), (workspace_id, seq), (kind, seq), (exposed, seq),
  *     (json_extract(record, '$.method'), seq),
  *     (coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner')), seq)
@@ -157,12 +160,13 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     let workspaceTitle: string | null = null;
     let exposed: AdminAccessExposure | null = null;
     let rest: Record<string, unknown>;
-    if (record.kind === "workspace" || record.kind === "write") {
-      // A write record is stored as an access record is, and carries no `exposed`.
+    if (record.kind === "workspace" || record.kind === "write" || record.kind === "grant") {
+      // A write or a grant record is stored as an access record is, and carries no `exposed`.
       let {
         kind: _kind, at: _at, admin: _admin, workspaceId: id, workspaceTitle: title,
         workspaceOwner: owner, exposed: answered, ...fields
-      }: (AdminAccessRecord | AdminWriteRecord) & { exposed?: AdminAccessExposure } = record;
+      }: (AdminAccessRecord | AdminWriteRecord | AdminGrantRecord) &
+          { exposed?: AdminAccessExposure } = record;
       if (record.kind === "workspace") {
         // A record without the field comes from a view that returns metadata only: this log is
         // one deployment-wide object, so a workspace whose code sends no such field reaches it,
@@ -329,7 +333,7 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
 
 function recordFromRow(row: AuditRow): AdminAuditRecord {
   let rest = JSON.parse(row.record) as Record<string, unknown>;
-  let columns = row.kind === "workspace" || row.kind === "write"
+  let columns = row.kind === "workspace" || row.kind === "write" || row.kind === "grant"
       ? { workspaceId: row.workspace_id, workspaceTitle: row.workspace_title } : {};
   // A view is opened for metadata unless content is asked for, so an access record kept without
   // `requested` was made by a metadata view. The column holds `exposed` for every access record.

@@ -14,15 +14,17 @@ import { createHash } from "node:crypto";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
   ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
+  MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminAccessRecord, type AdminChatState, type AdminFileContent,
-  type AdminSettingChange, type AdminSettingRecord, type AdminVia, type AdminViewAccess,
-  type AdminWorkspaceAccess, type AdminWorkspaceMethod, type AiChatAuthorInfo, type AiChatHistoryPage, type AiChatMetadata,
-  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
-  type NamedUser, type WorkpieceSummary,
+  type AdminContentRequest, type AdminGrantRecord, type AdminSettingChange,
+  type AdminSettingRecord, type AdminVia, type AdminViewAccess,
+  type AdminWorkspaceAccess, type AdminWorkspaceMethod, type AiChatAuthorInfo,
+  type AiChatHistoryPage, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
+  type CommitInfo, type GatekeeperCreationSpec, type NamedUser, type WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
@@ -148,6 +150,18 @@ export function adminAccessPolicy(
  * the call besides its time and changes. AdminApiImpl passes one with every AdminSettings
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
+
+/** Who takes a step of a request to read a workspace's content without its owner, as its
+ * AdminGrantRecord says. */
+export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "via">;
+
+/** What OverseerDurableObject.grantAdminContent() is given: a claimed content access request, and
+ * the admin who approved it, through which session, for the AdminGrantRecord the workspace
+ * appends. `workspaceOwner` is the owner the request named: the workspace refuses
+ * (`workspaceChanged`) a call naming another owner than its own, since a deleted workspace's id
+ * can be initialised again for someone else. */
+export type AdminContentGrantCall = AdminGrantActor &
+    Pick<AdminContentRequest, "reason" | "requestedBy" | "workspaceOwner"> & { requestId: string };
 
 /** What an admin view is minted with (see OverseerDurableObject.openForAdmin() and
  * UserDurableObject.openForAdmin()), fixed for the view's life. */

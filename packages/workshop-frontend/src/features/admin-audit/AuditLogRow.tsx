@@ -1,9 +1,11 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Badge, Button, Table } from '@cloudflare/kumo'
 import { CaretRight } from '@phosphor-icons/react'
+import { Link } from '@tanstack/react-router'
 import type {
   AdminAccessRecord,
   AdminAuditRecord,
+  AdminGrantRecord,
   AdminSettingChange,
   AdminUserAccessRecord,
   AdminVia,
@@ -96,7 +98,7 @@ const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
 
 // The workspace a record names: its title, which filters the log by that workspace, and its id.
 const WorkspaceDetail = ({ record, onFilterBy }: {
-  record: AdminAccessRecord | AdminWriteRecord
+  record: AdminAccessRecord | AdminWriteRecord | AdminGrantRecord
   onFilterBy: (filter: AuditFilter) => void
 }) => (
   <Detail term="Workspace">
@@ -156,16 +158,42 @@ const WriteDetails = ({ record, onFilterBy }: {
   </dl>
 )
 
+// One step of a request to read a workspace's content without its owner: the request, its
+// denial, its approval, or the early end of the grant it gave.
+const GrantDetails = ({ record, onFilterBy }: {
+  record: AdminGrantRecord
+  onFilterBy: (filter: AuditFilter) => void
+}) => (
+  <dl className="space-y-2">
+    <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+    <Detail term="Request"><span className="font-mono text-xs break-all">{record.requestId}</span></Detail>
+    <Detail term="Reason">{record.reason}</Detail>
+    {record.requestedBy !== record.admin && <Detail term="Requested by">{record.requestedBy}</Detail>}
+    {/* The id the reads made under the grant carry (see "Under grant" on an access record). */}
+    {record.grantId && (
+      <Detail term="Grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
+    )}
+    {record.endReason && <Detail term="Reason for ending">{record.endReason}</Detail>}
+    <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+  </dl>
+)
+
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, kind, target user),
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
- * changes, an access record's workspace or account, reason, level and arguments, or a write
- * record's workspace, reason and arguments. An access or a write record's target user is the user the call or the write reached: its workspace's owner, or
- * the user whose account a call was made into. The admin's name and the target user, and in a
- * workspace or a write record's details its workspace, filter the log by `onFilterBy`. Names are
- * never cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the
- * summary row as Kumo stripes a table's even rows: Kumo counts the details row below each one,
- * hidden or not, so every summary row is an odd row to it and would never be striped.
+ * changes, an access record's workspace or account, reason, level and arguments, with what a
+ * workspace's view was opened for when that is content and the grant the call ran under when it
+ * had one, a write record's workspace, reason and arguments, or a grant record's workspace,
+ * request, reason and what its step adds: who requested it, the grant, the reason an admin gave
+ * for ending it. A workspace access record's kind is followed by a badge for what the call
+ * exposed, when the record says, and an access record's by its refusal. An access, a write or a
+ * grant record's target user is the user the call reached: its workspace's owner, or the user
+ * whose account a call was made into. The admin's name and the target user, and in a workspace,
+ * write or grant record's details its workspace, filter the log by `onFilterBy`; those details
+ * also link the admin's page for the workspace. Names are never cut: an action too long for the
+ * space left is, whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a table's
+ * even rows: Kumo counts the details row below each one, hidden or not, so every summary row is
+ * an odd row to it and would never be striped.
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
@@ -243,12 +271,14 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
             : record.kind === 'write'
               ? <WriteDetails record={record} onFilterBy={onFilterBy} />
-              : (
-                <div className="space-y-4">
-                  <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
-                  <SettingChanges changes={record.changes} />
-                </div>
-              ))}
+              : record.kind === 'grant'
+                ? <GrantDetails record={record} onFilterBy={onFilterBy} />
+                : (
+                  <div className="space-y-4">
+                    <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
+                    <SettingChanges changes={record.changes} />
+                  </div>
+                ))}
         </Table.Cell>
       </Table.Row>
     </>

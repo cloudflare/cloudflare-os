@@ -101,9 +101,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       ?.focus()
   }
   const targetSuggestions = [...new Set(page?.records.flatMap((record) => targetUserOf(record) ?? []))]
-  // A call into a workspace and a write to one name the workspace and its title.
+  // A call into a workspace, a write to one and a grant step on one name the workspace and its
+  // title.
   const workspaceLabel = page?.records
-    .flatMap((record) => record.kind === 'workspace' || record.kind === 'write' ? [record] : [])
+    .flatMap((record) => record.kind === 'workspace' || record.kind === 'write' || record.kind === 'grant'
+      ? [record] : [])
     .find(({ workspaceId, workspaceTitle }) => workspaceId === workspace && workspaceTitle)?.workspaceTitle
 
   // A page button is disabled on the first or the last page, and a browser drops the focus of a

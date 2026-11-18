@@ -174,6 +174,18 @@ test("write-workspace's own help says what each action does, and what refuses th
   for (const refusal of ["notAdmin", "writesOff"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
 });
 
+});
+
+test("ending a grant an approval gave is an ordinary command: a workspace, a grant and a reason", () => {
+  const { doc, args } = real.nodes.AdminApi!.commands["end-workspace-grant"]!;
+  assert.deepEqual(args.map(({ name, flag, encoding }) => ({ name, flag, encoding })), [
+    { name: "workspaceId", flag: undefined, encoding: "string" },
+    { name: "grantId", flag: undefined, encoding: "string" },
+    { name: "reason", flag: undefined, encoding: "string" },
+  ]);
+  for (const refusal of ["notAdmin", "workspaceNotFound", "notFound"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+});
+
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {
   const { args } = buildTable(fixture()).nodes.FixtureAuthedApi!.commands["find-notes"]!;
   assert.deepEqual(args.map(({ name, index, flag, encoding }) => ({ name, index, flag, encoding })), [

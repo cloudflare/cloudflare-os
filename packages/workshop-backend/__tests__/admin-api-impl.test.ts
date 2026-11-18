@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
-  getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminUserAccessRecord, type AdminVia,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS, ADMIN_GRANT_ERROR_CODES,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  createAdminGrantError, getAdminAccessErrorCode, getAdminGrantErrorCode,
+  type AdminAccessRecord, type AdminContentRequest, type AdminUserAccessRecord, type AdminVia,
 } from "@gadgets/workshop-shared/api";
 import type { AdminWorkspaceViewTerms } from "../src/admin-access.js";
 import { AdminApiImpl } from "../src/admin-settings.js";
@@ -28,7 +29,8 @@ type Handler = (...args: any[]) => unknown;
  * An AdminApiImpl over fake namespaces, with ADMINS listing ADMIN and `vars` beside it. `calls`
  * lists every namespace and stub call made after the capability was minted, in order; a stub
  * method answers from `handlers[target][method]`, else with undefined. The AdminSettings stub
- * answers committedAdminConfig() with `config` over the defaults.
+ * answers committedAdminConfig() with `config` over the defaults. `waitUntil` is the execution
+ * context's, which records the promises it is given.
  */
 function deployment(options: {
   config?: Partial<AdminConfig>;
@@ -55,7 +57,8 @@ function deployment(options: {
       return stub(target);
     },
   });
-  const ctx = { exports: {
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  const ctx = { waitUntil, exports: {
     AdminSettings: namespace("admin"),
     UserDirectoryDurableObject: namespace("directory"),
     AdminAuditDurableObject: namespace("audit"),
@@ -79,7 +82,7 @@ function deployment(options: {
   };
   const callsTo = (target: string, method: string) =>
       calls.filter(call => call.target === target && call.method === method);
-  return { mint, calls, callsTo };
+  return { mint, calls, callsTo, waitUntil };
 }
 
 async function rejection(call: Promise<unknown>): Promise<unknown> {
@@ -712,5 +715,306 @@ describe("AdminApiImpl.writeWorkspace", () => {
     expect(warned.mock.calls.map(([entry]) => (entry as { event?: string }).event))
         .toEqual(["admin.directory.heal.failed", "admin.write.failed"]);
     vi.restoreAllMocks();
+  });
+});
+
+describe("AdminApiImpl content access requests", () => {
+  const CONTENT = {
+    config: { adminWorkspaceAccess: "content" as const },
+    vars: { ADMIN_WORKSPACE_ACCESS_MAX: "content" },
+  };
+  const LISTING = { title: "Quarterly report", ownerId: "bob@example.test" };
+  const REQUEST_ID = "4c1d2a0e-8a53-4c59-9a0e-3d7f1b6c2e11";
+  const GRANT_ID = "0b6f6c0e-2f0b-4f0a-9d0b-6a3c0a2d9e11";
+
+  // A request as the AdminSettings stub claims it, for a workspace id of this deployment.
+  const claimed = (): AdminContentRequest => ({
+    id: REQUEST_ID, workspaceId: workspaceId(), workspaceTitle: LISTING.title,
+    workspaceOwner: LISTING.ownerId, reason: REASON, requestedBy: "other-admin@example.test",
+    via: "api", requestedAt: new Date("2026-01-02T03:04:05.000Z"),
+    expiresAt: new Date("2026-01-03T03:04:05.000Z"), state: "approved", resolvedBy: ADMIN,
+    resolvedAt: new Date("2026-01-02T04:00:00.000Z"),
+  });
+
+  // A deployment at level content whose AdminSettings stub claims `request` and settles it as the
+  // object would, and whose workspace gives a grant. `handlers` replace any of that.
+  const approvalDeployment = (request: AdminContentRequest,
+      handlers: Record<string, Record<string, Handler>> = {}) => deployment({
+    ...CONTENT,
+    handlers: {
+      admin: {
+        claimContentAccess: () => request,
+        settleContentAccess: (_id: string, result: { grantId?: string; error?: string }) =>
+          "error" in result ? { ...request, state: "failed", error: result.error }
+            : { ...request, grantId: result.grantId },
+        ...handlers.admin,
+      },
+      overseer: { grantAdminContent: () => ({ grantId: GRANT_ID }), ...handlers.overseer },
+      directory: { workspaceListing: () => LISTING, ...handlers.directory },
+    },
+  });
+
+  it.each([
+    ["no cap", { ...CONTENT, vars: {} }],
+    ["the cap at metadata", { ...CONTENT, vars: { ADMIN_WORKSPACE_ACCESS_MAX: "metadata" } }],
+    ["the admins' choice of metadata", { vars: CONTENT.vars }],
+  ])("refuses a request while the level in force is below content, by %s, storing nothing",
+      async (_case, setup) => {
+    const { mint, calls } = deployment({
+      ...setup, handlers: { directory: { workspaceListing: () => LISTING } },
+    });
+    const error = await rejection(mint().requestContentAccess(workspaceId(), REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    // The id, then the committed config, and nothing else.
+    expect(named(calls)).toEqual(["overseers.idFromString", "admin.committedAdminConfig"]);
+  });
+
+  it("refuses every method to a caller no longer an admin before touching anything", async () => {
+    const { mint, calls } = deployment(CONTENT);
+    const api = mint("former@example.test");
+    for (let call of [
+      () => api.requestContentAccess(workspaceId(), REASON),
+      () => api.listContentAccessRequests(),
+      () => api.getContentAccessRequest(REQUEST_ID),
+      () => api.approveContentAccess(REQUEST_ID),
+      () => api.denyContentAccess(REQUEST_ID),
+      () => api.endWorkspaceGrant(workspaceId(), GRANT_ID, REASON),
+    ]) {
+      expect(getAdminAccessErrorCode(await rejection(call())))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a bad reason or a malformed id before touching anything", async () => {
+    const { mint, calls } = deployment(CONTENT);
+    const api = mint();
+    for (let reason of ["", "   ", "r".repeat(501)]) {
+      expect(await rejection(api.requestContentAccess(workspaceId(), reason)))
+          .toBeInstanceOf(TypeError);
+    }
+    expect(calls).toEqual([]);
+    expect(getAdminAccessErrorCode(await rejection(api.requestContentAccess("not-an-id", REASON))))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+  });
+
+  it.each<[string, Handler]>([
+    ["lists no such workspace", () => null],
+    ["lists it with no owner", () => ({ title: "Orphan", ownerId: "" })],
+    ["cannot be asked", () => { throw new Error("directory unavailable"); }],
+  ])("stores nothing for a workspace the directory %s", async (_label, workspaceListing) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { mint, callsTo } =
+        deployment({ ...CONTENT, handlers: { directory: { workspaceListing } } });
+    const error = await rejection(mint().requestContentAccess(workspaceId(), REASON));
+    expect(getAdminGrantErrorCode(error)).toBe(ADMIN_GRANT_ERROR_CODES.workspaceUnlisted);
+    expect(callsTo("admin", "requestContentAccess")).toEqual([]);
+    expect(callsTo("overseers", "get")).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("stores the request with the directory's title and owner, never reaching the workspace",
+      async () => {
+    const longTitle = "t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 40);
+    const longOwner = `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}@example.test`;
+    const { mint, calls, callsTo } = deployment({
+      ...CONTENT,
+      handlers: { directory: { workspaceListing: () => ({ title: longTitle, ownerId: longOwner }) } },
+    });
+    const id = workspaceId();
+    const before = Date.now();
+    const request =
+        await mint(ADMIN, "api").requestContentAccess(id.toUpperCase(), `  ${REASON}  `);
+
+    expect(named(calls)).toEqual([
+      "overseers.idFromString", "admin.committedAdminConfig",
+      "directorys.getByName", "directory.workspaceListing", "admin.requestContentAccess",
+    ]);
+    expect(callsTo("overseers", "get")).toEqual([]);
+    const [stored, actor] = callsTo("admin", "requestContentAccess")[0].args as
+        [AdminContentRequest, unknown];
+    expect(stored).toStrictEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/), workspaceId: id,
+      workspaceTitle: `${"t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`,
+      workspaceOwner: expect.stringMatching(/^o+…#[0-9a-f]{20}$/),
+      reason: REASON, requestedBy: ADMIN, via: "api",
+      requestedAt: expect.any(Date), expiresAt: expect.any(Date), state: "pending",
+    });
+    expect(actor).toStrictEqual({ admin: ADMIN, sessionId: expect.any(String), via: "api" });
+    expect(stored.requestedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(stored.expiresAt.getTime() - stored.requestedAt.getTime())
+        .toBe(ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS * 1000);
+    expect(ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS).toBe(24 * 60 * 60);
+    expect(request).toStrictEqual(stored);
+  });
+
+  it("is not a write: it asks nothing of ADMIN_WORKSPACE_WRITES", async () => {
+    const { mint, callsTo } = deployment({
+      ...CONTENT, vars: { ...CONTENT.vars, ADMIN_WORKSPACE_WRITES: "off" },
+      handlers: { directory: { workspaceListing: () => LISTING } },
+    });
+    await mint().requestContentAccess(workspaceId(), REASON);
+    expect(callsTo("admin", "requestContentAccess")).toHaveLength(1);
+  });
+
+  it("claims, has the workspace give the grant and settles it, in that order", async () => {
+    const request = claimed();
+    const { mint, calls, callsTo, waitUntil } = approvalDeployment(request);
+    const settled = await mint(ADMIN, "cli").approveContentAccess(REQUEST_ID);
+
+    expect(named(calls)).toEqual([
+      "admin.claimContentAccess", "overseers.idFromString", "overseers.get",
+      "overseer.grantAdminContent", "admins.getByName", "admin.settleContentAccess",
+    ]);
+    const actor = { admin: ADMIN, sessionId: expect.any(String), via: "cli" };
+    expect(callsTo("admin", "claimContentAccess")[0].args).toStrictEqual([REQUEST_ID, actor]);
+    expect(callsTo("overseers", "get")[0].args).toEqual([request.workspaceId]);
+    expect(callsTo("overseer", "grantAdminContent")[0].args).toStrictEqual([{
+      requestId: REQUEST_ID, requestedBy: "other-admin@example.test", reason: REASON,
+      workspaceOwner: LISTING.ownerId, ...actor,
+    }]);
+    expect(callsTo("admin", "settleContentAccess")[0].args)
+        .toStrictEqual([REQUEST_ID, { grantId: GRANT_ID }]);
+    // The grant is asked for and settled whatever becomes of the client.
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(settled).toStrictEqual({ ...request, grantId: GRANT_ID });
+  });
+
+  it("settles a confirmed grant again on a fresh stub when the first settle is reset, asking the workspace once",
+      async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const request = claimed();
+    let settles = 0;
+    const { mint, callsTo } = approvalDeployment(request, { admin: {
+      settleContentAccess: (_id: string, result: { grantId?: string }) => {
+        if (++settles === 1) throw Object.assign(new Error("reset"), { durableObjectReset: true });
+        return { ...request, grantId: result.grantId };
+      },
+    } });
+    expect(await mint().approveContentAccess(REQUEST_ID)).toStrictEqual({ ...request, grantId: GRANT_ID });
+    expect(callsTo("overseer", "grantAdminContent")).toHaveLength(1);
+    expect(callsTo("admin", "settleContentAccess").map(call => call.args))
+        .toStrictEqual([[REQUEST_ID, { grantId: GRANT_ID }], [REQUEST_ID, { grantId: GRANT_ID }]]);
+    expect(callsTo("admins", "getByName")).toHaveLength(2);
+    vi.restoreAllMocks();
+  });
+
+  it.each<[string, () => unknown, string, boolean]>([
+    ["drops a workspace found missing from the directory",
+      () => createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound),
+      "Workspace not found.", true],
+    ["leaves a workspace that changed owner listed",
+      () => createAdminGrantError(ADMIN_GRANT_ERROR_CODES.workspaceChanged),
+      "This workspace no longer belongs to the owner the request named, so no grant was given. " +
+          "Request it again.", false],
+    ["takes a thrown value that is no Error as its text", () => "unreachable", "unreachable",
+      false],
+    // The workspace may have committed the grant before its answer was lost.
+    ["says the outcome is unknown when the call was reset",
+      () => Object.assign(new Error("Durable Object reset"), { durableObjectReset: true }),
+      "The workspace's answer never arrived, so whether it gave the grant is unknown.", false],
+    ["says the outcome is unknown when the connection was lost",
+      () => Object.assign(new Error("Network connection lost."), { retryable: true }),
+      "The workspace's answer never arrived, so whether it gave the grant is unknown.", false],
+  ])("settles a request the workspace gave no grant for with its message, and %s",
+      async (_label, thrown, message, dropped) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const request = claimed();
+    const { mint, callsTo } = approvalDeployment(request, {
+      overseer: { grantAdminContent: () => { throw thrown(); } },
+    });
+    expect(await mint().approveContentAccess(REQUEST_ID))
+        .toMatchObject({ state: "failed", error: message });
+    expect(callsTo("admin", "settleContentAccess").map(call => call.args))
+        .toStrictEqual([[REQUEST_ID, { error: message }]]);
+    expect(callsTo("directory", "removeWorkspace").map(call => call.args))
+        .toEqual(dropped ? [[request.workspaceId]] : []);
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ADMIN_GRANT_ERROR_CODES.secondAdminRequired, ADMIN_GRANT_ERROR_CODES.requestNotPending,
+    ADMIN_GRANT_ERROR_CODES.requestNotFound,
+  ])("never reaches the workspace when the claim is refused %s", async code => {
+    const { mint, calls, waitUntil } = approvalDeployment(claimed(), {
+      admin: { claimContentAccess: () => { throw createAdminGrantError(code); } },
+    });
+    const error = await rejection(mint().approveContentAccess(REQUEST_ID));
+    expect(getAdminGrantErrorCode(error)).toBe(code);
+    expect(named(calls)).toEqual(["admin.claimContentAccess"]);
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("lists, reads and denies through AdminSettings, with the capability's own actor", async () => {
+    const listed = [claimed()];
+    const { mint, callsTo } = deployment({
+      handlers: { admin: {
+        listContentAccessRequests: () => listed, getContentAccessRequest: () => listed[0],
+      } },
+    });
+    const api = mint(ADMIN, "cli");
+    expect(await api.listContentAccessRequests()).toBe(listed);
+    expect(await api.getContentAccessRequest(REQUEST_ID)).toBe(listed[0]);
+    await api.denyContentAccess(REQUEST_ID);
+    expect(callsTo("admin", "getContentAccessRequest")[0].args).toEqual([REQUEST_ID]);
+    expect(callsTo("admin", "denyContentAccess")[0].args).toStrictEqual(
+        [REQUEST_ID, { admin: ADMIN, sessionId: expect.any(String), via: "cli" }]);
+  });
+});
+
+describe("AdminApiImpl.endWorkspaceGrant", () => {
+  const GRANT_ID = "0b6f6c0e-2f0b-4f0a-9d0b-6a3c0a2d9e11";
+
+  // Whatever the level, and with writes off: these deployments set neither.
+  it("has the workspace end it, through the capability's own session and `via`", async () => {
+    const { mint, calls, callsTo } = deployment();
+    const api = mint(ADMIN, "cli");
+    const id = workspaceId();
+
+    expect(await api.endWorkspaceGrant(id, GRANT_ID, `  ${REASON}  `)).toBeUndefined();
+
+    // Nothing is appended here: the workspace records the step.
+    expect(named(calls)).toEqual(
+        ["overseers.idFromString", "overseers.get", "overseer.endAdminGrant"]);
+    expect(callsTo("overseers", "get")[0].args).toEqual([id]);
+    expect(callsTo("overseer", "endAdminGrant")[0].args).toStrictEqual(
+        [{ admin: ADMIN, sessionId: expect.any(String), via: "cli" }, GRANT_ID, REASON]);
+  });
+
+  it("refuses a caller no longer an admin, a bad reason and a malformed id before reaching " +
+      "any workspace", async () => {
+    const { mint, callsTo } = deployment();
+    expect(getAdminAccessErrorCode(await rejection(
+        mint("former@example.test").endWorkspaceGrant(workspaceId(), GRANT_ID, REASON))))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    const api = mint();
+    for (let reason of ["", "   ", "r".repeat(501)]) {
+      expect(await rejection(api.endWorkspaceGrant(workspaceId(), GRANT_ID, reason)))
+          .toBeInstanceOf(TypeError);
+    }
+    expect(getAdminAccessErrorCode(
+        await rejection(api.endWorkspaceGrant("not-an-id", GRANT_ID, REASON))))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    expect(callsTo("overseers", "get")).toEqual([]);
+  });
+
+  it.each<[string, () => unknown, boolean]>([
+    ["drops a workspace found missing from the directory",
+      () => createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound), true],
+    ["leaves the workspace listed when it holds no such grant",
+      () => createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound), false],
+  ])("passes the workspace's refusal through, and %s", async (_label, thrown, dropped) => {
+    const refusal = thrown();
+    const { mint, callsTo } = deployment({
+      handlers: { overseer: { endAdminGrant: () => { throw refusal; } } },
+    });
+    const id = workspaceId();
+    expect(await rejection(mint().endWorkspaceGrant(id, GRANT_ID, REASON))).toBe(refusal);
+    expect(callsTo("directory", "removeWorkspace").map(call => call.args))
+        .toEqual(dropped ? [[id]] : []);
+    // The grant's own family of codes, which the caller reads as it reads any refusal.
+    if (!dropped) {
+      expect(getAdminGrantErrorCode(refusal)).toBe(ADMIN_GRANT_ERROR_CODES.notFound);
+    }
   });
 });

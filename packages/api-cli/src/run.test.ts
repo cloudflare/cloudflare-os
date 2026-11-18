@@ -835,6 +835,7 @@ test("an admin's view of a workspace has twenty-two commands, five of which read
     const { returns } = commands[name]!;
     assert.ok(returns.kind === "value" && returns.stream === true && returns.type.startsWith("AdminFileContent = "), name);
   }
+  }
 });
 
 test("the root help says what `--` does, and that an option after it is a value", () => {
