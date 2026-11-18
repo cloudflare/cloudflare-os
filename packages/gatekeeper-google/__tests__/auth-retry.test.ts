@@ -173,6 +173,20 @@ describe("fetchWithAuthRetry", () => {
     expect(requests).toBe(1);
   });
 
+  it("does not ask the provider again for a retry its caller gave up during the wait", async () => {
+    vi.stubGlobal("fetch", async () => new Response(null, { status: 503, headers: { "Retry-After": "1" } }));
+    let asked = 0;
+    let caller = new AbortController();
+    let response = fetchWithAuthRetry(
+      "https://www.googleapis.com/drive/v3/files/file-1", { signal: caller.signal },
+      async () => { asked++; return "token"; });
+    let outcome = expect(response).rejects.toThrow("stop");
+    await vi.waitFor(() => expect(asked).toBe(1));
+    caller.abort(new Error("stop"));
+    await outcome;
+    expect(asked).toBe(1);
+  });
+
   it("does not replay a 401 when the provider cannot refresh its token", async () => {
     let requests = 0;
     vi.stubGlobal("fetch", async () => { requests++; return new Response(null, { status: 401 }); });
