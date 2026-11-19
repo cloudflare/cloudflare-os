@@ -275,7 +275,14 @@ const TEXT_DECODER_STRICT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: t
  * gatekeeper-facing paths (submitAction, lazy reads) all funnel through it.
  */
 export class WorkspaceGitCache {
-  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate) {}
+  /**
+   * `assertRoom` refuses a new blob over CHUNK_MAX_SIZE the workspace has no room for, by
+   * throwing: it is called with such a blob's size, when known, before any of it is stored, and
+   * with each new chunk's size as that is stored. Only a blob over CHUNK_MAX_SIZE stores chunks,
+   * so a smaller one, even streamed, is never refused.
+   */
+  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate,
+              private assertRoom: (byteLength: number) => void = () => {}) {}
 
   // -------------------------------------------------------------------------------------
   // Local object access
@@ -369,7 +376,7 @@ export class WorkspaceGitCache {
       }
       this.storage.gitObjects.put(object.record);
     } else if (object.type === "blob" && object.payload.byteLength > CHUNK_MAX_SIZE) {
-      let writer = new BlobWriter(this.storage.gitObjects, object.payload.byteLength);
+      let writer = this.#blobWriter(object.payload.byteLength);
       writer.write(object.payload);
       let blob = writer.finish();
       if (blob.record === undefined || blob.oid !== oid) {
@@ -380,6 +387,20 @@ export class WorkspaceGitCache {
       this.storage.gitObjects.put({ oid, data: encodeLooseObject(object.type, object.payload) });
     }
     this.#extendToReferents(oid, object);
+  }
+
+  // A writer for a blob over CHUNK_MAX_SIZE, whose chunk rows are refused once the workspace has
+  // no room for them (see the constructor).
+  #blobWriter(byteLength: number | undefined): BlobWriter {
+    if (byteLength !== undefined && byteLength > CHUNK_MAX_SIZE) this.assertRoom(byteLength);
+    let objects = this.storage.gitObjects;
+    return new BlobWriter({
+      get: oid => objects.get(oid),
+      put: record => {
+        this.assertRoom(record.data.byteLength);
+        objects.put(record);
+      },
+    }, byteLength);
   }
 
   // Stores an object authored here -- a file's blob, a tree, a commit -- unless it is already
@@ -419,7 +440,13 @@ export class WorkspaceGitCache {
    */
   async writeBlobStream(stream: ReadableStream<Uint8Array>, byteLength?: number)
       : Promise<BytesRef> {
-    let writer = new BlobWriter(this.storage.gitObjects, byteLength);
+    let writer: BlobWriter;
+    try {
+      writer = this.#blobWriter(byteLength);
+    } catch (err) {
+      await stream.cancel(err).catch(() => {});
+      throw err;
+    }
     for await (let piece of readStreamPieces(stream)) writer.write(piece);
     let blob = writer.finish();
     if (!this.hasLocalObject(blob.oid)) {
@@ -826,7 +853,7 @@ export class WorkspaceGitCache {
       resolveLargeBase: oid => usable(oid) ? this.openLocalBlob(oid) : undefined,
       openBlobSink: size => {
         if (size <= CHUNK_MAX_SIZE) return undefined;
-        let writer = new BlobWriter(this.storage.gitObjects, size);
+        let writer = this.#blobWriter(size);
         return {
           write: piece => writer.write(piece),
           finish: () => {
@@ -917,7 +944,8 @@ export class WorkspaceGitCache {
    * recorded sources (`onRemote ∪ pullableFrom`, trying each recorded gatekeeper on failure).
    * All requests in one call share `hints` (batch callers group by expected type).
    *
-   * Throws if an object cannot be obtained. No object is ever refused for its size.
+   * Throws if an object cannot be obtained. No object is refused for its size, but one over
+   * CHUNK_MAX_SIZE is refused while the workspace has no room for it (see the constructor).
    */
   async ensureGitObjects(oids: GitOid[], hints: GitPullHints): Promise<void> {
     let missing = [...new Set(oids)].filter(oid => !this.hasLocalObject(oid));

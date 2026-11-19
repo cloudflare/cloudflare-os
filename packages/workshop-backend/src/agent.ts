@@ -1,9 +1,9 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -2300,13 +2300,27 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
-  // Count across the whole replay, not just the latest upload batch. PDFs also count on some
-  // providers; conservatively include candidate parts even if their headers later rule them out.
-  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
-    ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
-        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
-    : 0), 0);
-  const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
+  // Images and PDFs a request can carry inline, chosen across the whole replay since every request
+  // resends them all: the newest MAX_INLINE_ATTACHMENTS, each within MAX_INLINE_ATTACHMENT_BYTES
+  // and together within MAX_INLINE_ATTACHMENTS_TOTAL_BYTES. The rest are named by workspace path
+  // instead, so that no upload makes a request a provider refuses for its attachments. Choosing
+  // newest first does mean that once one overflows these, the next turn's prompt changes from
+  // an older message on, so the provider's cache misses from there. Parts count even if their
+  // headers later rule them out.
+  const isInlineCandidate = (mimeType: string) => isAllowedChatAttachmentImageMimeType(mimeType) ||
+      (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api));
+  const inlineAttachmentIds = new Set<string>();
+  let inlineAttachmentBytes = 0;
+  for (let msg of chatMessages.toReversed()) {
+    for (let attachment of msg.type === "message" ? msg.attachments?.toReversed() ?? [] : []) {
+      if (isInlineCandidate(attachment.mimeType) && inlineAttachmentIds.size < MAX_INLINE_ATTACHMENTS &&
+          attachment.size <= MAX_INLINE_ATTACHMENT_BYTES &&
+          inlineAttachmentBytes + attachment.size <= MAX_INLINE_ATTACHMENTS_TOTAL_BYTES) {
+        inlineAttachmentBytes += attachment.size;
+        inlineAttachmentIds.add(attachment.id);
+      }
+    }
+  }
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2381,6 +2395,36 @@ async function runAgentPass(
                     ? `; workspace file env.${agentContext.scratch.bindingName}/` +
                       attachment.workspacePath
                     : "";
+                let textLike = isTextLikeAttachmentMimeType(attachment.mimeType);
+                let isPdf = attachment.mimeType === PDF_MIME_TYPE;
+                // Inlined, text this long would be resent on every turn, and could alone exceed
+                // the model's window, which compaction cannot fix.
+                let tooLargeText = (): TextContent[] => [{
+                  type: "text",
+                  text: `\n\n[Attached text file${filename}${workspaceLocation}; ${attachment.size} ` +
+                      "bytes, too large to inline. " + (workspaceLocation
+                          ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                            "workspace file.]"
+                          : "It is not in the workspace yet, so its contents are unavailable.]"),
+                }];
+                // Model input support does not restrict workspace files. Never decode binary
+                // uploads lossily or send unsupported formats to a provider as image parts.
+                let binary = (): TextContent[] => [{
+                  type: "text",
+                  text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
+                      `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
+                }];
+                // Read the bytes only of what may be inlined: an image or PDF chosen above, or text
+                // short enough, since text decodes to at least a character per four bytes.
+                if (isInlineCandidate(attachment.mimeType) && !inlineAttachmentIds.has(attachment.id)) {
+                  return [{type: "text", text: `\n\n[Attached ${isPdf ? "PDF file" : "image"}${filename}` +
+                    `${workspaceLocation}; ${attachment.size} bytes, not shown to you: past the limits ` +
+                    "on the images and PDFs one request can carry.]"}];
+                } else if (textLike && attachment.size > 4 * MAX_TOOL_RESULT_CHARS) {
+                  return tooLargeText();
+                } else if (!textLike && !isInlineCandidate(attachment.mimeType)) {
+                  return binary();
+                }
                 let data: Uint8Array;
                 try {
                   data = await hooks.getChatAttachmentData(chatId, attachment.id);
@@ -2394,7 +2438,7 @@ async function runAgentPass(
                     "original contents are currently unavailable.]"}];
                 }
                 let text = decodeChatAttachmentText(attachment.mimeType, data);
-                if (canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
+                if (canInlineChatAttachmentImage(attachment.mimeType, data)) {
                   return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
                     type: "image",
                     data: data.toBase64(),
@@ -2407,18 +2451,8 @@ async function runAgentPass(
                         text,
                   }];
                 } else if (text !== undefined) {
-                  // Inlined, it would be resent on every turn, and could alone exceed the model's
-                  // window, which compaction cannot fix.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
-                        "bytes, too large to inline. " + (workspaceLocation
-                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
-                              "workspace file.]"
-                            : "It is not in the workspace yet, so its contents are unavailable.]"),
-                  }];
-                } else if (attachment.mimeType === PDF_MIME_TYPE &&
-                           modelApiSupportsPdfAttachments(handle.model.api)) {
+                  return tooLargeText();
+                } else if (isPdf && modelApiSupportsPdfAttachments(handle.model.api)) {
                   // pi has no file/document content part, so a PDF rides an ImageContent part;
                   // the model handle rewrites it into the provider's native document block just
                   // before the request goes out (see chat-attachment-pdf.ts). The text part
@@ -2428,13 +2462,7 @@ async function runAgentPass(
                     {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
                   ];
                 } else {
-                  // Model input support does not restrict workspace files. Never decode binary
-                  // uploads lossily or send unsupported formats to a provider as image parts.
-                  return [{
-                    type: "text",
-                    text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
-                        `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
-                  }];
+                  return binary();
                 }
               }));
               parts.push(...attachmentParts.flat());

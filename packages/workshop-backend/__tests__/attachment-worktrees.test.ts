@@ -2,7 +2,7 @@ import {describe, expect, it, vi} from "vitest";
 import {env} from "cloudflare:workers";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
-import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
+import {assertChatAttachmentSize, MAX_INLINE_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
@@ -206,7 +206,8 @@ describe("scratch worktree attachment ingress", () => {
     const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
       [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]);
     const text = "first line\nneedle\n" + "padding\n".repeat(524286);
-    // Exact upload cap, with short lines so the model requests only a small window.
+    // Far over MAX_BUFFERED_BLOB_SIZE, so named by its blob, with short lines so the model
+    // requests only a small window.
     const bytes = new TextEncoder().encode(text.padEnd(4 * 1024 * 1024, "x").slice(0, 4 * 1024 * 1024));
     const ref = await impl.gitCache.writeBlob(bytes);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", undefined,
@@ -324,7 +325,7 @@ describe("scratch worktree attachment ingress", () => {
       return {id};
     };
     const bytes = new TextEncoder().encode("x".repeat(size));
-    validateChatAttachmentUpload({content: bytes, mimeType: "text/plain", name: "large.txt"});
+    assertChatAttachmentSize(bytes.byteLength);
     const upload = await stage(bytes, "large.txt");
     const chatId = existing
       ? await impl.newChat(user, {profile: USER}, "Initial", undefined, [await stage(new TextEncoder().encode("small"), "small.txt")])
@@ -362,7 +363,7 @@ describe("scratch worktree attachment ingress", () => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const bytes = new TextEncoder().encode("original upload");
       const stage = (name: string) => {
-        const upload = validateChatAttachmentUpload({content: bytes, mimeType: "text/plain", name});
+        const upload = validateChatAttachmentUpload({leadingBytes: bytes, mimeType: "text/plain", name});
         const id = crypto.randomUUID();
         impl.storage.chatAttachmentContent.put({fileId: id, data: bytes, state: {
           type: "staged", uploadedAt: Date.now(), mimeType: upload.mimeType, name: upload.name,
@@ -440,9 +441,9 @@ describe("scratch worktree attachment ingress", () => {
         if (source === "blob") return {
           oid: (await impl.gitCache.writeBlob(content)).oid, mimeType, name,
         };
-        const upload = validateChatAttachmentUpload({content, mimeType, name});
+        const upload = validateChatAttachmentUpload({leadingBytes: content, mimeType, name});
         const id = crypto.randomUUID();
-        impl.storage.chatAttachmentContent.put({fileId: id, data: upload.content, state: {
+        impl.storage.chatAttachmentContent.put({fileId: id, data: upload.leadingBytes, state: {
           type: "staged", uploadedAt: Date.now(), mimeType: upload.mimeType, name: upload.name,
         }});
         return {id};
@@ -610,7 +611,7 @@ describe("scratch worktree attachment ingress", () => {
   }));
 
   it.each(["image/png", "application/pdf"])(
-    "reprojects earlier large images when a later %s crosses the many-image limit", mimeType => inKernel(crypto.randomUUID(), async impl => {
+    "inlines only the newest 20 images and PDFs once a later %s passes that many", mimeType => inKernel(crypto.randomUUID(), async impl => {
       // Header fixtures exercise projection without decoding pixels or altering original bytes.
       const large = new Uint8Array(24), small = new Uint8Array(24);
       for (const [bytes, width] of [[large, 4000], [small, 2000]] as const) {
@@ -636,10 +637,11 @@ describe("scratch worktree attachment ingress", () => {
         if (turn) await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
         const request = (await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0];
         const parts = imageParts(request);
-        expect(parts).toHaveLength(1);
-        expect(parts[0]).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
-        expect(JSON.stringify(request)).toContain("workspace file env.SCRATCH/0.png");
-        expect(JSON.stringify(request)).toContain("binary contents are not inlined");
+        expect(parts).toHaveLength(20);
+        expect(parts.at(-1)).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
+        // The oldest is named instead; those still inline keep their full 4000 pixels.
+        expect(JSON.stringify(request)).toContain("workspace file env.SCRATCH/0.png; 24 bytes, not shown to you");
+        expect(parts.filter(part => part.type === "image" && part.data === large.toBase64())).toHaveLength(19);
       }
       const originals = [...impl.storage.chats.list()].flatMap(message =>
         message.type === "message" ? message.attachments ?? [] : []);
@@ -649,6 +651,44 @@ describe("scratch worktree attachment ingress", () => {
       }
     }),
   );
+
+  // Every request resends the chat's images and PDFs, so the newest that fit go inline, and the
+  // rest are named by workspace path without their bytes being read.
+  it("inlines only the newest images within the per-file and per-request limits", () => inKernel(crypto.randomUUID(), async impl => {
+    const png = (size: number, width: number) => {
+      const bytes = new Uint8Array(size);
+      bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+      const view = new DataView(bytes.buffer);
+      view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+      view.setUint32(16, width); view.setUint32(20, 1000);
+      return bytes;
+    };
+    const upload = async (name: string, bytes: Uint8Array) =>
+      ({oid: impl.gitCache.writeBlob(bytes).oid, mimeType: "image/png", name});
+    const share = Math.floor(MAX_INLINE_ATTACHMENTS_TOTAL_BYTES / 2.5);
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const chatId = await impl.newChat(user, {profile: USER}, "Oldest", undefined,
+      [await upload("oldest.png", png(share, 1))]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Middle", undefined,
+      [await upload("middle.png", png(share, 2))]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Newest", undefined,
+      [await upload("newest.png", png(share, 3)), await upload("huge.png", png(MAX_INLINE_ATTACHMENT_BYTES + 1, 4))]);
+    const read = vi.spyOn(impl, "getChatAttachmentData");
+    const request = (await scriptedTurn(impl, chatId, []))[0];
+    const parts = request.flatMap(message => Array.isArray(message.content) ? message.content : []);
+    expect(parts.filter(part => part.type === "image")).toHaveLength(2);
+    const text = parts.flatMap(part => part.type === "text" ? [part.text] : []).join("");
+    expect(text).toContain("[Attached image (middle.png); workspace file env.SCRATCH/middle.png]");
+    expect(text).toContain("[Attached image (newest.png); workspace file env.SCRATCH/newest.png]");
+    for (const [name, size] of [["oldest.png", share], ["huge.png", MAX_INLINE_ATTACHMENT_BYTES + 1]] as const) {
+      expect(text).toContain(`[Attached image (${name}); workspace file env.SCRATCH/${name}; ${size} ` +
+        "bytes, not shown to you: past the limits on the images and PDFs one request can carry.]");
+    }
+    const attachments = [...impl.storage.chats.list()].flatMap(message =>
+      message.type === "message" ? message.attachments ?? [] : []);
+    const readNames = read.mock.calls.map(([, id]) => attachments.find(attachment => attachment.id === id)?.name);
+    expect(readNames.toSorted()).toEqual(["middle.png", "newest.png"]);
+  }));
 
   it("never scans attachment payloads on text-only sends or namespace allocation", () => inKernel(crypto.randomUUID(), async impl => {
     const list = vi.spyOn(impl.storage.chatAttachmentContent, "list")
@@ -692,7 +732,15 @@ describe("scratch worktree attachment ingress", () => {
     await expect(impl.newChat(user, {profile: USER}, "Missing blob", undefined,
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]))
       .rejects.toThrow("Unknown Git blob");
-    const tooBig = await impl.gitCache.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
+    // Streamed, as the composer uploads: the blob is never held whole.
+    const tooBigSize = 100 * 1024 * 1024 + 1, piece = new Uint8Array(1024 * 1024);
+    let left = tooBigSize;
+    const tooBig = await impl.gitCache.writeBlobStream(new ReadableStream({pull(controller) {
+      if (left === 0) return controller.close();
+      const length = Math.min(left, piece.byteLength);
+      left -= length;
+      controller.enqueue(piece.slice(0, length));
+    }}), tooBigSize);
     // Refused by its size alone: none of its chunks is read.
     const record = impl.storage.gitObjects.get(tooBig.oid)!;
     if (!("chunks" in record)) throw new Error("expected a chunked blob");
@@ -705,7 +753,7 @@ describe("scratch worktree attachment ingress", () => {
     };
     await expect(impl.newChat(user, {profile: USER}, "Too large", undefined,
       [{oid: tooBig.oid, mimeType: "application/octet-stream"}]))
-      .rejects.toThrow("too large");
+      .rejects.toThrow("100 MB or smaller");
     expect(chunkReads).toBe(0);
   }));
 });

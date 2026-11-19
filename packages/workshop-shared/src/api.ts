@@ -3884,6 +3884,12 @@ export type WorkspaceMetadata = {
    */
   defaultGadgetId?: WorkpieceId;
 
+  /**
+   * How many bytes the workspace stores, once that reaches WORKSPACE_STORAGE_WARNING_BYTES, for
+   * clients to warn; absent below it. Updated as it changes by a tenth of a GB.
+   */
+  storageBytes?: number;
+
   // TODO:
   // - created / modified / activity times
   // - icon? thumbnail?
@@ -3897,6 +3903,29 @@ export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
   created: Date;
   lastActive: Date;
 }
+
+/**
+ * The most a workspace can store: the storage limit of the Durable Object that holds it, which
+ * Cloudflare measures in GB, not GiB. A full one would refuse every write, even those that end an
+ * agent turn and report its error, so a workspace refuses what fills it well before that, at
+ * WORKSPACE_FILE_QUOTA_BYTES and WORKSPACE_TURN_QUOTA_BYTES.
+ */
+export const WORKSPACE_STORAGE_LIMIT_BYTES = 10_000_000_000;
+
+/** From this much stored, WorkspaceMetadata reports the workspace's `storageBytes`. */
+export const WORKSPACE_STORAGE_WARNING_BYTES = 7_000_000_000;
+
+/**
+ * From this much stored, a workspace refuses to store a new file over 1 MiB, whether uploaded,
+ * written, or pulled from a gatekeeper by a read, which then fails.
+ */
+export const WORKSPACE_FILE_QUOTA_BYTES = 8_000_000_000;
+
+/**
+ * From this much stored, a workspace starts no agent turn: one that would start ends at once
+ * with an `error` message whose code is `storage_full`.
+ */
+export const WORKSPACE_TURN_QUOTA_BYTES = 9_500_000_000;
 
 /**
  * The icons an output format may be drawn with. A closed set because we want them to look consistent.
@@ -4840,12 +4869,13 @@ export interface Overseer extends RpcTarget {
    * `setBytes` change together with the payload's byte length. The blob must be present in this
    * workspace's Git store.
    *
-   * There is no size limit. A `Uint8Array` travels in one RPC message; for large content, pass
-   * `{stream, byteLength}` instead, which the server stores as it arrives without holding it
-   * whole. `byteLength` must be the stream's exact length: it is verified, and a stream that
-   * ends short of it or runs past it fails the call and stores no blob (though pieces already
-   * written may remain, unreferenced, as after any interrupted write). Either way, the OID is
-   * returned only once the whole blob is durably stored.
+   * There is no size limit, but a blob over 1 MiB is refused once the workspace stores
+   * WORKSPACE_FILE_QUOTA_BYTES, with an error that says so. A `Uint8Array` travels in one RPC
+   * message; for large content, pass `{stream, byteLength}` instead, which the server stores as
+   * it arrives without holding it whole. `byteLength` must be the stream's exact length: it is
+   * verified, and a stream that ends short of it or runs past it fails the call and stores no
+   * blob (though pieces already written may remain, unreferenced, as after any interrupted
+   * write). Either way, the OID is returned only once the whole blob is durably stored.
    */
   uploadBlob(content: Uint8Array | { stream: ReadableStream<Uint8Array>; byteLength: number })
       : Promise<GitOid>;
@@ -4858,9 +4888,10 @@ export interface Overseer extends RpcTarget {
   readBlob(oid: GitOid): Promise<ReadableStream<Uint8Array>>;
 
   /**
-   * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
-   * present in the message's ChatAttachmentRef. Images are inlined there, so this is normally used
-   * only to download non-image attachments on demand.
+   * Fetch the bytes of a committed chat attachment over RPC, whole. The canonical metadata is
+   * already present in the message's ChatAttachmentRef, which carries small images' bytes. Read an
+   * attachment that has an `oid` with readBlob() instead, which streams: this refuses one over
+   * 16 MiB.
    */
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
 
@@ -5944,7 +5975,8 @@ export type AiChatMessageBody = {
   /**
    * Optional machine-readable code so the client can react specially (e.g. "usage_limit" opens
    * the "connect Cloudflare / add credits" modal instead of a generic error + retry; "stopped"
-   * marks a run the user stopped, which is not a failure).
+   * marks a run the user stopped, which is not a failure; "storage_full" marks a turn refused
+   * because the workspace reached WORKSPACE_TURN_QUOTA_BYTES, which a retry can't fix).
    */
   code?: string;
 } | {
@@ -6100,8 +6132,9 @@ export type ChatAttachmentHandle = {
 /**
  * Attachment metadata returned to clients.
  *
- * For supported inline image formats, `content` carries the image bytes so the client can render
- * them without an extra round trip. For other attachments, fetch the bytes on demand via
+ * For supported inline image formats up to 4 MiB, `content` carries the image bytes so the client
+ * can render them without an extra round trip. For other attachments, read the bytes on demand:
+ * with `Overseer.readBlob(oid)`, or for a legacy attachment with no `oid`,
  * `Overseer.getChatAttachmentContent()`.
  */
 export type ChatAttachmentRef = {
@@ -6122,7 +6155,7 @@ export type ChatAttachmentRef = {
    */
   workspacePath?: string;
 
-  /** Inlined bytes for small image attachments. Present only for images. */
+  /** Inlined bytes for image attachments up to 4 MiB. Present only for those. */
   content?: Uint8Array;
 };
 

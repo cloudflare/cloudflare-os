@@ -5,7 +5,8 @@ MIME type or the selected model's input support. Images, PDFs, archives, spreads
 unknown formats, empty binary files, and invalid UTF-8 are supported. Upload preparation
 preserves the original bytes, including images; it does not resize or transcode them.
 This intentionally removes the old image-only path that accepted source images up to 25 MiB
-and resized them to fit: source images, like every other upload, must now fit the 4 MiB limit.
+and resized them to fit: source images, like every other upload, must now fit the 100 MiB limit,
+and the model sees only those within the inline limits below.
 The scratch worktree is created on the first upload and reused for later uploads, plans,
 and other agent working files.
 
@@ -21,14 +22,17 @@ Uploaded bytes, Git-fetched files, and authored files share the existing `gitObj
 one zlib-compressed loose Git object per OID, except that a blob over 1 MiB is stored as an index
 of chunks that are themselves loose blobs (see `git-chunked-blob.ts`). There is no upload-grant
 system. As with other Git APIs, knowing an OID allows access to that object if it exists in the
-workspace. Raw-byte uploads and writes have no size limit, and reads return whatever is stored.
+workspace. Raw-byte uploads and writes have no size limit of their own (but see the storage
+quota below), and reads return whatever is stored.
 The shared Git store has no GC. Removing an attachment from an unsent draft does not reclaim
 its uploaded blob; retention/quota needs a generic policy that also protects objects referenced
 by messages and worktree changes, not attachment-specific deletion by OID.
 
-Valid UTF-8 text without NUL bytes retains the existing text OTs, including a preserved BOM.
-Later text uploads that exceed the OT record budget use an immutable blob reference instead,
-so the same upload size limit applies to initial and subsequent messages.
+Valid UTF-8 text without NUL bytes retains the existing text OTs, including a preserved BOM, up to
+`MAX_BUFFERED_BLOB_SIZE` (1 MiB). A larger upload is named by its immutable blob reference
+without being read or decoded: a text OT is held whole wherever the chat's files are, while
+reads and grep take a blob a window at a time. The same upload size limit therefore applies to
+initial and subsequent messages.
 Text reads and grep decode those references by content without changing their stored form.
 Text edits over an uncommitted blob replacement remain unsupported; this does not change OT
 composition or introduce binary deltas. Whole-file replacements and edits after committing
@@ -66,11 +70,24 @@ the model's context window, which compaction cannot repair. A later upload into 
 scratch worktree also reaches the agent as a user change, whose diff is shown only within the same
 limit. Images with an edge above 8000 pixels or unrecognized dimension headers stay
 workspace-only on every model replay; no resize/transcode changes their original bytes.
-When the replay contains more than 20 candidate images/documents, image edges are conservatively
-limited to 2000 pixels, including images attached in earlier turns. Originals remain unchanged.
-New images are read from the same immutable blob for previews; there
-is no separate payload copy in attachment records. Existing limits remain: 4 MiB per file,
-5 MiB and five files per message.
+Every request resends the chat's images and PDFs, so replay chooses which go inline across the
+whole chat: the newest `MAX_INLINE_ATTACHMENTS` (20, past which Anthropic lowers its pixel limit),
+each at most `MAX_INLINE_ATTACHMENT_BYTES` (7 MiB, under Anthropic's 10 MB of base64 per image)
+and together at most `MAX_INLINE_ATTACHMENTS_TOTAL_BYTES` (10 MiB, under Gemini's 20 MB inline
+request limit once encoded). The rest are named by workspace path, and replay reads no
+attachment's bytes unless it could inline them, so no upload can make a provider refuse a request
+for its attachments. Choosing newest first means a new attachment that overflows these limits
+changes the prompt from an older message on, so that turn misses the provider's cache from there.
+A PDF's page count is not checked. Originals remain unchanged. New images are read from the same immutable blob for previews; there is no
+separate payload copy in attachment records, and a chat message carries the bytes only of images
+up to 4 MiB to clients, which stream larger attachments with `readBlob()`. Uploads are limited to
+100 MiB per file and five files per message.
+
+Uploads count toward the workspace's storage quota. A workspace is one Durable Object, which holds
+at most 10 GB and refuses every write when full, so the git store refuses new blobs over 1 MiB
+from 8 GB (uploaded, written, or pulled by a read) and agent turns stop starting from 9.5 GB, each
+with a message that says why; clients warn from 7 GB (see `OverseerImpl.sampleStorageBytes()` and
+`WorkspaceMetadata.storageBytes`). Smaller blobs are never refused, so ordinary work goes on.
 
 Filename allocation reserves existing base and pending root names, including directories.
 Prior names are read from chat-scoped message metadata, never from a workspace-wide payload

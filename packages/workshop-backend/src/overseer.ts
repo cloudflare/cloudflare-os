@@ -1,7 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind, WORKSPACE_FILE_QUOTA_BYTES, WORKSPACE_STORAGE_LIMIT_BYTES, WORKSPACE_STORAGE_WARNING_BYTES, WORKSPACE_TURN_QUOTA_BYTES } from '@gadgets/workshop-shared/api'
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
@@ -12,7 +12,7 @@ import {
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId, MAX_BUFFERED_BLOB_SIZE } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -113,6 +113,7 @@ import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
+  CHAT_ATTACHMENT_SIGNATURE_BYTES,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
@@ -480,7 +481,15 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
 }
 
 const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
+// How much of its storage a workspace uses, for messages about its quotas.
+const storageUsage = (storedBytes: number) =>
+  `${(storedBytes / 1e9).toFixed(1)} of ${WORKSPACE_STORAGE_LIMIT_BYTES / 1e9} GB used`;
+// The largest image whose bytes a chat message carries to clients (see
+// hydrateChatMessageForClient()), so that loading a chat never sends every large image in it.
+const MAX_CLIENT_INLINE_IMAGE_BYTES = 4 * 1024 * 1024;
+// The largest attachment getChatAttachmentData() reads whole, well beyond what replay inlines;
+// a larger upload would crowd the object's memory, so its readers stream its blob instead.
+const MAX_WHOLE_ATTACHMENT_READ_BYTES = 16 * 1024 * 1024;
 
 const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
   ["text/csv", ".csv"],
@@ -1105,6 +1114,47 @@ class OverseerImpl implements AgentHooks {
     if (!sub) return;
     this.#presenceSubscribers.delete(token);
     sub[Symbol.dispose]();
+  }
+
+  // Storage quotas (see WORKSPACE_STORAGE_LIMIT_BYTES). A full workspace refuses every write,
+  // including those that end an agent turn and report its error, so it would stop working rather
+  // than refuse what filled it. Large files fill one fastest, so the git store refuses new ones
+  // well short of the limit (#assertRoomForFile), whether uploaded, written, or pulled by a read,
+  // leaving the rest for the small writes that keep a workspace working. Should those ever fill it
+  // too, agent turns stop starting while there is still room to say why. Nothing frees space yet:
+  // the git store has no GC (see git-cache.ts).
+  //
+  // The storage use clients are told of (WorkspaceMetadata.storageBytes), as of the last sample,
+  // and the metadata subscriptions told when it changes. Storage is sampled where it grows
+  // fastest: as large files are stored, and as agent turns start.
+  #reportedStorageBytes: number | undefined;
+  readonly storageBytesSubscribers = new Set<(storageBytes: number | undefined) => void>();
+
+  // How many bytes the workspace stores. Metadata subscribers hear of a change by a tenth of a GB.
+  sampleStorageBytes(): number {
+    let stored = this.ctx.storage.sql.databaseSize;
+    let reported = stored >= WORKSPACE_STORAGE_WARNING_BYTES ? stored : undefined;
+    if (Math.floor((reported ?? 0) / 1e8) !== Math.floor((this.#reportedStorageBytes ?? 0) / 1e8)) {
+      this.#reportedStorageBytes = reported;
+      for (let subscriber of this.storageBytesSubscribers) subscriber(reported);
+    }
+    return stored;
+  }
+
+  reportedStorageBytes(): number | undefined {
+    this.sampleStorageBytes();
+    return this.#reportedStorageBytes;
+  }
+
+  // Refuses `byteLength` more bytes of a new file over 1 MiB once the workspace nears its limit.
+  #assertRoomForFile(byteLength: number): void {
+    let stored = this.sampleStorageBytes();
+    if (stored + byteLength <= WORKSPACE_FILE_QUOTA_BYTES) return;
+    this.logger.warn("file refused: workspace storage is nearly full", {
+      event: "storage.file.refused", storageBytes: stored, size: byteLength,
+    });
+    throw new Error(`This workspace's storage is nearly full (${storageUsage(stored)}), so it ` +
+        "can't store new files over 1 MB.");
   }
 
   #getLiveChat(chatId: number): LiveChatContext {
@@ -1854,7 +1904,7 @@ class OverseerImpl implements AgentHooks {
     this.storage = makeOverseerStorage(ctx.storage);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
-    });
+    }, byteLength => this.#assertRoomForFile(byteLength));
     this.users = this.ctx.exports.UserDurableObject;
     this.adminAudits = this.ctx.exports.AdminAuditDurableObject;
     this.directories = this.ctx.exports.UserDirectoryDurableObject;
@@ -6212,7 +6262,13 @@ class OverseerImpl implements AgentHooks {
       throw new Error("Chat attachment not found.");
     }
     if (content.data !== undefined) return content.data;
-    if (content.state.oid !== undefined) return this.gitCache.readBlob(content.state.oid);
+    if (content.state.oid !== undefined) {
+      const reader = this.gitCache.openBlobRef(content.state.oid, undefined);
+      if (reader.size > MAX_WHOLE_ATTACHMENT_READ_BYTES) {
+        throw new Error("This attachment is too large to read whole. Read its blob with readBlob().");
+      }
+      return reader.read(0, reader.size);
+    }
     if (content.state.workspaceCommitId === undefined ||
         content.state.workspacePath === undefined) {
       throw new Error("Chat attachment has no stored content.");
@@ -6227,8 +6283,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Prepare a stored chat message for delivery to a client: strip private unread positions,
-  // inline image attachment bytes
-  // (non-image attachments are fetched on demand via getChatAttachmentContent()), strip the
+  // inline the bytes of images up to MAX_CLIENT_INLINE_IMAGE_BYTES (other attachments are
+  // fetched on demand, by readBlob() or getChatAttachmentContent()), strip the
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
   // ship as dead weight on the wire (it is not part of the message's API type).
@@ -6241,7 +6297,7 @@ class OverseerImpl implements AgentHooks {
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
-      if (!isAllowedChatAttachmentImageMimeType(a.mimeType)) {
+      if (!isAllowedChatAttachmentImageMimeType(a.mimeType) || a.size > MAX_CLIENT_INLINE_IMAGE_BYTES) {
         return a;
       }
       let content = this.storage.chatAttachmentContent.get(a.id);
@@ -6313,14 +6369,21 @@ class OverseerImpl implements AgentHooks {
 
     let files = new Map<string, FileContent>();
     for (let attachment of attachments) {
+      if (attachment.oid !== undefined && attachment.size > MAX_BUFFERED_BLOB_SIZE) {
+        // Named by its blob, unread. As a text OT it would be held whole wherever the chat's
+        // files are, while readFile and grep read a blob a window at a time.
+        attachment.workspacePath = this.#attachmentWorkspaceFilename(attachment, used);
+        files.set(attachment.workspacePath, {oid: attachment.oid, byteLength: attachment.size});
+        continue;
+      }
       const data = attachment.oid !== undefined
         ? this.gitCache.readBlob(attachment.oid)
         : this.storage.chatAttachmentContent.get(attachment.id)?.data;
       if (data === undefined) throw new Error("Chat attachment is no longer available.");
       let path = this.#attachmentWorkspaceFilename(attachment, used);
-      // Keep text OTs where they fit, including a preserved UTF-8 BOM. A supported upload
-      // can exceed the OT record budget; use the same immutable byte ingress as binary files
-      // rather than accepting it on the first message but rejecting it on later messages.
+      // Keep text OTs where they fit, including a preserved UTF-8 BOM. A legacy upload can
+      // exceed the OT record budget; use the same immutable byte ingress as binary files rather
+      // than accepting it on the first message but rejecting it on later messages.
       const text = decodeChatAttachmentText(attachment.mimeType, data);
       const value: FileContent = text !== undefined && (worktree === undefined ||
           codeChangeSerializedSize({[worktree.id]: [[path, {set: text}]]}) <= MAX_CODE_CHANGE_SIZE) ? text
@@ -6512,21 +6575,19 @@ class OverseerImpl implements AgentHooks {
       throw new Error(`You can attach up to ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments.`);
     }
 
-    let total = 0;
     let result: ChatAttachmentRef[] = [];
     let seenIds = new Set<string>();
     for (let attachment of attachments) {
       if ("oid" in attachment) {
         const reader = this.gitCache.openBlobRef(attachment.oid, undefined);
         assertChatAttachmentSize(reader.size);
-        const content = reader.read(0, reader.size);
+        // Only the leading bytes, of an upload that may be too large to hold.
         const upload = validateChatAttachmentUpload({
           mimeType: attachment.mimeType, name: attachment.name,
-          content,
+          leadingBytes: reader.read(0, Math.min(reader.size, CHAT_ATTACHMENT_SIGNATURE_BYTES)),
         });
-        total += content.byteLength;
         result.push({id: crypto.randomUUID(), oid: attachment.oid,
-          mimeType: upload.mimeType, name: upload.name, size: content.byteLength});
+          mimeType: upload.mimeType, name: upload.name, size: reader.size});
         continue;
       }
       let id = validateChatAttachmentId(attachment.id);
@@ -6539,16 +6600,12 @@ class OverseerImpl implements AgentHooks {
       let data = content.data;
       if (data === undefined) throw new Error("Staged chat attachment has no content.");
       assertChatAttachmentSize(data.byteLength);
-      total += data.byteLength;
       result.push({
         id,
         mimeType: content.state.mimeType,
         name: content.state.name,
         size: data.byteLength,
       });
-    }
-    if (total > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
-      throw new Error("Attached files are too large.");
     }
     return result;
   }
@@ -8494,6 +8551,19 @@ class OverseerImpl implements AgentHooks {
         // message attributed to their own authors, so the turn's appends never share a batch with
         // them. (`allowDuringTurn` because the callers set activeAgent before starting us.)
         this.materializeChatChanges(chatId, undefined, {allowDuringTurn: true});
+
+        // Refused while there is still room to record why: a turn writes as it runs, and ending
+        // one with an error writes too (see #reportedStorageBytes).
+        let storageBytes = this.sampleStorageBytes();
+        if (storageBytes >= WORKSPACE_TURN_QUOTA_BYTES) {
+          turn.setErrorType("storage_full");
+          failure = {code: "storage_full", message:
+              `This workspace's storage is full (${storageUsage(storageBytes)}), so the agent can't run.`};
+          turnLogger.warn("agent turn refused: workspace storage is full", {
+            event: "agent.run.finished", outcome: "storage_full", storageBytes,
+          });
+          return;
+        }
 
         // Enforce the optional free-tier usage limit before starting the turn, and resolve whether
         // it bills the owner's own gateway.
@@ -12811,6 +12881,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
+      storageBytes: this.impl.reportedStorageBytes(),
     };
     if (!this.isOwner) {
       result.owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
@@ -12836,6 +12907,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
+      storageBytes: this.impl.reportedStorageBytes(),
     };
     if (owner) metadata.owner = owner;
 
@@ -12863,12 +12935,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let storageSubscriber = (value: number | undefined) => {
+      metadata.storageBytes = value;
+      callback(metadata).catch(unsubscribe);
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
+      this.impl.storageBytesSubscribers.delete(storageSubscriber);
       callback[Symbol.dispose]();
     };
 
@@ -12876,6 +12953,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
+    this.impl.storageBytesSubscribers.add(storageSubscriber);
 
     callback(metadata).catch(unsubscribe);
 

@@ -129,3 +129,44 @@ it("decodes UTF-8 blobs by content and preserves old blob contents across replac
   expect(git.readBlob(ref.oid)).toEqual(bytes);
   expect(await cache.fileBytesAtCommit(commit, "a.txt")).toEqual(ref);
 });
+
+it("asks for room before storing a blob over CHUNK_MAX_SIZE, and before each new chunk", async () => {
+  const storage = makeOverseerStorage(makeMockStorage());
+  const asked: number[] = [];
+  let refuseAfter = Infinity;
+  const git = new WorkspaceGitCache(storage, {async pull() {throw new Error("unexpected pull");}},
+    byteLength => {
+      if (asked.length >= refuseAfter) throw new Error("no room");
+      asked.push(byteLength);
+    });
+  // Varied bytes, so the blob cuts into several distinct chunks.
+  const large = Uint8Array.from({length: 3 * 1024 * 1024}, (_, i) => (i * 2654435761) >>> 24);
+  git.writeBlob(Uint8Array.of(1));
+  expect(asked).toEqual([]);
+  const ref = git.writeBlob(large);
+  expect(asked[0]).toBe(large.byteLength);
+  expect(asked.length).toBeGreaterThan(2);
+  expect(git.readBlob(ref.oid, ref.byteLength)).toEqual(large);
+
+  const before = [...storage.gitObjects.list()].length;
+  asked.length = 0;
+  refuseAfter = 0;
+  expect(() => git.writeBlob(large.toReversed())).toThrow("no room");
+  let cancelled: unknown;
+  const refused = new ReadableStream<Uint8Array>({
+    pull: controller => controller.enqueue(large.toReversed()),
+    cancel: reason => { cancelled = reason; },
+  });
+  await expect(git.writeBlobStream(refused, large.byteLength)).rejects.toThrow("no room");
+  expect(cancelled).toBeInstanceOf(Error);
+  expect([...storage.gitObjects.list()]).toHaveLength(before);
+  // A small blob is never refused, streamed or not, of known length or not.
+  const small = Uint8Array.of(4, 5, 6);
+  expect((await git.writeBlobStream(new Blob([small]).stream(), small.byteLength)).byteLength).toBe(3);
+  expect((await git.writeBlobStream(new Blob([small.toReversed()]).stream())).byteLength).toBe(3);
+  expect(asked).toEqual([]);
+  // A stream of unknown length is refused at the chunk that finds no room.
+  refuseAfter = 2;
+  await expect(git.writeBlobStream(new Blob([large.toReversed()]).stream())).rejects.toThrow("no room");
+  expect(asked).toHaveLength(2);
+});
