@@ -38,8 +38,10 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
    * A recorded holder is believed only while its account says it still holds the grant. An account
    * whose removal never arrived here, because the call failed or the account's storage was deleted
    * some other way, is dropped when it is asked, so it cannot keep the grant from being revoked.
+   * `unsure` says no holder answered that it holds the grant, but one could not be asked, and so
+   * was counted as holding it.
    */
-  async remove(userObjectId: string): Promise<{ last: boolean }> {
+  async remove(userObjectId: string): Promise<{ last: boolean; unsure?: true }> {
     let kv = this.ctx.storage.kv;
     kv.delete(HOLDER_PREFIX + userObjectId);
     // Holders can be recorded while one is asked, so the list is read afresh after each answer,
@@ -52,17 +54,18 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
       // The answer stands only for the holder as it was recorded when asked. One that let go, or
       // was recorded again, while it was asked is looked at afresh.
       if (kv.get<string | boolean>(key) !== recorded) continue;
+      if (holds === "unknown") return { last: false, unsure: true };
       if (holds) return { last: false };
       kv.delete(key);
     }
   }
 
   /**
-   * Whether the account with this id says it holds this grant. An account that cannot be asked
-   * counts as holding it: revoking under a connection that is in use is the worse mistake, and it
-   * is asked again the next time a holder lets go.
+   * Whether the account with this id says it holds this grant, or `"unknown"` when it cannot be
+   * asked, which counts as holding it: revoking under a connection that is in use is the worse
+   * mistake, and it is asked again the next time a holder lets go.
    */
-  async #stillHolds(userObjectId: string): Promise<boolean> {
+  async #stillHolds(userObjectId: string): Promise<boolean | "unknown"> {
     try {
       let accounts = this.ctx.exports.UserAccount;
       return await accounts.get(accounts.idFromString(userObjectId))
@@ -71,7 +74,7 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
       logger.warn("failed to ask a Google grant's holder whether it still holds it", {
         event: "google.grant.holder.check.failed", error,
       });
-      return true;
+      return "unknown";
     }
   }
 }

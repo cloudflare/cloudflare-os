@@ -1570,7 +1570,10 @@ export class UserAccount extends DurableObject<Env> {
         return;
       }
       pending = { ...pending, subject };
-      if (!(await this.#grantRegistry(subject).remove(this.ctx.id.toString())).last) {
+      let answer = await this.#grantRegistry(subject).remove(this.ctx.id.toString());
+      // A holder that could not be asked may be one whose grant is gone: asked again later.
+      if (answer.unsure) throw new Error("A holder of the grant could not be asked whether it holds it.");
+      if (!answer.last) {
         logger.info("dropped a revocation a later connection's grant would undo", {
           event: "google.grant.revoke.dropped",
         });
@@ -1580,7 +1583,8 @@ export class UserAccount extends DurableObject<Env> {
       await revokeGoogleToken(pending.refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
     } catch (error) {
       // Google did not take it or could not say whose it is, or the registry could not say
-      // whether a connection made since holds the grant: all are asked again later.
+      // whether a connection made since holds the grant: all are asked again later, and when the
+      // tries run out the grant is left at Google.
       let attempts = pending.attempts + 1;
       if (attempts < REVOCATION_ATTEMPTS) {
         this.#scheduleRevocation({ ...pending, attempts });

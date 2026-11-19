@@ -60,6 +60,8 @@ function fakeGoogle() {
     blocked: new Set<string>(),
     /** Whether Google answers, about which account an access token belongs to, that it is no good. */
     profileUnauthorized: false,
+    /** Whether Google's token endpoint fails refreshes, as in an outage. */
+    refreshFails: false,
     /** Whether Google holds back its answers to refreshes. */
     refreshHeld: false,
     /** How many of those answers are being held back. */
@@ -70,6 +72,7 @@ function fakeGoogle() {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     if (url.href === "https://oauth2.googleapis.com/token") {
       const form = init.body as URLSearchParams;
+      if (google.refreshFails && form.get("refresh_token")) return json({error: "backend_error"}, 503);
       if (google.refreshHeld && form.get("refresh_token")) {
         google.refreshesWaiting++;
         while (google.refreshHeld) await new Promise(resolve => setTimeout(resolve, 1));
@@ -366,6 +369,34 @@ describe("Google grants shared by several connections", () => {
     for (let attempt = 0; attempt < 9; attempt++) expect(await abandoned.alarm()).toBe(true);
     expect(await abandoned.isEmpty()).toBe(true);
     expect(await abandoned.alarm()).toBe(false);
+  });
+
+  // A holder that could not be asked counts as holding at a disconnect, but proves nothing to a
+  // revocation to try again, which a stale holder would otherwise drop for good.
+  it("tries a revocation again when a holder of the grant cannot be asked", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const first = await connection(google, "first", ada);
+    google.revocationFails = true;
+    await first.disconnect();
+    google.revocationFails = false;
+
+    // A connection made since, idle, whose check with Google fails.
+    const later = await connection(google, "later", ada);
+    await later.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-later", expires: new Date(Date.now() - 1000)});
+    });
+    google.refreshFails = true;
+    expect(await first.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await first.isEmpty()).toBe(false);
+
+    // Asked again, it holds nothing: Google ended its refresh token.
+    google.refreshFails = false;
+    google.refused.set("refresh-later", null);
+    expect(await first.alarm()).toBe(true);
+    expect(google.revoked).toEqual(["refresh-first"]);
   });
 
   it("keeps a revocation Google did not take through a second disconnect", async () => {
@@ -1089,13 +1120,14 @@ describe("GoogleGrantRegistry", () => {
     expect(await removing).toEqual({last: true});
   });
 
-  it("counts a holder it cannot ask as still holding the grant", async () => {
+  it("counts a holder it cannot ask as still holding the grant, and says it was unsure", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const {ada} = googleAccounts();
     const registry = registryOf(ada);
     await registry.add("not an account id");
 
-    expect(await registry.remove(testEnv.UserAccount.newUniqueId().toString())).toEqual({last: false});
+    expect(await registry.remove(testEnv.UserAccount.newUniqueId().toString()))
+      .toEqual({last: false, unsure: true});
     expect(warn.mock.calls.some(([entry]) => entry?.event === "google.grant.holder.check.failed")).toBe(true);
   });
 });
