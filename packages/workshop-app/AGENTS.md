@@ -291,20 +291,26 @@ That is how the workspace's crumb (`WorkspaceCrumb`) stays between a workspace a
 growing its title out of the icon or drawing it back in, while going to another workspace swaps
 it. Render a pane's header in the commit that mounts the pane, or what it follows is gone by then.
 
-A workspace's page has a New chat button at the end of the Chats tab's controls. It opens an empty chat in
-the workspace (`/workspace/<id>/new`, `NewChatPane`, which the home page shares) that is
-created by its first message; the chat then takes the empty one's place in the history. Until
-then it greets the user as the home page does, under its header (`StartLayout`). The home
-page (`/`, which the sidebar's logo goes to) starts one in a new workspace: until its first message
-is sent it greets the user over the composer in the middle of the page (`ChatStart`), and is then
-drawn as the conversation it becomes. Under the composer, in its middle, is where the chat starts
+Every new chat starts on the home page (`/`, which the sidebar's logo goes to, `NewChatPane`):
+until its first message is sent it greets the user over the composer in the middle of the page
+(`ChatStart`, in a `StartLayout`), and is then drawn as the conversation it becomes, which is
+created by that first message. Under the composer, in its middle, is where the chat starts
 (`WorkspacePicker`): a new workspace until one of the user's is chosen, with its icon, from a menu
 that opens in place with a field to find one by. The menu is a `DropdownMenu` that holds an
 `OptionPicker` (`picker`) of which one is chosen (`single`), and choosing closes it. It offers the
-workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
-to the page. Once the list is read with none of those in it, the picker is left out, as a new
-workspace is all there is; while it is still being read the picker shows, so that it does not pop
-in for whoever has some.
+workspaces the user may chat in, not those they can only use. Once the list is read with none of
+those in it, the picker is left out, as a new workspace is all there is; while it is still being
+read the picker shows, so that it does not pop in for whoever has some.
+
+The workspace chosen is the address's (`/?workspace=<id>`), so a new chat in a workspace is home
+with it chosen: a workspace's page has a New chat button at the end of the Chats tab's controls
+that goes there, as do a gadget's Chat menu and search. Choosing another replaces it in place, so
+the draft stays and going back does not step through each choice. One that is not listed, or only
+used, is not chosen; until the list is read the one named is taken at its word, so that a message
+sent meanwhile goes there. With a workspace chosen the page has what one of its chats has: the
+workspace's crumb in its header, what is shown beside it (`?open=`, dropped as another is chosen,
+since it was the other's), and the workspace marked in the sidebar; the chat then takes the empty
+one's place in the history. The old `/workspace/<id>/new` redirects there, for links made before.
 
 The composer's + menu (`ComposerAddMenu`) is Upload and Add a new connection, then the skills, the
 ones chosen last first (`prefs/recentCommands.ts`, as a slash's matches are), then the commands,
@@ -676,7 +682,7 @@ what else is done where the user is (`routes/-appSearchSuggestions.ts`, plain an
 recent workspaces; Workspaces, Library and Automations, which the sidebar also has; and a few
 settings reached for under one Settings heading: the default model, the theme, the animations, and
 the way to Settings itself. The first is a new chat of its own, which starts a workspace, and is not
-offered on the page that starts one (home, or a workspace's new chat). In a workspace's chat it is a
+offered on the page that starts one (home, in a workspace or not). In a workspace's chat it is a
 new chat in that workspace with the default model, and on the workspace's page a new chat in it and
 inviting people (`workspaces/workspaceActionEntries.tsx`, plain and tested, each saying the
 workspace at its end): the model leaves the settings for the chat, and each only where the viewer
@@ -939,7 +945,7 @@ carrying on building it both happen in a chat. For whoever builds in its workspa
 `role === 'use'`), its header ends in Chat (`GadgetChatMenu`), the one labelled control, and its one
 primary button, last of all after the full-screen button (but where the page was expanded from
 beside a chat, the step down is last, where the arrow that puts the pane away was, with full screen
-before it and Chat before that): New chat (`/workspace/$id/new?open=`, greeted "what
+before it and Chat before that): New chat (`/?workspace=<id>&open=`, greeted "what
 should we do with Slides?" through the `gadgetTitle` history state), then up to four of the
 workspace's chats to carry on in (`aside/itemChats.ts`, tested, over `useWorkspaceChats`), those
 that last had it beside them in this browser (`lastShown`) first and saying so, agents' runs left

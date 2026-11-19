@@ -43,8 +43,8 @@ export const AppSearch = ({ open, onOpenChange, connections, context }: {
   const workspaces = useWorkspaces()
   const looks = useWorkspaceLooks()
   const inSettings = useRouterState({ select: ({ location }) => location.pathname.startsWith('/settings') })
-  // Where a chat is started already, home or a workspace's new chat, so that another is not offered there.
-  const startsChat = useRouterState({ select: ({ location }) => location.pathname === '/' || /^\/workspace\/[^/]+\/new\/?$/.test(location.pathname) })
+  // Where a chat is started already, home, in a workspace or not, so that another is not offered there.
+  const startsChat = useRouterState({ select: ({ location }) => location.pathname === '/' })
   // As the sidebar's own parts do: in place where the settings are open already, so that going back leaves them.
   const openSection = (section: SettingsSection) =>
     void navigate(inSettings ? { to: '/settings', search: { section }, replace: true, state: true } : { to: '/settings', search: { section }, state: { settingsOpenedHere: true } })

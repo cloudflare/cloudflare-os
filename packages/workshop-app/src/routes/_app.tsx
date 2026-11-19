@@ -103,7 +103,7 @@ const AppFrame = () => {
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
-  const { workspaceId } = useParams({ strict: false })
+  const { workspaceId: pathWorkspaceId } = useParams({ strict: false })
   const [prefs] = useState(readLayoutPrefs)
   const narrow = useNarrowScreen()
   // Whether the deployment's own settings are listed after the user's.
@@ -118,7 +118,9 @@ const AppFrame = () => {
   const homePage = useMatch({ from: '/_app/', shouldThrow: false })
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
   const chatPage = useMatch({ from: '/_app/workspace/$workspaceId/chat/$chatId', shouldThrow: false })
-  const newChatPage = useMatch({ from: '/_app/workspace/$workspaceId/new', shouldThrow: false })
+  // A new chat in a workspace is home, with the workspace chosen.
+  const newChatIn = homePage?.search.workspace
+  const workspaceId = pathWorkspaceId ?? newChatIn
   const appPage = useMatch({ from: '/_app/app/$itemId', shouldThrow: false })
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
@@ -142,7 +144,11 @@ const AppFrame = () => {
   const liveWaitingIn = workspacePage || agentPage ? undefined : workspaceId ?? pageItem?.workspaceId
 
   // Beside a chat, a chat that is still to be made, or a workspace's own page: which is named.
-  const besideOf = chatPage ?? newChatPage ?? workspacePage
+  const besideOf: { workspaceId: string; open: string | undefined } | undefined = chatPage
+    ? { workspaceId: chatPage.params.workspaceId, open: chatPage.search.open }
+    : newChatIn !== undefined
+      ? { workspaceId: newChatIn, open: homePage?.search.open }
+      : workspacePage && { workspaceId: workspacePage.params.workspaceId, open: workspacePage.search.open }
   const chatId = chatPage?.params.chatId
   const chatRef = chatPage && { workspaceId: chatPage.params.workspaceId, chatId: chatPage.params.chatId }
   // The page that has its workspace's library to show beside it: a chat, or the workspace's own,
@@ -152,7 +158,7 @@ const AppFrame = () => {
   // which says what the item is (a file's name and type) and where its bytes are.
   const pageChatId = itemPage?.search.chat
   const shownFrom = besideRef ?? (pageItem && pageChatId !== undefined ? { workspaceId: pageItem.workspaceId, chatId: pageChatId } : undefined)
-  const named = besideOf && parseAsideRef(besideOf.search.open)
+  const named = besideOf && parseAsideRef(besideOf.open)
   // The aside, had back beside a page that has shown nothing of what it has: open with nothing in
   // it while the library is read, until something turns up. Kept for that page alone.
   const besideRefWorkspaceId = besideRef?.workspaceId
@@ -254,12 +260,12 @@ const AppFrame = () => {
           void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: toChat.id }, search: { open }, state: { chatTitle: toChat.title } })
         }}
         onNewChat={backToChat ? undefined : (gadgetTitle) =>
-          navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId: pageWorkspaceId }, search: { open }, state: { gadgetTitle } })}
+          navigate({ to: '/', search: { workspace: pageWorkspaceId, open }, state: { gadgetTitle } })}
       />
     )
   } else if (besideOf && named) {
-    const item = asideItemFor(besideOf.params.workspaceId, named, chatId, known)
-    const { workspaceId: besideWorkspaceId } = besideOf.params
+    const item = asideItemFor(besideOf.workspaceId, named, chatId, known)
+    const { workspaceId: besideWorkspaceId } = besideOf
     expandAside = () => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })
     asideElement = (
       <AsidePane
@@ -340,7 +346,7 @@ const AppFrame = () => {
       onSelectWorkspace={(id) => {
         leaveSidebar()
         // What is shown beside one of the workspace's pages stays beside its own.
-        const open = besideOf?.params.workspaceId === id ? carryAside(besideOf.search.open, { workspaceId: id }) : undefined
+        const open = besideOf?.workspaceId === id ? carryAside(besideOf.open, { workspaceId: id }) : undefined
         void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
       }}
       onGoHome={() => {
@@ -430,7 +436,7 @@ const AppFrame = () => {
   // people, which the page's own dialog is asked for (`?invite`).
   const searchWorkspaceId = chatPage?.params.workspaceId ?? workspacePage?.params.workspaceId
   const searchNewChat = () => {
-    if (searchWorkspaceId !== undefined) void navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId: searchWorkspaceId }, search: { open: carriedOpen(besideOf?.search.open) } })
+    if (searchWorkspaceId !== undefined) void navigate({ to: '/', search: { workspace: searchWorkspaceId, open: carriedOpen(besideOf?.open) } })
   }
   const searchContext: SearchContext | undefined = searchWorkspaceId === undefined
     ? undefined

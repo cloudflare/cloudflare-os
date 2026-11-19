@@ -58,7 +58,7 @@ function Workspace() {
       inviteRequested={invite === true}
       // In place, with the rest of the address as it was, so that going back does not ask again.
       onInviteHandled={() => navigate({ to: '.', search: (previous: Record<string, unknown>) => ({ ...previous, invite: undefined }), replace: true })}
-      onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open: carriedOpen(open) } })}
+      onNewChat={() => navigate({ to: '/', search: { workspace: workspaceId, open: carriedOpen(open) } })}
       // Its own address, whole, as it is copied to be opened elsewhere.
       link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
       // Deleted, or out of the viewer's list, it is left for home, as there is nothing here to go back to.
