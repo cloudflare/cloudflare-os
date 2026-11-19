@@ -13,7 +13,7 @@ import { AdminApiImpl } from "../src/admin-settings.js";
 import type { IssueReportsDurableObject } from "../src/issue-reports.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
-  DEFAULT_ADMIN_CONFIG, type AdminConfig,
+  DEFAULT_ADMIN_CONFIG, type AdminConfig, type StoredContentRequest,
 } from "../src/storage-schema/admin-settings-storage.js";
 
 declare module "cloudflare:workers" {
@@ -660,7 +660,7 @@ describe("AdminApiImpl.writeWorkspace", () => {
     const { mint, calls, callsTo } = deployment({ vars: ON });
     const id = workspaceId();
     // However the caller wrote the id, the workspace is the one it names.
-    await mint(ADMIN, "cli").writeWorkspace(id.toUpperCase(), "stopAgent", { chatId: 3 }, REASON);
+    await mint(ADMIN, { via: "cli" }).writeWorkspace(id.toUpperCase(), "stopAgent", { chatId: 3 }, REASON);
 
     expect(named(calls)).toEqual(
         ["overseers.idFromString", "overseers.get", "overseer.applyAdminWrite"]);
@@ -673,7 +673,7 @@ describe("AdminApiImpl.writeWorkspace", () => {
     // Another capability of the same admin is another session, with a `via` of its own.
     const [first] = callsTo("overseer", "applyAdminWrite")[0].args as [{ sessionId: string }];
     const { mint: mintAgain, callsTo: callsAgain } = deployment({ vars: ON });
-    await mintAgain(ADMIN, "api").writeWorkspace(id, "restartWorkspace", {}, REASON);
+    await mintAgain(ADMIN, { via: "api" }).writeWorkspace(id, "restartWorkspace", {}, REASON);
     const [later] = callsAgain("overseer", "applyAdminWrite")[0].args as
         [{ sessionId: string; via: AdminVia }];
     expect(later.via).toBe("api");
@@ -828,7 +828,7 @@ describe("AdminApiImpl content access requests", () => {
     const id = workspaceId();
     const before = Date.now();
     const request =
-        await mint(ADMIN, "api").requestContentAccess(id.toUpperCase(), `  ${REASON}  `);
+        await mint(ADMIN, { via: "api" }).requestContentAccess(id.toUpperCase(), `  ${REASON}  `);
 
     expect(named(calls)).toEqual([
       "overseers.idFromString", "admin.committedAdminConfig",
@@ -864,7 +864,7 @@ describe("AdminApiImpl content access requests", () => {
   it("claims, has the workspace give the grant and settles it, in that order", async () => {
     const request = claimed();
     const { mint, calls, callsTo, waitUntil } = approvalDeployment(request);
-    const settled = await mint(ADMIN, "cli").approveContentAccess(REQUEST_ID);
+    const settled = await mint(ADMIN, { via: "cli" }).approveContentAccess(REQUEST_ID);
 
     expect(named(calls)).toEqual([
       "admin.claimContentAccess", "overseers.idFromString", "overseers.get",
@@ -956,13 +956,37 @@ describe("AdminApiImpl content access requests", () => {
         listContentAccessRequests: () => listed, getContentAccessRequest: () => listed[0],
       } },
     });
-    const api = mint(ADMIN, "cli");
-    expect(await api.listContentAccessRequests()).toBe(listed);
-    expect(await api.getContentAccessRequest(REQUEST_ID)).toBe(listed[0]);
+    const api = mint(ADMIN, { via: "cli" });
+    expect(await api.listContentAccessRequests()).toStrictEqual(listed);
+    expect(await api.getContentAccessRequest(REQUEST_ID)).toStrictEqual(listed[0]);
     await api.denyContentAccess(REQUEST_ID);
     expect(callsTo("admin", "getContentAccessRequest")[0].args).toEqual([REQUEST_ID]);
     expect(callsTo("admin", "denyContentAccess")[0].args).toStrictEqual(
         [REQUEST_ID, { admin: ADMIN, sessionId: expect.any(String), via: "cli" }]);
+  });
+
+  it("hands the workspace who was in the workspace an agent's request was filed from, " +
+      "and shows it to no client", async () => {
+    const insiders = ["other-admin@example.test", "member-admin@example.test"];
+    const request: StoredContentRequest = {
+      ...claimed(), via: "gatekeeper", agent: { workspaceId: "c".repeat(64), chatId: 4 }, insiders,
+    };
+    const { mint, callsTo } = approvalDeployment(request, { admin: {
+      listContentAccessRequests: () => [request], getContentAccessRequest: () => request,
+    } });
+    const api = mint();
+    const shown = await api.approveContentAccess(REQUEST_ID);
+
+    // The workspace checks the approver against the list again, so the call carries it.
+    expect(callsTo("overseer", "grantAdminContent")[0].args).toStrictEqual([{
+      requestId: REQUEST_ID, requestedBy: "other-admin@example.test", reason: REASON,
+      workspaceOwner: LISTING.ownerId, admin: ADMIN, sessionId: expect.any(String), via: "cli",
+      insiders,
+    }]);
+    // Neither the approval's answer nor a later read of the request shows it.
+    expect(shown).not.toHaveProperty("insiders");
+    expect(await api.getContentAccessRequest(REQUEST_ID)).not.toHaveProperty("insiders");
+    expect((await api.listContentAccessRequests())[0]).not.toHaveProperty("insiders");
   });
 });
 
@@ -972,7 +996,7 @@ describe("AdminApiImpl.endWorkspaceGrant", () => {
   // Whatever the level, and with writes off: these deployments set neither.
   it("has the workspace end it, through the capability's own session and `via`", async () => {
     const { mint, calls, callsTo } = deployment();
-    const api = mint(ADMIN, "cli");
+    const api = mint(ADMIN, { via: "cli" });
     const id = workspaceId();
 
     expect(await api.endWorkspaceGrant(id, GRANT_ID, `  ${REASON}  `)).toBeUndefined();
@@ -1019,6 +1043,10 @@ describe("AdminApiImpl.endWorkspaceGrant", () => {
     // The grant's own family of codes, which the caller reads as it reads any refusal.
     if (!dropped) {
       expect(getAdminGrantErrorCode(refusal)).toBe(ADMIN_GRANT_ERROR_CODES.notFound);
+    }
+  });
+});
+
 describe("AdminApiImpl lent to the admin gatekeeper", () => {
   const AGENT: AdminAgentOrigin = { workspaceId: "c".repeat(64), chatId: 4 };
   const GATEKEEPER: AdminCaller = { via: "gatekeeper", agent: AGENT };
@@ -1050,7 +1078,8 @@ describe("AdminApiImpl lent to the admin gatekeeper", () => {
 
   it("labels an open and a refused open with where the call came from", async () => {
     const { terms, userTerms, refused, refusedUser } = await labels(GATEKEEPER);
-    expect(terms).toStrictEqual({ via: "gatekeeper", agent: AGENT, expiresAt: terms.expiresAt });
+    expect(terms).toStrictEqual(
+        { via: "gatekeeper", agent: AGENT, access: "metadata", expiresAt: terms.expiresAt });
     expect(userTerms).toStrictEqual(
         { via: "gatekeeper", agent: AGENT, expiresAt: userTerms.expiresAt });
     expect(refused).toMatchObject({
@@ -1071,7 +1100,7 @@ describe("AdminApiImpl lent to the admin gatekeeper", () => {
   it("copies nothing of the caller into a record but its via and its origin", async () => {
     const caller = { ...GATEKEEPER, insiders: ["ada"], admin: "mallory" } as AdminCaller;
     const { terms, userTerms, refused, refusedUser } = await labels(caller);
-    expect(Object.keys(terms).toSorted()).toEqual(["agent", "expiresAt", "via"]);
+    expect(Object.keys(terms).toSorted()).toEqual(["access", "agent", "expiresAt", "via"]);
     expect(Object.keys(userTerms).toSorted()).toEqual(["agent", "expiresAt", "via"]);
     for (let labelled of [refused, refusedUser]) {
       expect(labelled).not.toHaveProperty("insiders");

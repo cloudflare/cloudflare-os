@@ -27,7 +27,7 @@ import {
   type NamedUser, type WorkpieceSummary, type AdminAgentOrigin,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
-import { isDeploymentAdmin } from "./auth/config.js";
+import { isDeploymentAdmin, sameDeploymentAdmin } from "./auth/config.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.admin.access");
@@ -179,9 +179,20 @@ export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "vi
  * the admin who approved it, through which session, for the AdminGrantRecord the workspace
  * appends. `workspaceOwner` is the owner the request named: the workspace refuses
  * (`workspaceChanged`) a call naming another owner than its own, since a deleted workspace's id
- * can be initialised again for someone else. */
+ * can be initialised again for someone else. `insiders` is the list a request filed through the
+ * admin gatekeeper keeps (see AdminCaller): none of them may approve it. */
 export type AdminContentGrantCall = AdminGrantActor &
-    Pick<AdminContentRequest, "reason" | "requestedBy" | "workspaceOwner"> & { requestId: string };
+    Pick<AdminContentRequest, "reason" | "requestedBy" | "workspaceOwner"> &
+    { requestId: string; insiders?: readonly string[] };
+
+/** Whether admin `approver` may not approve `request` because they had a part in asking for it:
+ * they are its requester or, for a request filed through the admin gatekeeper, one of the
+ * people who were in the workspace it was filed from. Each compared with sameDeploymentAdmin(). */
+export function isRequestInsider(
+    request: { requestedBy: string; insiders?: readonly string[] }, approver: string): boolean {
+  return [request.requestedBy, ...request.insiders ?? []].some(
+      insider => sameDeploymentAdmin(insider, approver));
+}
 /**
  * Who an AdminApiImpl acts for and how its calls are labelled: a client's session (`via` from its
  * User-Agent), or a workspace's lend to the admin gatekeeper, which alone says "gatekeeper" and
@@ -189,8 +200,12 @@ export type AdminContentGrantCall = AdminGrantActor &
  * an origin, or an origin without it.
  */
 export type AdminCaller =
-  | { via: Exclude<AdminVia, "gatekeeper">; agent?: undefined }
-  | { via: "gatekeeper"; agent: AdminAgentOrigin };
+  | { via: Exclude<AdminVia, "gatekeeper">; agent?: undefined; insiders?: undefined }
+  | { via: "gatekeeper"; agent: AdminAgentOrigin;
+      /** Who was in the lending workspace when it lent this to file a request for content
+       * access, by profile id (see OverseerImpl.lendAdminApi()): absent for every other lend.
+       * The request keeps the list, and no record does. */
+      insiders?: readonly string[] };
 
 /**
  * `caller` as a record keeps it, once it is shown to be well formed: `{ via }` for "api" and
