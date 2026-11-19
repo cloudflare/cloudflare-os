@@ -1,5 +1,5 @@
 import { Button, Loader } from "@cloudflare/kumo";
-import { Microphone } from "@phosphor-icons/react";
+import { Hourglass, Microphone } from "@phosphor-icons/react";
 import type { DictationStatus } from "./useComposerDictation";
 
 const announcements: Record<DictationStatus, string> = {
@@ -34,7 +34,8 @@ export const ComposerDictationButton = ({ status, disabled, onToggle, onCancel }
         title={label}
         icon={preparing ? (
           <span aria-hidden="true" className="text-kumo-subtle">
-            <Loader size="sm" className="motion-reduce:animate-none" />
+            <Loader size="sm" className="motion-reduce:hidden" />
+            <Hourglass size={16} className="hidden motion-reduce:block" />
           </span>
         ) : (
           <Microphone
