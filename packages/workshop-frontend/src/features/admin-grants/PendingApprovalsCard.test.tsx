@@ -129,6 +129,28 @@ describe('PendingApprovalsCard', () => {
     expect(button(item, 'Deny')).toBeDefined()
   })
 
+  it('names a request filed through the admin connection as its owner’s, with the workspace and the chat it came from', async () => {
+    await render(fakeAdmin([
+      request({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 } }),
+      request({ id: 'req-2', workspaceId: 'ws-2', via: 'gatekeeper', agent: { workspaceId: 'ws-triage' } }),
+    ]))
+
+    const [withChat, withoutChat] = items()
+    expect(withChat!.textContent).toContain('Asked for by grace via the admin connection.')
+    expect(withChat!.textContent).toContain('From workspace ws-triage, chat 4.')
+    expect(withChat!.textContent).toContain('An admin who was not in that workspace must approve it.')
+    expect([...withChat!.querySelectorAll('a')].map((link) => link.getAttribute('href')))
+      .toEqual(['/admin/workspace/ws-1', '/admin/workspace/ws-triage'])
+    expect(withoutChat!.textContent).toContain('From workspace ws-triage.')
+    expect(withoutChat!.textContent).not.toContain('chat')
+  })
+
+  it('names no agent for a person’s request', async () => {
+    await render(fakeAdmin([request()]))
+    expect(items()[0]!.textContent).not.toContain('agent')
+    expect(items()[0]!.textContent).not.toContain('From workspace')
+  })
+
   it('says when no request is waiting', async () => {
     await render(fakeAdmin([]))
     expect(container.textContent).toContain('No request is waiting.')

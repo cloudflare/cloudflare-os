@@ -996,19 +996,25 @@ describe('AdminAuditPanel', () => {
       expect(detail(restart, 'Via')).toBe('CLI')
     })
 
-    it('names a call made through the admin gatekeeper by its connection, with the workspace and the chat it came from', async () => {
+    it('names a call and a write made through the admin gatekeeper by its connection, with the workspace and the chat they came from', async () => {
+      const agent = { workspaceId: 'ws-triage', chatId: 4 }
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([
-        accessRecord({ via: 'gatekeeper', agent: { workspaceId: 'ws-triage', chatId: 4 } }),
+        accessRecord({ via: 'gatekeeper', agent }),
+        writeRecord({ via: 'gatekeeper', agent }),
       ]))
       await render(settingsWith(), admin)
 
-      const details = await expand()
-      expect(detail(details, 'Via')).toBe('Admin connection')
-      expect(detail(details, 'From workspace')).toBe('ws-triage')
-      expect(detail(details, 'From chat')).toBe('4')
-      // The record's own workspace is still the one the call reached.
-      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titledOpen workspace admin view')
+      for (const index of [0, 1]) {
+        const details = await expand(index)
+        expect(detail(details, 'Via')).toBe('Admin connection')
+        expect(detail(details, 'From workspace')).toBe('ws-triageOpen workspace admin view')
+        expect(detail(details, 'From chat')).toBe('4')
+        // The record's own workspace is still the one the call reached, and each has its link.
+        expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titledOpen workspace admin view')
+        expect([...details.querySelectorAll('a[href^="/admin/workspace/"]')].map((link) => link.getAttribute('href')))
+          .toEqual(['/admin/workspace/ws-titled', '/admin/workspace/ws-triage'])
+      }
     })
 
     it('names a call through the connection into a user’s account the same way, with the account it reached', async () => {
@@ -1020,7 +1026,7 @@ describe('AdminAuditPanel', () => {
 
       const details = await expand()
       expect(detail(details, 'Via')).toBe('Admin connection')
-      expect(detail(details, 'From workspace')).toBe('ws-triage')
+      expect(detail(details, 'From workspace')).toBe('ws-triageOpen workspace admin view')
       expect(detail(details, 'From chat')).toBe('4')
       expect(detail(details, 'Account')).toBe(userRecord().userId)
       expect(detail(details, 'Workspace')).toBeNull()
@@ -1034,19 +1040,21 @@ describe('AdminAuditPanel', () => {
       await render(settingsWith(), admin)
 
       const details = await expand()
-      expect(detail(details, 'From workspace')).toBe('ws-triage')
+      expect(detail(details, 'From workspace')).toBe('ws-triageOpen workspace admin view')
       expect(detail(details, 'From chat')).toBeNull()
     })
 
     it('says nothing of an agent for a call made through the CLI', async () => {
       const admin = fakeAdmin()
-      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord({ via: 'cli' })]))
+      admin.listAdminAudit.mockResolvedValue(testPage([accessRecord({ via: 'cli' }), writeRecord({ via: 'cli' })]))
       await render(settingsWith(), admin)
 
-      const details = await expand()
-      expect(detail(details, 'Via')).toBe('CLI')
-      expect(detail(details, 'From workspace')).toBeNull()
-      expect(detail(details, 'From chat')).toBeNull()
+      for (const index of [0, 1]) {
+        const details = await expand(index)
+        expect(detail(details, 'Via')).toBe('CLI')
+        expect(detail(details, 'From workspace')).toBeNull()
+        expect(detail(details, 'From chat')).toBeNull()
+      }
     })
 
     it('filters by kind, which the log asks the server for as it is', async () => {
