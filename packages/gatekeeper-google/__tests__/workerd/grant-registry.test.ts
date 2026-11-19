@@ -409,6 +409,30 @@ describe("Google grants shared by several connections", () => {
     expect(await later.refresh()).toBe("access-later");
   });
 
+  it("keeps with a revocation to try again the account its disconnect read, though the registry then failed", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    await connection(google, "other", ada);
+    // Never recorded, but its access token says whose it is.
+    const older = await storedAccount(google, "older", ada);
+    await older.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-older", expires: new Date(Date.now() + 3_600_000)});
+    });
+    vi.spyOn(GoogleGrantRegistry.prototype, "remove").mockImplementationOnce(async () => {
+      throw new Error("registry unavailable");
+    });
+    google.revocationFails = true;
+    await older.disconnect();
+    google.revocationFails = false;
+    // A Google Cloud session that ran out keeps the token from minting, which the account is not
+    // read with again: the registry is asked, and the other connection spared.
+    google.refused.set("refresh-older", "invalid_rapt");
+    expect(await older.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await older.isEmpty()).toBe(true);
+  });
+
   it("reads the Google account of a revocation to try again that none was known for", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();

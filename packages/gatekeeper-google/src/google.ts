@@ -1106,6 +1106,8 @@ export class UserAccount extends DurableObject<Env> {
     let kv = this.ctx.storage.kv;
     let installed = this.#credentialsId();
     let known = this.#accountSubject(installed);
+    // The account the release went by, however it was learned, kept should it fail.
+    let subject = known;
     try {
       let recordedFor = kv.get<string>(GRANT_CREDENTIALS_KEY);
       let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
@@ -1114,8 +1116,9 @@ export class UserAccount extends DurableObject<Env> {
       // listing this object there failed. Only that registry's answer decides.
       if (recordedSubject !== undefined &&
           (recordedFor === installed || recordedSubject === known)) {
+        subject = recordedSubject;
         let recorded = await this.#forgetGrant();
-        return { revoke: recorded?.last ?? true, subject: recordedSubject };
+        return { revoke: recorded?.last ?? true, subject };
       }
       // Otherwise it is a former listing, as a reconnect that could not read which account it
       // signed in as leaves, let go of without asking, whatever becomes of that: the grant held
@@ -1135,16 +1138,16 @@ export class UserAccount extends DurableObject<Env> {
       // call holds. Asked until it expires: one that lapses during the read fails it, and revokes.
       let stored = kv.get<GoogleAccessToken>("accessToken");
       if (!stored || stored.expires.valueOf() <= Date.now()) return { revoke: true };
-      let { sub } = await getGoogleAccountProfile(
-          stored.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
-      return { revoke: (await this.#grantRegistry(sub).remove(this.ctx.id.toString())).last, subject: sub };
+      subject = (await getGoogleAccountProfile(
+          stored.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
+      return { revoke: (await this.#grantRegistry(subject).remove(this.ctx.id.toString())).last, subject };
     } catch (error) {
       logger.warn("failed to release a Google grant; revoking it", {
         event: "google.grant.release.failed", error,
       });
       // The account still goes by, should Google not take the revocation, so that trying it again
       // can find a connection of the account made since.
-      return { revoke: true, ...(known === undefined ? {} : { subject: known }) };
+      return { revoke: true, ...(subject === undefined ? {} : { subject }) };
     }
   }
 
