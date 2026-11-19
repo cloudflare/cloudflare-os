@@ -1,9 +1,10 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-shared/api";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind, WORKSPACE_FILE_QUOTA_BYTES, WORKSPACE_STORAGE_LIMIT_BYTES, WORKSPACE_STORAGE_WARNING_BYTES, WORKSPACE_TURN_QUOTA_BYTES } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
+  createAdminAccessError, createSnapshotSharingError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
@@ -100,7 +101,9 @@ import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
-import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
+import {
+  SharingManager, SharingCaller, accessIncludesGadget, accessIncludesLiveGadget,
+} from "./sharing";
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
@@ -267,6 +270,110 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
     "forger.js": RESTORE_FORGER_HARNESS,
   },
   globalOutbound: null,
+};
+
+// The compatibility date gadget code runs at, whether in its own facet or in a snapshot's.
+// TODO: compatibility date configuration
+const GADGET_COMPATIBILITY_DATE = "2026-02-01";
+
+// The modules a gadget's files define: its .js files, by path.
+function gadgetModules(files: ReadonlyMap<string, string>): Record<string, string> {
+  let modules: Record<string, string> = {};
+  for (let [file, content] of files) {
+    if (file.endsWith(".js")) {
+      modules[file] = content;
+    }
+  }
+  return modules;
+}
+
+// Wrap a gadget facet stub so it can be returned to a client. Since facet stubs currently can't
+// be sent over RPC, the stub is wrapped in a Proxy to make it look like an RpcTarget instead.
+// `onDispose` runs when the client disposes the stub, and `onError` receives each error one of
+// the gadget's methods throws, as a console log event.
+function facetRpcStub(facet: Fetcher<DurableObject>, onDispose?: () => void,
+                      onError?: (event: ConsoleLogEvent) => void): RpcStub<any> {
+  // TODO: Make possible to return facet stub over RPC. This Proxy is a hack.
+  let proxy = new Proxy(facet, {
+    get(target, prop, receiver) {
+      // A lease ends when the client disposes the stub. (The DO reset that severs sessions
+      // releases it implicitly, by discarding this object -- and joinSession's leave is
+      // idempotent, so a double dispose is harmless.)
+      if (prop === Symbol.dispose && onDispose) {
+        let inner = Reflect.get(target, prop, target);
+        return () => {
+          onDispose();
+          if (typeof inner === "function") Reflect.apply(inner, target, []);
+        };
+      }
+
+      // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
+      //   we'll get an illegal invocation, as `receiver` points to our Proxy.
+      let method = Reflect.get(target, prop, target);
+
+      // Note that all wildcart properties of a stub appear as functions. So this check only
+      // really catches when `get()` returns `undefined`, as it does e.g. for the property
+      // named "then". Also if the prop is a symbol then it's definitely not an RPC so we handle
+      // that here.
+      if (typeof method !== "function" || typeof prop === "symbol") return method;
+
+      // HACK: We're going to assume all top-level properties are methods, and we are going to
+      //   intercept exceptions thrown by these methods and deliver them to the console log
+      //   subscriber. In theory we shouldn't have to do this, because these exceptions should
+      //   be reported to the tail worker. However, for some reason, that isn't working --
+      //   possibly a runtime bug which needs investigation.
+      // TODO: Fix exception reporting it tail workers so we can remove this hack.
+      return (...args: unknown[]) => {
+        let result: Promise<unknown> = Reflect.apply(method, target, args);
+        if (!onError) return result;
+        return result.catch((err: unknown) => {
+          let msg = err;
+          if (err instanceof Error) {
+            // Sadly the caught errors are missing any useful stack at the moment. Perhaps if
+            // we at least specify the method that was called it's somewhat useful to the agent.
+            msg = `${err}\n    at ${prop}()`;
+          }
+
+          onError({
+            timestamp: new Date(),
+            level: "error",
+            message: [msg],
+          });
+          throw err;
+        });
+      }
+    },
+    getPrototypeOf(target) {
+      return RpcTarget.prototype;
+    },
+  });
+
+  // Explicitly construct an RpcStub around the proxy to work around a workerd bug where
+  // returning an RpcTarget proxy as the top-level return value from an RPC isn't detected
+  // correctly.
+  // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
+  return new NativeRpcStub(proxy) as RpcStub<any>;
+}
+
+// A static snapshot of a gadget (see OverseerImpl.createGadgetSnapshot).
+type GadgetSnapshot = {
+  // The facet holding the copy: unique to this snapshot, and recorded in `gadgetSnapshots`.
+  facetName: string;
+  gadgetId: WorkpieceId;
+  // The gadget's head when it was copied, whose code the snapshot runs.
+  commitId: string;
+  refreshedAt: Date;
+};
+
+// What an export runs: a gadget's files, the worker they load as, and its facet (a gadget's or a
+// snapshot's). The worker and facet are loaded only for a gadget with a server. `renderMode` is
+// set only for a snapshot, which a browser-mode export tells the client as `gadgetRenderMode`.
+type GadgetExportSource = {
+  gadgetId: WorkpieceId;
+  files: ReadonlyMap<string, string>;
+  worker(): WorkerStub;
+  facet(): Promise<RpcStub<any>>;
+  renderMode?: "snapshot";
 };
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
@@ -1959,6 +2066,10 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
+      // A snapshot dies with the instance whose sessions used it (see createGadgetSnapshot).
+      for (let {facetName} of Array.from(this.storage.gadgetSnapshots.list())) {
+        this.deleteGadgetSnapshot(facetName);
+      }
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -2200,20 +2311,26 @@ class OverseerImpl implements AgentHooks {
     return record;
   }
 
-  // Create a new worktree workpiece rooted at the given commit id, provisional to (and permanently
-  // private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
+  // Create a new worktree workpiece, empty or rooted at the given commit id, provisional to
+  // (and permanently private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
   // has it -- by WorkspaceGitCache.fetchCommit. Like createGadget, the
   // caller (the agent's createWorktree tool) is responsible for getting the creation recorded in
   // the chat log -- `createdWorktrees` on the step's "changes" message -- which makes the pending
   // record permanent. The worktree is not pinned in the chat by its creation: it reads as its
   // accepted commit (`pinBase`) until the first modification pins it (see commitAgentStep).
-  async createWorktree(title: string, chatId: number, commitId: string)
+  async createWorktree(title: string, chatId: number, commitId?: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}> {
     title = title.trim();
     if (!title) {
       throw new Error("A worktree requires a non-empty title.");
     }
-    let baseCommit = await this.gitCache.fetchCommit(commitId);
+    // Share a canonical empty root; this initialization has no user-authored content.
+    let baseCommit = commitId === undefined
+        ? await this.gitCache.writeFilesAsCommit(new Map(), {
+          parents: [], message: "Initialize empty worktree", timestamp: new Date(0),
+          author: {name: "Cloudflare OS", email: "worktree@localhost"},
+        })
+        : await this.gitCache.fetchCommit(commitId);
 
     // The awaits above could have outlived the chat; a pending record for a deleted chat would
     // never be reaped.
@@ -2530,6 +2647,9 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
+    for (let snapshot of Array.from(this.storage.gadgetSnapshots.list())) {
+      if (snapshot.gadgetId === id) this.deleteGadgetSnapshot(snapshot.facetName);
+    }
     // An agent spawner may bind the gadget (see GatekeeperRecord.bindings).
     for (let chatId of this.#deleteBindingEdges(edge => edge.target === id)) {
       affectedChats.add(chatId);
@@ -2892,6 +3012,21 @@ class OverseerImpl implements AgentHooks {
 
   invalidateChatContent(chatId: number): void {
     this.#chatContentCache.delete(chatId);
+  }
+
+  async getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined> {
+    const record = this.storage.gadgets.get(id);
+    if (record?.type !== "worktree" || record.chatId !== chatId) {
+      throw new Error(`No worktree in this chat: ${id}`);
+    }
+    const value = turn.getOverlayFiles(id).get(path);
+    if (value !== undefined) {
+      return typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)).oid : value.oid;
+    }
+    if (turn.getRemovedPaths(id).has(path)) return undefined;
+    const base = turn.getBaseCommit(id);
+    return base === undefined ? undefined : this.gitCache.fileOidAtCommit(base, path);
   }
 
   // Live row count that triggers materialization (see submitCodeChange). A field so tests can
@@ -5340,13 +5475,6 @@ class OverseerImpl implements AgentHooks {
             : new Map();
       }
 
-      let modules: Record<string, string> = {};
-      for (let [file, content] of files) {
-        if (file.endsWith(".js")) {
-          modules[file] = content;
-        }
-      }
-
       let tailProps: GadgetTailLoopbackProps = {
         chatId,
         gadgetId,
@@ -5354,14 +5482,13 @@ class OverseerImpl implements AgentHooks {
       };
 
       return {
-        // TODO: compatibility date configuration
-        compatibilityDate: "2026-02-01",
+        compatibilityDate: GADGET_COMPATIBILITY_DATE,
         compatibilityFlags: [
           // Make ctx.restore() available.
           "allow_irrevocable_stub_storage",
         ],
         mainModule: "server.js",
-        modules,
+        modules: gadgetModules(files),
         env: this.getEnvForLoader(gadgetId, {from: "gadget", chatId, gadgetId}, chatId),
         globalOutbound: null,
 
@@ -5450,7 +5577,7 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  // Get an RpcStub for the gadget facet, which can be returned to the client.
+  // Get an RpcStub for the gadget facet, which can be returned to the client (see facetRpcStub).
   //
   // `joinAs` counts the returned stub toward #hasCollaboratorSession for its own lifetime, like
   // every other capability minted into a collaborator's session (see GadgetClientImpl): the facet
@@ -5459,76 +5586,89 @@ class OverseerImpl implements AgentHooks {
   // while the retained stub kept reading. Passed by the collaborator-facing connectToGadget
   // mints; omitted for the owner's and for internal callers (binding loopbacks already live
   // inside a counted session).
-  //
-  // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
-  // look like an RpcTarget instead.
   async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder)
       : Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
+    return facetRpcStub(facet, leaveSession,
+        event => this.deliverGadgetLogs(chatId ?? null, [event]));
+  }
 
-    let self = this;
+  // --- Static snapshots (see Overseer.getGadgetSnapshot) ---
+  //
+  // A snapshot is a facet cloned from a gadget's, running the gadget's code as of the commit it
+  // was cloned at, and reaching nothing the gadget can: its worker has no env, no network and no
+  // tail (see #loadSnapshotWorker), and no stub to it was minted by ctx.restore(), so it can't
+  // mint persistent stubs either. Each is recorded in `gadgetSnapshots` before it is cloned, and
+  // deleted when its session disposes it or its gadget is deleted; the next instance deletes any
+  // this one leaves behind.
 
-    // TODO: Make possible to return facet stub over RPC. This Proxy is a hack.
-    let proxy = new Proxy(facet, {
-      get(target, prop, receiver) {
-        // The lease ends when the client disposes the stub. (The DO reset that severs sessions
-        // releases it implicitly, by discarding this object -- and joinSession's leave is
-        // idempotent, so a double dispose is harmless.)
-        if (prop === Symbol.dispose && leaveSession) {
-          let inner = Reflect.get(target, prop, target);
-          return () => {
-            leaveSession!();
-            if (typeof inner === "function") Reflect.apply(inner, target, []);
-          };
-        }
+  // Throw unless the deployment allows sharing gadgets to view only (see
+  // AdminConfig.snapshotSharingEnabled). Opening or refreshing a snapshot checks it, as does
+  // making a view grant or minting a view link's key through the Overseer API, so turning it off
+  // suspends the view grants already made, untouched. A view link's existing keys still redeem,
+  // into view grants as dormant as those.
+  async requireSnapshotSharing(): Promise<void> {
+    if (!(await readAdminConfig(this.env)).snapshotSharingEnabled) {
+      throw createSnapshotSharingError(SNAPSHOT_SHARING_ERROR_CODES.disabled);
+    }
+  }
 
-        // Note: We need `target` to be used as the receiver. If we use `receiver` as the receiver,
-        //   we'll get an illegal invocation, as `receiver` points to our Proxy.
-        let method = Reflect.get(target, prop, target);
+  // Copy gadget `gadgetId`'s stored state into a new snapshot of it.
+  createGadgetSnapshot(gadgetId: WorkpieceId): GadgetSnapshot {
+    let commitId = this.getGadgetHead(gadgetId);
+    if (!this.isShareableGadget(gadgetId) || commitId === undefined) {
+      throw new Error(`No such gadget: ${gadgetId}`);
+    }
+    let snapshot: GadgetSnapshot = {
+      facetName: `snapshot-${crypto.randomUUID()}`, gadgetId, commitId, refreshedAt: new Date(),
+    };
+    this.storage.gadgetSnapshots.put({facetName: snapshot.facetName, gadgetId});
+    this.ctx.facets.clone(this.gadgetFacetName(gadgetId), snapshot.facetName);
+    return snapshot;
+  }
 
-        // Note that all wildcart properties of a stub appear as functions. So this check only
-        // really catches when `get()` returns `undefined`, as it does e.g. for the property
-        // named "then". Also if the prop is a symbol then it's definitely not an RPC so we handle
-        // that here.
-        if (typeof method !== "function" || typeof prop === "symbol") return method;
+  deleteGadgetSnapshot(facetName: string): void {
+    this.storage.gadgetSnapshots.delete(facetName);
+    this.ctx.facets.delete(facetName);
+  }
 
-        // HACK: We're going to assume all top-level properties are methods, and we are going to
-        //   intercept exceptions thrown by these methods and deliver them to the console log
-        //   subscriber. In theory we shouldn't have to do this, because these exceptions should
-        //   be reported to the tail worker. However, for some reason, that isn't working --
-        //   possibly a runtime bug which needs investigation.
-        // TODO: Fix exception reporting it tail workers so we can remove this hack.
-        return (...args: any[]) => {
-          let result: Promise<any> = Reflect.apply(method, target, args);
-          return result.catch((err: any) => {
-            let msg = err;
-            if (err instanceof Error) {
-              // Sadly the caught errors are missing any useful stack at the moment. Perhaps if
-              // we at least specify the method that was called it's somewhat useful to the agent.
-              msg = `${err}\n    at ${prop}()`;
-            }
+  // Throw unless `snapshot` is still recorded: it is gone once disposed, or deleted with its gadget.
+  requireGadgetSnapshot(snapshot: GadgetSnapshot): GadgetSnapshot {
+    if (!this.storage.gadgetSnapshots.get(snapshot.facetName)) {
+      throw new Error("This snapshot is no longer available.");
+    }
+    return snapshot;
+  }
 
-            let event: ConsoleLogEvent = {
-              timestamp: new Date(),
-              level: "error",
-              message: [msg],
-            };
-            self.deliverGadgetLogs(chatId ?? null, [event]);
-            throw err;
-          });
-        }
-      },
-      getPrototypeOf(target) {
-        return RpcTarget.prototype;
-      },
-    });
+  // A stub to `snapshot`'s facet, which can be returned to the client. The gadget's console
+  // doesn't get its errors: they are a viewer's, not the gadget's.
+  getSnapshotFacet(snapshot: GadgetSnapshot): RpcStub<any> {
+    return facetRpcStub(this.ctx.facets.get<DurableObject>(snapshot.facetName, () => {
+      // A stub outliving its snapshot must not restart the facet, empty and unrecorded, where
+      // nothing would ever delete it.
+      this.requireGadgetSnapshot(snapshot);
+      return {
+        class: this.#loadSnapshotWorker(snapshot).getDurableObjectClass<DurableObject>("Gadget"),
+        // The gadget's own facet ID, so code reading ctx.id sees what it sees in the gadget.
+        id: this.gadgetFacetName(snapshot.gadgetId),
+      };
+    }));
+  }
 
-    // Explicitly construct an RpcStub around the proxy to work around a workerd bug where
-    // returning an RpcTarget proxy as the top-level return value from an RPC isn't detected
-    // correctly.
-    // @ts-expect-error NativeRpcStub still has infinite recursion problems, fixed in Cap'n Web.
-    return new NativeRpcStub(proxy) as RpcStub<any>;
+  // The worker a snapshot runs: its gadget's code at the snapshot's commit, with an empty env,
+  // no network, and no tail (what it logs is a viewer's, not the gadget's). Unlike a gadget's
+  // worker, it lacks allow_irrevocable_stub_storage, so a stub the gadget stored -- a binding, or
+  // a persistent stub from ctx.restore() -- fails to load from the copied storage instead of
+  // reaching what the gadget can. Keyed by facet, so no two snapshots share module state.
+  #loadSnapshotWorker(snapshot: GadgetSnapshot): WorkerStub {
+    return this.env.LOADER.get(`${this.ctx.id}.${snapshot.facetName}`, () => ({
+      compatibilityDate: GADGET_COMPATIBILITY_DATE,
+      mainModule: "server.js",
+      modules: gadgetModules(this.gitCache.readCommitFiles(snapshot.commitId)),
+      env: {},
+      globalOutbound: null,
+    }));
   }
 
   // The gadget's file tree as seen from `chatId` (its chat content; the caller is presumed to
@@ -5559,15 +5699,46 @@ class OverseerImpl implements AgentHooks {
   async getGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number)
       : Promise<GadgetExportFormat[]> {
     this.checkChatExistsAndMaterializeChanges(chatId);
-    let resolved = await this.#resolveGadgetExportFormats(gadgetId, chatId);
-    resolved.gadget?.[Symbol.dispose]();
-    return resolved.formats;
+    return this.listExportFormats(await this.#gadgetExportSource(gadgetId, chatId));
   }
 
   async exportGadget(gadgetId: WorkpieceId, formatId: string, chatId?: number)
       : Promise<ReadableStream<Uint8Array>> {
     this.checkChatExistsAndMaterializeChanges(chatId);
-    let {formats, handler, gadget} = await this.#resolveGadgetExportFormats(gadgetId, chatId);
+    return this.runExport(await this.#gadgetExportSource(gadgetId, chatId), formatId);
+  }
+
+  // What exporting gadget `gadgetId`, as seen from `chatId`, runs.
+  async #gadgetExportSource(gadgetId: WorkpieceId, chatId?: number)
+      : Promise<GadgetExportSource> {
+    return {
+      gadgetId,
+      files: await this.readGadgetFiles(gadgetId, chatId),
+      worker: () => this.loadGadgetWorker(gadgetId, chatId),
+      facet: () => this.getGadgetFacet(gadgetId, chatId),
+    };
+  }
+
+  // What exporting `snapshot` runs: its own code and copy, never its gadget's.
+  snapshotExportSource(snapshot: GadgetSnapshot): GadgetExportSource {
+    return {
+      gadgetId: snapshot.gadgetId,
+      files: this.gitCache.readCommitFiles(snapshot.commitId),
+      worker: () => this.#loadSnapshotWorker(snapshot),
+      facet: async () => this.getSnapshotFacet(snapshot),
+      renderMode: "snapshot",
+    };
+  }
+
+  async listExportFormats(source: GadgetExportSource): Promise<GadgetExportFormat[]> {
+    let resolved = await this.#resolveExportFormats(source);
+    resolved.gadget?.[Symbol.dispose]();
+    return resolved.formats;
+  }
+
+  async runExport(source: GadgetExportSource, formatId: string)
+      : Promise<ReadableStream<Uint8Array>> {
+    let {formats, handler, gadget} = await this.#resolveExportFormats(source);
     if (!gadget) throw new Error("The Gadget server stub is unavailable.");
     using exportGadget = gadget;
     let format = formats.find(candidate => candidate.id === formatId);
@@ -5580,10 +5751,11 @@ class OverseerImpl implements AgentHooks {
     } else {
       let browser = this.env.BROWSER;
       if (!browser) throw new Error("Gadget export is not configured for this deployment.");
-      let bundle = await this.getGadgetUiBundle(gadgetId, chatId);
+      let bundle = buildUiBundle(source.files);
       if (!bundle) throw new Error("This Gadget does not have a UI to export.");
-      let title = this.getGadgetRecord(gadgetId).title;
-      return renderGadgetInBrowser(browser, bundle, title, exportGadget.dup(), format);
+      let title = this.getGadgetRecord(source.gadgetId).title;
+      return renderGadgetInBrowser(
+          browser, bundle, title, exportGadget.dup(), format, source.renderMode);
     }
   }
 
@@ -5594,19 +5766,19 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  async #resolveGadgetExportFormats(gadgetId: WorkpieceId, chatId?: number): Promise<{
+  async #resolveExportFormats(source: GadgetExportSource): Promise<{
     formats: GadgetExportFormat[];
     handler: Fetcher<GadgetExportEntrypoint> | null;
     gadget: NativeRpcStub<any> | null;
   }> {
-    let files = await this.readGadgetFiles(gadgetId, chatId);
+    let {files} = source;
     if (!files.has("server.js")) return {formats: [], handler: null, gadget: null};
 
-    let handler = this.loadGadgetWorker(gadgetId, chatId)
+    let handler = source.worker()
       .getEntrypoint<GadgetExportEntrypoint>(GADGET_EXPORT_ENTRYPOINT);
-    // getGadgetFacet() wraps this native stub for Cap'n Web's type system, but this path invokes
+    // facetRpcStub() wraps this native stub for Cap'n Web's type system, but this path invokes
     // native Worker RPC and needs its actual runtime type.
-    let gadget = await this.getGadgetFacet(gadgetId, chatId) as unknown as NativeRpcStub<any>;
+    let gadget = await source.facet() as unknown as NativeRpcStub<any>;
     try {
       let formats = await readCustomExportFormats(handler, gadget);
       return formats === null
@@ -6487,7 +6659,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<PreparedScratchWorktree | undefined> {
     if (files.size === 0 || this.#scratchWorktree(chatId) !== undefined) return undefined;
     let bindingName = fallbackBindingName(
-        "SCRATCH", name => this.chatScopeNames(chatId).has(name));
+        "ATTACHMENTS", name => this.chatScopeNames(chatId).has(name));
     let commitId = (await this.#writeWorkspaceAttachmentCommit(files, author))!;
     return {commitId, bindingName};
   }
@@ -6504,7 +6676,7 @@ class OverseerImpl implements AgentHooks {
     let record: WorktreeRecord = {
       type: "worktree",
       id: this.allocateWorkpieceId(),
-      title: "Scratch space",
+      title: "Attachments",
       created: new Date(),
       chatId,
       baseCommit: prepared.commitId,
@@ -6694,7 +6866,7 @@ class OverseerImpl implements AgentHooks {
           .filter(([, reach]) => reach.gatekeeperIds.has(gatekeeperId))
           .map(([gadgetId]) => gadgetId);
       if (access.role === "build" || vendorless ||
-          reachingGadgets.some(gadgetId => accessIncludesGadget(access, gadgetId))) {
+          reachingGadgets.some(gadgetId => accessIncludesLiveGadget(access, gadgetId))) {
         throw new Error(
             "This observation was blocked because it contains data that a current collaborator " +
             "is not permitted to see.");
@@ -11175,6 +11347,7 @@ class OverseerImpl implements AgentHooks {
     if (grant !== "workspace" && !this.isShareableGadget(grant.gadgetId)) {
       throw new Error(`No such gadget: ${grant.gadgetId}`);
     }
+    if (grant !== "workspace" && grant.mode === "view") return [];
     return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
   }
 
@@ -11317,24 +11490,32 @@ class OverseerImpl implements AgentHooks {
     return access;
   }
 
+  // How `profileId` may open gadget `gadgetId`: "live", only to "view" it as a snapshot, or not at
+  // all (null). Their effective access decides -- re-read live, since the workspace shell they
+  // hold was admitted with whatever access they had then -- and the gadget must be one that can be
+  // opened.
+  async gadgetOpenMode(profileId: string, gadgetId: WorkpieceId)
+      : Promise<"live" | "view" | null> {
+    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
+    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
+      return null;
+    }
+    return accessIncludesLiveGadget(access, gadgetId) ? "live" : "view";
+  }
+
   // The gate a "use" collaborator passes to get gadget `gadgetId` (UseOverseerInterface.getGadget):
-  // confirm their effective access includes it -- re-read live, since the workspace shell they hold
-  // was admitted with whatever access they had then -- and that it can be opened, then verify them
-  // as an observer of what that one gadget reaches. Returns false for no access, so the caller can
-  // deny without revealing whether the gadget exists; verification failures throw. A failure
-  // denies only this gadget: the others they hold keep the access their own gets verified.
-  // `configureCb` is as for authorizeCollaborator. The in-flight session lease and its handoff are
-  // too: it counts as a session holding this gadget, so widening the gadget's scope mid-
-  // verification restarts it.
+  // confirm they may open it live (see gadgetOpenMode), then verify them as an observer of what
+  // that one gadget reaches. Returns false for no live access, so the caller can deny without
+  // revealing whether the gadget exists; verification failures throw. A failure denies only this
+  // gadget: the others they hold keep the access their own gets verified. `configureCb` is as for
+  // authorizeCollaborator. The in-flight session lease and its handoff are too: it counts as a
+  // session holding this gadget, so widening the gadget's scope mid-verification restarts it.
   async authorizeGadget(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
       gadgetId: WorkpieceId,
       configureCb?: RpcStub<ObserverConfigCallback>): Promise<boolean> {
-    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
-    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
-      return false;
-    }
+    if (await this.gadgetOpenMode(profileId, gadgetId) !== "live") return false;
     let leaveSession = this.joinSession({kind: "use", profileId}, gadgetId);
     try {
       await this.ensureObserver(profileId, clientUser, {gadgetId}, configureCb);
@@ -11707,6 +11888,7 @@ class OverseerImpl implements AgentHooks {
         createdBy,
         role: record.role ?? "build",
         ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
+        ...(record.mode !== undefined ? {mode: record.mode} : {}),
         ...(record.gadgetIds !== undefined ? {gadgets: record.gadgetIds
           .filter(id => this.isShareableGadget(id))
           .map(id => ({id, title: this.getGadgetRecord(id).title}))} : {}),
@@ -13068,6 +13250,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return new GadgetClientImpl(this.impl, id, this.clientUserId, this.#mintedCapabilityHolder());
   }
 
+  async isViewOnly(id: WorkpieceId): Promise<boolean> {
+    this.impl.getGadgetRecord(id);  // validate it exists
+    return false;
+  }
+
+  async getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>> {
+    await this.impl.requireSnapshotSharing();
+    // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
+    //     type system doesn't know this.
+    return new GadgetSnapshotClientImpl(
+        this.impl, async () => true, this.impl.createGadgetSnapshot(id));
+  }
+
   async deleteSelf(): Promise<void> {
     if (!this.isOwner) {
       throw new Error("Only the workspace owner can delete it.");
@@ -14171,6 +14366,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async addCollaborator(username: string, grant: CollaboratorGrant, note?: string)
       : Promise<CollaboratorInfo | null> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
     // Look up the user DO to check if the account exists.
     let userDoId = this.impl.users.idFromName(username);
     let userDo = this.impl.users.get(userDoId);
@@ -14193,10 +14389,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         .previewRemoveCollaborator(this.#sharingCaller(), profileId, gadgetId);
   }
 
-  async removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
-      : Promise<AffectedCollaborator[]> {
+  async removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId,
+                           keepView?: boolean): Promise<AffectedCollaborator[]> {
+    // Before the mutation, which severs their grants in the same step as it gives the view.
+    if (keepView) await this.impl.requireSnapshotSharing();
     let affected = (await this.impl.getSharingManager())
-        .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId);
+        .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId, keepView);
     let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
     // Schedule the restart in the same synchronous step as the sharing mutation: the revoked
     // collaborator's live sessions must not outlive the cleanup below, which crosses gatekeeper
@@ -14244,13 +14442,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
     return (await this.impl.getSharingManager()).createShareLink(
         { caller: this.#sharingCaller(), grant, note, default: options?.default });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
-    return (await this.impl.getSharingManager())
-        .newShareLinkKey({ caller: this.#sharingCaller(), linkId });
+    return (await this.impl.getSharingManager()).newShareLinkKey({
+      caller: this.#sharingCaller(), linkId,
+      requireViewSharing: () => this.impl.requireSnapshotSharing(),
+    });
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {
@@ -14268,8 +14469,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // interface but permits only the handful of methods needed to render and interact with the
 // deployed UIs of the gadgets their access includes: getMetadata() (restricted to
 // id/title/owner), a restricted subscribeToMetadata(), subscribeToPresence(),
-// subscribeToWorkpieces() (listing only those gadgets), and getGadget() (verifying them for that
-// gadget, then returning a restricted, mainline-only UseGadgetClientInterface). Presence includes
+// subscribeToWorkpieces() (listing only those gadgets), getGadget() (for a gadget they may open
+// live, verifying them for it, then returning a restricted, mainline-only
+// UseGadgetClientInterface), isViewOnly(), and getGadgetSnapshot() (verifying nothing; see
+// GadgetSnapshotClientImpl). Presence includes
 // active viewers' names, profile IDs, and roles. Every other
 // method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
 // subscribeToActions() return inert subscriptions (they never deliver data), and
@@ -14427,6 +14630,26 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     return new UseGadgetClientInterface(this.impl, id, this.clientUserId, this.clientProfileId);
   }
 
+  async isViewOnly(id: WorkpieceId): Promise<boolean> {
+    let mode = await this.impl.gadgetOpenMode(this.clientProfileId, id);
+    if (!mode) throw new Error(`No such gadget: ${id}`);
+    return mode === "view";
+  }
+
+  // Unlike getGadget(), verifies nothing: a snapshot reaches none of what its gadget can (see
+  // GadgetSnapshotClientImpl). Open only to a view grant alone: a live grant opens the live
+  // gadget, through verification, and nothing else. Any other gadget is refused the same way, as
+  // is a refresh once the grant is no longer a view alone.
+  async getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>> {
+    await this.impl.requireSnapshotSharing();
+    let mayOpen = async () => await this.impl.gadgetOpenMode(this.clientProfileId, id) === "view";
+    if (!await mayOpen()) throw new Error(`No such gadget: ${id}`);
+    // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
+    //     type system doesn't know this.
+    return new GadgetSnapshotClientImpl(
+        this.impl, mayOpen, this.impl.createGadgetSnapshot(id));
+  }
+
   // --- Denied methods (build-only) ---
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
@@ -14561,8 +14784,8 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async listCollaborators(): Promise<CollaboratorInfo[]> { this.#deny(); }
   async addCollaborator(_username: string, _grant: CollaboratorGrant, _note?: string)
       : Promise<CollaboratorInfo | null> { this.#deny(); }
-  async removeCollaborator(_profileId: string, _keepUsers: string[], _gadgetId?: WorkpieceId)
-      : Promise<AffectedCollaborator[]> { this.#deny(); }
+  async removeCollaborator(_profileId: string, _keepUsers: string[], _gadgetId?: WorkpieceId,
+                           _keepView?: boolean): Promise<AffectedCollaborator[]> { this.#deny(); }
   async previewRemoveCollaborator(_profileId: string, _gadgetId?: WorkpieceId)
       : Promise<AffectedCollaborator[]> {
     this.#deny();
@@ -15361,6 +15584,85 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
                        _options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult> {
     this.#deny();
+  }
+}
+
+// A static snapshot of one gadget (see Overseer.getGadgetSnapshot), handed to the owner, "build"
+// collaborators, and a "use" collaborator who may only view the gadget. It runs the gadget's code
+// against its own copy of the gadget's storage, with no bindings (see
+// OverseerImpl.createGadgetSnapshot): what it shows is what the gadget had stored when it was
+// copied, and nothing it does reaches the gadget or anything the gadget can. So minting one
+// verifies nobody as an observer, and it counts as no session holding the gadget: a widening adds
+// nothing it can reach, and a revocation restarts the workspace, ending every snapshot. Its
+// interface picks only what a viewer needs from GadgetClient, so a new GadgetClient method never
+// reaches a snapshot unless it is added there deliberately.
+@validateRpc()
+class GadgetSnapshotClientImpl extends RpcTarget implements GadgetSnapshotClient {
+  #snapshot: GadgetSnapshot;
+
+  // `mayOpen` says whether its holder may still open the gadget, checked before each refresh
+  // after the deployment's own check (see OverseerImpl.requireSnapshotSharing).
+  constructor(private impl: OverseerImpl,
+              private mayOpen: () => Promise<boolean>, snapshot: GadgetSnapshot) {
+    super();
+    this.#snapshot = snapshot;
+  }
+
+  [Symbol.dispose]() {
+    this.impl.deleteGadgetSnapshot(this.#snapshot.facetName);
+  }
+
+  #deny(): never {
+    throw new Error("Unauthorized: a gadget snapshot can only be viewed.");
+  }
+
+  // The snapshot, unless it was deleted (by dispose, or with its gadget).
+  get #current(): GadgetSnapshot {
+    return this.impl.requireGadgetSnapshot(this.#snapshot);
+  }
+
+  async getId(): Promise<WorkpieceId> {
+    return this.#snapshot.gadgetId;
+  }
+
+  async getTitle(): Promise<string> {
+    return this.impl.getGadgetRecord(this.#current.gadgetId).title;
+  }
+
+  async getRefreshedAt(): Promise<Date> {
+    return this.#current.refreshedAt;
+  }
+
+  async refresh(): Promise<Date> {
+    let {gadgetId} = this.#current;
+    await this.impl.requireSnapshotSharing();
+    if (!await this.mayOpen()) throw new Error(`No such gadget: ${gadgetId}`);
+    // Re-read after the await, so a refresh racing dispose (or another refresh) replaces only the
+    // snapshot still held.
+    let previous = this.#current.facetName;
+    this.#snapshot = this.impl.createGadgetSnapshot(gadgetId);
+    this.impl.deleteGadgetSnapshot(previous);
+    return this.#snapshot.refreshedAt;
+  }
+
+  async getUiBundle(chatId?: number): Promise<UiBundle | null> {
+    if (chatId !== undefined) this.#deny();
+    return buildUiBundle(this.impl.gitCache.readCommitFiles(this.#current.commitId));
+  }
+
+  async connectToGadget(chatId?: number): Promise<RpcStub<any>> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.getSnapshotFacet(this.#current);
+  }
+
+  async getExportFormats(chatId?: number): Promise<GadgetExportFormat[]> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.listExportFormats(this.impl.snapshotExportSource(this.#current));
+  }
+
+  async export(id: string, chatId?: number): Promise<ReadableStream<Uint8Array>> {
+    if (chatId !== undefined) this.#deny();
+    return this.impl.runExport(this.impl.snapshotExportSource(this.#current), id);
   }
 }
 

@@ -3,6 +3,50 @@
 // Workshop lays out a message with it, and the evals find the views an answer shows with it.
 
 import { fromMarkdown } from "mdast-util-from-markdown";
+import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfm } from "micromark-extension-gfm";
+import { normalizeUri } from "micromark-util-sanitize-uri";
+
+// Match ReactMarkdown's remark-gfm parser, including links inside footnotes.
+const MARKDOWN_OPTIONS = {extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()]};
+
+/** File URLs in links and images, as the Markdown renderer normalizes them; code examples and raw HTML are excluded. */
+export function markdownFileUrls(markdown: string, streaming = false): string[] {
+  const root = fromMarkdown(markdown, MARKDOWN_OPTIONS);
+  const urls: string[] = [], references: string[] = [];
+  const definitions = new Map<string, string>();
+  const footnotes = new Map<string, Extract<typeof root.children[number], {type: "footnoteDefinition"}>>();
+  const collectDefinitions = (node: typeof root | typeof root.children[number]) => {
+    if (node.type === "definition" && !definitions.has(node.identifier) &&
+        (!streaming || (node.position?.end.offset ?? markdown.length) < markdown.length)) {
+      definitions.set(node.identifier, node.url);
+    }
+    if (node.type === "footnoteDefinition" && !footnotes.has(node.identifier)) footnotes.set(node.identifier, node);
+    if ("children" in node) node.children.forEach(collectDefinitions);
+  };
+  collectDefinitions(root);
+  const visitedFootnotes = new Set<string>();
+  const visit = (node: typeof root | typeof root.children[number]) => {
+    if (node.type === "footnoteDefinition") return;
+    // A closing backtick arriving later can turn an apparent image into a code example.
+    // Defer inline-content blocks containing backticks until EOF rather than guessing their syntax.
+    if (streaming && (node.type === "paragraph" || node.type === "heading" || node.type === "tableCell") &&
+        markdown.slice(node.position?.start.offset, node.position?.end.offset).includes("`")) return;
+    if (node.type === "image" || node.type === "link") urls.push(node.url);
+    if (node.type === "imageReference" || node.type === "linkReference") references.push(node.identifier);
+    if (node.type === "footnoteReference" && !visitedFootnotes.has(node.identifier)) {
+      visitedFootnotes.add(node.identifier);
+      footnotes.get(node.identifier)?.children.forEach(visit);
+    }
+    if ("children" in node) node.children.forEach(visit);
+  };
+  visit(root);
+  for (const reference of references) {
+    const url = definitions.get(reference);
+    if (url !== undefined) urls.push(url);
+  }
+  return urls.map(normalizeUri);
+}
 
 /** One closed `<inline-html>` block of an agent answer. */
 export type InlineHtmlBlock = {
@@ -44,7 +88,7 @@ const CLOSE = /^<\/inline-html>[ \t]*$/;
 // document can. Markdown decides a line's block from the lines before it, so these blocks hold for
 // every line that ends by `to`, whatever follows.
 function codeBlocksIn(text: string, from: number, to: number): {start: number; end: number}[] {
-  return fromMarkdown(text.slice(from, to)).children.flatMap(node => {
+  return fromMarkdown(text.slice(from, to), MARKDOWN_OPTIONS).children.flatMap(node => {
     let start = node.position?.start.offset, end = node.position?.end.offset;
     return node.type === "code" && start !== undefined && end !== undefined
       ? [{start: from + start, end: from + end}] : [];

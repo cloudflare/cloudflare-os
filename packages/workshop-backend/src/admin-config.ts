@@ -405,6 +405,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     userSearchEnabled: typeof p.userSearchEnabled === "boolean"
       ? p.userSearchEnabled
       : !signupsEnabled,
+    snapshotSharingEnabled: typeof p.snapshotSharingEnabled === "boolean"
+      ? p.snapshotSharingEnabled
+      : DEFAULT_ADMIN_CONFIG.snapshotSharingEnabled,
     siteName: typeof p.siteName === "string" ? p.siteName : "",
     siteLogoConfigured: typeof p.siteLogoConfigured === "boolean" ? p.siteLogoConfigured : false,
     instanceInstructions: typeof p.instanceInstructions === "string" ? p.instanceInstructions : "",
