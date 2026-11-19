@@ -1,6 +1,6 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { ADMIN_AGENT_LEND_SECONDS } from "@gadgets/workshop-shared/admin-agent";
+import { ADMIN_AGENT_ACTIONS, ADMIN_AGENT_LEND_SECONDS } from "@gadgets/workshop-shared/admin-agent";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, createAdminAccessError, getAdminAccessErrorCode,
   OPEN_WORKSPACE_ERROR_CODES, type AdminApi, type Overseer,
@@ -10,10 +10,11 @@ import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { connect, waitFor, type ConnectedAccount } from "../src/rpc-client.js";
 import {
   ACCOUNT_REMOVED, addAdminConnection, adminAccounts, adminActions, adminApiOf, agentTurn,
-  approveContent, auditCount, auditRecords, buildGadget, collaboratorIds, connectionVendors,
-  DEPLOYMENT_URL, gadgetIds, GRACE, HAS_CONNECTION, HAS_READ, HEIDI, isRestricted, listed,
-  newMember, newUser, newWorkspace, observationTitles, openAs, opening, OWNER, pendingActions,
-  provisionAdminAccount, reconnect, removeMember, requestsFiled, settle, signedInAgain,
+  approveContent, auditCount, auditRecords, buildGadget, collaboratorIds,
+  connectionVendors, DEPLOYMENT_URL, enableEveryRule, EVERY_TAG, fileReport,
+  gadgetIds, GRACE, HAS_CONNECTION, HAS_READ, HEIDI, isRestricted, listed, newMember, newUser,
+  newWorkspace, observationTitles, openAs, opening, OWNER, pendingActions, provisionAdminAccount,
+  reconnect, removeMember, reporterThread, requestsFiled, settle, signedInAgain,
   startAdminHarness, TAGS, turnModels, VENDOR, withAdmins, writesMade, type AdminConnection,
   type Suite, type SuiteUser,
 } from "./admin-gatekeeper-harness.js";
@@ -22,9 +23,9 @@ import {
 // it and how each read is recorded, who is admitted to a workspace that has it, and who may
 // approve what it files.
 //
-// The vendor's mode, the audit log and the content requests are deployment-wide, so this file
-// owns its harness and its cases run in order: the first two leave the vendor's mode "optional"
-// and the owner with an account, which the rest use.
+// The vendor's mode, the audit log, the issue reports and the content requests are deployment-wide, so
+// this file owns its harness and its cases run in order: the first two leave the vendor's mode
+// "optional" and the owner with an account, which the rest use.
 const models = turnModels();
 const network = new NetworkInterceptor({ handlers: [models.handler] });
 const scope = new DisposableStack();
@@ -169,6 +170,7 @@ it("records an agent's view calls as made through the gatekeeper, for the owner,
   const subject = await newMember(suite, "subject");
   const theirs = await newWorkspace(suite, subject, "A user's workspace");
   await theirs.ws.newChat("hello", null);
+  const report = await fileReport(subject);
   const triage = await newWorkspace(suite, owner, "Triage reads");
   const connection = await addAdminConnection(triage.ws, ownerAccount.id);
   expect(await isRestricted(triage.ws)).toBe(false);
@@ -176,6 +178,8 @@ it("records an agent's view calls as made through the gatekeeper, for the owner,
 
   const before = await auditCount(harness);
   const turn = await agentTurn(owner, triage.ws, `
+    await attempt("reports", () => env.ADMIN.listIssueReports());
+    await attempt("report", () => env.ADMIN.getIssueReport(${JSON.stringify(report.id)}));
     await attempt("users", () => env.ADMIN.listUsers({ limit: 1 }));
     await attempt("view", async () => {
       const view = await env.ADMIN.inspectWorkspace(
@@ -186,12 +190,14 @@ it("records an agent's view calls as made through the gatekeeper, for the owner,
   const ended = Date.now();
   const results = await turn.results();
   expect(results).toMatchObject({
+    reports: { value: { reports: expect.arrayContaining([expect.objectContaining({ id: report.id })]) } },
+    report: { value: { id: report.id } },
     users: { value: { users: [expect.anything()] } },
     view: { value: { chats: 1 } },
   });
 
-  // The view's open and its two calls are the turn's only records: a listing is read with no
-  // record in the audit log.
+  // The view's open and its two calls are the turn's only records: a listing and a report are
+  // read with no record in the audit log.
   expect(await auditCount(harness)).toBe(before + 3);
   const records = await auditRecords(admin, { workspace: theirs.id });
   expect(records.map(record => record.method)).toEqual(["listChats", "describe", "inspectWorkspace"]);
@@ -204,8 +210,8 @@ it("records an agent's view calls as made through the gatekeeper, for the owner,
 
   // Each read, the unrecorded ones included, is an observation of the workspace that made it.
   expect((await observationTitles(triage.ws)).toReversed()).toEqual([
-    "Admin API: listUsers", "Admin API: inspectWorkspace", "Admin view: describe",
-    "Admin view: listChats",
+    "Admin API: listIssueReports", "Admin API: getIssueReport", "Admin API: listUsers",
+    "Admin API: inspectWorkspace", "Admin view: describe", "Admin view: listChats",
   ]);
   expect(await isRestricted(triage.ws)).toBe(true);
 
@@ -338,8 +344,8 @@ it("admits only its owner and deployment admins to a workspace that has the conn
   const records = await auditCount(harness);
   await expect(direct(graceWs, session => session.listUsers()))
       .rejects.toThrow("Only this workspace's owner can open the admin connection directly");
-  // Nor does it queue an action, which would then be recorded as the owner's with nobody behind it.
-  await expect(direct(graceWs, session => session.requestContentAccess("a-workspace", "A reason")))
+  // Nor does it queue an action, which a rule could apply as the owner's with nobody deciding.
+  await expect(direct(graceWs, session => session.addIssueReportEntry("a-report", "A note.", "admins")))
       .rejects.toThrow("Only this workspace's owner can open the admin connection directly");
   expect(await adminActions(ws)).toEqual([]);
   expect(await auditCount(harness)).toBe(records);
@@ -401,9 +407,39 @@ it("admits only its owner and deployment admins to a workspace that has the conn
   expect(await collaboratorIds(ws)).toEqual(expect.arrayContaining([early.name, viewer.name]));
 });
 
+it("lets an admin who is a member decide an action, and records who decided", async () => {
+  const reporter = await newMember(suite, "notereporter");
+  const report = await fileReport(reporter);
+  const triage = await newWorkspace(suite, owner, "Triage decisions");
+  const connection = await addAdminConnection(triage.ws, ownerAccount.id);
+  expect(await triage.ws.addCollaborator(GRACE, "workspace")).not.toBeNull();
+  using graceWs = await openAs(
+      suite, grace, triage.id, { accountId: (await provisionAdminAccount(grace)).id });
+
+  const turn = await agentTurn(owner, triage.ws, `await attempt("note", () =>
+    env.ADMIN.addIssueReportEntry(${JSON.stringify(report.id)}, "Seen by the desk", "admins"));`,
+      { connection });
+  expect(turn.paused()).toBe(true);
+  const [note] = await pendingActions(triage.ws, 1);
+  expect(note!.description.actionKind?.tag).toBe(TAGS.issueReportNote);
+
+  await graceWs.approveAction(note!.id);
+  expect(await turn.resumed()).toEqual({ note: { value: null } });
+  const [decided] = await adminActions(triage.ws);
+  expect(decided).toMatchObject({ state: "approved", resolvedBy: { type: "user", id: GRACE } });
+  expect(decided!.autoApproved).toBeFalsy();
+  // The entry is the owner's: the call was made with the owner's Admin API.
+  expect((await admin.getIssueReport(report.id)).entries).toEqual([expect.objectContaining({
+    text: "Seen by the desk", visibility: "admins", via: "gatekeeper",
+    author: expect.objectContaining({ id: OWNER }),
+    agent: { workspaceId: triage.id, chatId: turn.chatId },
+  })]);
+  expect(await reporterThread(reporter, report.id)).toEqual([]);
+});
+
 /** An agent's code that files a request for the content of `workspaceId`. */
 const ask = (workspaceId: string) => `await attempt("request", () =>
-  env.ADMIN.requestContentAccess(${JSON.stringify(workspaceId)}, "A user asked for help"));`;
+  env.ADMIN.requestContentAccess(${JSON.stringify(workspaceId)}, "A reporter asked for help"));`;
 
 /** A gadget whose one method files a content request through its admin binding. */
 const ASKING_GADGET = `import { DurableObject } from "cloudflare:workers";
@@ -427,11 +463,12 @@ it("keeps a content request filed through the connection from being approved by 
   const triage = await newWorkspace(suite, owner, "Triage requests");
   let { ws } = triage;
   const connection = await addAdminConnection(ws, ownerAccount.id);
+  expect(await enableEveryRule(ws, connection)).toEqual(EVERY_TAG);
   expect(await ws.addCollaborator(GRACE, "workspace")).not.toBeNull();
   using graceWs = await openAs(
       suite, grace, triage.id, { accountId: (await provisionAdminAccount(grace)).id });
 
-  /** Runs a turn that asks for content of `workspaceId`: its card, pending. */
+  /** Runs a turn that asks for content of `workspaceId`: its card, pending under every rule. */
   const askForContent = async (workspaceId: string) => {
     const turn = await agentTurn(owner, ws, ask(workspaceId), { connection });
     await settle(ws);
@@ -473,11 +510,11 @@ it("keeps a content request filed through the connection from being approved by 
   expect(await approveContent(graceAdmin, again!.id)).toBe(secondAdminRequired);
   expect(await approveContent(heidiAdmin, again!.id)).toMatchObject({ resolvedBy: HEIDI });
 
-  // A write is a kind of its own, which waits for a person: once a member approves it, it runs as
-  // the owner's, with no other admin deciding.
+  // A write is a kind of its own, which no rule applies: it waits for a person, and once a
+  // member approves it, it runs as the owner's, with no other admin deciding.
   const restart = await agentTurn(owner, ws, `await attempt("write", () =>
     env.ADMIN.writeWorkspace(${JSON.stringify(restarted.id)}, "restartWorkspace", {},
-        "A user asked for help"));`, { connection });
+        "A reporter asked for help"));`, { connection });
   await settle(ws);
   expect(restart.paused()).toBe(true);
   const [write] = await pendingActions(ws, 1);
@@ -493,9 +530,9 @@ it("keeps a content request filed through the connection from being approved by 
     method: "restartWorkspace", admin: OWNER, via: "gatekeeper",
   })]);
 
-  // A member who has left is an outsider again, but only for a request filed after she left:
-  // merged gadget code that asks for content waits for a person, who is then counted among those
-  // who may not approve.
+  // A member who has left is an outsider again, but only for a request filed after she left,
+  // and no rule files one: merged gadget code that asks for content waits for a person, who is
+  // then counted among those who may not approve.
   ws = await removeMember(suite, owner, ws, GRACE);
   const { gadget } = await buildGadget(
       owner, ws, { name: "ASKER", server: ASKING_GADGET, bindings: { ADMIN: connection.id } });
@@ -604,29 +641,48 @@ async function directRead(member: RpcStub<Overseer>, connection: AdminConnection
 }
 
 it("goes back to ordinary sharing when a connection that read nothing is removed", async () => {
+  const reporter = await newMember(suite, "scopedreporter");
+  const report = await fileReport(reporter);
   const [nell, visitor] = [await newMember(suite, "nell"), await newMember(suite, "passerby")];
-  const triage = await newWorkspace(suite, owner, "Triage, never read");
+  const triage = await newWorkspace(suite, owner, "Triage, scoped only");
   const { ws } = triage;
   // Shared before it has the connection, and never invited again.
   expect(await ws.addCollaborator(nell.name, "workspace")).not.toBeNull();
   expect(await opening(suite, nell, triage.id)).toBe("opened");
   const link = await ws.createShareLink("workspace");
   const connection = await addAdminConnection(ws, ownerAccount.id);
+  await ws.setAutoApprovedActionKind(connection.id, ADMIN_AGENT_ACTIONS.issueReportNote.kind);
+  await ws.setAutoApprovedActionKind(connection.id, ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind);
   expect(await ws.addCollaborator(GRACE, "workspace")).not.toBeNull();
   using graceWs = await openAs(
       suite, grace, triage.id, { accountId: (await provisionAdminAccount(grace)).id });
 
   // Two reads refused before anything is lent: a member's own session, and a turn run while
-  // the vendor is off. Neither reads anything through the binding.
+  // the vendor is off.
   await expect(directRead(graceWs, connection)).rejects.toThrow(DIRECT_OWNER_ONLY);
   await admin.setGatekeeperMode(VENDOR, "disabled");
+  let chatId: number;
   try {
     const off = await agentTurn(owner, ws,
         `await attempt("users", () => env.ADMIN.listUsers());`, { connection });
     expect(await off.results()).toEqual({ users: { error: "Gatekeeper is disabled." } });
+    chatId = off.chatId;
   } finally {
     await admin.setGatekeeperMode(VENDOR, "optional");
   }
+
+  // What it did do reads nothing through the whole binding: a session limited to one report,
+  // its reply, and a note.
+  const turn = await agentTurn(owner, ws, `
+    const report = await env.ADMIN.openIssueReport(${JSON.stringify(report.id)});
+    await attempt("get", async () => (await report.get()).id);
+    await attempt("reply", () => report.reply("We are looking into it."));
+    await attempt("note", () => env.ADMIN.addIssueReportEntry(
+        ${JSON.stringify(report.id)}, "Triaged from the scoped session", "admins"));`, { chatId });
+  expect(await turn.resumed()).toEqual(
+      { get: { value: report.id }, reply: { value: null }, note: { value: null } });
+  expect((await reporterThread(reporter, report.id)).map(entry => entry.text))
+      .toEqual(["We are looking into it."]);
   expect((await observationTitles(ws)).filter(title => title.startsWith("Admin API:"))).toEqual([]);
   expect(await isRestricted(ws)).toBe(false);
 
@@ -686,11 +742,17 @@ it("stays admins-only for good once it has read through the connection, removed 
 
 it("ends the connections made with an account when its owner removes it, until they add " +
     "it again", async () => {
-  const subject = await newWorkspace(suite, await newMember(suite, "lookedat"), "Looked at");
+  const reporter = await newMember(suite, "waiting");
+  const report = await fileReport(reporter);
+  const subject = await newWorkspace(suite, reporter, "Looked at");
   const triage = await newWorkspace(suite, owner, "Triage, account removed");
   const spare = await newWorkspace(suite, owner, "Spare");
   const { ws } = triage;
   const connection = await addAdminConnection(ws, ownerAccount.id);
+  await ws.setAutoApprovedActionKind(connection.id, ADMIN_AGENT_ACTIONS.issueReportStatus.kind);
+  const paused = await agentTurn(owner, ws, `await attempt("note", () => env.ADMIN.addIssueReportEntry(
+      ${JSON.stringify(report.id)}, "Held while the account was gone", "admins"));`, { connection });
+  const [note] = await pendingActions(ws, 1);
 
   await owner.api.disconnectAccount(ownerAccount.id);
   expect(await adminAccounts(owner.api)).toEqual([]);
@@ -708,9 +770,16 @@ it("ends the connections made with an account when its owner removes it, until t
   expect(await auditCount(harness)).toBe(records);
   expect(await isRestricted(ws)).toBe(false);
 
-  // No new connection can be made; the connection is still there.
+  // No new connection can be made, and the pending action cannot be applied; the connection,
+  // its rule and the action are all still there.
   await expect(spare.ws.newGatekeeper(ownerAccount.id, DEPLOYMENT_URL)).rejects.toThrow();
+  await expect(ws.approveAction(note!.id)).rejects.toThrow(ACCOUNT_REMOVED);
+  expect((await pendingActions(ws, 1)).map(action => action.id)).toEqual([note!.id]);
+  expect(await ws.listAutoApprovedActionKinds()).toEqual([
+    { gatekeeperId: connection.id, actionKind: ADMIN_AGENT_ACTIONS.issueReportStatus.kind },
+  ]);
   expect(await connectionVendors(admin, triage.id)).toEqual([VENDOR]);
+  expect((await admin.getIssueReport(report.id)).entries).toEqual([]);
 
   // Added again, the account is another one, and the same connection answers with it.
   const removed = ownerAccount.id;
@@ -721,35 +790,56 @@ it("ends the connections made with an account when its owner removes it, until t
     users: { value: expect.objectContaining({ users: [expect.anything()] }) },
     view: { value: subject.id },
   });
+  await ws.approveAction(note!.id);
+  expect(await paused.resumed()).toEqual({ note: { value: null } });
+  expect((await admin.getIssueReport(report.id)).entries.map(entry => entry.text))
+      .toEqual(["Held while the account was gone"]);
 });
 
-/** A gadget whose methods show what its admin binding reaches. */
-const WATCHER_GADGET = `import { DurableObject } from "cloudflare:workers";
+/**
+ * A gadget that subscribes a hook when it is asked to, and whose other methods show what its
+ * admin binding reaches.
+ */
+const WATCHER_GADGET = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
 export class Gadget extends DurableObject {
+  async [restore](params) {
+    if (params.type !== "reports") throw new TypeError("Unknown restore type: " + params.type);
+    return new Reports();
+  }
+  async subscribe() {
+    await this.env.ADMIN.subscribeIssueReported(await this.ctx.restore({ type: "reports" }));
+    return "subscribed";
+  }
   async binding() { return typeof this.env.ADMIN; }
   async look(workspaceId) {
     const view = await this.env.ADMIN.inspectWorkspace(workspaceId, "Checking from a gadget");
     return (await view.describe()).id;
   }
+}
+class Reports extends RpcTarget {
+  async issueReported() {}
 }`;
 
-type Watcher = { binding(): string; look(workspaceId: string): string };
+type Watcher = { subscribe(): string; binding(): string; look(workspaceId: string): string };
 
 /** What fills the blueprint's one binding with the account `accountId`. */
 const assignment = (accountId: number) =>
   ({ ADMIN: { type: "gatekeeper" as const, accountId, resourceUrl: DEPLOYMENT_URL } });
 
-it("publishes a blueprint that carries no connection", async () => {
+it("publishes a blueprint that carries no connection and no subscription", async () => {
   const subject = await newWorkspace(suite, await newMember(suite, "watched"), "Watched");
   const source = await newWorkspace(suite, owner, "Watcher's source");
   const connection = await addAdminConnection(source.ws, ownerAccount.id);
   const { gadget } = await buildGadget(owner, source.ws,
       { name: "WATCHER", server: WATCHER_GADGET, bindings: { ADMIN: connection.id } });
+  using facet = await gadget.connectToGadget() as RpcStub<Watcher>;
+  expect(await facet.subscribe()).toBe("subscribed");
+  expect(await source.ws.listHooks()).toHaveLength(1);
 
-  const blueprint = await gadget.createBlueprint("Watcher", "Looks at workspaces");
+  const blueprint = await gadget.createBlueprint("Watcher", "Watches the issue reports");
   using publicApi = connect(harness.url);
   const published = await waitFor("the published blueprint", () => publicApi.getBlueprint(blueprint.id));
-  // The binding names the vendor and the kind of resource: no account or workspace.
+  // The binding names the vendor and the kind of resource: no account, workspace or hook.
   expect(published.metadata.bindings).toEqual({
     ADMIN: {
       title: "Deployment admin", description: "", type: "gatekeeper", gatekeeperName: VENDOR,
@@ -760,25 +850,30 @@ it("publishes a blueprint that carries no connection", async () => {
 
   // Someone who is not an admin has no account to fill the binding with: left out, their
   // workspace has no connection of the vendor, and the admin's account id names nothing of
-  // theirs.
+  // theirs. Neither way is a hook bound, and the gadget's code has nothing to subscribe through.
   const outsider = await newMember(suite, "installer");
   await expect(outsider.api.newWorkspaceFromBlueprint(blueprint.id, assignment(ownerAccount.id)))
       .rejects.toThrow("No such account.");
   const bare = suite.scope.use(
       await (await reconnect(suite, outsider)).newWorkspaceFromBlueprint(blueprint.id, {}));
   expect(await connectionVendors(admin, (await bare.getMetadata()).id)).not.toContain(VENDOR);
+  expect(await bare.listHooks()).toEqual([]);
   using theirs = await bare.getGadget((await gadgetIds(bare))[0]!);
   using theirFacet = await theirs.connectToGadget() as RpcStub<Watcher>;
   expect(await theirFacet.binding()).toBe("undefined");
+  await expect(theirFacet.subscribe()).rejects.toThrow();
+  expect(await bare.listHooks()).toEqual([]);
 
   // Another admin fills it with her own account: the connection is hers, the workspace is
-  // admins-only from that moment, and its calls are recorded as hers.
+  // admins-only from that moment, its calls are recorded as hers, and it has no hook until her
+  // instance of the gadget subscribes one itself.
   const graceAccount = await provisionAdminAccount(grace);
   const installed = suite.scope.use(await (await reconnect(suite, grace)).newWorkspaceFromBlueprint(
       blueprint.id, assignment(graceAccount.id)));
   const { id: installedId } = await installed.getMetadata();
   expect(await connectionVendors(admin, installedId)).toEqual([VENDOR]);
   await expect(installed.addCollaborator(outsider.name, "workspace")).rejects.toThrow(HAS_CONNECTION);
+  expect(await installed.listHooks()).toEqual([]);
 
   const [gadgetId] = await gadgetIds(installed);
   using hers = await installed.getGadget(gadgetId!);
@@ -787,29 +882,44 @@ it("publishes a blueprint that carries no connection", async () => {
   const [described] = await auditRecords(admin, { workspace: subject.id, method: "describe" });
   expect(described).toMatchObject({ admin: GRACE, via: "gatekeeper" });
   expect(described!.kind === "workspace" && described.agent).toEqual({ workspaceId: installedId });
+  expect(await herFacet.subscribe()).toBe("subscribed");
+  expect(await installed.listHooks()).toHaveLength(1);
 });
 
 // Last: each redeploy ends every session the cases above opened.
-it("refuses a demoted owner's connection everything, keeps it, and answers again once they are " +
-    "an admin again", async () => {
+it("refuses a demoted owner's connection everything, keeps what it had, and answers again " +
+    "once they are an admin again", async () => {
+  const reporter = await newMember(suite, "patient");
+  const report = await fileReport(reporter);
   const triage = await newWorkspace(suite, owner, "Triage, owner demoted");
   const connection = await addAdminConnection(triage.ws, ownerAccount.id);
+  const { gadget } = await buildGadget(owner, triage.ws,
+      { name: "WATCHER", server: WATCHER_GADGET, bindings: { ADMIN: connection.id } });
+  using facet = await gadget.connectToGadget() as RpcStub<Watcher>;
+  await facet.subscribe();
+  const rule = { gatekeeperId: connection.id, actionKind: ADMIN_AGENT_ACTIONS.issueReportStatus.kind };
+  await triage.ws.setAutoApprovedActionKind(rule.gatekeeperId, rule.actionKind);
+  const paused = await agentTurn(owner, triage.ws, `await attempt("note", () =>
+    env.ADMIN.addIssueReportEntry(${JSON.stringify(report.id)}, "Held while demoted", "admins"));`);
+  const [note] = await pendingActions(triage.ws, 1);
   const read = `await attempt("users", () => env.ADMIN.listUsers({ limit: 1 }));`;
   const notAdmin = createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin).message;
-  const first = await agentTurn(owner, triage.ws, read, { connection });
-  expect(await first.results())
-      .toEqual({ users: { value: expect.objectContaining({ users: [expect.anything()] }) } });
 
   await harness.redeployWorkshop(withAdmins([GRACE, HEIDI]));
   const demoted = await signedInAgain(suite, owner);
   expect(await demoted.api.getAdminApi()).toBeNull();
   expect(await adminAccounts(demoted.api)).toEqual([]);
   const ws = suite.scope.use(await demoted.api.openWorkspace(triage.id));
-  const cut = await agentTurn(demoted, ws, read, { chatId: first.chatId });
+  const cut = await agentTurn(demoted, ws, read);
   expect(await cut.results()).toEqual({ users: { error: notAdmin } });
-  // The connection is still the workspace's.
+  await expect(ws.approveAction(note!.id)).rejects.toThrow(notAdmin);
+  expect((await pendingActions(ws, 1)).map(action => action.id)).toEqual([note!.id]);
+  // The connection, its rule and its hook are still the workspace's.
+  expect(await ws.listAutoApprovedActionKinds()).toEqual([rule]);
+  expect(await ws.listHooks()).toHaveLength(1);
   const stillAdmin = await adminApiOf(suite, await signedInAgain(suite, grace));
   expect(await connectionVendors(stillAdmin, triage.id)).toEqual([VENDOR]);
+  expect((await stillAdmin.getIssueReport(report.id)).entries).toEqual([]);
 
   await harness.redeployWorkshop(withAdmins());
   const restored = await signedInAgain(suite, owner);
@@ -817,4 +927,9 @@ it("refuses a demoted owner's connection everything, keeps it, and answers again
   const back = await agentTurn(restored, again, read, { chatId: cut.chatId });
   expect(await back.results())
       .toEqual({ users: { value: expect.objectContaining({ users: [expect.anything()] }) } });
+  await again.approveAction(note!.id);
+  await waitFor("the paused turn to end", async () => paused.script.done() || null);
+  const restoredAdmin = await adminApiOf(suite, restored);
+  expect((await restoredAdmin.getIssueReport(report.id)).entries.map(entry => entry.text))
+      .toEqual(["Held while demoted"]);
 });

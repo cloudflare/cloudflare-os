@@ -1,6 +1,6 @@
 // Shared by the admin gatekeeper suites: the real gatekeeper booted beside the Workshop, three
 // deployment admins, and the steps every case repeats (turn the vendor on, add the connection to
-// a workspace, run an agent's turn whose code uses it).
+// a workspace, run an agent's turn whose code uses it, file a report as someone else).
 
 import { fileURLToPath, URL } from "node:url";
 import type { RpcStub } from "capnweb";
@@ -10,7 +10,8 @@ import {
   type ActionLogEntry, type AdminApi, type AdminAuditRecord, type AdminContentRequest,
   type AdminWriteRecord, type AiChatAuthorInfo, type AiModelConfig,
   type AuthenticatedApi, type CapsuleSpecifier, type GadgetClient, type GatekeeperClient,
-  type Overseer, type WorkpieceId,
+  type IssueReportEntry, type IssueReportInput, type Overseer, type OwnIssueReport,
+  type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { loadAllChatHistory } from "../src/agent-session.js";
@@ -376,12 +377,44 @@ export async function observationTitles(ws: RpcStub<Overseer>): Promise<string[]
 }
 
 /**
- * Time for the workspace to have applied an action it would apply unasked: the drain runs after
- * the submit returns. A case that asserts an action was NOT applied waits this long first.
+ * Time for a rule to apply an action it could apply: the drain runs after the submit returns. A
+ * case that asserts an action was NOT applied waits this long first.
  */
 export async function settle(ws: RpcStub<Overseer>): Promise<void> {
   await ws.listActions();
   await new Promise(resolve => setTimeout(resolve, 400));
+}
+
+/**
+ * Turns on a rule for each of the seven kinds, the three whose verdict is false included, as a member
+ * who enables everything would: the Workshop keeps a rule for any tag, and a rule alone applies
+ * nothing. Returns the tags the workspace then holds a rule for.
+ */
+export async function enableEveryRule(ws: RpcStub<Overseer>, connection: AdminConnection)
+    : Promise<string[]> {
+  for (const { kind } of Object.values(ADMIN_AGENT_ACTIONS)) {
+    await ws.setAutoApprovedActionKind(connection.id, kind);
+  }
+  return (await ws.listAutoApprovedActionKinds())
+      .filter(rule => rule.gatekeeperId === connection.id)
+      .map(rule => rule.actionKind.tag).toSorted();
+}
+
+/** Every tag of the gatekeeper's kinds, sorted: what enableEveryRule() returns. */
+export const EVERY_TAG = Object.values(TAGS).toSorted();
+
+/** Files a report as `user`. */
+export function fileReport(user: SuiteUser, input: Partial<IssueReportInput> = {})
+    : Promise<OwnIssueReport> {
+  return user.api.submitIssueReport({
+    text: `Something went wrong for ${user.name}`, priority: "medium", ...input,
+  });
+}
+
+/** The report's thread as its reporter reads it. */
+export async function reporterThread(user: SuiteUser, reportId: string)
+    : Promise<IssueReportEntry[]> {
+  return (await user.api.getIssueReport(reportId)).entries;
 }
 
 /** The audit log's records, newest first, as `admin` lists them. */
@@ -534,19 +567,79 @@ export async function buildGadget(
   return { id: await gadget.getId(), gadget };
 }
 
-/** What the Workshop answers for a connection whose owner removed their account of the vendor. */
-export const ACCOUNT_REMOVED = "This workspace's owner has removed the deployment admin account, " +
-    "so this connection reaches nothing. Add the account again from Connectors, or remove the " +
-    "connection.";
+/** A method of the admin binding that subscribes a hook. */
+export type HookMethod =
+    "subscribeIssueReported" | "subscribeInvestigationComplete" | "subscribeIssueReportChanged";
 
-/** The ids of the workspace's gadgets. */
-export async function gadgetIds(ws: RpcStub<Overseer>): Promise<WorkpieceId[]> {
-  const workpieces = new WorkpieceRecorder();
-  using stub = stubFor(workpieces);
-  using _subscription = await ws.subscribeToWorkpieces(stub);
-  await workpieces.loaded;
-  return [...workpieces.summaries.values()]
-      .flatMap(summary => summary.type === "gadget" ? [summary.id] : []);
+/**
+ * A gadget that subscribes the hooks of its admin binding it is told to, all with one stored
+ * callback, keeps every call it receives, and handles each event once, keyed by its id.
+ * `failNext()` makes its next call throw.
+ */
+const RECORDING_GADGET = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async [restore](params) {
+    if (params.type !== "hook") throw new TypeError("Unknown restore type: " + params.type);
+    return new Hook(this);
+  }
+  async subscribe(hooks) {
+    for (const hook of hooks) await this.env.ADMIN[hook](await this.ctx.restore({ type: "hook" }));
+  }
+  async failNext() { await this.ctx.storage.put("fail", true); }
+  async failed() {
+    return (await this.ctx.storage.get("fail")) ? null : (await this.ctx.storage.get("failed")) ?? null;
+  }
+  async calls() { return (await this.ctx.storage.get("calls")) ?? []; }
+  async handled() { return [...(await this.ctx.storage.list({ prefix: "handled:" })).values()]; }
+  async record(kind, event) {
+    if (await this.ctx.storage.get("fail")) {
+      await this.ctx.storage.put("failed", event);
+      await this.ctx.storage.delete("fail");
+      throw new Error("The callback failed this once.");
+    }
+    const calls = (await this.ctx.storage.get("calls")) ?? [];
+    await this.ctx.storage.put("calls", [...calls, { kind, event }]);
+    await this.ctx.storage.put("handled:" + event.eventId, event.reportId);
+  }
+}
+class Hook extends RpcTarget {
+  constructor(gadget) { super(); this.gadget = gadget; }
+  async issueReported(event) { await this.gadget.record("issueReported", event); }
+  async investigationComplete(event) { await this.gadget.record("investigationComplete", event); }
+  async issueReportChanged(event) { await this.gadget.record("issueReportChanged", event); }
+}`;
+
+/** One call RECORDING_GADGET's callback received: the method called, and the event it was given. */
+export type HookCall = { kind: string; event: Record<string, unknown> };
+
+/** What RECORDING_GADGET serves. */
+export type Recorder = {
+  subscribe(hooks: HookMethod[]): void; failNext(): void; calls(): HookCall[];
+  /** The event of the call that failed, once the failure failNext() asked for has happened. */
+  failed(): HookCall["event"] | null;
+  /** The report of each event the gadget handled, which it keys by the event's id. */
+  handled(): string[];
+};
+
+/** The calls the gadget has received, once there are `count` of them. */
+export const callsOf = (facet: RpcStub<Recorder>, count: number, timeoutMs?: number) =>
+  waitFor(`${count} call(s) of the callback`, async () => {
+    const received = await facet.calls();
+    return received.length >= count ? received : null;
+  }, timeoutMs);
+
+/**
+ * A RECORDING_GADGET built in `ws` by `user`, bound to `connection` and subscribed to `hooks`.
+ * Subscribing binds each hook disabled: nothing is delivered until a person enables it.
+ */
+export async function recordingGadget(
+    suite: Suite, user: SuiteUser, ws: RpcStub<Overseer>, connection: AdminConnection,
+    hooks: HookMethod[]): Promise<RpcStub<Recorder>> {
+  const { gadget } = await buildGadget(user, ws,
+      { name: "WATCHER", server: RECORDING_GADGET, bindings: { ADMIN: connection.id } });
+  const facet = suite.scope.use(await gadget.connectToGadget() as RpcStub<Recorder>);
+  await facet.subscribe(hooks);
+  return facet;
 }
 
 /**
@@ -563,4 +656,19 @@ export async function removeMember(
   await ws.removeCollaborator(profileId, []);
   await waitFor("the workspace restart", async () => restarted || null);
   return suite.scope.use(await (await reconnect(suite, owner)).openWorkspace(id));
+}
+
+/** What the Workshop answers for a connection whose owner removed their account of the vendor. */
+export const ACCOUNT_REMOVED = "This workspace's owner has removed the deployment admin account, " +
+    "so this connection reaches nothing. Add the account again from Connectors, or remove the " +
+    "connection.";
+
+/** The ids of the workspace's gadgets. */
+export async function gadgetIds(ws: RpcStub<Overseer>): Promise<WorkpieceId[]> {
+  const workpieces = new WorkpieceRecorder();
+  using stub = stubFor(workpieces);
+  using _subscription = await ws.subscribeToWorkpieces(stub);
+  await workpieces.loaded;
+  return [...workpieces.summaries.values()]
+      .flatMap(summary => summary.type === "gadget" ? [summary.id] : []);
 }
