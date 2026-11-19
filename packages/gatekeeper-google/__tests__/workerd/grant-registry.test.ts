@@ -399,6 +399,29 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-first"]);
   });
 
+  // Sparing a holder that could not be asked must not lose the last token that can revoke.
+  it("puts off a disconnect's revocation while a holder of the grant cannot be asked", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const idle = await connection(google, "idle", ada);
+    const first = await connection(google, "first", ada);
+    await idle.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-idle", expires: new Date(Date.now() - 1000)});
+    });
+    google.refreshFails = true;
+    await first.disconnect();
+    expect(google.revoked).toEqual([]);
+    await expect(first.refresh()).rejects.toThrow(/has been disconnected/);
+
+    // Asked again once Google answers, the idle one holds nothing: its refresh token was ended.
+    google.refreshFails = false;
+    google.refused.set("refresh-idle", null);
+    expect(await first.alarm()).toBe(true);
+    expect(google.revoked).toEqual(["refresh-first"]);
+    expect(await first.isEmpty()).toBe(true);
+  });
+
   it("keeps a revocation Google did not take through a second disconnect", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();

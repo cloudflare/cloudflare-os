@@ -289,15 +289,24 @@ type AccountSubject = { credentialsId: string; subject: string };
 // the key goes when a token mints again or other credentials are installed.
 const REFRESH_TOKEN_DEAD_KEY = "refreshTokenDead";
 
-// Storage key holding, once the account is disconnected, a revocation Google did not take, which
-// the alarm tries again: its refresh token, and the Google account whose registry it rechecks.
+// Storage key holding, once the account is disconnected, a revocation Google did not take, or one
+// put off because a holder of the grant could not be asked, which the alarm tries again: its
+// refresh token, and the Google account whose registry it rechecks.
 const PENDING_REVOCATION_KEY = "pendingRevocation";
 
 /** `attempts` counts the tries made so far, the disconnect's included. */
 type PendingRevocation = { refreshToken: string; subject?: string; attempts: number };
 
-/** Whether a disconnect revokes the grant at Google, and the Google account it went by, if known. */
-type GrantRelease = { revoke: boolean; subject?: string };
+/**
+ * Whether a disconnect revokes the grant at Google, and the Google account it went by, if known.
+ * `unsure`: not revoked because a holder could not be asked, which may hold nothing.
+ */
+type GrantRelease = { revoke: boolean; subject?: string; unsure?: true };
+
+/** The release a registry's answer about the Google account `subject`'s grant makes. */
+function released(answer: { last: boolean; unsure?: true }, subject: string): GrantRelease {
+  return { revoke: answer.last, subject, ...(answer.unsure ? { unsure: true } : {}) };
+}
 
 // How many times a revocation Google does not take is tried, with the wait before the second, which
 // doubles each time up to the last: about eight hours in all.
@@ -1079,7 +1088,7 @@ export class UserAccount extends DurableObject<Env> {
    * so a removal that does not reach the registry is made good the next time the registry asks.
    * Called with the credentials mutex held.
    */
-  async #forgetGrant(): Promise<{ last: boolean } | undefined> {
+  async #forgetGrant(): Promise<{ last: boolean; unsure?: true } | undefined> {
     let subject = this.#unrecordGrant();
     if (subject === undefined) return undefined;
     return await this.#grantRegistry(subject).remove(this.ctx.id.toString());
@@ -1124,8 +1133,7 @@ export class UserAccount extends DurableObject<Env> {
       if (recordedSubject !== undefined &&
           (recordedFor === installed || recordedSubject === known)) {
         subject = recordedSubject;
-        let recorded = await this.#forgetGrant();
-        return { revoke: recorded?.last ?? true, subject };
+        return released(await this.#forgetGrant() ?? { last: true }, subject);
       }
       // Otherwise it is a former listing, as a reconnect that could not read which account it
       // signed in as leaves, let go of without asking, whatever becomes of that: the grant held
@@ -1136,7 +1144,7 @@ export class UserAccount extends DurableObject<Env> {
         });
       });
       if (known !== undefined) {
-        return { revoke: (await this.#grantRegistry(known).remove(this.ctx.id.toString())).last, subject: known };
+        return released(await this.#grantRegistry(known).remove(this.ctx.id.toString()), known);
       }
       // Not known for these credentials: a sign-in, a connection older than the registry that
       // has not refreshed a token since, or one whose recording failed or has not finished, as
@@ -1147,7 +1155,7 @@ export class UserAccount extends DurableObject<Env> {
       if (!stored || stored.expires.valueOf() <= Date.now()) return { revoke: true };
       subject = (await getGoogleAccountProfile(
           stored.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
-      return { revoke: (await this.#grantRegistry(subject).remove(this.ctx.id.toString())).last, subject };
+      return released(await this.#grantRegistry(subject).remove(this.ctx.id.toString()), subject);
     } catch (error) {
       logger.warn("failed to release a Google grant; revoking it", {
         event: "google.grant.release.failed", error,
@@ -1486,7 +1494,8 @@ export class UserAccount extends DurableObject<Env> {
 
   /**
    * Disconnects the account: its credentials and everything else it stored are deleted, but for a
-   * revocation Google did not take, which is tried again later. The grant is revoked at Google only
+   * revocation Google did not take, or put off for a holder that could not be asked, which is tried
+   * again later. The grant is revoked at Google only
    * when no other connection of the same Google account holds it, since Google would end theirs
    * with it. While the grant lives on, so does an access token this
    * account already handed out: a gatekeeper object that memoized one goes on reaching Google
@@ -1501,6 +1510,14 @@ export class UserAccount extends DurableObject<Env> {
       let pending: PendingRevocation | undefined;
       if (refreshToken) {
         let release = await this.#releaseGrant();
+        // Not revoked for a holder that could not be asked, which may hold nothing: the grant's
+        // registry is asked again later, as for a revocation Google did not take.
+        if (release.unsure) {
+          pending = {
+            refreshToken, attempts: 1,
+            ...(release.subject === undefined ? {} : { subject: release.subject }),
+          };
+        }
         // A revocation Google does not take is tried again later, the disconnect done all the
         // same: left connected, the account would no longer count as a holder of the grant, and
         // another connection's disconnect, such as the Workshop dropping a connect it never
