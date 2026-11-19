@@ -17,6 +17,7 @@ import '../../styles.css'
 // side's strip scrolls the page sideways, and CodeMirror stops measuring the original side, which
 // is then off screen, as no split view ever is.
 beforeAll(() => page.viewport(1600, 1000))
+afterEach(() => page.viewport(1600, 1000))
 afterAll(() => page.viewport(414, 896))
 
 let root: Root | undefined
@@ -249,6 +250,8 @@ it('hides the strip when the whole file fits', async () => {
 
 it('lands on a change when wrapped lines make offscreen heights estimates', async () => {
   // Phone widths wrap the chat side, so heights below the viewport are guesses until measured.
+  // A phone's page, too, where the editor's desktop margins are off.
+  await page.viewport(414, 896)
   const original = Array.from({ length: 1_000 }, (_, i) =>
     i % 2 ? `const long${i + 1} = '${'wrapped text '.repeat(30)}'` : `const short${i + 1} = 1`)
   const modified = original.with(749, 'const line750 = 750 + changed')
