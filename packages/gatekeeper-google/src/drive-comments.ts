@@ -686,6 +686,11 @@ async function postNote(
     throw new ActionApplyError(`The suggestion was made, but its note was not posted: ${
       error.message}`, { cause: error });
   });
+  // Asked before the note's send is recorded, as before any send (see sendOnce).
+  await host.ready?.().catch((error: unknown) => {
+    throw new Error(`The suggestion was made, but its note was not posted: ${
+      error instanceof Error ? error.message : String(error)}`, { cause: error });
+  });
   host.attempts.put(id, { ...marked, noteAt: Date.now() });
   try {
     await host.docs.replyToSuggestion(payload.fileId, suggestionId, note);
@@ -1126,5 +1131,5 @@ export const DRIVE_COMMENT_DEFINITIONS = commentDefinitions<DriveWritesHost>(DRI
   docs: host.docs,
   writeRefusal: () => host.writeRefusal(),
   attempts: host.attempts,
-  ...(host.ready ? { ready: () => host.ready!() } : {}),
+  ready: async () => { await host.ready?.() },
 }));

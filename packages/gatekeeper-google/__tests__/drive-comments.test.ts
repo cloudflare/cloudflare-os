@@ -1557,6 +1557,22 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     expect(suggestionSummary(edit())).toBe("Replace: “May” with “June”");
   });
 
+  // The note is a send of its own, checked as any send is before it is recorded.
+  it("posts no note once its connection cannot send, though its suggestion was made", async () => {
+    let { docs, attempts, host, submit, apply } = harness();
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    let checks = 0;
+    host.ready = async () => {
+      if (checks++ > 0) throw new Error("This connection was disconnected.");
+    };
+    expect(await apply(id))
+      .toBe("The suggestion was made, but its note was not posted: This connection was disconnected.");
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+    expect(docs.replyToSuggestion).not.toHaveBeenCalled();
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1" });
+    expect(attempts.get(id)).not.toHaveProperty("noteAt");
+  });
+
   it("looks for a suggestion an unconfirmed send made before it sends again, and posts the note once", async () => {
     let run = harness();
     run.keepSuggestions({ loseFirst: "suggestion" });
