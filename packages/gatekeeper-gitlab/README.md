@@ -355,9 +355,3 @@ keeps from anyone below Maintainer, and the collaborator is below Maintainer (se
 [CI status](#ci-status)). A project owner can grant the collaborator Maintainer; otherwise share a
 workspace that has not read them.
 
-### "This binding already answers for 50 collaborators …"
-
-A binding created before subresource reporting can be shared with at most 50 collaborators at
-once: it records each one it admits, as the releases that checked every one of them on each
-job-log or test-report read did. Remove a collaborator from the workspace before adding another,
-or bind the project again: a binding created since has no cap.
