@@ -165,6 +165,10 @@ describe("ChatComposer", () => {
     strip()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
   // The strip dims the guess the recognizer may still revise.
   const guess = () => strip()?.querySelector("p .text-kumo-subtle")?.textContent;
+  const stopAndFinish = async (speech: TestSpeechRecognition) => {
+    await act(async () => voiceButton("Stop")!.click());
+    await act(async () => speech.dispatchEvent(new Event("end")));
+  };
 
   it("shows speech apart from the draft and adds it when the user stops", async () => {
     vi.stubGlobal("webkitSpeechRecognition", TestSpeechRecognition);
@@ -189,7 +193,14 @@ describe("ChatComposer", () => {
     expect(stripText()).toBe("a dashboard with filters");
 
     await act(async () => voiceButton("Stop")!.click());
-    expect(speech.abort).toHaveBeenCalledOnce();
+    expect(speech.stop).toHaveBeenCalledOnce();
+    // The browser finishes what it heard first, and the strip stays until it has.
+    expect(textarea.value).toBe("Build");
+    expect(stripText()).toBe("a dashboard with filters");
+    await act(async () => {
+      speech.report(1, first, { text: " with filters", final: true });
+      speech.dispatchEvent(new Event("end"));
+    });
     expect(textarea.value).toBe("Build a dashboard with filters");
     expect(strip()).toBeNull();
     expect(voiceButton("Start")).not.toBeNull();
@@ -239,7 +250,7 @@ describe("ChatComposer", () => {
     await typeText(textarea, "Create a dashboard");
     expect(speech.abort).not.toHaveBeenCalled();
     expect(stripText()).toBe("with filters");
-    await act(async () => voiceButton("Stop")!.click());
+    await stopAndFinish(speech);
     expect(textarea.value).toBe("Create a dashboard with filters");
   });
 
@@ -269,7 +280,7 @@ describe("ChatComposer", () => {
     });
     expect(textarea.value).toContain("Project");
     expect(testState.addToast).not.toHaveBeenCalled();
-    await act(async () => voiceButton("Stop")!.click());
+    await stopAndFinish(speech);
     expect(textarea.value.endsWith(" the plan")).toBe(true);
   });
 
@@ -340,6 +351,55 @@ describe("ChatComposer", () => {
     },
   );
 
+  it("adds the words at once, or drops them, while Stop is still finishing", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    const first = TestSpeechRecognition.current;
+    await act(async () => first.report(0, { text: "Quick note", final: true }));
+    await act(async () => voiceButton("Stop")!.click());
+    await act(async () => stripButton("Add to message")!.click());
+    expect(first.abort).toHaveBeenCalledOnce();
+    expect(textarea.value).toBe("Quick note");
+    await act(async () => first.dispatchEvent(new Event("end")));
+    expect(textarea.value).toBe("Quick note");
+
+    await act(async () => voiceButton("Start")!.click());
+    const second = TestSpeechRecognition.current;
+    await act(async () => second.report(0, { text: "never mind", final: true }));
+    await act(async () => voiceButton("Stop")!.click());
+    await pressEscape(textarea);
+    await act(async () => second.dispatchEvent(new Event("end")));
+    expect(textarea.value).toBe("Quick note");
+    expect(strip()).toBeNull();
+  });
+
+  it("keeps the space a finalized segment ends with before the guess", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.report(
+      0,
+      { text: "Open the ", final: true },
+      { text: "dashboard", final: false },
+    ));
+    expect(stripText()).toBe("Open the dashboard");
+    await act(async () => stripButton("Add to message")!.click());
+    expect(textarea.value).toBe("Open the dashboard");
+  });
+
+  it("returns focus to the draft when the strip's discard button takes itself away", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.report(0, { text: "scratch that", final: true }));
+    const discard = stripButton("Discard what you said")!;
+    discard.focus();
+    await act(async () => discard.click());
+    expect(strip()).toBeNull();
+    expect(document.activeElement).toBe(textarea);
+  });
+
   it("joins speech segments with the spacing the recognizer gives them", async () => {
     vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
     const textarea = await renderDictationComposer();
@@ -349,7 +409,7 @@ describe("ChatComposer", () => {
     await act(async () => speech.report(0, first));
     await act(async () => speech.report(1, first, { text: "予定を確認", final: true }));
     expect(stripText()).toBe("明日の予定を確認");
-    await act(async () => voiceButton("Stop")!.click());
+    await stopAndFinish(speech);
     expect(textarea.value).toBe("明日の予定を確認");
   });
 
@@ -447,7 +507,7 @@ describe("ChatComposer", () => {
     expect(DownloadableRecognition.install).toHaveBeenCalledOnce();
     const speech = TestSpeechRecognition.current;
     await act(async () => speech.report(0, { text: "Build a dashboard", final: true }));
-    await act(async () => voiceButton("Stop")!.click());
+    await stopAndFinish(speech);
     expect(textarea.value).toBe("Build a dashboard");
   });
 

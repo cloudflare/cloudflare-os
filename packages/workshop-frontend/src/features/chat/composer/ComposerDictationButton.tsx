@@ -7,6 +7,7 @@ const announcements: Record<DictationStatus, string> = {
   starting: "Starting voice typing…",
   downloading: "Downloading the voice typing language pack…",
   listening: "Listening… Stop adds what you said to your message, and Escape discards it.",
+  finishing: "Finishing voice typing…",
 };
 
 export const ComposerDictationButton = ({ status, disabled, onToggle, onCancel }: {
@@ -16,8 +17,10 @@ export const ComposerDictationButton = ({ status, disabled, onToggle, onCancel }
   onCancel: () => void;
 }) => {
   const listening = status === "listening";
-  const preparing = status === "starting" || status === "downloading";
-  const label = status === "idle" ? "Start voice typing" : "Stop voice typing";
+  const preparing = status === "starting" || status === "downloading" || status === "finishing";
+  const label = status === "idle"
+    ? "Start voice typing"
+    : status === "finishing" ? "Add what you said now" : "Stop voice typing";
 
   return (
     <>

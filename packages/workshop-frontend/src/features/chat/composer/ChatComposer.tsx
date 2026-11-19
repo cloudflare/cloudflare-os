@@ -375,11 +375,28 @@ export const ChatComposer = ({
   }, [activeUrl]);
 
   const isBlocked = !!blockedReason;
+  // Puts dictated words after the draft.
+  const addToDraft = (words: string) => {
+    if (!words) return;
+    recordDraftEdit();
+    setInputValue((draft) => appendDictatedText(draft, words));
+  };
+  // Back to the draft, with the caret at its end, for a user about to read or edit it.
+  const returnToDraft = () => requestAnimationFrame(() => {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) return;
+    textarea.focus();
+    moveCaret(textarea.value.length);
+  });
   const dictation = useComposerDictation({
     disabled: isBlocked || isSending,
     chatKey,
     draftStorageKey,
     seedNonce,
+    onFinish: (words) => {
+      addToDraft(words);
+      returnToDraft();
+    },
     onReady: () => toasts.add({
       title: "Voice typing is ready",
       description: "Select the microphone to start.",
@@ -388,27 +405,14 @@ export const ChatComposer = ({
     onError: (title) => toasts.add({ title, variant: "error" }),
   });
   const dictatedText = (dictation.words.final + dictation.words.interim).trim();
-  const showDictation = dictation.status === "listening" || dictatedText !== "";
+  const showDictation = dictation.status === "listening" || dictation.status === "finishing" ||
+    dictatedText !== "";
   const dictatedTextId = useId();
-  // Puts the words dictation shows after the draft, and returns the document that now holds them,
-  // since inputValueRef and the token refs catch up only on the next render.
+  // Adds the words dictation shows now, and returns the document that holds them, since
+  // inputValueRef and the token refs catch up only on the next render.
   const addDictation = () => {
-    const words = dictation.take();
-    if (words) {
-      recordDraftEdit();
-      setInputValue((draft) => appendDictatedText(draft, words));
-    }
+    addToDraft(dictation.take());
     return getDocumentSnapshot().document;
-  };
-  // The user adding the words is about to read or edit them, so put the caret after them.
-  const addDictationAndEdit = () => {
-    addDictation();
-    requestAnimationFrame(() => {
-      const textarea = composerTextareaRef.current;
-      if (!textarea) return;
-      textarea.focus();
-      moveCaret(textarea.value.length);
-    });
   };
 
   // A disabled textarea stops firing mouse events, so drop the hover state the token hit-testing
@@ -1006,8 +1010,15 @@ export const ChatComposer = ({
             textId={dictatedTextId}
             words={dictation.words}
             disabled={isBlocked || isSending}
-            onAdd={addDictationAndEdit}
-            onDiscard={dictation.discard}
+            onAdd={() => {
+              addDictation();
+              returnToDraft();
+            }}
+            onDiscard={() => {
+              dictation.discard();
+              // The strip, and the button that had focus, are gone.
+              composerTextareaRef.current?.focus();
+            }}
           />
         )}
 
@@ -1031,8 +1042,11 @@ export const ChatComposer = ({
                 status={dictation.status}
                 disabled={isBlocked || isSending}
                 onToggle={() => {
-                  if (dictation.status === "listening") addDictationAndEdit();
-                  else if (dictation.status === "idle") void dictation.start();
+                  if (dictation.status === "listening") dictation.finish();
+                  else if (dictation.status === "finishing") {
+                    addDictation();
+                    returnToDraft();
+                  } else if (dictation.status === "idle") void dictation.start();
                   else dictation.pause();
                 }}
                 onCancel={dictation.discard}
