@@ -13,6 +13,9 @@ import { DriveFiles, DOC_MIME as DRIVE_DOC_MIME, FOLDER_MIME } from "../drive-fi
 import { serveFakes, type ProviderFake } from "../slides-provider";
 import { GoogleDocEditSessionImpl } from "../../src/docs";
 
+/** The files of the Doc preview, by the paths its modules import one another by. */
+const PREVIEW_PATHS = ["client.js", "draw.js", "pages.js", "text.js", "ui/chrome.js"];
+
 /** Every write coordinate names the tab it applies to; tab bodies index independently. */
 type DocCoordinate = { tabId?: string };
 
@@ -2437,9 +2440,13 @@ describe("Google Doc pending changes", () => {
 
     expect(await hooks().describe("pending-preview")).toMatchObject({ hasPreview: true });
     let files = await hooks().previewUi("pending-preview");
-    expect(files.map(({ path }) => path)).toEqual(["client.js", "ui/chrome.js"]);
+    expect(files.map(({ path }) => path)).toEqual(PREVIEW_PATHS);
     expect(files[0].code).toContain("gadget.getPendingChanges(");
-    expect(files[0].code).toContain("from './ui/chrome.js'");
+    expect(files[0].code).toContain("gadget.readDrawing(");
+    // Each module it imports is one of the files beside it.
+    for (let [, path] of files.map(({ code }) => code).join("\n").matchAll(/ from '\.\/([^']+)'/g)) {
+      expect(PREVIEW_PATHS).toContain(path);
+    }
   });
 
   it("authorizes one read of the tab, like getContent()", async () => {

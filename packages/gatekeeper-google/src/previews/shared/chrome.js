@@ -22,7 +22,7 @@ styleSheet.textContent = `
     font: 11pt/1.5 Arial, Helvetica, sans-serif; }
   button { font: inherit; color: inherit; cursor: pointer; }
   button:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
-  :is(#nav button, #outline-toggle, .fold):active { transform: scale(.9); }
+  :is(.nav button, #outline-toggle, .fold):active { transform: scale(.9); }
   [hidden] { display: none !important; }
 
   /* What has just arrived, what is being pointed out, and what is still being read. */
@@ -49,17 +49,18 @@ styleSheet.textContent = `
   #stale { display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 9px; border-radius: 999px;
     background: var(--gone); color: var(--gone-ink); box-shadow: var(--float); white-space: nowrap;
     cursor: help; animation: arrive .2s ease-out; }
-  #nav { display: flex; align-items: center; gap: 2px; padding: 2px 3px 2px 12px;
+  .nav { display: flex; align-items: center; gap: 2px; padding: 2px 3px 2px 12px;
     border-radius: 999px; background: var(--page); box-shadow: var(--float); color: var(--ink);
     font-size: 12px; white-space: nowrap; animation: arrive .2s ease-out; }
-  #nav span { margin-right: 4px; color: var(--dim); }
+  .nav span { margin-right: 4px; color: var(--dim); }
   /* The dot that says something holds a change, or is one. */
   .touched::after, .tab.new .name::after { content: ''; flex: none; width: 6px;
     height: 6px; border-radius: 50%; background: var(--mark-ink); box-shadow: 0 0 0 3px var(--mark); }
   .touched::after, .tab.new .name::after { margin-right: 3px; }
-  #nav button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0;
-    border-radius: 50%; background: none; color: var(--dim); transition: background .12s, color .12s; }
-  #nav button:hover { background: var(--chip); color: var(--ink); }
+  .nav button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0;
+    border-radius: 50%; background: none; color: var(--dim); transition: background .12s, color .12s, opacity .12s; }
+  .nav button:hover { background: var(--chip); color: var(--ink); }
+  .nav button:disabled { opacity: .35; pointer-events: none; }
 
   /* The outline stands beside the page where there is room, and over it where there is not. */
   #outline-toggle { position: fixed; z-index: 3; top: 6px; left: 10px; display: grid;
@@ -237,6 +238,7 @@ export function foldArrow(key, label, folded, redraw) {
 // ---------------------------------------------------------------------------------------------
 // The status and the change navigator, which steps through the places the changes touch
 
+// The controls that float over the page's corner.
 const bar = document.body.appendChild(make('div'));
 bar.id = 'bar';
 const statusLine = bar.appendChild(make('span'));
@@ -247,12 +249,29 @@ staleNote.hidden = true;
 staleNote.setAttribute('role', 'status');
 staleNote.append(lineIcon('M10 7v4M10 14h.01M8.7 3.3L2.4 14a1.5 1.5 0 001.3 2.2h12.6a1.5 1.5 0 001.3-2.2L11.3 3.3a1.5 1.5 0 00-2.6 0z', 14));
 const staleLabel = staleNote.appendChild(make('span'));
-const nav = bar.appendChild(make('div'));
+
+/**
+ * A navigator: `label` and an arrow each way, which call `step(-1)` and `step(1)` and are named
+ * by `names`. What it steps through is for the group's own label to say, with how many there are.
+ */
+export function stepper(label, names, step) {
+  const group = make('div', 'nav');
+  group.setAttribute('role', 'group');
+  group.appendChild(make('span', '', label)).ariaHidden = 'true';
+  for (const [next, path] of ['M6 12l4-4.5 4 4.5', 'M6 8l4 4.5L14 8'].entries()) {
+    const button = group.appendChild(make('button'));
+    button.append(lineIcon(path, 16));
+    button.setAttribute('aria-label', names[next]);
+    button.addEventListener('click', () => step(next ? 1 : -1));
+  }
+  return group;
+}
+
+const nav = bar.appendChild(stepper('Changes', ['Previous change', 'Next change'], step => showChange(step)));
 nav.id = 'nav';
 nav.hidden = true;
-nav.setAttribute('role', 'group');
-// What the arrows step through. The group's own label says it, with how many there are.
-nav.appendChild(make('span', '', 'Changes')).ariaHidden = 'true';
+/** Puts a control of a preview's own among those that float over the page, before the navigator. */
+export const addControl = control => bar.insertBefore(control, nav);
 // Each place a change touches, as the elements drawn there, and the one the navigator is on.
 let stops = [];
 let stop = -1;
@@ -265,15 +284,6 @@ function showChange(step) {
     element.classList.add('here');
     flash(element);
   }
-}
-
-for (const [label, path, step] of [
-  ['Previous change', 'M6 12l4-4.5 4 4.5', -1], ['Next change', 'M6 8l4 4.5L14 8', 1],
-]) {
-  const button = nav.appendChild(make('button'));
-  button.append(lineIcon(path, 16));
-  button.setAttribute('aria-label', label);
-  button.addEventListener('click', () => showChange(step));
 }
 
 /**
@@ -304,15 +314,18 @@ export function setStops(places) {
 // ---------------------------------------------------------------------------------------------
 // Loading, failing and refreshing
 
+/** The outline of text still to come: lines of a paragraph, a gap, and another. */
+export const ghostLines = () => [38, 92, 100, 96, 71, 0, 100, 88, 94, 52].map(width => {
+  const line = make('div', width ? 'ghost' : '');
+  line.style.width = `${width}%`;
+  return line;
+});
+
 /** Fills the page with the outline of text still to come. */
 export function showLoading() {
   page.hidden = false;
   page.setAttribute('aria-busy', 'true');
-  page.replaceChildren(...[38, 92, 100, 96, 71, 0, 100, 88, 94, 52].map(width => {
-    const line = make('div', width ? 'ghost' : '');
-    line.style.width = `${width}%`;
-    return line;
-  }));
+  page.replaceChildren(...ghostLines());
 }
 
 /** Shows the page as drawn, after showLoading() or showError(). */

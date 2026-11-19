@@ -5,11 +5,14 @@ import { afterEach, expect, it } from 'vitest'
 import { prepareUiPage } from '@gadgets/workshop-shared/ui-page'
 import { DOCS_PREVIEW_BUNDLE } from './docsPreviewBundle'
 
-type Doc = { savedMarkdown: string, markdown?: string, styles?: object, tabs?: string[], titles?: string[] }
+type Doc = { savedMarkdown: string, markdown?: string, drawing?: object, tabs?: string[], titles?: string[] }
 
 let frame: HTMLIFrameElement | undefined
 
 afterEach(() => frame?.remove())
+
+// What ends every paragraph, so an empty one is a line high.
+const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
 
 /** Draws `doc` and resolves to the frame's document once the page has its blocks. */
 async function draw(doc: Doc) {
@@ -22,12 +25,13 @@ async function draw(doc: Doc) {
       const savedMarkdown = doc.tabs ? `${tabId}\n` : doc.savedMarkdown
       return { changes: [], markdown: savedMarkdown, ...doc, savedMarkdown }
     },
-    getStyles: async () => doc.styles ?? Promise.reject(new Error('no styles')),
-    listImages: async () => [],
+    // A tab with no drawing here is drawn from its Markdown, in Google's own styles.
+    readDrawing: async () => doc.drawing ?? Promise.reject(new Error('no drawing')),
+    readImage: async () => Promise.reject(new Error('no image')),
   }
   Object.assign(window, { docsPreviewGadget: gadget })
   frame = document.body.appendChild(document.createElement('iframe'))
-  frame.style.width = '900px'
+  Object.assign(frame.style, { width: '900px', height: '600px' })
   // Started as the gadget UI frame starts it: main(gadget) on the module's default export.
   const { entryUrl, importMap } = prepareUiPage(DOCS_PREVIEW_BUNDLE, '')
   frame.srcdoc = `<body><script type="importmap">${importMap}</script><script type="module">
@@ -36,106 +40,228 @@ async function draw(doc: Doc) {
   </script>`
   const page = () => frame!.contentDocument?.getElementById('page')
   await expect.poll(() => page() && !page()!.hasAttribute('aria-busy')).toBe(true)
+  const blocks = () => [...page()!.querySelectorAll<HTMLElement>('.col > *')]
   return {
     page: page()!,
-    blocks: () => [...page()!.children] as HTMLElement[],
+    blocks,
+    sheets: () => [...page()!.querySelectorAll<HTMLElement>('.sheet')],
     look: (element: Element) => frame!.contentWindow!.getComputedStyle(element),
     async refresh(next: Partial<Doc>) {
       Object.assign(doc, next)
       frame!.contentWindow!.postMessage({ type: 'refresh' }, '*')
     },
+    /** Shows another copy of the tab, by the name on its button. */
+    show(view: string) {
+      const buttons = [...frame!.contentDocument!.querySelectorAll<HTMLElement>('.views button')]
+      buttons.find(button => button.textContent === view)!.click()
+    },
   }
 }
 
+const POINT = 4 / 3
 const BLUE = 'rgb(74, 134, 232)'
-const STYLES = {
-  page: { width: 600, marginTop: 72, marginRight: 72, marginLeft: 72 },
-  named: {
-    NORMAL_TEXT: { fontFamily: 'Arial', fontSize: 11 },
-    TITLE: { fontFamily: 'Arial', fontSize: 26, color: '#4a86e8', alignment: 'center' },
-    HEADING_1: { fontFamily: 'Arial', fontSize: 20, bold: true },
-  },
-  paragraphs: [
-    { line: 0, style: 'TITLE' },
-    { line: 2, style: 'NORMAL_TEXT', runs: [{ start: 6, end: 10, look: 0 }] },
+const RED = 'rgb(136, 0, 0)'
+const ARIAL = { fontFamily: 'Arial', fontSize: 11, weight: 400 }
+// Places in the looks below.
+const [NORMAL, TITLE, CODE, HEADING, LARGE] = [0, 1, 2, 3, 4]
+
+/** A tab's drawing: a small page with `blocks` on it, in a handful of looks. */
+const drawing = (blocks: object[], more: object = {}) => ({
+  page: { width: 600, height: 400 },
+  sections: [{ margins: { top: 40, right: 50, bottom: 40, left: 50, header: 10, footer: 10 } }],
+  blocks, headers: {}, footers: {}, footnotes: {}, lists: {}, objects: {},
+  paragraphLooks: [{ lineSpacing: 1 }, { lineSpacing: 1, alignment: 'center' }, { lineSpacing: 1 }, { lineSpacing: 1, spaceAbove: 20 }],
+  textLooks: [
+    ARIAL,
+    { ...ARIAL, fontSize: 26, color: '#4a86e8' },
+    { ...ARIAL, fontFamily: 'Consolas', color: '#880000' },
+    { ...ARIAL, fontSize: 20, weight: 700 },
+    { ...ARIAL, fontSize: 24 },
   ],
-  runLooks: [{ fontFamily: 'Consolas', color: '#880000' }],
-  tables: [{
-    line: 4,
-    columns: [100, 300],
-    rows: [[
-      { background: '#d9ead3', look: { alignment: 'center' } },
-      { borders: { top: { width: 0, color: '#000000' } } },
-    ]],
-  }],
-}
+  named: {
+    NORMAL_TEXT: { paragraph: NORMAL, text: NORMAL },
+    TITLE: { paragraph: TITLE, text: TITLE },
+    HEADING_1: { paragraph: HEADING, text: HEADING },
+  },
+  ...more,
+})
+
+type Run = { text: string, look: number, at?: number }
+
+/** A paragraph of a drawing, on `line` of the saved Markdown: its runs, or text in one look. */
+const paragraph = (line: number | undefined, runs: string | Run[] | object[], more: { look?: number, style?: string, [more: string]: unknown } = {}) => ({
+  type: 'paragraph', line, style: 'NORMAL_TEXT', look: more.look ?? NORMAL, end: more.look ?? NORMAL,
+  runs: typeof runs === 'string' ? [{ text: runs, look: more.look ?? NORMAL, at: 0 }] : runs,
+  ...more,
+})
+
 const SAVED = [
   '# Report', '', 'plain code plain', '',
   '<table>', '  <tr>', '    <td><p>Head</p></td>', '    <td><p>Body</p></td>', '  </tr>', '</table>', '',
 ].join('\n')
+const CELL = { padding: [5, 5, 5, 5], borders: {} }
+const DRAWN = drawing([
+  paragraph(0, [{ text: 'Report', look: TITLE, at: 2 }], { style: 'TITLE', look: TITLE }),
+  paragraph(2, [{ text: 'plain ', look: NORMAL, at: 0 }, { text: 'code', look: CODE, at: 6 }, { text: ' plain', look: NORMAL, at: 10 }]),
+  {
+    type: 'table', line: 4, columns: [100, 300],
+    rows: [{ cells: [
+      { ...CELL, column: 0, background: '#d9ead3', blocks: [paragraph(undefined, 'Head', { look: TITLE })] },
+      { ...CELL, column: 1, borders: { bottom: { width: 1, color: '#000000' } }, blocks: [paragraph(undefined, 'Body')] },
+    ] }],
+  },
+])
 
-it('draws paragraphs, runs and table cells in the styles the session gives', async () => {
-  const { blocks, look } = await draw({ savedMarkdown: SAVED, styles: STYLES })
-  const [title, paragraph, table] = blocks()
+/** The run of `block` that reads `words`. */
+const run = (block: Element, words: string) =>
+  [...block.querySelectorAll('span, ins, del, a')].find(found => text(found).trim() === words)!
 
-  // The title is a first-level heading in Markdown, told apart by its named style.
-  expect(look(title).color).toBe(BLUE)
+it('draws each paragraph, run and table cell as the tab\'s drawing sets it', async () => {
+  const { blocks, look } = await draw({ savedMarkdown: SAVED, drawing: DRAWN })
+  const [title, body, table] = blocks()
+
+  // The title is a first-level heading in Markdown, and is set as the title it is.
+  expect(title.getAttribute('aria-level')).toBe('1')
   expect(title.style.textAlign).toBe('center')
-  expect(title.style.fontSize).toBe('26pt')
+  expect(look(run(title, 'Report')).color).toBe(BLUE)
+  expect(parseFloat(look(run(title, 'Report')).fontSize)).toBeCloseTo(26 * POINT, 1)
 
-  const run = [...paragraph.querySelectorAll('span')].find(span => span.textContent === 'code')!
-  expect(look(run).color).toBe('rgb(136, 0, 0)')
-  expect(look(run).fontFamily).toContain('Consolas')
-  expect(paragraph.textContent).toBe('plain code plain')
+  expect(look(run(body, 'code')).color).toBe(RED)
+  expect(look(run(body, 'code')).fontFamily).toContain('Consolas')
+  expect(text(body)).toBe('plain code plain')
 
-  const [head, body] = table.querySelectorAll('td')
+  const [head, cell] = table.querySelectorAll('td')
   expect(look(head).backgroundColor).toBe('rgb(217, 234, 211)')
-  expect(look(head).textAlign).toBe('center')
-  expect(look(body).borderTopStyle).toBe('none')
-  expect([...table.querySelectorAll('col')].map(column => column.style.width)).toEqual(['25%', '75%'])
+  expect(look(head.firstElementChild!).textAlign).toBe('center')
+  expect([look(cell).borderTopStyle, look(cell).borderBottomStyle]).toEqual(['none', 'solid'])
+  expect([...table.querySelectorAll('col')].map(column => column.style.width)).toEqual(['100pt', '300pt'])
 })
 
-it('keeps a run\'s look on the words an edit keeps, and gives an added block its kind\'s style', async () => {
-  const { blocks, look, refresh } = await draw({ savedMarkdown: SAVED, styles: STYLES })
+it('shows the tab as its changes leave it, as it is saved, or with each change marked in place', async () => {
+  const { blocks, look, refresh, show } = await draw({ savedMarkdown: SAVED, drawing: DRAWN })
+  const views = frame!.contentDocument!.querySelector<HTMLElement>('.views')!
+  // A tab with nothing pending has one copy.
+  expect(views.hidden).toBe(true)
 
   await refresh({ markdown: SAVED.replace('plain code plain', 'plainer code plain\n\n# Added') })
   await expect.poll(() => blocks().some(block => block.classList.contains('changed'))).toBe(true)
+  expect(views.hidden).toBe(false)
+  const changed = () => blocks().find(block => block.classList.contains('changed'))!
 
-  const changed = blocks().find(block => block.classList.contains('changed'))!
-  expect(changed.querySelector('del')!.textContent).toBe('plain')
-  expect(changed.querySelector('ins')!.textContent).toBe('plainer')
-  const run = [...changed.querySelectorAll('span')].find(span => span.textContent === 'code')!
-  expect(look(run).color).toBe('rgb(136, 0, 0)')
-
+  // As it will be: what was removed takes no room, and is a mark where it was.
+  expect(text(changed())).toBe('plainer code plain')
+  expect(changed().querySelector('ins')!.textContent).toBe('plainer')
+  expect(changed().querySelector('.tick')!.getAttribute('aria-label')).toBe('Removed here: “plain”')
+  // A word the edit keeps stays in its run's look.
+  expect(look(run(changed(), 'code')).color).toBe(RED)
   // A new heading has no saved paragraph to take after, so it is a Heading 1, not the title.
   const added = blocks().find(block => block.classList.contains('added'))!
-  expect(added.textContent).toBe('Added')
-  expect(added.style.fontSize).toBe('20pt')
-  expect(look(added).fontWeight).toBe('700')
+  expect(text(added)).toBe('Added')
+  expect(parseFloat(look(run(added, 'Added')).fontSize)).toBeCloseTo(20 * POINT, 1)
+  expect(look(run(added, 'Added')).fontWeight).toBe('700')
   expect(added.style.textAlign).toBe('')
+
+  show('Inline')
+  expect([changed().querySelector('del')!.textContent, changed().querySelector('ins')!.textContent]).toEqual(['plain', 'plainer'])
+  expect(changed().querySelector('.tick')).toBeNull()
+
+  show('As saved')
+  expect(text(changed())).toBe('plain code plain')
+  expect(changed().querySelector('.tick')!.getAttribute('aria-label')).toBe('Added here: “plainer”')
+  // The heading still to be added is a mark between the blocks it will stand between.
+  expect(blocks().map(block => block.className)).toContain('omit came')
+  expect(blocks().some(block => block.classList.contains('added'))).toBe(false)
 })
 
-it('draws no paragraph\'s own look when a style is on a line that does not read as its kind', async () => {
-  const styles = { ...STYLES, paragraphs: [{ line: 0, style: 'NORMAL_TEXT' }, STYLES.paragraphs[1]] }
-  const { blocks } = await draw({ savedMarkdown: SAVED, styles })
-  const [title, paragraph] = blocks()
+it('sets the body on as many sheets as it fills, each under the header with its page\'s number', async () => {
+  const lines = Array.from({ length: 40 }, (_, line) => `Line ${line}`)
+  const header = paragraph(undefined, [{ text: 'Page ', look: NORMAL }, { field: 'pageNumber', look: NORMAL }, { text: ' of ', look: NORMAL }, { field: 'pageCount', look: NORMAL }])
+  const paged = drawing(lines.map((line, index) => paragraph(index * 2, line)), {
+    sections: [{ margins: { top: 40, right: 50, bottom: 40, left: 50, header: 10, footer: 10 }, header: 'h', footer: 'f' }],
+    headers: { h: [header] },
+    footers: { f: [paragraph(undefined, 'Foot')] },
+  })
+  const { sheets, blocks } = await draw({ savedMarkdown: `${lines.join('\n\n')}\n`, drawing: paged })
 
-  expect(title.style.fontSize).toBe('20pt')
-  expect(paragraph.querySelectorAll('span')).toHaveLength(0)
+  expect(sheets().length).toBeGreaterThan(1)
+  expect(sheets().map(sheet => text(sheet.querySelector('.head')!))).toEqual(
+    sheets().map((_, index) => `Page ${index + 1} of ${sheets().length}`))
+  // Every line is on one sheet, in order, inside the margins that sheet keeps.
+  expect(blocks().map(text)).toEqual(lines)
+  for (const sheet of sheets()) {
+    const { top, bottom, height } = sheet.getBoundingClientRect()
+    expect(height).toBeCloseTo(400 * POINT, 0)
+    const body = [...sheet.querySelectorAll('.col > *')].map(block => block.getBoundingClientRect())
+    expect(Math.min(...body.map(box => box.top))).toBeGreaterThanOrEqual(top + 40 * POINT - 1)
+    expect(Math.max(...body.map(box => box.bottom))).toBeLessThanOrEqual(bottom - 40 * POINT + 1)
+    const foot = sheet.querySelector('.foot')!.getBoundingClientRect()
+    expect(foot.bottom).toBeCloseTo(bottom - 10 * POINT, 0)
+  }
 })
 
-it('draws the document in its own styles when the session gives none', async () => {
-  const { blocks } = await draw({ savedMarkdown: SAVED })
+it('keeps the images of a paragraph a pending change edits, and wraps its text round one tethered to it', async () => {
+  const savedMarkdown = '[Image] Beside [Image] the picture\n'
+  const pictured = drawing([paragraph(0, [
+    { text: 'Beside ', look: NORMAL, at: 8 }, { object: 'inline', look: NORMAL }, { text: ' the picture', look: NORMAL, at: 22 },
+  ], { objects: ['tethered'] })], {
+    objects: {
+      tethered: { width: 100, height: 60, readable: true, placed: { left: 0, top: 0, layout: 'wrap' } },
+      inline: { width: 20, height: 10, readable: true },
+    },
+  })
+  const { blocks, look } = await draw({ savedMarkdown, markdown: savedMarkdown.replace('picture', 'photograph'), drawing: pictured })
+  const [edited] = blocks()
 
-  expect(blocks().map(block => block.tagName)).toEqual(['H1', 'P', 'DIV'])
-  expect(blocks()[0].getAttribute('style')).toBeNull()
+  expect(edited.classList.contains('changed')).toBe(true)
+  expect([...edited.querySelectorAll<HTMLElement>('.obj')].map(box => box.dataset.object)).toEqual(['tethered', 'inline'])
+  expect(text(edited)).toBe('Beside  the photograph')
+  const [tethered] = edited.querySelectorAll('.obj')
+  expect(look(tethered).float).toBe('left')
+  // The text starts beside the image, not under it.
+  const words = run(edited, 'Beside').getBoundingClientRect()
+  expect(words.left).toBeGreaterThanOrEqual(tethered.getBoundingClientRect().right - 1)
+  expect(words.top).toBeLessThan(tethered.getBoundingClientRect().bottom)
+})
+
+it('draws a tab from its Markdown when its drawing is of another document', async () => {
+  // The first line is a heading in the Markdown and plain text in the drawing.
+  const other = { ...DRAWN, blocks: [paragraph(0, 'Report'), ...DRAWN.blocks.slice(1)] }
+  const { blocks, look } = await draw({ savedMarkdown: SAVED, drawing: other })
+  const [title, body] = blocks()
+
+  expect(parseFloat(look(run(title, 'Report')).fontSize)).toBeCloseTo(20 * POINT, 1)
+  expect(look(run(body, 'plain code plain')).color).not.toBe(RED)
+})
+
+it('draws a tab in Google\'s own styles when its drawing cannot be read', async () => {
+  const { blocks, look } = await draw({ savedMarkdown: '# Report\n\nWords\n' })
+  const [title, body] = blocks()
+
+  expect(title.getAttribute('aria-level')).toBe('1')
+  expect(parseFloat(look(run(title, 'Report')).fontSize)).toBeCloseTo(20 * POINT, 1)
+  expect(parseFloat(look(run(body, 'Words')).fontSize)).toBeCloseTo(11 * POINT, 1)
 })
 
 it('draws one empty paragraph for each the tab has, at its start and end as between blocks', async () => {
   // As the converter writes an empty paragraph first, between two paragraphs, and last.
   const { blocks } = await draw({ savedMarkdown: '\n\nFirst\n\n\n\nSecond\n\n\n' })
 
-  expect(blocks().map(block => block.textContent)).toEqual(['', 'First', '', 'Second', ''])
+  expect(blocks().map(text)).toEqual(['', 'First', '', 'Second', ''])
+  // An empty paragraph is as high as a line of text.
+  const heights = blocks().map(block => Math.round(block.getBoundingClientRect().height))
+  expect(new Set(heights).size).toBe(1)
+})
+
+it('leaves out a paragraph an empty one is written over, where the changes are shown made', async () => {
+  const { blocks, show } = await draw({
+    savedMarkdown: 'First\n\nGoing\n\nLast\n',
+    markdown: 'First\n\n\n\nLast\n',
+    drawing: drawing([paragraph(0, 'First'), paragraph(2, 'Going'), paragraph(4, 'Last')]),
+  })
+  expect(blocks().map(text).filter(Boolean)).toEqual(['First', 'Last'])
+
+  show('As saved')
+  expect(blocks().map(text).filter(Boolean)).toEqual(['First', 'Going', 'Last'])
 })
 
 it('marks what was put in beside a word, not the word, and draws a line break a paragraph holds', async () => {
@@ -149,15 +275,62 @@ it('marks what was put in beside a word, not the word, and draws a line break a 
   await expect.poll(() => blocks().some(block => block.classList.contains('changed'))).toBe(true)
 
   const changed = blocks().find(block => block.classList.contains('changed'))!
-  expect(changed.querySelector('del')).toBeNull()
+  expect(changed.querySelector('.tick')).toBeNull()
   expect([...changed.querySelectorAll('ins')].map(node => node.textContent).join('')).toBe(', and every embedder,')
 })
 
-it('draws a page break as the gap between two sheets', async () => {
-  const { page } = await draw({ savedMarkdown: 'Before\n\n\\[Page break\\]\n\nAfter\n' })
+it('starts a new sheet at a page break, one a pending change adds as one the tab has', async () => {
+  const savedMarkdown = 'Before\n\n\\[Page break\\]\n\nAfter\n'
+  const { sheets, refresh, show } = await draw({ savedMarkdown })
+  const pages = () => sheets().map(sheet => text(sheet.querySelector('.area')!))
+  expect(pages()).toEqual(['Before', 'After'])
 
-  expect(page.querySelectorAll('.break')).toHaveLength(1)
-  expect(page.textContent).toBe('BeforeAfter')
+  await refresh({ markdown: `${savedMarkdown}\n\\[Page break\\]\n\nLast\n` })
+  await expect.poll(pages).toEqual(['Before', 'After', 'Last'])
+  // As saved, the tab ends where it did.
+  show('As saved')
+  expect(pages()).toEqual(['Before', 'After'])
+  // With each change in place there is one sheet, as long as the tab.
+  show('Inline')
+  expect(sheets()).toHaveLength(1)
+  expect(sheets()[0].querySelectorAll('.pagebreak')).toHaveLength(2)
+})
+
+it('steps from page to page with a navigator at the foot of the frame, where there are pages', async () => {
+  const savedMarkdown = 'One\n\n\\[Page break\\]\n\nTwo\n\n\\[Page break\\]\n\nThree\n'
+  const { sheets, refresh, show } = await draw({ savedMarkdown })
+  const pager = frame!.contentDocument!.getElementById('pager')!
+  const [previous, next] = [...pager.querySelectorAll('button')]
+  const reading = () => pager.getAttribute('aria-label')
+  const top = (sheet: number) => Math.round(sheets()[sheet].getBoundingClientRect().top)
+
+  expect(pager.hidden).toBe(false)
+  // What the pill shows, and what it is called.
+  expect(pager.textContent).toBe('Page1 / 3')
+  expect(reading()).toBe('Page 1 of 3')
+  expect([previous.disabled, next.disabled]).toEqual([true, false])
+  // Once the sheets have settled where they arrive.
+  await expect.poll(() => top(0)).toBe(52)
+
+  // Two steps go two pages on, though the first is still under way.
+  next.click()
+  next.click()
+  await expect.poll(reading).toBe('Page 3 of 3')
+  expect(pager.querySelector('.count')!.textContent).toBe('3 / 3')
+  // The page stepped to is at the head of the frame, clear of the controls there.
+  await expect.poll(() => top(2)).toBe(52)
+  expect([previous.disabled, next.disabled]).toEqual([false, true])
+  previous.click()
+  await expect.poll(reading).toBe('Page 2 of 3')
+  await expect.poll(() => top(1)).toBe(52)
+
+  // Read change by change the tab is one sheet, which has no pages to step through.
+  await refresh({ markdown: `${savedMarkdown}\nMore\n` })
+  await expect.poll(() => sheets()[2]?.textContent).toContain('More')
+  show('Inline')
+  expect(pager.hidden).toBe(true)
+  show('With changes')
+  expect(pager.hidden).toBe(false)
 })
 
 it('lists the tabs again on a refresh, and leaves a tab that has gone for the first', async () => {
@@ -167,12 +340,12 @@ it('lists the tabs again on a refresh, and leaves a tab that has gone for the fi
   expect(buttons().map(button => [button.title, getComputedStyle(button, '::after').content])).toEqual(
     [['Tab 1', 'none'], ['Tab 2 (new, not yet added)', '""']])
   buttons()[1].click()
-  await expect.poll(() => page.textContent).toBe('pending-tab-1')
+  await expect.poll(() => text(page)).toBe('pending-tab-1')
 
   // The tab's add was discarded.
   await refresh({ tabs: ['t.0'] })
 
-  await expect.poll(() => page.textContent).toBe('t.0')
+  await expect.poll(() => text(page)).toBe('t.0')
   expect(buttons()).toHaveLength(0)
   expect(frame!.contentDocument!.getElementById('error')).toBeNull()
 })
@@ -181,11 +354,11 @@ it('stays on an added tab once Google has it, though another tab has its title',
   const titles = ['Notes', 'Notes']
   const { page, refresh } = await draw({ savedMarkdown: '', tabs: ['t.0', 'pending-tab-1'], titles })
   frame!.contentDocument!.querySelectorAll<HTMLElement>('#outline .tab .name')[1].click()
-  await expect.poll(() => page.textContent).toBe('pending-tab-1')
+  await expect.poll(() => text(page)).toBe('pending-tab-1')
 
   await refresh({ tabs: ['t.0', 't.1'], titles })
 
-  await expect.poll(() => page.textContent).toBe('t.1')
+  await expect.poll(() => text(page)).toBe('t.1')
 })
 
 it('lists the headings in an outline, marks a section that holds a change, and scrolls to one', async () => {
@@ -204,8 +377,9 @@ it('lists the headings in an outline, marks a section that holds a change, and s
   expect(entries().map(entry => entry.parentElement!.style.paddingLeft)).toEqual(['0px', '12px', '0px'])
 
   entries()[1].click()
-  const details = page.querySelector('h2')!
-  await expect.poll(() => Math.round(details.getBoundingClientRect().top)).toBeLessThan(40)
+  const details = page.querySelector('[aria-level="2"]')!
+  // Clear of the controls that float over the top of the page.
+  await expect.poll(() => Math.round(details.getBoundingClientRect().top)).toBeLessThan(60)
   expect(outline.hidden).toBe(true)
 })
 
@@ -235,7 +409,7 @@ it('folds a heading\'s own headings away from its arrow, and still goes to it fr
   expect(scrolled()).toBe(before)
 
   rows()[2].querySelector<HTMLElement>('.entry')!.click()
-  const last = page.querySelectorAll('h1')[1]
+  const last = page.querySelectorAll('[aria-level="1"]')[1]
   await expect.poll(() => Math.round(last.getBoundingClientRect().top)).toBeLessThan(400)
   arrows()[0]!.click()
   expect(rows().map(row => row.hidden)).toEqual([false, false, false])
@@ -244,13 +418,11 @@ it('folds a heading\'s own headings away from its arrow, and still goes to it fr
 it('follows a link to a heading of the document, and makes one to the web a link to a new tab', async () => {
   const filler = Array.from({ length: 60 }, (_, line) => `Line ${line}`).join('\n\n')
   const savedMarkdown = `# Intro\n\nSee [the end](#heading=h.last) or [the web](https://example.com/) or [a mark](?tab=t.0#bookmark=id.x) or [a slip](#heading=%).\n\n${filler}\n\n# Last\n\nEnd\n`
-  const paragraphs = [
-    { line: 0, style: 'HEADING_1', headingId: 'h.intro' },
-    { line: savedMarkdown.split('\n').indexOf('# Last'), style: 'HEADING_1', headingId: 'h.last' },
-  ]
-  const { page, look } = await draw({ savedMarkdown, styles: { named: {}, paragraphs, runLooks: [], tables: [] } })
+  const heading = (name: string, headingId: string) => paragraph(savedMarkdown.split('\n').indexOf(`# ${name}`),
+    [{ text: name, look: HEADING, at: 2 }], { style: 'HEADING_1', look: HEADING, headingId })
+  const { page, look } = await draw({ savedMarkdown, drawing: drawing([heading('Intro', 'h.intro'), heading('Last', 'h.last')]) })
   const [inside, outside, bookmark, slip] = [...page.querySelectorAll<HTMLElement>('.link')]
-  const last = page.querySelectorAll('h1')[1]
+  const last = page.querySelectorAll('[aria-level="1"]')[1]
   const top = () => Math.round(last.getBoundingClientRect().top)
   const far = top()
 
@@ -269,50 +441,52 @@ it('follows a link to a heading of the document, and makes one to the web a link
   // A link followed in place is in reach of the keyboard, as the web link is by its address.
   expect([inside, bookmark].map(link => ['tabindex', 'role'].map(name => link.getAttribute(name)))).toEqual([['0', 'link'], [null, null]])
   inside.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
-  await expect.poll(top).toBeLessThan(40)
+  // The heading is near the foot of the last sheet, which scrolls no further.
+  await expect.poll(top).toBeLessThan(400)
 })
 
 it('keeps an asterisk that stands alone as the document\'s text, and a run\'s look to its own characters', async () => {
   const savedMarkdown = 'Calculate 2 * 3 * 4 and *stress* it\n\nPrice: (USD)100\n'
-  const styles = {
-    named: {}, runLooks: [{ color: '#880000' }], tables: [],
-    paragraphs: [{ line: 0, style: 'NORMAL_TEXT' }, { line: 2, style: 'NORMAL_TEXT', runs: [{ start: 8, end: 11, look: 0 }] }],
-  }
-  const { blocks, look } = await draw({ savedMarkdown, styles })
+  const priced = drawing([paragraph(2, [
+    { text: 'Price: (', look: NORMAL, at: 0 }, { text: 'USD', look: CODE, at: 8 }, { text: ')100', look: NORMAL, at: 11 },
+  ])])
+  const { blocks, look } = await draw({ savedMarkdown, markdown: savedMarkdown.replace('Price', 'Cost'), drawing: priced })
   const [sum, price] = blocks()
+  const runs = (block: Element) => [...block.querySelectorAll('span, ins')]
 
-  expect(sum.textContent).toBe('Calculate 2 * 3 * 4 and stress it')
-  expect([...sum.querySelectorAll('.i')].map(run => run.textContent)).toEqual(['stress'])
+  expect(text(sum)).toBe('Calculate 2 * 3 * 4 and stress it')
+  expect(runs(sum).filter(found => look(found).fontStyle === 'italic').map(text)).toEqual(['stress'])
   // The run starts and ends inside a word, which takes its look for those characters alone.
-  expect(price.textContent).toBe('Price: (USD)100')
-  expect([...price.querySelectorAll('span')].filter(run => look(run).color === 'rgb(136, 0, 0)').map(run => run.textContent))
-    .toEqual(['USD'])
+  expect(text(price)).toBe('Cost: (USD)100')
+  expect(runs(price).filter(found => look(found).color === RED).map(text)).toEqual(['USD'])
 })
 
 it('draws a word a pending change writes as the text before it is drawn', async () => {
   const savedMarkdown = 'Big title here\n\nSmall then loud\n\nYour Company\n'
-  const styles = {
-    named: {}, runLooks: [{ fontSize: 24 }], tables: [],
-    paragraphs: [
-      { line: 0, style: 'NORMAL_TEXT', runs: [{ start: 0, end: 14, look: 0 }] },
-      { line: 2, style: 'NORMAL_TEXT', runs: [{ start: 11, end: 15, look: 0 }] },
-      { line: 4, style: 'NORMAL_TEXT', runs: [{ start: 0, end: 12, look: 0 }] },
-    ],
-  }
+  const sized = drawing([
+    paragraph(0, [{ text: 'Big title here', look: LARGE, at: 0 }]),
+    paragraph(2, [{ text: 'Small then ', look: NORMAL, at: 0 }, { text: 'loud', look: LARGE, at: 11 }]),
+    paragraph(4, [{ text: 'Your Company', look: LARGE, at: 0 }]),
+  ])
   const markdown = savedMarkdown.replace('title', 'heading').replace('loud', 'quiet').replace('Your Company', 'Fresh Words')
-  const { blocks, look } = await draw({ savedMarkdown, markdown, styles })
-  const size = (block: Element, text: string) =>
-    look([...block.querySelectorAll('span, ins, del')].find(run => run.textContent?.trim() === text)!).fontSize
-  const [title, line, , fresh] = blocks()
+  const { blocks, look, show } = await draw({ savedMarkdown, markdown, drawing: sized })
+  const size = (block: Element, words: string) => look(run(block, words)).fontSize
+  const [title, line, fresh] = blocks()
 
   // The write removes the old text first, so the new takes the look of what is left before it.
   expect(size(title, 'heading')).toBe(size(title, 'Big'))
-  expect(size(line, 'loud')).toBe(size(title, 'Big'))
-  expect(size(line, 'quiet')).toBe(look(line).fontSize)
+  expect(size(line, 'quiet')).toBe(size(line, 'Small then'))
   expect(size(line, 'quiet')).not.toBe(size(title, 'Big'))
   // A paragraph written over whole is that paragraph still, and draws the new text as it began.
-  expect(fresh.textContent).toBe('Fresh Words')
+  expect(blocks()).toHaveLength(3)
+  expect(text(fresh)).toBe('Fresh Words')
   expect(size(fresh, 'Fresh Words')).toBe(size(title, 'Big'))
+  const large = size(title, 'Big')
+
+  // What it wrote over is drawn as Google has it, where every change is read in place.
+  show('Inline')
+  expect(blocks().map(text)).toEqual(['Big titleheading here', 'Small then loudquiet', 'Your Company', 'Fresh Words'])
+  expect(size(blocks()[1], 'loud')).toBe(large)
 })
 
 it('opens and closes an outline nobody chose as the frame gains and loses the room for it', async () => {
@@ -352,9 +526,10 @@ it('makes no link of a web address that is in a pending change', async () => {
 it('draws a table a pending change writes as the text it is, and one the document holds as a table', async () => {
   const held = ['<table>', '  <tr>', '    <td><p>Held</p></td>', '  </tr>', '</table>'].join('\n')
   const written = held.replace('Held', 'Written')
-  const { page } = await draw({ savedMarkdown: `${held}\n`, markdown: `${held}\n\n${written}\n` })
+  const tabled = drawing([{ type: 'table', line: 0, columns: [200], rows: [{ cells: [{ ...CELL, column: 0, blocks: [paragraph(undefined, 'Held')] }] }] }])
+  const { page } = await draw({ savedMarkdown: `${held}\n`, markdown: `${held}\n\n${written}\n`, drawing: tabled })
 
   // The write inserts table markup as plain text, so that is what applying it leaves.
-  expect([...page.querySelectorAll('td')].map(cell => cell.textContent)).toEqual(['Held'])
-  expect(page.textContent).toContain('<td><p>Written</p></td>')
+  expect([...page.querySelectorAll('td')].map(text)).toEqual(['Held'])
+  expect(text(page)).toContain('<td><p>Written</p></td>')
 })
