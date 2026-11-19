@@ -10,6 +10,9 @@
   initial-value: 20px;
 }
 
+/* `--composer-slot` is the room the end slot takes, with the gap before the buttons: set from its
+   measured width (`Composer`), and nothing without one. */
+
 /* One clock drives the shell, text reveal and curved path. The horizontal cubic
    and vertical arc steer the visible field around the buttons in both directions. */
 .composer {
@@ -19,7 +22,7 @@
   /* Where the inline message starts: clear of the button at the start. */
   --composer-start: calc(var(--composer-button) + 12px);
   /* Where it ends: clear of the buttons at the end (4px apart), and 8px more. */
-  --composer-end: calc(var(--composer-button) + 14px);
+  --composer-end: calc(var(--composer-button) + 14px + var(--composer-slot, 0px));
   --composer-sweep: calc(var(--composer-open) * var(--composer-open) * var(--composer-open));
   --composer-lift: calc(32px * var(--composer-open) * (1 - var(--composer-open)));
   /* On one line it is as tall as a button and the room around it. Opened, the field is over the
@@ -36,7 +39,7 @@
 }
 
 .composer[data-two-actions] {
-  --composer-end: calc(2 * var(--composer-button) + 18px);
+  --composer-end: calc(2 * var(--composer-button) + 18px + var(--composer-slot, 0px));
 }
 
 .composer-editor {

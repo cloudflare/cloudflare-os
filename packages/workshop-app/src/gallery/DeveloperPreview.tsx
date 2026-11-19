@@ -1,16 +1,19 @@
 import { useState } from 'react'
 import { ChatListItem } from '@/blocks/ChatListItem'
+import { ChatStart } from '@/blocks/ChatStart'
 import { ComposerStatusLine } from '@/blocks/ComposerStatusLine'
 import { DeveloperIds } from '@/blocks/DeveloperIds'
 import { messageInfo } from '@/blocks/messageInfo'
 import { WorkspaceCost } from '@/blocks/WorkspaceCost'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Markdown } from '@/components/Markdown'
+import { Select } from '@/components/Select'
 import { useOpen } from './previewState'
 import { Section } from './Section'
 
 const MODELS = [
   { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+  { id: 'kimi', label: 'Kimi K2.7 Code (Workers AI) with a name long enough to be cut' },
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
   { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
 ]
@@ -41,6 +44,20 @@ const StatusLineDemo = ({ own, bare, problem }: { own?: boolean; bare?: boolean;
 
 const REPLY = messageInfo({ sender: 'Claude Sonnet 5.5', sentAt: new Date(2026, 10, 12, 15, 30), workedFor: 125_000 })
 
+/** A new chat with the model chosen before the send button, as developer mode has it. */
+const StartDemo = () => {
+  const [model, setModel] = useState(MODELS[1].id)
+  return (
+    <div className="flex h-96 w-[34rem] max-w-full flex-col rounded-3xl bg-kumo-tint">
+      <ChatStart
+        greeting="Hello Ada, what should we do today?"
+        onSend={async () => true}
+        endSlot={<span className="flex max-w-40 min-w-0 max-sm:max-w-28"><Select aria-label="Model" value={model} options={MODELS} onValueChange={setModel} compact={{ align: 'end', medium: true }} /></span>}
+      />
+    </div>
+  )
+}
+
 /** What developer mode shows: the line under the composer, a workspace's cost, chats' costs, and a message's details. */
 export const DeveloperPreview = () => {
   const open = useOpen()
@@ -51,6 +68,9 @@ export const DeveloperPreview = () => {
         <StatusLineDemo own />
         <StatusLineDemo bare />
         <StatusLineDemo problem="Couldn’t change the model: the workspace couldn’t be reached." />
+      </Section>
+      <Section title="ChatStart with the model before the send button (the message makes room for it)">
+        <StartDemo />
       </Section>
       <Section title="WorkspaceCost (in a workspace’s header; exact when pointed at), and ChatListItem with what the chat cost">
         <WorkspaceCost cost={12.3456} />

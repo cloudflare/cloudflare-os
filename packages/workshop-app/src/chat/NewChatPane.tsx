@@ -18,6 +18,7 @@ import { withCapsules } from './capsules'
 import { handOverFirstMessage, type FirstMessage } from './firstMessage'
 import { orderCommands, skillCommandOf } from './slashCommands'
 import { startWithFormat, type StartFormat } from './startWithFormat'
+import { ComposerModelPicker } from './ComposerModelPicker'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 
 // As the message will be drawn: the skill or the format as what it is, then what was written.
@@ -147,6 +148,8 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
     }
   }
 
+  // In developer mode, the model before the send button.
+  const modelPicker = <ComposerModelPicker modelId={model.status === 'ready' ? model.id : undefined} onProblem={setProblem} />
   const composerProblem = problem === undefined ? undefined : { message: problem, onDismiss: () => setProblem(undefined) }
 
   // Once something is said, it is shown as the conversation it becomes; if it could not be sent,
@@ -154,7 +157,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} autoFocus />
+        <ChatStart ref={composer} greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} commandsLoading={commandsLoading} format={format} problem={composerProblem} workspace={workspace} addActions={addActions} endSlot={modelPicker} autoFocus />
         {connectsIn !== undefined && <AddConnection workspaceId={connectsIn} open={adding} onOpenChange={setAdding} to="this chat" onAdded={onAdded} />}
       </StartLayout>
     )
@@ -162,7 +165,7 @@ export const NewChatPane = ({ header, sendingHeader = header, greeting, format, 
 
   return (
     // The message being sent has its format in it, so the composer under it starts with none.
-    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} />}>
+    <ChatLayout header={sendingHeader} composer={<Composer ref={composer} onSend={send} commands={commands} commandsLoading={commandsLoading} format={pending ? undefined : format} problem={composerProblem} addActions={addActions} endSlot={modelPicker} />}>
       {/* In the conversation's own list, so it is where the conversation this becomes will be. */}
       <MessageList messages={[]}>
         {pending && <UserMessage {...shownOf(pending)} />}

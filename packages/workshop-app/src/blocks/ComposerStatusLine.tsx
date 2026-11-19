@@ -69,7 +69,7 @@ export const ComposerStatusLine = ({ model, context, cost, problem }: ComposerSt
   return (
     <div className="flex flex-col gap-0.5 px-1 text-xs text-kumo-subtle">
       <div className="flex min-h-7 items-center justify-between gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 max-w-[60%]">
           {model && model.options.length > 0 && (
             <Select aria-label="Model" value={model.value} options={model.options} onValueChange={model.onChange} searchable={model.options.length > 8} compact={{ align: 'start', medium: true }} />
           )}

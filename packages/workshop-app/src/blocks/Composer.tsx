@@ -1,4 +1,4 @@
-import { useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from 'react'
+import { useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
@@ -76,6 +76,11 @@ export type ComposerProps = {
    * connect them, adding each as a connection through the handle (`addConnection`).
    */
   onPasteLinks?: (urls: string[]) => void
+  /**
+   * Something small before the send button, such as a choice of model: the message makes room for
+   * it as it is on its one line. Left out, or drawing nothing, it takes no room.
+   */
+  endSlot?: ReactNode
   /** Expand the add menu in place over its button. */
   addMenuInPlace?: boolean
   /** Put the cursor in the message once it is shown. */
@@ -93,7 +98,7 @@ const MAX_ROWS = 6
 const COMPOSER_BUTTON = 'size-(--composer-button) [&>svg]:size-[calc(var(--composer-button)*0.47)]'
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading, reply, format, problem, stop, addActions, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading, reply, format, problem, stop, addActions, endSlot, onPasteLinks, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
@@ -120,10 +125,29 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
   const { isActive: isFileDragActive, ...dropHandlers } = useComposerAttachmentDrop(addDraftFiles)
   const formRef = useRef<HTMLFormElement>(null)
   const editorRef = useRef<HTMLDivElement>(null)
+  const slotRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sizingRef = useRef<HTMLTextAreaElement>(null)
   const measureRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  // The message ends where the end slot begins, whatever width it is drawn at.
+  const hasSlot = endSlot !== undefined
+  useLayoutEffect(() => {
+    const field = editorRef.current
+    const slot = slotRef.current
+    if (!field || !slot) return
+    const place = () => {
+      const { width } = slot.getBoundingClientRect()
+      field.style.setProperty('--composer-slot', width > 0 ? `${Math.ceil(width) + 4}px` : '0px')
+    }
+    place()
+    const watching = new ResizeObserver(place)
+    watching.observe(slot)
+    return () => {
+      watching.disconnect()
+      field.style.removeProperty('--composer-slot')
+    }
+  }, [hasSlot])
   const trimmed = text.trim()
   // A command goes on its own, with words alone, once the agent has finished.
   const filesRefused = !!command && attachments.length > 0
@@ -431,7 +455,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], commandsLoading,
               onUpload={() => fileInputRef.current?.click()}
             />
           </div>
-          <div className="absolute right-1.5 bottom-1.5 flex gap-1">
+          <div className="absolute right-1.5 bottom-1.5 flex items-center gap-1">
+            {hasSlot && <div ref={slotRef} className="flex min-w-0">{endSlot}</div>}
             {stop && (
               <Button
                 // Beside Send it steps back, so Enter's button is the one that stands out.
