@@ -60,6 +60,8 @@ function fakeGoogle() {
     blocked: new Set<string>(),
     /** Whether Google answers, about which account an access token belongs to, that it is no good. */
     profileUnauthorized: false,
+    /** Access tokens Google rejects before their recorded expiry, at user info. */
+    rejected: new Set<string>(),
     /** Whether Google's token endpoint fails refreshes, as in an outage. */
     refreshFails: false,
     /** Whether Google holds back its answers to refreshes. */
@@ -100,7 +102,7 @@ function fakeGoogle() {
         while (google.profileHeld) await new Promise(resolve => setTimeout(resolve, 1));
         google.profilesWaiting--;
       }
-      if (google.profileUnauthorized) return json({error: "invalid_token"}, 401);
+      if (google.profileUnauthorized || google.rejected.has(token)) return json({error: "invalid_token"}, 401);
       const sub = google.subjects.get(token);
       return sub === undefined ? json({error: "invalid_token"}, 500) : json({sub});
     }
@@ -330,6 +332,19 @@ describe("Google grants shared by several connections", () => {
     const {ada} = googleAccounts();
     await connection(google, "recorded", ada);
     const older = await storedAccount(google, "older", ada);
+    await older.disconnect();
+    expect(google.revoked).toEqual([]);
+  });
+
+  it("refreshes a stored token Google rejects early to read whose an unrecorded connection is", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    await connection(google, "recorded", ada);
+    const older = await storedAccount(google, "older", ada);
+    await older.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-stale", expires: new Date(Date.now() + 3_600_000)});
+    });
+    google.rejected.add("access-stale");
     await older.disconnect();
     expect(google.revoked).toEqual([]);
   });

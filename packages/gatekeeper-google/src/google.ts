@@ -1092,30 +1092,39 @@ export class UserAccount extends DurableObject<Env> {
 
   /**
    * Which Google account `refreshToken`'s credentials belong to, read with the stored access token
-   * or, once it has expired, one a refresh mints and drops; null when Google refuses the refresh
-   * token for good, which is then recorded as dead while it is still installed. Without the
-   * credentials mutex, as holdsGrantIn() is. Throws when Google cannot say.
+   * or, once it has expired or Google rejects it, one a refresh mints and drops; null when Google
+   * refuses the refresh token for good, which is then recorded as dead while it is still
+   * installed. Without the credentials mutex, as holdsGrantIn() is. Throws when Google cannot say.
    */
   async #readAccountSubject(refreshToken: string): Promise<string | null> {
-    let stored = this.ctx.storage.kv.get<GoogleAccessToken>("accessToken");
-    let token = stored !== undefined && stored.expires.valueOf() > Date.now() ? stored.token : undefined;
-    if (token === undefined) {
-      let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+    let kv = this.ctx.storage.kv;
+    let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+    // A refresh token Google refuses for good holds no grant: null, below.
+    let dead = false;
+    let mint = async () => {
       if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
       let result = await getAccessToken(refreshToken, clientId, clientSecret,
           AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
-      if (!result.ok) {
-        if (result.reason !== "revoked" || isCloudSessionExpiry(result)) {
-          throw new Error("Google would not refresh these credentials to say whose they are.");
-        }
-        let kv = this.ctx.storage.kv;
-        if (kv.get<string>("refreshToken") === refreshToken) kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
-        return null;
-      }
-      token = result.token.token;
+      if (result.ok) return result.token.token;
+      dead = result.reason === "revoked" && !isCloudSessionExpiry(result);
+      throw new Error("Google would not refresh these credentials to say whose they are.");
+    };
+    let stored = kv.get<GoogleAccessToken>("accessToken");
+    try {
+      let token = stored !== undefined && stored.expires.valueOf() > Date.now()
+          ? stored.token : await mint();
+      // A token Google stops accepting before its recorded expiry gets one refresh, as any
+      // request's does (see fetchWithAuthRetry).
+      return (await getGoogleAccountProfile(
+          async opts => opts?.forceRefresh ? await mint() : token,
+          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
+    } catch (error) {
+      if (!dead) throw error;
+      if (kv.get<string>("refreshToken") === refreshToken) kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+      return null;
     }
-    return (await getGoogleAccountProfile(token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
   }
+
 
   /**
    * Whether Google still honours `refreshToken`, asked with a refresh whose token is dropped.
