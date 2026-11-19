@@ -473,6 +473,52 @@ When a provider does not fit, step down one rung at a time:
 4. A native `RefreshCredentials<Grant>`, keeping every other leaf. A non-RFC revocation, such as a
    JSON body or a `DELETE`, stays hand-written.
 
+## Upstream calls
+
+`defineUpstream` in `./upstream` is the one client a gatekeeper sends its provider calls through.
+Each attempt has a timeout, 30 seconds by default. A request that is safe to send twice (a GET or
+HEAD, or one marked `idempotent`) is sent again after a 429, 502, 503 or 504, a network failure or
+a timeout. Every attempt is written as one point of the
+[subservice metrics](../observability/README.md#subservice-calls). `Upstream`'s JSDoc holds the
+exact rules. The module keeps its running tally in `AsyncLocalStorage`, so a Worker that imports it
+needs the `nodejs_als` (or `nodejs_compat`) compatibility flag.
+
+```ts
+const API = "https://api.vendor.example/v1";
+// The paths this gatekeeper calls. Its requests are named `threads.list`, `threads.get` and
+// `threads.modify`, whatever id a path holds.
+const ROUTES: Routes = [[`${API}/`, { threads: { [ID]: { modify: "POST" } } }]];
+const upstream = defineUpstream({ vendorId: "vendor", routes: ROUTES });
+
+async function vendorJson<T>(token: string, path: string, init?: UpstreamRequestInit): Promise<T> {
+  return upstream.read(`${API}${path}`, {
+    ...init,
+    authorize: () => ({ Authorization: `Bearer ${token}` }),
+  }, async response => {
+    if (!response.ok) throw new HttpError(response.status, "Vendor rejected the request.");
+    return JSON.parse(await readTextCapped(response)) as T;
+  });
+}
+```
+
+- `request` returns the answer and counts it by its status. `read` parses the answer first and
+  counts it afterwards, so its `answer` argument can count an error inside a 200, by convention as
+  an `error` with the reason `api`. `call` counts a call that is not an HTTP request, such as an
+  RPC binding's method. Wrap an operation that makes many requests in `summed`: its calls are
+  written as one point per kind when it ends, which keeps a long listing under the 250 points
+  Analytics Engine takes from one invocation.
+- Every string of a point is a closed word: a literal in the gatekeeper's code or a key of its
+  route tree (`./route-operation`), never a URL, host, id, header or message. A request the tree
+  does not name is counted under its HTTP method, or under `OTHER` where its method is not one of
+  HTTP's own. Keep a table of the gatekeeper's requests and their names in a test, and assert
+  there that `unreachedRouteEnds(ROUTES, rows)` is empty, so that the tree and the table cannot
+  drift apart.
+- The kit writes these words itself: an HTTP method or `OTHER` as the operation of a request
+  that has no name, the reasons `rate` (a 429, counted as `refused`), `http`, `timeout`,
+  `network`, `parse` and `exception`, and, from an `OAuthClient` given the `upstream`, the reason
+  `api` and the operations `token.exchange`, `token.refresh`, `token.revoke`, `token.client` and
+  `token.request`.
+
 ## Storage
 
 ### Name the narrowest surface

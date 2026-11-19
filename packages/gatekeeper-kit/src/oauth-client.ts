@@ -4,6 +4,8 @@ import { base64url } from "jose";
 import { CredentialsExpiredError, type RefreshCredentials } from "./credentials";
 import { requirePositiveInt } from "./positive-int";
 import { readTextCapped } from "./response-body";
+// Types alone: a Worker that passes no `upstream` loads neither that module nor what it needs.
+import type { CallAnswer, Upstream } from "./upstream";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024;
@@ -23,6 +25,13 @@ const RESERVED_AUTHORIZE_KEYS = [
   "code_challenge_method",
 ] as const;
 const RESERVED_HEADERS = ["authorization", "content-type"] as const;
+
+// The operation a `request("token")` is counted as, by its grant type.
+const GRANT_OPERATIONS: ReadonlyMap<string, string> = new Map([
+  ["authorization_code", "token.exchange"],
+  ["refresh_token", "token.refresh"],
+  ["client_credentials", "token.client"],
+]);
 
 /**
  * A PKCE (RFC 7636) verifier and its S256 challenge. Field names mirror the wire parameters, and
@@ -101,6 +110,24 @@ export type OAuthClientOptions = {
    * service binding as `binding.fetch.bind(binding)`.
    */
   fetch?: (input: string, init: RequestInit) => Promise<Response>;
+  /**
+   * The gatekeeper's upstream client (`defineUpstream` in `./upstream`). Given one, every request
+   * is sent with its `fetch` and counted as one subservice call; `fetch` may not be given beside
+   * it. The request, its timeout, and what a method returns or throws are those of a client
+   * without it: the upstream's timeout, retry and redirect options do not apply.
+   *
+   * The operation is `token.exchange` for `exchangeCode`, `token.refresh` for `refresh`, and
+   * `token.revoke` for `revoke` and `request("revocation")`. A `request("token")` is named by its
+   * `grant_type`: `token.exchange` for `authorization_code`, `token.refresh` for `refresh_token`,
+   * `token.client` for `client_credentials`, and `token.request` for any other. A 2xx that
+   * carries an `error` and no access token, or no access token where the method requires one, is
+   * counted as an `error` with the reason `api`. A 2xx whose body is not read to its end is
+   * counted as `Upstream.read` counts one: an `error` with the reason `parse` where the body is
+   * too large and `timeout` where the timeout cut the reading off, and not at all where the
+   * caller's signal did. Any other answer is counted by its status, and a request that was not
+   * answered as `Upstream` counts one.
+   */
+  upstream?: Upstream;
 };
 
 /** A parsed token response. Plain, structured-clone-safe data; absent fields stay absent. */
@@ -182,7 +209,8 @@ export function isInvalidGrant(error: unknown): boolean {
  * times out. A non-2xx response, or a 2xx body carrying an `error` and no non-empty
  * `access_token`, throws `OAuthResponseError`; network, abort, timeout, and `ResponseTooLargeError`
  * failures propagate unchanged. The client holds no state between calls and classifies nothing as
- * grant death: `oauthRefresh` does.
+ * grant death: `oauthRefresh` does. Given an `upstream`, every request is also counted as a
+ * subservice call (see `OAuthClientOptions.upstream`).
  *
  * @example
  * ```ts
@@ -208,6 +236,7 @@ export class OAuthClient {
   readonly #timeoutMs: number;
   readonly #maxResponseBytes: number;
   readonly #fetch: OAuthClientOptions["fetch"];
+  readonly #upstream: Upstream | undefined;
 
   /**
    * Creates a client, validating its configuration up front.
@@ -238,7 +267,11 @@ export class OAuthClient {
     this.#timeoutMs = requirePositiveInt("timeoutMs", options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     this.#maxResponseBytes = requirePositiveInt(
       "maxResponseBytes", options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES);
+    if (options.upstream !== undefined && options.fetch !== undefined) {
+      throw new Error("Pass upstream or fetch, not both: an upstream sends with its own fetch.");
+    }
     this.#fetch = options.fetch;
+    this.#upstream = options.upstream;
   }
 
   /**
@@ -296,7 +329,7 @@ export class OAuthClient {
       redirect_uri: request.redirectUri,
     });
     if (request.codeVerifier !== undefined) body.code_verifier = request.codeVerifier;
-    return this.#token(body, request.signal);
+    return this.#token("token.exchange", body, request.signal);
   }
 
   /**
@@ -317,7 +350,7 @@ export class OAuthClient {
     });
     const scopes = request.scopes?.length ? [...request.scopes] : undefined;
     if (scopes) body.scope = scopes.join(this.#scopeSeparator ?? " ");
-    const tokens = await this.#token(body, request.signal);
+    const tokens = await this.#token("token.refresh", body, request.signal);
     if (scopes && tokens.scopes === undefined) tokens.scopes = scopes;
     return tokens;
   }
@@ -335,7 +368,7 @@ export class OAuthClient {
   }): Promise<void> {
     const body = this.#body(request.params, { token: request.token });
     if (request.tokenTypeHint !== undefined) body.token_type_hint = request.tokenTypeHint;
-    await this.#post(this.#revocation(), body, request.signal);
+    await this.#post(this.#revocation(), body, "token.revoke", request.signal);
   }
 
   /**
@@ -353,7 +386,12 @@ export class OAuthClient {
     options: { signal?: AbortSignal } = {},
   ): Promise<Record<string, unknown>> {
     const url = endpoint === "token" ? this.#tokenEndpoint : this.#revocation();
-    return (await this.#post(url, { ...params }, options.signal)).body;
+    // The grant type is read from the copy, which is an object whatever `params` is.
+    const body = { ...params };
+    const operation = endpoint === "token"
+      ? GRANT_OPERATIONS.get(body.grant_type) ?? "token.request"
+      : "token.revoke";
+    return (await this.#post(url, body, operation, options.signal)).body;
   }
 
   #revocation(): string {
@@ -368,10 +406,11 @@ export class OAuthClient {
     return { ...params, ...fields };
   }
 
-  async #token(body: Record<string, string>, signal?: AbortSignal): Promise<OAuthTokens> {
+  async #token(
+    operation: string, body: Record<string, string>, signal?: AbortSignal,
+  ): Promise<OAuthTokens> {
     const requestedAt = Date.now();
-    const response = await this.#post(this.#tokenEndpoint, body, signal);
-    if (!hasAccessToken(response.body)) throw new OAuthResponseError(this.#label, response.status);
+    const response = await this.#post(this.#tokenEndpoint, body, operation, signal, true);
     return parseTokenResponse(response.body, {
       requestedAt,
       defaultExpiresIn: this.#defaultExpiresIn,
@@ -379,8 +418,11 @@ export class OAuthClient {
     });
   }
 
+  // Sends one request. `operation` is what an upstream counts it as, and `tokenRequired` makes
+  // a 2xx with no access token a rejection.
   async #post(
-    url: string, body: Record<string, string>, signal?: AbortSignal,
+    url: string, body: Record<string, string>, operation: string, signal?: AbortSignal,
+    tokenRequired: boolean = false,
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const headers = new Headers({ Accept: "application/json" });
     for (const [key, value] of Object.entries(this.#headers)) headers.set(key, value);
@@ -399,31 +441,64 @@ export class OAuthClient {
       headers.set("Content-Type", "application/x-www-form-urlencoded");
       encoded = new URLSearchParams(body);
     }
-    const timeout = AbortSignal.timeout(this.#timeoutMs);
-    const fetch = this.#fetch ?? globalThis.fetch;
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: encoded,
-      redirect: "manual",
-      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
-    });
+    // The one request of both paths, which differ only in who sends it and whether it is counted.
+    const request: RequestInit & { redirect: "manual" } = {
+      method: "POST", headers, body: encoded, redirect: "manual",
+    };
+    const read = (response: Response) => this.#read(response, tokenRequired);
+    const upstream = this.#upstream;
+    let answer: Answer;
+    if (upstream === undefined) {
+      const timeout = AbortSignal.timeout(this.#timeoutMs);
+      const fetch = this.#fetch ?? globalThis.fetch;
+      answer = await read(await fetch(url, {
+        ...request,
+        signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+      }));
+    } else {
+      answer = await upstream.read(url, {
+        ...request, signal, operation, timeoutMs: this.#timeoutMs, retry: null,
+      }, read, countedAs);
+    }
+    if (answer.rejection !== undefined) throw answer.rejection;
+    return answer;
+  }
 
+  // Reads one answer: its body, and the rejection it is. A rejection is returned, not thrown, so
+  // that an upstream counts the answer by what was read. What reading the body throws propagates.
+  async #read(response: Response, tokenRequired: boolean): Promise<Answer> {
     const { status } = response;
     if (status >= 300 && status < 400) {
       await response.body?.cancel().catch(() => undefined);
-      throw new OAuthResponseError(this.#label, status);
+      return { status, body: {}, rejection: new OAuthResponseError(this.#label, status) };
     }
-    const parsed = jsonObject(await readTextCapped(response, this.#maxResponseBytes));
-    const error = typeof parsed.error === "string" ? parsed.error : undefined;
-    const description = typeof parsed.error_description === "string"
-      ? parsed.error_description
+    const body = jsonObject(await readTextCapped(response, this.#maxResponseBytes));
+    const error = typeof body.error === "string" ? body.error : undefined;
+    const description = typeof body.error_description === "string"
+      ? body.error_description
       : undefined;
-    if (!response.ok || (error !== undefined && !hasAccessToken(parsed))) {
-      throw new OAuthResponseError(this.#label, status, error, description);
+    if (!response.ok || (error !== undefined && !hasAccessToken(body))) {
+      return {
+        status, body, rejection: new OAuthResponseError(this.#label, status, error, description),
+      };
     }
-    return { status, body: parsed };
+    if (tokenRequired && !hasAccessToken(body)) {
+      return { status, body, rejection: new OAuthResponseError(this.#label, status) };
+    }
+    return { status, body };
   }
+}
+
+// One answer of an endpoint: its status and JSON body, and the error it is thrown as where the
+// endpoint rejected the request or gave no access token to a method that requires one.
+type Answer = { status: number; body: Record<string, unknown>; rejection?: OAuthResponseError };
+
+// How an upstream counts an answer its status does not describe: a rejection inside a 2xx is an
+// error of the API. Any other is counted by its status.
+function countedAs(answer: Answer): CallAnswer | undefined {
+  return answer.rejection !== undefined && answer.status >= 200 && answer.status < 300
+    ? { outcome: "error", reason: "api" }
+    : undefined;
 }
 
 /**
