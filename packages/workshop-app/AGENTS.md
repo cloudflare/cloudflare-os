@@ -589,6 +589,20 @@ is `secondary` in that colour, for what cannot be taken back. Switches are the a
 `Switch`, fully round as the buttons are, in Kumo's blue with a thumb that is white in either
 theme: Kumo's is a squircle whose thumb cannot be reshaped from outside. Use it for any new one.
 
+Search has an entry for each connection as this page lists them
+(`connections/connectionEntries.tsx`, plain and tested), from the list the sidebar has already
+read: "Connections › Google", the accounts first, then the services not yet connected, each saying
+at its end Connected, Needs sign-in or Not connected, and doing the one thing in one step. A
+service with an account is listed as that account (the accounts of one service are told apart by
+whose they are), since its dialog is also where another is added. Each is found by the service's
+name, what it is for, whose the account is and the word for what choosing it does ("manage" on an
+account, "add" on a service), so "manage" lists what is connected and "add google" finds Google
+only while it is not. Choosing one goes to `/connections?open=<connection key>`, which shows that
+connection's dialog (Manage for an account, Connect for a service) once the list is complete
+(`useConnections`' `complete`, as what is added as it is comes in a request of its own) and forgets
+the address, in place. Nothing is connected or changed from search itself, as what is given access
+to is chosen in the dialog.
+
 A service is signed in to in a window of its own (`connections/connectHandoff.ts`, plain and
 tested, ported from the old app without the native app's path; see `docs/connect-handoff.md`). The
 window is opened empty, disowned and given the flow's nonce before it is sent to the service, and
@@ -628,6 +642,66 @@ A part is a file in `settings/` (`ProfileSettings`, `ModelSettings`, …) made o
   turns: give a text one `ON_SETTINGS_CARD` and an icon alone `LIST_ACTION`. A row's buttons that
   show only while it is pointed at are in `CardAction`, which keeps their room, so that nothing
   beside them moves.
+
+### Settings from search
+
+⌘K (`routes/-AppSearch.tsx`, over the `SearchDialog` block) is a control panel as well as a way to
+go to places: the settings that are there can be changed from it. A setting that is a switch, a
+choice or a line of text is defined once (`settings/settingDefinition.ts`: its title, description,
+part of the page, current value and `set`), by a hook or a plain function in `settings/`
+(`usePreferenceSettings`, `useProfileSettings`, `modelChoiceSettings`). The page draws its own row
+for it (`SettingDefinitionRow`, or `SettingField` for text) and search its own entry
+(`settings/search/settingEntry.tsx`), so the two cannot differ; a definition marked `soon` is
+left out of search. Anything that is not one of those three kinds (a form, a dialog, a list, an
+action) is an entry of its own in `settings/search/`, or a way into its part of the page
+(`sectionEntries`). Search offers none of the admin parts, which hold a capability that audits
+what is done with it. One that is refused says why under the field. An on/off setting shows as a
+switch at the end of its row (`SearchEntry.on`, drawn by `components/SwitchIndicator`, which shares
+its look with `Switch` through `switchStyle.ts`), which choosing the row flips; the switch has
+nothing to press of its own, as a listbox option holds no control, and the state is said in words to
+whatever reads it.
+
+Nothing is read from the server for search until it is opened (`useModelSettings(enabled)`,
+`useUsage(enabled)`, and the library below), and what was read is kept while it is shut. A choice
+whose options are still being read (`ChoiceSetting.unavailable`: the models) is listed all the
+same, so the default model is there from the first frame with its value filled in a moment later,
+and says so if it is chosen before then. What is typed carries on into a page it still narrows
+(`carriedInto`: found by "dark", the theme goes on to Dark alone), and starts over where it would
+leave nothing.
+
+Before anything is typed it offers, in this order, with no heading over the first: a new chat, and
+what else is done where the user is (`routes/-appSearchSuggestions.ts`, plain and tested); three
+recent workspaces; Workspaces, Library and Automations, which the sidebar also has; and a few
+settings reached for under one Settings heading: the default model, the theme, the animations, and
+the way to Settings itself. The first is a new chat of its own, which starts a workspace, and is not
+offered on the page that starts one (home, or a workspace's new chat). In a workspace's chat it is a
+new chat in that workspace with the default model, and on the workspace's page a new chat in it and
+inviting people (`workspaces/workspaceActionEntries.tsx`, plain and tested, each saying the
+workspace at its end): the model leaves the settings for the chat, and each only where the viewer
+may (`shareStanding`). Inviting asks the page for its own dialog (`?invite`, which
+`WorkspacePane` answers once the workspace is listed and the address then forgets), as the
+Connections page is asked for a dialog (`?open`). The settings come from
+`useSettingsSearchEntries`' `suggested`, built from the same definitions, and are listed under that
+one heading in place of their part of the settings, the Settings page with them though it is found
+under Go to. The other pages are found by typing. The results scroll within a height of their own
+(`SearchDialog`: 30rem, or 60% of the window if less), the marked row kept in sight by the arrow
+keys.
+
+Everything the user has made is found by typing, under Library (`library/libraryEntries.tsx`, plain
+and tested): one entry for each output of every workspace, with its workspace at its end, found by
+its title and its kind, opening its own page. None is offered before anything is typed. It is read as
+search opens (`useLibrary` with a key only while open: one `listOutputs()` call), so a search on the
+first opening that finds nothing says "Looking…" until it has been read (`SearchDialog`'s
+`reading`).
+
+Where the user is only adds to what is found everywhere and never takes anything away: what a chat
+or a workspace's page adds is found by typing too, and comes first among equals, so that what is
+searched for is there on any page. The default model answers each message sent, in a new chat and in
+one already open (`sendChatMessage` takes it with every message), so choosing another from search
+tells the open page (`chat/preferredModelChanges.ts`, which `useDefaultModel` listens to) rather than
+leaving it to the next page.
+
+The `add-workshop-setting` skill is the checklist for adding one.
 
 Approvals are the user's own, for every workspace: the defaults ("Permission defaults"), then
 rules that always ask and rules that allow without asking (`ApprovalRules`), in that order of
