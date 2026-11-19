@@ -508,11 +508,10 @@ describe("Gmail group binding", () => {
     await expect(gmail.session()).rejects.toThrow("The connected Google Group now answers at another address.");
   });
 
-  it("stops a cursor and a capability opened before the group's addresses changed", async () => {
+  it("stops a cursor opened before the group's addresses changed", async () => {
     const gmail = harness();
     using session = await gmail.session();
     using cursor = await session.listThreads() as never as Cursor<GmailGroupThreadEntry> & Disposable;
-    using message = await session.getMessage("a1") as GmailGroupMessage & Disposable;
 
     // The group is renamed, and its old address may be another group's by now.
     gmail.backend.groupAddress = "renamed@example.com";
@@ -522,7 +521,6 @@ describe("Gmail group binding", () => {
     gmail.backend.groupAliases = ["crew@example.com"];
     using again = await session.listThreads() as never as Cursor<GmailGroupThreadEntry> & Disposable;
     await expect(Promise.resolve(again.next())).rejects.toThrow("The connected Google Group's addresses have changed.");
-    void message;
   });
 
   it("starts no firing, and retries nothing, for a group that has been deleted", async () => {
