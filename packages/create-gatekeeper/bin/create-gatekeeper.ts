@@ -16,6 +16,7 @@ Writes packages/gatekeeper-<name>, a gatekeeper built on gatekeeper-kit.
   <name>             The vendor id, e.g. "pagerduty": lowercase, hyphens between words.
   --auth <kind>      How a user connects: "oauth", an authorization-code grant with PKCE, or
                      "api-key", a key the user pastes into the connect page.
+  --hooks            Push events to gadgets, from a webhook the provider delivers to.
   --display <text>   The provider's name as users read it, e.g. "PagerDuty".
   --out <dir>        Write the package here instead, and register nothing.
   --no-install       Don't run "pnpm install" and "pnpm types:generate" afterwards.
@@ -37,13 +38,28 @@ function insertAfterLast(path: string, after: RegExp, line: string): void {
   writeFileSync(path, lines.join("\n"));
 }
 
+/** Replaces the one match of `pattern` in `path`. */
+function replaceOnce(path: string, pattern: RegExp, replacement: string): void {
+  const text = readFileSync(path, "utf8");
+  if (!pattern.test(text)) fail(`${relative(ROOT, path)} no longer matches ${pattern}; register the gatekeeper there by hand.`);
+  writeFileSync(path, text.replace(pattern, replacement));
+}
+
 /** Adds the gatekeeper to the lists the repository keeps by hand. */
-function register(names: Names, auth: ScaffoldOptions["auth"]): void {
+function register(names: Names, auth: ScaffoldOptions["auth"], hooks: boolean): void {
   insertAfterLast(join(ROOT, "README.md"), /^\* \[.*\]\(packages\/gatekeeper-[a-z0-9-]+\/README\.md\)$/,
     `* [${names.display}](packages/gatekeeper-${names.name}/README.md)`);
   if (auth === "oauth") {
     insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \{ id: "[A-Z0-9_]+", secret: "[A-Z0-9_]+" \},$/,
       `  "gatekeeper-${names.name}": { id: "${names.constant}_CLIENT_ID", secret: "${names.constant}_CLIENT_SECRET" },`);
+  }
+  if (hooks) {
+    // The dev server passes the webhook's signing secret through from the shell or `.dev.vars`.
+    insertAfterLast(join(ROOT, "scripts", "run-dev-server.ts"), /^  "gatekeeper-[a-z0-9-]+": \[.*\],$/,
+      `  "gatekeeper-${names.name}": ["${names.constant}_WEBHOOK_SECRET"],`);
+    // Wrangler's generated types lack `restore`, which a hook's delivery stub is made with.
+    replaceOnce(join(ROOT, "scripts", "generate-worker-types.ts"), /"\]\.includes\(basename\(pkgDir\)\)/,
+      `", "gatekeeper-${names.name}"].includes(basename(pkgDir))`);
   }
 }
 
@@ -60,6 +76,7 @@ try {
     options: {
       auth: { type: "string" },
       display: { type: "string" },
+      hooks: { type: "boolean" },
       out: { type: "string" },
       "no-install": { type: "boolean" },
       help: { type: "boolean", short: "h" },
@@ -78,7 +95,7 @@ if (positionals.length !== 1 || values.auth === undefined) fail(USAGE);
 let names: Names;
 let files: ReturnType<typeof scaffold>;
 try {
-  const options = { name: positionals[0], display: values.display, auth: values.auth as ScaffoldOptions["auth"] };
+  const options = { name: positionals[0], display: values.display, auth: values.auth as ScaffoldOptions["auth"], hooks: values.hooks };
   names = namesFor(options);
   files = scaffold(options);
 } catch (error) {
@@ -96,8 +113,8 @@ for (const [path, file] of files) {
 console.log(`Wrote ${files.size} files to ${relative(process.cwd(), dir) || dir}.`);
 
 if (values.out === undefined) {
-  register(names, values.auth as ScaffoldOptions["auth"]);
-  console.log("Registered it in README.md" + (values.auth === "oauth" ? " and scripts/run-dev-server.ts." : "."));
+  register(names, values.auth as ScaffoldOptions["auth"], values.hooks === true);
+  console.log("Registered it in README.md and the scripts that list gatekeepers by name.");
   if (!values["no-install"]) {
     run("pnpm", ["install"]);
     run("pnpm", ["types:generate"]);

@@ -26,6 +26,9 @@ import { accountStub, type AcmeVerifierApi } from "./acme-credentials";
 import {
   ALL_RESOURCES, ITEM_RESOURCE, WEB_ORIGIN, getBasePath, getBaseUrl, type AcmeGatekeeperImplProps, type Env,
 } from "./acme-env";
+// #if hooks
+import { handleWebhook } from "./acme-hooks";
+// #endif
 import { parseResourceUrl } from "./acme-urls";
 import ACME_LOGO_SVG from "./acme-logo.svg";
 import TYPES_CODE from "./types.txt";
@@ -33,6 +36,9 @@ import CONFIGURATOR_HTML from "./generated/acme-configurator-ui.txt";
 
 export { UserAccount } from "./acme-account";
 export { AcmeGatekeeperImpl } from "./acme-gatekeeper";
+// #if hooks
+export { AcmeHookController, AcmeHookDriver } from "./acme-hooks";
+// #endif
 export { AcmeItemImpl } from "./acme-session";
 
 const LOGO_URL = `data:image/svg+xml,${encodeURIComponent(ACME_LOGO_SVG)}`;
@@ -50,6 +56,9 @@ export default {
       throw new Error(`Request path ${url.pathname} does not match BASE_URL path ${basePath}`);
     }
     const relPath = url.pathname.slice(basePath.length);
+    // #if hooks
+    if (relPath === "/webhook" && req.method === "POST") return await handleWebhook(req, env, ctx.exports);
+    // #endif
     return await handleConnect(req, env, ctx, relPath) ?? new Response("Not Found", { status: 404 });
   },
 };

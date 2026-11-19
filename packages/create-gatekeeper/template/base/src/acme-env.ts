@@ -11,6 +11,13 @@ export const VENDOR_ID = "acme";
 export type Env = Cloudflare.Env & AuthEnv & {
   /** This Worker's public base URL, ending in `/gatekeeper/acme`. */
   BASE_URL?: string;
+  // #if hooks
+  /**
+   * The secret the provider signs its webhook's deliveries to `{BASE_URL}/webhook` with. Hooks are
+   * refused while it is unset.
+   */
+  ACME_WEBHOOK_SECRET?: string;
+  // #endif
 };
 
 // STOP(origins): The provider's API and web origins. If either varies by account (a region, a

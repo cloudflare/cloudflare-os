@@ -4,6 +4,10 @@
 // through the account's credential source.
 
 import { DurableObject, type RpcStub } from "cloudflare:workers";
+// #if hooks
+// A separate import, so the template parses where it lies.
+import { restore } from "cloudflare:workers";
+// #endif
 import { validateRpc } from "capnweb-validate";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
@@ -16,6 +20,11 @@ import {
   accountSource, accountStub, itemSubresourceId, type AcmeVerifierApi, type Identity,
 } from "./acme-credentials";
 import type { AcmeGatekeeperImplProps, Env } from "./acme-env";
+// #if hooks
+import {
+  HOOKS_NOT_CONFIGURED, AcmeHookDeliveryImpl, hookDescription, hooksConfigured, type AcmeHookDelivery, type HookScope,
+} from "./acme-hooks";
+// #endif
 import { AcmeItemImpl, type SessionHost } from "./acme-session";
 import { itemUrl } from "./acme-urls";
 import type { AcmeItem } from "./types";
@@ -58,6 +67,20 @@ export class AcmeGatekeeperImpl extends DurableObject<Env, AcmeGatekeeperImplPro
     submit: async (queue, kind, payload) => {
       await this.#actions.submit(queue, kind, payload, { fence: { generation: (await this.#me()).userId } });
     },
+    // #if hooks
+    subscribe: async (queue, hook) => {
+      if (!hooksConfigured(this.env)) throw new Error(HOOKS_NOT_CONFIGURED);
+      // Refuses a binding its connection no longer matches before the user is asked.
+      await this.#me();
+      const scope: HookScope = { itemId: this.ctx.props.itemId };
+      using delivery: RpcStub<AcmeHookDelivery> = await this.ctx.restore(scope);
+      const controller = this.ctx.exports.AcmeHookController({ props: {
+        key: crypto.randomUUID(), userObjectId: this.ctx.props.userObjectId, itemId: scope.itemId, delivery,
+      } });
+      // @ts-expect-error Workers widens the controller's hook type across bindHook RPC.
+      await queue.bindHook(controller, hook, hookDescription(scope));
+    },
+    // #endif
   };
 
   async describe(): Promise<ResourceDescription> {
@@ -68,6 +91,9 @@ export class AcmeGatekeeperImpl extends DurableObject<Env, AcmeGatekeeperImplPro
       snippet: "Acme Service",
       suggestedBindingName: "ACME_ITEM",
       tsType: "AcmeItem",
+      // #if hooks
+      hookTsType: "AcmeEventHook",
+      // #endif
     };
   }
 
@@ -82,6 +108,13 @@ export class AcmeGatekeeperImpl extends DurableObject<Env, AcmeGatekeeperImplPro
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<AcmeItem> {
     return new AcmeItemImpl(this.#sessionHost, approvalQueue.dup(), this.ctx.props.itemId);
   }
+  // #if hooks
+
+  /** The target of a hook's delivery stub, minted by `SessionHost.subscribe` with the hook's scope. */
+  [restore](scope: HookScope): AcmeHookDelivery {
+    return new AcmeHookDeliveryImpl(this.#sessionHost, scope);
+  }
+  // #endif
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
     // Fenced on the user the binding is pinned to, as each action was submitted (see `actions`).

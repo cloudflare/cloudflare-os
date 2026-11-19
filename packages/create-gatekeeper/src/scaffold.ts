@@ -17,6 +17,8 @@ export type ScaffoldOptions = {
   /** The provider's name as users read it. Defaults to `name` with its words capitalized. */
   display?: string;
   auth: (typeof AUTH_KINDS)[number];
+  /** Whether the gatekeeper pushes events to gadgets, from a webhook the provider delivers to. */
+  hooks?: boolean;
 };
 
 /** One generated file: its text, or the target of a symlink. */
@@ -59,6 +61,27 @@ function rename(text: string, names: Names): string {
     .replaceAll("acme", names.name);
 }
 
+/**
+ * `text` with its conditional blocks resolved. A block is the lines between `// #if <feature>` and
+ * `// #endif`, each alone on a line, with an optional `// #else`; blocks do not nest.
+ * @throws Error for a block that is not closed, or a directive outside one.
+ */
+export function resolveBlocks(text: string, features: ReadonlySet<string>): string {
+  let keep: boolean | undefined;
+  const lines = text.split("\n").filter(line => {
+    const directive = /^\s*\/\/ #(if|else|endif)(?: ([a-z-]+))?$/.exec(line);
+    if (!directive) return keep ?? true;
+    const [, word, feature] = directive;
+    if ((word === "if") !== (keep === undefined) || (word === "if") !== (feature !== undefined)) {
+      throw new Error(`Misplaced template directive: ${line.trim()}`);
+    }
+    keep = word === "if" ? features.has(feature) : word === "else" ? !keep : undefined;
+    return false;
+  });
+  if (keep !== undefined) throw new Error("A template block is not closed.");
+  return lines.join("\n");
+}
+
 function* walk(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true }).toSorted((a, b) => a.name.localeCompare(b.name))) {
     const path = join(dir, entry.name);
@@ -75,14 +98,15 @@ export function scaffold(options: ScaffoldOptions): Map<string, ScaffoldFile> {
   const names = namesFor(options);
   if (!AUTH_KINDS.includes(options.auth)) throw new Error(`Unknown --auth "${options.auth}": use ${AUTH_KINDS.join(" or ")}.`);
   const files = new Map<string, ScaffoldFile>();
-  for (const layer of ["base", `auth-${options.auth}`]) {
+  const features = new Set(options.hooks ? ["hooks"] : []);
+  for (const layer of ["base", `auth-${options.auth}`, ...features]) {
     const root = join(TEMPLATE, layer);
     for (const path of walk(root)) {
       let file: ScaffoldFile;
       try {
         file = { symlink: rename(readlinkSync(path), names) };
       } catch {
-        file = { text: rename(readFileSync(path, "utf8"), names) };
+        file = { text: rename(resolveBlocks(readFileSync(path, "utf8"), features), names) };
       }
       files.set(rename(relative(root, path), names).replaceAll("\\", "/"), file);
     }
