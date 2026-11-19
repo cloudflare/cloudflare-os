@@ -213,9 +213,9 @@ export type ObserverTrackerOptions<V> = {
    */
   maxTrackedCollections?: number;
   /**
-   * Most observers one `prepareObservation` will fan out over, so a read cannot exceed Worker
-   * invocation limits. Admission is not capped: a binding whose reads never reach
-   * `prepareObservation` can be shared without limit.
+   * Most observers one `prepareObservation` will fan out over; a read over a larger roster is
+   * refused before it writes or asks anything. It does not cap admission, and bounds no check
+   * made outside this tracker.
    */
   maxObservers?: number;
   /** Concurrent verifier round trips. */
