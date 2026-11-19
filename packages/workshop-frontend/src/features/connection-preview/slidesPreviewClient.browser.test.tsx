@@ -187,12 +187,17 @@ it('rings what a pending change touches, names it under the slide, and shows the
   // A ring carries only the number its name has, so no name lies over the slide.
   expect(text('.card[data-slide="s1"] .marks .spot')).toEqual(['1', '2', '3', '4'])
   expect(text('.card[data-slide="s1"] .change > i')).toEqual(['1', '2', '3', '4'])
+  // Each in its change's color: purple for an edit, red for what is deleted, green for what is added.
+  for (const mark of ['.marks .spot', '.change']) {
+    expect(all(`.card[data-slide="s1"] ${mark}`).map(node => ['edit', 'gone'].find(kind => node.classList.contains(kind)) ?? 'added'))
+      .toEqual(['edit', 'edit', 'gone', 'added'])
+  }
   const marks = card('s1').querySelector('.marks')!.getBoundingClientRect()
   expect(all('.card[data-slide="s1"] .change').every(chip => chip.getBoundingClientRect().top >= marks.bottom)).toBe(true)
   expect(card('s1').querySelector('.sheet [data-id="title"]')!.textContent).toBe('New title')
   expect(text('.card[data-slide="s1"] .tag')).toEqual(['2 changes'])
-  expect(film('s1').querySelector('i')!.classList.contains('touched')).toBe(true)
-  expect(film('s2').querySelector('i')!.classList.contains('touched')).toBe(false)
+  expect(film('s1').classList.contains('changed')).toBe(true)
+  expect(film('s2').classList.contains('changed')).toBe(false)
 
   // The notes are compared as text, word by word.
   const notes = card('s1').querySelector('.notes')!
@@ -293,6 +298,62 @@ it('lists slides that are added, deleted, moved and skipped where they belong, e
   expect(film('new').classList.contains('added')).toBe(true)
   // A slide changed as a whole is a stop of its own.
   expect(doc.getElementById('nav')!.getAttribute('aria-label')).toBe('4 changed places')
+
+  // Each thumbnail is ringed in the color of what is to happen to it, and the one being read in
+  // blue, with the only glow there is. The outline has no dots.
+  doc.scrollingElement!.scrollTo({ top: 0, behavior: 'instant' })
+  await expect.poll(() => film('s1').getAttribute('aria-current')).toBe('true')
+  const ink = (name: string) => {
+    const probe = doc.body.appendChild(doc.createElement('i'))
+    probe.style.color = `var(${name})`
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  }
+  const ring = (name: string) => `${ink(name)} 0px 0px 0px 2px`
+  const rings = () => all('.film').map(node => getComputedStyle(node.querySelector('.mini')!).boxShadow)
+  // Once each has eased into its ring.
+  await expect.poll(() => rings().slice(1)).toEqual([ring('--gone-ink'), ring('--edit-ink'), ring('--edit-ink'), ring('--mark-ink')])
+  await expect.poll(() => rings()[0]).toMatch(/ 0px 0px 0px 2px, .+ 0px 0px 0px 5px$/)
+  expect(rings()[0].startsWith(`${ring('--link')}, `)).toBe(true)
+  expect(all('#outline [data-touched]')).toEqual([])
+})
+
+it('steps from slide to slide with a navigator at the foot of the frame, counting the slides there will be', async () => {
+  const deck: Deck = { saved: listed('One', 'Two', 'Three', 'Four'), drawings: {} }
+  const { doc, film, refresh } = await draw(deck)
+  const pager = doc.getElementById('pager')!
+  const [previous, next] = [...pager.querySelectorAll('button')]
+  const reading = () => pager.getAttribute('aria-label')
+
+  // What the pill shows, and what it is called, as a document's page navigator has them.
+  expect(pager.hidden).toBe(false)
+  expect(pager.textContent).toBe('Slide1 / 4')
+  expect(reading()).toBe('Slide 1 of 4')
+  expect([previous.disabled, next.disabled]).toEqual([true, false])
+  expect(pager.classList.contains('lifted')).toBe(false)
+
+  // Two steps go two slides on, though the first is still under way.
+  next.click()
+  next.click()
+  await expect.poll(reading).toBe('Slide 3 of 4')
+  // The filmstrip marks the slide the navigator is on.
+  expect(film('s3').getAttribute('aria-current')).toBe('true')
+  previous.click()
+  await expect.poll(reading).toBe('Slide 2 of 4')
+
+  // A slide to be deleted is stepped to where the filmstrip lists it, and is not counted.
+  await refresh({
+    slides: [deck.saved[0], ...deck.saved.slice(2)].map((info, index) => ({ ...info, index })),
+    changes: [{ id: 1, type: 'deleteSlide', slideIds: ['s2'], slideId: 's2' }],
+    drawings: { s2: { drawing: null, saved: slide([box('b', 20, 20, 'Two')]) } },
+  })
+  await expect.poll(reading).toBe('Deleted slide, after slide 1 of 3')
+  expect(pager.querySelector('.count')!.textContent).toBe('– / 3')
+  // It stands clear of the Workshop's card for the change, where that lies across the foot.
+  expect(pager.classList.contains('lifted')).toBe(true)
+  next.click()
+  await expect.poll(reading).toBe('Slide 2 of 3')
 })
 
 it('draws 50 slides, the changed ones and their neighbours first, and lists the rest by title', async () => {
@@ -402,7 +463,7 @@ it('leaves no mark of a change that was withdrawn while its slide was being read
   expect(all('.spot, .change')).toEqual([])
   expect(card('s2').querySelector('.sheet [data-id="s2-title"]')!.textContent).toBe('s2')
   expect(card('s2').querySelector('.views')).toBeNull()
-  expect(film('s2').querySelector('i')!.classList.contains('touched')).toBe(false)
+  expect(film('s2').classList.contains('changed')).toBe(false)
   expect(doc.getElementById('nav')!.hidden).toBe(true)
 })
 
