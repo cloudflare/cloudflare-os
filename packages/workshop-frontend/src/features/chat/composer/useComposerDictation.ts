@@ -93,6 +93,9 @@ export const useComposerDictation = ({
 }) => {
   const [status, setStatus] = useState<DictationStatus>("idle");
   const [text, setText] = useState("");
+  // The words the last commit painted, which can trail the session by a result still rendering.
+  // A ref, because callers such as a toast's action hold an older render's closure.
+  const shown = useRef("");
   const active = useRef<Session | null>(null);
   const RecognitionConstructor = getLocalRecognitionConstructor();
 
@@ -101,6 +104,7 @@ export const useComposerDictation = ({
     const session = active.current;
     if (!session) return;
     active.current = null;
+    shown.current = "";
     session.listeners.abort();
     setStatus("idle");
     setText("");
@@ -114,19 +118,25 @@ export const useComposerDictation = ({
     return session;
   };
 
-  const keep = (session: Session | undefined) => {
-    const words = session && appendDictatedText(session.transcript, session.interim);
-    if (words) onTranscript(words);
+  const keep = (words: string) => {
+    const trimmed = words.trim();
+    if (trimmed) onTranscript(trimmed);
   };
 
-  /** Ends dictation, keeping the words it shows. */
-  const finish = () => keep(discard());
+  /** Ends dictation, keeping the words on screen rather than a newer guess the user hasn't seen. */
+  const finish = () => {
+    const words = shown.current;
+    if (discard()) keep(words);
+  };
 
   /** Ends dictation, dropping the words it shows. */
   const cancel = () => {
     discard();
   };
 
+  useLayoutEffect(() => {
+    shown.current = text;
+  }, [text]);
   // Layout effects, so a new chat or draft never renders with the old one's words.
   useLayoutEffect(() => cancel, [chatKey, draftStorageKey, seedNonce]);
   // Whatever disables dictation (a send, a resource flow, a blocked composer) keeps the words shown.
@@ -175,22 +185,27 @@ export const useComposerDictation = ({
       const finalized: string[] = [];
       const interim: string[] = [];
       // Finalized results are cumulative. Append only newly finalized speech, but rebuild the
-      // preview because the browser can revise or remove any interim word.
+      // preview because the browser can revise or remove any interim word. Segments carry their
+      // own leading whitespace where the language uses it, so they join as given.
       for (let index = 0; index < results.length; index++) {
         const result = results[index];
-        const words = result[0].transcript.trim();
-        if (!words) continue;
-        if (!result.isFinal) interim.push(words);
-        else if (index >= resultIndex) finalized.push(words);
+        if (!result.isFinal) interim.push(result[0].transcript);
+        else if (index >= resultIndex) finalized.push(result[0].transcript);
       }
-      session.transcript = appendDictatedText(session.transcript, finalized.join(" "));
-      session.interim = interim.join(" ");
-      setText(appendDictatedText(session.transcript, session.interim));
+      session.transcript += finalized.join("");
+      session.interim = interim.join("");
+      setText((session.transcript + session.interim).trim());
     }, { signal });
-    recognition.addEventListener("end", () => keep(detach()), { signal });
+    // Ending on its own, after stop(), the browser has finalized what it heard. An error can cut
+    // it off mid-guess, so only finalized words survive one.
+    recognition.addEventListener("end", () => {
+      const ended = detach();
+      if (ended) keep(ended.transcript + ended.interim);
+    }, { signal });
     recognition.addEventListener("error", (event) => {
       const { error } = event as Event & { error: string };
-      keep(detach());
+      const failed = detach();
+      if (failed) keep(failed.transcript);
       const message = recognitionError(error);
       if (message) onError(message);
     }, { signal });

@@ -16,16 +16,20 @@ const SHORT_TEXT = "The quick brown fox jumps over the lazy dog.";
 // Past the four rows the textarea grows to, so it scrolls.
 const LONG_TEXT = `${SHORT_TEXT} `.repeat(20);
 
-const Editor = ({ text }: { text: string }) => {
+// `preview` is text the mirror paints after the textarea's value, as dictation does.
+const Editor = ({ text, preview = "" }: { text: string; preview?: string }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<ComposerMirrorHandle>(null);
+  const painted = text + preview;
   const { resizeTextarea } = useComposerEditorLayout({
-    textareaRef, wrapperRef, mirrorRef, text, activeTextOffset: undefined, minRows: 2, maxRows: 4,
+    textareaRef, wrapperRef, mirrorRef, text: painted, activeTextOffset: undefined,
+    preview: preview ? { start: text.length, end: painted.length } : undefined,
+    minRows: 2, maxRows: 4,
   });
   return (
     <div ref={wrapperRef} className={styles.capsuleInputWrapper}>
-      <ComposerMirror ref={mirrorRef} value={text} tokens={[]} disabled={false} />
+      <ComposerMirror ref={mirrorRef} value={painted} tokens={[]} disabled={false} />
       <textarea
         ref={(textarea) => {
           textareaRef.current = textarea;
@@ -40,6 +44,21 @@ const Editor = ({ text }: { text: string }) => {
   );
 };
 
+const settle = () => act(() => new Promise((resolve) => {
+  requestAnimationFrame(() => requestAnimationFrame(resolve));
+}));
+
+// Where the mirror paints its last character, which the clip must not hide.
+const lastCharacterRect = (mirror: HTMLElement) => {
+  const walker = document.createTreeWalker(mirror, NodeFilter.SHOW_TEXT);
+  let last: Text | null = null;
+  while (walker.nextNode()) last = walker.currentNode as Text;
+  const range = document.createRange();
+  range.setStart(last!, last!.length - 1);
+  range.setEnd(last!, last!.length);
+  return range.getBoundingClientRect();
+};
+
 describe("composer editor layout", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
@@ -47,21 +66,24 @@ describe("composer editor layout", () => {
   afterEach(async () => {
     await act(async () => root?.unmount());
     container?.remove();
+    root = undefined;
+    container = undefined;
   });
 
-  const render = async (text: string) => {
-    container = document.body.appendChild(document.createElement("div"));
-    // A flex layout rarely gives the composer a whole-pixel width.
-    container.style.width = "403.3px";
-    root = createRoot(container);
-    await act(async () => root!.render(<Editor text={text} />));
-    await act(() => new Promise((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(resolve));
-    }));
+  const render = async (text: string, preview?: string) => {
+    if (!container) {
+      container = document.body.appendChild(document.createElement("div"));
+      // A flex layout rarely gives the composer a whole-pixel width.
+      container.style.width = "403.3px";
+      root = createRoot(container);
+    }
+    await act(async () => root!.render(<Editor text={text} preview={preview} />));
+    await settle();
     const textarea = container.querySelector("textarea")!;
     const mirror = container.querySelector<HTMLElement>('[aria-hidden="true"] > div')!;
     return { textarea, mirror, clip: mirror.parentElement! };
   };
+
 
   // A mirror rounded to a whole pixel wraps a line differently once one ends within that
   // fraction of the edge, and the caret then appears in the middle of the painted text.
@@ -85,5 +107,28 @@ describe("composer editor layout", () => {
     const { textarea, clip } = await render(LONG_TEXT);
 
     expect(clip.getBoundingClientRect().height).toBe(textarea.getBoundingClientRect().height);
+  });
+
+  it("grows for preview text the textarea doesn't hold, then gives the room back", async () => {
+    const { textarea } = await render(SHORT_TEXT);
+    const height = textarea.clientHeight;
+
+    await render(SHORT_TEXT, ` ${SHORT_TEXT} ${SHORT_TEXT}`);
+    expect(textarea.value).toBe(SHORT_TEXT);
+    expect(textarea.clientHeight).toBeGreaterThan(height);
+
+    await render(SHORT_TEXT);
+    expect(textarea.clientHeight).toBe(height);
+    expect(textarea.style.paddingBottom).toBe("0px");
+  });
+
+  it("scrolls to the newest preview words once the textarea stops growing", async () => {
+    const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
+    const lastCharacter = lastCharacterRect(mirror);
+    const visible = clip.getBoundingClientRect();
+
+    expect(textarea.scrollTop).toBeGreaterThan(0);
+    expect(lastCharacter.top).toBeGreaterThanOrEqual(visible.top);
+    expect(lastCharacter.bottom).toBeLessThanOrEqual(visible.bottom);
   });
 });

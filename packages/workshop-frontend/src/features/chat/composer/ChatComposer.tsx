@@ -2,7 +2,6 @@ import { getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useState,
   useEffect,
-  useLayoutEffect,
   useRef,
   useMemo,
   useCallback,
@@ -307,6 +306,41 @@ export const ChatComposer = ({
       if (configure) configureToastsRef.current.set(toastId, () => toasts.close(toastId));
     },
   });
+  const isBlocked = !!blockedReason;
+  // A resource flow commits against a snapshot of the draft, which dictated words would make stale.
+  const dictationDisabled = isBlocked || isSending || attachModalOpen || isCreatingResource;
+  const dictation = useComposerDictation({
+    disabled: dictationDisabled,
+    chatKey,
+    draftStorageKey,
+    seedNonce,
+    onTranscript: (text) => {
+      recordDraftEdit();
+      setInputValue((draft) => appendDictatedText(draft, text));
+    },
+    onReady: () => toasts.add({
+      title: "Voice typing is ready",
+      description: "Select the microphone to start.",
+      variant: "success",
+    }),
+    onError: (title) => toasts.add({ title, variant: "error" }),
+  });
+  const dictating = dictation.status !== "idle";
+  // Only the mirror paints dictated words, after the draft. The textarea, and so its selection,
+  // undo history and IME, holds just the draft, which gets the words when dictation ends.
+  const displayedText = appendDictatedText(inputValue, dictation.text);
+
+  // Sending and anything that snapshots the draft end dictation first, keeping the words it shows.
+  // inputValueRef and the token refs catch up only on the next render, so callers continue from
+  // the returned document, and from its caret: one at the end of the draft moves past the words
+  // appended there, as it would past typed ones.
+  const finishDictation = () => {
+    const draftEnd = getDocumentSnapshot().document.text.length;
+    const selection = composerTextareaRef.current?.selectionStart ?? draftEnd;
+    dictation.finish();
+    const document = getDocumentSnapshot().document;
+    return { document, caret: selection >= draftEnd ? document.text.length : selection };
+  };
   const {
     resizeTextarea,
     syncMirrorScroll,
@@ -315,8 +349,9 @@ export const ChatComposer = ({
     textareaRef: composerTextareaRef,
     wrapperRef,
     mirrorRef,
-    text: inputValue,
+    text: displayedText,
     activeTextOffset: activeUrl?.start,
+    preview: dictation.text ? { start: inputValue.length, end: displayedText.length } : undefined,
     minRows,
     maxRows: newChat ? 10 : 4,
   });
@@ -373,48 +408,6 @@ export const ChatComposer = ({
     setOverlayIndex(firstAccountIndex(overlayItemsRef.current));
     overlayNavigatedRef.current = false;
   }, [activeUrl]);
-
-  const isBlocked = !!blockedReason;
-  // A resource flow commits against a snapshot of the draft, which dictated words would make stale.
-  const dictationDisabled = isBlocked || isSending || attachModalOpen || isCreatingResource;
-  const dictation = useComposerDictation({
-    disabled: dictationDisabled,
-    chatKey,
-    draftStorageKey,
-    seedNonce,
-    onTranscript: (text) => {
-      recordDraftEdit();
-      setInputValue((draft) => appendDictatedText(draft, text));
-    },
-    onReady: () => toasts.add({
-      title: "Voice typing is ready",
-      description: "Select the microphone to start.",
-      variant: "success",
-    }),
-    onError: (title) => toasts.add({ title, variant: "error" }),
-  });
-  const dictating = dictation.status !== "idle";
-  // The textarea and its mirror show dictated words after the draft. The draft, and so storage,
-  // tokens and submission, gets them only when dictation ends.
-  const displayedText = appendDictatedText(inputValue, dictation.text);
-
-  // Typing, sending and anything that snapshots the draft end dictation first, keeping the words
-  // it shows, so the visible text never moves. inputValueRef and the token refs catch up only on
-  // the next render, so callers continue from the returned document.
-  const finishDictation = () => {
-    dictation.finish();
-    return getDocumentSnapshot().document;
-  };
-
-  // Dictated words arrive without an input event, so resize here and keep the newest in view.
-  useLayoutEffect(() => {
-    const textarea = composerTextareaRef.current;
-    if (!textarea) return;
-    resizeTextarea(textarea);
-    if (dictation.text) textarea.scrollTop = textarea.scrollHeight;
-    syncMirrorScroll(textarea);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dictation.text]);
 
   // A disabled textarea stops firing mouse events, so drop the hover state the token hit-testing
   // below leaves behind; otherwise the cursor outlives `disabled:cursor-not-allowed`.
@@ -534,7 +527,7 @@ export const ChatComposer = ({
 
   const handleSend = async () => {
     if (sendInFlightRef.current || isSending || isBlocked) return;
-    const draft = finishDictation();
+    const { document: draft } = finishDictation();
     setSendHiccup(null);
     const attachmentsSnapshot = pendingAttachments;
     const readyAttachments = attachmentsSnapshot
@@ -619,9 +612,8 @@ export const ChatComposer = ({
   };
 
   const handleAttachOpen = () => {
-    finishDictation();
-    const position = composerTextareaRef.current?.selectionStart ?? inputValueRef.current.length;
-    openAttachModal(snapCaretOutOfRanges(position, currentTokenRanges(), "nearest"));
+    const { caret } = finishDictation();
+    openAttachModal(snapCaretOutOfRanges(caret, currentTokenRanges(), "nearest"));
   };
 
   const addMenuCaretRef = useRef(0);
@@ -637,7 +629,9 @@ export const ChatComposer = ({
   };
 
   const handleInputChange = (newValue: string, editCursorPos?: number) => {
-    const transition = applyComposerTextEdit(finishDictation(), newValue, editCursorPos);
+    const transition = applyComposerTextEdit(
+      currentComposerDocument(), newValue, editCursorPos,
+    );
     if (transition.rejected) {
       const textarea = composerTextareaRef.current;
       if (textarea) {
@@ -671,8 +665,8 @@ export const ChatComposer = ({
         textarea.setSelectionRange(snapped, snapped);
       }
     }
-    // Offsets inside dictated words mean nothing to the picker or to the draft a URL's account
-    // picker would snapshot.
+    // While dictating, a URL's account picker would snapshot a draft that dictation is about to
+    // grow, and Escape belongs to dictation rather than the slash command picker.
     if (dictating) return;
     syncPickerCaret(cursorPos);
 
@@ -692,11 +686,9 @@ export const ChatComposer = ({
   // Inserted at the caret, like a capsule, so the noun lands in the sentence that needs it.
   const chooseFormat = async (format: OutputFormatOffer) => {
     const logo = await formatIconDataUrl(format.output.icon);
-    const draft = finishDictation();
-    const value = draft.text;
     // The menu takes focus, but the textarea keeps its last selection; falling back to the end is
     // right for the case where it was never focused at all.
-    const caret = Math.min(composerTextareaRef.current?.selectionStart ?? value.length, value.length);
+    const { document: draft, caret } = finishDictation();
     const at = snapCaretOutOfRanges(caret, currentTokenRanges(), "nearest");
     const transition = insertComposerFormat(
       draft,
@@ -848,13 +840,12 @@ export const ChatComposer = ({
               dictationStart={dictation.text ? inputValue.length : undefined}
             />
             <textarea
-              value={displayedText}
+              value={inputValue}
               role="combobox"
               aria-autocomplete="list"
               aria-expanded={slashCommandPicker.open}
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
               aria-activedescendant={slashCommandPicker.activeDescendant}
-              onCompositionStart={finishDictation}
               onChange={(e) => {
                 handleInputChange(e.target.value, e.target.selectionStart ?? 0);
                 syncPickerCaret(e.target.selectionStart ?? 0);
@@ -891,14 +882,17 @@ export const ChatComposer = ({
                 syncMirrorScroll(e.currentTarget);
               }}
               disabled={isBlocked}
+              // The empty textarea's placeholder would paint over dictated words in the mirror.
               placeholder={
-                isBlocked
-                  ? blockedReason
-                  : isAgentActive
-                    ? "Message the agent while it works…"
-                    : newChat
-                      ? "Start a new conversation…"
-                      : "Ask a follow-up…"
+                dictation.text
+                  ? undefined
+                  : isBlocked
+                    ? blockedReason
+                    : isAgentActive
+                      ? "Message the agent while it works…"
+                      : newChat
+                        ? "Start a new conversation…"
+                        : "Ask a follow-up…"
               }
               autoFocus={autoFocus}
               rows={minRows}
