@@ -131,14 +131,26 @@ let overrideFor: string | null = null;
  * fills nothing in.
  */
 let choice: string | null = null;
+/**
+ * The data project the query project was last filled in or suggested for, by the URL or a
+ * suggestion. An empty field there is then the user's to fill: a choice moving within the project
+ * suggests nothing again, so what the user is replacing is not replaced for them.
+ */
+let askedIn: string | null = null;
 
 /** The data project of a pre-filled query project, while `target` is the choice it arrived with. */
 function overriddenProject(target: string | null | undefined): string | undefined {
   return sharedProject(target) === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
 }
 
-/** Fills in the query project a choice in a shared project needs, when the account has only one. */
+/**
+ * Fills in the query project a choice in a shared project needs, when the account has only one, once
+ * per data project; a pending suggestion moves with the choice.
+ */
 function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
+  const project = (target ? refOf(target)?.projectId : undefined) ?? null;
+  if (project === askedIn && suggestedFor === null) return;
+  askedIn = project;
   suggestedFor = sharedProject(target) === undefined ? null : target;
   if (suggestedFor === null) return;
   onlyProject ??= ui.listProjects("").then(
@@ -173,7 +185,10 @@ export default {
     const prefilled = queryProject && queryProject !== projectId ? queryProject : null;
     // Recorded now, not when the lookup answers, so a choice made before then keeps it too.
     choice = target;
-    if (prefilled !== null) overrideFor = target;
+    if (prefilled !== null) {
+      overrideFor = target;
+      askedIn = projectId;
+    }
     return { target, queryProject: prefilled };
   },
 
@@ -261,7 +276,7 @@ export default {
             const kept = keep ? queryProject : null;
             setValues({ target: next, queryProject: kept });
             // A choice left without one asks for it, also within its project, which a search result
-            // can say is shared before the pre-fill lookup does; a pending suggestion moves to it.
+            // can say is shared before the pre-fill lookup does, unless one was already asked for there.
             if (kept === null) suggestQueryProject(context, next);
           }}
           icons={ICONS}

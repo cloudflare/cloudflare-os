@@ -315,6 +315,20 @@ describe("the query project", () => {
     await loading;
     expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/events/clicks?queryProject=mine");
   });
+
+  it("leaves a pre-filled query project the user typed over for them to replace as the choice narrows", async () => {
+    const frame = await open("https://bigquery.googleapis.com/theirs/events?queryProject=compute");
+    frame.ui.listProjects.mockResolvedValue([{ value: "mine", title: "mine" }]);
+    frame.ui.getNode.mockResolvedValueOnce(SHARED_DATASET);
+    await frame.load("dataset:theirs/events");
+    frame.autocomplete().onChange(null);
+    frame.picker().onChange(null, null);
+    frame.picker().onChange("table:theirs/events/clicks", null);
+    // Nothing is suggested in place of what the user is replacing.
+    expect(frame.ui.listProjects).not.toHaveBeenCalled();
+    expect(frame.values()).toEqual({ target: "table:theirs/events/clicks", queryProject: null });
+    expect(frame.ready()).toBe(false);
+  });
 });
 
 describe("URLs", () => {
