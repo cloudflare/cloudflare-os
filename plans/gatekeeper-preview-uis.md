@@ -402,8 +402,8 @@ Found against real documents, and each is drawn as near as the API allows:
 - `text.js`: the Markdown the diff works on, as lines, words and inline pieces.
 
 What any preview of this gatekeeper needs is a module of its own, `previews/shared/chrome.js`,
-imported as `./ui/chrome.js`: the theme, the outline sheet, the change navigator, the stale
-banner, the loading, updating and error states, and the refresh handling. `getPreviewUi()`
+imported as `./ui/chrome.js`: the theme, the outline sheet and the dot it puts on what holds a
+change, the change navigator, the part navigator, the stale banner, the loading, updating and error states, and the refresh handling. `getPreviewUi()`
 returns all of them, listed once in `previews/files.ts`. The gatekeeper's bundler imports only
 `.txt` and `.svg` as text, so each file is imported through a `.txt` symlink beside it, and
 `previews/docs/ui` links to `previews/shared` so the import resolves on disk too. The frame calls
@@ -450,7 +450,8 @@ wrapped image rather than across it.
 
 **Stepping through pages.** A navigator at the foot of the frame, right, the twin of the change
 navigator at its head: "Page", the page read of how many ("3 / 21"), and an arrow each way
-(`stepper()` in `chrome.js` builds both). It steps to the top of the next or the previous sheet,
+(`stepper()` in `chrome.js` builds both, and `partNavigator()` there is this one, which Slides
+shares). It steps to the top of the next or the previous sheet,
 counts steps made while one is still under way, dims the arrow there is nothing past, and names
 the page read ("Page 3 of 21") to assistive technology. It is hidden where there is one sheet: a one-page tab, a
 pageless document, and the Inline view. The Workshop's card for a change waiting lies across

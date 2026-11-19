@@ -1,7 +1,8 @@
 // What every preview of this gatekeeper shares: its colors, and the parts around the resource it
 // draws. Those are the page the resource is drawn on, the status, the note on changes that no
-// longer fit and the change navigator, the outline sheet, and the loading and error states. A preview
-// imports this as ./ui/chrome.js and draws its resource into `page`.
+// longer fit, the change navigator and the part navigator, the outline sheet and the dot it puts
+// on what holds a change, and the loading and error states. A preview imports this as
+// ./ui/chrome.js and draws its resource into `page`.
 //
 // Importing it builds those parts into the frame's document, which holds one preview.
 
@@ -9,13 +10,14 @@ const styleSheet = document.createElement('style');
 styleSheet.textContent = `
   :root { color-scheme: light dark; --page: #fff; --desk: #f1f3f4; --ink: #1f1f1f; --dim: #5f6368;
     --line: #dadce0; --mark: #e6f4ea; --mark-ink: #137333; --gone: #fce8e6; --gone-ink: #a50e0e;
-    --link: #1a73e8; --chip: #f1f3f4; --shine: #e8eaed; --width: 816px;
+    --edit: #f3e8fd; --edit-ink: #8430ce; --link: #1a73e8; --chip: #f1f3f4; --shine: #e8eaed; --width: 816px;
     --paper: 0 1px 2px rgb(60 64 67 / .2), 0 4px 14px rgb(60 64 67 / .1);
     --float: 0 1px 3px rgb(60 64 67 / .24), 0 6px 20px rgb(60 64 67 / .14); }
   @media (prefers-color-scheme: dark) {
     :root { --page: #1f1f1f; --desk: #131314; --ink: #e3e3e3; --dim: #9aa0a6; --line: #3c4043;
       --mark: #1e3a2a; --mark-ink: #81c995; --gone: #3b1f1d; --gone-ink: #f28b82;
-      --link: #8ab4f8; --chip: #2d2f31; --shine: #3c4043; --paper: 0 0 0 1px var(--line);
+      --edit: #2f2440; --edit-ink: #c58af9; --link: #8ab4f8; --chip: #2d2f31; --shine: #3c4043;
+      --paper: 0 0 0 1px var(--line);
       --float: 0 0 0 1px var(--line), 0 8px 24px rgb(0 0 0 / .5); }
   }
   html, body { margin: 0; height: 100%; background: var(--desk); color: var(--ink);
@@ -53,14 +55,21 @@ styleSheet.textContent = `
     border-radius: 999px; background: var(--page); box-shadow: var(--float); color: var(--ink);
     font-size: 12px; white-space: nowrap; animation: arrive .2s ease-out; }
   .nav span { margin-right: 4px; color: var(--dim); }
-  /* The dot that says something holds a change, or is one. */
-  .touched::after, .tab.new .name::after { content: ''; flex: none; width: 6px;
-    height: 6px; border-radius: 50%; background: var(--mark-ink); box-shadow: 0 0 0 3px var(--mark); }
-  .touched::after, .tab.new .name::after { margin-right: 3px; }
+  /* The dot that says something holds a change, or is one: green where it adds, red where it
+     removes, and purple where it edits or does both. */
+  [data-touched]::after { content: ''; flex: none; width: 6px; height: 6px; margin-right: 3px;
+    border-radius: 50%; background: var(--mark-ink); box-shadow: 0 0 0 3px var(--mark); }
+  [data-touched="removed"]::after { background: var(--gone-ink); box-shadow: 0 0 0 3px var(--gone); }
+  [data-touched="changed"]::after { background: var(--edit-ink); box-shadow: 0 0 0 3px var(--edit); }
   .nav button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0;
     border-radius: 50%; background: none; color: var(--dim); transition: background .12s, color .12s, opacity .12s; }
   .nav button:hover { background: var(--chip); color: var(--ink); }
   .nav button:disabled { opacity: .35; pointer-events: none; }
+  /* The part navigator, at the foot of the frame as the change navigator is at its head. */
+  #pager { position: fixed; z-index: 1; right: 14px; bottom: 14px; }
+  #pager .count { color: var(--ink); font-variant-numeric: tabular-nums; }
+  /* In a narrow frame the Workshop's card for a change waiting lies across the foot. */
+  @media (max-width: 900px) { #pager.lifted { bottom: 134px; } }
 
   /* The outline stands beside the page where there is room, and over it where there is not. */
   #outline-toggle { position: fixed; z-index: 3; top: 6px; left: 10px; display: grid;
@@ -235,8 +244,25 @@ export function foldArrow(key, label, folded, redraw) {
   return arrow;
 }
 
+// What the dot says of each kind of change, to whoever cannot see its color.
+const HOLDS = { added: 'has pending additions', removed: 'has pending deletions', changed: 'has pending edits' };
+
+/**
+ * Puts the dot on `element` for `kinds`, what each change it holds does: 'added', 'removed' or
+ * 'changed'. It is the kind they share, or 'changed' when they differ, and none when there are
+ * none. Returns what the dot says, for the element's title.
+ */
+export function touch(element, kinds) {
+  const found = new Set(kinds);
+  const kind = found.size > 1 ? 'changed' : [...found][0];
+  if (kind) element.dataset.touched = kind;
+  else delete element.dataset.touched;
+  return HOLDS[kind];
+}
+
 // ---------------------------------------------------------------------------------------------
-// The status and the change navigator, which steps through the places the changes touch
+// The status and the change navigator, which steps through the places the changes touch, and the
+// part navigator, which steps through the parts the resource is read in
 
 // The controls that float over the page's corner.
 const bar = document.body.appendChild(make('div'));
@@ -284,6 +310,50 @@ function showChange(step) {
     element.classList.add('here');
     flash(element);
   }
+}
+
+// The part navigator, where a preview has one.
+let pager;
+
+/**
+ * The navigator at the foot of the frame for the parts a resource is read in, each called `noun`,
+ * such as 'page'. Its `show(parts, at)` gives it the parts' elements and the one being read, with
+ * the number that one goes by and how many are numbered, which are its place and the parts' count
+ * unless said otherwise, and what to call it then. Fewer than two parts need no navigator.
+ */
+export function partNavigator(noun) {
+  const Noun = noun[0].toUpperCase() + noun.slice(1);
+  let parts = [];
+  // The part being read, and the one being stepped to until it is reached.
+  let on = 0;
+  let aimed;
+  pager = document.body.appendChild(stepper(Noun, [`Previous ${noun}`, `Next ${noun}`], step => {
+    aimed = Math.min(Math.max((aimed ?? on) + step, 0), parts.length - 1);
+    parts[aimed].scrollIntoView({ block: 'start', behavior: motion() });
+  }));
+  pager.id = 'pager';
+  pager.hidden = true;
+  // What the group's label says in words.
+  const count = pager.insertBefore(make('span', 'count'), pager.querySelector('button'));
+  count.ariaHidden = 'true';
+  addEventListener('scrollend', () => { aimed = undefined; });
+  return {
+    show(found, at, number = at + 1, total = found.length, label = `${Noun} ${number} of ${total}`) {
+      parts = found;
+      pager.hidden = parts.length < 2 || page.hidden;
+      if (pager.hidden) return;
+      on = at;
+      if (on === aimed) aimed = undefined;
+      const { scrollTop, clientHeight, scrollHeight } = document.scrollingElement;
+      const [previous, next] = pager.querySelectorAll('button');
+      previous.disabled = on === 0;
+      next.disabled = on === parts.length - 1 || scrollTop + clientHeight >= scrollHeight - 1;
+      count.textContent = `${number} / ${total}`;
+      pager.setAttribute('aria-label', label);
+    },
+    /** Stands it above the Workshop's card for a change waiting, while there is one. */
+    lift: lifted => pager.classList.toggle('lifted', lifted),
+  };
 }
 
 /**
@@ -339,6 +409,7 @@ export function showPage() {
 export function showError(error, resource, retry) {
   page.hidden = true;
   nav.hidden = true;
+  if (pager) pager.hidden = true;
   document.getElementById('error')?.remove();
   const box = document.body.appendChild(make('div'));
   box.id = 'error';
