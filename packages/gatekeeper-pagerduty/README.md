@@ -184,9 +184,9 @@ seconds if it denied, so a lost role or team membership goes unnoticed for up to
 
 ## REST types
 
-Every REST call goes through typed clients (`@gadgets/gatekeeper-kit/http`) whose paths, path and
+Every REST call goes through one typed client (`@gadgets/gatekeeper-kit/http`) whose paths, path and
 query parameters, and request bodies come from PagerDuty's OpenAPI description, pinned by commit in
-the `generate:openapi` script, for the operations `openapi-operations.txt` lists. The schemas are
+the `generate:openapi` script, for the operations `openapi-operations.txt` lists. The schema is
 generated into `src/openapi/`; after changing the list, the patch or the pinned commit, regenerate
 and commit the output:
 

@@ -119,6 +119,128 @@ export type TeamReferenceInput = ReferenceInput & {
   type?: "team_reference";
 };
 
+export type Incident = {
+  id?: string;
+  /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
+  summary?: string | null;
+  /** A string that determines the schema of the object. This must be the standard name for the entity, suffixed by `_reference` if the object is a reference. */
+  type?: string;
+  /** the API show URL at which the object is accessible */
+  self?: string | null;
+  /** a URL at which the entity is uniquely displayed in the Web app */
+  html_url?: string | null;
+} & {
+  /** The number of the incident. This is unique across your account. */
+  incident_number?: number;
+  /** A succinct description of the nature, symptoms, cause, or effect of the incident. */
+  title?: string;
+  /** The time the incident was first triggered. */
+  created_at?: string;
+  /** The time the incident was last modified. */
+  updated_at?: string;
+  /** The current status of the incident. */
+  status?: "triggered" | "acknowledged" | "resolved";
+  /** The incident's de-duplication key. */
+  incident_key?: string;
+  /** The service the incident is on. If the `include[]=services` query parameter is provided, the full service definition will be returned. */
+  service?: ServiceReference | Service;
+  /** List of all assignments for this incident. This list will be empty if the `Incident.status` is `resolved`. Returns a user reference for each assignment. Full user definitions will be returned if the `include[]=assignees` query parameter is provided. */
+  assignments?: Assignment[];
+  /** How the current incident assignments were decided.  Note that `direct_assignment` incidents will not escalate up the attached `escalation_policy` */
+  assigned_via?: "escalation_policy" | "direct_assignment";
+  /** The time the status of the incident last changed. If the incident is not currently acknowledged or resolved, this will be the incident's `updated_at`. */
+  last_status_change_at?: string;
+  /** The time the incident became "resolved" or `null` if the incident is not resolved. */
+  resolved_at?: string;
+  /** The first log entry on the incident. The log entry will be of type `TriggerLogEntry` and will represent information about how the incident was triggered. If the `include[]=first_trigger_log_entries` query parameter is provided, the full log entry definition will be returned. */
+  first_trigger_log_entry?: LogEntryReference | TriggerLogEntry;
+  alert_counts?: AlertCount;
+  /** Whether the incident is mergeable. Only incidents that have alerts, or that are manually created can be merged. */
+  is_mergeable?: boolean;
+  /** The incident type of the incident. */
+  incident_type?: {
+    /** The name of the Incident Type. */
+    name?: string;
+  };
+  /** The escalation policy attached to the service that the incident is on. If the `include[]=escalation_policies` query parameter is provided, the full escalation policy definition will be returned. */
+  escalation_policy?: EscalationPolicyReference | EscalationPolicy;
+  /** The teams involved in the incident’s lifecycle. If the `include[]=teams` query parameter is provided, the full team definitions will be returned. */
+  teams?: (TeamReference | Team)[];
+  /** The list of pending_actions on the incident. A pending_action object contains a type of action which can be escalate, unacknowledge, resolve or urgency_change. A pending_action object contains at, the time at which the action will take place. An urgency_change pending_action will contain to, the urgency that the incident will change to. */
+  pending_actions?: IncidentAction[];
+  /** List of all acknowledgements for this incident. This list will be empty if the `Incident.status` is `resolved` or `triggered`. If the `include[]=acknowledgers` query parameter is provided, the full user or service definitions will be returned for each acknowledgement entry. */
+  acknowledgements?: Acknowledgement[];
+  /** Describes the alert grouping state of this incident. Will be null if the incident has no alerts. */
+  alert_grouping?: {
+    grouping_type?: "basic" | "advanced" | "rules";
+    started_at?: string;
+    ended_at?: string;
+    alert_grouping_active?: boolean;
+  };
+  /** The entity that last changed the status of the incident. If the `include[]=agents` query parameter is provided, the full user/service/integration definition will be returned. */
+  last_status_change_by?: AgentReference | User | Service;
+  priority?: Priority;
+  resolve_reason?: ResolveReason;
+  /** The conference bridge information attached to the incident. Only returned if the `include[]=conference_bridge` query parameter is provided. */
+  conference_bridge?: ConferenceBridge;
+  /** The responders on the incident. Only returned if the account has access to the [responder requests](https://support.pagerduty.com/docs/add-responders) feature. */
+  incidents_responders?: IncidentsRespondersReference[];
+  /** Previous responder requests made on this incident. Only returned if the account has access to the [responder requests](https://support.pagerduty.com/docs/add-responders) feature. */
+  responder_requests?: ResponderRequest[];
+  /** The current urgency of the incident. */
+  urgency?: "high" | "low";
+  /** The additional incident body details. Only returned if the `include[]=body` query parameter is provided. */
+  body?: IncidentBody;
+};
+/** {@link Incident} as a request sends it, without its `readOnly` fields. */
+export type IncidentInput = {
+  id?: string;
+} & {
+  /** A succinct description of the nature, symptoms, cause, or effect of the incident. */
+  title?: string;
+  /** The time the incident was last modified. */
+  updated_at?: string;
+  /** The current status of the incident. */
+  status?: "triggered" | "acknowledged" | "resolved";
+  /** The service the incident is on. If the `include[]=services` query parameter is provided, the full service definition will be returned. */
+  service?: ServiceReferenceInput | ServiceInput;
+  /** List of all assignments for this incident. This list will be empty if the `Incident.status` is `resolved`. Returns a user reference for each assignment. Full user definitions will be returned if the `include[]=assignees` query parameter is provided. */
+  assignments?: readonly AssignmentInput[];
+  /** The time the incident became "resolved" or `null` if the incident is not resolved. */
+  resolved_at?: string;
+  /** The first log entry on the incident. The log entry will be of type `TriggerLogEntry` and will represent information about how the incident was triggered. If the `include[]=first_trigger_log_entries` query parameter is provided, the full log entry definition will be returned. */
+  first_trigger_log_entry?: LogEntryReferenceInput | TriggerLogEntryInput;
+  alert_counts?: AlertCount;
+  /** The incident type of the incident. */
+  incident_type?: {
+    /** The name of the Incident Type. */
+    name?: string;
+  };
+  /** The escalation policy attached to the service that the incident is on. If the `include[]=escalation_policies` query parameter is provided, the full escalation policy definition will be returned. */
+  escalation_policy?: EscalationPolicyReferenceInput | EscalationPolicyInput;
+  /** The teams involved in the incident’s lifecycle. If the `include[]=teams` query parameter is provided, the full team definitions will be returned. */
+  teams?: readonly (TeamReferenceInput | TeamInput)[];
+  /** List of all acknowledgements for this incident. This list will be empty if the `Incident.status` is `resolved` or `triggered`. If the `include[]=acknowledgers` query parameter is provided, the full user or service definitions will be returned for each acknowledgement entry. */
+  acknowledgements?: readonly AcknowledgementInput[];
+  /** Describes the alert grouping state of this incident. Will be null if the incident has no alerts. */
+  alert_grouping?: {
+    grouping_type?: "basic" | "advanced" | "rules";
+    started_at?: string;
+    ended_at?: string;
+    alert_grouping_active?: boolean;
+  };
+  /** The entity that last changed the status of the incident. If the `include[]=agents` query parameter is provided, the full user/service/integration definition will be returned. */
+  last_status_change_by?: AgentReferenceInput | UserInput | ServiceInput;
+  priority?: PriorityInput;
+  resolve_reason?: ResolveReasonInput;
+  /** The conference bridge information attached to the incident. Only returned if the `include[]=conference_bridge` query parameter is provided. */
+  conference_bridge?: ConferenceBridge;
+  /** The current urgency of the incident. */
+  urgency?: "high" | "low";
+  /** The additional incident body details. Only returned if the `include[]=body` query parameter is provided. */
+  body?: IncidentBody;
+};
+
 export type Service = {
   id?: string;
   /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
@@ -433,6 +555,18 @@ export type AutoPauseNotificationsParameters = {
   recommended_timeout?: 120 | 180 | 300 | 600 | 900;
 };
 
+export type Assignment = {
+  /** Time at which the assignment was created. */
+  at: string;
+  assignee: UserReference | User;
+};
+/** {@link Assignment} as a request sends it, without its `readOnly` fields. */
+export type AssignmentInput = {
+  /** Time at which the assignment was created. */
+  at: string;
+  assignee: UserReferenceInput | UserInput;
+};
+
 export type UserReference = Reference & {
   type?: "user_reference";
 };
@@ -531,6 +665,338 @@ export type NotificationRuleReferenceInput = ReferenceInput & {
   type?: "assignment_notification_rule_reference";
 };
 
+export type LogEntryReference = Reference & {
+  type?: "acknowledge_log_entry_reference" | "annotate_log_entry_reference" | "assign_log_entry_reference" | "escalate_log_entry_reference" | "exhaust_escalation_path_log_entry_reference" | "notify_log_entry_reference" | "reach_trigger_limit_log_entry_reference" | "repeat_escalation_path_log_entry_reference" | "resolve_log_entry_reference" | "snooze_log_entry_reference" | "trigger_log_entry_reference" | "unacknowledge_log_entry_reference";
+};
+/** {@link LogEntryReference} as a request sends it, without its `readOnly` fields. */
+export type LogEntryReferenceInput = ReferenceInput & {
+  type?: "acknowledge_log_entry_reference" | "annotate_log_entry_reference" | "assign_log_entry_reference" | "escalate_log_entry_reference" | "exhaust_escalation_path_log_entry_reference" | "notify_log_entry_reference" | "reach_trigger_limit_log_entry_reference" | "repeat_escalation_path_log_entry_reference" | "resolve_log_entry_reference" | "snooze_log_entry_reference" | "trigger_log_entry_reference" | "unacknowledge_log_entry_reference";
+};
+
+export type TriggerLogEntry = LogEntry & {
+  type?: "trigger_log_entry";
+};
+/** {@link TriggerLogEntry} as a request sends it, without its `readOnly` fields. */
+export type TriggerLogEntryInput = LogEntryInput & {
+  type?: "trigger_log_entry";
+};
+
+export type LogEntry = {
+  id?: string;
+  /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
+  summary?: string | null;
+  /** A string that determines the schema of the object. This must be the standard name for the entity, suffixed by `_reference` if the object is a reference. */
+  type?: string;
+  /** the API show URL at which the object is accessible */
+  self?: string | null;
+  /** a URL at which the entity is uniquely displayed in the Web app */
+  html_url?: string | null;
+} & {
+  type?: "acknowledge_log_entry" | "annotate_log_entry" | "assign_log_entry" | "delegate_log_entry" | "escalate_log_entry" | "exhaust_escalation_path_log_entry" | "notify_log_entry" | "reach_ack_limit_log_entry" | "reach_trigger_limit_log_entry" | "repeat_escalation_path_log_entry" | "resolve_log_entry" | "snooze_log_entry" | "trigger_log_entry" | "unacknowledge_log_entry" | "urgency_change_log_entry" | "field_value_change_log_entry" | "custom_field_value_change_log_entry";
+  /** Time at which the log entry was created. */
+  created_at?: string;
+  /** Polymorphic object representation of the means by which the action was channeled. Has different formats depending on type, indicated by channel[type]. Will be one of `auto`, `email`, `api`, `nagios`, or `timeout` if `agent[type]` is `service`. Will be one of `email`, `sms`, `website`, `web_trigger`, or `note` if `agent[type]` is `user`. */
+  channel?: Channel;
+  agent?: AgentReference;
+  /** Optional field containing a note, if one was included with the log entry. */
+  note?: string;
+  /** Contexts to be included with the trigger such as links to graphs or images. */
+  contexts?: Context[];
+  service?: ServiceReference;
+  incident?: IncidentReference;
+  /** Will consist of references unless included */
+  teams?: TeamReference[];
+  event_details?: {
+    /** Additional details about the event. */
+    description?: string;
+  };
+  /** String record of custom field updates */
+  changeset?: string[];
+};
+/** {@link LogEntry} as a request sends it, without its `readOnly` fields. */
+export type LogEntryInput = {
+  id?: string;
+} & {
+  type?: "acknowledge_log_entry" | "annotate_log_entry" | "assign_log_entry" | "delegate_log_entry" | "escalate_log_entry" | "exhaust_escalation_path_log_entry" | "notify_log_entry" | "reach_ack_limit_log_entry" | "reach_trigger_limit_log_entry" | "repeat_escalation_path_log_entry" | "resolve_log_entry" | "snooze_log_entry" | "trigger_log_entry" | "unacknowledge_log_entry" | "urgency_change_log_entry" | "field_value_change_log_entry" | "custom_field_value_change_log_entry";
+  /** Polymorphic object representation of the means by which the action was channeled. Has different formats depending on type, indicated by channel[type]. Will be one of `auto`, `email`, `api`, `nagios`, or `timeout` if `agent[type]` is `service`. Will be one of `email`, `sms`, `website`, `web_trigger`, or `note` if `agent[type]` is `user`. */
+  channel?: ChannelInput;
+  service?: ServiceReferenceInput;
+  incident?: IncidentReferenceInput;
+  /** String record of custom field updates */
+  changeset?: readonly string[];
+};
+
+/** Polymorphic object representation of the means by which the action was channeled. Has different formats depending on type, indicated by channel[type]. Will be one of `auto`, `email`, `api`, `nagios`, or `timeout` if `agent[type]` is `service`. Will be one of `email`, `sms`, `website`, `web_trigger`, or `note` if `agent[type]` is `user`. */
+export type Channel = {
+  /** type */
+  type: string;
+  user?: {
+    [key: string]: unknown;
+  };
+  team?: {
+    [key: string]: unknown;
+  };
+  notification?: Notification;
+  /** channel */
+  channel?: {
+    [key: string]: unknown;
+  };
+  /** Changeset present in CustomFieldsValueChange and FieldValueChange log entries. */
+  changeset?: {
+    /** Customer Fields present in CustomFieldsValueChange and FieldValueChange log entries. */
+    customer_fields?: {
+      id?: string;
+      name?: string;
+      value?: number | string[];
+      namespace?: string;
+      old_value?: string | null;
+    }[];
+    /** Application Fields present in CustomFieldsValueChange and FieldValueChange log entries. */
+    application_fields?: {
+      id?: string;
+      name?: string;
+      value?: string | number | string[];
+      namespace?: string;
+      old_value?: string | null;
+    }[];
+    /** Custom attributes for the changeset. */
+    custom_attributes?: {
+      [key: string]: string;
+    };
+    customer_schema?: {
+      old_value?: string | null;
+    };
+  };
+} & ({
+  /** Will be `nagios` */
+  type?: string;
+  /** Same as `host` */
+  summary?: string;
+  /** Nagios host */
+  host?: string;
+  /** Nagios service that created the event, if applicable */
+  service?: string;
+  /** State that caused the event */
+  state?: string;
+  /** Additional details of the incident */
+  details?: {
+    [key: string]: unknown;
+  };
+} | {
+  /** Will be `api` */
+  type?: string;
+  /** Same as `description` */
+  summary?: string;
+  /** API service key */
+  service_key?: string;
+  /** Description of the event */
+  description?: string;
+  /** Incident deduping string */
+  incident_key?: string;
+  /** Additional details of the incident */
+  details?: {
+    [key: string]: unknown;
+  };
+} | {
+  /** Will be `email` */
+  type?: string;
+  /** Same as `subject` */
+  summary?: string;
+  /** To address of the email */
+  to?: string;
+  /** From address of the email */
+  from?: string;
+  /** Subject of the email */
+  subject?: string;
+  /** Body of the email */
+  body?: string;
+  /** Content type of the email body. Will be `text/plain` or `text/html` */
+  body_content_type?: string;
+  /** URL for raw text of email */
+  raw_url?: string;
+  /** URL for html rendered version of the email. Only present if `content_type` is `text/html` */
+  html_url?: string;
+} | {
+  /** Will be `web_trigger` */
+  type?: string;
+  /** Same as `subject` */
+  summary?: string;
+  /** Subject of the web trigger */
+  subject?: string;
+  /** Details about the web trigger */
+  details?: string;
+} | {
+  /** Will be `website` */
+  type: string;
+  /** For `snooze` log entries, this is the number of seconds that the incident was snoozed for. */
+  duration?: number;
+});
+/** {@link Channel} as a request sends it, without its `readOnly` fields. */
+export type ChannelInput = {
+  /** type */
+  type: string;
+  user?: {
+    [key: string]: unknown;
+  };
+  team?: {
+    [key: string]: unknown;
+  };
+  notification?: NotificationInput;
+  /** channel */
+  channel?: {
+    [key: string]: unknown;
+  };
+  /** Changeset present in CustomFieldsValueChange and FieldValueChange log entries. */
+  changeset?: {
+    /** Customer Fields present in CustomFieldsValueChange and FieldValueChange log entries. */
+    customer_fields?: readonly {
+      id?: string;
+      name?: string;
+      value?: number | readonly string[];
+      namespace?: string;
+      old_value?: string | null;
+    }[];
+    /** Application Fields present in CustomFieldsValueChange and FieldValueChange log entries. */
+    application_fields?: readonly {
+      id?: string;
+      name?: string;
+      value?: string | number | readonly string[];
+      namespace?: string;
+      old_value?: string | null;
+    }[];
+    /** Custom attributes for the changeset. */
+    custom_attributes?: {
+      [key: string]: string;
+    };
+    customer_schema?: {
+      old_value?: string | null;
+    };
+  };
+} & ({
+  /** Will be `nagios` */
+  type?: string;
+  /** Same as `host` */
+  summary?: string;
+  /** Nagios host */
+  host?: string;
+  /** Nagios service that created the event, if applicable */
+  service?: string;
+  /** State that caused the event */
+  state?: string;
+  /** Additional details of the incident */
+  details?: {
+    [key: string]: unknown;
+  };
+} | {
+  /** Will be `api` */
+  type?: string;
+  /** Same as `description` */
+  summary?: string;
+  /** API service key */
+  service_key?: string;
+  /** Description of the event */
+  description?: string;
+  /** Incident deduping string */
+  incident_key?: string;
+  /** Additional details of the incident */
+  details?: {
+    [key: string]: unknown;
+  };
+} | {
+  /** Will be `email` */
+  type?: string;
+  /** Same as `subject` */
+  summary?: string;
+  /** To address of the email */
+  to?: string;
+  /** From address of the email */
+  from?: string;
+  /** Subject of the email */
+  subject?: string;
+  /** Body of the email */
+  body?: string;
+  /** Content type of the email body. Will be `text/plain` or `text/html` */
+  body_content_type?: string;
+  /** URL for raw text of email */
+  raw_url?: string;
+  /** URL for html rendered version of the email. Only present if `content_type` is `text/html` */
+  html_url?: string;
+} | {
+  /** Will be `web_trigger` */
+  type?: string;
+  /** Same as `subject` */
+  summary?: string;
+  /** Subject of the web trigger */
+  subject?: string;
+  /** Details about the web trigger */
+  details?: string;
+} | {
+  /** Will be `website` */
+  type: string;
+  /** For `snooze` log entries, this is the number of seconds that the incident was snoozed for. */
+  duration?: number;
+});
+
+export type Notification = {
+  id?: string;
+  /** The type of notification. */
+  type?: "sms_notification" | "email_notification" | "phone_notification" | "push_notification";
+  /** The time at which the notification was sent */
+  started_at?: string;
+  /** The address where the notification was sent. This will be null for notification type `push_notification`. */
+  address?: string;
+  user?: UserReference;
+  /** The address of the conference bridge */
+  conferenceAddress?: string;
+  status?: string;
+  ""?: string;
+};
+/** {@link Notification} as a request sends it, without its `readOnly` fields. */
+export type NotificationInput = {
+  id?: string;
+  user?: UserReferenceInput;
+  /** The address of the conference bridge */
+  conferenceAddress?: string;
+  status?: string;
+  ""?: string;
+};
+
+export type AgentReference = Reference & {
+  type?: "user_reference" | "service_reference" | "integration_reference";
+};
+/** {@link AgentReference} as a request sends it, without its `readOnly` fields. */
+export type AgentReferenceInput = ReferenceInput & {
+  type?: "user_reference" | "service_reference" | "integration_reference";
+};
+
+export type Context = {
+  /** The type of context being attached to the incident. */
+  type: "link" | "image";
+  /** The link's target url */
+  href?: string;
+  /** The image's source url */
+  src?: string;
+  /** The alternate display for an image */
+  text?: string;
+};
+
+export type IncidentReference = Reference & {
+  type?: "incident_reference";
+};
+/** {@link IncidentReference} as a request sends it, without its `readOnly` fields. */
+export type IncidentReferenceInput = ReferenceInput & {
+  type?: "incident_reference";
+};
+
+export type AlertCount = {
+  /** The count of triggered alerts grouped into this incident */
+  triggered?: number;
+  /** The count of resolved alerts grouped into this incident */
+  resolved?: number;
+  /** The total count of alerts grouped into this incident */
+  all?: number;
+};
+
 export type Team = {
   id?: string;
   /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
@@ -565,6 +1031,34 @@ export type TeamInput = {
   default_role?: "manager" | "none";
 };
 
+/** An incident action is a pending change to an incident that will automatically happen at some future time. */
+export type IncidentAction = {
+  type: "unacknowledge" | "escalate" | "resolve" | "urgency_change";
+  at: string;
+  /** The urgency that the incident will change to. This field is only present when the type is `urgency_change`. */
+  to?: "high";
+};
+
+export type Acknowledgement = {
+  /** Time at which the acknowledgement was created. */
+  at: string;
+  acknowledger: AcknowledgerReference | User | Service;
+};
+/** {@link Acknowledgement} as a request sends it, without its `readOnly` fields. */
+export type AcknowledgementInput = {
+  /** Time at which the acknowledgement was created. */
+  at: string;
+  acknowledger: AcknowledgerReferenceInput | UserInput | ServiceInput;
+};
+
+export type AcknowledgerReference = Reference & {
+  type?: "user_reference" | "service_reference";
+};
+/** {@link AcknowledgerReference} as a request sends it, without its `readOnly` fields. */
+export type AcknowledgerReferenceInput = ReferenceInput & {
+  type?: "user_reference" | "service_reference";
+};
+
 export type Priority = {
   id?: string;
   /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
@@ -591,6 +1085,392 @@ export type PriorityInput = {
   description?: string;
 };
 
+export type ResolveReason = {
+  /** The reason the incident was resolved. The only reason currently supported is merge. */
+  type?: "merge_resolve_reason";
+  incident?: IncidentReference;
+};
+/** {@link ResolveReason} as a request sends it, without its `readOnly` fields. */
+export type ResolveReasonInput = {
+  /** The reason the incident was resolved. The only reason currently supported is merge. */
+  type?: "merge_resolve_reason";
+  incident?: IncidentReferenceInput;
+};
+
+export type ConferenceBridge = {
+  /** The phone number of the conference call for the conference bridge. Phone numbers should be formatted like +1 415-555-1212,,,,1234#, where a comma (,) represents a one-second wait and pound (#) completes access code input. */
+  conference_number?: string;
+  /** An URL for the conference bridge. This could be a link to a web conference or Slack channel. */
+  conference_url?: string;
+};
+
+export type IncidentsRespondersReference = {
+  /** The status of the responder being added to the incident */
+  state?: "pending" | "joined" | "declined" | "user_cancelled";
+  user?: UserReference;
+  incident?: IncidentReference;
+  updated_at?: string;
+  /** The message sent with the responder request */
+  message?: string;
+  requester?: UserReference;
+  requested_at?: string;
+  /** Names of escalation policies that this responder was requested through, if applicable */
+  escalation_policy_requests?: string[];
+};
+/** {@link IncidentsRespondersReference} as a request sends it, without its `readOnly` fields. */
+export type IncidentsRespondersReferenceInput = {
+  /** The status of the responder being added to the incident */
+  state?: "pending" | "joined" | "declined" | "user_cancelled";
+  user?: UserReferenceInput;
+  incident?: IncidentReferenceInput;
+  updated_at?: string;
+  /** The message sent with the responder request */
+  message?: string;
+  requester?: UserReferenceInput;
+  requested_at?: string;
+  /** Names of escalation policies that this responder was requested through, if applicable */
+  escalation_policy_requests?: readonly string[];
+};
+
+export type ResponderRequest = {
+  /** The ID of the responder request */
+  id?: string;
+  incident?: IncidentReference;
+  requester?: UserReference;
+  /** The time the request was made */
+  requested_at?: string;
+  /** The message sent with the responder request */
+  message?: string;
+  /** The array of targets the responder request is being sent to */
+  responder_request_targets?: ResponderRequestTargetReference[];
+};
+/** {@link ResponderRequest} as a request sends it, without its `readOnly` fields. */
+export type ResponderRequestInput = {
+  /** The ID of the responder request */
+  id?: string;
+  incident?: IncidentReferenceInput;
+  requester?: UserReferenceInput;
+  /** The time the request was made */
+  requested_at?: string;
+  /** The message sent with the responder request */
+  message?: string;
+  /** The array of targets the responder request is being sent to */
+  responder_request_targets?: readonly ResponderRequestTargetReference[];
+};
+
+export type ResponderRequestTargetReference = {
+  responder_request_target: {
+    /** The id of the user or escalation policy. */
+    id: string;
+    type: "user_reference" | "escalation_policy_reference";
+  };
+};
+
+export type IncidentBody = {
+  /** Additional incident details. */
+  details?: string;
+  type: "incident_body";
+};
+
+export type PriorityReference = Reference & {
+  type?: "priority_reference";
+};
+/** {@link PriorityReference} as a request sends it, without its `readOnly` fields. */
+export type PriorityReferenceInput = ReferenceInput & {
+  type?: "priority_reference";
+};
+
+export type IncidentTypeReference = {
+  id?: string;
+  /** The name of the Incident Type. */
+  name?: string;
+};
+
+export type Alert = {
+  id?: string;
+  /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
+  summary?: string | null;
+  /** A string that determines the schema of the object. This must be the standard name for the entity, suffixed by `_reference` if the object is a reference. */
+  type?: string;
+  /** the API show URL at which the object is accessible */
+  self?: string | null;
+  /** a URL at which the entity is uniquely displayed in the Web app */
+  html_url?: string | null;
+} & {
+  /** The date/time the alert was first triggered. */
+  created_at?: string;
+  /** The type of object being created. */
+  type: "alert";
+  /** The current status of the alert. */
+  status?: "triggered" | "resolved";
+  /** The alert's de-duplication key. */
+  alert_key?: string;
+  service?: ServiceReference;
+  first_trigger_log_entry?: LogEntryReference;
+  incident?: IncidentReference;
+  /** Whether or not an alert is suppressed. Suppressed alerts are not created with a parent incident. */
+  suppressed?: boolean;
+  /** The magnitude of the problem as reported by the monitoring tool. */
+  severity?: "info" | "warning" | "error" | "critical";
+  integration?: IntegrationReference;
+  /** A JSON object containing data describing the alert. */
+  body?: {
+    /** The type of the body. */
+    type?: "alert_body";
+    /** Contexts to be included with the body such as links to graphs or images. */
+    contexts?: Context[];
+    /** An arbitrary JSON object or string containing any data explaining the nature of the alert. */
+    details?: {
+      [key: string]: unknown;
+    };
+  };
+};
+/** {@link Alert} as a request sends it, without its `readOnly` fields. */
+export type AlertInput = {
+  id?: string;
+} & {
+  /** The type of object being created. */
+  type: "alert";
+  /** The current status of the alert. */
+  status?: "triggered" | "resolved";
+  service?: ServiceReferenceInput;
+  first_trigger_log_entry?: LogEntryReferenceInput;
+  incident?: IncidentReferenceInput;
+  integration?: IntegrationReferenceInput;
+};
+
+export type AcknowledgeLogEntry = LogEntry & {
+  /** Duration for which the acknowledgement lasts, in seconds. Services can contain an `acknowledgement_timeout` property, which specifies the length of time acknowledgements should last for. Each time an incident is acknowledged, this timeout is copied into the acknowledgement log entry. This property is optional, as older log entries may not contain it. It may also be `null`, as acknowledgements can be performed on incidents whose services have no `acknowledgement_timeout` set. */
+  acknowledgement_timeout?: number;
+  type?: "acknowledgement_log_entry";
+};
+/** {@link AcknowledgeLogEntry} as a request sends it, without its `readOnly` fields. */
+export type AcknowledgeLogEntryInput = LogEntryInput & {
+  /** Duration for which the acknowledgement lasts, in seconds. Services can contain an `acknowledgement_timeout` property, which specifies the length of time acknowledgements should last for. Each time an incident is acknowledged, this timeout is copied into the acknowledgement log entry. This property is optional, as older log entries may not contain it. It may also be `null`, as acknowledgements can be performed on incidents whose services have no `acknowledgement_timeout` set. */
+  acknowledgement_timeout?: number;
+  type?: "acknowledgement_log_entry";
+};
+
+export type AnnotateLogEntry = LogEntry & {
+  type?: "annotate_log_entry";
+};
+/** {@link AnnotateLogEntry} as a request sends it, without its `readOnly` fields. */
+export type AnnotateLogEntryInput = LogEntryInput & {
+  type?: "annotate_log_entry";
+};
+
+export type AssignLogEntry = LogEntry & {
+  /** An array of assigned Users for this log entry */
+  assignees?: UserReference[];
+  type?: "assign_log_entry";
+};
+/** {@link AssignLogEntry} as a request sends it, without its `readOnly` fields. */
+export type AssignLogEntryInput = LogEntryInput & {
+  type?: "assign_log_entry";
+};
+
+export type DelegateLogEntry = LogEntry & {
+  /** An array of assigned Users for this log entry */
+  assignees?: UserReference[];
+  type?: "delegate_log_entry";
+};
+/** {@link DelegateLogEntry} as a request sends it, without its `readOnly` fields. */
+export type DelegateLogEntryInput = LogEntryInput & {
+  type?: "delegate_log_entry";
+};
+
+export type EscalateLogEntry = LogEntry & {
+  /** An array of assigned Users for this log entry */
+  assignees?: UserReference[];
+  type?: "escalate_log_entry";
+};
+/** {@link EscalateLogEntry} as a request sends it, without its `readOnly` fields. */
+export type EscalateLogEntryInput = LogEntryInput & {
+  type?: "escalate_log_entry";
+};
+
+export type ExhaustEscalationPathLogEntry = LogEntry & {
+  type?: "exhaust_escalation_path_log_entry";
+};
+/** {@link ExhaustEscalationPathLogEntry} as a request sends it, without its `readOnly` fields. */
+export type ExhaustEscalationPathLogEntryInput = LogEntryInput & {
+  type?: "exhaust_escalation_path_log_entry";
+};
+
+export type NotifyLogEntry = LogEntry & {
+  /** Time at which the log entry was created */
+  created_at?: string;
+  user?: UserReference;
+  type?: "notify_log_entry";
+};
+/** {@link NotifyLogEntry} as a request sends it, without its `readOnly` fields. */
+export type NotifyLogEntryInput = LogEntryInput & {
+  user?: UserReferenceInput;
+  type?: "notify_log_entry";
+};
+
+export type ReachAckLimitLogEntry = LogEntry & {
+  type?: "reach_ack_limit_log_entry";
+};
+/** {@link ReachAckLimitLogEntry} as a request sends it, without its `readOnly` fields. */
+export type ReachAckLimitLogEntryInput = LogEntryInput & {
+  type?: "reach_ack_limit_log_entry";
+};
+
+export type ReachTriggerLimitLogEntry = LogEntry & {
+  type?: "reach_trigger_limit_log_entry";
+};
+/** {@link ReachTriggerLimitLogEntry} as a request sends it, without its `readOnly` fields. */
+export type ReachTriggerLimitLogEntryInput = LogEntryInput & {
+  type?: "reach_trigger_limit_log_entry";
+};
+
+export type RepeatEscalationPathLogEntry = LogEntry & {
+  type?: "repeat_escalation_path_log_entry";
+};
+/** {@link RepeatEscalationPathLogEntry} as a request sends it, without its `readOnly` fields. */
+export type RepeatEscalationPathLogEntryInput = LogEntryInput & {
+  type?: "repeat_escalation_path_log_entry";
+};
+
+export type ResolveLogEntry = LogEntry & {
+  type?: "resolve_log_entry";
+};
+/** {@link ResolveLogEntry} as a request sends it, without its `readOnly` fields. */
+export type ResolveLogEntryInput = LogEntryInput & {
+  type?: "resolve_log_entry";
+};
+
+export type SnoozeLogEntry = LogEntry & {
+  changed_actions?: IncidentAction[];
+  type?: "snooze_log_entry";
+};
+/** {@link SnoozeLogEntry} as a request sends it, without its `readOnly` fields. */
+export type SnoozeLogEntryInput = LogEntryInput & {
+  changed_actions?: readonly IncidentAction[];
+  type?: "snooze_log_entry";
+};
+
+export type UnacknowledgeLogEntry = LogEntry & {
+  type?: "unacknowledge_log_entry";
+};
+/** {@link UnacknowledgeLogEntry} as a request sends it, without its `readOnly` fields. */
+export type UnacknowledgeLogEntryInput = LogEntryInput & {
+  type?: "unacknowledge_log_entry";
+};
+
+export type UrgencyChangeLogEntry = LogEntry & {
+  type?: "urgency_change_log_entry";
+};
+/** {@link UrgencyChangeLogEntry} as a request sends it, without its `readOnly` fields. */
+export type UrgencyChangeLogEntryInput = LogEntryInput & {
+  type?: "urgency_change_log_entry";
+};
+
+export type FieldValueChangeLogEntry = LogEntry & {
+  type?: "field_value_change_log_entry";
+};
+/** {@link FieldValueChangeLogEntry} as a request sends it, without its `readOnly` fields. */
+export type FieldValueChangeLogEntryInput = LogEntryInput & {
+  type?: "field_value_change_log_entry";
+};
+
+export type CustomFieldValueChangeLogEntry = LogEntry & {
+  type?: "custom_field_value_change_log_entry";
+};
+/** {@link CustomFieldValueChangeLogEntry} as a request sends it, without its `readOnly` fields. */
+export type CustomFieldValueChangeLogEntryInput = LogEntryInput & {
+  type?: "custom_field_value_change_log_entry";
+};
+
+export type IncidentNote = {
+  id?: string;
+  user?: Reference & {
+    type?: "user_reference" | "bot_user_reference";
+  };
+  /** The means by which this Note was created. Has different formats depending on type. */
+  channel?: {
+    /** A string describing the source of the Note. */
+    summary: string;
+    id?: string;
+    /** A string that determines the schema of the object */
+    type?: string;
+    /** The API show URL at which the object is accessible */
+    self?: string;
+    /** a URL at which the entity is uniquely displayed in the Web app */
+    html_url?: string;
+  };
+  /** The note content */
+  content: string;
+  /** The time at which the note was submitted */
+  created_at?: string;
+  /** The time at which the note was last updated */
+  updated_at?: string;
+};
+/** {@link IncidentNote} as a request sends it, without its `readOnly` fields. */
+export type IncidentNoteInput = {
+  id?: string;
+  user?: ReferenceInput & {
+    type?: "user_reference" | "bot_user_reference";
+  };
+  /** The note content */
+  content: string;
+};
+
+export type StatusUpdate = {
+  id?: string;
+  /** The message of the status update. */
+  message?: string;
+  /** The date/time when this status update was created. */
+  created_at?: string;
+  sender?: UserReference;
+  /** The subject of the custom html email status update. Present if included in request body. */
+  subject?: string;
+  /** The html content of the custom html email status update. Present if included in request body. */
+  html_message?: string;
+};
+/** {@link StatusUpdate} as a request sends it, without its `readOnly` fields. */
+export type StatusUpdateInput = {
+  id?: string;
+  /** The message of the status update. */
+  message?: string;
+  /** The date/time when this status update was created. */
+  created_at?: string;
+  sender?: UserReferenceInput;
+  /** The subject of the custom html email status update. Present if included in request body. */
+  subject?: string;
+  /** The html content of the custom html email status update. Present if included in request body. */
+  html_message?: string;
+};
+
+export type Oncall = {
+  escalation_policy?: EscalationPolicyReference;
+  user?: UserReference;
+  /** The schedule from which this on-call originates. May be a legacy schedule reference or a v3 schedule reference. */
+  schedule?: ScheduleReference | V3ScheduleReference;
+  /** The escalation level for the on-call. */
+  escalation_level?: number;
+  /** The start of the on-call. If `null`, the on-call is a permanent user on-call. */
+  start?: string;
+  /** The end of the on-call. If `null`, the user does not go off-call. */
+  end?: string;
+};
+/** {@link Oncall} as a request sends it, without its `readOnly` fields. */
+export type OncallInput = {
+  escalation_policy?: EscalationPolicyReferenceInput;
+  user?: UserReferenceInput;
+  /** The schedule from which this on-call originates. May be a legacy schedule reference or a v3 schedule reference. */
+  schedule?: ScheduleReferenceInput | V3ScheduleReference;
+};
+
+export type ScheduleReference = Reference & {
+  type?: "schedule_reference";
+};
+/** {@link ScheduleReference} as a request sends it, without its `readOnly` fields. */
+export type ScheduleReferenceInput = ReferenceInput & {
+  type?: "schedule_reference";
+};
+
 /**
  * Lightweight schedule object returned by the list endpoint.
  * Uses `"type": "schedule_v3_reference"` to distinguish from
@@ -603,4 +1483,1099 @@ export type V3ScheduleReference = {
   summary: string;
   self?: string;
   html_url?: string;
+};
+
+export type Schedule = {
+  id?: string;
+  /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
+  summary?: string | null;
+  /** A string that determines the schema of the object. This must be the standard name for the entity, suffixed by `_reference` if the object is a reference. */
+  type?: string;
+  /** the API show URL at which the object is accessible */
+  self?: string | null;
+  /** a URL at which the entity is uniquely displayed in the Web app */
+  html_url?: string | null;
+} & {
+  /** The type of object being created. */
+  type: "schedule";
+  /** A list of schedule layers. */
+  schedule_layers?: ScheduleLayer[];
+  /** The time zone of the schedule. */
+  time_zone: string;
+  /** The name of the schedule */
+  name?: string;
+  /** The description of the schedule */
+  description?: string;
+  final_schedule?: SubSchedule;
+  overrides_subschedule?: SubSchedule;
+  /** An array of all of the escalation policies that uses this schedule. */
+  escalation_policies?: EscalationPolicyReference[];
+  /** An array of all of the users on the schedule. */
+  users?: UserReference[];
+  /** An array of all of the teams on the schedule. */
+  teams?: TeamReference[];
+  next_oncall_for_user?: {
+    /** The start date for the User shift */
+    start?: string;
+    /** The end date for the User shift */
+    end?: string;
+    user?: Reference;
+  };
+};
+/** {@link Schedule} as a request sends it, without its `readOnly` fields. */
+export type ScheduleInput = {
+  id?: string;
+} & {
+  /** The type of object being created. */
+  type: "schedule";
+  /** A list of schedule layers. */
+  schedule_layers?: readonly ScheduleLayerInput[];
+  /** The time zone of the schedule. */
+  time_zone: string;
+  /** The name of the schedule */
+  name?: string;
+  /** The description of the schedule */
+  description?: string;
+  final_schedule?: SubScheduleInput;
+  overrides_subschedule?: SubScheduleInput;
+  next_oncall_for_user?: {
+    user?: ReferenceInput;
+  };
+};
+
+export type ScheduleLayer = {
+  id?: string;
+  /** The start time of this layer. */
+  start: string;
+  /** The end time of this layer. If `null`, the layer does not end. */
+  end?: string;
+  /** The ordered list of users on this layer. The position of the user on the list determines their order in the layer. */
+  users: ScheduleLayerUser[];
+  /** An array of restrictions for the layer. A restriction is a limit on which period of the day or week the schedule layer can accept assignments. Restrictions respect the `time_zone` parameter of the request. */
+  restrictions?: Restriction[];
+  /** The effective start time of the layer. This can be before the start time of the schedule. */
+  rotation_virtual_start: string;
+  /** The duration of each on-call shift in seconds. */
+  rotation_turn_length_seconds: number;
+  /** The name of the schedule layer. */
+  name?: string;
+  /** This is a list of entries on the computed layer for the current time range. Since or until must be set in order for this field to be populated. */
+  rendered_schedule_entries?: ScheduleLayerEntry[];
+  /** The percentage of the time range covered by this layer. Returns null unless since or until are set. */
+  rendered_coverage_percentage?: number;
+};
+/** {@link ScheduleLayer} as a request sends it, without its `readOnly` fields. */
+export type ScheduleLayerInput = {
+  id?: string;
+  /** The start time of this layer. */
+  start: string;
+  /** The end time of this layer. If `null`, the layer does not end. */
+  end?: string;
+  /** The ordered list of users on this layer. The position of the user on the list determines their order in the layer. */
+  users: readonly ScheduleLayerUserInput[];
+  /** An array of restrictions for the layer. A restriction is a limit on which period of the day or week the schedule layer can accept assignments. Restrictions respect the `time_zone` parameter of the request. */
+  restrictions?: readonly Restriction[];
+  /** The effective start time of the layer. This can be before the start time of the schedule. */
+  rotation_virtual_start: string;
+  /** The duration of each on-call shift in seconds. */
+  rotation_turn_length_seconds: number;
+  /** The name of the schedule layer. */
+  name?: string;
+};
+
+export type ScheduleLayerUser = {
+  user: UserReference;
+};
+/** {@link ScheduleLayerUser} as a request sends it, without its `readOnly` fields. */
+export type ScheduleLayerUserInput = {
+  user: UserReferenceInput;
+};
+
+export type Restriction = {
+  /** Specify the types of `restriction`. */
+  type: "daily_restriction" | "weekly_restriction";
+  /** The duration of the restriction in seconds. */
+  duration_seconds: number;
+  /** The start time in HH:mm:ss format. */
+  start_time_of_day: string;
+  /** Only required for use with a `weekly_restriction` restriction type. The first day of the weekly rotation schedule as [ISO 8601 day](https://en.wikipedia.org/wiki/ISO_week_date) (1 is Monday, etc.) */
+  start_day_of_week?: number;
+};
+
+export type ScheduleLayerEntry = {
+  user?: UserReference;
+  /** The start time of this entry. */
+  start: string;
+  /** The end time of this entry. If null, the entry does not end. */
+  end: string;
+};
+/** {@link ScheduleLayerEntry} as a request sends it, without its `readOnly` fields. */
+export type ScheduleLayerEntryInput = {
+  user?: UserReferenceInput;
+};
+
+export type SubSchedule = {
+  /** The name of the subschedule */
+  name: "Final Schedule" | "Overrides";
+  /** This is a list of entries on the computed layer for the current time range. Since or until must be set in order for this field to be populated. */
+  rendered_schedule_entries?: ScheduleLayerEntry[];
+  /** The percentage of the time range covered by this layer. Returns null unless since or until are set. */
+  rendered_coverage_percentage?: number;
+};
+/** {@link SubSchedule} as a request sends it, without its `readOnly` fields. */
+export type SubScheduleInput = {};
+
+export type Override = {
+  id?: string;
+  /** A short-form, server-generated string that provides succinct, important information about an object suitable for primary labeling of an entity in a client. In many cases, this will be identical to `name`, though it is not intended to be an identifier. */
+  summary?: string | null;
+  /** A string that determines the schema of the object. This must be the standard name for the entity, suffixed by `_reference` if the object is a reference. */
+  type?: string;
+  /** the API show URL at which the object is accessible */
+  self?: string | null;
+  /** a URL at which the entity is uniquely displayed in the Web app */
+  html_url?: string | null;
+} & {
+  id?: string;
+  /** The start date and time for the override. */
+  start: string;
+  /** The end date and time for the override. */
+  end: string;
+  user: UserReference;
+};
+/** {@link Override} as a request sends it, without its `readOnly` fields. */
+export type OverrideInput = {
+  id?: string;
+} & {
+  id?: string;
+  /** The start date and time for the override. */
+  start: string;
+  /** The end date and time for the override. */
+  end: string;
+  user: UserReferenceInput;
+};
+
+export type V3ErrorResponse = {
+  error: {
+    message: string;
+    code: number;
+    /**
+     * Map of field path to list of validation messages for that field.
+     * Field paths use dot notation prefixed by the resource type
+     * (e.g. `event.effective_since`, `rotation.events`).
+     */
+    errors?: {
+      [key: string]: string[];
+    };
+  };
+};
+
+export type ScheduleResponse = {
+  schedule: {
+    id: string;
+    /**
+     * Always `"schedule_v3"` for schedules created with this API.
+     * Schedules created with the legacy `/schedules` API use `"schedule"`.
+     */
+    type: "schedule_v3";
+    name: string;
+    time_zone: string;
+    description?: string;
+    teams?: TeamReference[];
+    /** Escalation policies that reference this schedule */
+    escalation_policies?: EscalationPolicyReference[];
+    /** All users referenced in this schedule (only present when include[]=users) */
+    users?: UserReference[];
+    /** Rotations in this schedule */
+    rotations?: Rotation[];
+    /**
+     * Computed on-call assignments for the requested time range.
+     * Only present when `include[]=final_schedule` is specified and
+     * `since`/`until` are provided.
+     */
+    final_schedule?: FinalSchedule;
+    /** iCal HTTP feed URL for this schedule */
+    http_cal_url?: string;
+    /** iCal webcal URL for this schedule */
+    web_cal_url?: string;
+    self?: string;
+    html_url?: string;
+  };
+};
+/** {@link ScheduleResponse} as a request sends it, without its `readOnly` fields. */
+export type ScheduleResponseInput = {
+  schedule: {
+    id: string;
+    /**
+     * Always `"schedule_v3"` for schedules created with this API.
+     * Schedules created with the legacy `/schedules` API use `"schedule"`.
+     */
+    type: "schedule_v3";
+    name: string;
+    time_zone: string;
+    description?: string;
+    teams?: readonly TeamReferenceInput[];
+    /** Escalation policies that reference this schedule */
+    escalation_policies?: readonly EscalationPolicyReferenceInput[];
+    /** All users referenced in this schedule (only present when include[]=users) */
+    users?: readonly UserReferenceInput[];
+    /** Rotations in this schedule */
+    rotations?: readonly Rotation[];
+    /**
+     * Computed on-call assignments for the requested time range.
+     * Only present when `include[]=final_schedule` is specified and
+     * `since`/`until` are provided.
+     */
+    final_schedule?: FinalSchedule;
+    /** iCal HTTP feed URL for this schedule */
+    http_cal_url?: string;
+    /** iCal webcal URL for this schedule */
+    web_cal_url?: string;
+    self?: string;
+    html_url?: string;
+  };
+};
+
+/**
+ * A rotation within a schedule. All scheduling logic (recurrence,
+ * assignment strategy, members) is defined on the rotation's events.
+ */
+export type Rotation = {
+  id: string;
+  type: "schedule_rotation";
+  /** Events in this rotation */
+  events?: Event[];
+  self?: string;
+  html_url?: string;
+};
+
+/**
+ * An event defines when and how users are on-call within a rotation.
+ * It combines a recurring time window (`start_time`, `end_time`,
+ * `recurrence`) with an assignment strategy and an effective date range
+ * (`effective_since`, `effective_until`).
+ */
+export type Event = {
+  id: string;
+  type: "schedule_event";
+  /** Display name for this event */
+  name: string;
+  /**
+   * A time-of-day value with an explicit time zone. Used for event
+   * `start_time` and `end_time` to define the recurring window of coverage
+   * (e.g., 9 AM–5 PM every Monday in New York).
+   */
+  start_time: ZonedDateTime;
+  /**
+   * A time-of-day value with an explicit time zone. Used for event
+   * `start_time` and `end_time` to define the recurring window of coverage
+   * (e.g., 9 AM–5 PM every Monday in New York).
+   */
+  end_time: ZonedDateTime;
+  /** When this event starts producing shifts (UTC) */
+  effective_since: string;
+  /** When this event stops producing shifts (UTC). Null means indefinite. */
+  effective_until?: string | null;
+  /** RFC 5545 recurrence rules defining the repeating pattern. This must be an array containing:  <br> - Exactly one <b>RRULE</b> <br>- Zero or more <b>EXDATE</b> <br>- Zero or more <b>RDATE</b> */
+  recurrence: string[];
+  /**
+   * Defines how users are assigned on-call within an event's time window.
+   *
+   * - `rotating_member_assignment_strategy`: users rotate in sequence.
+   *   `shifts_per_member` controls how many consecutive shift periods each
+   *   member covers before rotating.
+   * - `every_member_assignment_strategy`: all listed members are on-call
+   *   simultaneously for every occurrence.
+   */
+  assignment_strategy: EventAssignmentStrategy;
+  self?: string;
+  html_url?: string;
+};
+
+/**
+ * A time-of-day value with an explicit time zone. Used for event
+ * `start_time` and `end_time` to define the recurring window of coverage
+ * (e.g., 9 AM–5 PM every Monday in New York).
+ */
+export type ZonedDateTime = {
+  /** The date and time */
+  date_time: string;
+  /** IANA timezone identifier */
+  time_zone: string;
+};
+
+/**
+ * Defines how users are assigned on-call within an event's time window.
+ *
+ * - `rotating_member_assignment_strategy`: users rotate in sequence.
+ *   `shifts_per_member` controls how many consecutive shift periods each
+ *   member covers before rotating.
+ * - `every_member_assignment_strategy`: all listed members are on-call
+ *   simultaneously for every occurrence.
+ */
+export type EventAssignmentStrategy = {
+  type: "rotating_member_assignment_strategy" | "every_member_assignment_strategy";
+  /**
+   * Required for `rotating_member_assignment_strategy`. Number of
+   * consecutive shift occurrences each member covers before the
+   * next member takes over.
+   *
+   * Must be omitted (or null) for `every_member_assignment_strategy`.
+   *
+   * **UI editor constraint:** When `recurrence` uses `FREQ=WEEKLY`,
+   * `shifts_per_member` must be evenly divisible by the number of days
+   * listed in the RRULE `BYDAY` parameter. Events that violate this
+   * are fully functional via the API but cannot be loaded in the
+   * web schedule editor.
+   */
+  shifts_per_member?: number;
+  members: ShiftMember[];
+};
+
+/** A member (user) assigned to a shift or rotation slot */
+export type ShiftMember = {
+  /**
+   * `user_member` — a specific user is assigned.
+   * `empty_member` — the slot is intentionally unassigned.
+   */
+  type: "user_member" | "empty_member";
+  /** The ID of the user. Required when type is `user_member`. */
+  user_id?: string;
+};
+
+/**
+ * Computed on-call assignments for the requested time range.
+ * Only present when `include[]=final_schedule` is specified and
+ * `since`/`until` are provided.
+ */
+export type FinalSchedule = {
+  type: "final_schedule";
+  /** Percentage of the requested time range that has on-call coverage (0–100) */
+  rendered_coverage_percentage: number;
+  computed_shift_assignments: ComputedShiftAssignment[];
+};
+
+/** A single computed on-call assignment within the final schedule */
+export type ComputedShiftAssignment = {
+  type: "computed_shift_assignment";
+  start_time: string;
+  end_time: string;
+  /** A member (user) assigned to a shift or rotation slot */
+  member: ShiftMember;
+  /** Where a computed shift assignment originated */
+  source: ShiftSource;
+};
+
+/** Where a computed shift assignment originated */
+export type ShiftSource = {
+  type: "schedule_rotation" | "custom_shift" | "schedule_rotation_override" | "custom_shift_override";
+  /** Present for schedule_rotation and schedule_rotation_override sources */
+  rotation_id?: string;
+  /** Present for custom_shift and custom_shift_override sources */
+  shift_id?: string;
+  /** Present for schedule_rotation_override and custom_shift_override sources */
+  override_id?: string;
+};
+
+/**
+ * Temporarily replaces a scheduled on-call member for a specific
+ * time period. References either a `rotation_id` or a `custom_shift_id`
+ * to identify the source shift being overridden (not both).
+ */
+export type OverrideShift = {
+  id: string;
+  type: "override_shift";
+  /** ID of the rotation whose shift is being overridden (mutually exclusive with custom_shift_id) */
+  rotation_id?: string;
+  /** ID of the custom shift being overridden (mutually exclusive with rotation_id) */
+  custom_shift_id?: string;
+  start_time: string;
+  end_time: string;
+  /** A member (user) assigned to a shift or rotation slot */
+  overridden_member: ShiftMember;
+  /** A member (user) assigned to a shift or rotation slot */
+  overriding_member: ShiftMember;
+  self?: string;
+  html_url?: string;
+};
+
+/**
+ * The ungrouped operations, as a schema for `createOpenAPIClient` from
+ * `@gadgets/gatekeeper-kit/http`.
+ */
+export type Api = {
+  get: [
+    /** List escalation policies (`listEscalationPolicies`) */
+    {
+      path: "/escalation_policies";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Filters the result, showing only the records whose name matches the query. */
+        query?: string;
+        /** Filters the results, showing only escalation policies on which any of the users is a target. */
+        "user_ids[]"?: readonly string[];
+        /** An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter. */
+        "team_ids[]"?: readonly string[];
+        /** Array of additional Models to include in response. */
+        "include[]"?: readonly ("services" | "teams" | "targets" | "escalation_rule_assignment_strategies")[];
+        /** Used to specify the field you wish to sort the results on. */
+        sort_by?: "name" | "name:asc" | "name:desc";
+      };
+      response: Pagination & {
+        escalation_policies: EscalationPolicy[];
+      };
+    },
+    /** Get an escalation policy (`getEscalationPolicy`) */
+    {
+      path: "/escalation_policies/{id}";
+      query: {
+        /** Array of additional Models to include in response. */
+        "include[]"?: readonly ("services" | "teams" | "targets" | "escalation_rule_assignment_strategies")[];
+      };
+      response: {
+        escalation_policy: EscalationPolicy;
+      };
+    },
+    /** List incidents (`listIncidents`) */
+    {
+      path: "/incidents";
+      query: {
+        /** The number of results per page. Maximum of 100. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** When set to all, the since and until parameters and defaults are ignored. */
+        date_range?: "all";
+        /** Incident de-duplication key. Incidents with child alerts do not have an incident key; querying by incident key will return incidents whose alerts have alert_key matching the given incident key. */
+        incident_key?: string;
+        /** Returns only the incidents associated with the passed service(s). This expects one or more service IDs. */
+        "service_ids[]"?: readonly string[];
+        /** An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter. */
+        "team_ids[]"?: readonly string[];
+        /** Returns only the incidents currently assigned to the passed user(s). This expects one or more user IDs. Note: When using the assigned_to_user filter, you will only receive incidents with statuses of triggered or acknowledged. This is because resolved incidents are not assigned to any user. */
+        "user_ids[]"?: readonly string[];
+        /** Array of the urgencies of the incidents to be returned. Defaults to all urgencies. Account must have the `urgencies` ability to do this. */
+        "urgencies[]"?: readonly ("high" | "low")[];
+        /** Time zone used to render timestamps and to interpret `since/until` values before filtering. Rendering defaults to UTC if omitted. `since/until` default to the account's time zone if omitted. */
+        time_zone?: string;
+        /** Return only incidents with the given statuses. To query multiple statuses, pass `statuses[]` more than once, for example: `https://api.pagerduty.com/incidents?statuses[]=triggered&statuses[]=acknowledged`. (More status codes may be introduced in the future.) */
+        "statuses[]"?: readonly ("triggered" | "acknowledged" | "resolved")[];
+        /** Used to specify both the field you wish to sort the results on (incident_number/created_at/resolved_at/urgency), as well as the direction (asc/desc) of the results. The sort_by field and direction should be separated by a colon. A maximum of two fields can be included, separated by a comma. Sort direction defaults to ascending. The account must have the `urgencies` ability to sort by the urgency. */
+        sort_by?: string;
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("acknowledgers" | "agents" | "assignees" | "conference_bridge" | "escalation_policies" | "first_trigger_log_entries" | "priorities" | "services" | "teams" | "users")[];
+        /** The start of the date range over which you want to search. Maximum range is 6 months and default is 1 month. */
+        since?: string;
+        /** The end of the date range over which you want to search. Maximum range is 6 months and default is 1 month. */
+        until?: string;
+      };
+      response: Pagination & {
+        incidents: Incident[];
+      };
+    },
+    /** Get an incident (`getIncident`) */
+    {
+      path: "/incidents/{id}";
+      query: {
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("acknowledgers" | "agents" | "assignees" | "conference_bridge" | "custom_fields" | "escalation_policies" | "first_trigger_log_entries" | "priorities" | "services" | "teams" | "users" | "body")[];
+      };
+      response: {
+        incident: Incident;
+      };
+    },
+    /** List alerts for an incident (`listIncidentAlerts`) */
+    {
+      path: "/incidents/{id}/alerts";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Alert de-duplication key. */
+        alert_key?: string;
+        /** Return only alerts with the given statuses. (More status codes may be introduced in the future.) */
+        "statuses[]"?: readonly ("triggered" | "resolved")[];
+        /** Used to specify both the field you wish to sort the results on (created_at/resolved_at), as well as the direction (asc/desc) of the results. The sort_by field and direction should be separated by a colon. A maximum of two fields can be included, separated by a comma. Sort direction defaults to ascending. */
+        sort_by?: "created_at" | "resolved_at" | "created_at:asc" | "created_at:desc" | "resolved_at:asc" | "resolved_at:desc";
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("services" | "first_trigger_log_entries" | "incidents")[];
+      };
+      response: Pagination & {
+        alerts: Alert[];
+      };
+    },
+    /** List log entries for an incident (`listIncidentLogEntries`) */
+    {
+      path: "/incidents/{id}/log_entries";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Time zone in which results will be rendered. This will default to the account time zone. */
+        time_zone?: string;
+        /** The start of the date range over which you want to search. */
+        since?: string;
+        /** The end of the date range over which you want to search. */
+        until?: string;
+        /** If `true`, will return a subset of log entries that show only the most important changes to the incident. */
+        is_overview?: boolean;
+        /** Array of additional Models to include in response. */
+        "include[]"?: readonly ("incidents" | "services" | "channels" | "teams")[];
+      };
+      response: Pagination & {
+        log_entries: (AcknowledgeLogEntry | AnnotateLogEntry | AssignLogEntry | DelegateLogEntry | EscalateLogEntry | ExhaustEscalationPathLogEntry | NotifyLogEntry | ReachAckLimitLogEntry | ReachTriggerLimitLogEntry | RepeatEscalationPathLogEntry | ResolveLogEntry | SnoozeLogEntry | TriggerLogEntry | UnacknowledgeLogEntry | UrgencyChangeLogEntry | FieldValueChangeLogEntry | CustomFieldValueChangeLogEntry)[];
+      };
+    },
+    /** List notes for an incident (`listIncidentNotes`) */
+    {
+      path: "/incidents/{id}/notes";
+      response: {
+        notes: IncidentNote[];
+      };
+    },
+    /** List all of the on-calls (`listOnCalls`) */
+    {
+      path: "/oncalls";
+      query: {
+        /** Time zone in which results will be rendered. This will default to the account time zone. */
+        time_zone?: string;
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("escalation_policies" | "users" | "schedules")[];
+        /** Filters the results, showing only on-calls for the specified user IDs. */
+        "user_ids[]"?: readonly string[];
+        /** Filters the results, showing only on-calls for the specified escalation policy IDs. */
+        "escalation_policy_ids[]"?: readonly string[];
+        /** Filters the results, showing only on-calls for the specified schedule IDs. If `null` is provided in the array, it includes permanent on-calls due to direct user escalation targets. */
+        "schedule_ids[]"?: readonly string[];
+        /** The start of the time range over which you want to search. If an on-call period overlaps with the range, it will be included in the result. Defaults to current time. On-call shifts are limited to 90 days in the future. */
+        since?: string;
+        /** The end of the time range over which you want to search. If an on-call period overlaps with the range, it will be included in the result. Defaults to current time. On-call shifts are limited to 90 days in the future, and the `until` time cannot be before the `since` time. */
+        until?: string;
+        /** This will filter on-calls such that only the earliest on-call for each combination of escalation policy, escalation level, and user is returned. This is useful for determining when the "next" on-calls are for a given set of filters. */
+        earliest?: boolean;
+      };
+      response: Pagination & {
+        oncalls: Oncall[];
+      };
+    },
+    /** List priorities (`listPriorities`) */
+    {
+      path: "/priorities";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+      };
+      response: Pagination & {
+        priorities: Priority[];
+      };
+    },
+    /** List schedules (`listSchedules`) */
+    {
+      path: "/schedules";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Filters the result, showing only the records whose name matches the query. */
+        query?: string;
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("schedule_layers" | "overrides_subschedule" | "final_schedule")[];
+        /** Time zone in which results will be rendered. This will default to the current user's time zone and then the account's time zone. */
+        time_zone?: string;
+        /** Specify an `user_id`, and the schedule list API will return information about this user's next on-call. */
+        include_next_oncall_for_user?: string;
+        /** The start of the date range over which you want to show schedule entries. Defaults to 2 weeks before until if an until is given. Optional parameter. When provided with include[] for schedule types, populates the rendered_schedule_entries fields in the response. */
+        since?: string;
+        /** The end of the date range over which you want to show schedule entries. Defaults to 2 weeks after since if a since is given. Optional parameter. When provided with include[] for schedule types, populates the rendered_schedule_entries fields in the response. */
+        until?: string;
+        /** An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter. */
+        "team_ids[]"?: readonly string[];
+      };
+      response: Pagination & {
+        schedules: Schedule[];
+      };
+    },
+    /** Get a schedule (`getSchedule`) */
+    {
+      path: "/schedules/{id}";
+      query: {
+        /** Time zone in which results will be rendered. This will default to the schedule's time zone. */
+        time_zone?: string;
+        /** The start of the date range over which you want to show schedule entries. Defaults to 2 weeks before until if an until is given. Optional parameter. When provided with include[] for schedule types, populates the rendered_schedule_entries fields in the response. */
+        since?: string;
+        /** The end of the date range over which you want to show schedule entries. Defaults to 2 weeks after since if a since is given. Optional parameter. When provided with include[] for schedule types, populates the rendered_schedule_entries fields in the response. */
+        until?: string;
+        /**
+         * Any on-call schedule entries that pass the date range bounds will be truncated at the bounds, unless the parameter `overflow=true` is passed. This parameter defaults to false.
+         * For instance, if your schedule is a rotation that changes daily at midnight UTC, and your date range is from `2011-06-01T10:00:00Z` to `2011-06-01T14:00:00Z`:
+         *
+         *
+         * - If you don't pass the `overflow=true` parameter, you will get one schedule entry returned with a start of `2011-06-01T10:00:00Z` and end of `2011-06-01T14:00:00Z`.
+         * - If you do pass the `overflow=true` parameter, you will get one schedule entry returned with a start of `2011-06-01T00:00:00Z` and end of `2011-06-02T00:00:00Z`.
+         */
+        overflow?: boolean;
+        /** Specify an `user_id`, and the schedule list API will return information about this user's next on-call. */
+        include_next_oncall_for_user?: string;
+      };
+      response: {
+        schedule: Schedule;
+      };
+    },
+    /** List overrides (`listScheduleOverrides`) */
+    {
+      path: "/schedules/{id}/overrides";
+      query: {
+        /** The start of the date range over which you want to search. */
+        since: string;
+        /** The end of the date range over which you want to search. */
+        until: string;
+        /** When this parameter is present, only editable overrides will be returned. The result will only include the id of the override if this parameter is present. Only future overrides are editable. */
+        editable?: boolean;
+        /** Any on-call schedule entries that pass the date range bounds will be truncated at the bounds, unless the parameter overflow=true is passed. This parameter defaults to false. */
+        overflow?: boolean;
+      };
+      response: {
+        overrides: Override[];
+      };
+    },
+    /** List services (`listServices`) */
+    {
+      path: "/services";
+      query: {
+        /** Filters the result, showing only the records whose name matches the query. */
+        query?: string;
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter. */
+        "team_ids[]"?: readonly string[];
+        /** Time zone in which results will be rendered. This will default to the account time zone. */
+        time_zone?: string;
+        /** Used to specify the field you wish to sort the results on. */
+        sort_by?: "name" | "name:asc" | "name:desc";
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("escalation_policies" | "teams" | "integrations" | "auto_pause_notifications_parameters")[];
+        /** Filters the results, showing only services with the specified name. */
+        name?: string;
+      };
+      response: Pagination & {
+        services: Service[];
+      };
+    },
+    /** Get a service (`getService`) */
+    {
+      path: "/services/{id}";
+      query: {
+        /** Array of additional details to include. */
+        "include[]"?: readonly ("escalation_policies" | "teams" | "auto_pause_notifications_parameters" | "integrations")[];
+      };
+      response: {
+        service: Service;
+      };
+    },
+    /** List teams (`listTeams`) */
+    {
+      path: "/teams";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Filters the result, showing only the records whose name matches the query. */
+        query?: string;
+      };
+      response: Pagination & {
+        teams: Team[];
+      };
+    },
+    /** Get a team (`getTeam`) */
+    {
+      path: "/teams/{id}";
+      query: {
+        /** Array of additional Models to include in response. */
+        "include[]"?: readonly "privileges"[];
+      };
+      response: {
+        team: Team;
+      };
+    },
+    /** List members of a team (`listTeamUsers`) */
+    {
+      path: "/teams/{id}/members";
+      query: {
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Array of additional Models to include in response. */
+        "include[]"?: readonly "users"[];
+      };
+      response: Pagination & {
+        members?: {
+          user?: UserReference;
+          role?: string;
+        }[];
+      };
+    },
+    /** List users (`listUsers`) */
+    {
+      path: "/users";
+      query: {
+        /** Filters the result, showing only the records whose name matches the query. */
+        query?: string;
+        /** An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter. */
+        "team_ids[]"?: readonly string[];
+        /** The number of results per page. */
+        limit?: number;
+        /** Offset to start pagination search results. */
+        offset?: number;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** Array of additional Models to include in response. */
+        "include[]"?: readonly ("contact_methods" | "notification_rules" | "teams" | "subdomains")[];
+      };
+      response: Pagination & {
+        users: User[];
+      };
+    },
+    /** Get the current user (`getCurrentUser`) */
+    {
+      path: "/users/me";
+      query: {
+        /** Array of additional Models to include in response. Use `calendar_urls` to include `http_cal_url` and `web_cal_url`; account admins with `can_update_user` may use this to retrieve another user's calendar feed URLs. Note that these URLs are bearer credentials: anyone with the URL can read that user's on-call calendar. */
+        "include[]"?: readonly ("contact_methods" | "notification_rules" | "teams" | "subdomains" | "calendar_urls")[];
+      };
+      response: {
+        user: User;
+      };
+    },
+    /** Get a user (`getUser`) */
+    {
+      path: "/users/{id}";
+      query: {
+        /** Array of additional Models to include in response. Use `calendar_urls` to include `http_cal_url` and `web_cal_url`; account admins with `can_update_user` may use this to retrieve another user's calendar feed URLs. Note that these URLs are bearer credentials: anyone with the URL can read that user's on-call calendar. */
+        "include[]"?: readonly ("contact_methods" | "notification_rules" | "teams" | "subdomains" | "calendar_urls")[];
+      };
+      response: {
+        user: User;
+      };
+    },
+    /** List schedules (`listSchedulesV3`) */
+    {
+      path: "/v3/schedules";
+      query: {
+        /** Maximum number of schedules to return */
+        limit?: number;
+        offset?: number;
+        /** Filters the result, showing only the records whose name matches the query. */
+        query?: string;
+        /**
+         * By default the `total` field in pagination responses is set to `null` to provide the fastest possible response times. Set `total` to `true` for this field to be populated.
+         *
+         * See our [Pagination Docs](https://developer.pagerduty.com/docs/rest-api-v2/pagination/) for more information.
+         */
+        total?: boolean;
+        /** An array of team IDs. Only results related to these teams will be returned. Account must have the `teams` ability to use this parameter. */
+        "team_ids[]"?: readonly string[];
+        /** Return only schedules that include this user. */
+        user_id?: string;
+      };
+      response: {
+        schedules: V3ScheduleReference[];
+        limit?: number;
+        offset?: number;
+        /** Whether additional results exist beyond this page */
+        more?: boolean;
+      };
+    },
+    /** Get a schedule (`getScheduleV3`) */
+    {
+      path: "/v3/schedules/{id}";
+      query: {
+        /**
+         * Start of time range (ISO 8601). Send `since` and `until` together.
+         * `since` can be at most 3 years in the future.
+         */
+        since?: string;
+        /**
+         * End of time range (ISO 8601). Send `since` and `until` together.
+         * `until` must be after `since`, and can be at most 3 years and 2 weeks
+         * in the future.
+         */
+        until?: string;
+        /**
+         * IANA timezone identifier for rendering shift times. Defaults to the
+         * schedule's configured time zone.
+         */
+        time_zone?: string;
+        /** Include shifts that extend beyond the requested time range boundaries */
+        overflow?: boolean;
+        /**
+         * Additional data to include in the schedule response:
+         * - `final_schedule`: computed on-call assignments for the time range
+         * - `users`: all users referenced in the schedule
+         */
+        "include[]"?: readonly ("final_schedule" | "users")[];
+      };
+      response: ScheduleResponse;
+    },
+    /** List overrides (`listOverrides`) */
+    {
+      path: "/v3/schedules/{id}/overrides";
+      query: {
+        /** Start of time range (ISO 8601). Can be at most 2 years in the future. */
+        since: string;
+        /**
+         * End of time range (ISO 8601). Can be at most 2 years and 2 weeks in
+         * the future.
+         */
+        until: string;
+        /**
+         * IANA timezone identifier for rendering shift times. Defaults to the
+         * schedule's configured time zone.
+         */
+        time_zone?: string;
+        /** Include shifts that extend beyond the requested time range boundaries */
+        overflow?: boolean;
+      };
+      response: {
+        overrides: OverrideShift[];
+      };
+    },
+  ];
+  post: [
+    /** Create an Incident (`createIncident`) */
+    {
+      path: "/incidents";
+      body?: {
+        /** Details of the incident to be created. */
+        incident: {
+          type: "incident";
+          /** A succinct description of the nature, symptoms, cause, or effect of the incident. */
+          title: string;
+          service: ServiceReferenceInput;
+          priority?: PriorityReferenceInput;
+          /** The urgency of the incident */
+          urgency?: "high" | "low";
+          body?: IncidentBody;
+          /** A string which identifies the incident. Sending subsequent requests referencing the same service and with the same incident_key will result in those requests being rejected if an open incident matches that incident_key. */
+          incident_key?: string;
+          /** Assign the incident to these assignees. Cannot be specified if an escalation policy is given. */
+          assignments?: readonly {
+            assignee?: UserReferenceInput;
+          }[];
+          incident_type?: IncidentTypeReference;
+          escalation_policy?: EscalationPolicyReferenceInput;
+          conference_bridge?: ConferenceBridge;
+        };
+      };
+      response: {
+        incident: Incident;
+      };
+    },
+    /** Create a note on an incident (`createIncidentNote`) */
+    {
+      path: "/incidents/{id}/notes";
+      body?: {
+        note: {
+          /** The note content */
+          content: string;
+        };
+      };
+      response: {
+        note: IncidentNote;
+      };
+    },
+    /** Create a responder request for an incident (`createIncidentResponderRequest`) */
+    {
+      path: "/incidents/{id}/responder_requests";
+      body?: {
+        /** The user id of the requester. */
+        requester_id: string;
+        /** The message sent with the responder request. */
+        message: string;
+        /** The array of targets the responder request is sent to. */
+        responder_request_targets: readonly ResponderRequestTargetReference[];
+      };
+      response: {
+        responder_request: ResponderRequest;
+      };
+    },
+    /** Snooze an incident (`createIncidentSnooze`) */
+    {
+      path: "/incidents/{id}/snooze";
+      body?: {
+        /** The number of seconds to snooze the incident for. After this number of seconds has elapsed, the incident will return to the "triggered" state. */
+        duration: number;
+      };
+      response: {
+        incident: Incident;
+      };
+    },
+    /** Create a status update on an incident (`createIncidentStatusUpdate`) */
+    {
+      path: "/incidents/{id}/status_updates";
+      body?: {
+        /** The message to be posted as a status update. */
+        message: string;
+        /** The subject to be sent for the custom html email status update. Required if sending custom html email. */
+        subject?: string;
+        /** The html content to be sent for the custom html email status update. Required if sending custom html email. */
+        html_message?: string;
+      };
+      response: {
+        status_update: StatusUpdate;
+      };
+    },
+    /** Create one or more overrides (`createScheduleOverride`) */
+    {
+      path: "/schedules/{id}/overrides";
+      body: {
+        overrides?: readonly OverrideInput[];
+      };
+      response: {
+        /** HTTP Status Code reflecting the result of creating this specific override, e.g. 201 for success, 400 for invalid parameters. */
+        status?: number;
+        /** If present, an array of strings representing human-readable explanations for errors found. */
+        errors?: string[];
+        override: Override;
+      }[];
+    },
+  ];
+  put: [
+    /** Update an incident (`updateIncident`) */
+    {
+      path: "/incidents/{id}";
+      body?: {
+        /** The parameters of the incident to update. */
+        incident: {
+          /** The incident type. */
+          type: "incident" | "incident_reference";
+          /** The new status of the incident. If the incident is currently resolved, setting the status to "triggered" or "acknowledged" will reopen it. When reopening an incident to the "triggered" status, it will be assigned based on the assignees or escalation_policy fields in the request, otherwise it will be assigned to the current Escalation Policy. When reopening an incident to the "acknowledged" status, it will be assigned to the current user. */
+          status?: "resolved" | "acknowledged" | "triggered";
+          /** The priority of the incident. Can be provided as a priority object or a string matching a priority name. If a string is provided, the highest priority with a matching name will be used. */
+          priority?: {
+            /** The ID of the priority. */
+            id: string;
+            /** The user-provided short name of the priority. */
+            name?: string;
+            /** The type of the reference. */
+            type: "priority" | "priority_reference";
+          } | string | null;
+          /**
+           * The resolution for this incident. This field is used only when setting the incident status to resolved.
+           * The value provided here is added to the incident’s 'Resolve' log entry as a note and will not be displayed directly in the UI.
+           */
+          resolution?: string;
+          /** The new title of the incident. */
+          title?: string;
+          /** Escalate the incident to this level in the escalation policy. */
+          escalation_level?: number;
+          /** Assign the incident to these assignees. */
+          assignments?: readonly {
+            assignee?: UserReferenceInput;
+          }[];
+          incident_type?: IncidentTypeReference;
+          escalation_policy?: EscalationPolicyReferenceInput;
+          /** The urgency of the incident. */
+          urgency?: "high" | "low";
+          conference_bridge?: ConferenceBridge;
+          /** Assign the incident to this service. */
+          service?: {
+            /** The ID of the service. */
+            id: string;
+            /** The type of the reference. */
+            type: "service_reference";
+          };
+        };
+      };
+      response: {
+        incident: Incident;
+      };
+    },
+  ];
+  delete: [
+    /** Delete an override (`deleteScheduleOverride`) */
+    {
+      path: "/schedules/{id}/overrides/{override_id}";
+      response: undefined;
+    },
+  ];
 };

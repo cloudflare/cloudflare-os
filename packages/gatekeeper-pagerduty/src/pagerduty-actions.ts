@@ -10,7 +10,6 @@ import {
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, sanitizeTitle, type ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
-import type { IncidentsApi } from "./openapi/incidents";
 import { PagerDutyApiError, isRefusal, type BodyOf, type PagerDutyApi } from "./pagerduty-api";
 import type { Identity } from "./pagerduty-credentials";
 import { VENDOR_ID, type Tenant } from "./pagerduty-env";
@@ -207,11 +206,11 @@ async function idempotent(host: PagerDutyActionHost, op: (api: PagerDutyApi, me:
 }
 
 /** The fields `PUT /incidents/{id}` changes. */
-type IncidentChange = Omit<BodyOf<IncidentsApi, "put", "/incidents/{id}">["incident"], "type">;
+type IncidentChange = Omit<BodyOf<"put", "/incidents/{id}">["incident"], "type">;
 
 /** Updates the incident `id` with the `PUT /incidents/{id}` fields in `incident`. */
 async function putIncident(host: PagerDutyActionHost, id: string, incident: IncidentChange): Promise<void> {
-  await idempotent(host, api => api.rest.incidents.put("/incidents/{id}", {
+  await idempotent(host, api => api.rest.put("/incidents/{id}", {
     path: { id }, body: { incident: { type: "incident_reference", ...incident } },
   }));
 }
@@ -251,7 +250,7 @@ function overrideDefinition(autoApprovable: boolean) {
         .inline("Until", payload.end)),
     apply: async (payload: NewOverride, host: PagerDutyActionHost) => {
       await host.requireInScope({ kind: "schedule", id: payload.scheduleId }, payload.within);
-      const [result] = await once(host, api => api.rest.schedules.post("/schedules/{id}/overrides", {
+      const [result] = await once(host, api => api.rest.post("/schedules/{id}/overrides", {
         path: { id: payload.scheduleId },
         body: { overrides: [{ start: payload.start, end: payload.end, user: userReference(payload.user) }] },
       }));
@@ -311,7 +310,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "unless it is resolved first.").inline("Seconds", String(payload.seconds))),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, api => api.rest.incidents.post("/incidents/{id}/snooze", {
+      await once(host, api => api.rest.post("/incidents/{id}/snooze", {
         path: { id }, body: { duration: payload.seconds },
       }));
     },
@@ -362,7 +361,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       buildDescription(`Adds a note to ${incidentLabel(host, payload.incident)}.`).verbatim("Note", payload.content)),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, api => api.rest.incidents.post("/incidents/{id}/notes", {
+      await once(host, api => api.rest.post("/incidents/{id}/notes", {
         path: { id }, body: { note: { content: payload.content } },
       }));
     },
@@ -411,7 +410,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     },
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, (api, me) => api.rest.incidents.post("/incidents/{id}/responder_requests", {
+      await once(host, (api, me) => api.rest.post("/incidents/{id}/responder_requests", {
         path: { id },
         body: {
           requester_id: me.userId,
@@ -437,7 +436,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
         "sends to its subscribers and stakeholders.").verbatim("Message", payload.message)),
     apply: async (payload, host) => {
       const id = await incidentId(host, payload.incident);
-      await once(host, api => api.rest.incidents.post("/incidents/{id}/status_updates", {
+      await once(host, api => api.rest.post("/incidents/{id}/status_updates", {
         path: { id }, body: { message: payload.message },
       }));
     },
@@ -463,7 +462,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
     },
     apply: async (payload, host) => {
       await host.requireInScope({ kind: "service", id: payload.service.id }, payload.within);
-      const { incident } = await once(host, api => api.rest.incidents.post("/incidents", {
+      const { incident } = await once(host, api => api.rest.post("/incidents", {
         body: { incident: {
           type: "incident",
           title: payload.title,
@@ -502,7 +501,7 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
       const id = host.refs.requireResolved(payload.overrideId, { expectedKind: overrideKind(payload.scheduleId) });
       await idempotent(host, async api => {
         try {
-          await api.rest.schedules.delete("/schedules/{id}/overrides/{override_id}", {
+          await api.rest.delete("/schedules/{id}/overrides/{override_id}", {
             path: { id: payload.scheduleId, override_id: id },
           });
         } catch (error) {

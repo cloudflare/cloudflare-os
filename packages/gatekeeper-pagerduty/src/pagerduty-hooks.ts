@@ -150,7 +150,7 @@ export class PagerDutyHookDeliveryImpl extends RpcTarget implements PagerDutyHoo
       if (event.trimmedNoteId !== undefined) {
         // Left out if deleted since.
         const { notes } = await host.read(api =>
-          api.rest.incidents.get("/incidents/{id}/notes", { path: { id: wire.id } }));
+          api.rest.get("/incidents/{id}/notes", { path: { id: wire.id } }));
         note = notes.find(({ id }) => id === event.trimmedNoteId)?.content;
       }
     } catch (error) {

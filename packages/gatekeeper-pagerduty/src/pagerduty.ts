@@ -172,7 +172,7 @@ function toGrant(tokens: OAuthTokens): Grant {
 
 /** Reads the user a grant belongs to. */
 async function fetchUser(accessToken: string, grant: GrantIdentity): Promise<Identity> {
-  const { user } = await new PagerDutyApi(accessToken, grant.region).rest.users.get("/users/me");
+  const { user } = await new PagerDutyApi(accessToken, grant.region).rest.get("/users/me");
   return identityOf(grant, user);
 }
 
