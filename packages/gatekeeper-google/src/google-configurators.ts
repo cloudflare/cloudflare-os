@@ -23,7 +23,7 @@ import type {
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type {
-  GoogleGroupConfiguratorGroupCheck, GoogleGroupConfiguratorRpc,
+  GoogleGroupConfiguratorAlias, GoogleGroupConfiguratorGroupCheck, GoogleGroupConfiguratorRpc,
 } from "./configurator/google-group-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import {
@@ -237,13 +237,12 @@ export class GoogleGroupConfiguratorUI extends RpcTarget implements GoogleGroupC
       : { value: group.address, title: group.address });
   }
 
-  async checkGroup(address: string, outsideSenders: boolean): Promise<GoogleGroupConfiguratorGroupCheck> {
+  async checkGroup(
+      address: string, outsideSenders: boolean): Promise<GoogleGroupConfiguratorGroupCheck | GoogleGroupConfiguratorAlias> {
     let identity = new CloudIdentityApi(googleTokenProvider(this));
     let group = await identity.lookupGroup(address);
     // A binding is to a group's main address, which is what it is pinned and matched by.
-    if (group.address !== address) {
-      throw new Error(`That is another address of ${group.address}. Connect the group by that address.`);
-    }
+    if (group.address !== address) return { aliasOf: group.address };
     let [mail, membership] = await Promise.all([
       this.#checkGroupMail({ ...group, outsideSenders }), this.#membership(identity, group),
     ]);

@@ -3,6 +3,7 @@ import {
   type ConfiguratorUIRenderContext, type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
 import type {
+  GoogleGroupConfiguratorAlias as Alias,
   GoogleGroupConfiguratorGroupCheck as GroupCheck,
   GoogleGroupConfiguratorRpc as Rpc,
   GoogleGroupConfiguratorValues as Values,
@@ -23,7 +24,7 @@ const ACCESS_WAIT_MS = 3 * 60_000;
 /** Whether the account lets this app read its mail; the group's mail comes from the owner's inbox. */
 let mailAccess: Load<boolean> | undefined;
 /** Each group's check, by address and who sends to it, so choosing one again doesn't repeat it. */
-const checks = new Map<string, Load<GroupCheck>>();
+const checks = new Map<string, Load<GroupCheck | Alias>>();
 /** Asking for Gmail access: `waiting` while Google's window is open, `error` when asking failed. */
 let asking: { waiting?: true; error?: string } = {};
 // Bumped by every ask, so an earlier one's wait ends.
@@ -52,7 +53,7 @@ function loadMailAccess({ ui, setValues }: Context): void {
 const outside = (values: Values) => values.senders === "anyone";
 const checkKey = (address: string, values: Values) => `${address} ${outside(values) ? "anyone" : ""}`;
 
-function checkOf({ ui, values, setValues }: Context, address: string): Load<GroupCheck> {
+function checkOf({ ui, values, setValues }: Context, address: string): Load<GroupCheck | Alias> {
   const key = checkKey(address, values);
   if (!checks.has(key)) {
     track(ui.checkGroup(address, outside(values)), entry => { checks.set(key, entry); }, () => checks.get(key), () => setValues({}));
@@ -128,6 +129,12 @@ function groupNotices(context: Context, address: string) {
       Couldn't check this group.
     </Notice>;
   }
+  if ("aliasOf" in check.value) {
+    const { aliasOf } = check.value;
+    return <Notice action={{ label: "Use that address", onClick: () => context.setValues({ group: aliasOf }) }}>
+      This is another address for {aliasOf}. A group is connected by its main address.
+    </Notice>;
+  }
   const { mail, membership } = check.value;
   if (membership === "none") {
     return <Notice tone="error">You're not a direct member of this group, so it can't be connected.</Notice>;
@@ -162,7 +169,7 @@ export default {
     if (!group || mailAccess?.state !== "ready" || !mailAccess.value) return false;
     // Only once the group has been found and the account's own membership answered.
     const check = checks.get(checkKey(group, values));
-    return check?.state === "ready" && check.value.membership !== "none";
+    return check?.state === "ready" && !("aliasOf" in check.value) && check.value.membership !== "none";
   },
 
   // Must mirror `parseGroupsUrl` and `groupResourceUrl` in resources.ts, which is what actually

@@ -26,6 +26,9 @@ export type GoogleGroupConfiguratorGroupCheck = {
   membership: "member" | "manager" | "none" | "hidden";
 };
 
+/** The address checked is another address of the group at `aliasOf`, which is the one to connect it by. */
+export type GoogleGroupConfiguratorAlias = { aliasOf: string };
+
 export interface GoogleGroupConfiguratorRpc {
   /** Whether the account lets this app read its mail, which the group's mail is read from. */
   canReadMail(): Promise<boolean>;
@@ -36,7 +39,9 @@ export interface GoogleGroupConfiguratorRpc {
   listGroups(query: string): Promise<ConfiguratorOption[]>;
   /**
    * Whether mail sent to the group at `address` can be shown, and to its members, on a connection
-   * that takes the group to receive mail from outside the organization or not.
+   * that takes the group to receive mail from outside the organization or not. An address that is
+   * only an alias of a group isn't checked: the answer names the group's main address instead.
    */
-  checkGroup(address: string, outsideSenders: boolean): Promise<GoogleGroupConfiguratorGroupCheck>;
+  checkGroup(address: string, outsideSenders: boolean):
+    Promise<GoogleGroupConfiguratorGroupCheck | GoogleGroupConfiguratorAlias>;
 }

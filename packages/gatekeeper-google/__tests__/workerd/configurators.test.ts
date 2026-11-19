@@ -1528,9 +1528,9 @@ describe("Google Group check", () => {
     await expect(check()).resolves.toEqual({ mail: "ready", membership: "manager" });
   });
 
-  it("refuses an address that is another group's alias, naming the group's own", async () => {
+  it("answers an address that is another group's alias with the group's own", async () => {
     mockGroup({ mail: [authenticated], membership: "member", primary: "crew@example.com" });
-    await expect(check()).rejects.toThrow("That is another address of crew@example.com.");
+    await expect(check()).resolves.toEqual({ aliasOf: "crew@example.com" });
   });
 
   it("says so when the account isn't in the group directly", async () => {
