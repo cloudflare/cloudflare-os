@@ -6,6 +6,7 @@
 // preview scales them only afterwards.
 
 import { make } from './ui/chrome.js';
+import { carry, join, joined, settle } from './draw.js';
 
 const styleSheet = document.createElement('style');
 styleSheet.textContent = `
@@ -30,41 +31,51 @@ document.head.append(styleSheet);
 
 /** CSS pixels to a point, which the drawing is measured in. */
 const PX = 4 / 3;
-/** How far past its room a box may reach and still fit: less than anyone could see. */
-const SLACK = .5;
+/** How far past its room a box may reach and still fit: what laying it out may be out by. */
+const SLACK = .1;
 
 const boxOf = element => element.getBoundingClientRect();
 /** The space under a paragraph, which may hang off the foot of a page. */
-const spaceBelow = element => parseFloat(element.style.paddingBottom) * PX || 0;
+const spaceBelow = element => parseFloat(element.style.paddingBottom) || 0;
 
 /**
- * The lines of a paragraph as the browser broke them: where each starts and ends down the page,
- * and the first thing on it, a text node from its character `offset` or an element.
+ * The lines of a paragraph as the browser broke them: where the box of each starts and ends down
+ * the page, and the first thing on it, a text node from its character `offset` or an element.
  */
 function linesOf(element) {
   const lines = [];
   const range = document.createRange();
-  const add = (node, rect, start) => {
-    if (!rect.height) return;
+  const add = (node, top, bottom, start) => {
+    if (bottom <= top) return;
     const line = lines.at(-1);
-    // Everything on a line overlaps the rest of it, however small or large it is set.
-    if (line && (rect.top + rect.bottom) / 2 < line.bottom) {
-      line.top = Math.min(line.top, rect.top);
-      line.bottom = Math.max(line.bottom, rect.bottom);
+    // Everything on a line is inside the line's box, however small or large it is set.
+    if (line && (top + bottom) / 2 < line.bottom) {
+      line.top = Math.min(line.top, top);
+      line.bottom = Math.max(line.bottom, bottom);
     } else {
-      lines.push({ top: rect.top, bottom: rect.bottom, node, start });
+      lines.push({ top, bottom, node, start });
     }
   };
   const visit = parent => {
+    const style = getComputedStyle(parent);
+    // Text is drawn higher than the line keeps it, and the line keeps its line height for it.
+    const moved = parseFloat(style.top) || 0;
+    const tall = parseFloat(style.lineHeight) || 0;
     for (const node of parent.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) {
         range.selectNodeContents(node);
-        for (const [n, rect] of [...range.getClientRects()].entries()) add(node, rect, n === 0);
+        for (const [n, rect] of [...range.getClientRects()].entries()) {
+          const top = rect.top - moved - (tall - rect.height) / 2;
+          if (rect.height) add(node, top, top + tall, n === 0);
+        }
       } else if (node.nodeType !== Node.ELEMENT_NODE || node.matches('.lift, .row, .tick, br') ||
           node.style.float || node.style.position === 'absolute') {
         // Set against the paragraph rather than on a line of it.
       } else if (node.matches('.obj, .marker, .chip, .rule')) {
-        add(node, boxOf(node), true);
+        const rect = boxOf(node);
+        const box = getComputedStyle(node);
+        const top = rect.top - (parseFloat(box.top) || 0) - parseFloat(box.marginTop);
+        add(node, top, top + parseFloat(box.marginTop) + rect.height + parseFloat(box.marginBottom), true);
       } else {
         visit(node);
       }
@@ -110,6 +121,7 @@ function cut(element, node, offset) {
   element.classList.add('cut');
   rest.classList.add('rest');
   for (const name of ['role', 'aria-level', 'data-heading', 'data-before']) rest.removeAttribute(name);
+  carry(element, rest);
   return rest;
 }
 
@@ -121,8 +133,8 @@ function cut(element, node, offset) {
 function splitParagraph(element, bottom, forced) {
   const lines = linesOf(element);
   const end = boxOf(element).bottom - spaceBelow(element);
-  // Where line `count` ends: halfway to the next, since lines stand a little apart.
-  const edge = count => count < lines.length ? (lines[count - 1].bottom + lines[count].top) / 2 : end;
+  // Where line `count` ends.
+  const edge = count => count < lines.length ? lines[count - 1].bottom : end;
   let fits = 0;
   while (fits < lines.length && edge(fits + 1) <= bottom + SLACK) fits++;
   let keep = fits;
@@ -271,8 +283,9 @@ export function paginate(root, drawing, items, draw, endless) {
         if (!blocks?.length) return 0;
         const box = element.appendChild(make('div', kind === 'header' ? 'head' : 'foot'));
         box.style.padding = `0 ${margins.right}pt 0 ${margins.left}pt`;
-        box.append(...draw(blocks));
+        box.append(...joined(draw(blocks)));
         for (const field of box.querySelectorAll('[data-field="pageNumber"]')) field.textContent = number;
+        settle(box);
         const height = boxOf(box.lastElementChild).bottom - boxOf(box).top;
         const edge = margins[kind] * PX;
         box.style.top = `${kind === 'header' ? edge : boxOf(element).height - edge - height}px`;
@@ -323,10 +336,11 @@ export function paginate(root, drawing, items, draw, endless) {
         sheet.notes.style.padding = `0 ${section.margins.right}pt 0 ${section.margins.left}pt`;
       }
       const text = sheet.notes.appendChild(make('div'));
-      text.append(...draw(blocks));
+      text.append(...joined(draw(blocks)));
       const mark = reference.cloneNode(true);
       delete mark.dataset.footnote;
       text.querySelector('.para')?.prepend(mark);
+      settle(text);
       return [{ reference, text }];
     });
   }
@@ -338,6 +352,8 @@ export function paginate(root, drawing, items, draw, endless) {
 
   newSheet();
   const queue = items.toReversed();
+  // The break the paragraph before this one ended in.
+  let broken;
   while (queue.length) {
     const item = queue.pop();
     if (item.section !== undefined) {
@@ -345,17 +361,22 @@ export function paginate(root, drawing, items, draw, endless) {
       continue;
     }
     const { element } = item;
-    // A paragraph ends at a page or column break in it, and what follows starts the next.
+    const before = item.before ?? broken ?? element.dataset.before;
+    broken = undefined;
+    // A paragraph ends at a page or column break in it, and what follows starts the next: the
+    // rest of it, or the paragraph after it when the break is the last thing in it.
     const mark = element.querySelector('.brk');
     if (mark) {
       mark.classList.remove('brk');
-      queue.push({ ...item, element: cut(element, mark.nextSibling, 0), before: mark.dataset.break });
+      if (mark.nextSibling === element.lastChild) broken = mark.dataset.break;
+      else queue.push({ ...item, element: cut(element, mark.nextSibling, 0), before: mark.dataset.break });
     }
-    const before = item.before ?? element.dataset.before;
     if (before && endless) column.appendChild(make('div', 'pagebreak', 'Page break'));
     else if (before === 'page' && !sheet.empty) newSheet();
     else if (before && !sheet.empty) nextColumn();
     column.append(element);
+    if (!item.gap) join(placed.findLast(other => !other.gap)?.element, element);
+    settle(element);
     if (endless || item.gap) {
       placed.push(item);
       continue;

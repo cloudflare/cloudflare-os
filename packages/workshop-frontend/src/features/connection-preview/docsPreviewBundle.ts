@@ -14,7 +14,7 @@ const keyed = (code: string, imports: string[]) => keyedFor('Google Doc', code, 
 export const DOCS_PREVIEW_BUNDLE: UiBundle = { modules: [
   { path: 'client.js', code: keyed(CLIENT, ['ui/chrome.js', 'draw.js', 'pages.js', 'text.js']) },
   { path: 'draw.js', code: keyed(DRAW, ['ui/chrome.js']) },
-  { path: 'pages.js', code: keyed(PAGES, ['ui/chrome.js']) },
+  { path: 'pages.js', code: keyed(PAGES, ['ui/chrome.js', 'draw.js']) },
   { path: 'text.js', code: TEXT },
   { path: 'ui/chrome.js', code: CHROME },
 ] }

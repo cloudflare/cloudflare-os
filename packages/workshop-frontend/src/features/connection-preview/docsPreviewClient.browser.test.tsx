@@ -199,6 +199,41 @@ it('sets the body on as many sheets as it fills, each under the header with its 
   }
 })
 
+it('sets each line as tall as Google Docs does in any font, with the larger space between two paragraphs', async () => {
+  const lines = ['Body', 'Code', 'Large heading', 'Small heading', 'Body', 'Two\u000blines']
+  const set = drawing(lines.map((line, index) => paragraph(index * 2, line, { look: [0, 1, 2, 3, 0, 4][index] })), {
+    paragraphLooks: [
+      { lineSpacing: 1.15 }, { lineSpacing: 1.15 }, { lineSpacing: 1.15, spaceAbove: 24, spaceBelow: 6 },
+      { lineSpacing: 1.15, spaceAbove: 14, spaceBelow: 4 }, { lineSpacing: 1.4, spaceAbove: 10 },
+    ],
+    textLooks: [ARIAL, { ...ARIAL, fontFamily: 'Consolas' }, { ...ARIAL, fontSize: 18, weight: 700 }, { ...ARIAL, fontSize: 12, weight: 700 }, ARIAL],
+  })
+  const { blocks } = await draw({ savedMarkdown: `${lines.join('\n\n')}\n`, drawing: set })
+
+  // As Google Docs draws them. A line is 1.18 of its size times its spacing, rounded up with the
+  // space it carries: 11pt at 1.15 is 20px. The large heading gives the space under it up to the
+  // larger one over the small heading, whose one line has the space over and under it; and of two
+  // lines only the first has the space over them.
+  expect(blocks().map(block => block.offsetHeight)).toEqual([20, 20, 65, 46, 20, 38 + 25])
+})
+
+it('ends no line at a hyphen inside a word', async () => {
+  // Wide enough that the line ends inside the last word or before it, in whatever font stands in.
+  const words = `${'x '.repeat(36)}${'a'.repeat(20)}-${'b'.repeat(20)}`
+  const { blocks } = await draw({ savedMarkdown: `${words}\n`, drawing: drawing([paragraph(0, words)]) })
+  const [letters] = [...blocks()[0].querySelectorAll('span')].flatMap(span => [...span.childNodes]).filter(node => node.textContent!.includes('-'))
+  const top = (character: string) => {
+    const range = frame!.contentDocument!.createRange()
+    const at = letters.textContent!.indexOf(character)
+    range.setStart(letters, at)
+    range.setEnd(letters, at + 1)
+    return Math.round(range.getBoundingClientRect().top)
+  }
+
+  expect(top('b')).toBe(top('a'))
+  expect(top('a')).toBeGreaterThan(top('x'))
+})
+
 it('keeps the images of a paragraph a pending change edits, and wraps its text round one tethered to it', async () => {
   const savedMarkdown = '[Image] Beside [Image] the picture\n'
   const pictured = drawing([paragraph(0, [
@@ -284,6 +319,8 @@ it('starts a new sheet at a page break, one a pending change adds as one the tab
   const { sheets, refresh, show } = await draw({ savedMarkdown })
   const pages = () => sheets().map(sheet => text(sheet.querySelector('.area')!))
   expect(pages()).toEqual(['Before', 'After'])
+  // A paragraph that ends in its page break leaves no line of itself on the next sheet.
+  expect(sheets()[1].querySelectorAll('.col > *')).toHaveLength(1)
 
   await refresh({ markdown: `${savedMarkdown}\n\\[Page break\\]\n\nLast\n` })
   await expect.poll(pages).toEqual(['Before', 'After', 'Last'])
@@ -362,7 +399,7 @@ it('stays on an added tab once Google has it, though another tab has its title',
 })
 
 it('lists the headings in an outline, marks a section that holds a change, and scrolls to one', async () => {
-  const filler = Array.from({ length: 60 }, (_, line) => `Line ${line}`).join('\n\n')
+  const filler = Array.from({ length: 55 }, (_, line) => `Line ${line}`).join('\n\n')
   const savedMarkdown = `# Intro\n\n${filler}\n\n## Details\n\nOld text\n\n# Last\n\nEnd\n`
   const { page } = await draw({ savedMarkdown, markdown: savedMarkdown.replace('Old text', 'New text') })
   const outline = frame!.contentDocument!.getElementById('outline')!
@@ -416,7 +453,7 @@ it('folds a heading\'s own headings away from its arrow, and still goes to it fr
 })
 
 it('follows a link to a heading of the document, and makes one to the web a link to a new tab', async () => {
-  const filler = Array.from({ length: 60 }, (_, line) => `Line ${line}`).join('\n\n')
+  const filler = Array.from({ length: 55 }, (_, line) => `Line ${line}`).join('\n\n')
   const savedMarkdown = `# Intro\n\nSee [the end](#heading=h.last) or [the web](https://example.com/) or [a mark](?tab=t.0#bookmark=id.x) or [a slip](#heading=%).\n\n${filler}\n\n# Last\n\nEnd\n`
   const heading = (name: string, headingId: string) => paragraph(savedMarkdown.split('\n').indexOf(`# ${name}`),
     [{ text: name, look: HEADING, at: 2 }], { style: 'HEADING_1', look: HEADING, headingId })

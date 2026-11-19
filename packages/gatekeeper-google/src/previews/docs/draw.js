@@ -7,9 +7,11 @@ import { make } from './ui/chrome.js';
 
 const styleSheet = document.createElement('style');
 styleSheet.textContent = `
-  /* A line is as tall as what is on it: every run carries the height its own font gives it. */
+  /* A line is as tall as what is on it: every run carries the height its size gives it. */
+  /* Google Docs sets each letter as wide as its font draws it, where a browser may round that. */
   .para { position: relative; margin: 0; font-size: 0; line-height: 0; white-space: pre-wrap;
-    overflow-wrap: break-word; tab-size: 36pt; scroll-margin-top: 44px; }
+    overflow-wrap: break-word; tab-size: 36pt; scroll-margin-top: 44px;
+    text-rendering: geometricPrecision; }
   .para.justify { text-align: justify; }
   /* The two halves of a paragraph that a page ends in. */
   .para.cut { padding-bottom: 0 !important; border-bottom: 0 !important; }
@@ -19,8 +21,8 @@ styleSheet.textContent = `
   .marker > span { display: inline-block; }
   .obj { position: relative; display: inline-block; overflow: hidden; text-indent: 0;
     vertical-align: baseline; }
-  /* One set in a line as a letter is: what line spacing adds goes under it, as under text. */
-  .obj.inline { margin-top: calc((var(--ls, 1) - 1) * var(--h, 0pt) / 2); }
+  /* One as wide as its line, which whole pixels may make a little wider, leaves room for what follows it. */
+  .obj.inline { max-width: 100%; }
   .obj img { position: absolute; display: block; max-width: none; animation: arrive .25s ease-out; }
   /* A drawing, which has a size and nothing to show in it. */
   .obj.none { border-radius: 2pt; background: repeating-linear-gradient(135deg, #f1f3f4 0 6pt, #e8eaed 6pt 12pt); }
@@ -45,35 +47,26 @@ const fontStack = name => {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Text looks, each a class. Google Docs sets a line at its font's own height times the
-// paragraph's line spacing, so each class carries that height and the paragraph the spacing.
-// Google Docs lays its pages out in pixels, so a font's height is the font's own at that size,
-// rounded up to a whole pixel.
+// Lines, as Google Docs sets them, measured on the pages it draws. Every font is set alike: a
+// line of text is LINE of its size tall times the paragraph's line spacing, with the baseline
+// ASCENT of the size under its top and the rest of the line under the text. A paragraph's space
+// is added to its first line and its last, and each line is then rounded up to a whole pixel.
 
-// A family Google Docs sets by other measures than its font file holds, as a fraction of the
-// font's size above the baseline and below it: Docs keeps the measures a family had when it
-// first served it, so that no document is laid out again when the font is redrawn.
-const DOCS_MEASURES = { 'Roboto Slab': [1900 / 2048, 500 / 2048] };
+const LINE = 1.18;
+const ASCENT = .96;
+/** CSS pixels to a point, which the drawing is measured in. */
+const PX = 4 / 3;
+const whole = pixels => Math.ceil(pixels - .01);
+/** How tall a line of text of `size` points is before it is rounded, in pixels. */
+const lineOf = (size, spacing) => spacing * LINE * size * PX;
+
+// A fixed-width family that only its owner hands out, by how wide each of its letters is
+// against its size: whatever fixed-width font stands in for it is spaced to that.
+const FIXED_WIDTHS = { Consolas: 1126 / 2048 };
 
 const lookSheet = document.head.appendChild(document.createElement('style'));
-const ruler = document.createElement('canvas').getContext('2d');
-// Each font's line height against its size, as the browser has the font now. It is measured
-// large: at the size of text a browser rounds what it reports.
-const heights = new Map();
 // Each look drawn so far, by what it holds.
 const classes = new Map();
-
-function lineHeight({ fontFamily, fontSize, weight, italic }) {
-  const font = `${italic ? 'italic ' : ''}${weight} 1000px ${fontStack(fontFamily)}`;
-  const [ascent, descent] = DOCS_MEASURES[fontFamily] ?? [];
-  if (ascent) heights.set(font, ascent + descent);
-  if (!heights.has(font)) {
-    ruler.font = font;
-    const { fontBoundingBoxAscent, fontBoundingBoxDescent } = ruler.measureText('x');
-    heights.set(font, (fontBoundingBoxAscent + fontBoundingBoxDescent) / 1000);
-  }
-  return Math.ceil(heights.get(font) * fontSize * 4 / 3 - .01) * .75;
-}
 
 function lookCss(look) {
   const lines = [look.underline && 'underline', look.strikethrough && 'line-through'].filter(Boolean);
@@ -82,6 +75,7 @@ function lookCss(look) {
     `font-weight: ${look.weight}`,
     look.italic && 'font-style: italic',
     look.smallCaps && 'font-variant-caps: small-caps',
+    FIXED_WIDTHS[look.fontFamily] && `letter-spacing: calc(${FIXED_WIDTHS[look.fontFamily]}em - 1ch)`,
     lines.length && `text-decoration-line: ${lines.join(' ')}`,
     look.color && `color: ${look.color}`,
     look.highlight && `background-color: ${look.highlight}`,
@@ -90,11 +84,11 @@ function lookCss(look) {
       ? [`font-size: ${pt(look.fontSize * .6)}`, `vertical-align: ${look.baseline}`, 'line-height: 0']
       : [
         `font-size: ${pt(look.fontSize)}`,
-        `--h: ${pt(lineHeight(look))}`,
-        'line-height: calc(var(--ls, 1) * var(--h))',
+        `--l: round(up, calc(var(--ls, 1) * ${LINE}em - .01px), 1px)`,
+        'line-height: var(--l)',
         // What line spacing adds to a line, Google Docs puts under its text: a browser puts half above.
         'position: relative',
-        'top: calc((1 - var(--ls, 1)) * var(--h) / 2)',
+        `top: calc((${LINE}em - var(--l)) / 2)`,
       ],
   ].filter(Boolean).join('; ');
 }
@@ -108,6 +102,64 @@ function lookClass(look) {
     lookSheet.sheet.insertRule(`.${found.name} { ${lookCss(look)} }`, lookSheet.sheet.cssRules.length);
   }
   return found.name;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The space above and below a paragraph. Between two paragraphs Google Docs keeps the larger of
+// what the upper asks for below it and the lower above it.
+
+// Each paragraph drawn: the space it asks for and how tall its first and last lines are before
+// they are rounded, in pixels, and what its border adds over and under it.
+const spaces = new WeakMap();
+
+function setSpace(element) {
+  const kept = spaces.get(element);
+  const above = kept.over ? 0 : kept.above;
+  const below = kept.under ? 0 : kept.below;
+  const top = whole(above + kept.first) - whole(kept.first);
+  const bottom = whole(kept.last + below) - whole(kept.last);
+  // A paragraph of one line has both on that line, which may round another way.
+  const alone = whole(above + kept.first + below) - whole(above + kept.first);
+  const set = element.style;
+  set.paddingTop = `${kept.top + top}px`;
+  set.paddingBottom = `${kept.bottom + bottom}px`;
+  set.setProperty('--above', `${top}px`);
+  set.setProperty('--below', `${bottom}px`);
+  if (alone === bottom) delete element.dataset.one;
+  else element.dataset.one = kept.bottom + alone;
+  if (element.isConnected) settle(element);
+}
+
+/** Sets the space between `upper` and `lower`, one drawn under the other; either may be no paragraph. */
+export function join(upper, lower) {
+  const [over, under] = [spaces.get(upper), spaces.get(lower)];
+  if (over) over.under = !!under && under.above >= over.below;
+  if (under) under.over = !!over && over.below > under.above;
+  if (over) setSpace(upper);
+  if (under) setSpace(lower);
+}
+
+/** `elements` with the space between each and the next set. */
+export function joined(elements) {
+  for (const [n, element] of elements.entries()) join(elements[n - 1], element);
+  return elements;
+}
+
+/** Gives `rest`, which carries the paragraph `element` on, the space under it. */
+export function carry(element, rest) {
+  const kept = spaces.get(element);
+  spaces.set(rest, { ...kept, above: 0, top: 0, first: kept.last, over: false });
+}
+
+/** Gives each paragraph of one line in `root`, once it is laid out, the space under it that one line has. */
+export function settle(root) {
+  for (const element of [root, ...root.querySelectorAll('[data-one]')]) {
+    const kept = spaces.get(element);
+    if (!kept || !('one' in element.dataset)) continue;
+    const set = element.style;
+    const lines = element.getBoundingClientRect().height - parseFloat(set.paddingTop) - parseFloat(set.paddingBottom) - kept.edges;
+    if (lines <= whole(kept.first) + .5) set.paddingBottom = `${element.dataset.one}px`;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -182,8 +234,9 @@ export function drawer(drawing, width, lists) {
     const object = objects[id] ?? { width: 0, height: 0 };
     const box = make('span', object.readable ? 'obj' : 'obj none');
     box.dataset.object = id;
-    box.style.width = pt(object.width);
-    box.style.height = pt(object.height);
+    // Google Docs draws an object a whole number of pixels wide and tall.
+    box.style.width = `${Math.round(object.width * PX)}px`;
+    box.style.height = `${Math.round(object.height * PX)}px`;
     box.setAttribute('role', 'img');
     box.setAttribute('aria-label', object.description ?? 'Image');
     if (object.description) box.title = object.description;
@@ -214,7 +267,7 @@ export function drawer(drawing, width, lists) {
     // a line is level with it by its text, not by the spacing under that. So what keeps the text
     // off starts that much lower than the object's own margin does.
     const lift = top - (look.spaceAbove ?? 0);
-    const spacing = (look.lineSpacing - 1) * lineHeight(end);
+    const spacing = (whole(lineOf(end.fontSize, look.lineSpacing)) - lineOf(end.fontSize, 1)) / PX;
     const clear = Math.max(0, lift + spacing);
     const drop = lift + above - clear;
     // What holds text off the object: itself, or for one with no text beside it the whole line.
@@ -253,10 +306,6 @@ export function drawer(drawing, width, lists) {
     set.setProperty('--ls', look.lineSpacing);
     // The start of the text, for what is drawn in the margin beside it.
     set.setProperty('--in', pt(start));
-    if (look.spaceAbove) set.paddingTop = pt(look.spaceAbove);
-    if (look.spaceBelow) set.paddingBottom = pt(look.spaceBelow);
-    set.setProperty('--above', pt(look.spaceAbove ?? 0));
-    set.setProperty('--below', pt(look.spaceBelow ?? 0));
     // A border stands outside the text, which stays where its indent puts it.
     if (start - edge('left')) set.marginLeft = pt(start - edge('left'));
     if ((look.indentEnd ?? 0) - edge('right')) set.marginRight = pt((look.indentEnd ?? 0) - edge('right'));
@@ -267,8 +316,7 @@ export function drawer(drawing, width, lists) {
     for (const side of EDGES) {
       if (!borders[side]) continue;
       set.setProperty(`border-${side}`, line(borders[side]));
-      const padding = (borders[side].padding ?? 0) + (side === 'top' ? look.spaceAbove ?? 0 : side === 'bottom' ? look.spaceBelow ?? 0 : 0);
-      set.setProperty(`padding-${side}`, pt(padding));
+      if (side === 'left' || side === 'right') set.setProperty(`padding-${side}`, pt(borders[side].padding ?? 0));
     }
     if (level) {
       element.setAttribute('role', 'heading');
@@ -309,7 +357,8 @@ export function drawer(drawing, width, lists) {
         }
         for (const [n, text] of run.text.split('\u000b').entries()) {
           if (n) last.append(make('br'));
-          if (text) last.append(text);
+          // Google Docs ends no line at a hyphen inside a word, as a browser would.
+          if (text) last.append(text.replace(/-(?=\S)/g, '-\u2060'));
         }
         continue;
       }
@@ -320,7 +369,15 @@ export function drawer(drawing, width, lists) {
         tick.title = run.note;
         tick.setAttribute('aria-label', run.note);
       } else if (run.object) {
-        element.appendChild(objectBox(run.object)).classList.add('inline', set);
+        const box = element.appendChild(objectBox(run.object));
+        box.classList.add('inline', set);
+        // It stands on the baseline, in a line as tall as imageLine() makes it, and is drawn as
+        // far under the top of that line as Google Docs draws it.
+        const size = (run.look ?? end).fontSize;
+        const tall = parseFloat(box.style.height);
+        const over = whole(imageLine(run.object, size, look.lineSpacing)) - tall - under(set, look.lineSpacing);
+        box.style.marginTop = `${over}px`;
+        box.style.top = `${Math.max(2, ASCENT * size * PX - tall) - over}px`;
       } else if (run.break) {
         // Set as text is, so the line the break ends is one even with nothing else on it.
         element.appendChild(make('span', `brk ${set}`, '\u2060')).dataset.break = run.break;
@@ -341,7 +398,47 @@ export function drawer(drawing, width, lists) {
     }
     // The paragraph's end is set in a look of its own, which an empty line is the height of.
     element.append(make('span', lookClass(end), '\u2060'));
+    // Its first line and its last are taken to be as tall as its first run and its last make them.
+    const height = run => {
+      const size = (run?.look ?? end).fontSize;
+      return run?.object ? imageLine(run.object, size, look.lineSpacing) : lineOf(size, look.lineSpacing);
+    };
+    const looked = runs.filter(run => run.look);
+    spaces.set(element, {
+      above: (look.spaceAbove ?? 0) * PX,
+      below: (look.spaceBelow ?? 0) * PX,
+      first: height(looked[0]),
+      last: Math.max(height(looked.at(-1)), height()),
+      top: (borders.top?.padding ?? 0) * PX,
+      bottom: (borders.bottom?.padding ?? 0) * PX,
+      edges: ((borders.top?.width ?? 0) + (borders.bottom?.width ?? 0)) * PX,
+    });
+    setSpace(element);
     return element;
+  }
+
+  // How far under the baseline a line keeps the text of a look, which a browser rounds its own way.
+  const unders = new Map();
+  function under(name, spacing) {
+    const key = `${name} ${spacing}`;
+    if (!unders.has(key)) {
+      const probe = document.body.appendChild(make('div', 'para'));
+      probe.style.cssText = `position: absolute; visibility: hidden; --ls: ${spacing}`;
+      probe.append(make('span', name, '\u2060'));
+      const foot = probe.appendChild(make('span'));
+      foot.style.display = 'inline-block';
+      unders.set(key, probe.getBoundingClientRect().bottom - foot.getBoundingClientRect().bottom);
+      probe.remove();
+    }
+    return unders.get(key);
+  }
+
+  // How tall the line an object is set in is, before it is rounded, among text of `size` points:
+  // the object stands on the baseline two pixels under the top of its line, which goes on under
+  // it as under text.
+  function imageLine(id, size, spacing) {
+    const tall = Math.round((objects[id]?.height ?? 0) * PX);
+    return Math.max(ASCENT * size * PX, tall + 2) + (LINE * spacing - ASCENT) * size * PX;
   }
 
   /** A paragraph of the drawing as paragraph() takes one. */
@@ -382,7 +479,7 @@ export function drawer(drawing, width, lists) {
         if (cell.background) box.style.background = cell.background;
         if (cell.verticalAlign) box.style.verticalAlign = cell.verticalAlign;
         const inside = widths.slice(cell.column, cell.column + span).reduce((sum, column) => sum + column, 0) - cell.padding[1] - cell.padding[3];
-        box.append(...cell.blocks.flatMap(block => blocks(block, undefined, inside)));
+        box.append(...joined(cell.blocks.flatMap(block => blocks(block, undefined, inside))));
       }
     }
     return element;

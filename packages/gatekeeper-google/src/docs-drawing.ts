@@ -27,9 +27,9 @@ export const DOC_DRAWING_VERSION = 3;
  * to `marginHeader` and `marginFooter`: one from before Google Docs had them, which it still lays
  * out as it did then. Measured from its pages.
  */
-const UNSET_HEADER_MARGIN = 5;
+const UNSET_HEADER_MARGIN = 5.25;
 const UNSET_FOOTER_MARGIN = -3.6;
-const UNSET_HEADER_GAP = 6;
+const UNSET_HEADER_GAP = 5.25;
 
 /** The ID a header or footer is drawn under when Google Docs returned none for it. */
 const UNRETURNED = "unreturned";
