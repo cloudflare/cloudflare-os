@@ -1,0 +1,27 @@
+{
+  "name": "@gadgets/create-gatekeeper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Writes a new gatekeeper package, built on gatekeeper-kit, for `pnpm create-gatekeeper`. Not a deployable Worker.",
+  "type": "module",
+  "bin": {
+    "create-gatekeeper": "./bin/create-gatekeeper.ts"
+  },
+  "scripts": {
+    "test:run": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
+    "@gadgets/observability": "workspace:*",
+    "@gadgets/scripts": "workspace:*",
+    "@gadgets/workshop-shared": "workspace:*",
+    "@types/node": "26.1.0",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

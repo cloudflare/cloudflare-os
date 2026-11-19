@@ -90,18 +90,29 @@ Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesd
 
 ### Step 4: Implement
 
-See [SKELETON.md](SKELETON.md) for a complete implementation template.
+Start the package with `pnpm create-gatekeeper <name> --auth oauth --display "<Provider Name>"`. It writes a gatekeeper that builds, built on `gatekeeper-kit`, for an invented provider, and marks each answer only the provider's documentation or your design can give with `STOP(<id>)`; the package's tests fail until no mark is left. [SKELETON.md](SKELETON.md) lists what it writes, what it leaves, and what it does not cover yet (hooks). Replace the invented session API, resource types and subresource model with the ones the operator approved in Step 3 first; the rest follows from them.
 
-Package structure:
+Package structure, as the command writes it:
 ```
 packages/gatekeeper-<name>/
 ├── src/
-│   ├── configurator/         # Optional resource-picker UI modules and UI-facing types
-│   ├── <name>.ts              # Vendor, UserAccount, UserImpl, GatekeeperImpl, SessionImpl
-│   ├── types.d.ts             # Session/Hook types (compile-time)
-│   ├── types.txt -> types.d.ts  # Symlink (runtime, for getTypeScriptTypes())
-│   └── <name>-api.ts          # (optional) Helper wrapping the service's HTTP API
-├── cloudflare.config.ts      # wrangler.jsonc is generated from it
+│   ├── configurator/            # Resource-picker UI module and its UI-facing types
+│   ├── <name>.ts                # HTTP entrypoint, Vendor, UserImpl, Verifier (the main module)
+│   ├── <name>-account.ts        # UserAccount Durable Object and the connect flow's routes
+│   ├── <name>-auth.ts           # How a user connects: endpoints, scopes, client
+│   ├── <name>-credentials.ts    # Identity, subresource IDs, the verifier's interface
+│   ├── <name>-env.ts            # Env, origins, resource types
+│   ├── <name>-urls.ts           # Resource link parsing
+│   ├── <name>-api.ts            # The only module that talks HTTP to the provider
+│   ├── <name>-gatekeeper.ts     # GatekeeperImpl, the per-binding Durable Object
+│   ├── <name>-session.ts        # SessionImpl, the capability a gadget holds
+│   ├── <name>-actions.ts        # Actions, declared with the kit's defineActions
+│   ├── types.d.ts               # Session/Hook types (compile-time)
+│   └── types.txt -> types.d.ts  # Symlink (runtime, for getTypeScriptTypes())
+├── __tests__/
+├── action-table.json            # The committed action table
+├── cloudflare.config.ts         # wrangler.jsonc is generated from it
+├── deploy-inputs.json
 ├── package.json
 └── tsconfig.json
 ```
@@ -200,6 +211,8 @@ Go through all the API methods and decide where to insert `submitAction()` calls
 - Any operation which has visible side effects on the world must call submitAction(), and must not actually apply the action until approved.
 
 Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+
+Once the definitions exist, commit what they declare. A package from `create-gatekeeper` has a test that compares each definition's name, tag, verdict, delivery, claim and fence with a committed `action-table.json`, so a later change to one fails the test and shows in review as a changed line. Regenerating the file accepts any change: read its diff, and give a reason for each line.
 
 #### Action kinds and auto-approval
 
@@ -380,7 +393,7 @@ Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAcce
 
 1. **Report every dependency on every read that returns information to its caller**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, simulated reads, nested capability reads, and hook deliveries. There is no blanket requirement to retain every consulted source for an empty result; report requirements for information actually disclosed.
 2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: qualify resources with their tenant unless the deployed Worker's configuration permanently fixes it. A tenant chosen by an account, binding, or URL is not fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
-3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
+3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }`; the `new-gatekeeper-observer-contract` lint rule also refuses an `authorizeObservation({...})` that names no `subresources`. New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
 5. **Keep verification independent of read authorization.** Do not store supplied verifiers, cache verdicts by observer ID (the same observer can return with another account), or wait on a lock held by a read awaiting authorization. Account-side caches must be partitioned by credential authority.
 6. **Implement the remaining required members**: `getHistoricalSubresources()` returning `[]`, and no-op `addObserver` / `removeObserver`, for new gatekeepers. No observer roster, observed-set log, `excludeObservers`, or new legacy tracker is needed.
@@ -430,7 +443,7 @@ Some services can push events to the Gadget (inbound email, webhooks, chat messa
 3. **Deliver.** When the event occurs, call `initiator.startHook()`. This returns `{callback, approvalQueue}` bound to a fresh session. Await observation authorization with explicit `subresources` for the event's complete access dependencies (register actions too if the callback's return value triggers side effects), then invoke the `callback`. Use the same typed read helper as ordinary reads; a hook is not exempt from observer checks.
 4. **Disable / delete.** The overseer calls `controller.disable()`. Forget the stored `initiator` and clean up all related state — `disable()` may never be called again, though the overseer may later call `enable()` afresh.
 
-Because the callback is a persistent stub tied to a session, the gatekeeper never stores it directly; the overseer hands it back (re-bound to a new session) each time you call `startHook()`. See the SKELETON for the full code shape.
+Because the callback is a persistent stub tied to a session, the gatekeeper never stores it directly; the overseer hands it back (re-bound to a new session) each time you call `startHook()`. See [SKELETON.md](SKELETON.md#hooks) for the full code shape.
 
 ### Documentation
 
@@ -474,7 +487,7 @@ Reviews tend to stop at general correctness. The most important review is of the
 
 ## Reference implementations
 
-Start with [SKELETON.md](SKELETON.md) and the [new-gatekeeper observer contract](#new-gatekeeper-observer-contract), including the empty `getHistoricalSubresources()` and no-op `addObserver` / `removeObserver`. Existing implementations can illustrate reporting and access oracles, but their legacy admission checks are **not** a new-authoring pattern:
+Start with `pnpm create-gatekeeper` ([SKELETON.md](SKELETON.md)) and the [new-gatekeeper observer contract](#new-gatekeeper-observer-contract), including the empty `getHistoricalSubresources()` and no-op `addObserver` / `removeObserver`. Existing implementations can illustrate reporting and access oracles, but their legacy admission checks are **not** a new-authoring pattern:
 
 - `packages/gatekeeper-google/` — the kit's [worked Google migration patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations) cover Calendar's event/free-busy permission split, BigQuery source-dataset reporting, Gmail's mailbox identity across filters, Chat's account/conversation split, and Drive/Docs/Sheets/Slides file and folder reporting. These combine A–D per disclosure; the guide notes incomplete oracles and missing history exports. Copy the reporting/helper patterns, not retained legacy admission or tracking.
 - `packages/gatekeeper-github/` — every read, each page of a listing and each hook delivery included, authorizes through `GitHubGatekeeperImpl.authorizeRead`, which reports the bound repository as `repo/<repoId>`, GitHub's numeric id, pinned on first use (nothing is read before it is, and REST reads are addressed by it, so a name a deleted or renamed repository freed can't retarget them). `verifyObserverAccess()` refuses any other ID; for the pinned repository it allows every observer when the binding owner's token finds it public (`#reportsPublicRepo`, reused for 15 minutes, an unanswered check counting as not public), and otherwise asks `observerAccessVerifier` over `GitHubVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its connection; `addObserver()` asks, live and with the observer's token alone, for reads made before conversion, `hasRepoNameAccess` of the binding's name, which is what those reads followed, and `GitHubVerifier.hasRepoAccess` of the stored id once there is one, never pinning it, so a lapsed owner grant can't lock collaborators out; caches filled before conversion are discarded on upgrade. Its admission checks are legacy migration protection, not a new-authoring pattern.
