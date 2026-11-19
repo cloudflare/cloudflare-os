@@ -151,7 +151,10 @@ export function carry(element, rest) {
   spaces.set(rest, { ...kept, above: 0, top: 0, first: kept.last, over: false });
 }
 
-/** Gives each paragraph of one line in `root`, once it is laid out, the space under it that one line has. */
+/**
+ * Gives each paragraph of one line in `root`, once it is laid out, the space under it that one
+ * line has, and then each table's rows their height.
+ */
 export function settle(root) {
   for (const element of [root, ...root.querySelectorAll('[data-one]')]) {
     const kept = spaces.get(element);
@@ -160,6 +163,19 @@ export function settle(root) {
     const lines = element.getBoundingClientRect().height - parseFloat(set.paddingTop) - parseFloat(set.paddingBottom) - kept.edges;
     if (lines <= whole(kept.first) + .5) set.paddingBottom = `${element.dataset.one}px`;
   }
+  const tables = [...root.matches('.grid') ? [root] : [], ...root.querySelectorAll('.grid')];
+  // A table inside a cell first: the row it is in is as tall as it makes it.
+  for (const table of tables.toReversed()) fitRows([...table.rows]);
+}
+
+/**
+ * Makes each of `rows`, laid out, a whole number of pixels tall: Google Docs draws the line
+ * between two rows on a pixel, with the upper row's text and padding all above it.
+ */
+export function fitRows(rows) {
+  for (const row of rows) row.style.height = row.dataset.least ?? '';
+  const tall = rows.map(row => row.getBoundingClientRect().height);
+  for (const [n, row] of rows.entries()) if (tall[n] % 1 > .01) row.style.height = `${Math.ceil(tall[n])}px`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -340,6 +356,8 @@ export function drawer(drawing, width, lists) {
       if (alignment) text.style.transform = `translateX(${alignment === 'end' ? -100 : -50}%)`;
     }
 
+    // The spaces a paragraph ends in take no room: they neither move its text nor start a line.
+    const final = runs.at(-1)?.text === undefined ? undefined : runs.at(-1);
     // Runs set alike and side by side are one element.
     let last;
     let lastKey;
@@ -355,7 +373,7 @@ export function drawer(drawing, width, lists) {
           }
           lastKey = key;
         }
-        for (const [n, text] of run.text.split('\u000b').entries()) {
+        for (const [n, text] of (run === final ? run.text.replace(/ +$/, '') : run.text).split('\u000b').entries()) {
           if (n) last.append(make('br'));
           // Google Docs ends no line at a hyphen inside a word, as a browser would.
           if (text) last.append(text.replace(/-(?=\S)/g, '-\u2060'));
@@ -396,19 +414,20 @@ export function drawer(drawing, width, lists) {
         }
       }
     }
-    // The paragraph's end is set in a look of its own, which an empty line is the height of.
-    element.append(make('span', lookClass(end), '\u2060'));
+    // The paragraph's end has a look of its own, which only an empty paragraph is the height of:
+    // after anything else it is set as that is.
+    const looked = runs.filter(run => run.look);
+    element.append(make('span', lookClass(looked.at(-1)?.look ?? end), '\u2060'));
     // Its first line and its last are taken to be as tall as its first run and its last make them.
     const height = run => {
       const size = (run?.look ?? end).fontSize;
       return run?.object ? imageLine(run.object, size, look.lineSpacing) : lineOf(size, look.lineSpacing);
     };
-    const looked = runs.filter(run => run.look);
     spaces.set(element, {
       above: (look.spaceAbove ?? 0) * PX,
       below: (look.spaceBelow ?? 0) * PX,
       first: height(looked[0]),
-      last: Math.max(height(looked.at(-1)), height()),
+      last: height(looked.at(-1)),
       top: (borders.top?.padding ?? 0) * PX,
       bottom: (borders.bottom?.padding ?? 0) * PX,
       edges: ((borders.top?.width ?? 0) + (borders.bottom?.width ?? 0)) * PX,
@@ -459,13 +478,18 @@ export function drawer(drawing, width, lists) {
     const fixed = columns.reduce((sum, column) => sum + column, 0);
     const share = Math.max(0, room - fixed) / Math.max(1, columns.filter(column => !column).length);
     const widths = columns.map(column => column || share);
-    element.style.width = pt(widths.reduce((sum, column) => sum + column, 0));
+    const total = widths.reduce((sum, column) => sum + column, 0);
+    element.style.width = pt(total);
+    // A table wider than its column is one brought in from Word, which starts it before the
+    // column, so that the text of its first cells starts where the column does.
+    const first = rows[0]?.cells[0];
+    if (total > room && first) element.style.marginLeft = `${-Math.round(first.padding[3] * PX + (first.borders.left ? 1 : 0))}px`;
     const group = element.appendChild(make('colgroup'));
     for (const column of widths) group.appendChild(make('col')).style.width = pt(column);
     const body = element.appendChild(make('tbody'));
     for (const row of rows) {
       const cells = body.appendChild(make('tr'));
-      if (row.minHeight) cells.style.height = pt(row.minHeight);
+      if (row.minHeight) cells.style.height = cells.dataset.least = pt(row.minHeight);
       if (row.header) cells.dataset.header = '';
       if (row.unbroken) cells.dataset.unbroken = '';
       for (const cell of row.cells) {

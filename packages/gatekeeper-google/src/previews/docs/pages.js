@@ -6,7 +6,7 @@
 // preview scales them only afterwards.
 
 import { make } from './ui/chrome.js';
-import { carry, join, joined, settle } from './draw.js';
+import { carry, fitRows, join, joined, settle } from './draw.js';
 
 const styleSheet = document.createElement('style');
 styleSheet.textContent = `
@@ -169,10 +169,13 @@ function splitRow(row, bottom) {
   if (!starts) return undefined;
   const rest = row.cloneNode(false);
   rest.style.height = '';
+  delete rest.dataset.least;
   for (const cell of row.cells) {
     const room = bottom - parseFloat(getComputedStyle(cell).paddingBottom);
     rest.appendChild(cell.cloneNode(false)).append(...takePast(cell, room));
   }
+  // What stays is as tall as what is left in it.
+  fitRows([row]);
   return rest;
 }
 
