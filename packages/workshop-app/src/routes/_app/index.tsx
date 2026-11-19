@@ -52,6 +52,9 @@ function Home() {
   }
   const startIn = startsIn ?? made
   const chosen = startable.find(({ id }) => id === startsIn)
+  // With none to choose, there is nothing to pick but a new workspace, so it is left out. Kept
+  // while the list loads, so that it does not pop in under the composer for whoever has some.
+  const offersChoice = workspaces.status === 'loading' || startable.length > 0
   return (
     <NewChatPane
       // A newer release of the deployment, said to its admins where main's home page said it.
@@ -65,11 +68,11 @@ function Home() {
       )}
       greeting={greeting(user.name)}
       format={format && { noun: format.noun, icon: format.icon, onRemove: () => navigate({ to: '/', replace: true }) }}
-      workspace={{
+      workspace={offersChoice ? {
         workspaces: startable.map((workspace) => ({ id: workspace.id, title: workspaceTitle(workspace), label: workspaceLabel(workspace.title), look: looks[workspace.id] })),
         value: startsIn,
         onValueChange: setChosenId,
-      }}
+      } : undefined}
       initialText={draft}
       connectsIn={startIn}
       makeConnectable={makeConnectable}

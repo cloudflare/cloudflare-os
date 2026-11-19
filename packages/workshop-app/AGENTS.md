@@ -302,7 +302,9 @@ drawn as the conversation it becomes. Under the composer, in its middle, is wher
 that opens in place with a field to find one by. The menu is a `DropdownMenu` that holds an
 `OptionPicker` (`picker`) of which one is chosen (`single`), and choosing closes it. It offers the
 workspaces the user may chat in, not those they can only use, and the choice lasts for the visit
-to the page.
+to the page. Once the list is read with none of those in it, the picker is left out, as a new
+workspace is all there is; while it is still being read the picker shows, so that it does not pop
+in for whoever has some.
 
 The composer's + menu (`ComposerAddMenu`) is Upload and Add a new connection, then the skills, the
 ones chosen last first (`prefs/recentCommands.ts`, as a slash's matches are), then the commands,
