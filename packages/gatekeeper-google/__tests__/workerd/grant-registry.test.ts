@@ -1,5 +1,5 @@
 import {env} from "cloudflare:workers";
-import {runInDurableObject} from "cloudflare:test";
+import {runDurableObjectAlarm, runInDurableObject} from "cloudflare:test";
 import {stageCredentials} from "@gadgets/gatekeeper-kit/credential-stage";
 import type {GatekeeperConnectCallback} from "@gadgets/workshop-shared/gatekeeper";
 import {afterEach, describe, expect, it, vi} from "vitest";
@@ -125,6 +125,8 @@ function accountHandle(id: DurableObjectId) {
     refresh: () => runInDurableObject(stub(),
       async (instance: UserAccount) => (await instance.getAccessToken({forceRefresh: true})).token),
     disconnect: () => runInDurableObject(stub(), (instance: UserAccount) => instance.revoke()),
+    /** Runs the account's alarm, if one is set. */
+    alarm: () => runDurableObjectAlarm(stub()),
     /** Waits until the account is recorded as holding the grant of the Google account `subject`. */
     holds: (subject: string) => vi.waitFor(async () => expect(await held()).toBe(subject), {timeout: 5000}),
     stored,
@@ -316,34 +318,50 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-unknown", "refresh-unnamed"]);
   });
 
-  it("holds the grant again from its next refresh when Google does not take the revocation", async () => {
+  // Left connected, a connection whose revocation Google did not take would no longer count as a
+  // holder, and a disconnect of another, such as a connect the Workshop dropped, would revoke under it.
+  it("finishes a disconnect Google does not take, and revokes again later", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada} = googleAccounts();
     const first = await connection(google, "first", ada);
     google.revocationFails = true;
-    await expect(first.disconnect()).rejects.toThrow(/Failed to revoke token/);
-    expect(await first.stored("refreshToken")).toBe("refresh-first");
+    await first.disconnect();
+    expect(await first.stored("refreshToken")).toBeUndefined();
+    await expect(first.refresh()).rejects.toThrow(/has been disconnected/);
 
-    // Still connected and still used, so a later connection of the same Google account must not
-    // revoke under it.
-    google.revocationFails = false;
-    await first.refresh();
-    await first.holds(ada);
-    const second = await connection(google, "second", ada);
-    await second.disconnect();
+    // Google is asked again, until it takes the revocation or the tries run out.
+    expect(await first.alarm()).toBe(true);
     expect(google.revoked).toEqual([]);
+    google.revocationFails = false;
+    expect(await first.alarm()).toBe(true);
+    expect(google.revoked).toEqual(["refresh-first"]);
+    expect(await first.isEmpty()).toBe(true);
+
+    const abandoned = await connection(google, "abandoned", ada);
+    google.revocationFails = true;
+    await abandoned.disconnect();
+    for (let attempt = 0; attempt < 9; attempt++) expect(await abandoned.alarm()).toBe(true);
+    expect(await abandoned.isEmpty()).toBe(true);
+    expect(await abandoned.alarm()).toBe(false);
   });
 
-  it("does not let a connect the Workshop dropped keep the grant from being revoked later", async () => {
+  it("drops a revocation Google did not take once a later connection holds the grant", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada} = googleAccounts();
-    // The Workshop drops a connect that was never redeemed and forgets it, whatever revoke() says.
+    // The Workshop drops a connect that was never redeemed.
     const abandoned = await connectThroughOAuth(google, "abandoned", ada, "connect");
     google.revocationFails = true;
-    await expect(abandoned.disconnect()).rejects.toThrow(/Failed to revoke token/);
+    await abandoned.disconnect();
     google.revocationFails = false;
 
     const later = await connection(google, "later", ada);
+    expect(await abandoned.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await abandoned.isEmpty()).toBe(true);
+    expect(await later.refresh()).toBe("access-later");
+
     await later.disconnect();
     expect(google.revoked).toEqual(["refresh-later"]);
   });

@@ -289,6 +289,22 @@ type AccountSubject = { credentialsId: string; subject: string };
 // the key goes when a token mints again or other credentials are installed.
 const REFRESH_TOKEN_DEAD_KEY = "refreshTokenDead";
 
+// Storage key holding, once the account is disconnected, a revocation Google did not take, which
+// the alarm tries again: its refresh token, and the Google account whose registry it rechecks.
+const PENDING_REVOCATION_KEY = "pendingRevocation";
+
+/** `attempts` counts the tries made so far, the disconnect's included. */
+type PendingRevocation = { refreshToken: string; subject?: string; attempts: number };
+
+/** Whether a disconnect revokes the grant at Google, and the Google account it went by, if known. */
+type GrantRelease = { revoke: boolean; subject?: string };
+
+// How many times a revocation Google does not take is tried, with the wait before the second, which
+// doubles each time up to the last: about eight hours in all.
+const REVOCATION_ATTEMPTS = 10;
+const REVOCATION_RETRY_BASE_MS = 60 * 1000;
+const REVOCATION_RETRY_MAX_MS = 4 * 3600 * 1000;
+
 // How long reading which Google account the credentials belong to may take.
 const GRANT_SUBJECT_TIMEOUT_MS = 10 * 1000;
 
@@ -1075,7 +1091,7 @@ export class UserAccount extends DurableObject<Env> {
    * When the account is not known, or a registry cannot be asked, the grant is revoked: nothing
    * then says another connection would lose it. Called with the credentials mutex held.
    */
-  async #releaseGrant(): Promise<boolean> {
+  async #releaseGrant(): Promise<GrantRelease> {
     let kv = this.ctx.storage.kv;
     try {
       let installed = this.#credentialsId();
@@ -1088,10 +1104,10 @@ export class UserAccount extends DurableObject<Env> {
       // object there failed.
       if (recorded !== undefined &&
           (recordedFor === installed || (known !== undefined && recordedSubject === known))) {
-        return recorded.last;
+        return { revoke: recorded.last, subject: recordedSubject };
       }
       if (known !== undefined) {
-        return (await this.#grantRegistry(known).remove(this.ctx.id.toString())).last;
+        return { revoke: (await this.#grantRegistry(known).remove(this.ctx.id.toString())).last, subject: known };
       }
       // Not known for these credentials: a sign-in, a connection older than the registry that
       // has not refreshed a token since, or one whose recording failed or has not finished, as
@@ -1099,15 +1115,15 @@ export class UserAccount extends DurableObject<Env> {
       // token, while it lasts, says which account it is; minting another would need the mutex this
       // call holds. Asked until it expires: one that lapses during the read fails it, and revokes.
       let stored = kv.get<GoogleAccessToken>("accessToken");
-      if (!stored || stored.expires.valueOf() <= Date.now()) return true;
+      if (!stored || stored.expires.valueOf() <= Date.now()) return { revoke: true };
       let { sub } = await getGoogleAccountProfile(
           stored.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
-      return (await this.#grantRegistry(sub).remove(this.ctx.id.toString())).last;
+      return { revoke: (await this.#grantRegistry(sub).remove(this.ctx.id.toString())).last, subject: sub };
     } catch (error) {
       logger.warn("failed to release a Google grant; revoking it", {
         event: "google.grant.release.failed", error,
       });
-      return true;
+      return { revoke: true };
     }
   }
 
@@ -1425,6 +1441,11 @@ export class UserAccount extends DurableObject<Env> {
 
   async alarm(_alarmInfo?: AlarmInvocationInfo): Promise<void> {
     await this.#credentials.run(async () => {
+      let pending = this.ctx.storage.kv.get<PendingRevocation>(PENDING_REVOCATION_KEY);
+      if (pending !== undefined) {
+        await this.#retryRevocation(pending);
+        return;
+      }
       if (shouldDeleteCredentialsOnAlarm(this.ctx.storage.kv)) {
         await this.#forgetHooks();
         this.ctx.storage.deleteAll();
@@ -1433,26 +1454,83 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   /**
-   * Disconnects the account: its credentials and everything else it stored are deleted. The grant
-   * is revoked at Google only when no other connection of the same Google account holds it, since
-   * Google would end theirs with it. While the grant lives on, so does an access token this
+   * Disconnects the account: its credentials and everything else it stored are deleted, but for a
+   * revocation Google did not take, which is tried again later. The grant is revoked at Google only
+   * when no other connection of the same Google account holds it, since Google would end theirs
+   * with it. While the grant lives on, so does an access token this
    * account already handed out: a gatekeeper object that memoized one goes on reaching Google
    * until it next asks this account, within a minute (see AccessTokenCache).
    */
   async revoke(): Promise<void> {
     await this.#credentials.run(async () => {
       let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
-      // If Google does not take the revocation, the account stays connected and is no longer
-      // recorded as a holder. One still in use is recorded again at its next token refresh. One the
-      // Workshop has dropped never asks for a token, so it cannot keep a later disconnect of the
-      // same Google account from revoking the grant.
-      if (refreshToken && await this.#releaseGrant()) {
-        await revokeGoogleToken(refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
+      let pending: PendingRevocation | undefined;
+      if (refreshToken) {
+        let release = await this.#releaseGrant();
+        // A revocation Google does not take is tried again later, the disconnect done all the
+        // same: left connected, the account would no longer count as a holder of the grant, and
+        // another connection's disconnect, such as the Workshop dropping a connect it never
+        // completed, could revoke the grant under it.
+        if (release.revoke) {
+          try {
+            await revokeGoogleToken(refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
+          } catch (error) {
+            logger.warn("Google did not take a revocation; trying it again later", {
+              event: "google.grant.revoke.failed", error,
+            });
+            pending = {
+              refreshToken, attempts: 1,
+              ...(release.subject === undefined ? {} : { subject: release.subject }),
+            };
+          }
+        }
       }
       await this.#forgetHooks();
       this.ctx.storage.deleteAlarm();
       this.ctx.storage.deleteAll();
+      if (pending !== undefined) this.#scheduleRevocation(pending);
     });
+  }
+
+  /** Keeps what a revocation Google did not take needs, until the alarm tries it again. */
+  #scheduleRevocation(pending: PendingRevocation): void {
+    this.ctx.storage.kv.put<PendingRevocation>(PENDING_REVOCATION_KEY, pending);
+    this.ctx.storage.setAlarm(Date.now() +
+        Math.min(REVOCATION_RETRY_BASE_MS * 2 ** (pending.attempts - 1), REVOCATION_RETRY_MAX_MS));
+  }
+
+  /**
+   * Tries again a revocation Google did not take when the account was disconnected, unless a
+   * connection of the same Google account made since holds the grant, which would lose it. Gives
+   * up after REVOCATION_ATTEMPTS, leaving the grant at Google until it lapses. Called with the
+   * credentials mutex held.
+   */
+  async #retryRevocation(pending: PendingRevocation): Promise<void> {
+    if (pending.subject !== undefined) {
+      // A registry that cannot be asked says nothing of another holder, as at the disconnect.
+      let held = await this.#grantRegistry(pending.subject).remove(this.ctx.id.toString())
+          .then(({ last }) => !last, () => false);
+      if (held) {
+        logger.info("dropped a revocation a later connection's grant would undo", {
+          event: "google.grant.revoke.dropped",
+        });
+        this.ctx.storage.deleteAll();
+        return;
+      }
+    }
+    try {
+      await revokeGoogleToken(pending.refreshToken, AbortSignal.timeout(TOKEN_REVOKE_TIMEOUT_MS));
+    } catch (error) {
+      let attempts = pending.attempts + 1;
+      if (attempts < REVOCATION_ATTEMPTS) {
+        this.#scheduleRevocation({ ...pending, attempts });
+        return;
+      }
+      logger.warn("gave up revoking a disconnected connection's Google grant", {
+        event: "google.grant.revoke.abandoned", error,
+      });
+    }
+    this.ctx.storage.deleteAll();
   }
 
   /**
