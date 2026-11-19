@@ -1196,8 +1196,10 @@ Size limits from the provider and the disclosure shape. `maxTrackedCollections` 
 bounds the distinct collections this binding has *ever* disclosed, including markers a fail-closed read
 left behind, so size it from the whole resource rather than one page — a per-page value starts
 refusing valid reads once later pages reveal new collections. Observers are not capped: each costs a verifier call on a
-`collections` read, throttled by `concurrency`, and the Workers limits such a fan-out could meet
-are on call depth, not on the number of calls. `remotePageSize`
+`collections` read, throttled by `concurrency`. The fan-out adds no call depth, but each call, and
+whatever the verifier does to answer it, counts toward the Workers subrequest limit (10,000 per
+invocation by default); a check that fails for that reason excludes its observer, as any failed
+check does. `remotePageSize`
 cannot exceed the provider's page cap. Lower `maxProviderPagesPerCall` for a provider that bills
 each row it returns: a filter that drops whole pages otherwise pays for up to ten per `next()`, and
 `1` with a `pageSize` no provider page exceeds makes each `next()` one provider request.

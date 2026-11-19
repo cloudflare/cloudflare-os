@@ -448,8 +448,8 @@ export class ObserverTracker<V> {
     const claimed = canonical.map(collectionId => this.#collectionKey(collectionId));
     claimSets(claims, claimed, new Set(untracked.map(collectionId => this.#collectionKey(collectionId))));
 
-    // Not capped: the Workers limits a fan-out could meet are on call depth, which the number of
-    // observers does not change. `concurrency` throttles it.
+    // Not capped: the fan-out adds no call depth. Each check still counts toward the subrequest
+    // limit, and one that fails is an exclusion below. `concurrency` only throttles.
     const observers = [...this.#observers()];
     const access = await mapLimit(observers, this.#concurrency, async ([id, verifier]) => {
       try {
