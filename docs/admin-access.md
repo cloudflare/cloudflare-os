@@ -167,9 +167,9 @@ re-checks that the caller is an admin, reads the access policy from the authorit
 access off, or `"content"` after an admin lowered the level, must not mint a view above the level
 in force), and then calls `OverseerDurableObject.openForAdmin(adminId, reason, sessionId, terms)`.
 The terms carry the caller's `via` and, for a call made through the admin gatekeeper, where it
-came from (`agent`), what the view was opened for (`access`: `"metadata"`, or
-`"content"` when the open asked for it, see [Opening for content](#opening-for-content)) and the
-view's expiry (`expiresAt`).
+came from (`agent`), what the view was opened for (`access`: `"metadata"`, or `"content"` when
+the open asked for it, see [Opening for content](#opening-for-content)), the issue report it was
+opened for when there is one (`forIssueReport`) and the view's expiry (`expiresAt`).
 
 `AdminApiImpl` checks an open of either kind, `inspectWorkspace()` or `inspectUser()`, with
 `#openTerms()`, in the order the API documents: the reason and the lifetime, that the caller is
@@ -183,7 +183,8 @@ Neither a workspace nor an account checks the terms it is opened with, so `Admin
 before it sends them. The label it puts on the terms and on its own record of a refused open is
 what `adminCallerTerms()` returns for the capability's caller: `"api"` or `"cli"` with no
 origin, or `"gatekeeper"` with the workspace and, when there is one, the chat, and a `TypeError`
-for anything else.
+for anything else. `inspectWorkspace()` also refuses, with a `TypeError` and before anything is
+reached, a `forIssueReport` that is not a non-empty string of at most 128 characters.
 
 `openForAdmin()`:
 
@@ -335,6 +336,14 @@ content reads are refused (`contentNotRequested`) and every other method answers
 What a view was opened for is fixed for its life and is on every record it makes (`requested`).
 An investigation therefore starts on a metadata view and moves to content deliberately, in a
 second `inspectWorkspace()` call with a reason of its own, and the log shows when it did.
+
+**A view can be opened for one issue report** (`AdminWorkspaceInspectOptions.forIssueReport`,
+which the admin gatekeeper's session limited to one report uses: see
+[Through an agent](#through-an-agent)). Only the grant the workspace's owner gave with that
+report, or the owner's account-wide grant, then answers a content call, and the view's
+description lists no other grant. Such a view is opened only for a report the workspace's owner
+filed about that workspace: any other is refused as a report that does not exist
+(`ISSUE_REPORT_NOT_FOUND`), unrecorded, since nothing of the workspace was read.
 
 The Workshop never opens a view for content. Its page for one workspace
 (`/admin/workspace/<workspaceId>`) opens a metadata view, lists the workspace's live grants, ends
@@ -916,66 +925,98 @@ workspaces that need it. Its design record is
 [README's table](../packages/gatekeeper-admin/README.md#what-each-kind-does) lists
 them):
 
-- **Read**: the listings, the settings getters, the audit log and its statistics, the content
-  access requests, and `inspectWorkspace()` and `inspectUser()` with every method of the view each
-  returns. A read runs at once. A workspace's view reads metadata, and content only as
-  [Each call](#each-call) decides for any admin: the gatekeeper adds no way round a grant. A view
-  of a user's account reads metadata alone (see [User inspection](#user-inspection)).
-- **Act**: a write, and a request for content access. The call is queued as an action of the
-  workspace and runs once a member approves it; no rule approves either. A write then runs with no
-  other admin deciding, and a request for content access must still be approved by a second admin
-  once it is filed.
-- **Omitted**: every setter and every other method that changes a setting, the gateway tests,
-  `checkForUpdates()` and `getUpdateStatus()`, approving or denying a content access request, and
-  ending an admins' grant. They are absent from what the agent is told and refused.
+- **Read**: the listings, the settings getters, the audit log and its statistics, issue reports
+  with their threads and images, the content access requests, `inspectWorkspace()` and
+  `inspectUser()` with every method of the view each returns, and `whoami()`, which names the
+  workspace's owner: the admin every call through the binding is made as. A read runs at once. A
+  workspace's view reads metadata, and content only as [Each call](#each-call) decides for any
+  admin: the gatekeeper adds no way round a grant. A view of a user's account reads metadata
+  alone (see [User inspection](#user-inspection)).
+- **Act**: an entry in a report's thread, a report's status, claiming or releasing a report, a
+  write, and a request for content access. The call is queued as an action of the workspace and
+  runs once a member approves it, or a rule does where the kind allows one. A public reply
+  through the binding always waits for a person, and so do a write, which then runs with no other
+  admin deciding, and a request for content access, which a second admin must still approve once
+  it is filed. A claim and a release are one kind of action, for the workspace's owner, whoever
+  in the workspace asked: a claim makes the owner the report's assignee and is refused where
+  another admin holds the report. It is never a take-over, which only a person makes, from the
+  holder they name (see
+  [issue-reports.md](issue-reports.md#the-assignee)). An action refused where it lands, such
+  a claim included, stays pending until a person rejects it, and the connection's later
+  actions wait behind it (see [its limits](issue-reports.md#limits)).
+- **Omitted**: every setter, approving or denying a content access request, ending an admins'
+  grant, and setting a report's links. They are absent from what the agent is told and refused.
+
+From the binding, code can also open a session limited to one issue report, which reaches that
+report as its reporter reads it and the reporter's workspace as the reporter chose to show it
+(see [Opening for content](#opening-for-content)), and subscribe to three hooks: a report
+filed, an investigation ended, and every write to a report after it was filed (see
+[issue-reports.md](issue-reports.md#hooks)).
 
 **Every call is the workspace owner's.** The gatekeeper Worker holds no credential: the workspace
 lends it its owner's Admin API, and each call is checked and recorded as any admin's is, with
 `via: "gatekeeper"` and where it came from.
 
 **The lend.** A session is lent the read methods for at most `ADMIN_AGENT_LEND_SECONDS` (15
-minutes), and a view it opens ends with it. An approved action is lent one call, of the method its
+minutes), and a view it opens ends with it. An approved action is lent one call, of a method its
 kind names. The Workshop asks at each lend whether the owner still holds the account, and before
 every call whether the owner is still a deployment admin and the gatekeeper is still turned on.
 
 **The workspace admits only deployment admins.** While a workspace has the connection, nobody
 but its owner and users who are deployment admins at that moment can open it, in any role or by
 any share link; other admins may collaborate there and decide its pending actions. Once the
-workspace has read anything through the binding it stays so for good, with or without the
+workspace has read anything through the whole binding it stays so for good, with or without the
 connection, because its chats hold what was read.
 
-**Reads mark the workspace as holding restricted data.** Every read through the binding sets the
-platform's restricted-data latch on the workspace, in this version. From then on no rule applies
-anything there, so every action waits for a person, and web fetches reach only the hosts the
-deployment trusts.
+**Reads mark the workspace as holding restricted data.** Every read through the whole binding
+sets the platform's restricted-data latch on the workspace, in this version. From then on no
+rule applies anything there, so every action waits for a person, and web fetches reach only the
+hosts the deployment trusts. A report session's reads do not mark, with one exception: its view
+of a reporter's workspace that itself holds restricted data marks the workspace that reads it,
+without closing it for good. A hook's event that tells what a report's reporter is not shown
+marks the workspace that receives it as a read through the whole binding does, for good; a new
+report and a public reply mark nothing (see [issue-reports.md](issue-reports.md#hooks)).
 
 **Where the person behind a call is found.** Every record names the owner, so:
 
 - for an agent's turn, the chat the record names says who prompted it;
 - for an approved action, its record in the workspace says who decided (`resolvedBy`);
 - for a session opened directly from the connection, it is the owner: no other member is lent
-  one, and no other member's queues an action.
+  one, and no other member's queues an action, which a rule could apply with nobody deciding.
 
 A slash command is not among them: this gatekeeper has none.
 
 **What the audit log holds of an agent.** View opens and view calls, of a workspace and of a
 user's account, writes, and content access requests carry `via: "gatekeeper"` and the origin
-(`agent`). Listings of users and
-workspaces, settings and the audit log itself leave no audit record, for an agent as for any
-admin: their only trace is the observation in the activity of the workspace that called, which
-goes with that workspace.
+(`agent`). Listings
+of users, workspaces, reports, settings and the audit log itself, and reading a report or its
+image, leave no audit record, for an agent as for any admin: their only trace is the observation
+in the activity of the workspace that called, which goes with that workspace. A report entry, a
+status or a change of assignee an agent made is recorded in the report's thread.
 
 **Removing the account.** Disconnecting the deployment admin account from Connectors ends every
-connection made with it, in every workspace its holder owns, at the next session or action, and
-adding it again restores them. In mode Enabled it cannot be removed.
+connection made with it, in every workspace its holder owns, at the next session, action or hook
+firing, and adding it again restores them. In mode Enabled it cannot be removed.
 
 **Limits**, each described in the README:
 
-- [The restricted-data mark is the gatekeeper Worker's own
-  declaration](../packages/gatekeeper-admin/README.md#what-a-worker-that-keeps-everything-could-do):
-  it holds against agents and gadgets, not against the Worker.
+- [The split of the two reply kinds and the restricted-data mark are the gatekeeper Worker's
+  own declarations](../packages/gatekeeper-admin/README.md#what-a-worker-that-keeps-everything-could-do):
+  they hold against agents and gadgets, not against the Worker.
+- [Non-admins admitted again after the connection is removed read what report sessions left in
+  the chats](../packages/gatekeeper-admin/README.md#what-the-non-admins-who-come-back-can-read).
+  When an admin reports their own workspace that read through the whole binding, and grants its
+  content, that is what the whole binding answered there: the workspace that triages the report
+  is marked as holding restricted data, and is not closed for good.
 - [The latch does not hold back reads through the workspace's other
   connections](../packages/gatekeeper-admin/README.md#what-the-latch-does-not-hold-back).
+- [What a report session reads of an ordinary reporter's workspace, under the reporter's grant,
+  lands in a triage workspace that is not
+  marked](../packages/gatekeeper-admin/README.md#what-an-unmarked-triage-workspace-holds).
+  Its web fetches and the rule-applied actions of its other connections are not held, and a
+  report's text can steer an agent to send that content out. So a triage agent is given no
+  other connection, and the triage workspace holds none its owner would not send a reporter's
+  content to.
 - [An agent finds the write it asked for through the audit log, and the content request it filed
   through the list of requests](../packages/gatekeeper-admin/README.md#limits): the call
   that queues either returns nothing.
@@ -1155,9 +1196,9 @@ settings across deploys, while a variable only bounds what an admin session can 
   `contentOff`, `contentNotRequested` or `grantRequired`.
 - **`AdminUserAccessRecord`** (`kind: "user"`): one admin call into a user's account, the open or a
   view method. It holds `at`, `admin`, `sessionId`, `via`, `agent` (for a call made through the
-  admin gatekeeper, see below), the user whose account it is (`userId`,
-  by canonical user id, kept as `workspaceOwner` is: a long one keeps its start and a digest of the
-  whole id; for an open refused before it reaches the account, the id the admin gave), `method`,
+  admin gatekeeper, see below), the user whose account it is (`userId`, by canonical user id,
+  kept as `workspaceOwner` is: a long one keeps its start and a digest of the whole id; for an
+  open refused before it reaches the account, the id the admin gave), `method`,
   the `reason` given at the open, its own `access` (`"metadata"`, or `"off"` for a call refused
   for that: a view of an account answers with metadata alone, whatever level is in force) and
   `refused` (`accessOff` alone), and its own `args`: only the open records one (`expiresAt`),
@@ -1648,11 +1689,12 @@ Grants and content reads add these, in the same directory:
   names that differ only by the case of ASCII letters are one admin.
 - `git-cache.test.ts` also covers `readLocalFileAtCommit()`: text, a stream for a large file or
   one that is not text, a symlink and a submodule, and never a pull.
+
 The admin gatekeeper adds these, in the same directory (its own suites are listed in
 [its README](../packages/gatekeeper-admin/README.md#tests)):
 
-- `admin-agent-kinds.test.ts`: every `AdminApi` method classified, the two action kinds with a
-  tag each, their methods and their verdicts, and the constants.
+- `admin-agent-kinds.test.ts`: every `AdminApi` method classified, the seven action kinds with a
+  tag each, their methods (an assignment's two) and their verdicts, and the constants.
 - `admin-agent.test.ts`: the membrane. What `adminAgentRefusal()` refuses under a session and
   under each action kind; `restrictAdminApi()`'s checks in their order, an action's one call, a
   lend that ended or ran out; and a view behind it, of a workspace or of a user's account, which
@@ -1660,10 +1702,11 @@ The admin gatekeeper adds these, in the same directory (its own suites are liste
   lend has left.
 - `admin-agent-lend.test.ts`: `lendAdminApi()` on a real workspace. A session's reads and what
   each records, with `via` `"gatekeeper"`, the workspace and the chat, a view of a user's
-  account included; an approved action's one call; who is lent nothing, and who queues nothing
-  (the vendor off, an owner who is not an admin or holds no account, a member's direct session);
-  the insiders of a request for content, with a second admin who collaborates in the workspace;
-  and a spawned chat without the binding named.
+  account included; an approved action's one call; restricted data, marked by a read and
+  refusing a rule's approval afterwards; who is lent
+  nothing (the vendor off, an owner who is not an admin or holds no account, a member's direct
+  session); the insiders of a request for content, with a second admin who collaborates in the
+  workspace; and a spawned chat without the binding named.
 - `admin-workspace-admission.test.ts`: the admission rule at each gate, for a workspace with the
   connection, for one that had it and read nothing, and for one that read through it, a
   non-admin kept in the sharing list included.
@@ -1671,9 +1714,11 @@ The admin gatekeeper adds these, in the same directory (its own suites are liste
   Disabled until an admin chooses, and its account offered, provisioned and listed for
   deployment admins alone, in each mode.
 - `admin-access.test.ts`, `admin-api-impl.test.ts`, `admin-audit.test.ts`,
-  `admin-workspace-view.test.ts` and `admin-user-view.test.ts` also cover a caller's `via` and
-  `agent` checked in one place, before any terms reach a workspace or an account, and kept on
-  each record.
+  `admin-workspace-view.test.ts`, `admin-user-view.test.ts`, `admin-content-requests.test.ts` and
+  the write suites also cover
+  a caller's `via` and `agent` checked in one place, before any terms reach a workspace or an
+  account, and kept on each record, `isRequestInsider()` at the claim and in the workspace, and a
+  view opened for one issue report.
 
 The issue report suites are listed in [issue-reports.md](issue-reports.md#code-and-tests).
 
@@ -1722,10 +1767,19 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   nothing changing when the record cannot be written; every action as its operation,
   and anything else refused; a workspace that is gone; and every write refused once a redeploy
   leaves `ADMIN_WORKSPACE_WRITES` unset.
-- `admin-gatekeeper.test.ts`: the admin gatekeeper end to end, with a scripted model. Who is
-  offered it; an agent's view calls recorded as made through the gatekeeper; the admins-only
-  workspace, while it has the connection and after; the methods an agent is not given; the
-  vendor turned off; the account removed; a blueprint; and a demoted owner.
+
+- `admin-gatekeeper.test.ts`, `admin-gatekeeper-actions.test.ts` and
+  `admin-gatekeeper-hooks.test.ts`: the admin gatekeeper end to end, with a scripted model. Who
+  is offered it; an agent's view calls recorded as made through the gatekeeper, and content read
+  only where the workspace's own check allows it; the admins-only workspace, while it has the
+  connection and after; a content request no member of the workspace can approve; a public
+  reply through the binding held for a person whatever the rules; a note, a status and a write
+  request applied by their rules; the restricted-data mark and its order; the session limited
+  to one report, its reply reaching the reporter with no person, and the mark of a reporter's
+  restricted workspace; the three hooks firing into a gadget's stored callback, once for each
+  kind of change to a report, and which of their events mark the workspace; two admins'
+  workspaces claiming one report, of which exactly one holds it; and a spawned agent handed
+  one report's session.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
@@ -1745,6 +1799,11 @@ Frontend suites, in `packages/workshop-frontend/src/`:
 - `features/admin-grants/PendingApprovalsCard.test.tsx` and `AdminPage.test.tsx`: the Audit tab's
   pending approvals, Approve and Deny on other admins' requests, and an admin's own request shown
   as waiting for another admin.
+- `features/admin-audit/AdminAuditPanel.test.tsx` and `PendingApprovalsCard.test.tsx` also cover
+  a record and a request made through the admin gatekeeper: the "Agent" label, and the workspace
+  and the chat it came from. `ShareModal.test.tsx` covers the reason shown when adding someone to
+  an admins-only workspace is refused, and `ResourcePicker.test.tsx` and `GatekeeperModal.test.tsx`
+  the picker's row that adds an auto-provisioned account.
 
 The CLI's suites, in `packages/api-cli/`, pin the `cf-os api` commands for grants, content reads
 and issue reports, and `--out <file>` saving the byte stream a result holds inside it.

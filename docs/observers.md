@@ -205,11 +205,12 @@ exists. What stands in for the owner's knowledge there:
 - the audit records of the request, the approval and every read made under the grant, and of an
   admin ending it.
 
-A workspace that has the admin gatekeeper's connection, or that has read through its binding,
-admits beside its owner only deployment admins, which the Workshop checks at each open and each
-background read (`OverseerImpl.admitsNonOwner()`). That connection's `verifyObserverAccess()`
-therefore allows every observer it is asked about for the subresource id it reports, and none for
-any other: who may see what it read is decided by admission, not by an account
+A workspace that has the admin gatekeeper's connection, or that has read through its whole
+binding, admits beside its owner only deployment admins, which the Workshop checks at each open
+and each background read (`OverseerImpl.admitsNonOwner()`). That connection's
+`verifyObserverAccess()` therefore allows every observer it is asked about for the two subresource
+ids it reports, and none for any other: who may see what it read is decided by admission, not by
+an account
 (see [the gatekeeper's README](../packages/gatekeeper-admin/README.md#who-can-use-it-and-where)).
 
 [admin-access.md](admin-access.md) is the design record.
@@ -1144,7 +1145,7 @@ The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAcces
   subresources.
 - **Removal.** A disconnected connection's audit records stay, but admission ignores them: its
   checks go with it, even when data it read survives (edge case 8), except that a workspace
-  which read through the admin gatekeeper's binding stays closed to non-admins.
+  which read through the admin gatekeeper's whole binding stays closed to non-admins.
 - **Direct contexts only.** A chat binding read records requirements only on that chat, checked
   against "build" collaborators; a gadget binding read only on that gadget, checked against
   "build" collaborators and those holding a gadget that reaches it. Gadget session access, root

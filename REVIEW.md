@@ -116,10 +116,6 @@ through logs and errors, then everything else.
   other than through `namedUser()`; a reporter's or an owner's call that can add a row the store
   keeps without a bound (a `grants` row no report names); and a listing that returns every report
   or every grant.
-- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS`, `ISSUE_REPORT_RETENTION_MIN_DAYS`
-  and `ADMIN_WORKSPACE_WRITES` are env-driven, like auth config, and the cap and the writes switch
-  fail closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or prunes with
-  `adminAuditRetentionDays` or `issueReportRetentionDays`, without `adminAccessPolicy()`.
 - The admin gatekeeper holds no power of its own: a workspace lends it its owner's Admin API, a
   session or an approved action at a time. Flag an `AdminApiImpl` made with `via: "gatekeeper"`,
   or that value set on a record, anywhere but `OverseerImpl.lendAdminApi()`; anything of the
@@ -128,9 +124,6 @@ through logs and errors, then everything else.
   answers one from its sharing records without asking `admitsNonOwner()`; and `adminReads`
   written anywhere but where the restricted-data latch is set. The gatekeeper's own rules are in
   `packages/gatekeeper-admin/README.md` (Reviewing a change here).
-- `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
-  config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
-  prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
 - Text a user or workspace member controls (display names, titles) enters the directory or the
