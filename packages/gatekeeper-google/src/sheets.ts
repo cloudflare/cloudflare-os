@@ -18,7 +18,9 @@ import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
 import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
-import { baseDrawing, drawingOf, drawnCells, mergeAnchors, pendingChangesOf } from "./sheets-drawing";
+import {
+  baseDrawing, drawingOf, drawnCells, fontFamiliesOf, mergeAnchors, pendingChangesOf,
+} from "./sheets-drawing";
 import {
   BlankSpreadsheet, enteredValue, GoogleSheetsApi, parseFormatRange, validateRanges,
   type SheetArea,
@@ -27,6 +29,7 @@ import {
 import type { BaseFormats } from "./sheets-format";
 import { isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
+import { downloadFont, isFontRequest } from "./slides-media";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardOf, resolveChanges, sheetLabels,
 } from "./sheets-plan";
@@ -384,6 +387,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SheetsChangeQueue;
+  /** The font families of the cells drawn so far, as Google holds them. */
+  #fonts = new Set<string>();
 
   /** `reader` makes the reads with nothing queued: for a spreadsheet not created yet, a blank one. */
   constructor(
@@ -669,12 +674,25 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget
     // A merge shows what its first cell holds, wherever in the sheet that cell is.
     let anchors = mergeAnchors(drawn, rest);
     let starts = basePiecesOf(grid, anchors);
-    let base = baseDrawing(
-      starts.length > 0 ? [rest, await this.#reader.readDrawing(this.#spreadsheetId, starts)] : [rest], enteredValue);
+    let rests = starts.length > 0 ? [rest, await this.#reader.readDrawing(this.#spreadsheetId, starts)] : [rest];
+    let base = baseDrawing(rests, enteredValue);
     // And one here says what the cells hold.
     let drawing = refusable(() => simulated(grid, [...drawn.areas, ...anchors], base.entered,
       () => drawingOf(grid, drawn, base, anchors)));
+    // Only what is saved: a font a queued change sets is its author's choice, and readFont()
+    // fetches what is named here without a report of its own.
+    for (let family of fontFamiliesOf(rests)) this.#fonts.add(family);
     return conflict ? { ...drawing, queuedChangeConflict: conflict } : drawing;
+  }
+
+  async readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array> {
+    // A font is public, and says nothing of the spreadsheet but that it names the family, which
+    // a drawing reports. Only a family one named is fetched, so nothing else reaches Google Fonts.
+    if (!this.#fonts.has(family) || !isFontRequest(family, weight)) {
+      throw new Error(`readFont: no drawing read names a font "${family}" that Google Fonts ` +
+        "could serve at that weight. Pass the first family of a `fontFamily` readDrawing() returned.");
+    }
+    return downloadFont(family, weight, italic);
   }
 
   async updateSpreadsheet(changes: SheetChange[]): Promise<void> {

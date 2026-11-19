@@ -58,7 +58,13 @@ const METADATA = spreadsheetMetadata("sheet-1", "Budget", [
   sheet(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
 ]);
 
+const FONT_URL = "https://fonts.gstatic.com/s/oxygen/v15/regular.ttf";
+/** How a TrueType file starts. */
+const FONT = new Uint8Array([0, 1, 0, 0, 0, 12]);
+
 let providerFetches: URL[];
+/** The `family` of each request to Google Fonts, in order. */
+let fontRequests: string[];
 /** The body of each data-filter read of values, in order. */
 let dataFilterReads: {
   dataFilters: { gridRange: Required<FixtureGridRange> }[];
@@ -90,12 +96,18 @@ function positionedFormats(sheetId: number, cells: ReturnType<typeof rect>) {
 
 beforeEach(() => {
   providerFetches = [];
+  fontRequests = [];
   dataFilterReads = [];
   enteredReads = [];
   formatFilterReads = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     let request = new Request(input, init);
     let url = new URL(request.url);
+    if (url.hostname === "fonts.googleapis.com") {
+      fontRequests.push(url.searchParams.get("family")!);
+      return new Response(`@font-face { font-family: 'Oxygen'; src: url(${FONT_URL}) format('truetype'); }`);
+    }
+    if (url.href === FONT_URL) return new Response(FONT);
     providerFetches.push(url);
     if (url.hostname !== "sheets.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
@@ -119,6 +131,9 @@ beforeEach(() => {
       if (url.searchParams.get("fields")?.includes("userEnteredValue")) {
         let { dataFilters } = body;
         enteredReads.push(dataFilters.map(({ gridRange }) => gridRange));
+        // A drawing read asks how each cell looks as well: all are set in one font.
+        let look = url.searchParams.get("fields")!.includes("fontFamily")
+          ? { effectiveFormat: { textFormat: { fontFamily: "Oxygen,sans-serif" } } } : {};
         // Each cell holds the text naming it; a sheet's entry lists a block per range on it.
         let sheetIds = [...new Set(dataFilters.map(({ gridRange }) => gridRange.sheetId))].toSorted((a, b) => a - b);
         return Response.json({
@@ -127,7 +142,7 @@ beforeEach(() => {
             data: dataFilters.filter(({ gridRange }) => gridRange.sheetId === sheetId).map(({ gridRange }) => ({
               startRow: gridRange.startRowIndex,
               startColumn: gridRange.startColumnIndex,
-              rowData: named(gridRange).map(row => ({ values: row.map(stringValue => ({ userEnteredValue: { stringValue } })) })),
+              rowData: named(gridRange).map(row => ({ values: row.map(stringValue => ({ userEnteredValue: { stringValue }, ...look })) })),
             })),
           })),
         });
@@ -643,6 +658,39 @@ async function boundSpreadsheet(facet: string) {
   await hooks.adoptCreated(facet);
   return hooks;
 }
+
+describe("Google Sheets fonts", () => {
+  it("reads a font the cells drawn are set in from Google Fonts by its name alone, with no report of its own", async () => {
+    let { queue, session } = newSession();
+    using _session = session;
+
+    let { formats } = await session.readDrawing("Sales!A1:B2");
+    let font = await session.readFont("Oxygen", 700, false);
+
+    expect(formats).toEqual([{ fontFamily: "Oxygen,sans-serif" }]);
+    expect([...font]).toEqual([...FONT]);
+    expect(fontRequests).toEqual(["Oxygen:ital,wght@0,700"]);
+    expect(queue.observations.map(({ title }) => title)).toEqual(["Read a Google Sheets drawing of Sales!A1:B2"]);
+  });
+
+  it("refuses a font no drawing read names, or that is no font's name, without asking Google Fonts", async () => {
+    let { session } = newSession();
+    using _session = session;
+    let refusals: string[] = [];
+    let ask = (family: string, weight: number) =>
+      Promise.resolve(session.readFont(family, weight, false)).then(() => {}, (error: Error) => refusals.push(error.message));
+
+    // Before any drawing is read, the session knows of no font.
+    await ask("Oxygen", 400);
+    await session.readDrawing("Sales!A1:B2");
+    await ask("Lobster", 400);
+    await ask("Oxygen", 450);
+
+    expect(refusals).toEqual(["Oxygen", "Lobster", "Oxygen"].map(family =>
+      expect.stringContaining(`no drawing read names a font "${family}" that Google Fonts could serve at that weight`)));
+    expect(fontRequests).toEqual([]);
+  });
+});
 
 describe("Google Sheets describe() of an Office file", () => {
   it("explains a refusal of a file Drive reports as an Office spreadsheet", async () => {

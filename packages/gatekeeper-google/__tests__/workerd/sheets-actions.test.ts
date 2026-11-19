@@ -468,6 +468,7 @@ class SheetsProvider {
   layouts = new Map<number, {
     rows?: Record<number, object>; columns?: Record<number, object>;
     merges?: FixtureGridRange[]; hideGridlines?: boolean;
+    conditionalFormats?: { ranges: FixtureGridRange[] }[]; bandedRanges?: { range: FixtureGridRange }[];
   }>();
   /** The format in effect where conditional formatting makes it differ from the one set, by cell. */
   effective = new Map<string, NonNullable<RestDrawnCell["effectiveFormat"]>>();
@@ -495,6 +496,8 @@ class SheetsProvider {
       return [{
         properties: { sheetId: sheet.id, ...(layout.hideGridlines ? { gridProperties: { hideGridlines: true } } : {}) },
         ...(layout.merges ? { merges: layout.merges } : {}),
+        ...(layout.conditionalFormats ? { conditionalFormats: layout.conditionalFormats } : {}),
+        ...(layout.bandedRanges ? { bandedRanges: layout.bandedRanges } : {}),
         data: ranges.map(range => ({
           startRow: range.startRowIndex,
           startColumn: range.startColumnIndex,
@@ -512,6 +515,7 @@ class SheetsProvider {
                 }),
                 ...(typeof raw === "number" ? { effectiveValue: { numberValue: raw } } : {}),
                 ...(format ? { effectiveFormat: format } : {}),
+                ...(this.formats.has(at) ? { userEnteredFormat: this.formats.get(at) } : {}),
                 ...(this.runs.has(at) ? { textFormatRuns: this.runs.get(at) } : {}),
               };
             }),
@@ -2699,6 +2703,62 @@ describe("Google Sheets preview reads", () => {
     expect(drawing.rows.map(row => row.size)).toEqual([43, 30, 21, 21]);
   });
 
+  it("draws a row nobody resized as tall as the lines its text takes, wrapped in the width it has", async () => {
+    let header = "Rating Scales Delivered to CM’s";
+    let provider = current = new SheetsProvider([sheetMeta(0, "Sales")], {
+      "Sales!A1": header, "Sales!B1": header, "Sales!C1": header, "Sales!A2": header, "Sales!A3": "one\ntwo",
+    }).install();
+    let wrapped = { wrapStrategy: "WRAP", textFormat: { fontSize: 10 } };
+    // Three lines in one column, bold and smaller; one where it does not wrap, and none in a
+    // hidden column; two in the width of the columns it is merged across; a line for each line break.
+    provider.effective.set(key(0, 0, 0), { wrapStrategy: "WRAP", textFormat: { fontSize: 9, bold: true } });
+    provider.effective.set(key(0, 0, 1), { textFormat: { fontSize: 10 } });
+    provider.effective.set(key(0, 0, 2), wrapped);
+    provider.effective.set(key(0, 1, 0), wrapped);
+    provider.effective.set(key(0, 2, 0), { textFormat: { fontSize: 10 } });
+    provider.layouts.set(0, {
+      columns: { 2: { hiddenByUser: true } },
+      merges: [{ sheetId: 0, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 }],
+    });
+
+    let drawing = await drawingOf(gatekeeper(), "Sales!A1:C3");
+
+    expect(drawing.rows.map(row => row.size)).toEqual([48, 37, 37]);
+  });
+
+  it("keeps the fill a conditional rule gives a cell under one a pending change sets", async () => {
+    let provider = budget();
+    let [red, grey, blue] = [{ red: 1 }, { red: 0.5, green: 0.5, blue: 0.5 }, { blue: 1 }];
+    // A rule's fill over no fill and over the cell's own, a band's under the rule's range, and
+    // a fill no rule is over.
+    provider.effective.set(key(0, 0, 0), { backgroundColor: red });
+    provider.effective.set(key(0, 0, 1), { backgroundColor: grey });
+    provider.setFormat("Sales!C1", { backgroundColor: blue });
+    provider.effective.set(key(0, 0, 2), { backgroundColor: red });
+    provider.effective.set(key(0, 0, 3), { backgroundColor: red });
+    let row = (startColumnIndex: number, endColumnIndex: number) =>
+      ({ sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex, endColumnIndex });
+    provider.layouts.set(0, { conditionalFormats: [{ ranges: [row(0, 3)] }], bandedRanges: [{ range: row(1, 2) }] });
+    let sheets = gatekeeper();
+    await sheets.queued([{ op: "formatCells", range: "Sales!A1:D1", format: { fillColor: "#fff2cc" } }]);
+
+    let drawing = await drawingOf(sheets, "Sales!A1:D1");
+
+    expect(drawing.cells[0].map(cell => drawing.formats[cell!.format!].fillColor)).toEqual(["#ff0000", "#fff2cc", "#ff0000", "#fff2cc"]);
+    expect(drawing.cells[0].every(cell => cell!.formatted)).toBe(true);
+  });
+
+  it("draws text turned in its cell, in a row nobody resized as tall as the text then stands", async () => {
+    let provider = budget();
+    provider.effective.set(key(0, 0, 0), { textRotation: { angle: 90 }, textFormat: { fontSize: 10 } });
+
+    let drawing = await drawingOf(gatekeeper(), "Sales!A1:A2");
+
+    expect(drawing.formats[drawing.cells[0][0]!.format!]).toMatchObject({ rotation: 90 });
+    // "Region", six letters on end.
+    expect(drawing.rows.map(row => row.size)).toEqual([49, 21]);
+  });
+
   it("draws rows a pending change inserts as inserted, and a sheet one adds without asking Google", async () => {
     let provider = budget();
     let sheets = gatekeeper();
@@ -3166,6 +3226,8 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
       // The reads a preview draws from, which only a session that queues changes has.
       getPendingChanges: ["Sales"],
       readDrawing: ["Sales!A1:B2"],
+      // Only a font a drawing names is read, and no drawing was.
+      readFont: ["Oxygen", 400, false],
       // Declarations, the same for every spreadsheet: answered whatever has become of this one.
       getRenderingTypes: [],
     };
@@ -3175,13 +3237,15 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
     for (let method of writes) {
       // A read is refused as any read of the file is.
       let refusal = method === "updateSpreadsheet" ? OUT_OF_SCOPE
-        : method === "getRenderingTypes" ? undefined : "The requested file is outside this Drive binding.";
+        : method === "getRenderingTypes" ? undefined
+        : method === "readFont" ? expect.stringContaining('no drawing read names a font "Oxygen"')
+        : "The requested file is outside this Drive binding.";
       sheetsRequests.requests.length = 0;
       let refused = await hooks().callDriveNativeAfter(
         folder.facet, FOLDER, "openGoogleSheet", "sheet-1", method, args[method], [],
         async () => { drive.files.get("sheet-1")!.parents = ["elsewhere"]; });
       drive.files.get("sheet-1")!.parents = [ROOT];
-      expect(refused.error, method).toBe(refusal);
+      expect(refused.error, method).toEqual(refusal);
       expect(refused.actionId, method).toBeUndefined();
       expect(sheetsRequests.requests, method).toEqual([]);
     }

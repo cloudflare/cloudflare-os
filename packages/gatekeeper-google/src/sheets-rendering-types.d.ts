@@ -14,6 +14,13 @@ export interface GoogleSpreadsheetRenderingReads {
    * At most 10,000 cells are drawn at once, those of frozen rows and columns included.
    */
   readDrawing(range: string): Promise<SpreadsheetDrawing>;
+
+  /**
+   * One font of a family that a format `readDrawing()` returned names first in its `fontFamily`,
+   * as a TrueType file from Google Fonts. Throws for a font Google Fonts does not serve, such as
+   * Arial, and for a family only a pending change sets.
+   */
+  readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
 }
 
 /**
@@ -23,13 +30,18 @@ export interface GoogleSpreadsheetRenderingReads {
 export type SheetDrawnFormat = Omit<SheetCellFormat, "numberFormat"> & {
   /** The font's family, such as `Arial`. */
   fontFamily?: string;
+  /** How far the text is turned, in degrees from -90 to 90: 90 reads from the bottom up. */
+  rotation?: number;
 };
 
 /** One row or column of a drawing. */
 export type SheetDrawnLine = {
   /** Its 1-based number among the sheet's rows or columns: column C is 3. */
   number: number;
-  /** Its height or width in pixels. */
+  /**
+   * Its height or width in pixels. A row nobody has resized is as tall as its text, which is
+   * estimated where the text wraps.
+   */
   size: number;
   /** Set when it is hidden, by hand or by a filter. */
   hidden?: true;
