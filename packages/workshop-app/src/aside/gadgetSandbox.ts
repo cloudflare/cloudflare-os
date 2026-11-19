@@ -16,7 +16,7 @@ const MISSING_MAIN = "client.js's default export has no main() function. Start t
 // It connects to the app, whose root (`GadgetFrameRoot`) has the gadget's server side and the
 // app as its host. A UI of modules is started by `main(gadget, host)` on client.js's default
 // export, and the two stay in the runtime's scope; a legacy client.js gets them as globals. It
-// passes on console calls, uncaught errors and Escape, and blocks popups.
+// passes on console calls, uncaught errors, Escape and where the pointer is, and blocks popups.
 const runtimeUrl = (callsMain: boolean) => `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
 let root, gadget, host;
@@ -62,6 +62,18 @@ try {
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') notify(root.escape());
 }, true);
+
+// Where the pointer is, at most once a frame, as the app sees nothing of it over the frame.
+let pointerY, pointerQueued = false;
+window.addEventListener('pointermove', (event) => {
+  pointerY = Math.round(event.clientY);
+  if (pointerQueued) return;
+  pointerQueued = true;
+  requestAnimationFrame(() => {
+    pointerQueued = false;
+    notify(root.pointerAt(pointerY));
+  });
+}, { capture: true, passive: true });
 
 window.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
@@ -128,6 +140,8 @@ export type ConsoleLocation = { url?: string; line?: number; column?: number }
 export type FrameEvents = {
   reportConsole(level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation): void
   escape(): void
+  /** The pointer moved over the page, to `y` pixels below its top. */
+  pointerAt(y: number): void
 }
 
 /** The app, as a gadget's page sees it (`GadgetHost`). */
@@ -174,6 +188,10 @@ export class GadgetFrameRoot extends RpcTarget {
 
   escape() {
     this.events.escape()
+  }
+
+  pointerAt(y: unknown) {
+    if (typeof y === 'number' && Number.isFinite(y)) this.events.pointerAt(y)
   }
 }
 

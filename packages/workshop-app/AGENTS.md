@@ -1335,8 +1335,14 @@ passes the key on.
 The header then has the app's mark, the name (which closes nothing there), who else is there, more
 (only reload), the link, and the way back. The mark, a button as in the sidebar, leaves full screen
 for the output's workspace's latest chat, with the output beside it (`latestChat`). The header is
-out until it is put away, and is put away and had back by the bar as beside the page; doing so
-squares off the surface's top corners as it goes, so they are square at the window's top.
+put away and had back by the bar as beside the page; doing so squares off the surface's top corners
+as it goes, so they are square at the window's top. Gone into full screen, it goes away by itself
+after a second, the once: brought back, it stays, and leaving full screen brings it back if it went
+by itself and nobody has taken hold of the bar since. Taking hold of the bar in that second is
+choosing for it. While the header is away the bar fades out, and comes back as the pointer nears
+the window's top (100px, `usePointerNearTop`) or the keyboard comes to it. A gadget's frame keeps
+its pointer from the app, so its page's runtime says where the pointer is over it, at most once a
+frame (`pointerAt`), which only shows the bar.
 
 The sidebar is expanded, collapsed to a rail one button wide, or hidden, and `AppShell` owns
 which (it hands `collapsed` to whatever draws the sidebar). Its gap dragged well past the

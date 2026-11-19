@@ -5,6 +5,7 @@ import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon,
   CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, GearSixIcon, ShareNetworkIcon, XIcon,
 } from '@phosphor-icons/react'
+import { cn } from '@cloudflare/kumo/utils'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
@@ -41,9 +42,15 @@ type Placement =
       placement: 'page'
       /** Back beside the page it was expanded from, when it was: the step down. */
       onCollapse?: () => void
-      /** Filling the window, for nothing but it: the step up. */
+      /**
+       * Filling the window, for nothing but it: the step up. Gone into, the header goes away by
+       * itself after a moment, the once, and the bar that brings it back fades while it is away,
+       * unless the pointer is near the top (`pointerNearTop`).
+       */
       fullScreen: boolean
       onFullScreenChange: (on: boolean) => void
+      /** The pointer is near the window's top, where the bar shows again in full screen. */
+      pointerNearTop?: boolean
       /** The way to a chat with it beside it (`GadgetChatMenu`), for whoever builds where it is. */
       chat?: Omit<GadgetChatMenuProps, 'title' | 'compact'>
     }
@@ -125,6 +132,8 @@ const CRAMPED_BELOW = 460
 // The most the header can be tugged down on, with it all the way out: it snaps away at once, where
 // let go of short of it, after any tug down, it rolls up all the same.
 const TUG_AT = 120
+// How long after going into full screen the header goes away by itself, in milliseconds.
+const AWAY_AFTER = 1000
 
 /**
  * A file or an output: a header, then what it shows on a surface of its own.
@@ -163,6 +172,36 @@ export const SidePane = (props: SidePaneProps) => {
     if (reduceMotion) reveal.jump(shown ? 1 : 0)
     else animate(reveal, shown ? 1 : 0, motionTransition({ type: 'spring', duration: 0.3, bounce: 0.1 }))
   }
+
+  // Gone into full screen, the header goes away by itself after a moment, so that the one shown
+  // has the window; brought back, it stays. Put away that way, it is back on leaving full screen,
+  // unless it was taken hold of since. Taking hold of it first is choosing for it.
+  const awayTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const putAwayItself = useRef(false)
+  const handled = () => {
+    clearTimeout(awayTimer.current)
+    putAwayItself.current = false
+  }
+  const fullScreenChanged = useEffectEvent((on: boolean) => {
+    if (on) {
+      awayTimer.current = setTimeout(() => {
+        // One put away already was put away by whoever did it.
+        if (reveal.get() < 1) return
+        putAwayItself.current = true
+        showHeader(false)
+      }, AWAY_AFTER)
+    } else if (putAwayItself.current) {
+      putAwayItself.current = false
+      showHeader(true)
+    }
+  })
+  useEffect(() => {
+    fullScreenChanged(fullScreen)
+    return () => clearTimeout(awayTimer.current)
+  }, [fullScreen])
+  // Full screen with the header away, the bar to bring it back fades until the pointer nears the
+  // top, or the keyboard comes to it.
+  const barAway = fullScreen && !headerShown && props.placement === 'page' && props.pointerNearTop !== true
 
   // With the header away, the surface's top is the card's, which has an edge of its own.
   const lineOpacity = useTransform(reveal, [0, 0.5], [0, 1])
@@ -313,43 +352,53 @@ export const SidePane = (props: SidePaneProps) => {
             style={{ opacity: lineOpacity, borderTopLeftRadius: corner, borderTopRightRadius: corner }}
             className="pointer-events-none absolute inset-0 z-10 border-t border-kumo-line"
           />
-          <Grabber
-            aria-label={headerShown ? 'Hide the header' : 'Show the header'}
-            expanded={headerShown}
-            className="absolute top-0 left-1/2 z-10 -translate-x-1/2"
-            onDragStart={() => {
-              reveal.stop()
-              grabbed.current = reveal.get()
-              tugged.current = false
-            }}
-            onDrag={(offset) => {
-              if (tugged.current) return
-              // A header that was all the way out and is tugged down on, as a cord is, snaps away
-              // as soon as it is tugged far enough, without waiting to be let go: down is where
-              // people pull, and where there is room to.
-              if (grabbed.current > 0.99 && offset > TUG_AT) {
-                tugged.current = true
-                showHeader(false)
-                return
-              }
-              reveal.set(resistSize(grabbed.current * TUCK + offset, 0, TUCK) / TUCK)
-            }}
-            onDragEnd={(offset) => {
-              // What was left of the gesture, after the header snapped away, is nothing.
-              if (tugged.current) {
+          <div
+            className={cn(
+              'absolute top-0 left-1/2 z-10 flex -translate-x-1/2 transition-opacity duration-300 has-focus-visible:opacity-100 motion-reduce:transition-none',
+              barAway && 'opacity-0',
+            )}
+          >
+            <Grabber
+              aria-label={headerShown ? 'Hide the header' : 'Show the header'}
+              expanded={headerShown}
+              onDragStart={() => {
+                handled()
+                reveal.stop()
+                grabbed.current = reveal.get()
                 tugged.current = false
-                return
-              }
-              // Let go of after any tug down, however short, it rolls up all the same.
-              if (grabbed.current > 0.99 && offset > 0) {
-                showHeader(false)
-                return
-              }
-              const amount = clampSize(reveal.get(), 0, 1)
-              showHeader(offset > 0 ? amount > COMMITS_AT : amount > 1 - COMMITS_AT)
-            }}
-            onToggle={() => showHeader(!headerShown)}
-          />
+              }}
+              onDrag={(offset) => {
+                if (tugged.current) return
+                // A header that was all the way out and is tugged down on, as a cord is, snaps away
+                // as soon as it is tugged far enough, without waiting to be let go: down is where
+                // people pull, and where there is room to.
+                if (grabbed.current > 0.99 && offset > TUG_AT) {
+                  tugged.current = true
+                  showHeader(false)
+                  return
+                }
+                reveal.set(resistSize(grabbed.current * TUCK + offset, 0, TUCK) / TUCK)
+              }}
+              onDragEnd={(offset) => {
+                // What was left of the gesture, after the header snapped away, is nothing.
+                if (tugged.current) {
+                  tugged.current = false
+                  return
+                }
+                // Let go of after any tug down, however short, it rolls up all the same.
+                if (grabbed.current > 0.99 && offset > 0) {
+                  showHeader(false)
+                  return
+                }
+                const amount = clampSize(reveal.get(), 0, 1)
+                showHeader(offset > 0 ? amount > COMMITS_AT : amount > 1 - COMMITS_AT)
+              }}
+              onToggle={() => {
+                handled()
+                showHeader(!headerShown)
+              }}
+            />
+          </div>
           {children}
         </motion.div>
       )}

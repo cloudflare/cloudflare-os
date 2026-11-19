@@ -2,7 +2,6 @@ import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react
 import { animate, motion, useMotionValue, useTransform } from 'motion/react'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { motionTransition } from '@/hooks/motionTransition'
-import { cn } from '@cloudflare/kumo/utils'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
 import { clampSize } from './resizing'
 
@@ -18,7 +17,6 @@ export type GrabberProps = {
   onDragEnd: (offset: number) => void
   /** Clicked, or pressed from the keyboard, rather than dragged. */
   onToggle: () => void
-  className?: string
 }
 
 // A pointer that moved less than this between pressing and letting go only clicked.
@@ -36,7 +34,7 @@ const HOVER_OPACITY = 0.4
  * while dragged fast. Focused from the keyboard, it is as if held. While it is held nothing on the
  * page can be selected, so that a drag does not highlight whatever the pointer crosses.
  */
-export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, onDragEnd, onToggle, className }: GrabberProps) => {
+export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, onDragEnd, onToggle }: GrabberProps) => {
   const drag = useRef<{ pointerId: number; from: number; moved: boolean }>(undefined)
   // Set when a drag ends, for the click that follows letting go.
   const dragged = useRef(false)
@@ -129,10 +127,7 @@ export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, on
       type="button"
       aria-label={label}
       aria-expanded={expanded}
-      className={cn(
-        'relative h-4 w-12 cursor-grab touch-none outline-none select-none [-webkit-touch-callout:none] active:cursor-grabbing',
-        className,
-      )}
+      className="relative h-4 w-12 cursor-grab touch-none outline-none select-none [-webkit-touch-callout:none] active:cursor-grabbing"
       onPointerDown={take}
       onPointerMove={move}
       onPointerUp={letGo}

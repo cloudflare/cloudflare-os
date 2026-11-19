@@ -10,6 +10,7 @@ import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { usePointerNearTop } from '@/hooks/usePointerNearTop'
 import { accessNotConfirmed, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
 import type { CodeLines } from '@/components/CodeEditor'
 import { agentKeyOf } from '@/automations/agents'
@@ -91,8 +92,15 @@ export const AsidePane = (props: AsidePaneProps) => {
   const onOpenSettingsPage = props.placement === 'page' ? props.onOpenSettings : undefined
   const fullScreen = props.placement === 'page' && props.fullScreen
   const askAccessAgain = useAskAccessAgain()
-  const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
+  // Full screen, the bar that brings the header back shows as the pointer nears the top, over the
+  // gadget's page too, which says where it is in its own frame.
+  const pointer = usePointerNearTop(fullScreen, NEAR_TOP)
+  const { connection, snapshot } = useGadgetConnection(
+    item.kind === 'output' ? item.output : undefined,
+    () => onFullScreenChange(false),
+    (y) => pointer.report((frame.current?.getBoundingClientRect().top ?? 0) + y),
+  )
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
   const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
   // A gadget's, which a worktree, with no settings of its own, is not.
@@ -270,7 +278,7 @@ export const AsidePane = (props: AsidePaneProps) => {
       {share}
     </SidePane>
   ) : (
-    <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
+    <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange} pointerNearTop={pointer.near}>
       {content}
       {share}
     </SidePane>
@@ -334,6 +342,9 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
 
 // How long the Share button shows how copying the template's link went.
 const COPY_SHOWN_FOR = 1500
+
+// How near the window's top, in pixels, the pointer brings back the bar to pull the header down by.
+const NEAR_TOP = 100
 
 const NO_GADGETS: number[] = []
 

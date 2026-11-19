@@ -81,12 +81,13 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
   }
   const onEscape = vi.fn<() => void>()
   const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
-  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape, onConsoleLog })
+  const onPointerAt = vi.fn<(y: number) => void>()
+  const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape, onConsoleLog, onPointerAt })
   const frame = {} as Window
   connection.showIn(() => frame)
   /** The stub named `name` can no longer reach what it did, as when the workspace restarted. */
   const breaks = (name: string) => onBroken.get(name)?.forEach((callback) => callback(new Error('Durable Object reset')))
-  return { connection, overseer, gadget, frame, disposed, onEscape, onConsoleLog, links: () => roots, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
+  return { connection, overseer, gadget, frame, disposed, onEscape, onConsoleLog, onPointerAt, links: () => roots, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
 }
 
 const handshake = (source: unknown, origin = 'null') => {
@@ -173,15 +174,19 @@ describe('GadgetConnection', () => {
     connection.stop()
   })
 
-  it('passes on Escape and what the page logs, through the root its page connects to', async () => {
-    const { connection, frame, onEscape, onConsoleLog, links } = setUp()
+  it('passes on Escape, what the page logs and where the pointer is, through the root its page connects to', async () => {
+    const { connection, frame, onEscape, onConsoleLog, onPointerAt, links } = setUp()
     connection.start()
     await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
     handshake(frame)
     await vi.waitFor(() => expect(links()).toHaveLength(1))
-    const root = links()[0]! as unknown as { escape(): void; reportConsole(level: unknown, message: unknown, at?: unknown): void; gadget: unknown }
+    const root = links()[0]! as unknown as { escape(): void; reportConsole(level: unknown, message: unknown, at?: unknown): void; pointerAt(y: unknown): void; gadget: unknown }
     root.escape()
     expect(onEscape).toHaveBeenCalledOnce()
+    root.pointerAt(42)
+    root.pointerAt('42')
+    root.pointerAt(Number.NaN)
+    expect(onPointerAt.mock.calls).toEqual([[42]])
     root.reportConsole('error', ['Uncaught', 'boom'], { url: 'https://elsewhere.example/x.js', line: 3, column: 7 })
     root.reportConsole('shout', ['not a level'])
     expect(onConsoleLog).toHaveBeenCalledOnce()

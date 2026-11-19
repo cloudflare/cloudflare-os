@@ -12,9 +12,10 @@ const nothing = () => NOTHING
 /**
  * The gadget an output is, live, while it is the one shown; nothing for an output that is not a
  * gadget. Showing another connects to that one instead. A new API, from a new connection, connects
- * to it again, keeping the page shown until the new one is loaded.
+ * to it again, keeping the page shown until the new one is loaded. `onEscape` and `onPointerAt`
+ * are those it was first given for the gadget, so they must not need to change.
  */
-export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: () => void) => {
+export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: () => void, onPointerAt?: (y: number) => void) => {
   const { api, user } = useApi()
   const notice = useConnectionNotice()
   // The API the connection opens the workspace with, read when it connects.
@@ -28,6 +29,7 @@ export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: (
           chatId: output.chatId,
           viewerId: user.id,
           onEscape,
+          onPointerAt,
           // Beside a chat, what its page logs is the chat's to send to its agent.
           onConsoleLog: output.chatId === undefined
             ? undefined

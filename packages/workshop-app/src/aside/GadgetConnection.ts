@@ -67,6 +67,8 @@ export type GadgetConnectionOptions = {
   viewerId?: string
   /** Escape was pressed in the gadget's page, which keeps its keys from the app. */
   onEscape?: () => void
+  /** The pointer moved over the gadget's page, to `y` pixels below its top, which the app does not hear of otherwise. */
+  onPointerAt?: (y: number) => void
   /**
    * Something the gadget's page logged, or an error it did not catch, with where it happened at
    * the end of what it says.
@@ -410,6 +412,7 @@ export class GadgetConnection {
         this.options.onConsoleLog?.({ timestamp: new Date(), level, message: where ? [...message, `at ${where}`] : message })
       },
       escape: () => this.options.onEscape?.(),
+      pointerAt: (y) => this.options.onPointerAt?.(y),
     })
     this.#link = { server, session: newMessagePortRpcSession(port, root), gone }
     // The page's calls go to the gadget's server side, which can go without the rest. One that
