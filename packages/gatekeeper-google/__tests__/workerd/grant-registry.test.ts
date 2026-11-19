@@ -62,6 +62,8 @@ function fakeGoogle() {
     profileUnauthorized: false,
     /** Access tokens Google rejects before their recorded expiry, at user info. */
     rejected: new Set<string>(),
+    /** How many more answers about an access token's account fail for a while, as a 503. */
+    profileUnavailable: 0,
     /** Whether Google's token endpoint fails refreshes, as in an outage. */
     refreshFails: false,
     /** Whether Google holds back its answers to refreshes. */
@@ -103,6 +105,10 @@ function fakeGoogle() {
         google.profilesWaiting--;
       }
       if (google.profileUnauthorized || google.rejected.has(token)) return json({error: "invalid_token"}, 401);
+      if (google.profileUnavailable > 0) {
+        google.profileUnavailable--;
+        return json({error: "backend_error"}, 503);
+      }
       const sub = google.subjects.get(token);
       return sub === undefined ? json({error: "invalid_token"}, 500) : json({sub});
     }
@@ -345,6 +351,8 @@ describe("Google grants shared by several connections", () => {
       state.storage.kv.put("accessToken", {token: "access-stale", expires: new Date(Date.now() + 3_600_000)});
     });
     google.rejected.add("access-stale");
+    // The read with the refreshed token is tried again after a moment, with that token.
+    google.profileUnavailable = 1;
     await older.disconnect();
     expect(google.revoked).toEqual([]);
   });

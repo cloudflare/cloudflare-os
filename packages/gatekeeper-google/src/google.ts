@@ -1115,8 +1115,9 @@ export class UserAccount extends DurableObject<Env> {
           ? stored.token : await mint();
       // A token Google stops accepting before its recorded expiry gets one refresh, as any
       // request's does (see fetchWithAuthRetry).
+      // Kept for the attempts after it, which a 5xx retries.
       return (await getGoogleAccountProfile(
-          async opts => opts?.forceRefresh ? await mint() : token,
+          async opts => opts?.forceRefresh ? (token = await mint()) : token,
           AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
     } catch (error) {
       if (!dead) throw error;
