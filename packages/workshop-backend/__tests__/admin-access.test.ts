@@ -17,7 +17,7 @@ import {
   minAdminAuditRetentionDays, namedUser, redactAdminAuditArgs, validateAdminAccessReason,
   withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdChatStateContent,
   withholdCommitContent, withholdCreationContent, withholdHookContent, workpieceHoldsContent,
-  adminCallerTerms,
+  adminCallerTerms, isRequestInsider,
   type AdminViewTerms,
 } from "../src/admin-access.js";
 import { serializeAdminConfig } from "../src/admin-config.js";
@@ -830,5 +830,43 @@ describe("adminSettingChange", () => {
       let last = excerpt.charCodeAt(excerpt.length - 1);
       expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
     }
+  });
+});
+
+describe("isRequestInsider", () => {
+  const filed = {
+    requestedBy: "owner@example.test",
+    insiders: ["owner@example.test", "member@example.test", "decider@example.test"],
+  };
+
+  it("names the requester", () => {
+    expect(isRequestInsider(filed, "owner@example.test")).toBe(true);
+  });
+
+  it("names everyone the request keeps as an insider", () => {
+    expect(isRequestInsider(filed, "member@example.test")).toBe(true);
+    expect(isRequestInsider(filed, "decider@example.test")).toBe(true);
+  });
+
+  it("names a requester and an insider spelled in another case of ASCII letters", () => {
+    expect(isRequestInsider(filed, "Owner@Example.test")).toBe(true);
+    expect(isRequestInsider(filed, "MEMBER@example.test")).toBe(true);
+    // Only ASCII letters fold: the Kelvin sign is not "k".
+    expect(isRequestInsider({ requestedBy: "owner@example.test", insiders: ["kim@example.test"] },
+        "\u212Aim@example.test")).toBe(false);
+  });
+
+  it("names nobody else", () => {
+    expect(isRequestInsider(filed, "outside@example.test")).toBe(false);
+    expect(isRequestInsider(filed, "member@example.test.evil")).toBe(false);
+    expect(isRequestInsider(filed, "")).toBe(false);
+  });
+
+  it("names the requester alone for a request that keeps no list", () => {
+    const direct = { requestedBy: "owner@example.test" };
+    expect(isRequestInsider(direct, "owner@example.test")).toBe(true);
+    expect(isRequestInsider(direct, "OWNER@example.test")).toBe(true);
+    expect(isRequestInsider(direct, "member@example.test")).toBe(false);
+    expect(isRequestInsider({ ...direct, insiders: [] }, "member@example.test")).toBe(false);
   });
 });

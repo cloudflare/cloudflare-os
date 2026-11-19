@@ -750,7 +750,8 @@ const adminGrantErrors = codedErrorFamily<AdminGrantErrorCode>({
       "This workspace no longer belongs to the owner the request named, so no grant was given. " +
       "Request it again.",
   [ADMIN_GRANT_ERROR_CODES.secondAdminRequired]:
-      "This request must be approved by an admin other than the one who made it.",
+      "This request must be approved by an admin other than the one who made it and, for a " +
+      "request an agent filed, other than everyone who was in the workspace it was filed from.",
 });
 
 /** Creates an expected grant refusal with a machine-readable code. */
@@ -2481,6 +2482,10 @@ export const ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS = 24 * 60 * 60;
  * deployment. A workspace has at most one pending. */
 export const MAX_PENDING_CONTENT_REQUESTS = 50;
 
+/** How many of them may be requests filed through the admin gatekeeper: a workspace's rule can
+ * file one with no person deciding, and those must leave room for the requests people make. */
+export const MAX_PENDING_AGENT_CONTENT_REQUESTS = 10;
+
 /**
  * Where a request to read a workspace's content stands:
  *   - "pending":  waiting for an admin other than its requester to approve it, or for any admin to
@@ -3062,7 +3067,9 @@ export interface AdminApi {
   // re-checks that the caller is still a deployment admin (`notAdmin`). Nothing of a request, its
   // approval or the grant it gives is shown to the workspace's members: the reason stays in the
   // admin audit log. Every admin sees every request: the panel's list of pending approvals is
-  // listContentAccessRequests().
+  // listContentAccessRequests(). A request an agent files through the admin gatekeeper is its
+  // workspace owner's, and neither they nor anyone who was in that workspace when it was filed
+  // may approve it: its owner, its members, and whoever approved the filing.
 
   /**
    * Ask for a grant to read a workspace's content, for `reason` (required, as for
@@ -3075,7 +3082,8 @@ export interface AdminApi {
    * Refused `contentOff` while the level in force is below "content", `workspaceNotFound` for a
    * malformed id, and (ADMIN_GRANT_ERROR_CODES) `workspaceUnlisted` for a workspace the directory
    * does not list (see listWorkspaces()), `requestPending` while a request for the same workspace
-   * is pending, and `tooManyRequests` while MAX_PENDING_CONTENT_REQUESTS are pending.
+   * is pending, and `tooManyRequests` while MAX_PENDING_CONTENT_REQUESTS are pending or, for a
+   * request filed through the admin gatekeeper, MAX_PENDING_AGENT_CONTENT_REQUESTS of those.
    */
   requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest>;
 
@@ -3093,7 +3101,8 @@ export interface AdminApi {
    * it asks for: source "admins", for ADMIN_GRANT_LIFETIME_SECONDS. It replaces the live grant of
    * that source there, if any, which the approval's record names (AdminGrantRecord.replacedGrantId)
    * and which ends as ended by the caller. Refused (ADMIN_GRANT_ERROR_CODES)
-   * `secondAdminRequired` for the request's own requester, which leaves it pending,
+   * `secondAdminRequired` for the request's own requester or, for a request filed through the
+   * admin gatekeeper, anyone who was in the workspace it was filed from, which leaves it pending,
    * `requestNotFound` and `requestNotPending`, and `contentOff` below "content". Once claimed,
    * the request is "approved" and leaves "pending" for good. The workspace then checks again that
    * the requester and the caller are admins and not one admin, the level, and that it still has
