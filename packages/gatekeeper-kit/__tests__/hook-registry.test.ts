@@ -147,7 +147,8 @@ describe("HookRegistry", () => {
     expect(disposed.toSorted()).toEqual(["delivery", "firing", "initiator"]);
     expect(hooks.nextDue()).toBe(Date.now() + MINUTE);
 
-    await hooks.run(hooks.nextDue()!);
+    vi.setSystemTime(hooks.nextDue()!);
+    await hooks.run(Date.now());
     expect(deliver).toHaveBeenCalledTimes(2);
   });
 
@@ -177,7 +178,10 @@ describe("HookRegistry", () => {
     await hooks.run(Date.now());
     expect(deliver).not.toHaveBeenCalled();
 
-    for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) await hooks.run(hooks.nextDue()!);
+    for (let attempt = 0; attempt < MAX_DELIVERY_ATTEMPTS; attempt++) {
+      vi.setSystemTime(hooks.nextDue()!);
+      await hooks.run(Date.now());
+    }
     expect(reports.filter(report => report.dropped > 0)).toEqual([expect.objectContaining({ failed: 1, dropped: 1 })]);
   });
 

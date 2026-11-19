@@ -35,8 +35,8 @@ export function fakeKv(): FakeKv {
         .filter(([key]) => key.startsWith(prefix)
           && (startAfter === undefined || key > startAfter) && (end === undefined || key < end))
         .toSorted(byKey)
-        .map(([key, value]) => [key, structuredClone(value)] as [string, T]);
-      return limit === undefined ? found : found.slice(0, limit);
+        .slice(0, limit);
+      return found.map(([key, value]) => [key, structuredClone(value)] as [string, T]);
     },
     writes,
     keys: () => [...values.keys()].toSorted(),

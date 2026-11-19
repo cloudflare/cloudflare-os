@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env, runDurableObjectAlarm } from "cloudflare:test";
 import { expect, it } from "vitest";
 
 // What only real storage and RPC show: stubs are read back out of storage and called, and a firing's
@@ -27,4 +27,23 @@ it("leaves a hook as it was when the driver's transaction around set() fails", a
   await host.enable("hook");
   expect(await refused("hook")).toBe(true);
   expect(await host.deliver("hook", "message")).toEqual(["message"]);
+});
+
+// The wake resolves a promise the alarm's run awaits from another request's context.
+it("wakes a run waiting in the alarm when another request queues a row", async () => {
+  const host = env.HOOK_HOST.getByName("wakes");
+  await host.enable("held");
+  await host.enable("woken");
+  await host.enqueue("held", "held", true);
+  const alarm = runDurableObjectAlarm(host);
+  await host.arrived("held");
+
+  // Returns at once: the delivery it starts runs in the alarm, while "held" still holds the run.
+  await host.enqueue("woken", "woken");
+  await host.arrived("woken");
+  await host.release();
+
+  expect(await alarm).toBe(true);
+  expect(await host.row("woken:woken")).toEqual({ deliveredAt: expect.any(Number) });
+  expect(await host.reports()).toEqual([]);
 });

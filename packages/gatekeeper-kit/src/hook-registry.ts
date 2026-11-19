@@ -96,8 +96,8 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
 
   /**
    * @param kv The driver's `ctx.storage.kv`.
-   * @param options.onRunReport Called once at the end of a run in which a delivery failed or timed
-   * out or a message was dropped, as `HookDeliveryQueue` reports it.
+   * @param options.onRunReport Called once at the end of a run that has something to report, as
+   * `HookDeliveryQueue` reports it.
    */
   constructor(kv: KvScannable, options: { onRunReport: (report: RunReport) => void }) {
     this.#kv = kv;

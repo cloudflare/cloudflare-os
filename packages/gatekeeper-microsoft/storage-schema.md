@@ -67,7 +67,7 @@ connection's bindings on that mailbox registered.
 | `watch:<folderId>` | `{ cursor, renewAt, subscriptionId?, expiresAt? }` | Per watched folder: the `receivedDateTime` read up to (re-read with a two-minute overlap), and its Graph subscription, renewed halfway through its three days. |
 | `clientState` | `string` | The secret every notification must carry, compared in constant time. A notification only brings the next read forward, so a forged one costs a read. |
 | `syncAt` | `number` | When the next read is due. |
-| `msg:<hookKey>…`, `queue:due:*`, `queue:finished:*` | kit `HookDeliveryQueue` | Deliveries, by message ID, with `attempts` counting the attempts started (stored before each call), retried with backoff and remembered for a day so an overlapping read doesn't deliver twice. |
+| `msg:<hookKey>…`, `queue:*` | kit `HookDeliveryQueue` | Deliveries, by message ID, with `attempts` counting the attempts started (stored before each call), retried with backoff and remembered for a day so an overlapping read doesn't deliver twice, and the indexes they are read by (see [hook delivery](../../docs/hook-delivery.md#storage)). |
 
 ## CalendarGatekeeper
 
