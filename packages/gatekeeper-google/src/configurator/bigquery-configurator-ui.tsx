@@ -112,61 +112,59 @@ function sharedProject(target: string | null | undefined): string | undefined {
 
 /** The account's one project, offered as the query project before the user has to look for it. */
 let onlyProject: Promise<string | null> | undefined;
-/**
- * The choice a suggestion is pending for; the field waits, disabled, until the answer lands, so
- * nothing typed meanwhile can be overridden. Cleared by the answer or by a later choice.
- */
-let suggestedFor: string | null = null;
-/**
- * A pre-filled choice that arrived with a query project, from the URL being read. Unless its project
- * turns out to need one, the field stays in view while the choice stays in that data project, until
- * the user clears it, so it does not vanish mid-edit and narrowing the choice does not change where
- * its queries are billed.
- */
-let overrideFor: string | null = null;
-/**
- * The choice the query project goes with: the pre-filled one, then each one the user makes. It
- * outlasts a moment with nothing chosen, as while the user opens a location or searches, so a
- * choice back in its data project keeps the query project, and a late answer about another choice
- * fills nothing in.
- */
-let choice: string | null = null;
-/**
- * The data project the query project was last filled in or suggested for, by the URL or a
- * suggestion. An empty field there is then the user's to fill: a choice moving within the project
- * suggests nothing again, so what the user is replacing is not replaced for them.
- */
-let askedIn: string | null = null;
 
-/** The data project of a pre-filled query project, while `target` is the choice it arrived with. */
+/**
+ * The query project's state, which belongs to the latest choice's data project: a choice within the
+ * same project keeps it, as does a moment with nothing chosen (while the user opens a location or
+ * searches), and a choice in another project starts over. Seeded from the URL.
+ */
+type Billing = {
+  dataProject: string;
+  /** The URL named a query project, which stands until dropped, though queries could run in `dataProject`. */
+  override: boolean;
+  /**
+   * The field was filled in here, by the URL, a suggestion or the user. A suggestion comes only before
+   * that, so what the user is replacing is never replaced for them.
+   */
+  asked: boolean;
+  /** A suggestion is on its way: the field waits, disabled, so nothing typed meanwhile is overwritten. */
+  suggesting: boolean;
+};
+let billing: Billing | null = null;
+
+/** {@link billing} when `target` is in its data project, else undefined. */
+function billingOf(target: string | null | undefined): Billing | undefined {
+  const ref = target ? refOf(target) : undefined;
+  return ref && billing?.dataProject === ref.projectId ? billing : undefined;
+}
+
+/** The data project of `target` while the URL's query project stands for it and queries could run there. */
 function overriddenProject(target: string | null | undefined): string | undefined {
-  return sharedProject(target) === undefined && target !== null && overrideFor === target ? refOf(target)?.projectId : undefined;
+  const state = billingOf(target);
+  return state?.override && sharedProject(target) === undefined ? state.dataProject : undefined;
 }
 
 /**
- * Fills in the query project a choice in a shared project needs, when the account has only one, once
- * per data project; a pending suggestion moves with the choice.
+ * Fills in the account's one project, once, for a choice in a shared project whose field is still
+ * untouched. The answer lands only while that data project's state stands.
  */
-function suggestQueryProject({ ui, setValues }: Context, target: string | null): void {
-  const project = (target ? refOf(target)?.projectId : undefined) ?? null;
-  if (project === askedIn && suggestedFor === null) return;
-  askedIn = project;
-  suggestedFor = sharedProject(target) === undefined ? null : target;
-  if (suggestedFor === null) return;
+function suggestQueryProject({ ui, setValues }: Context, target: string): void {
+  const state = billingOf(target);
+  if (!state || state.asked || sharedProject(target) === undefined) return;
+  state.asked = state.suggesting = true;
   onlyProject ??= ui.listProjects("").then(
     options => options.length === 1 ? options[0]!.value : null,
     () => { onlyProject = undefined; return null; });
-  // Every answer is the same project, so any pending suggestion takes the first to arrive.
   void onlyProject.then(project => {
-    if (suggestedFor === null) return;
-    suggestedFor = null;
+    if (billing !== state) return;
+    state.suggesting = false;
     setValues(project ? { queryProject: project } : {});
   });
 }
 
-/** Drops a pre-filled query project, so queries run in, and are billed to, the data project. */
-function dropOverride({ setValues, clearFields }: Context): void {
-  overrideFor = null;
+/** Empties the field; for the URL's query project, queries then run in, and are billed to, the data project. */
+function dropQueryProject({ setValues, clearFields }: Context): void {
+  if (billing) billing.override = false;
   clearFields("queryProject");
   setValues({ queryProject: null });
 }
@@ -184,11 +182,7 @@ export default {
     const target = idOf({ kind, projectId, datasetId, tableId });
     const prefilled = queryProject && queryProject !== projectId ? queryProject : null;
     // Recorded now, not when the lookup answers, so a choice made before then keeps it too.
-    choice = target;
-    if (prefilled !== null) {
-      overrideFor = target;
-      askedIn = projectId;
-    }
+    billing = { dataProject: projectId, override: prefilled !== null, asked: prefilled !== null, suggesting: false };
     return { target, queryProject: prefilled };
   },
 
@@ -198,11 +192,11 @@ export default {
     // Until the picker's lookup of a pre-filled choice says whether queries can run in its project,
     // the form is not ready: a connection made before then might not be able to query.
     const runs = runsQueries.get(ref.projectId);
+    if (runs === undefined) return false;
+    // A query project is needed where queries can't run, and where the URL's one stands, until it is
+    // replaced or dropped: typing over it bills nothing new.
     const chosen = typeof queryProject === "string" && queryProject.length > 0;
-    // A pre-filled query project being typed over waits for its replacement: only clearing the
-    // field bills the data project instead.
-    if (runs === true) return chosen || overriddenProject(target) === undefined;
-    return runs === false && chosen;
+    return chosen || (runs && overriddenProject(target) === undefined);
   },
 
   resourceUrl({ values: { target, queryProject } }) {
@@ -247,11 +241,11 @@ export default {
             const known = runsQueries.has(refOf(id)?.projectId ?? "");
             const item = toItem(node);
             lookedUp.set(id, item);
-            // Whether a pre-filled choice can be connected is known only now, unless the user has
-            // since moved on to another choice, which this answer says nothing about.
-            if (!known && choice === id) {
+            // Whether a pre-filled choice can be connected is known only now, which matters only while
+            // the choice is still in its data project.
+            if (!known && billingOf(id)) {
               setValues({});
-              if (queryProject === null) suggestQueryProject(context, id);
+              suggestQueryProject(context, id);
             }
             return item;
           }}
@@ -261,23 +255,16 @@ export default {
               setValues({ target: null });
               return;
             }
-            // A query project stays while the choice moves within the data project it was picked
-            // for: the one a shared project needs, or one a pre-filled choice arrived with.
-            const overridden = overriddenProject(choice);
-            const held = sharedProject(choice) ?? overridden;
-            const keep = held !== undefined && refOf(next)?.projectId === held;
-            choice = next;
-            if (!keep) {
+            if (billingOf(next)) {
+              setValues({ target: next });
+            } else {
+              const ref = refOf(next);
+              billing = ref ? { dataProject: ref.projectId, override: false, asked: false, suggesting: false } : null;
               clearFields("queryProject");
-              overrideFor = null;
-            } else if (overridden !== undefined) {
-              overrideFor = next;
+              setValues({ target: next, queryProject: null });
             }
-            const kept = keep ? queryProject : null;
-            setValues({ target: next, queryProject: kept });
-            // A choice left without one asks for it, also within its project, which a search result
-            // can say is shared before the pre-fill lookup does, unless one was already asked for there.
-            if (kept === null) suggestQueryProject(context, next);
+            // Also within the project, which a search result can say is shared before a lookup does.
+            suggestQueryProject(context, next);
           }}
           icons={ICONS}
           searchPlaceholder="Search here, or paste a link or project ID"
@@ -294,15 +281,18 @@ export default {
           value={queryProject}
           placeholder="Search your projects..."
           loadOptions={query => ui.listProjects(query)}
-          onChange={next => setValues({ queryProject: next })}
-          disabled={suggestedFor !== null && suggestedFor === target && queryProject === null}
+          onChange={next => {
+            if (billing) billing.asked = true;
+            setValues({ queryProject: next });
+          }}
+          disabled={billingOf(target)?.suggesting === true}
           optional={override !== undefined}
-          onClear={() => dropOverride(context)}
+          onClear={() => dropQueryProject(context)}
         />
       </Field>}
       {/* Clear shows only while a project is picked, and Tab skips it, so dropping the override has its own control. */}
       {override !== undefined && <div>
-        <Button variant="secondary" onClick={() => dropOverride(context)}>{`Run queries in "${override}"`}</Button>
+        <Button variant="secondary" onClick={() => dropQueryProject(context)}>{`Run queries in "${override}"`}</Button>
       </div>}
     </Section>;
   },

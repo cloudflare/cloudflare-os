@@ -152,6 +152,23 @@ describe("the query project", () => {
     expect(frame.url()).toBe("https://bigquery.googleapis.com/theirs/?queryProject=mine");
   });
 
+  it("lands a suggestion only while the choice stays in the data project it was made for", async () => {
+    const frame = await open();
+    const projects = Promise.withResolvers<{ value: string; title: string }[]>();
+    frame.ui.listProjects.mockReturnValueOnce(projects.promise);
+    const LOGS: BigQueryNode = { id: "dataset:others/logs", kind: "dataset", title: "logs", runsQueries: false };
+    frame.ui.listNodes.mockResolvedValueOnce({ nodes: [SHARED_DATASET, LOGS, MINE] });
+    await frame.list("bigquery");
+    frame.picker().onChange("dataset:theirs/events", null);
+    // Moving to a project of the account's own while it is on its way, then to another shared one.
+    frame.picker().onChange("project:mine", null);
+    projects.resolve([{ value: "mine", title: "mine" }]);
+    frame.picker().onChange("dataset:others/logs", null);
+    await vi.waitFor(() => expect(frame.values()).toEqual({ target: "dataset:others/logs", queryProject: "mine" }));
+    // The first answer, which arrived while "mine" was chosen, filled nothing in there.
+    expect(frame.setValues.mock.calls.filter(([patch]) => patch.queryProject === "mine")).toHaveLength(1);
+  });
+
   it("is chosen by the user when the account has several projects, and dropped on leaving the shared project", async () => {
     const frame = await open();
     frame.ui.listNodes.mockResolvedValueOnce({ nodes: [SHARED_DATASET, MINE] });
