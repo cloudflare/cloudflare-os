@@ -193,6 +193,25 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
     }
   });
 
+  it("lists every operation of the document with --list, and writes nothing", () => {
+    const listed = spawnSync(process.execPath, [bin, join(fixture, "spec.json"), "--list"], { encoding: "utf8" });
+    expect(listed.status, listed.stderr).toBe(0);
+    const lines = listed.stdout.replace(/\n$/, "").split("\n").map(line => line.split("\t"));
+    expect(lines.map(([id, method, path, tag]) => [id, method, path, tag])).toEqual([
+      ["issues/list", "GET", "/repos/{owner}/{repo}/issues", "issues"],
+      ["issues/create", "POST", "/repos/{owner}/{repo}/issues", "issues"],
+      ["issues/delete", "DELETE", "/repos/{owner}/{repo}/issues/{issue_number}", "issues"],
+      ["issues/upload", "POST", "/repos/{owner}/{repo}/issues/{issue_number}/attachments", "issues"],
+      ["users/get", "GET", "/users/{username}", "users"],
+      ["users/avatar", "GET", "/users/{username}/avatar", "users"],
+    ]);
+    expect(lines.every(line => line.length === 5)).toBe(true);
+
+    const both = generate(join(fixture, "spec.json"), join(tmpdir(), "unused"), "--list");
+    expect(both.status).toBe(1);
+    expect(both.stderr).toContain("usage:");
+  });
+
   it("refuses to replace an output directory holding a file it did not generate", () => {
     const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
     try {

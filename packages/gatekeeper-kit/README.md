@@ -139,6 +139,14 @@ why. The output directory holds only generated files and is replaced on each run
 output: generating needs Forge's native binary and jco, which builds the plugin on first use and
 caches it under `node_modules/.cache`.
 
+To choose the operations, list the document's with `--list` in place of `--out`. It prints each
+one's operationId, method, path, first tag and summary on a line, separated by tabs, and writes no
+files:
+
+```sh
+gatekeeper-openapi-schema <spec.json or https URL> --list [--sha256 <hex>] | grep -i incident
+```
+
 ## Internal modules
 
 The package does not export `kv`, `positive-int`, `per-storage`, `action-journal`, or
