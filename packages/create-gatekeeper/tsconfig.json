@@ -9,5 +9,5 @@
     "types": ["node"]
   },
   "include": ["src", "bin", "__tests__"],
-  "exclude": ["node_modules", "template"]
+  "exclude": ["node_modules", "template", "__tests__/workerd/worker.ts", "__tests__/workerd/*.test.ts"]
 }

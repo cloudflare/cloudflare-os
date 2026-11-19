@@ -247,6 +247,9 @@ importers:
 
   packages/create-gatekeeper:
     devDependencies:
+      '@cloudflare/vitest-plugin':
+        specifier: 'catalog:'
+        version: 1.8.2(@cloudflare/workers-types@5.20261115.1)(@types/node@26.1.0)(vitest@5.1.0)
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 5.20261115.1
