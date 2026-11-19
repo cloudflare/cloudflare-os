@@ -4,42 +4,44 @@
 //
 // The gate posts the one `risk-review` check run on each pull request head and merge group, as the
 // risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts, rung 1
-// proofs, band evidence) run on `pull_request`, write one artifact each, and post nothing; the gate
-// reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs only
-// from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
+// proofs, the preview smoke) run on `pull_request`, write one artifact each, and post nothing; the
+// gate reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs
+// only from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
 // through the relay's `workflow_run`, and a merge group is accepted only when the merge queue lists
 // its commit. It reads every policy file from the base branch, so a pull request cannot rewrite its
 // own gate.
 //
 // What it decides, per pull request (rules in risk-review-policy.ts):
 //
-// - A band (low, medium, high) and an area from fixed rules, and whether the change touches a path
-//   no AI may decide on (`NEVER_AUTO`).
-// - Whether it could merge without a person: its area and band are open in
-//   `.github/automerge-bands.json`, it touches no policy path, a maintainer wrote it (or Dependabot,
-//   for rung 1's dependency proof only), no maintainer commented after the last push, and either a
-//   rung 1 proof holds (never for text people or agents read) or both reviewers' verdicts (Bonk's
-//   and our Opus runner's) clear the band's threshold, with the band's evidence passing.
+// - A risk level (low, medium, high) from fixed rules, and whether the change touches a path no AI
+//   may decide on (`NEVER_AUTO`).
+// - Whether it could merge without a person: it touches no policy path, no maintainer commented
+//   after the last push, no change request stands, and one of the two rungs takes it. Each rung is
+//   switched on in `.github/automerge.json`.
+//   - Rung 1, proven: a proof holds, whatever the risk level. Dependabot's is the dependency proof
+//     with the preview smoke, on a pull request that holds only Dependabot's commits; a
+//     maintainer's is the test proof or the equivalence proof. No proof admits a change to text
+//     people or agents read.
+//   - Rung 2, scored: a maintainer wrote it, it is low risk, both reviewers' verdicts (Bonk's and
+//     our Opus runner's) are full reviews with no P0 or P1 finding and no `NEEDS-A-PERSON`, their
+//     models come from different providers, and the lower score is at least the file's `threshold`.
 // - Otherwise a maintainer from `.github/maintainers` must approve the head commit, and a pull
 //   request an agent opened needs its human assignee's approval.
 //
-// The bands file's `mode` sets what the check run reports. In `shadow`, which ships, it mirrors
-// today's rule (`reviewDecision == APPROVED`), records the decision above without acting on it,
-// and is not a required check, so it cannot change who merges. In `enforce` it reports the gate's own
-// decision, and for an open band it approves (when App approvals count) and enqueues with the App's
-// token. Every missing, stale or malformed input counts as absent, which sends the pull request to a
-// person.
+// The file's `mode` sets what the check run reports. In `shadow`, which ships, it mirrors today's
+// rule (`reviewDecision == APPROVED`), records the decision above without acting on it, and is not
+// a required check, so it cannot change who merges. In `enforce` it reports the gate's own
+// decision, and for a pull request a rung takes it approves (when App approvals count) and enqueues
+// with the App's token. Every missing, stale or malformed input counts as absent, which sends the
+// pull request to a person.
 
 import { basename } from "node:path/posix";
 
 import {
-  AREAS,
-  BANDS,
   addedDependencies,
   changedInstallSettings,
   isCatalogVersionBump,
   isSkillPath,
-  isWorkerConfig,
   asObject,
   classifyChangeset,
   durableObjectRisks,
@@ -47,10 +49,8 @@ import {
   parseEscapeSnapshot,
   parseJson,
   parseMaintainers,
-  type Area,
   type Band,
   type ChangedFile,
-  type Classification,
   type ContentFacts,
   type ContentsKind,
   type EscapeSnapshot,
@@ -63,14 +63,13 @@ import {
   bindingError,
   identityError,
   isProducerName,
+  modelProvider,
   newestRun,
-  parseFingerprint,
   parseProducerArtifact,
   pickArtifact,
   readArtifactFile,
   type Artifact,
   type BindingExpectation,
-  type Fingerprint,
   type ProducerArtifact,
   type ProducerInput,
   type ProducerName,
@@ -83,7 +82,7 @@ export const CHECK_NAME = "risk-review";
 /** Policy files, read at the base commit. */
 export const POLICY_FILES = {
   maintainers: ".github/maintainers",
-  bands: ".github/automerge-bands.json",
+  config: ".github/automerge.json",
   escapes: ".github/automerge-escape-files.json",
 } as const;
 
@@ -97,128 +96,62 @@ const PER_PAGE = 100;
 /** Bots that open pull requests on a schedule rather than at someone's direction. */
 const DEPENDABOT = "dependabot[bot]";
 
-/** Rung 1 proofs a maintainer's pull request may qualify through. */
-// `proof-actions` is Dependabot's only: see {@link GATE_WORKFLOWS}. `proof-migrations` is not a proof
-// either: it holds for any change that leaves migrations alone, so it is only a precondition for a
-// change that touches a Worker config.
-const PROOFS = ["proof-deps", "proof-equivalence", "proof-tests"] as const;
-
-/**
- * The workflows the gate reads from or runs as: every producer's, and its own. A Dependabot Actions
- * bump whose proof holds needs no person unless it touches one of these or any other `.github/**`
- * file; the proof checks the workflows it touches hold no credential.
- */
-export const GATE_WORKFLOWS: ReadonlySet<string> = new Set([
-  ".github/workflows/risk-review.yml",
-  ".github/workflows/risk-review-trigger.yml",
-  ...Object.values(PRODUCERS).map(({ workflow }) => workflow),
-]);
+/** Rung 1 proofs of a maintainer's pull request. Dependabot's is `proof-deps` with the preview smoke. */
+const MAINTAINER_PROOFS = ["proof-equivalence", "proof-tests"] as const satisfies readonly ProducerName[];
 
 /** What the check run reports. */
-export type Mode = "shadow" | "enforce";
+type Mode = "shadow" | "enforce";
 
-/** One area and band's entry in `.github/automerge-bands.json`. */
-export interface BandRule {
-  open: boolean;
-  /** The lower reviewer score must be at least this, 0 to 10. */
-  threshold: number | null;
-  /** The reviewer configuration the band was calibrated on; a verdict from any other closes it. */
-  reviewerFingerprint: Partial<Record<(typeof VERDICT_NAMES)[number], Fingerprint>> | null;
-  /** Producers whose `holds` must be true. */
-  evidence: ProducerName[];
-}
+/** A way to merge without a person: rung 1 rests on a proof, rung 2 on both reviewers' scores. */
+type Rung = "proven" | "scored";
 
-/** `.github/automerge-bands.json`. */
-export interface BandsConfig {
+/** `.github/automerge.json`. */
+interface Config {
   mode: Mode;
   /** Whether the App's approving review counts toward the ruleset's required review. */
   appApprovalsCount: boolean;
-  areas: Record<Area, Record<Band, BandRule>>;
+  /** Rung 2 needs the lower reviewer score to be at least this, 0 to 10. */
+  threshold: number;
+  /** Whether each rung is on. */
+  rungs: Record<Rung, boolean>;
 }
 
-const CLOSED_RULE: BandRule = { open: false, threshold: null, reviewerFingerprint: null, evidence: [] };
-
-function closedArea(): Record<Band, BandRule> {
-  return { low: CLOSED_RULE, medium: CLOSED_RULE, high: CLOSED_RULE };
-}
-
-/** Every area and band closed, as a fresh object the parser can fill in. */
-function closedAreas(): BandsConfig["areas"] {
-  return { proven: closedArea(), scored: closedArea(), "kernel-small": closedArea(), "agent-facing-api": closedArea(), kernel: closedArea() };
-}
-
-/** What a missing or malformed bands file means: shadow mode, every band closed. */
-export const CLOSED_BANDS: BandsConfig = { mode: "shadow", appApprovalsCount: false, areas: closedAreas() };
-
-function parseBandRule(value: Json | undefined, area: Area): BandRule | string {
-  const rule = asObject(value);
-  if (!rule) return "not an object";
-  const { open, threshold, reviewer_fingerprint, evidence } = rule;
-  if (typeof open !== "boolean") return "open is not a boolean";
-  if (threshold !== null && (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 0 || threshold > 10)) {
-    return "threshold is not null or an integer from 0 to 10";
-  }
-  if (!Array.isArray(evidence)) return "evidence is not a list";
-  const names = evidence.flatMap((name) => (typeof name === "string" && isProducerName(name) ? [name] : []));
-  if (names.length !== evidence.length) return "evidence names an unknown producer";
-  let reviewerFingerprint: BandRule["reviewerFingerprint"] = null;
-  if (reviewer_fingerprint !== null) {
-    const object = asObject(reviewer_fingerprint);
-    if (!object) return "reviewer_fingerprint is not null or an object";
-    reviewerFingerprint = {};
-    for (const name of VERDICT_NAMES) {
-      const print = parseFingerprint(object[name]);
-      if (!print) return `reviewer_fingerprint.${name} is malformed`;
-      reviewerFingerprint[name] = print;
-    }
-  }
-  if (open && area !== "proven" && (threshold === null || reviewerFingerprint === null)) {
-    return "an open AI-scored band needs a threshold and a reviewer fingerprint";
-  }
-  return { open, threshold, reviewerFingerprint, evidence: names };
-}
-
-function closedBecause(problem: string): { config: BandsConfig; problem: string } {
-  return { config: CLOSED_BANDS, problem };
+function shadowBecause(problem: string): { config: Config; problem: string } {
+  return { config: { mode: "shadow", appApprovalsCount: false, threshold: 10, rungs: { proven: false, scored: false } }, problem };
 }
 
 /**
- * Parses `.github/automerge-bands.json`. Anything malformed closes every band in shadow mode.
+ * Parses `.github/automerge.json`. A missing or malformed file means shadow mode with both rungs
+ * off.
  *
- * @returns The config, and why it was replaced by {@link CLOSED_BANDS} if it was.
+ * @returns The config, and why the file was not used if it was not.
  */
-export function parseBands(text: string | undefined): { config: BandsConfig; problem?: string } {
-  if (text === undefined) return closedBecause("the bands file is missing");
+export function parseConfig(text: string | undefined): { config: Config; problem?: string } {
+  if (text === undefined) return shadowBecause("the file is missing");
   const root = asObject(parseJson(text));
-  if (!root || root.schema !== 1) return closedBecause("the bands file is not schema 1 JSON");
-  if (root.mode !== "shadow" && root.mode !== "enforce") return closedBecause("mode is not shadow or enforce");
-  if (typeof root.app_approvals_count !== "boolean") return closedBecause("app_approvals_count is not a boolean");
-  const areasJson = asObject(root.areas);
-  if (!areasJson) return closedBecause("areas is not an object");
-  const areas = closedAreas();
-  for (const area of AREAS) {
-    const bands = asObject(areasJson[area]);
-    if (!bands) return closedBecause(`areas.${area} is missing`);
-    for (const band of BANDS) {
-      const rule = parseBandRule(bands[band], area);
-      if (typeof rule === "string") return closedBecause(`areas.${area}.${band}: ${rule}`);
-      areas[area][band] = rule;
-    }
+  if (!root) return shadowBecause("the file is not a JSON object");
+  const { mode, app_approvals_count, threshold } = root;
+  if (mode !== "shadow" && mode !== "enforce") return shadowBecause("mode is not shadow or enforce");
+  if (typeof app_approvals_count !== "boolean") return shadowBecause("app_approvals_count is not a boolean");
+  if (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 0 || threshold > 10) {
+    return shadowBecause("threshold is not an integer from 0 to 10");
   }
-  return { config: { mode: root.mode, appApprovalsCount: root.app_approvals_count, areas } };
+  const { proven, scored } = asObject(root.rungs) ?? {};
+  if (typeof proven !== "boolean" || typeof scored !== "boolean") return shadowBecause("rungs.proven or rungs.scored is not a boolean");
+  return { config: { mode, appApprovalsCount: app_approvals_count, threshold, rungs: { proven, scored } } };
 }
 
 /** Policy read from the base commit. */
 export interface Policy {
   sha: string;
   maintainers: ReadonlySet<string>;
-  bands: BandsConfig;
-  bandsProblem?: string;
+  config: Config;
+  configProblem?: string;
   escapes: EscapeSnapshot | undefined;
 }
 
 /** A GitHub account. `type` is `User` for people and `Bot` for apps and bot accounts. */
-export interface GitHubUser {
+interface GitHubUser {
   login: string;
   type?: string;
 }
@@ -256,7 +189,7 @@ export interface PullCommit {
  *
  * @param commits Every commit on the pull request, or `undefined` when they could not all be listed.
  */
-export function dependabotCommitsError(commits: PullCommit[] | undefined): string | undefined {
+function dependabotCommitsError(commits: PullCommit[] | undefined): string | undefined {
   if (commits === undefined) return "its commits could not all be listed";
   const other = commits.find(({ author, committer, commit }) =>
     author?.login !== DEPENDABOT || committer?.login !== "web-flow" || commit.verification?.verified !== true);
@@ -299,22 +232,16 @@ export interface PullInputs {
 export type InputSummary =
   | { absent: string }
   | { status: string; holds: boolean }
-  | {
-    status: string;
-    merge_confidence: number | null;
-    findings: Record<"P0" | "P1" | "P2" | "P3", number>;
-    needs_person: string[];
-    fingerprint: Fingerprint;
-  };
+  | { status: string; merge_confidence: number | null; findings: Record<"P0" | "P1" | "P2" | "P3", number>; needs_person: string[] };
 
 /** The decision for one pull request, as the check run records it. */
 export interface PullDecision {
   number: number;
   head_sha: string;
   base_sha: string;
+  /** The risk level. */
   band: Band;
   band_reasons: string[];
-  area: Classification["area"];
   never_auto: string[];
   author: { login: string; maintainer: boolean };
   approvers: string[];
@@ -325,15 +252,8 @@ export interface PullDecision {
   today: { review_decision: string | null; passes: boolean };
   /** The gate's own rule, which enforce mode reports. */
   gate: { passes: boolean; reason: string };
-  /** Whether it could merge without a person, through which area, and every reason it cannot. */
-  would: { decision: "auto" | "person"; area: Area | null; reasons: string[] };
-  /**
-   * Both reviewers' scores when their verdicts' own conditions hold, whatever the band, threshold,
-   * evidence, holds and change requests; `null` otherwise. The calibration report reads these.
-   */
-  eligible_scores: Scores | null;
-  /** Whether it changes a Worker config while the migration proof does not hold, which rules out any merge. */
-  needs_migration_proof: boolean;
+  /** Whether it could merge without a person, the rung that takes it if so, and every reason if not. */
+  would: { decision: "auto" | "person"; rung: Rung | null; reasons: string[] };
 }
 
 /**
@@ -342,7 +262,7 @@ export interface PullDecision {
  *
  * @param reviews Every review on the pull request, oldest first.
  */
-export function tallyReviews(reviews: Review[], { headSha, author, maintainers }: {
+function tallyReviews(reviews: Review[], { headSha, author, maintainers }: {
   headSha: string;
   author: string | undefined;
   maintainers: ReadonlySet<string>;
@@ -372,7 +292,7 @@ export function tallyReviews(reviews: Review[], { headSha, author, maintainers }
  * comments or a change request, after the last push. An approval is not a hold. An unknown push
  * time holds, since any comment could be after it.
  */
-export function maintainerHolds(reviews: Review[], comments: Comment[], { lastPush, author, maintainers }: {
+function maintainerHolds(reviews: Review[], comments: Comment[], { lastPush, author, maintainers }: {
   lastPush: string | undefined;
   author: string | undefined;
   maintainers: ReadonlySet<string>;
@@ -399,13 +319,7 @@ function summarize(input: ProducerInput): InputSummary {
   if (artifact.kind !== "verdict") return { status: artifact.status, holds: artifact.holds };
   const findings = { P0: 0, P1: 0, P2: 0, P3: 0 };
   for (const { severity } of artifact.findings) findings[severity]++;
-  return {
-    status: artifact.status,
-    merge_confidence: artifact.merge_confidence,
-    findings,
-    needs_person: artifact.needs_person,
-    fingerprint: artifact.fingerprint,
-  };
+  return { status: artifact.status, merge_confidence: artifact.merge_confidence, findings, needs_person: artifact.needs_person };
 }
 
 function holding(input: ProducerInput | undefined): boolean {
@@ -413,71 +327,49 @@ function holding(input: ProducerInput | undefined): boolean {
     input.artifact.holds;
 }
 
-function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
-  return a.model === b.model && a.opencode === b.opencode && a.review_md === b.review_md && a.prompt === b.prompt &&
-    a.action === b.action;
-}
-
-/** A score per reviewer. */
-export type Scores = Record<(typeof VERDICT_NAMES)[number], number>;
-
 /**
- * Checks both verdicts' own conditions: present, `ok`, a full review (not diff-only), no P0 or P1
- * finding, no `NEEDS-A-PERSON`, and a score. These are what the AI said, so they hold or fail the
- * same whatever the band, its threshold, the evidence, holds or change requests.
- *
- * @returns Every failed condition, and both scores when none failed.
+ * Every reason rung 2 does not take a pull request; empty when it does. The rung is on, the change
+ * is low risk, and each verdict is present, `ok`, a full review (not diff-only), free of P0 and P1
+ * findings and `NEEDS-A-PERSON`, and scored, with the lower score at least the threshold. The two
+ * verdicts' models come from different providers: Bonk's model is a repository variable no pull
+ * request reviews, and two reviews by one model family are one opinion.
  */
-function verdictConditions(inputs: PullInputs): { failures: string[]; scores: Scores | null } {
-  const failures: string[] = [];
-  const scores: Partial<Scores> = {};
+function scoredFailures(inputs: PullInputs, band: Band, config: Config): string[] {
+  const reasons: string[] = [];
+  if (!config.rungs.scored) reasons.push("the rung is off");
+  if (band !== "low") reasons.push(`the change is ${band} risk, and only low risk qualifies`);
+  const scores: number[] = [];
+  const providers: string[] = [];
   for (const name of VERDICT_NAMES) {
     const input = inputs.producers[name] ?? { absent: "no run" };
     if ("absent" in input) {
-      failures.push(`${name} verdict absent: ${input.absent}`);
+      reasons.push(`${name} verdict absent: ${input.absent}`);
       continue;
     }
     const { artifact } = input;
     if (artifact.kind !== "verdict") {
-      failures.push(`${name} is not a verdict`);
+      reasons.push(`${name} is not a verdict`);
       continue;
     }
-    if (artifact.status !== "ok") failures.push(`${name} verdict status is ${artifact.status}`);
+    if (artifact.status !== "ok") reasons.push(`${name} verdict status is ${artifact.status}`);
     // A diff-only re-review did not look again at what earlier rounds found.
     if (artifact.review_from_sha !== null) {
-      failures.push(`${name} reviewed only the diff since ${artifact.review_from_sha.slice(0, 7)}`);
+      reasons.push(`${name} reviewed only the diff since ${artifact.review_from_sha.slice(0, 7)}`);
     }
     const blocking = artifact.findings.filter(({ severity }) => severity === "P0" || severity === "P1");
-    if (blocking.length > 0) failures.push(`${name} found ${blocking.length} P0 or P1 issues`);
-    for (const need of artifact.needs_person) failures.push(`${name}: needs a person: ${need}`);
-    if (artifact.merge_confidence === null) failures.push(`${name} gave no merge confidence`);
-    else scores[name] = artifact.merge_confidence;
+    if (blocking.length > 0) reasons.push(`${name} found ${blocking.length} P0 or P1 issues`);
+    for (const need of artifact.needs_person) reasons.push(`${name}: needs a person: ${need}`);
+    if (artifact.merge_confidence === null) reasons.push(`${name} gave no merge confidence`);
+    else scores.push(artifact.merge_confidence);
+    const provider = modelProvider(artifact.model);
+    if (provider === undefined) reasons.push(`${name} names no model provider the gate can read: ${artifact.model || "no model"}`);
+    else providers.push(provider);
   }
-  const { bonk, opus } = scores;
-  return { failures, scores: failures.length === 0 && bonk !== undefined && opus !== undefined ? { bonk, opus } : null };
-}
-
-/** Every reason the merge rule fails for one area and band; empty when it holds. */
-function mergeRuleFailures(area: Area, band: Band, inputs: PullInputs, rule: BandRule): string[] {
-  const reasons: string[] = [];
-  if (!rule.open) reasons.push(`the ${area} area's ${band} band is closed`);
-  if (area !== "proven") {
-    const { failures, scores } = verdictConditions(inputs);
-    reasons.push(...failures);
-    for (const name of VERDICT_NAMES) {
-      const input = inputs.producers[name];
-      const pinned = rule.reviewerFingerprint?.[name];
-      if (pinned && input && "artifact" in input && input.artifact.kind === "verdict" && !sameFingerprint(pinned, input.artifact.fingerprint)) {
-        reasons.push(`${name} ran with a configuration other than the band's, which closes the band for this pull request`);
-      }
-    }
-    const lowest = scores && Math.min(scores.bonk, scores.opus);
-    if (lowest !== null && rule.threshold !== null && lowest < rule.threshold) {
-      reasons.push(`lower merge confidence ${lowest} is below the band's ${rule.threshold}`);
-    }
+  if (scores.length === VERDICT_NAMES.length && Math.min(...scores) < config.threshold) {
+    reasons.push(`lower merge confidence ${Math.min(...scores)} is below the threshold ${config.threshold}`);
   }
-  for (const name of rule.evidence) {
-    if (!holding(inputs.producers[name])) reasons.push(`evidence ${name} does not hold`);
+  if (providers.length === VERDICT_NAMES.length && new Set(providers).size < providers.length) {
+    reasons.push(`both reviewers' models come from one provider, ${providers[0]}`);
   }
   return reasons;
 }
@@ -492,16 +384,12 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const authorLogin = author?.login ?? "";
   const dependabotAuthor = authorLogin === DEPENDABOT && author?.type === "Bot";
   const commitProblem = dependabotAuthor ? dependabotCommitsError(inputs.commits) : undefined;
-  // Someone who can push to a Dependabot branch keeps its author, so both Dependabot routes also
-  // need every commit to be Dependabot's.
-  const dependabot = dependabotAuthor && commitProblem === undefined;
   const classification = classifyChangeset({
     files: inputs.files,
     listed: inputs.files.length >= pull.changed_files,
     facts: inputs.facts,
     escapes: policy.escapes,
     now,
-    ...(dependabot && holding(inputs.producers["proof-actions"]) && { provenActionsBump: { gateInputs: GATE_WORKFLOWS } }),
   });
   const maintainer = author?.type === "User" && policy.maintainers.has(authorLogin.toLowerCase());
   const people = { author: author?.login, maintainers: policy.maintainers };
@@ -510,34 +398,26 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
 
   const common: string[] = [...classification.neverAuto.map((reason) => `policy: ${reason}`), ...holds];
   if (blockers.length > 0) common.push(`changes requested by ${blockers.map((login) => `@${login}`).join(", ")}`);
-  const depsProven = holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"]);
-  const touchesWorkerConfig = inputs.files.some((file) =>
-    [file.filename, file.previous_filename].some((path) => path !== undefined && isWorkerConfig(path)));
-  const needsMigrationProof = touchesWorkerConfig && !holding(inputs.producers["proof-migrations"]);
-  if (needsMigrationProof) common.push("changes a Worker config, and the migration proof does not hold");
   // No proof judges text that people or agents read; such a change can only be AI-scored.
   const provable = classification.readText.length === 0;
+  // Someone who can push to a Dependabot branch keeps its author, so its proof also needs every
+  // commit to be Dependabot's.
   const proven = provable && (dependabotAuthor
-    ? dependabot && (depsProven || classification.workflowBump)
-    : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name])));
-  const candidates: Area[] = [];
-  if (proven) candidates.push("proven");
-  if (maintainer) candidates.push(classification.area);
+    ? commitProblem === undefined && holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"])
+    : MAINTAINER_PROOFS.some((name) => holding(inputs.producers[name])));
+  const rungs: { rung: Rung; failures: string[] }[] = [];
+  if (proven) rungs.push({ rung: "proven", failures: policy.config.rungs.proven ? [] : ["the rung is off"] });
+  if (maintainer) rungs.push({ rung: "scored", failures: scoredFailures(inputs, classification.band, policy.config) });
   else if (!dependabotAuthor) common.push("the author is not a maintainer");
   if (commitProblem) common.push(`a Dependabot pull request needs only Dependabot's commits: ${commitProblem}`);
   else if (dependabotAuthor && !proven) {
-    common.push("a Dependabot pull request needs its dependency proof and preview smoke, or its Actions proof, to hold");
+    common.push("a Dependabot pull request needs its dependency proof and preview smoke to hold");
   }
 
-  let would: PullDecision["would"] = { decision: "person", area: candidates[0] ?? null, reasons: [...common] };
-  for (const area of candidates) {
-    const failures = mergeRuleFailures(area, classification.band, inputs, policy.bands.areas[area][classification.band]);
-    if (common.length === 0 && failures.length === 0) {
-      would = { decision: "auto", area, reasons: [] };
-      break;
-    }
-    would.reasons.push(...failures.map((reason) => `${area}: ${reason}`));
-  }
+  const taken = common.length === 0 ? rungs.find(({ failures }) => failures.length === 0) : undefined;
+  const would: PullDecision["would"] = taken
+    ? { decision: "auto", rung: taken.rung, reasons: [] }
+    : { decision: "person", rung: null, reasons: [...common, ...rungs.flatMap(({ rung, failures }) => failures.map((reason) => `${rung}: ${reason}`))] };
 
   return {
     number: pull.number,
@@ -545,7 +425,6 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
     base_sha: pull.base.sha,
     band: classification.band,
     band_reasons: classification.bandReasons,
-    area: classification.area,
     never_auto: classification.neverAuto,
     author: { login: authorLogin, maintainer },
     approvers,
@@ -553,10 +432,8 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
     holds,
     inputs: Object.fromEntries(Object.entries(inputs.producers).map(([name, input]) => [name, summarize(input)])),
     today: { review_decision: inputs.reviewDecision, passes: inputs.reviewDecision === "APPROVED" },
-    gate: gateRule(inputs, { approvers, blockers, autoApproves: would.decision === "auto" && policy.bands.appApprovalsCount }),
+    gate: gateRule(inputs, { approvers, blockers, autoApproves: would.decision === "auto" && policy.config.appApprovalsCount }),
     would,
-    eligible_scores: verdictConditions(inputs).scores,
-    needs_migration_proof: needsMigrationProof,
   };
 }
 
@@ -595,7 +472,7 @@ export interface DecisionRecord {
   event: string;
   sha: string;
   policy_sha: string;
-  bands_problem?: string;
+  config_problem?: string;
   conclusion: "success" | "failure";
   reason: string;
   pulls: PullDecision[];
@@ -603,7 +480,7 @@ export interface DecisionRecord {
 }
 
 /** The check run's conclusion: today's rule in shadow mode, the gate's in enforce mode. */
-export function conclude(pulls: PullDecision[], mode: Mode, problem?: string): Pick<DecisionRecord, "conclusion" | "reason"> {
+function conclude(pulls: PullDecision[], mode: Mode, problem?: string): Pick<DecisionRecord, "conclusion" | "reason"> {
   if (problem) return { conclusion: "failure", reason: problem };
   if (pulls.length === 0) return { conclusion: "failure", reason: "no pull request to decide" };
   const failing = pulls.filter((pull) => (mode === "shadow" ? !pull.today.passes : !pull.gate.passes));
@@ -622,8 +499,8 @@ export function conclude(pulls: PullDecision[], mode: Mode, problem?: string): P
 export function renderOutput(record: DecisionRecord): { title: string; summary: string } {
   let json = JSON.stringify(record);
   if (json.length > MAX_DECISION_CHARS) {
-    const pulls = record.pulls.map(({ number, head_sha, base_sha, band, area, today, gate, would }) =>
-      ({ number, head_sha, base_sha, band, area, today, gate, would: { ...would, reasons: would.reasons.slice(0, 5) } }));
+    const pulls = record.pulls.map(({ number, head_sha, base_sha, band, today, gate, would }) =>
+      ({ number, head_sha, base_sha, band, today, gate, would: { ...would, reasons: would.reasons.slice(0, 5) } }));
     json = JSON.stringify({ ...record, pulls, truncated: true });
   }
   if (json.length > MAX_DECISION_CHARS) {
@@ -631,8 +508,8 @@ export function renderOutput(record: DecisionRecord): { title: string; summary: 
     json = JSON.stringify({ ...rest, pulls: [], truncated: true });
   }
   const lines = record.pulls.map((pull) =>
-    `- #${pull.number} at ${pull.head_sha.slice(0, 7)}: ${pull.band} band, ${pull.area} area; ` +
-    `would ${pull.would.decision === "auto" ? `merge through ${pull.would.area}` : "go to a person"}` +
+    `- #${pull.number} at ${pull.head_sha.slice(0, 7)}: ${pull.band} risk; ` +
+    `would ${pull.would.rung ? `merge through the ${pull.would.rung} rung` : "go to a person"}` +
     (pull.would.reasons.length > 0 ? `: ${pull.would.reasons.join("; ")}` : ""));
   const prose = [`**${record.mode}**: ${record.reason}`, ...lines].join("\n");
   const summary = `\`\`\`json\n${json}\n\`\`\`\n\n${prose}`.slice(0, MAX_SUMMARY_CHARS);
@@ -746,7 +623,7 @@ export interface ActionsCore {
 }
 
 /** The risk-review App, whose token the workflow passes in. */
-export interface RiskReviewApp {
+interface RiskReviewApp {
   id: number;
   /** The App's bot login, `<slug>[bot]`. */
   login: string;
@@ -806,38 +683,31 @@ async function mergeBaseOf(github: GitHubClient, repo: RepoRef, base: string, he
  * when it does. Each proof read something from its base; that must be the same, readable, at the
  * decision's.
  *
- * - `proof-actions` read every touched workflow at its base, for credentials.
  * - `proof-deps` read the release-age policy in `pnpm-workspace.yaml` and the package names in
  *   `pnpm-lock.yaml` at the merge base of its base and the head.
  * - `proof-equivalence` and `proof-tests` built or ran the whole tree at that merge base, which no
  *   file list can bound: they hold only when made against the decision base and the head already
  *   contains it, so the merge base they built is the decision base and the head is what merges.
  */
-async function staleProofError(github: GitHubClient, repo: RepoRef, { name, artifact, pull, files, decisionBase }: {
+async function staleProofError(github: GitHubClient, repo: RepoRef, { name, artifact, pull, decisionBase }: {
   name: ProducerName;
   artifact: ProducerArtifact;
   pull: PullRequest;
-  files: ChangedFile[];
   decisionBase: string;
 }): Promise<string | undefined> {
   const proofBase = artifact.base_sha;
-  const unchanged = async (paths: string[], at: string) => {
-    for (const path of paths) {
-      const before = await readBlobSha(github, repo, path, at);
-      const after = at === decisionBase ? before : await readBlobSha(github, repo, path, decisionBase);
-      if (before === undefined || before !== after) {
-        return `${path} is unreadable or changed between ${at.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
-      }
-    }
-    return undefined;
-  };
   switch (name) {
-    case "proof-actions":
-      return unchanged(files.map(({ filename }) => filename), proofBase);
     case "proof-deps": {
       const from = await mergeBaseOf(github, repo, proofBase, pull.head.sha);
       if (from === undefined) return `cannot compare ${proofBase.slice(0, 7)} with the head`;
-      return unchanged(["pnpm-workspace.yaml", "pnpm-lock.yaml"], from);
+      for (const path of ["pnpm-workspace.yaml", "pnpm-lock.yaml"]) {
+        const before = await readBlobSha(github, repo, path, from);
+        const after = from === decisionBase ? before : await readBlobSha(github, repo, path, decisionBase);
+        if (before === undefined || before !== after) {
+          return `${path} is unreadable or changed between ${from.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
+        }
+      }
+      return undefined;
     }
     case "proof-equivalence":
     case "proof-tests": {
@@ -851,19 +721,18 @@ async function staleProofError(github: GitHubClient, repo: RepoRef, { name, arti
   }
 }
 
-/** Reads the policy files at a base commit. */
-export async function readPolicy(github: GitHubClient, repo: RepoRef, sha: string): Promise<Policy> {
-  const [maintainers, bands, escapes] = await Promise.all([
+async function readPolicy(github: GitHubClient, repo: RepoRef, sha: string): Promise<Policy> {
+  const [maintainers, automerge, escapes] = await Promise.all([
     readFile(github, repo, POLICY_FILES.maintainers, sha),
-    readFile(github, repo, POLICY_FILES.bands, sha),
+    readFile(github, repo, POLICY_FILES.config, sha),
     readFile(github, repo, POLICY_FILES.escapes, sha),
   ]);
-  const { config, problem } = parseBands(bands);
+  const { config, problem } = parseConfig(automerge);
   return {
     sha,
     maintainers: parseMaintainers(maintainers),
-    bands: config,
-    ...(problem && { bandsProblem: problem }),
+    config,
+    ...(problem && { configProblem: problem }),
     escapes: parseEscapeSnapshot(escapes),
   };
 }
@@ -1158,7 +1027,7 @@ async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pu
  * @param decisionBase The commit the pull request would land on: its base, or, in a merge group, the
  *     commit the queue puts under it.
  */
-export async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest, decisionBase: string):
+async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest, decisionBase: string):
   Promise<PullInputs> {
   const repo = context.repo;
   const ref = { ...repo, pull_number: pull.number };
@@ -1177,7 +1046,7 @@ export async function readPullInputs(github: GitHubClient, context: ActionsConte
     // Only a holding proof can count, so only it needs checking.
     if (!isProducerName(name) || !input || !("artifact" in input)) continue;
     if (input.artifact.kind === "verdict" || input.artifact.status !== "ok" || !input.artifact.holds) continue;
-    const stale = await staleProofError(github, repo, { name, artifact: input.artifact, pull, files, decisionBase });
+    const stale = await staleProofError(github, repo, { name, artifact: input.artifact, pull, decisionBase });
     if (stale) producers[name] = { absent: stale };
   }
   return {
@@ -1317,7 +1186,7 @@ async function execute(github: GitHubClient, context: ActionsContext, { inputs, 
   const ref = { ...repo, pull_number: decision.number };
   const auto = decision.would.decision === "auto";
   // A draft is not ready to merge: approving it now would carry the App's approval past "ready for review".
-  const approve = auto && policy.bands.appApprovalsCount && !inputs.pull.draft;
+  const approve = auto && policy.config.appApprovalsCount && !inputs.pull.draft;
   const standing = inputs.reviews.filter((review) => review.user?.login === app.login && review.state === "APPROVED");
   if (!approve) {
     for (const review of standing) {
@@ -1386,12 +1255,12 @@ export async function runRiskReview({ github, context, core, app, now = new Date
     const decisions = pulls.map(({ decision }) => decision);
     const record: DecisionRecord = {
       schema: 1,
-      mode: policy.bands.mode,
+      mode: policy.config.mode,
       event: target.mergeGroup ? "merge_group" : context.eventName,
       sha: target.sha,
       policy_sha: policy.sha,
-      ...(policy.bandsProblem && { bands_problem: policy.bandsProblem }),
-      ...conclude(decisions, policy.bands.mode, target.problem),
+      ...(policy.configProblem && { config_problem: policy.configProblem }),
+      ...conclude(decisions, policy.config.mode, target.problem),
       pulls: decisions,
     };
 

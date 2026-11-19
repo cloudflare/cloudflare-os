@@ -1,6 +1,6 @@
-// The risk-review gate's fixed rules: which band a change is in, which area it belongs to, and
-// which paths always need a person. Everything here is a pure function of the changed files and of
-// policy files read from the base branch, so the gate can apply it without running pull request code.
+// The risk-review gate's fixed rules: how risky a change is (low, medium or high) and which paths
+// always need a person. Everything here is a pure function of the changed files and of policy
+// files read from the base branch, so the gate can apply it without running pull request code.
 //
 // Imports are limited to `node:` builtins and other `scripts/risk-review*` modules (see
 // risk-review-imports.test.ts): the gate runs this file from the base branch, and a dependency
@@ -9,32 +9,21 @@
 import { matchesGlob } from "node:path/posix";
 import { isDeepStrictEqual } from "node:util";
 
-/** A risk band, lowest first. */
+/** A risk level, lowest first. */
 export type Band = "low" | "medium" | "high";
 
-export const BANDS: readonly Band[] = ["low", "medium", "high"];
-
-/**
- * Where a change may later merge without a person. `proven` is rung 1 (a proof holds, no AI);
- * `scored` is rung 2; the other three are rung 3's areas.
- */
-export type Area = "proven" | "scored" | "kernel-small" | "agent-facing-api" | "kernel";
-
-export const AREAS: readonly Area[] = ["proven", "scored", "kernel-small", "agent-facing-api", "kernel"];
+const BANDS: readonly Band[] = ["low", "medium", "high"];
 
 /** Lines changed above which a change is high risk whatever its paths. */
-export const MAX_LINES = 400;
+const MAX_LINES = 400;
 
 /**
  * Files touched above which a change is high risk. Measured 2026-11-02: 3 of the 217 merged GitHub
  * pull requests with at most 400 changed lines touched more than 20 files (95th percentile: 14).
  */
-export const MAX_FILES = 20;
+const MAX_FILES = 20;
 
-/** Lines changed at or below which a kernel change can be in the `kernel-small` area. */
-export const KERNEL_SMALL_LINES = 50;
-
-/** A changed file, as `pulls.listFiles` returns it. */
+/** The fields of a changed file, as `pulls.listFiles` returns it, that the gate reads. */
 export interface ChangedFile {
   filename: string;
   /** The path before a rename or copy, which matters as much as the new one. */
@@ -42,14 +31,11 @@ export interface ChangedFile {
   status: string;
   additions: number;
   deletions: number;
-  changes: number;
-  /** Absent for binary files and for diffs too large for the API to inline. */
-  patch?: string;
 }
 
 /**
- * Paths that set a minimum band, highest first. High is the kernel, this gate and the rest of CI
- * and release, the supply-chain policy, and the security chokepoints REVIEW.md names outside the
+ * Paths that set a minimum risk level, highest first. High is the kernel, this gate and the rest of
+ * CI and release, the supply-chain policy, and the security chokepoints REVIEW.md names outside the
  * kernel.
  */
 const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
@@ -119,8 +105,7 @@ const SKILLS = ".agents/skills/**";
  * Paths no AI may decide on, always a person: this gate and everything it reads or trusts (so a
  * pull request that an AI judges always runs `main`'s producer workflows and judge scripts), the
  * instructions AI reviewers follow, auth config, the supply-chain policy and release. Each entry
- * names its reason for the decision record. The one exception is a proven Actions bump (see
- * {@link classifyChangeset}); no AI decides that either.
+ * names its reason for the decision record.
  */
 const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[] = [
   { reason: "CI, repository policy or a producer workflow", globs: [".github/**"] },
@@ -143,7 +128,7 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[]
     reason: "agent skills and settings outside .agents/skills/",
     globs: ["**/.agents/**"],
     // Skills are scored like code: the reviewers read the base version of every instruction file,
-    // so a skill edit cannot steer its own review (decision 2026-11-10). A symlink there can.
+    // so a skill edit cannot steer its own review. A symlink there can.
     except: [SKILLS],
   },
   { reason: "auth config", globs: ["packages/workshop-backend/src/auth/**"] },
@@ -165,18 +150,10 @@ const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[]
 const READ_TEXT = ["**/*.md", "docs/**", "plans/**", "**/.agents/**"];
 
 /**
- * Files an escape snapshot entry does not raise the band for: lockfiles and prose outside
+ * Files an escape snapshot entry does not raise the risk level for: lockfiles and prose outside
  * `.agents/`, which nearly every pull request touches and which no reviewer judges by their past.
  */
 const ESCAPE_IGNORED = { globs: ["**/pnpm-lock.yaml", "docs/**", "plans/**", "**/*.md"], except: ["**/.agents/**"] };
-
-/** Worker configs: the `cloudflare.config.ts` source and the `wrangler.jsonc` generated from it. */
-const WORKER_CONFIGS = ["**/cloudflare.config.ts", "**/wrangler.jsonc"];
-
-/** Whether `filename` is a Worker config, either the source or the generated file. */
-export function isWorkerConfig(filename: string): boolean {
-  return matchesAny(filename, WORKER_CONFIGS);
-}
 
 /**
  * The Worker config that deploys: Wrangler and the release manifest (`scripts/release/
@@ -202,26 +179,6 @@ const SEAMS: { reason: string; globs: string[] }[] = [
     ],
   },
 ];
-
-const KERNEL = ["packages/workshop-backend/**", "packages/workshop-shared/src/api.ts", "packages/typed-storage/**"];
-
-/** Declarations the agent receives as verbatim text. */
-const AGENT_DECLARATIONS = [
-  "packages/gatekeeper-*/src/*types.d.ts",
-  "packages/mcp-shared/src/types.d.ts",
-  "packages/workshop-backend/src/*-binding.d.ts",
-];
-
-const GATEKEEPER_CODE = ["packages/gatekeeper-*/src/**", "packages/mcp-shared/src/**"];
-
-/**
- * Words in a changed gatekeeper line that put the change in rung 3's agent-facing API area: scopes,
- * resource URL patterns, auto-approvable actions, `readOnlyHint`, bindings, `describe()`,
- * auto-provisioning, request paths, OAuth and tokens. A lexical match over-approximates, so it can
- * only move a change out of rung 2, never into it.
- */
-const AGENT_FACING_WORDS =
-  /scope|resourceUrlPattern|autoApprovable|readOnlyHint|binding|describe\s*\(|autoProvision|createAccount|oauth|token|requestPath|urlFor|apiPath/i;
 
 /**
  * `matchesGlob` per path segment, where a `**` segment matches any number of segments, dot-segments
@@ -274,7 +231,7 @@ function raiseOne(band: Band): Band {
 }
 
 /**
- * Returns the minimum band a path sets.
+ * Returns the minimum risk level a path sets.
  *
  * @param filename Repository-relative path.
  */
@@ -314,48 +271,38 @@ export interface ContentFacts {
   newDependencies: string[];
   /**
    * `path: reason` for each way a `wrangler.jsonc` change may drop Durable Object data: a class an
-   * appended migration deletes, another operation that is not adding classes, rewritten
-   * migrations, a file `removed`, or one that is `unreadable`.
+   * appended migration deletes, another operation that is not adding classes, an appended
+   * migration with no tag or a used one, rewritten migrations, a file `removed`, or one that is
+   * `unreadable`.
    */
   durableObjectRisks: string[];
   /** Paths under `.agents/skills/` that are a symlink at base or head, or whose type is unreadable. */
   skillSymlinks: string[];
 }
 
-/** The band, area and policy reasons of one change. */
-export interface Classification {
+/** The risk level and policy reasons of one change. */
+interface Classification {
   band: Band;
   bandReasons: string[];
   /** Why no AI may decide; empty when one may. */
   neverAuto: string[];
-  /** The rung 2 or rung 3 area an AI decision would come from. */
-  area: Exclude<Area, "proven">;
-  /** Whether the change is a proven Actions bump, exempt from the `.github/**` policy rule. */
-  workflowBump: boolean;
   /** Changed files people or agents read, which bar every rung 1 proof. */
   readText: string[];
 }
 
-/** A workflow file GitHub runs: directly under `.github/workflows/`. */
-const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/;
-
 /**
- * Classifies a change. Every rule can only raise the band or add a policy reason.
+ * Classifies a change. Every rule can only raise the risk level or add a policy reason.
  *
  * @param input The changed files; whether `listFiles` returned every one (it stops at 3,000); what
  *     the gate read from file contents; the escape snapshot from the base branch, or `undefined` when
- *     it is missing or malformed; the time of the decision, for the escape window; and, only when
- *     Dependabot opened the pull request and its Actions proof holds, the workflows the gate reads
- *     from. Such a change is exempt from the `.github/**` rule when every changed file is an existing
- *     workflow, modified in place (not added, removed or renamed), that is not one of those.
+ *     it is missing or malformed; and the time of the decision, for the escape window.
  */
-export function classifyChangeset({ files, listed, facts, escapes, now, provenActionsBump }: {
+export function classifyChangeset({ files, listed, facts, escapes, now }: {
   files: ChangedFile[];
   listed: boolean;
   facts: ContentFacts;
   escapes: EscapeSnapshot | undefined;
   now: Date;
-  provenActionsBump?: { gateInputs: ReadonlySet<string> };
 }): Classification {
   let band: Band = "low";
   const bandReasons: string[] = [];
@@ -396,12 +343,7 @@ export function classifyChangeset({ files, listed, facts, escapes, now, provenAc
     }
   }
 
-  const workflowBump = provenActionsBump !== undefined && files.length > 0 &&
-    files.every(({ filename, previous_filename, status }) =>
-      status === "modified" && previous_filename === undefined && WORKFLOW_FILE.test(filename) &&
-      !provenActionsBump.gateInputs.has(filename));
   for (const rule of NEVER_AUTO_PATHS) {
-    if (workflowBump && rule.globs.includes(".github/**")) continue;
     const matched = files.filter((file) => pathsOf(file).some((path) => matchesRule(path, rule)));
     if (matched.length > 0) neverAuto.push(`${rule.reason} (${names(matched)})`);
   }
@@ -414,27 +356,7 @@ export function classifyChangeset({ files, listed, facts, escapes, now, provenAc
   }
 
   const readText = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, READ_TEXT))).map(describePath);
-  return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0), workflowBump, readText };
-}
-
-function areaOf(files: ChangedFile[], band: Band, lines: number, seam: boolean): Classification["area"] {
-  const touches = (globs: readonly string[]) => files.some((file) => pathsOf(file).some((path) => matchesAny(path, globs)));
-  const agentFacing = touches(AGENT_DECLARATIONS) || files.some(changesAgentFacingGatekeeperCode);
-  if (touches(KERNEL)) {
-    const small = lines <= KERNEL_SMALL_LINES && !seam && !agentFacing;
-    return small ? "kernel-small" : "kernel";
-  }
-  if (agentFacing) return "agent-facing-api";
-  return band === "high" ? "kernel" : "scored";
-}
-
-function changesAgentFacingGatekeeperCode(file: ChangedFile): boolean {
-  if (!pathsOf(file).some((path) => matchesAny(path, GATEKEEPER_CODE))) return false;
-  if (pathsOf(file).some((path) => AGENT_FACING_WORDS.test(path))) return true;
-  // A diff the API did not inline is unread, so it may change anything.
-  if (file.patch === undefined) return file.changes > 0;
-  return file.patch.split("\n").some((line) =>
-    /^[+-](?![+-]{2} )/.test(line) && AGENT_FACING_WORDS.test(line.slice(1)));
+  return { band, bandReasons, neverAuto, readText };
 }
 
 /**
@@ -654,14 +576,17 @@ function readWorkerConfig(text: string): Map<string | null, Deployment> | undefi
  * Why a `wrangler.jsonc` change needs a person for its Durable Object data. Empty when it keeps
  * each Worker's name and migrations, or only appends migrations that add classes.
  *
- * Migrations are append-only: Wrangler applies the ones after the deployed tag, by position, so a
- * list that is reordered, retagged, edited or cut can run an old deletion again. Nothing here
- * compares class names between base and head, so no look-alike in the base can stand for a
- * deletion it "already made". Each reason is one of:
+ * Migrations are append-only: Wrangler finds the deployed migration by the first entry with its
+ * tag and applies every entry after it, by position, so a list that is reordered, retagged, edited
+ * or cut, or that uses a tag twice, can run an old deletion again. Nothing here compares class
+ * names between base and head, so no look-alike in the base can stand for a deletion it "already
+ * made". Each reason is one of:
  * - `unreadable`: either side is not a file this reads exactly;
  * - `renames the Worker`: under a new name, at the top level or in an environment, a plain
  *   `wrangler deploy` creates a new Worker without the old one's Durable Objects;
  * - `rewrites migrations`: somewhere the head's list does not start with the base's;
+ * - `appends a migration with no tag`: its `tag` is missing, empty or not a string;
+ * - `reuses the tag <tag>`: an earlier migration in the same list already has it;
  * - `deletes <class>`: for each class an appended migration deletes;
  * - `<operation> in <tag>`: any other operation in an appended migration that is not adding
  *   classes (`renamed_classes`, `transferred_classes`, one this does not know).
@@ -680,15 +605,23 @@ export function durableObjectRisks(base: string | undefined, head: string): stri
     }
   }
   for (const [place, now] of after) {
-    for (const migration of now.migrations.slice(before.get(place)?.migrations.length ?? 0)) {
-      for (const [operation, value] of Object.entries(migration)) {
-        if (ADDS_CLASSES.includes(operation)) continue;
-        if (operation === "deleted_classes" && Array.isArray(value) && value.every((name) => typeof name === "string")) {
-          risks.push(...value.map((name) => `deletes ${String(name)}`));
-        } else {
-          risks.push(`${operation} in ${typeof migration.tag === "string" ? migration.tag : "an untagged migration"}`);
+    const kept = before.get(place)?.migrations.length ?? 0;
+    const used = new Set<string>();
+    for (const [index, migration] of now.migrations.entries()) {
+      const tag = typeof migration.tag === "string" && migration.tag !== "" ? migration.tag : undefined;
+      if (index >= kept) {
+        if (tag === undefined) risks.push("appends a migration with no tag");
+        else if (used.has(tag)) risks.push(`reuses the tag ${tag}`);
+        for (const [operation, value] of Object.entries(migration)) {
+          if (ADDS_CLASSES.includes(operation)) continue;
+          if (operation === "deleted_classes" && Array.isArray(value) && value.every((name) => typeof name === "string")) {
+            risks.push(...value.map((name) => `deletes ${String(name)}`));
+          } else {
+            risks.push(`${operation} in ${tag ?? "an untagged migration"}`);
+          }
         }
       }
+      if (tag !== undefined) used.add(tag);
     }
   }
   return risks;

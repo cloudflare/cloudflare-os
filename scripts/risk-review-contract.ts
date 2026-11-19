@@ -1,15 +1,14 @@
 // The contract between producer workflows and the risk-review gate. A producer (a reviewer's
-// verdict, a rung 1 proof, a piece of band evidence) runs on `pull_request`, writes one JSON
-// artifact, and holds no `checks: write`; the gate accepts the artifact only from a run that is
-// bound to the pull request's head, and only when its JSON has the shape below. Anything else counts
-// as absent, which sends the pull request to a person.
+// verdict, a rung 1 proof, the preview smoke) runs on `pull_request`, writes one JSON artifact,
+// and holds no `checks: write`; the gate accepts the artifact only from a run that is bound to the
+// pull request's head, and only when its JSON has the shape below. Anything else counts as absent,
+// which sends the pull request to a person.
 
 import { inflateRawSync } from "node:zlib";
 
 import { asObject, parseJson, type Json } from "./risk-review-policy.ts";
 
-/** A producer artifact's kind. */
-export type ProducerKind = "verdict" | "proof" | "evidence";
+type ProducerKind = "verdict" | "proof" | "evidence";
 
 /** Where the gate looks for a producer's runs. */
 export interface Producer {
@@ -23,24 +22,16 @@ const VERDICTS = ".github/workflows/review-verdict.yml";
 /** Proofs that run no pull request code, so nothing in the head can write their artifacts. */
 const PROOFS = ".github/workflows/automerge-proofs.yml";
 /** Producers that build or run the head; their artifacts rest on a maintainer author. */
-const EVIDENCE = ".github/workflows/automerge-evidence.yml";
+const HEAD_RUNS = ".github/workflows/automerge-evidence.yml";
 
 /** Every producer the gate reads, by name. Its artifact is {@link artifactName}. */
 export const PRODUCERS = {
   bonk: { kind: "verdict", workflow: ".github/workflows/bonk-pr.yml" },
   opus: { kind: "verdict", workflow: VERDICTS },
   "proof-deps": { kind: "proof", workflow: PROOFS },
-  "proof-actions": { kind: "proof", workflow: PROOFS },
-  "proof-migrations": { kind: "proof", workflow: PROOFS },
-  "proof-equivalence": { kind: "proof", workflow: EVIDENCE },
-  "proof-tests": { kind: "proof", workflow: EVIDENCE },
-  "evidence-deploy-dry-run": { kind: "evidence", workflow: EVIDENCE },
-  "evidence-eval": { kind: "evidence", workflow: ".github/workflows/workshop-evals-pr.yml" },
-  "evidence-consumer-build": { kind: "evidence", workflow: EVIDENCE },
-  "evidence-preview-e2e": { kind: "evidence", workflow: EVIDENCE },
-  "evidence-mutation": { kind: "evidence", workflow: EVIDENCE },
-  "evidence-red-green": { kind: "evidence", workflow: EVIDENCE },
-  "preview-smoke": { kind: "evidence", workflow: EVIDENCE },
+  "proof-equivalence": { kind: "proof", workflow: HEAD_RUNS },
+  "proof-tests": { kind: "proof", workflow: HEAD_RUNS },
+  "preview-smoke": { kind: "evidence", workflow: HEAD_RUNS },
 } as const satisfies Record<string, Producer>;
 
 /** A producer's name. */
@@ -51,7 +42,7 @@ export function isProducerName(name: string): name is ProducerName {
   return Object.hasOwn(PRODUCERS, name);
 }
 
-/** The two reviewers whose verdicts rung 2 and rung 3 need. */
+/** The two reviewers whose verdicts rung 2 needs. */
 export const VERDICT_NAMES = ["bonk", "opus"] as const satisfies readonly ProducerName[];
 
 /** The artifact a producer uploads, which holds one file of the same name plus `.json`. */
@@ -59,20 +50,21 @@ export function artifactName(name: ProducerName): string {
   return PRODUCERS[name].kind === "verdict" ? `automerge-verdict-${name}` : `automerge-${name}`;
 }
 
-/** A reviewer verdict's configuration, which an open band pins. */
-export interface Fingerprint {
-  model: string;
-  opencode: string;
-  /** The blob SHA of the `REVIEW.md` the reviewer read. */
-  review_md: string;
-  /** SHA-256 of the prompt. */
-  prompt: string;
-  /** The reviewer harness's pinned action (Bonk's `uses:` SHA), or `null` for our own runner. */
-  action: string | null;
+/** The gateway both reviewers reach their model through: the first segment of a verdict's `model`. */
+const GATEWAY = "cloudflare-ai-gateway";
+
+/**
+ * The provider a verdict's `model` names, lowercased: `anthropic` for
+ * `cloudflare-ai-gateway/anthropic/claude-opus-5.5`. `undefined` for any other form: no model ran,
+ * another gateway, or a longer id, which routes through one provider to a model this cannot name.
+ */
+export function modelProvider(model: string): string | undefined {
+  const [gateway, provider, name, ...rest] = model.split("/");
+  return gateway === GATEWAY && provider && name && rest.length === 0 ? provider.toLowerCase() : undefined;
 }
 
 /** A finding in a verdict. */
-export interface Finding {
+interface Finding {
   severity: "P0" | "P1" | "P2" | "P3";
   title: string;
   path: string | null;
@@ -97,7 +89,8 @@ export type ProducerArtifact =
     merge_confidence: number | null;
     round: number;
     review_from_sha: string | null;
-    fingerprint: Fingerprint;
+    /** The model id the review ran with; empty only when no model ran. */
+    model: string;
   })
   | (ArtifactBase & { kind: "proof" | "evidence"; holds: boolean });
 
@@ -130,16 +123,6 @@ function parseFinding(value: Json): Finding | undefined {
   if (path !== null && typeof path !== "string") return undefined;
   if (line !== null && !isInteger(line, 1, Number.MAX_SAFE_INTEGER)) return undefined;
   return { severity, title, path, line };
-}
-
-/** Parses a reviewer fingerprint, or returns `undefined` when any field is missing. */
-export function parseFingerprint(value: Json | undefined): Fingerprint | undefined {
-  const fingerprint = asObject(value);
-  const { model, opencode, review_md, prompt, action } = fingerprint ?? {};
-  if (typeof model !== "string" || typeof opencode !== "string") return undefined;
-  if (typeof review_md !== "string" || typeof prompt !== "string") return undefined;
-  if (action !== null && typeof action !== "string") return undefined;
-  return { model, opencode, review_md, prompt, action };
 }
 
 /**
@@ -184,8 +167,8 @@ export function parseProducerArtifact(
   if (!isInteger(root.round, 1, Number.MAX_SAFE_INTEGER)) return { absent: "malformed round" };
   const from = root.review_from_sha;
   if (from !== null && (typeof from !== "string" || !SHA.test(from))) return { absent: "malformed review_from_sha" };
-  const fingerprint = parseFingerprint(root.fingerprint);
-  if (!fingerprint) return { absent: "malformed fingerprint" };
+  const { model } = root;
+  if (typeof model !== "string") return { absent: "malformed model" };
   return {
     artifact: {
       ...base,
@@ -195,7 +178,7 @@ export function parseProducerArtifact(
       merge_confidence: confidence,
       round: root.round,
       review_from_sha: from,
-      fingerprint,
+      model,
     },
   };
 }
@@ -307,7 +290,7 @@ export function bindingError(run: WorkflowRun, expected: BindingExpectation): st
 }
 
 /** Artifacts above this are not producer JSON. */
-export const MAX_ARTIFACT_BYTES = 1_048_576;
+const MAX_ARTIFACT_BYTES = 1_048_576;
 
 /**
  * Picks the run's artifact for a producer: the newest one of that name made during the latest

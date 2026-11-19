@@ -49,7 +49,13 @@ export function zip(entries: Record<string, string>, method: 0 | 8 = 8): Uint8Ar
   return new Uint8Array(Buffer.concat([...locals, directory, end]));
 }
 
-/** A well-formed verdict, as review-verdict.yml writes it. */
+/** The model each reviewer's verdict names. */
+export const MODELS = {
+  bonk: "cloudflare-ai-gateway/openai/gpt-6.1-sol",
+  opus: "cloudflare-ai-gateway/anthropic/claude-opus-5.5",
+};
+
+/** A well-formed verdict: Bonk's, or Opus's when `name` says so. */
 export function verdictJson(overrides: Record<string, Json | undefined> = {}): string {
   return JSON.stringify({
     schema: 1,
@@ -64,7 +70,7 @@ export function verdictJson(overrides: Record<string, Json | undefined> = {}): s
     merge_confidence: 8,
     round: 1,
     review_from_sha: null,
-    fingerprint: { model: "openai/gpt-6.1-sol", opencode: "1.18.33", review_md: "d".repeat(40), prompt: "e".repeat(64), action: null },
+    model: overrides.name === "opus" ? MODELS.opus : MODELS.bonk,
     ...overrides,
   });
 }
