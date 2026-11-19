@@ -107,7 +107,13 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  */
 export const SearchDialog = ({ open, onOpenChange, entries, suggested, placeholder = 'Search', reading = false }: SearchDialogProps) => {
   const [query, setQuery] = useState('')
-  const [active, setActive] = useState(0)
+  const [active, setMarked] = useState(0)
+  // Whether the pointer marked the one marked, which is then under it and in sight already.
+  const pointed = useRef(false)
+  const setActive = (index: number, byPointer = false) => {
+    pointed.current = byPointer
+    setMarked(index)
+  }
   // The pages gone on to, the last the one shown, each with what was typed and marked before it.
   const [trail, setTrail] = useState<{ page: SearchPage; query: string; active: number }[]>([])
   const [pending, setPending] = useState(false)
@@ -131,9 +137,10 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
   const current = Math.min(active, shown.length - 1)
   const optionId = (index: number) => `${listId}-${index}`
 
-  // The marked one kept in sight as the keys move it.
+  // The marked one kept in sight as the keys move it. Not as the pointer does: its scroll padding
+  // and a group's first one's margin would scroll one at the edge under the pointer a little.
   useEffect(() => {
-    if (current >= 0) document.getElementById(optionId(current))?.scrollIntoView({ block: 'nearest' })
+    if (current >= 0 && !pointed.current) document.getElementById(optionId(current))?.scrollIntoView({ block: 'nearest' })
   })
 
   // What there is to change, ready to be typed over.
@@ -312,7 +319,7 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
                                 id={optionId(at)}
                                 role="option"
                                 aria-selected={at === current}
-                                onPointerMove={() => at !== current && setActive(at)}
+                                onPointerMove={() => at !== current && setActive(at, true)}
                                 onClick={() => void go(entry)}
                                 // Scrolled to from below, a group's first stops under its heading rather than hiding it.
                                 className={cn('flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 aria-selected:bg-kumo-tint', headed && entry === members[0] && 'scroll-mt-9')}
