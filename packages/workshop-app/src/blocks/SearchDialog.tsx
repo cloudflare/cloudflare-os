@@ -288,7 +288,7 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
                     aria-busy={pending}
                     // So that clicking one leaves the field to type in, as a page or a setting that stays open goes on.
                     onMouseDown={(event) => event.preventDefault()}
-                    className="max-h-[min(30rem,60vh)] min-h-0 overflow-y-auto overscroll-contain p-2"
+                    className="max-h-[min(30rem,60vh)] min-h-0 scroll-p-2 overflow-y-auto overscroll-contain p-2"
                   >
                     {shown.length === 0 && (
                       <p className="px-3 py-6 text-center text-kumo-subtle">
@@ -297,37 +297,41 @@ export const SearchDialog = ({ open, onOpenChange, entries, suggested, placehold
                           : query.trim() ? `Nothing matches “${query.trim()}”.` : list ? 'Nothing to choose from.' : 'Nothing to go to yet.'}
                       </p>
                     )}
-                    {groups.map(([group, members]) => (
-                      <div key={group} role="group" aria-label={group} className="not-first:mt-2">
-                        {!members.every(({ noHeading }) => noHeading) && (
-                          <div aria-hidden="true" className="px-3 pt-2 pb-1 text-sm text-kumo-subtle">{group}</div>
-                        )}
-                        {members.map((entry) => {
-                          const at = index++
-                          return (
-                            <div
-                              key={entry.key}
-                              id={optionId(at)}
-                              role="option"
-                              aria-selected={at === current}
-                              onPointerMove={() => at !== current && setActive(at)}
-                              onClick={() => void go(entry)}
-                              className="flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 aria-selected:bg-kumo-tint"
-                            >
-                              <span className="flex size-5 shrink-0 items-center justify-center text-kumo-subtle [&>svg]:size-[1.125em]">{entry.icon}</span>
-                              <span className="min-w-0 flex-1 truncate">{entry.title}</span>
-                              {entry.detail && <span className="max-w-[50%] shrink-0 truncate text-sm text-kumo-subtle">{entry.detail}</span>}
-                              {entry.on !== undefined && (
-                                <>
-                                  <SwitchIndicator checked={entry.on} />
-                                  <span className="sr-only">{entry.on ? 'On' : 'Off'}</span>
-                                </>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    ))}
+                    {groups.map(([group, members]) => {
+                      const headed = !members.every(({ noHeading }) => noHeading)
+                      return (
+                        <div key={group} role="group" aria-label={group} className="not-first:mt-2">
+                          {headed && (
+                            <div aria-hidden="true" className="px-3 pt-2 pb-1 text-sm text-kumo-subtle">{group}</div>
+                          )}
+                          {members.map((entry) => {
+                            const at = index++
+                            return (
+                              <div
+                                key={entry.key}
+                                id={optionId(at)}
+                                role="option"
+                                aria-selected={at === current}
+                                onPointerMove={() => at !== current && setActive(at)}
+                                onClick={() => void go(entry)}
+                                // Scrolled to from below, a group's first stops under its heading rather than hiding it.
+                                className={cn('flex cursor-pointer items-center gap-3 rounded-2xl px-3 py-2.5 aria-selected:bg-kumo-tint', headed && entry === members[0] && 'scroll-mt-9')}
+                              >
+                                <span className="flex size-5 shrink-0 items-center justify-center text-kumo-subtle [&>svg]:size-[1.125em]">{entry.icon}</span>
+                                <span className="min-w-0 flex-1 truncate">{entry.title}</span>
+                                {entry.detail && <span className="max-w-[50%] shrink-0 truncate text-sm text-kumo-subtle">{entry.detail}</span>}
+                                {entry.on !== undefined && (
+                                  <>
+                                    <SwitchIndicator checked={entry.on} />
+                                    <span className="sr-only">{entry.on ? 'On' : 'Off'}</span>
+                                  </>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
           </BaseDialog.Popup>
