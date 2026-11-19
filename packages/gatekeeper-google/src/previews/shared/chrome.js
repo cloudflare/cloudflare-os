@@ -206,8 +206,12 @@ export const dataUrl = async (content, type) => {
   });
 };
 
-/** Families every browser has, or has a match for, which Google Fonts does not serve. */
-export const SYSTEM_FONT = /^(arial|helvetica( neue)?|sans|times new roman|courier new|georgia|verdana|tahoma|trebuchet ms|comic sans ms|impact|calibri|cambria|consolas)$/i;
+/**
+ * Families Google Fonts does not serve, which every browser has or has a match for. It does serve
+ * the others an editor offers that are not its own, Cambria and Times New Roman among them, in
+ * the files the editor draws with.
+ */
+export const SYSTEM_FONT = /^(arial|sans)$/i;
 
 /**
  * Brings fonts into this frame through `read(family, weight, italic)`, a session's readFont(): at
