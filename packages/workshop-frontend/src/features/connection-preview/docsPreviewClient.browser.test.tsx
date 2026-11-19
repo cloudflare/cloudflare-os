@@ -137,6 +137,39 @@ it('draws each paragraph, run and table cell as the tab\'s drawing sets it', asy
   expect([...table.querySelectorAll('col')].map(column => column.style.width)).toEqual(['100pt', '300pt'])
 })
 
+it('sets a table, its rows and the paragraphs in them where Google Docs does', async () => {
+  const edge = { width: 1, color: '#000000' }
+  const cell = (column: number, block: object, padding = [0, 5.4, 0, 5.4]) =>
+    ({ padding, borders: { top: edge, right: edge, bottom: edge, left: edge }, column, blocks: [block] })
+  const markup = ['<table>', ...['Same', 'Same', 'Padded'].flatMap(words =>
+    ['  <tr>', `    <td><p>${words}</p></td>`, '    <td><p></p></td>', '  </tr>']), '</table>'].join('\n')
+  // As one brought in from Word is: wider than the 500pt column, with no padding over or under its text.
+  const { blocks } = await draw({
+    savedMarkdown: `${markup}\n`,
+    drawing: drawing([{
+      type: 'table', line: 0, columns: [300, 220],
+      rows: [
+        { cells: [cell(0, paragraph(undefined, 'Same', { look: TITLE, end: NORMAL })), cell(1, paragraph(undefined, []))] },
+        // Ending in spaces, and in an end larger than its text.
+        { cells: [cell(0, paragraph(undefined, [{ text: 'Same   ', look: TITLE }], { look: TITLE, end: LARGE })), cell(1, paragraph(undefined, []))] },
+        { cells: [cell(0, paragraph(undefined, 'Padded'), [5, 5, 5, 5]), cell(1, paragraph(undefined, []), [5, 5, 5, 5])] },
+      ],
+    }]),
+  })
+  const [table] = blocks()
+  const box = (element: Element) => element.getBoundingClientRect()
+  const scale = box(table).width / table.offsetWidth
+
+  // Its first cell's text starts where the column does: the table a border and a padding before it.
+  expect((box(table).left - box(table.parentElement!).left) / scale).toBeCloseTo(-8, 1)
+  const [first, spaced, padded] = [...table.querySelectorAll('tr')]
+  // The spaces a paragraph ends in do not move its text, and its end does not make its line taller.
+  expect(box(run(spaced, 'Same')).left).toBeCloseTo(box(run(first, 'Same')).left, 1)
+  expect(box(spaced).height).toBeCloseTo(box(first).height, 1)
+  // A row is a whole number of pixels tall: a line of 18, 5pt over and under it, and a border.
+  expect(box(padded).height / scale).toBeCloseTo(33, 1)
+})
+
 it('shows the tab as its changes leave it, as it is saved, or with each change marked in place', async () => {
   const { blocks, look, refresh, show } = await draw({ savedMarkdown: SAVED, drawing: DRAWN })
   const views = frame!.contentDocument!.querySelector<HTMLElement>('.views')!

@@ -19,7 +19,7 @@ import type {
  * Version of the drawing a snapshot holds. Bump it whenever what this module returns changes, so
  * a snapshot cached by older code is read again.
  */
-export const DOC_DRAWING_VERSION = 3;
+export const DOC_DRAWING_VERSION = 4;
 
 /**
  * How far a header starts below the top of the page, how far a footer ends above its foot, and
@@ -30,6 +30,13 @@ export const DOC_DRAWING_VERSION = 3;
 const UNSET_HEADER_MARGIN = 5.25;
 const UNSET_FOOTER_MARGIN = -3.6;
 const UNSET_HEADER_GAP = 5.25;
+
+/**
+ * What Google Docs pads a cell by, above, after, below and before its text, where the cell states
+ * none. A table made in Google Docs states 5pt all round; one brought in from Word states
+ * nothing, and is drawn as Word set it. Measured from its pages.
+ */
+const UNSTATED_PADDING = [0, 5.4, 0, 5.4];
 
 /** The ID a header or footer is drawn under when Google Docs returned none for it. */
 const UNRETURNED = "unreturned";
@@ -408,9 +415,8 @@ export function docTabDrawing(
               background: fill(style.backgroundColor),
               verticalAlign: ({ MIDDLE: "middle", BOTTOM: "bottom" } as const)[style.contentAlignment as "MIDDLE"],
             }),
-            // Google Docs pads a cell by 5pt where it says nothing.
-            padding: (["Top", "Right", "Bottom", "Left"] as const)
-              .map(side => points(style[`padding${side}`]) ?? 5) as [number, number, number, number],
+            padding: (["Top", "Right", "Bottom", "Left"] as const).map((side, at) =>
+              points(style[`padding${side}`]) ?? UNSTATED_PADDING[at]) as [number, number, number, number],
             // And draws a 1pt line where an edge names no width.
             borders: set({
               top: border(style.borderTop, 1),

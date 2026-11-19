@@ -849,6 +849,8 @@ describe("Google Docs tables", () => {
       contentAlignment: "MIDDLE",
       borderTop: { width: { unit: "PT" }, color: {} },
       borderLeft: { width: { magnitude: 1, unit: "PT" }, color: { color: { rgbColor: {} } } },
+      paddingTop: { magnitude: 5, unit: "PT" },
+      paddingLeft: { unit: "PT" },
     };
     cell.content![0].paragraph!.paragraphStyle.alignment = "CENTER";
 
@@ -885,6 +887,8 @@ describe("Google Docs tables", () => {
     let drawn = table.rows[0]!.cells[0]!;
     expect(drawn).toMatchObject({ background: "#00ff00", verticalAlign: "middle" });
     expect(drawn.borders).toEqual({ right: edge, bottom: edge, left: edge });
+    // The padding a cell states, none included, and on the sides it states none what Word gives it.
+    expect(drawn.padding).toEqual([5, 5.4, 0, 0]);
     expect(set(drawn.blocks[0] as GoogleDocParagraph)).toEqual({ lineSpacing: 1.15, alignment: "center" });
   });
 

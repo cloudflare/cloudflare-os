@@ -390,6 +390,18 @@ Found against real documents, and each is drawn as near as the API allows:
     rounds a font's ascent and descent its own way.
   - *Consolas* is Google's own copy, 1126/2048 of its size wide. Whatever fixed-width font
     stands in for it is letter-spaced to that (`FIXED_WIDTHS`).
+  - *A paragraph's end sizes only an empty paragraph.* The mark that ends a paragraph has a
+    look of its own, often larger than the text before it, and a line with text on it is no
+    taller for it. The spaces a paragraph ends in take no room: centered text is centered
+    without them, and they start no line.
+  - *A table is drawn as CSS collapses one*: a column's width runs between the middles of its
+    lines, and a 1pt line is one pixel. The line between two rows is on a whole pixel, so a row
+    is its lines, its padding and its border rounded up.
+  - *A cell that states no padding has Word's*: none over or under its text, 5.4pt beside it. A
+    table made in Google Docs states 5pt all round; one brought in from Word states nothing,
+    and usually also starts a padding and a border before its column, so that its text starts
+    where the column does. The Docs API returns neither a table's indent nor its alignment, so
+    that is drawn for a table wider than its column and no other.
 
 ### Client
 
@@ -489,6 +501,14 @@ a document's colors are chosen against its paper.
   and within 5px at the foot of the first, where each inline image sits about 1.7px lower in
   Google Docs than here, for a reason not found. A 21-page A4 design document paginates
   without overflow and was not compared line by line.
+- Two documents that are mostly table, each one page in the editor and one here. A form
+  brought in from Word (merged cells, shaded cells, no stated padding) has its table's columns
+  on the editor's pixels and its text where the editor has it in every row that wraps as the
+  editor's does. It is set in Cambria, which the browser stood another serif in for, so 34 of
+  its 79 lines end at another word and the table is seven lines shorter; with a font as wide
+  as Cambria in its place, every line between two rows was on the editor's pixel. A rubric
+  made in Google Docs has its rows within a pixel: its table is centered in the editor and
+  starts 2px further left here, and its first and last rows are a pixel taller here.
 - Live, against a real Google Doc on a local instance: styles, tables, images, several tabs, a
   pending tab add, the outline, heading links, replacements, appends and a stale change; refresh
   on queue and discard; auto-open, dismissal and reopen. Opening a preview logs the tab list,
@@ -524,6 +544,12 @@ a document's colors are chosen against its paper.
   swaps for another, and a header the Docs API does not return.
 - **A full-width inline image** is drawn 2px further right by Google Docs than here, and the
   place of a tethered object is not rounded to a whole pixel.
+- **A line's height is not quite the same for every font.** 14pt Karma and 10pt Arial at 1.15
+  are each a pixel shorter in the editor than 1.18 times the size rounded up makes them, where
+  20pt and 21pt Roboto are not: the factor differs between fonts in its third digit, which
+  shows only where a line comes within a tenth of a pixel of a whole one.
+- **Cambria and Calibri** are in no browser without Office, so a document brought in from
+  Word wraps as whatever serif or sans the browser has.
 - **Text wraps an image on one side.** Google Docs runs text down both sides of an image set in
   the middle of a column; here it keeps to the wider side.
 - **Tab stops** are drawn at the default spacing, not at the stops a paragraph sets.
