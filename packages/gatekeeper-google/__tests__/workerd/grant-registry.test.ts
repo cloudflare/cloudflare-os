@@ -825,6 +825,12 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-working"]);
     expect(await ended.stored("refreshTokenDead")).toBe(true);
 
+    // Reconnected, it is the Google account's holder again, so its next disconnect spares another.
+    await reconnect(google, ended, "ended-again", ada);
+    const another = await connection(google, "another", ada);
+    await another.disconnect();
+    expect(google.revoked).toEqual(["refresh-working"]);
+
     // One Google still honours goes on counting.
     const idle = await connection(google, "idle", grace);
     const leaving = await connection(google, "leaving", grace);

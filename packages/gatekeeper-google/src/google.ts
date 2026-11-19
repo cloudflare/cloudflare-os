@@ -858,9 +858,11 @@ export class UserAccount extends DurableObject<Env> {
           this.ctx.storage.kv, Date.now(), stageId);
       if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       // Whether this object is recorded, registry included, as holding its grant under the
-      // credentials replaced here.
+      // credentials replaced here. Not once Google refused those for good: the registry drops a
+      // holder whose refresh token is dead when it asks.
       let recorded = kv.get<string>(GRANT_CREDENTIALS_KEY) !== undefined &&
-          kv.get<string>(GRANT_CREDENTIALS_KEY) === kv.get<string>("credentialsId");
+          kv.get<string>(GRANT_CREDENTIALS_KEY) === kv.get<string>("credentialsId") &&
+          kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) !== true;
       kv.put<string>("refreshToken", staged.refreshToken);
       kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
       kv.put<string>("credentialsId", credentialsId);
