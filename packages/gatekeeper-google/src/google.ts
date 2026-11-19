@@ -884,12 +884,19 @@ export class UserAccount extends DurableObject<Env> {
     // them would record it as told again.
     let refused = () => kv.get<string>("credentialsId") === credentialsId &&
         kv.get<string>(REFRESH_REFUSED_KEY) !== undefined;
-    if (!refused()) return;
-    await this.#notices.run(() => {
-      if (!refused()) return;
-      this.#mintFailure = undefined;
-      clearCredentialExpiryLatch(kv);
-    });
+    if (refused()) {
+      await this.#notices.run(() => {
+        if (!refused()) return;
+        this.#mintFailure = undefined;
+        clearCredentialExpiryLatch(kv);
+      });
+    }
+    // A later reconnect or a disconnect replaced these credentials while this one waited. Told of
+    // a reconnect that returns, the Workshop records the account as working, which would clear an
+    // expiry it has been told of since for the credentials that are live.
+    if (kv.get<string>("credentialsId") !== credentialsId) {
+      throw new Error("These credentials were replaced before this reconnect finished.");
+    }
   }
 
   // How many recordings of this object as a grant holder are under way (see #holdGrant).

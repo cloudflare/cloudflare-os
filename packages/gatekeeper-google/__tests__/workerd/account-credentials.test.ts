@@ -60,12 +60,15 @@ async function connectedAccount() {
       async (instance: UserAccount) => (await instance.getAccessToken({forceRefresh: true})).token),
     /** Drop what the account remembers in memory, such as the refusal it won't ask Google about again for a minute. */
     restart: () => abortAllDurableObjects(),
-    /** Replace the account's credentials as a confirmed reconnect does. */
-    reconnect: () => runInDurableObject(account(), async (instance: UserAccount, state: DurableObjectState) => {
+    /**
+     * Replace the account's credentials as a confirmed reconnect does, with the Google account the
+     * stage read as `subject`, if it read one.
+     */
+    reconnect: (subject?: string) => runInDurableObject(account(), async (instance: UserAccount, state: DurableObjectState) => {
       await instance.commitReconnect(stageCredentials(state.storage.kv, {
         refreshToken: "new-refresh-token",
         accessToken: {token: "new-access-token", expires: new Date(Date.now() + 3_600_000)},
-        grantedScopes: [], requestedResources: [],
+        grantedScopes: [], requestedResources: [], ...(subject === undefined ? {} : {subject}),
       }, Date.now()));
     }),
     /** Whether the Workshop can be reached; while it can't, no notice arrives. */
@@ -368,5 +371,19 @@ describe("Google credential expiry notices", () => {
     account.google.refresh = revoked;
     await expect(account.mint()).rejects.toThrow(/expired or been revoked/);
     await account.told("credentialsExpired", "credentialsExpired");
+  });
+
+  // The Workshop records a reconnect that returns as working: one a later reconnect overtook must
+  // not, or it would clear an expiry told since of the credentials that are live.
+  it("fails a reconnect whose credentials a later one replaced before it returned", async () => {
+    const account = await connectedAccount();
+    // The first reconnect's stage read no Google account, so it waits to ask which.
+    account.google.profileHeld = true;
+    const first = account.reconnect();
+    first.catch(() => {});
+    await vi.waitFor(() => expect(account.google.profilesWaiting).toBe(1));
+    await account.reconnect("subject");
+    account.google.profileHeld = false;
+    await expect(first).rejects.toThrow("These credentials were replaced before this reconnect finished.");
   });
 });
