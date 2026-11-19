@@ -71,7 +71,7 @@ export const OBSERVER_ATTEMPT_LIFETIME_MS = 10 * 60 * 1000;
 
 const DEFAULT_MAX_TRACKED_COLLECTIONS = 1000;
 
-// Keep verifier fan-out below the Workers subrequest ceiling.
+// A request may make 32 Worker invocations, and each verifier spends a second one on its account.
 const DEFAULT_MAX_OBSERVERS = 10;
 
 /** Internal: default concurrent verifier round trips, for the tracker and `observerAccessVerifier`. */
@@ -212,7 +212,11 @@ export type ObserverTrackerOptions<V> = {
    * a crash is kept permanently, since a lost reply may still have recorded the observation.
    */
   maxTrackedCollections?: number;
-  /** Caps fan-out before reads can exceed Worker invocation limits. */
+  /**
+   * Most observers one `prepareObservation` will fan out over, so a read cannot exceed Worker
+   * invocation limits. Admission is not capped: a binding whose reads never reach
+   * `prepareObservation` can be shared without limit.
+   */
   maxObservers?: number;
   /** Concurrent verifier round trips. */
   concurrency?: number;
@@ -291,13 +295,6 @@ export class ObserverTracker<V> {
     }
     this.#sweepStaleAttempts();
 
-    // Re-admission of one already here is free; a new one costs a verifier call on every read.
-    const existing = this.observerIds();
-    if (!existing.includes(id) && existing.length >= this.#maxObservers) {
-      throw new Error(
-        `This binding already answers for ${existing.length} collaborators, the most it can ` +
-        "verify on every read. Remove one before adding another.");
-    }
     const attemptKey = `${OBSERVER_ATTEMPT_PREFIX}${id}`;
     const nonceKey = `${OBSERVER_NONCE_PREFIX}${id}`;
     const nonce = generateNonce();
@@ -441,6 +438,13 @@ export class ObserverTracker<V> {
     // Canonicalized up front, so the keys written, the state compared, and the ids the oracle is
     // asked about are all the same spelling.
     const canonical = [...new Set(collectionIds.map(collectionId => this.#canonicalCollectionId(collectionId)))];
+    // Refused before anything is written: each observer costs a verifier call on this read.
+    const observers = [...this.#observers()];
+    if (observers.length > this.#maxObservers) {
+      throw new Error(
+        `This binding is shared with ${observers.length} collaborators, more than the ` +
+        `${this.#maxObservers} it can verify on one read. Remove a collaborator and try again.`);
+    }
     // Both partitions come from one state read per collection, before the first await, so the "pending"
     // writes below reflect storage as a concurrent addObserver will scan it.
     const states = canonical.map(collectionId => [collectionId, this.#state(collectionId)] as const);
@@ -463,7 +467,6 @@ export class ObserverTracker<V> {
     const claimed = canonical.map(collectionId => this.#collectionKey(collectionId));
     claimSets(claims, claimed, new Set(untracked.map(collectionId => this.#collectionKey(collectionId))));
 
-    const observers = [...this.#observers()];
     const access = await mapLimit(observers, this.#concurrency, async ([id, verifier]) => {
       try {
         // Copied per verifier: the oracle may chunk destructively, and the exclusion check below

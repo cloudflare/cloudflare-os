@@ -1197,7 +1197,9 @@ Size limits from the provider and the disclosure shape. `maxTrackedCollections` 
 bounds the distinct collections this binding has *ever* disclosed, including markers a fail-closed read
 left behind, so size it from the whole resource rather than one page — a per-page value starts
 refusing valid reads once later pages reveal new collections. `maxObservers` must account for the Workers
-subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
+invocation ceiling because every observer costs a verifier call on each `collections` read; it
+refuses such a read, never an admission, so it does not limit a binding whose reads all report
+`subresources`. `remotePageSize`
 cannot exceed the provider's page cap. Lower `maxProviderPagesPerCall` for a provider that bills
 each row it returns: a filter that drops whole pages otherwise pays for up to ten per `next()`, and
 `1` with a `pageSize` no provider page exceeds makes each `next()` one provider request.

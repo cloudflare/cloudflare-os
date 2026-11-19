@@ -2023,10 +2023,6 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       collectionPrefix: OBSERVED_SET_PREFIX,
       vendorId: VENDOR_ID,
       maxTrackedCollections: 2,
-      // An older binding's tracker still stores each observer it admits, and refuses one past this
-      // cap. 50 is the cap they admitted under while each CI-data read checked every stored
-      // observer, so none loses a collaborator it had.
-      maxObservers: 50,
       verifyBaseline: async verifier => {
         if (!(await hasLevel(verifier))) {
           throw new Error(

@@ -236,25 +236,31 @@ describe("ObserverTracker", () => {
     expect(kv.get("observed:secret")).toBe("pending");
   });
 
-  it("refuses an observer past the cap, and still re-admits one it already answers for", async () => {
-    // Every observer costs a verifier call per read, and a request may make only 32 Worker
-    // invocations, so admission is where the ceiling has to be legible.
+  it("admits past the cap, and refuses only the read that would fan out over them", async () => {
+    // Every observer costs a verifier call per collection-scoped read, and a request may make only
+    // 32 Worker invocations. Admission costs nothing per observer, so only the read is bounded.
     const kv = makeKv();
     const instance = tracker(kv, { maxObservers: 2 });
-    await instance.addObserver("x", verifier());
-    await instance.addObserver("y", verifier());
+    const observers = [verifier("a"), verifier("a"), verifier("a")];
+    await instance.addObserver("x", observers[0]!);
+    await instance.addObserver("y", observers[1]!);
+    await instance.addObserver("z", observers[2]!);
 
-    await expect(instance.addObserver("z", verifier())).rejects.toThrow(/already answers for 2/);
-    await expect(instance.addObserver("x", verifier())).resolves.toBeUndefined();
+    await expect(instance.prepareObservation(["a"])).rejects.toThrow(/shared with 3 collaborators/);
+    // Refused before anything was written or asked.
+    expect(kv.get("observed:a")).toBeUndefined();
+    expect(observers.flatMap(observer => observer.batches)).toEqual([]);
+
+    instance.removeObserver("z");
+    await expect(observe(instance, ["a"])).resolves.toBeUndefined();
   });
 
-  it("reclaims the slot of an admission a crash stranded, once the attempt ages out", async () => {
+  it("sweeps an admission a crash stranded, once the attempt ages out", async () => {
     vi.useFakeTimers();
     const kv = makeKv();
     const gate = Promise.withResolvers<void>();
     let batches = 0;
     const instance = tracker(kv, {
-      maxObservers: 1,
       hasCollectionAccess: async (value, collectionIds) => {
         if (++batches === 1) await gate.promise;
         return collectionIds.map(collectionId => value.allowed.includes(collectionId));
@@ -262,7 +268,7 @@ describe("ObserverTracker", () => {
     });
     await observe(instance, ["a"]);
 
-    // The ghost's activation "dies" parked in its ACL check, holding the only slot.
+    // The ghost's activation "dies" parked in its ACL check.
     const stranded = instance.addObserver("ghost", verifier("a"));
     vi.advanceTimersByTime(OBSERVER_ATTEMPT_LIFETIME_MS);
 
@@ -290,30 +296,31 @@ describe("ObserverTracker", () => {
     kv.put("observer-nonce:ghost", "stale");
 
     await expect(instance.addObserver("next", verifier())).rejects.toThrow("storage unavailable");
-    // The cancellation landed even though the removal did not, so the surviving attempt still
-    // holds its slot and the stale admission fails closed at its next nonce check.
+    // The cancellation landed even though the removal did not, so the surviving attempt waits for
+    // the next sweep and the stale admission fails closed at its next nonce check.
     expect(kv.get("observer-nonce:ghost")).toBeUndefined();
     expect(kv.get("observer-attempt:ghost")).toBeDefined();
   });
 
-  it("keeps a fresh in-flight admission counted against the cap", async () => {
+  it("counts a fresh in-flight admission against a read's cap", async () => {
     const gate = Promise.withResolvers<void>();
     let batches = 0;
     const instance = tracker(makeKv(), {
       maxObservers: 1,
       hasCollectionAccess: async (value, collectionIds) => {
-        if (++batches === 1) await gate.promise;
+        if (++batches === 2) await gate.promise;
         return collectionIds.map(collectionId => value.allowed.includes(collectionId));
       },
     });
     await observe(instance, ["a"]);
+    await instance.addObserver("first", verifier("a"));
 
-    const admitting = instance.addObserver("first", verifier("a"));
-    await expect(instance.addObserver("second", verifier("a")))
-      .rejects.toThrow(/already answers for 1/);
+    // A read checks candidates too, so one still being admitted is one more verifier call.
+    const admitting = instance.addObserver("second", verifier("a"));
+    await expect(instance.prepareObservation(["a"])).rejects.toThrow(/shared with 2 collaborators/);
     gate.resolve();
     await admitting;
-    expect(instance.observerIds()).toEqual(["first"]);
+    expect(instance.observerIds()).toEqual(["first", "second"]);
   });
 
   it("leaves a set alone once another read has revealed it", async () => {

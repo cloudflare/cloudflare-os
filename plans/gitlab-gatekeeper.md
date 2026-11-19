@@ -996,10 +996,10 @@ constructor before anything else touches storage, whether its roster is complete
 without the `observerRoster` marker is empty on a new binding (`"complete"`) and holds keys on
 one an earlier version used (`"legacy"`); the answer is stored. A legacy binding refuses
 `readLog()`, `getTestReport()` and `listFailedTests()` before fetching anything — the connection
-must be removed and added again — and serves every other CI read. And a cap: the tracker keeps
-at most 50 observers (`maxObservers`; the kit's default of 10 would refuse collaborators
-existing bindings already had), because each such read re-checks every stored observer's
-membership with GitLab, and the cap bounds that fan-out under the Workers subrequest limit.
+must be removed and added again — and serves every other CI read. The tracker once capped its
+roster at 50 observers, because each such read re-checked every stored observer's membership
+with GitLab; reads now report subresources, nothing fans out over the roster, and the kit no
+longer caps admission.
 
 The owner's own access is checked too: the job read that revalidates a cached log is Reporter's,
 a debug trace Developer's, so a cached log is served only while the connected account holds
