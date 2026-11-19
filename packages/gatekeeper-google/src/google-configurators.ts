@@ -6,7 +6,11 @@ import type { BigQueryDataset, BigQueryProject, BigQueryTable } from "./bigquery
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
-import { GoogleAccessToken } from "./google-api";
+import { getGoogleVerifiedEmail, GmailApi, GoogleAccessToken } from "./google-api";
+import { CloudIdentityApi, CloudIdentityApiError, type CloudIdentityGroup } from "./cloud-identity-api";
+import {
+  GMAIL_GROUP_ADMISSION_HEADERS, gmailGroupCandidates, groupStanding, type GmailGroupIdentity,
+} from "./gmail-group-admission";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import {
   DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, isFileInvisible,
@@ -18,6 +22,9 @@ import type {
 } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
+import type {
+  GoogleGroupConfiguratorAlias, GoogleGroupConfiguratorGroupCheck, GoogleGroupConfiguratorRpc,
+} from "./configurator/google-group-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
 import {
   editorKind, OFFICE_KINDS, OfficeConversion, type OfficeConversionResult, type OfficeFileInspection,
@@ -33,8 +40,8 @@ import type {
 } from "./configurator/drive-configurator-types";
 import type { CreationLocationConfiguratorRpc, CreationPurpose } from "./configurator/creation-location-configurator-types";
 import {
-  BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl,
-  SHARED_DRIVES_GRANT, type ResourceTarget,
+  BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, GMAIL_RESOURCE, GROUP_MAIL_GRANT, OFFICE_IMPORT_GRANT,
+  parseResourceUrl, SHARED_DRIVES_GRANT, type ResourceTarget,
 } from "./resources";
 
 /**
@@ -50,6 +57,7 @@ const writeOffers = new WeakMap<object, boolean>();
 /** What a creation location picker was opened for (see GatekeeperUser.startCreationConfigurator()). */
 const creationPurposes = new WeakMap<object, CreationPurpose>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
+const groupConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, Promise<unknown>>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
@@ -179,6 +187,99 @@ function chatSpaceOption(space: ChatSpaceInfo, title = space.name): Configurator
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class GmailConfiguratorUI extends RpcTarget implements GmailConfiguratorRpc {}
+
+/** How much of a group's newest mail a check reads, to tell a group Google vouches for from one it doesn't. */
+const GMAIL_GROUP_CHECK_MESSAGES = 5;
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class GoogleGroupConfiguratorUI extends RpcTarget implements GoogleGroupConfiguratorRpc {
+  #holds: (grant: string) => Promise<boolean>;
+
+  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+    this.#holds = holds;
+  }
+
+  async canReadMail(): Promise<boolean> {
+    // The Gmail Mailbox grant's scopes read mail too.
+    return await this.#holds(GROUP_MAIL_GRANT) || await this.#holds(GMAIL_RESOURCE.urlPattern);
+  }
+
+  async listGroups(query: string): Promise<ConfiguratorOption[]> {
+    let options = groupConfiguratorCaches.get(this);
+    if (!options) {
+      options = this.#listGroups();
+      // Don't let a transient API error poison the cache permanently.
+      options.catch(() => groupConfiguratorCaches.delete(this));
+      groupConfiguratorCaches.set(this, options);
+    }
+    let resolved = await options;
+    return resolved.filter(option => optionMatches([option.title, option.subtitle, option.value], query));
+  }
+
+  /** Every group to offer. What it throws is shown in the dialog, so each message is written for it. */
+  async #listGroups(): Promise<ConfiguratorOption[]> {
+    let groups;
+    try {
+      groups = await new CloudIdentityApi(googleTokenProvider(this)).listGroupsOf(await this.#email());
+    } catch (error) {
+      if (!(error instanceof CloudIdentityApiError)) throw error;
+      // Google's own words when the API is off say where to turn it on.
+      if (error.status === 403 && error.reason === "SERVICE_DISABLED") throw new Error(error.message, { cause: error });
+      throw new Error(error.status === 403
+        ? "Google won't let this account look up its groups."
+        : "Couldn't load your groups from Google.", { cause: error });
+    }
+    return groups.map(group => group.displayName && group.displayName !== group.address
+      ? { value: group.address, title: group.displayName, subtitle: group.address }
+      : { value: group.address, title: group.address });
+  }
+
+  async checkGroup(
+      address: string, outsideSenders: boolean): Promise<GoogleGroupConfiguratorGroupCheck | GoogleGroupConfiguratorAlias> {
+    let identity = new CloudIdentityApi(googleTokenProvider(this));
+    let group = await identity.lookupGroup(address);
+    // A binding is to a group's main address, which is what it is pinned and matched by.
+    if (group.address !== address) return { aliasOf: group.address };
+    let [mail, membership] = await Promise.all([
+      this.#checkGroupMail({ ...group, outsideSenders }), this.#membership(identity, group),
+    ]);
+    return { mail, membership };
+  }
+
+  async #checkGroupMail(group: GmailGroupIdentity): Promise<GoogleGroupConfiguratorGroupCheck["mail"]> {
+    let gmail = new GmailApi("", googleTokenProvider(this));
+    let { messages } = await gmail.listMessages(GMAIL_GROUP_CHECK_MESSAGES, gmailGroupCandidates(group));
+    if (messages.length === 0) return "empty";
+    let newest = await Promise.all(messages.map(message =>
+      gmail.getMessageHeaders(message.id, GMAIL_GROUP_ADMISSION_HEADERS)));
+    return newest.some(message => groupStanding(group, message) === "own") ? "ready" : "unverified";
+  }
+
+  /**
+   * The account's own membership, looked up the way each member's account must to open a shared
+   * gadget: `hidden` when the group's "Who can view members" setting refuses the lookup.
+   */
+  async #membership(
+      identity: CloudIdentityApi, group: CloudIdentityGroup): Promise<GoogleGroupConfiguratorGroupCheck["membership"]> {
+    try {
+      let roles = await identity.directRoles(group.name, await this.#email());
+      if (!roles) return "none";
+      return roles.some(role => role === "MANAGER" || role === "OWNER") ? "manager" : "member";
+    } catch (error) {
+      if (error instanceof CloudIdentityApiError && error.status === 403) return "hidden";
+      throw error;
+    }
+  }
+
+  async #email(): Promise<string> {
+    let email = await getGoogleVerifiedEmail((await googleToken(this)).token);
+    if (!email) throw new Error("Google hasn't verified this account's email address.");
+    return email.toLowerCase();
+  }
+}
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
