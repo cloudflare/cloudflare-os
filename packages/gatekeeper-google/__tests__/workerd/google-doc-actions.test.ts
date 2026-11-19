@@ -2317,27 +2317,6 @@ describe("Google Doc drawing", () => {
   });
 });
 
-describe("Google Doc styles", () => {
-  it("reads a tab's styles under one observation", async () => {
-    let docs = new DocsModel();
-    docs.setText(MAIN_TAB, "Draft");
-    docs.install();
-
-    expect(await hooks().readStyles("styles-read", MAIN_TAB)).toEqual({
-      named: {}, paragraphs: [{ line: 0, style: "NORMAL_TEXT" }], runLooks: [], tables: [],
-    });
-    expect(await hooks().lastObservations).toEqual([`Read the styles of tab "Main" (${MAIN_TAB}).`]);
-  });
-
-  it("refuses a tab the document does not have", async () => {
-    nestedDocs();
-
-    await expect(Promise.resolve(hooks().readStyles("styles-no-tab", "nope")))
-      .rejects.toThrow('getStyles: no tab with ID "nope"');
-    expect(await hooks().lastObservations).toEqual(["Read the styles of one tab of the document."]);
-  });
-});
-
 describe("Google Doc images", () => {
   const LISTED = `Read the images in tab "Main" (${MAIN_TAB}).`;
 
@@ -2500,8 +2479,8 @@ describe("Google Doc pending changes", () => {
     expect(await hooks().readPendingChanges("pending-added-tab", added.tabId))
       .toEqual({ savedMarkdown: "\n", markdown: "Hello\n", changes });
     expect((await hooks().readPendingChanges("pending-added-tab", MAIN_TAB)).changes).toEqual([]);
-    expect(await hooks().readStyles("pending-added-tab", added.tabId))
-      .toMatchObject({ paragraphs: [{ line: 0, style: "NORMAL_TEXT" }], tables: [] });
+    expect((await hooks().callDoc("pending-added-tab", "readDrawing" as keyof GoogleDocSession, [added.tabId])).value)
+      .toMatchObject({ blocks: [{ type: "paragraph", line: 0, style: "NORMAL_TEXT" }] });
 
     expect(await hooks().applyAction("pending-added-tab", added.actionId)).toBeNull();
     // The ID the agent was given still names the tab, and the edit queued under it.
@@ -2750,7 +2729,7 @@ function tabSnapshot(tabId: string, title: string) {
   return {
     tabId, title, index: 0, nestingLevel: 0,
     markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
-    images: [], styles: { named: {}, paragraphs: [], runLooks: [], tables: [] }, committedWriteIds: [],
+    images: [], committedWriteIds: [],
     drawing: docTabToMarkdown(blankDocsTab(tabId, title)).drawing, imageUris: {},
   };
 }

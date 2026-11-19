@@ -13,7 +13,7 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import {
   GoogleDocSession, DocMetadata, type GoogleDocEditSession, type DocCommentOptions, type DocSuggestEditOptions,
-  type GoogleDocImage, type GoogleDocImageBytes, type GoogleDocStyles,
+  type GoogleDocImage, type GoogleDocImageBytes,
   type GoogleDocPendingChange, type GoogleDocPendingChanges, type GoogleDocReadSession, type GoogleDocTab,
 } from "./docs-types";
 import {
@@ -1051,22 +1051,10 @@ export class GoogleDocSessionImpl extends RpcTarget
   /** The tab a read of what is saved names: one Google has, or an added one, empty until it is. */
   #savedTab(
     snapshot: GoogleDocSnapshot, tabId: string,
-    operation: "getStyles" | "readDrawing" | "listImages" | "readImage",
+    operation: "readDrawing" | "listImages" | "readImage",
   ): GoogleDocTabSnapshot {
     let { tabs } = this.#replay(snapshot);
     return resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
-  }
-
-  async getStyles(tabId: string): Promise<GoogleDocStyles> {
-    let tab = await this.#readSettled(taken => this.#savedTab(taken, tabId, "getStyles"), tab => ({
-      title: "Read Google Doc styles",
-      description: `Read the styles of tab ${googleDocTabLabel(tab)}.`,
-    }), {
-      // As in getContent(), the error says whether that tab exists.
-      title: "Read Google Doc styles",
-      description: "Read the styles of one tab of the document.",
-    });
-    return tab.styles;
   }
 
   async readDrawing(tabId: string): Promise<GoogleDocDrawing> {

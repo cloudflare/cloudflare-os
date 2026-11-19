@@ -166,12 +166,6 @@ export interface GoogleDocSession extends GoogleDocEditSession {
   getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;
 
   /**
-   * Return how tab `tabId` looks in Google Docs beyond what its Markdown says: its page, its named
-   * styles, and what each paragraph sets over its named style.
-   */
-  getStyles(tabId: string): Promise<GoogleDocStyles>;
-
-  /**
    * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
    * the order the placeholders appear.
    */
@@ -189,93 +183,6 @@ export interface GoogleDocSession extends GoogleDocEditSession {
    * footers and wrapped images. Call it before writing or changing code that renders the document.
    */
   getRenderingTypes(): Promise<string>;
-}
-
-/** How a paragraph's text is drawn. Lengths are in points and colors are `#rrggbb`. */
-export type GoogleDocLook = {
-  fontFamily?: string;
-  fontSize?: number;
-  bold?: boolean;
-  italic?: boolean;
-  color?: string;
-
-  /** The color behind the text. */
-  highlight?: string;
-
-  /** The color behind the whole paragraph. */
-  shading?: string;
-  alignment?: "start" | "center" | "end" | "justify";
-
-  /** Line height as a multiple of single spacing. */
-  lineSpacing?: number;
-  spaceAbove?: number;
-  spaceBelow?: number;
-}
-
-/** How one table cell is drawn. */
-export type GoogleDocCell = {
-  /** The color that fills the cell. */
-  background?: string;
-
-  /** Where the cell's content sits in it; absent for the top. */
-  verticalAlign?: "middle" | "bottom";
-
-  /** Each edge that is not Google Docs' usual 1pt black line; a width of 0 is no line. */
-  borders?: { [side in "top" | "right" | "bottom" | "left"]?: { width: number; color: string } };
-
-  /** The font, size, color and alignment that all of the cell's paragraphs share. */
-  look?: GoogleDocLook;
-}
-
-/** How one tab looks, as Google Docs has it saved. */
-export type GoogleDocStyles = {
-  /** The page's width and margins in points, when the document sets them. */
-  page?: { width: number; marginTop: number; marginRight: number; marginLeft: number };
-
-  /**
-   * Each named style in full, by name: `NORMAL_TEXT`, `TITLE`, `SUBTITLE` and `HEADING_1` to
-   * `HEADING_6`.
-   */
-  named: Record<string, GoogleDocLook>;
-
-  /** The tab's paragraphs, in order. A table's paragraphs are not among them. */
-  paragraphs: {
-    /** The paragraph's line in `getPendingChanges().savedMarkdown`, counting from zero. */
-    line: number;
-
-    /** The named style the paragraph has. */
-    style: string;
-
-    /**
-     * What a link to this heading names it by: such a link reads `#heading=<headingId>` in the
-     * Markdown, after `?tab=<tabId>` when it is to another tab.
-     */
-    headingId?: string;
-
-    /** What the paragraph, or all of its text, sets differently from that named style. */
-    look?: GoogleDocLook;
-
-    /**
-     * The stretches of the paragraph's line that are drawn differently from the rest of it, as
-     * offsets into the line and an index into `runLooks`.
-     */
-    runs?: { start: number; end: number; look: number }[];
-  }[];
-
-  /** What a run sets differently from its paragraph: a font, a size, a color or a highlight. */
-  runLooks: GoogleDocLook[];
-
-  /** The tab's tables, in order. A table inside a table is not among them. */
-  tables: {
-    /** The line of the table's `<table>` in `getPendingChanges().savedMarkdown`. */
-    line: number;
-
-    /** Each column's width in points, when the table fixes them. */
-    columns?: number[];
-
-    /** The table's cells a row at a time, one for each `<td>` the Markdown writes. */
-    rows: GoogleDocCell[][];
-  }[];
 }
 
 /** An image, drawing or chart in a tab. */

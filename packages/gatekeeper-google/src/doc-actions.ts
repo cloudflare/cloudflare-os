@@ -245,8 +245,8 @@ export function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
   operation:
-    "getContent" | "getPendingChanges" | "getStyles" | "readDrawing" | "listImages" | "readImage" |
-    "replaceText" | "appendText",
+    "getContent" | "getPendingChanges" | "readDrawing" | "listImages" | "readImage" | "replaceText" |
+    "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
