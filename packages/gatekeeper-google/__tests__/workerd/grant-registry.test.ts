@@ -416,8 +416,7 @@ describe("Google grants shared by several connections", () => {
     google.profileFails = true;
     await reconnect(google, moved, "moved-again", grace, false);
 
-    // The first account's registry still lists it. Asked, it holds that grant no longer, so the
-    // account's last connection revokes.
+    // The reconnect took it out of the first account's registry, whose last connection revokes.
     await other.disconnect();
     expect(google.revoked).toEqual(["refresh-other"]);
   });
@@ -546,14 +545,20 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-first", "refresh-second"]);
   });
 
-  it("is dropped by the first Google account's registry, which a reconnect never tells, when it next asks", async () => {
+  it("is dropped by the first Google account's registry, which a reconnect's removal did not reach, when it next asks", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada, grace} = googleAccounts();
     const moved = await connection(google, "moved", ada);
     const other = await connection(google, "other", ada);
+    const drop = vi.spyOn(GoogleGrantRegistry.prototype, "drop").mockImplementationOnce(async () => {
+      throw new Error("registry unavailable");
+    });
     await reconnect(google, moved, "moved-again", grace);
+    expect(drop).toHaveBeenCalledOnce();
     expect(await moved.stored("grantSubject")).toBe(grace);
 
+    // Still listed by the first account's registry, it is asked, and holds that grant no longer.
     await other.disconnect();
     expect(google.revoked).toEqual(["refresh-other"]);
   });
