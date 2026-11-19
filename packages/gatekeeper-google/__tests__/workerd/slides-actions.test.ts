@@ -273,8 +273,8 @@ describe.each(RUNS)("Google Slides changes ($name)", run => {
       descriptionIsComplete: true,
       fields: [
         ...run.file,
-        { label: "Find", kind: "text", value: "Revenue: $10M" },
-        { label: "Replace with", kind: "text", value: "Revenue: $12M" },
+        { label: "Find", kind: "inline", value: "Revenue: $10M" },
+        { label: "Replace with", kind: "inline", value: "Revenue: $12M" },
       ],
     });
     expect(shapeText((await slides.slides("s2"))[0], "b2")).toBe("Revenue: $12M\nMargin: 20%");
@@ -416,8 +416,8 @@ describe.each(RUNS)("Google Slides changes ($name)", run => {
     ]);
     expect(action?.fields).toEqual([
       ...run.file,
-      { label: "Current text", kind: "text", value: "Q3 review" },
-      { label: "New text", kind: "text", value: "Q4 review" },
+      { label: "Current text", kind: "inline", value: "Q3 review" },
+      { label: "New text", kind: "inline", value: "Q4 review" },
     ]);
 
     provider.edit(d => {
@@ -733,7 +733,7 @@ describe.each(RUNS)("Google Slides design changes ($name)", run => {
         label: "Slide changes that delete elements, table rows or columns, or download images",
       }),
       descriptionIsComplete: true,
-      fields: [...run.file, { label: "Change 1: Text", kind: "text", value: "New" }],
+      fields: [...run.file, { label: "Change 1: Text", kind: "inline", value: "New" }],
     });
     expect(action!.description).toContain(
       "2. On slide 2 (\"Revenue\"), format all of the text of the shape change 1 adds: bold");
@@ -1099,7 +1099,7 @@ describe.each(RUNS)("Google Slides backgrounds and theme ($name)", run => {
       autoApprovable: false,
       actionKind: { tag: "update-slides" },
       descriptionIsComplete: true,
-      fields: [...run.file, { label: "Change 2: Background image URL", kind: "text", value: PICTURE_URL }],
+      fields: [...run.file, { label: "Change 2: Background image URL", kind: "inline", value: PICTURE_URL }],
     });
     expect(action!.description).toBe(
       "Makes 3 changes, all or none of which are applied:\n\n" +

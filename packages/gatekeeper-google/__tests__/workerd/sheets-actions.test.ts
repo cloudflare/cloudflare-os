@@ -1106,7 +1106,7 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
       autoApprovable: true,
       actionKind: run.kind({ tag: "editSheetValues", label: "Sheet value edits" }),
       descriptionIsComplete: true,
-      fields: [...run.file, { label: "Values", kind: "text", value: '[6,"done"]' }],
+      fields: [...run.file, { label: "Values", kind: "inline", value: '[6,"done"]' }],
     });
     expect(await sheets.autoApprovable()).toEqual(run.catalog(AUTO_APPROVABLE));
     expect(provider.get("Sales!B2")).toBe(4);
@@ -1178,7 +1178,7 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
       fields: [
         ...run.file,
         { label: "Change 1: Values", kind: "text", value: '["=sum(Sales!B2:C2)"]\n[null]' },
-        { label: "Change 1: Formulas", kind: "text", value: "D2: =sum(Sales!B2:C2)" },
+        { label: "Change 1: Formulas", kind: "inline", value: "D2: =sum(Sales!B2:C2)" },
       ],
     });
     expect(action!.description).toContain(
@@ -1231,7 +1231,7 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
     expect(action!.fields).toEqual([
       ...run.file,
       { label: "Change 1: Sheet", kind: "inline", value: "Sheet_1" },
-      { label: "Change 1: Values", kind: "text", value: '["=1+\\nB1: =2","=A1"]' },
+      { label: "Change 1: Values", kind: "inline", value: '["=1+\\nB1: =2","=A1"]' },
       { label: "Change 1: Formulas", kind: "text", value: 'A1: "=1+\\nB1: =2"\nB1: =A1' },
     ]);
   });
@@ -1248,8 +1248,8 @@ describe.each(RUNS)("Google Sheets changes ($name)", run => {
       ...run.file,
       // The kit shows a title it cannot write out plainly as JSON.
       { label: "Sheet", kind: "json", value: '"Sales\\u200b"' },
-      { label: "Values", kind: "text", value: '["=1+\\u2028B1: =2","x\\u2029y"]' },
-      { label: "Formulas", kind: "text", value: 'A1: "=1+\\u2028B1: =2"' },
+      { label: "Values", kind: "inline", value: '["=1+\\u2028B1: =2","x\\u2029y"]' },
+      { label: "Formulas", kind: "inline", value: 'A1: "=1+\\u2028B1: =2"' },
     ]);
   });
 
@@ -1922,8 +1922,8 @@ describe.each(RUNS)("Google Sheets changes to rows, columns and sheets ($name)",
       title: 'Edit "Q3 Plan"',
       fields: [
         ...run.file,
-        { label: "Change 2: Values", kind: "text", value: '["=Sales!B2*2"]' },
-        { label: "Change 2: Formulas", kind: "text", value: "A1: =Sales!B2*2" },
+        { label: "Change 2: Values", kind: "inline", value: '["=Sales!B2*2"]' },
+        { label: "Change 2: Formulas", kind: "inline", value: "A1: =Sales!B2*2" },
       ],
     });
     expect(action!.description).toContain(
@@ -2241,7 +2241,7 @@ describe.each(RUNS)("Google Sheets formatting ($name)", run => {
       autoApprovable: true,
       actionKind: run.kind({ tag: "formatSheets", label: "Sheet formatting" }),
       descriptionIsComplete: true,
-      fields: [...run.file, { label: "Number format", kind: "text", value: '"$"#,##0.00' }],
+      fields: [...run.file, { label: "Number format", kind: "inline", value: '"$"#,##0.00' }],
     });
     expect(await sheets.autoApprovable()).toEqual(run.catalog(AUTO_APPROVABLE));
 
@@ -2392,7 +2392,7 @@ describe.each(RUNS)("Google Sheets formatting ($name)", run => {
       title: "Format 2 sheets",
       autoApprovable: true,
       actionKind: run.kind({ tag: "formatSheets", label: "Sheet formatting" }),
-      fields: [...run.file, { label: "Change 3: Number format", kind: "text", value: "0.0" }],
+      fields: [...run.file, { label: "Change 3: Number format", kind: "inline", value: "0.0" }],
     });
     expect(formatting.action!.description).toContain(
       "Makes 3 changes, all or none of which are applied:\n\n" +
