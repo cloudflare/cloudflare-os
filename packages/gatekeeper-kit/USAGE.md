@@ -104,6 +104,34 @@ must decide locally when the flow is dead, clear it only if the credential ident
 still current, and apply provider cleanup only when that cannot invalidate an alias or successor.
 Workshop revokes a staged connect whose ticket is never redeemed.
 
+### A pasted key instead of OAuth
+
+Where the provider has no OAuth flow, the connect link opens a form. Spend the link's nonce when the
+form is shown and give the form a second one, so the link cannot be replayed:
+
+```ts
+// GET /<account>/<linkNonce>
+return formPageResponse(connectFormHtml({
+  title: "Connect Vendor",
+  intro: "Create an API key in Vendor, under Settings, and paste it here.",
+  action: `${baseUrl}/${accountId}/key`,
+  nonce: formNonce,
+  fields: [{ name: "key", label: "API key", secret: true }],
+}));
+
+// POST /<account>/key
+const form = await readConnectForm(req, { origin: baseUrl });
+if (form instanceof Response) return form;
+const result = await account.acceptKey(form.get(CONNECT_FORM_NONCE_FIELD) ?? "", form.get("key") ?? "");
+```
+
+Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
+posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site.
+`readConnectForm()` checks the method, origin, encoding and size and nothing else, and the origin
+is the whole deployment's, not this gatekeeper's alone. The account
+checks the nonce, in the step that spends it, and validates the key against the provider before it
+stores it. `origin` is the configured base URL, not `req.url`.
+
 ### Reconnect and `ensureResources`
 
 A reconnect or resource expansion must not write the new grant live. Stage the complete canonical
