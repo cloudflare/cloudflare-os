@@ -90,7 +90,7 @@ Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesd
 
 ### Step 4: Implement
 
-Start the package with `pnpm create-gatekeeper <name> --auth oauth --display "<Provider Name>"`. It writes a gatekeeper that builds, built on `gatekeeper-kit`, for an invented provider, and marks each answer only the provider's documentation or your design can give with `STOP(<id>)`; the package's tests fail until no mark is left. [SKELETON.md](SKELETON.md) lists what it writes, what it leaves, and what it does not cover yet (hooks). Replace the invented session API, resource types and subresource model with the ones the operator approved in Step 3 first; the rest follows from them.
+Start the package with `pnpm create-gatekeeper <name> --auth <oauth|api-key> --display "<Provider Name>"`. It writes a gatekeeper that builds, built on `gatekeeper-kit`, for an invented provider, and marks each answer only the provider's documentation or your design can give with `STOP(<id>)`; the package's tests fail until no mark is left. [SKELETON.md](SKELETON.md) lists what it writes, what it leaves, and what it does not cover yet (hooks). Replace the invented session API, resource types and subresource model with the ones the operator approved in Step 3 first; the rest follows from them.
 
 Package structure, as the command writes it:
 ```

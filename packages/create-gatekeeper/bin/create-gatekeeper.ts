@@ -14,7 +14,8 @@ const USAGE = `Usage: pnpm create-gatekeeper <name> --auth <${AUTH_KINDS.join("|
 Writes packages/gatekeeper-<name>, a gatekeeper built on gatekeeper-kit.
 
   <name>             The vendor id, e.g. "pagerduty": lowercase, hyphens between words.
-  --auth <kind>      How a user connects: ${AUTH_KINDS.join(", ")}.
+  --auth <kind>      How a user connects: "oauth", an authorization-code grant with PKCE, or
+                     "api-key", a key the user pastes into the connect page.
   --display <text>   The provider's name as users read it, e.g. "PagerDuty".
   --out <dir>        Write the package here instead, and register nothing.
   --no-install       Don't run "pnpm install" and "pnpm types:generate" afterwards.

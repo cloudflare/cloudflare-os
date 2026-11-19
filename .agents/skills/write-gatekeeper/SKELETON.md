@@ -3,12 +3,13 @@
 A new gatekeeper starts from a command, not from copied code:
 
 ```bash
-pnpm create-gatekeeper <name> --auth oauth --display "<Provider Name>"
+pnpm create-gatekeeper <name> --auth <oauth|api-key> --display "<Provider Name>"
 ```
 
-It writes `packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and to the
-OAuth credential map in `scripts/run-dev-server.ts`, and runs `pnpm install` and
-`pnpm types:generate`. The package builds, lints and bundles as written. The template is
+`--auth oauth` is an authorization-code grant with PKCE; `--auth api-key` is a key the user pastes
+into the connect page, for a provider with no OAuth. The command writes
+`packages/gatekeeper-<name>`, adds it to the gatekeeper list in `README.md` and, for OAuth, to the
+credential map in `scripts/run-dev-server.ts`, and runs `pnpm install` and `pnpm types:generate`. The package builds, lints and bundles as written. The template is
 `packages/create-gatekeeper/template/`; a test generates a package from it and compiles that, so
 read the template rather than an older gatekeeper for the current shape.
 
@@ -16,8 +17,8 @@ read the template rather than an older gatekeeper for the current shape.
 
 The package is written for an invented provider with one resource type, an item at
 `https://<name>.example/items/:itemId`, one read and one action. Everything the kit already has an
-answer for is real: the connect handshake and its nonces, PKCE, the preview-deployment callback
-relay, staged reconnects, credential refresh and rejection handling, the action journal and its
+answer for is real: the connect handshake and its nonces, PKCE and the preview-deployment callback
+relay (or the key form and its cross-site check), staged reconnects, credential refresh and rejection handling, the action journal and its
 fence, per-read observer reporting, and the observer verifier with its cache.
 
 Wherever only the provider's documentation or a design decision can say what is right, the
@@ -32,7 +33,7 @@ and subresource model come first and need the operator's review (Step 3) before 
 | `src/<name>-env.ts` | origins, resource types and URL patterns | `origins`, `resources` |
 | `src/<name>-urls.ts` | parsing and building resource links | |
 | `src/<name>-api.ts` | the typed client and error classification | `api`, `api-auth`, `api-errors` |
-| `src/<name>-auth.ts` | OAuth endpoints, scopes and client | `oauth-endpoints`, `oauth-scopes`, `oauth-token-lifetime`, `oauth-client-auth` |
+| `src/<name>-auth.ts` | how a user connects: OAuth endpoints, scopes and client, or the key form's text | `oauth-endpoints`, `oauth-scopes`, `oauth-token-lifetime`, `oauth-client-auth`; or `key-help`, `key-format` |
 | `src/<name>-account.ts` | the `UserAccount` Durable Object and connect routes | `identity`, `observer-probe`, `observer-cache` |
 | `src/<name>-credentials.ts` | identity, subresource IDs, the verifier's interface | `subresources` |
 | `src/<name>-gatekeeper.ts` | the per-binding Durable Object | |

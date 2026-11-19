@@ -95,6 +95,6 @@ describe("create-gatekeeper", () => {
   it("prints its usage when no way to connect is named", () => {
     const result = spawnSync(process.execPath, [bin, "acme"], { encoding: "utf8" });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("--auth <oauth>");
+    expect(result.stderr).toContain("--auth <oauth|api-key>");
   });
 });

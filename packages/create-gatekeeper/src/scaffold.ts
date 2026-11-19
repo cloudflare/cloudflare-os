@@ -7,8 +7,8 @@ import { join, relative } from "node:path";
 
 const TEMPLATE = join(import.meta.dirname, "..", "template");
 
-/** How a user connects an account. */
-export const AUTH_KINDS = ["oauth"] as const;
+/** How a user connects an account: an OAuth authorization-code grant, or a key they paste. */
+export const AUTH_KINDS = ["oauth", "api-key"] as const;
 
 /** What to generate. */
 export type ScaffoldOptions = {
