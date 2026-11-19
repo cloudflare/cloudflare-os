@@ -4,6 +4,7 @@ import { CaretRight } from '@phosphor-icons/react'
 import { Link } from '@tanstack/react-router'
 import type {
   AdminAccessRecord,
+  AdminAgentOrigin,
   AdminAuditRecord,
   AdminGrantRecord,
   AdminSettingChange,
@@ -21,7 +22,7 @@ import { KindBadge } from './KindBadge'
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
 export const AUDIT_LOG_COLUMNS = 6
 
-const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI' }
+const VIA_NAMES: Record<AdminVia, string> = { api: 'API', cli: 'CLI', gatekeeper: 'Admin connection' }
 
 // The settings stored as lists of entries with ids, whose keyless change is a change of order.
 const ORDERED_SETTING_NAMES = new Map([
@@ -140,6 +141,18 @@ const ArgumentsDetail = ({ args }: { args: AdminAccessRecord['args'] }) => {
 // A call into a workspace or a user's account. What a workspace's view was opened for is said
 // only when that is not metadata, and its grant only when the call ran under one: a record has
 // no line for a field it lacks.
+// Where a call made through the admin gatekeeper came from: the workspace whose connection made
+// it, and the chat, when the workspace tied the call to one. The terms say "from", since the
+// record's own workspace is the one the call reached.
+const AgentOriginDetails = ({ agent }: { agent: AdminAgentOrigin }) => (
+  <>
+    <Detail term="From workspace">
+      <span className="block font-mono text-xs text-kumo-subtle break-all">{agent.workspaceId}</span>
+    </Detail>
+    {agent.chatId !== undefined && <Detail term="From chat">{agent.chatId}</Detail>}
+  </>
+)
+
 const AccessDetails = ({ record, onFilterBy }: {
   record: AdminAccessRecord | AdminUserAccessRecord
   onFilterBy: (filter: AuditFilter) => void
@@ -161,6 +174,7 @@ const AccessDetails = ({ record, onFilterBy }: {
       )}
       <ArgumentsDetail args={record.args} />
       <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+      {record.agent && <AgentOriginDetails agent={record.agent} />}
     </dl>
   )
 }
@@ -202,7 +216,8 @@ const GrantDetails = ({ record, onFilterBy }: {
 
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, kind, target user),
- * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
+ * with a toggle that shows the rest in a row below it: how the call came (for one an agent made
+ * through the admin gatekeeper, also the workspace and the chat it came from), and a setting record's
  * changes, an access record's workspace or account, reason, level and arguments, with what a
  * workspace's view was opened for when that is content and the grant the call ran under when it
  * had one, a write record's workspace, reason and arguments, or a grant record's workspace,
