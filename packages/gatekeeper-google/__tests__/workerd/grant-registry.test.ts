@@ -282,6 +282,11 @@ describe("Google grants shared by several connections", () => {
     await signIn.disconnect();
     expect(google.revoked).toEqual([]);
 
+    // Nor when the Workshop describes it, though it then knows which account it is.
+    const described = await connectThroughOAuth(google, "described", ada, "auth", true);
+    expect(described.recordedAtReturn).toBeUndefined();
+    expect(await described.stored("grantSubject")).toBeUndefined();
+
     // With no connection to spare, a sign-in's grant is revoked.
     const alone = await connectThroughOAuth(google, "alone", grace, "auth");
     await alone.disconnect();
@@ -588,6 +593,23 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual([]);
     await last.disconnect();
     expect(google.revoked).toEqual(["refresh-last"]);
+  });
+
+  it("records a reconnect it never listed once describing it reads the account", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    const other = await connection(google, "other", ada);
+    // Stored before the registry, and its reconnect could not read which account it is.
+    const older = await storedAccount(google, "older", ada);
+    google.profileFails = true;
+    await reconnect(google, older, "older-again", ada, false);
+    google.profileFails = false;
+    await older.describe();
+    await older.holds(ada);
+
+    await other.disconnect();
+    expect(google.revoked).toEqual([]);
   });
 
   it("stops counting for the first Google account as soon as a reconnect is known to sign in as another", async () => {

@@ -821,6 +821,9 @@ export class UserAccount extends DurableObject<Env> {
       this.#forgetRefusal();
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
+      // Marked before the Workshop describes it, which can record a connection as its grant's
+      // holder (see noteAccountSubject), and a sign-in is never one.
+      if (flow.mode === "auth") this.ctx.storage.kv.put("deleteCredentialsOnAlarm", true);
       return { callback, mode: flow.mode, stageId: undefined };
     });
 
@@ -838,7 +841,6 @@ export class UserAccount extends DurableObject<Env> {
       }
 
       if (completion.mode === "auth") {
-        this.ctx.storage.kv.put("deleteCredentialsOnAlarm", true);
         this.ctx.storage.setAlarm(Date.now() + 2 * 60 * 1000);
       } else {
         this.ctx.storage.deleteAlarm();
@@ -1002,10 +1004,9 @@ export class UserAccount extends DurableObject<Env> {
   /**
    * Notes that `accessToken`, while it is the access token stored, belongs to the Google account
    * `subject`, as describing the account read: recording this object as a holder of that
-   * account's grant then needn't ask Google again. A connection a reconnect left listed under the
-   * grant it held before, not knowing which account it signed in as, is recorded now, under the
-   * account read, before the description returns. One listed nowhere is recorded by its own flow
-   * or not at all, as a sign-in, which is described too.
+   * account's grant then needn't ask Google again. A connection not recorded for these credentials,
+   * as after a reconnect that could not read which account it signed in as, is recorded now, under
+   * the account read, before the description returns; never a sign-in, which is described too.
    */
   async noteAccountSubject(accessToken: string, subject: string): Promise<void> {
     let kv = this.ctx.storage.kv;
@@ -1014,10 +1015,7 @@ export class UserAccount extends DurableObject<Env> {
       return;
     }
     kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject });
-    if (kv.get<string>(GRANT_SUBJECT_KEY) !== undefined &&
-        kv.get<string>(GRANT_CREDENTIALS_KEY) !== installed) {
-      await this.#holdGrant();
-    }
+    if (kv.get<string>(GRANT_CREDENTIALS_KEY) !== installed) await this.#holdGrant();
   }
 
   /**
