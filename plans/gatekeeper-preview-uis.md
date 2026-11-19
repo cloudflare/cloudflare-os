@@ -476,7 +476,10 @@ to another tab, leaves what is drawn alone. Bold and italic faces are read beyon
 looks' only where a pending change writes them.
 
 **Falling back.** When `readDrawing()` fails, or its blocks do not match `savedMarkdown`'s
-lines, the tab is drawn from its Markdown alone, on one sheet.
+lines, the tab is drawn from its Markdown alone, on one sheet. The Markdown does not escape the
+document's text, so a paragraph that reads `# of rows` is a heading in it: where the drawing
+has that text in a paragraph that is no heading, the line is read as the drawing has it, and
+is no mismatch.
 
 **Paper.** A sheet is the document's own color, white unless it says otherwise, in both themes:
 a document's colors are chosen against its paper.
