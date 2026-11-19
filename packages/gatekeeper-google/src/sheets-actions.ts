@@ -293,7 +293,7 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
   throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
 }
 
-type Field = (label: string, text: string, kind: "inline" | "verbatim") => void;
+type Field = (label: string, text: string) => void;
 
 type FormatField = keyof Omit<SheetFormatChange, "borders">;
 
@@ -348,7 +348,7 @@ function formatWords(format: SheetFormatChange, field: Field): string {
     if (value === undefined) return [];
     if (value === null) return [FORMAT_WORDS[name].reset];
     if (name === "numberFormat" && typeof value === "object" && value.pattern !== undefined) {
-      field("Number format", value.pattern, "verbatim");
+      field("Number format", value.pattern);
     }
     return [FORMAT_WORDS[name].set(value as never)];
   });
@@ -376,7 +376,7 @@ function band(axis: "rows" | "columns", start: number, count: number): string {
 function describeChange(change: PlannedChange, titles: Map<number, string>, field: Field): string {
   let named = (sheetId: number, label = "Sheet") => {
     let title = titles.get(sheetId);
-    if (title !== undefined && inexact(title)) field(label, title, "inline");
+    if (title !== undefined && inexact(title)) field(label, title);
     return sheetName(title, sheetId);
   };
   switch (change.op) {
@@ -385,13 +385,13 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
       let where = `In ${named(change.sheetId)}`;
       let cells = rectName(change.rect);
       if (change.op === "clearRange") return `${where}, clear the contents of ${cells}, keeping their formatting`;
-      field("Values", change.values.map(oneLine).join("\n"), "verbatim");
+      field("Values", change.values.map(oneLine).join("\n"));
       // One formula per line: one with a line break of its own is quoted, so it cannot pass for others.
       let formulas = change.values.flatMap((row, r) => row.flatMap((value, c) => isFormula(value)
         ? [`${cellName(change.rect.startRow + r, change.rect.startColumn + c)}: ` +
           (/[\r\n\u2028\u2029]/.test(value) ? oneLine(value) : value)]
         : []));
-      if (formulas.length > 0) field("Formulas", formulas.join("\n"), "verbatim");
+      if (formulas.length > 0) field("Formulas", formulas.join("\n"));
       return `${where}, set ${cells} to the values below`;
     }
     case "formatCells":
@@ -442,16 +442,17 @@ function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition
       let ids = [...new Set(changes.flatMap(change =>
         change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId]))];
       let titles = new Map(Object.entries(sheets).map(([id, title]) => [Number(id), title]));
-      let fields: [string, string, "inline" | "verbatim"][] = [];
+      let fields: [string, string][] = [];
       let lines = changes.map((change, i) => {
         let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
-        return describeChange(change, titles, (name, text, shape) => fields.push([`${label}${name}`, text, shape]));
+        return describeChange(change, titles, (name, text) => fields.push([`${label}${name}`, text]));
       });
       let builder = buildDescription(lines.length === 1
         ? `${lines[0]}.`
         : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
           lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
-      for (let [label, text, shape] of fields) builder[shape](label, text);
+      // A value one line shows exactly shares it with its label; any other is a block of its own.
+      for (let [label, text] of fields) builder.inline(label, text);
       let verb = changes.every(change => change.op === "formatCells") ? "Format" : "Edit";
       return {
         title: sanitizeTitle(changes.every(change => change.op === "addSheet")

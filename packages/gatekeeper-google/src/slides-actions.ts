@@ -564,7 +564,8 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
         ? `${lines[0]}.`
         : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
           lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
-      for (let [label, text] of fields) builder.verbatim(label, text);
+      // A value one line shows exactly shares it with its label; any other is a block of its own.
+      for (let [label, text] of fields) builder.inline(label, text);
       if (pageCount > 0) {
         builder.prose("Each change to a master or layout reaches every slide made from it.");
       }
