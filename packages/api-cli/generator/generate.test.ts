@@ -50,9 +50,9 @@ test("the admin gatekeeper's schema is regenerated with the rest, and when a met
 test("the CLI's admin commands come from the whole schema, with the methods the admin gatekeeper's leaves out", () => {
   const kept = adminMethods(ADMIN_FILE);
   const left = adminMethods("packages/api-schema/generated/workshop-api.schema.json").filter((name) => !kept.includes(name));
-  assert.ok(left.includes("setSiteName") && left.includes("checkForUpdates"), left.join(" "));
+  assert.ok(left.includes("setSiteName") && left.includes("endWorkspaceGrant"), left.join(" "));
   const commands = readFileSync(join(ROOT, CLI_FILES[0]!), "utf8");
-  for (const command of ["set-site-name", "check-for-updates"]) assert.ok(commands.includes(`"${command}"`), command);
+  for (const command of ["set-site-name", "end-workspace-grant"]) assert.ok(commands.includes(`"${command}"`), command);
 });
 
 test("agent-types.ts holds the agent declarations, whole, per service and per gatekeeper app UI, each text line for line", async (t) => {

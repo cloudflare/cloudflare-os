@@ -10,26 +10,32 @@
 import { describe, expect, it, vi } from "vitest";
 import { RpcTarget } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_USER_METHODS, ADMIN_WORKSPACE_METHODS,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, getAdminAccessErrorCode,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_USER_METHODS, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  getAdminAccessErrorCode,
 } from "@gadgets/workshop-shared/api";
-import { ADMIN_AGENT_KINDS } from "@gadgets/workshop-shared/admin-agent";
+import {
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, type AdminAgentAction,
+} from "@gadgets/workshop-shared/admin-agent";
 import type { AdminApi } from "@gadgets/workshop-shared/api";
+import { ADMIN_METHOD_ANSWERS } from "../src/admin-access.js";
 import {
   ADMIN_AGENT_VIEWS, adminAgentRefusal, capViewLifetime, restrictAdminApi, type AdminAgentUse,
 } from "../src/admin-agent.js";
 
 const ADMIN = "admin@example.test";
 const METHODS = Object.keys(ADMIN_AGENT_KINDS) as (keyof typeof ADMIN_AGENT_KINDS)[];
+const ACTIONS = Object.keys(ADMIN_AGENT_ACTIONS) as AdminAgentAction[];
 // Names that are not methods of AdminApi, the ones every object answers included.
 const NOT_METHODS = ["constructor", "then", "toString", "__proto__", "hasOwnProperty", "dup", ""];
 // The view methods, as the table for inspectWorkspace() allows them.
-const VIEW_METHODS: string[] =
-    ADMIN_WORKSPACE_METHODS.filter(name => name !== "inspectWorkspace");
+const VIEW_METHODS = Object.keys(ADMIN_METHOD_ANSWERS).filter(name => name !== "inspectWorkspace");
 // The methods of a view of a user's account, as the table for inspectUser() allows them.
 const USER_VIEW_METHODS: string[] = ADMIN_USER_METHODS.filter(name => name !== "inspectUser");
 const T0 = 1_700_000_000_000;
 const SESSION: AdminAgentUse = { for: "session", until: T0 + 60_000, live: () => {} };
+
+const action = (kind: AdminAgentAction, autoApproved = false): AdminAgentUse =>
+    ({ for: "action", kind, autoApproved, decidedBy: ADMIN });
 
 async function rejection(call: Promise<unknown>): Promise<Error> {
   try {
@@ -41,20 +47,46 @@ async function rejection(call: Promise<unknown>): Promise<Error> {
 }
 
 describe("adminAgentRefusal", () => {
-  it("lets a session read, and refuses it every omitted method", () => {
+  it("lets a session read, and refuses it every act and omitted method", () => {
     for (let method of METHODS) {
-      let refusal = adminAgentRefusal(method);
+      let refusal = adminAgentRefusal(SESSION, method);
       let kind = ADMIN_AGENT_KINDS[method];
       if (kind === "read") expect(refusal, method).toBeUndefined();
+      if (kind === "act") {
+        expect(refusal).toBe(`AdminApi.${method}() runs only as an approved action.`);
+      }
       if (kind === "omitted") {
         expect(refusal).toBe(`AdminApi.${method}() is not available through the admin gatekeeper.`);
       }
     }
   });
 
-  it("refuses a name that is not a method", () => {
-    for (let name of NOT_METHODS) {
-      expect(adminAgentRefusal(name)).toBe(`AdminApi has no method ${name}.`);
+  it.each(ACTIONS)("lets an action of kind %s make its own call and no other", kind => {
+    let own = ADMIN_AGENT_ACTIONS[kind].method;
+    for (let method of METHODS) {
+      let refusal = adminAgentRefusal(action(kind), method);
+      if (method === own) {
+        expect(refusal, method).toBeUndefined();
+      } else if (ADMIN_AGENT_KINDS[method] === "omitted") {
+        expect(refusal).toBe(`AdminApi.${method}() is not available through the admin gatekeeper.`);
+      } else {
+        expect(refusal).toBe(`This action may only call AdminApi.${own}().`);
+      }
+    }
+  });
+
+  it("keeps a request for content apart from a write", () => {
+    expect(adminAgentRefusal(action("contentAccessRequest"), "writeWorkspace"))
+        .toBe("This action may only call AdminApi.requestContentAccess().");
+    expect(adminAgentRefusal(action("workspaceWriteRequest"), "requestContentAccess"))
+        .toBe("This action may only call AdminApi.writeWorkspace().");
+  });
+
+  it("refuses a name that is not a method, whatever the use", () => {
+    for (let use of [SESSION, ...ACTIONS.map(kind => action(kind))]) {
+      for (let name of NOT_METHODS) {
+        expect(adminAgentRefusal(use, name)).toBe(`AdminApi has no method ${name}.`);
+      }
     }
   });
 });
@@ -89,9 +121,9 @@ describe("capViewLifetime", () => {
   });
 
   it("keeps the other options and leaves the caller's object alone", () => {
-    let options = { other: "kept", lifetimeSeconds: 3600 };
+    let options = { access: "content", lifetimeSeconds: 3600 };
     expect(capViewLifetime(["ws", "why", options], FIVE_MINUTES))
-        .toEqual(["ws", "why", { other: "kept", lifetimeSeconds: 300 }]);
+        .toEqual(["ws", "why", { access: "content", lifetimeSeconds: 300 }]);
     expect(options.lifetimeSeconds).toBe(3600);
   });
 
@@ -119,7 +151,7 @@ describe("ADMIN_AGENT_VIEWS", () => {
 
   it("answers every method of a workspace view and no other name", () => {
     let { answers } = ADMIN_AGENT_VIEWS.inspectWorkspace;
-    expect(VIEW_METHODS.length).toBeGreaterThan(10);
+    expect(VIEW_METHODS.length).toBeGreaterThan(20);
     for (let name of VIEW_METHODS) expect(answers(name), name).toBe(true);
     for (let name of ["inspectWorkspace", "onRpcBroken", "valueOf", ...NOT_METHODS]) {
       expect(answers(name), name).toBe(false);
@@ -132,7 +164,7 @@ describe("ADMIN_AGENT_VIEWS", () => {
     for (let name of USER_VIEW_METHODS) expect(answers(name), name).toBe(true);
     // Not the open, and nothing only a workspace's view answers.
     let workspaceOnly = VIEW_METHODS.filter(name => !USER_VIEW_METHODS.includes(name));
-    expect(workspaceOnly).toContain("listChats");
+    expect(workspaceOnly).toContain("getChat");
     for (let name of ["inspectUser", "onRpcBroken", "valueOf", ...workspaceOnly, ...NOT_METHODS]) {
       expect(answers(name), name).toBe(false);
     }
@@ -184,12 +216,14 @@ describe("restrictAdminApi", () => {
     expect(calls).toEqual([{ method: "listUsers", args: [{ query: "ada" }] }]);
   });
 
-  it("refuses a session every omitted method and every name that is no method", async () => {
+  it("refuses a session every act and omitted method and every name that is no method", async () => {
     let { api, calls } = lendOver(SESSION);
+    expect((await rejection(api.writeWorkspace("ws", "stopAgent", { chatId: 3 }, "why"))).message)
+        .toBe("AdminApi.writeWorkspace() runs only as an approved action.");
     expect((await rejection(api.setSiteName("x"))).message)
         .toBe("AdminApi.setSiteName() is not available through the admin gatekeeper.");
-    expect((await rejection(api.checkForUpdates())).message)
-        .toBe("AdminApi.checkForUpdates() is not available through the admin gatekeeper.");
+    expect((await rejection(api.approveContentAccess("request"))).message)
+        .toBe("AdminApi.approveContentAccess() is not available through the admin gatekeeper.");
     expect((await rejection(api.noSuchMethod())).message)
         .toBe("AdminApi has no method noSuchMethod.");
     expect(calls).toEqual([]);
@@ -250,7 +284,9 @@ describe("restrictAdminApi", () => {
     let { api, calls, state } = lendOver(SESSION);
     expect(await api.listUsers()).toBe("listUsers answered");
     state.off = true;
-    expect((await rejection(api.listUsers())).message).toBe("Gatekeeper is disabled.");
+    let refused = await rejection(api.listUsers());
+    expect(refused.message).toBe("Gatekeeper is disabled.");
+    expect(getAdminAccessErrorCode(refused)).toBe(ADMIN_ACCESS_ERROR_CODES.gatekeeperOff);
     expect(state.offAsked).toBe(2);
     expect(calls).toHaveLength(1);
   });
@@ -327,6 +363,60 @@ describe("restrictAdminApi", () => {
         .toBe("This Admin API session has ended. Open a new one.");
   });
 
+  it("lends nothing to an auto-approval of a kind that always waits for a person", () => {
+    for (let kind of ACTIONS) {
+      let lend = () => lendOver(action(kind, true));
+      if (ADMIN_AGENT_ACTIONS[kind].autoApprovable) {
+        expect(lend, kind).not.toThrow();
+      } else {
+        expect(lend, kind).toThrow("This kind of action is never auto-approved.");
+      }
+    }
+    expect(ACTIONS.filter(kind => !ADMIN_AGENT_ACTIONS[kind].autoApprovable))
+        .toEqual(["workspaceWriteRequest", "contentAccessRequest"]);
+    // A person's approval of the same kinds is lent to.
+    expect(() => lendOver(action("workspaceWriteRequest"))).not.toThrow();
+    expect(() => lendOver(action("contentAccessRequest"))).not.toThrow();
+  });
+
+  it("answers an action's one call and refuses a second", async () => {
+    let { api, calls } = lendOver(action("workspaceWriteRequest"));
+    expect(await api.writeWorkspace("ws", "stopAgent", { chatId: 3 }, "why"))
+        .toBe("writeWorkspace answered");
+    expect((await rejection(api.writeWorkspace("ws", "restartWorkspace", {}, "why"))).message)
+        .toBe("This action has made its one call.");
+    expect(calls).toEqual([
+      { method: "writeWorkspace", args: ["ws", "stopAgent", { chatId: 3 }, "why"] },
+    ]);
+  });
+
+  it("makes one call of two an action starts together", async () => {
+    let { api, calls } = lendOver(action("contentAccessRequest"));
+    let results = await Promise.allSettled([
+      api.requestContentAccess("ws", "first"),
+      api.requestContentAccess("ws", "second"),
+    ]);
+    expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect(calls).toEqual([{ method: "requestContentAccess", args: ["ws", "first"] }]);
+  });
+
+  it("leaves an action no call once its first was refused", async () => {
+    let { api, calls } = lendOver(action("workspaceWriteRequest"));
+    expect((await rejection(api.requestContentAccess("ws", "why"))).message)
+        .toBe("This action may only call AdminApi.writeWorkspace().");
+    expect((await rejection(api.writeWorkspace("ws", "stopAgent", { chatId: 3 }, "why"))).message)
+        .toBe("This action has made its one call.");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses an action's lend after end(), its call made or not", async () => {
+    let unused = lendOver(action("contentAccessRequest"));
+    unused.lend.end();
+    expect((await rejection(unused.api.requestContentAccess("ws", "why"))).message)
+        .toBe("This Admin API session has ended. Open a new one.");
+    expect(unused.calls).toEqual([]);
+  });
+
   it("passes a returned stream on to the caller", async () => {
     let bytes = new Uint8Array([1, 2, 3, 4]);
     let { api } = lendOver(SESSION, { getSettings: () => new Response(bytes).body });
@@ -346,6 +436,20 @@ describe("a view a lent API returns", () => {
     let view = fakeCapability(FAKE_VIEW_NAMES, reached, viewAnswers);
     return { ...lendOver(use, { inspectWorkspace: () => view }), reached };
   }
+
+  it("cancels the stream of a file a view answers after its lend ends", async () => {
+    let cancelled = false;
+    let content = new ReadableStream({ cancel() { cancelled = true; } });
+    let held: { lend: { end(): void } } | undefined;
+    let lent = lendWithView(SESSION, {
+      readFile: () => { held!.lend.end(); return { kind: "stream", content, size: 4 }; },
+    });
+    held = lent;
+    let view = await lent.api.inspectWorkspace("ws", "why");
+    expect((await rejection(view.readFile(1, "big.bin"))).message)
+        .toBe("This Admin API session has ended. Open a new one.");
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+  });
 
   it("answers every method of the view through the membrane", async () => {
     let { api, reached } = lendWithView();
@@ -391,7 +495,7 @@ describe("a view a lent API returns", () => {
     let { api, calls } = lendOver(SESSION, { inspectUser: () => view });
     let opened = await api.inspectUser("ada", "why");
     for (let name of USER_VIEW_METHODS) expect(await opened[name]()).toBe(`${name} answered`);
-    for (let name of ["inspectUser", "listChats", "listFiles", "listGatekeepers"]) {
+    for (let name of ["inspectUser", "getChat", "readFile", "listChats"]) {
       expect((await rejection(opened[name]())).message).toBe(`This view has no method ${name}.`);
     }
     expect(reached).toEqual(USER_VIEW_METHODS);
@@ -482,12 +586,12 @@ describe("a view a lent API returns", () => {
       let { api, calls, state } = lendWithView();
       // 60 seconds of lend, 20 of them gone.
       state.now = T0 + 20_000;
-      await api[method]("ws", "why", { lifetimeSeconds: 3600, other: "kept" });
+      await api[method]("ws", "why", { lifetimeSeconds: 3600, access: "content" });
       await api[method]("ws", "why");
       await api[method]("ws", "why", { lifetimeSeconds: 5 });
       await api[method]("ws", "why", { lifetimeSeconds: "3600" });
       let expected = [
-        ["ws", "why", { lifetimeSeconds: 3600, other: "kept" }], ["ws", "why"],
+        ["ws", "why", { lifetimeSeconds: 3600, access: "content" }], ["ws", "why"],
         ["ws", "why", { lifetimeSeconds: 5 }], ["ws", "why", { lifetimeSeconds: "3600" }],
       ].map(args => ADMIN_AGENT_VIEWS[method].cap(args, 40_000));
       expect(calls).toEqual(expected.map(args => ({ method, args })));

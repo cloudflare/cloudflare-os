@@ -660,7 +660,9 @@ export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
  * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls, and of
  * AdminApi.writeWorkspace(). `contentOff` is also what the grant methods and a request for content
- * access are refused with while the level in force is below "content".
+ * access are refused with while the level in force is below "content". `gatekeeperOff` refuses a
+ * call through the Admin API lent to the admin gatekeeper, and that lend itself, while the
+ * deployment has turned that gatekeeper off: the call reached nothing.
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -672,6 +674,7 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   contentNotRequested: "ADMIN_CONTENT_NOT_REQUESTED",
   grantRequired: "ADMIN_GRANT_REQUIRED",
   writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
+  gatekeeperOff: "ADMIN_GATEKEEPER_OFF",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -697,6 +700,7 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
   [ADMIN_ACCESS_ERROR_CODES.writesOff]:
       "Admin writes to workspaces are turned off on this deployment. Only its " +
       "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
+  [ADMIN_ACCESS_ERROR_CODES.gatekeeperOff]: "Gatekeeper is disabled.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -2524,6 +2528,21 @@ export type AdminWriteArgs = {
 };
 
 /**
+ * The arguments each write action takes, as AdminWriteArgs' doc lists them: the `required` ones
+ * and the `optional` ones. AdminApi.writeWorkspace() refuses a write by this table, and a client
+ * reads it to refuse one before it is sent.
+ */
+export const ADMIN_WRITE_ARGS: Record<AdminWriteAction, {
+  /** The arguments a write of the action must carry. */
+  required: (keyof AdminWriteArgs)[];
+  /** The arguments a write of the action may carry. */
+  optional?: (keyof AdminWriteArgs)[];
+}> = {
+  stopAgent: { required: ["chatId"] },
+  restartWorkspace: { required: [] },
+};
+
+/**
  * One admin write to a workspace (AdminApi.writeWorkspace()), in the deployment-wide audit log.
  * The workspace appends it before it changes anything, so that a write whose record cannot be
  * written does not happen; its owner and title are the workspace's own then, kept as an
@@ -3481,7 +3500,9 @@ export interface AdminApi {
   /**
    * Change a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. Off unless the
    * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". A reason is required, as for
-   * inspectWorkspace(), and is kept in the admins' log only.
+   * inspectWorkspace(), and is kept in the admins' log only. An agent's write through the admin
+   * gatekeeper is its workspace owner's, made once a member of that workspace approves the action
+   * that asks for it.
    *
    * The workspace records the write (an AdminWriteRecord) in the deployment-wide log and only then
    * runs it, so a write whose record cannot be written does not happen. That record is the write's

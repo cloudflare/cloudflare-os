@@ -44,11 +44,14 @@ const RESOURCE_URL = "https://workshop.example/admin";
 export type FakeAdminSessionStub = Disposable & {
   read(call: FakeAdminCall, keep?: { api?: string; result?: string }, then?: FakeAdminCall)
       : Promise<FakeAdminOutcome>;
+  submit(action: number, description: object): Promise<void>;
   observe(description: object): Promise<void>;
 };
 
 /** The fake admin gatekeeper's facet, as a suite drives it once a session is gone. */
 export type FakeAdminFacet = {
+  plan(action: number, calls: FakeAdminCall[]): Promise<void>;
+  outcomes(action: number): Promise<FakeAdminOutcome[] | undefined>;
   onKept(name: string, call: FakeAdminCall, keepAs?: string): Promise<FakeAdminOutcome>;
   kept(): Promise<string[]>;
 };
@@ -150,6 +153,7 @@ export async function adminWorkspace(
       get: (id: string) => ({
         id, whoami: async () => owner, getGadget: async () => null,
         getChatContext: async () => ({ profile: owner }),
+        liveAccountAdminGrant: async () => null,
         holdsGatekeeperAccount: (vendorId: string) => ownerDo.holdsGatekeeperAccount(vendorId),
         listProvidedAccounts: () => ownerDo.listProvidedAccounts(),
         messageArrived: async () => {}, setWorkspaceLastActive: async () => {},
