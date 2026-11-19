@@ -878,10 +878,13 @@ export type GmailGroupMessageInfo = {
   threadId: string;
   /**
    * Who it is from. Google Groups resends some outside senders' mail under the group's own
-   * address, named "Their Name via Group Name": look for the person who wrote it in `replyTo`.
+   * address, named "Their Name via Group Name", and who wrote it is then not always given.
    */
   from: EmailAddress;
-  /** Where the message asks for replies, when it says. Whoever wrote the message chose it. */
+  /**
+   * Where the message asks for replies, when it says: a destination, not who wrote it. The sender
+   * or the group's settings chose it, so it may be the whole group, its owners or another address.
+   */
   replyTo?: EmailAddress[];
   to: EmailAddress[];
   cc: EmailAddress[];

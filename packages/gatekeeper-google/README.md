@@ -391,7 +391,8 @@ Things to know:
   Leave it off for an internal group, where it would let anyone outside put mail in front of
   the team's gadget by naming the group.
 - Google Groups resends some outside senders' mail under the group's own address ("Name via
-  Group"); `replyTo` then names who wrote it.
+  Group"), and who wrote it is then not always given. `replyTo` is where replies are asked to
+  go, which the group's settings can point at the whole group or its owners, not who wrote it.
 - The mail comes from the owner's own copies: nothing from before they joined the group, nothing
   they have binned, and nothing at all if they get the group as a digest or read it only on the
   web.

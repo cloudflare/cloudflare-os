@@ -148,9 +148,10 @@ What keeps a member from learning about the owner's other mail:
   count and history ID describe the whole thread, so none is passed through: a conversation's
   snippet is its newest admitted message's own. The owner's labels and unread state are stripped;
   provider page tokens and result estimates stay inside the cursor.
-- `replyTo` is passed through as the sender wrote it. Google Groups resends mail from a domain
+- `replyTo` is passed through as the message carries it. Google Groups resends mail from a domain
   with a strict DMARC policy under the group's own address ("Name via Group"), so `from` alone
-  would show most outside senders as the group.
+  would show most outside senders as the group. It is documented as a reply destination only:
+  the group's "post replies to" setting can make it the group, its owners or a custom address.
 - An ID the agent supplies gets one answer, "This isn't one of the group's messages.", whether it
   is missing, not the group's or malformed.
 - Reads spend the owner's Gmail quota, which members share, so each call fetches a bounded number
