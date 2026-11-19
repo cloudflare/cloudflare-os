@@ -131,7 +131,12 @@ function groupNotices(context: Context, address: string) {
   }
   if ("aliasOf" in check.value) {
     const { aliasOf } = check.value;
-    return <Notice action={{ label: "Use that address", onClick: () => context.setValues({ group: aliasOf }) }}>
+    // The field keeps what was typed apart from its value, so that goes too.
+    const useMain = () => {
+      context.clearFields("group");
+      context.setValues({ group: aliasOf });
+    };
+    return <Notice action={{ label: "Use that address", onClick: useMain }}>
       This is another address for {aliasOf}. A group is connected by its main address.
     </Notice>;
   }
