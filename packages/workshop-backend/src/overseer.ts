@@ -6373,8 +6373,9 @@ class OverseerImpl implements AgentHooks {
         if (description.containsRestrictedData) {
           this.storage.containsRestrictedData.put(true);
           // ADMIN_BINDING_SUBRESOURCE is the one subresource id the Workshop reads rather than
-          // treats as opaque: only the gatekeeper's own declaration says a read was made through
-          // its admin binding (see adminsOnly()).
+          // treats as opaque: this gatekeeper's two capabilities observe on one queue and read
+          // through the same lent methods, so only its own declaration tells a read through the
+          // whole binding from a read of a session limited to one report (see adminsOnly()).
           if (isAdminGatekeeper(gatekeeper) &&
               description.subresources?.includes(ADMIN_BINDING_SUBRESOURCE)) {
             this.storage.adminReads.put(true);
@@ -7004,11 +7005,15 @@ class OverseerImpl implements AgentHooks {
   /** The stored grants that are live (isAdminGrantLive()), from either source, newest first.
    * Synchronous, and it writes nothing. All of them: contentGrant() takes its first, and an
    * admin view's describe() lists the "admins" ones before the owner's, MAX_ADMIN_GRANTS_LISTED
-   * in all. */
-  liveAdminGrants(): AdminAccessGrant[] {
+   * in all. With `reportId`, only those the owner gave with that issue report: what a view
+   * opened for the report may read under and list
+   * (AdminWorkspaceInspectOptions.forIssueReport). */
+  liveAdminGrants(reportId?: string): AdminAccessGrant[] {
     let now = Date.now();
     return [...this.storage.adminGrants.list()]
-        .filter(grant => isAdminGrantLive(grant, now)).toSorted(newestAdminGrantFirst);
+        .filter(grant => isAdminGrantLive(grant, now) && (reportId === undefined ||
+            (grant.source === "owner" && grant.reportId === reportId)))
+        .toSorted(newestAdminGrantFirst);
   }
 
   // The owner's account-wide grant as their account last gave it, with when the question was
@@ -7016,9 +7021,10 @@ class OverseerImpl implements AgentHooks {
   #accountGrant?: { at: number; ownerId: string; grant: AdminAccessGrant };
 
   /**
-   * The grant an admin's content call runs under: the newest of liveAdminGrants(), else the
-   * owner's account-wide grant. A live answer from the owner's account is kept in memory, with
-   * the id of the owner it was asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
+   * The grant an admin's content call runs under: the newest of liveAdminGrants(reportId), else
+   * the owner's account-wide grant, which counts whichever report the view was opened for. A
+   * live answer from the owner's account is kept in memory, with the id of the owner it was
+   * asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
    * the question was sent (the time is taken before the await, so the bound on a revocation does
    * not grow by the round trip), and checked with isLiveAccountGrant() each time it is used. An
    * answer that arrives after that time is neither used nor kept: it counts as no grant. It
@@ -7030,8 +7036,8 @@ class OverseerImpl implements AgentHooks {
    * that would return content: no member-facing path, listing or metadata call reaches it. It
    * writes nothing.
    */
-  async contentGrant(): Promise<AdminAccessGrant | undefined> {
-    let [stored] = this.liveAdminGrants();
+  async contentGrant(reportId?: string): Promise<AdminAccessGrant | undefined> {
+    let [stored] = this.liveAdminGrants(reportId);
     if (stored) return stored;
 
     let ownerId = this.ownerId;
@@ -11473,12 +11479,13 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Why this workspace admits, beside its owner, only deployment admins, or undefined when it
-  // admits whoever it is shared with: "reads" once anything was read through the admin binding of
-  // an admin gatekeeper connection (storage.adminReads: for good, whether or not the connection
-  // is still there, since removing it, or every chat, does not remove what was read), else
-  // "connection" while it has one. A workspace that had the connection and read nothing through
-  // it is ordinary again as soon as the connection is removed: the collaborators kept in its
-  // sharing list are admitted at their next open. Synchronous.
+  // admits whoever it is shared with: "reads" once anything was read through the whole admin
+  // binding of an admin gatekeeper connection (storage.adminReads: for good, whether or not the
+  // connection is still there, since removing it, or every chat, does not remove what was read),
+  // else "connection" while it has one. A workspace that had the connection and read nothing
+  // through the whole binding (sessions limited to one report included, whatever they marked) is
+  // ordinary again as soon as the connection is removed: the collaborators kept in its sharing
+  // list are admitted at their next open. Synchronous.
   adminsOnly(): "reads" | "connection" | undefined {
     return this.storage.adminReads.get() ? "reads"
         : this.hasAdminConnection() ? "connection" : undefined;
@@ -11489,7 +11496,8 @@ class OverseerImpl implements AgentHooks {
   // admin. Read from the environment at each admission, never stored. EVERY path that lets a
   // non-owner in, sends them the workspace's state or answers them from its sharing records
   // asks it: open() before a share key is redeemed, authorizeCollaborator(), gadgetOpenMode()
-  // (a gadget's live open and a snapshot's), mayReadChatState(), addCollaborator(), and the Outputs refreshes of open() and
+  // (a gadget's live open and a snapshot's), mayReadChatState(), issueReportContext(),
+  // addCollaborator(), and the Outputs refreshes of open() and
   // refreshAffectedCollaboratorListings().
   admitsNonOwner(profileId: string): boolean {
     return !this.adminsOnly() || isDeploymentAdmin(this.env, profileId);
@@ -12339,7 +12347,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * else and writing nothing: unlike open()'s first-open path it never asks a user DO whether the
    * workspace is theirs and never claims ownership. `reason` and `terms` arrive validated (see
    * AdminApiImpl.inspectWorkspace()). An `expiresAt` already past refuses the open `viewExpired`,
-   * unrecorded, as any call on an expired view is.
+   * unrecorded, as any call on an expired view is. Terms that carry `forIssueReport` are refused
+   * `notFound` (ISSUE_REPORT_ERROR_CODES), unrecorded, unless that report is one this workspace's
+   * owner filed about it (IssueReportsDurableObject.checkReportWorkspace()).
    *
    * By explicit policy it skips authorizeCollaborator() and observer verification (see
    * docs/observers.md): the admin is not a collaborator, is never registered with the workspace's
@@ -12362,6 +12372,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // The owner is resolved now, since a call's record is built before its first await (see
     // AdminWorkspaceViewImpl), and never changes.
     let ownerId = await this.impl.getOwnerProfileId();
+    // Asked before the open is recorded: a refusal has read nothing of the workspace. The report
+    // is not a field of the view's records, since a record's `grantId` says which grant answered.
+    let {forIssueReport} = terms;
+    if (forIssueReport !== undefined) {
+      await this.impl.issueReports.getByName("").checkReportWorkspace(
+          ownerId, forIssueReport, this.ctx.id.toString());
+    }
     let view = await AdminWorkspaceViewImpl.open(
         this.impl, adminId, reason, sessionId, terms, ownerId);
     this.impl.logger.info("admin workspace view opened", {event: "admin.view.opened"});
@@ -12677,7 +12694,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Throws `contextNotFound` (ISSUE_REPORT_ERROR_CODES) unless user `userId` (a
-   * UserDurableObject id) owns this workspace or is a collaborator on it, and can open the chat
+   * UserDurableObject id) owns this workspace or is a collaborator on it whom the workspace
+   * admits (one that admits only deployment admins answers a collaborator who is not one as it
+   * answers a stranger: see OverseerImpl.admitsNonOwner()), and can open the chat
    * and gadget `context` names: any chat and gadget for the owner and a "build" collaborator; no
    * chat, and only a gadget shared with them, for a "use" collaborator. A workspace never
    * initialised or since deleted is refused the same way, so a report cannot tell which
@@ -12695,7 +12714,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let access: CollaboratorAccess | undefined = owner ? {role: "build"} : undefined;
     if (impl.ownerId && !owner) {
       let profile = await impl.users.get(impl.users.idFromString(userId)).whoamiIfExists();
-      access = profile
+      access = profile && impl.admitsNonOwner(profile.id)
           ? (await impl.getSharingManager()).getEffectiveAccess(profile.id) : undefined;
     }
     let { chatId, gadgetId } = context;
@@ -15282,7 +15301,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       if (kind !== "metadata") {
         let refusal = adminContentRefusal(this.#terms, {access: level});
         if (refusal === undefined) {
-          grant = await impl.contentGrant();
+          grant = await impl.contentGrant(this.#terms.forIssueReport);
           // Checked again: the lookup may have awaited the owner's account.
           this.#assertLive();
           if (grant === undefined) refusal = ADMIN_ACCESS_ERROR_CODES.grantRequired;
@@ -15368,7 +15387,7 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     return this.#call("describe", {}, async content => {
       let owner = await this.#ownerProfile();
       let collaborators = await (await impl.getSharingManager()).listCollaborators();
-      let live = impl.liveAdminGrants();
+      let live = impl.liveAdminGrants(this.#terms.forIssueReport);
       return {
         id: impl.ctx.id.toString(),
         // Live data, not a record, so whole.

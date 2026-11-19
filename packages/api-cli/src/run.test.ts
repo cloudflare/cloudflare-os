@@ -867,7 +867,7 @@ test("help shows a reporter's cursor and an inspection's access as options, an i
     /^Usage: cf-os api list-issue-reports \[--cursor <string>\]\n/);
   const inspect = flat(commandHelp(realTable, "AdminApi", "inspect-workspace", ["get-admin-api", "inspect-workspace"]));
   assert.match(inspect, /^Usage: cf-os api get-admin-api inspect-workspace <workspaceId> <reason> \[--options <json\|@file\|->\] /);
-  assert.match(inspect, /--options <json\|@file\|-> AdminWorkspaceInspectOptions = \{ access\?: AdminViewAccess; lifetimeSeconds\?: number \}/);
+  assert.match(inspect, /--options <json\|@file\|-> AdminWorkspaceInspectOptions = \{ access\?: AdminViewAccess; forIssueReport\?: string; lifetimeSeconds\?: number \}/);
   const image = flat(commandHelp(realTable, "AuthenticatedApi", "add-issue-report-image", ["add-issue-report-image"]));
   assert.match(image, /^Usage: cf-os api add-issue-report-image <reportId> <image> <byteLength> /);
   assert.match(image, /<image> <@file\|->: ReadableStream <byteLength> number /);

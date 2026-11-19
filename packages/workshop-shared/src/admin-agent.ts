@@ -26,10 +26,13 @@ export const ADMIN_AGENT_LEND_SECONDS = 15 * 60;
 
 /**
  * The subresource id (ObservationDescription.subresources) the admin gatekeeper puts on every
- * observation it makes through the admin binding: each read of the binding and each call on a
- * view the binding opened. A workspace treats every other subresource id as opaque; this one it
- * reads: an observation that names it and says its read holds restricted data keeps the
- * workspace to deployment admins for good.
+ * observation it makes through the whole admin binding: each read of the binding, each call on
+ * a view the binding opened, and a hook's delivery. An observation of a session limited to one
+ * issue report never carries it. A workspace treats every other subresource id as opaque; this
+ * one it reads, as it reads this gatekeeper's action tags (ADMIN_AGENT_ACTIONS), to tell the
+ * two apart where they must be: an observation that names it and says its read holds restricted
+ * data keeps the workspace to deployment admins for good, and a report session's observation,
+ * which says the same when the reporter's own workspace holds restricted data, does not.
  */
 export const ADMIN_BINDING_SUBRESOURCE = "admin:deployment";
 

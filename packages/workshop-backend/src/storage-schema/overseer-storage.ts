@@ -1428,9 +1428,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // connection: an observation of that connection flagged `containsRestrictedData` that names
       // ADMIN_BINDING_SUBRESOURCE. Written in the same transaction as the latch above, inside the
       // same test of the same flag, and like it never cleared: it keeps what the latch alone cannot
-      // say once the connection is removed, that the restricted data is what only admins see. While
-      // set, the workspace admits only its owner and deployment admins (see
-      // OverseerImpl.adminsOnly()), with or without the connection: its chats hold what was read.
+      // say once the connection is removed, that the restricted data is what only admins see. A
+      // flagged observation of a session limited to one report (what it read of a reporter's
+      // workspace that itself holds restricted data) sets the latch and not this. While set, the
+      // workspace admits only its owner and deployment admins (see OverseerImpl.adminsOnly()), with
+      // or without the connection: its chats hold what was read.
       adminReads: singleton(false),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in

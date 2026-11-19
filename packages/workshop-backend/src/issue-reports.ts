@@ -735,6 +735,22 @@ export class IssueReportsDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Throws `notFound` unless report `reportId` was filed by `ownerId` and names workspace
+   * `workspaceId`: what lets an admin's view of that workspace be opened for the report
+   * (AdminWorkspaceInspectOptions.forIssueReport). Reads only. Called by the workspace, with its
+   * own owner and id, never on a client's word.
+   */
+  checkReportWorkspace(ownerId: string, reportId: string, workspaceId: string): void {
+    // The reporter is compared with the owner as they are when this is asked, not with who
+    // owned the workspace when the report was filed (`owns_workspace`), and no grant is read: a
+    // report that holds a live grant is still its owner's.
+    let found = this.ctx.storage.sql.exec(
+      "SELECT 1 FROM reports WHERE id = ? AND reporter_id = ? AND workspace_id = ?",
+      reportId, auditOwnerId(ownerId), workspaceId).toArray();
+    if (found.length === 0) throw notFound();
+  }
+
+  /**
    * Stores what the workspace or account that holds a grant says of it, after it stored the grant
    * or its change. Called by the workspace or the account, never on a client's word.
    *
