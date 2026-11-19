@@ -21,6 +21,8 @@ let gadget;
 const HEAD_H = 24;
 const HEAD_W = 46;
 const MAX_CELLS = 10_000;
+// The most fonts read for one spreadsheet.
+const MAX_FONTS = 24;
 // A sheet no larger than this is drawn whole.
 const WHOLE = { rows: 200, columns: 26 };
 
@@ -283,8 +285,11 @@ function ink(color) {
   return dark.matches ? `oklch(from ${color} calc(.92 - .7 * l) c h)` : color;
 }
 
+// The first family a font names, which is the one Google Sheets draws in.
+const familyOf = name => name.split(',').map(part => part.replace(/[^\w .-]/g, '').trim()).find(Boolean);
+
 const fontStack = name => {
-  const [family] = name.split(',').map(part => part.replace(/[^\w .-]/g, '').trim()).filter(Boolean);
+  const family = familyOf(name);
   if (!family) return 'Arial, sans-serif';
   return `"${family}", ${MONO.test(family) ? 'monospace' : SERIF.test(family) ? 'serif' : 'Arial, sans-serif'}`;
 };
@@ -325,7 +330,49 @@ function writeLook(format, index) {
   if (justify) Object.assign(set, { justifyContent: justify, textAlign: align });
   if (UPRIGHT[format.verticalAlignment]) set.alignItems = UPRIGHT[format.verticalAlignment];
   if (format.wrap === 'WRAP') Object.assign(set, { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' });
+  // Text turned on its side reads up the cell or down it, so its alignments change places, over
+  // those a cell takes from what it holds. Text turned less is drawn level.
+  const turn = Math.abs(format.rotation ?? 0) === 90 ? Math.sign(format.rotation) : 0;
+  if (!turn) return;
+  const [near, far] = turn > 0 ? ['flex-start', 'flex-end'] : ['flex-end', 'flex-start'];
+  set.writingMode = turn > 0 ? 'sideways-lr' : 'vertical-rl';
+  set.setProperty('justify-content', { TOP: far, MIDDLE: 'center' }[format.verticalAlignment] ?? near, 'important');
+  set.alignItems = { RIGHT: far, CENTER: 'center' }[format.horizontalAlignment] ?? near;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Fonts: the spreadsheet's own, which the session reads from Google Fonts for this frame
+
+// Families every browser has, or has a match for, which Google Fonts does not serve.
+const SYSTEM_FONT = /^(arial|helvetica( neue)?|sans|times new roman|courier new|georgia|verdana|tahoma|trebuchet ms|comic sans ms|impact|calibri|cambria)$/i;
+// Each font asked for, by family, weight and slant: whether it arrived.
+const faces = new Map();
+// Only a font that arrives, or may yet, counts against the limit.
+let fontsHeld = 0;
+
+function readFace(family, weight, italic) {
+  const key = `${family}\u0000${weight}\u0000${italic}`;
+  if (faces.has(key)) return faces.get(key);
+  if (fontsHeld >= MAX_FONTS) return Promise.resolve(false);
+  fontsHeld++;
+  const arrived = gadget.readFont(family, weight, italic).then(async bytes => {
+    const face = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal' });
+    await face.load();
+    document.fonts.add(face);
+    return true;
+  }).catch(() => {
+    fontsHeld--;
+    // Without the weight the browser makes one from the family's regular, when that is there.
+    return (weight !== 400 || italic) && readFace(family, 400, false);
+  });
+  faces.set(key, arrived);
+  return arrived;
+}
+
+// Reads the fonts a drawing's formats name that have not been asked for, and says whether any
+// arrived, which changes how far its text runs.
+const readFonts = ({ formats }) =>
+  fonts.read(formats.map(({ fontFamily, bold, italic = false }) => [familyOf(fontFamily ?? ''), bold ? 700 : 400, italic]));
 
 const canvas = document.createElement('canvas').getContext('2d');
 // How wide `text` is in a cell of `format`, padding included.
@@ -563,7 +610,8 @@ function draw(drawing) {
   // The cell the keyboard was on is the same cell in the next window.
   const focused = grid.contains(document.activeElement) && document.activeElement.at;
   grid.replaceChildren(...parts);
-  shown = { drawing, rows, columns, nodes, head };
+  // Where the window lies is show()'s to say, and stays as it was when the same one is drawn again.
+  shown = { ...shown, drawing, rows, columns, nodes, head };
   stopOn(nodes.get(reached) ?? grid.querySelector('.c[tabindex]'));
   if (focused) nodes.get(cellName(focused.row, focused.column))?.focus({ preventScroll: true });
 }
@@ -601,7 +649,7 @@ grid.addEventListener('focusin', event => stopOn(event.target.closest('.c')));
 // for text that neither wraps nor is clipped, and takes the gridlines it crosses away.
 function overflow(drawn, blank, columns) {
   drawn.forEach(({ node, text, format, cell, merge, width }, c) => {
-    if (!text || merge || format?.wrap === 'WRAP' || format?.wrap === 'CLIP' || cell?.link) return;
+    if (!text || merge || format?.wrap === 'WRAP' || format?.wrap === 'CLIP' || format?.rotation || cell?.link) return;
     const need = widthOf(text, format) - width;
     if (need <= 0) return;
     // A number with no alignment of its own stands at the right, and so runs on to the left.
@@ -974,6 +1022,14 @@ async function show(view, current, target) {
     scroller.scrollTo(starts(axes.columns)[before.c0] + held.left, starts(axes.rows)[before.r0] + held.top);
   }
   pick(picked);
+  // Text runs on over empty cells as far as it is wide, so a font that arrives is drawn again.
+  readFonts(drawing).then(arrived => {
+    if (!arrived || shown?.drawing !== drawing) return;
+    draw(drawing);
+    lightHeads();
+    showPeek();
+    pick(picked);
+  });
 }
 
 // A chart is not drawn: the session has no picture of one. It is given its place over the sheet,
@@ -1059,8 +1115,11 @@ async function readChanges() {
   }
   const read = await gadget.getPendingChanges(title);
   const titled = read.sheets.pending.find(listed => listed.title === title);
-  const touched = read.sheets.pending.find(listed => listed.touched && !listed.hidden);
-  if (sheet || !touched || titled?.touched) return { read, title };
+  // One there already before one a change adds, which is empty until more is written to it.
+  const saved = new Set(read.sheets.saved.map(listed => listed.id));
+  const changed = read.sheets.pending.filter(listed => listed.touched && !listed.hidden);
+  const touched = changed.find(listed => saved.has(listed.id)) ?? changed[0];
+  if (sheet || !touched || touched === titled) return { read, title };
   return { read: await gadget.getPendingChanges(touched.title), title: touched.title };
 }
 

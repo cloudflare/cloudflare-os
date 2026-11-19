@@ -55,13 +55,15 @@ export const THEME_FIELDS = "properties(spreadsheetTheme(themeColors))";
 export const DRAWING_FIELDS =
   `${THEME_FIELDS},` +
   "sheets(properties(sheetId,gridProperties(hideGridlines)),merges,basicFilter(range)," +
+  "conditionalFormats(ranges),bandedRanges(range)," +
   "charts(spec(title),position(overlayPosition))," +
   "data(startRow,startColumn,rowMetadata(pixelSize,hiddenByUser,hiddenByFilter)," +
   "columnMetadata(pixelSize,hiddenByUser,hiddenByFilter)," +
   "rowData(values(formattedValue,userEnteredValue,effectiveValue(numberValue,boolValue,errorValue(type))," +
   "hyperlink,note,dataValidation(condition(type),showCustomUi)," +
   "textFormatRuns(startIndex,format(foregroundColor,foregroundColorStyle,fontFamily,fontSize,bold,italic,underline,strikethrough))," +
-  "effectiveFormat(backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy," +
+  "userEnteredFormat(backgroundColor,backgroundColorStyle)," +
+  "effectiveFormat(backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy,textRotation(angle)," +
   "textFormat(foregroundColor,fontFamily,fontSize,bold,italic,underline,strikethrough)," +
   `borders(top(${BORDER}),bottom(${BORDER}),left(${BORDER}),right(${BORDER})))))))`;
 
@@ -76,7 +78,8 @@ export type RestDrawnCell = {
   formattedValue?: string;
   userEnteredValue?: object;
   effectiveValue?: { numberValue?: number; boolValue?: boolean; errorValue?: object };
-  effectiveFormat?: RestCellFormat & { textFormat?: { fontFamily?: string } };
+  userEnteredFormat?: RestCellFormat;
+  effectiveFormat?: RestCellFormat & { textFormat?: { fontFamily?: string }; textRotation?: { angle?: number } };
   hyperlink?: string;
   note?: string;
   dataValidation?: { condition?: { type?: string }; showCustomUi?: boolean };
@@ -86,6 +89,8 @@ export type RestDrawnCell = {
 type RestDrawnSheet = {
   properties?: { sheetId?: number; gridProperties?: { hideGridlines?: boolean } };
   merges?: RestGridRange[];
+  conditionalFormats?: { ranges?: RestGridRange[] }[];
+  bandedRanges?: { range?: RestGridRange }[];
   basicFilter?: { range?: RestGridRange };
   charts?: {
     spec?: { title?: string };
@@ -148,21 +153,47 @@ export function baseDrawing(
     }
   }
   let cell = (sheetId: number, row: number, column: number) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
+  let theme = new Map((rests[0]?.properties?.spreadsheetTheme?.themeColors ?? []).flatMap(({ colorType, color }) => {
+    let hex = sheetColor(color);
+    return colorType && hex ? [[colorType, hex] as const] : [];
+  }));
+  let fillOf = (format: RestCellFormat | undefined) => {
+    let named = sheetColor(format?.backgroundColorStyle, format?.backgroundColor);
+    return named?.startsWith("#") ? named : theme.get(named ?? "");
+  };
+  // The fill a conditional rule gives the cell, which Google draws over whatever fill the cell is
+  // set: a fill in effect that is not the cell's own, under a rule. Banding gives a cell with no
+  // fill of its own one too, so where both could have it is not taken for the rule's.
+  let ruleFill = (sheetId: number, row: number, column: number) => {
+    let held = cell(sheetId, row, column);
+    let [own, shown] = [fillOf(held?.userEnteredFormat), fillOf(held?.effectiveFormat)];
+    let within = (ranges: (RestGridRange | undefined)[]) => ranges.some(range => {
+      let rect = rectOf(range);
+      return row >= rect.startRow && row < rect.endRow && column >= rect.startColumn && column < rect.endColumn;
+    });
+    let sheet = sheets.get(sheetId);
+    return shown && shown !== (own ?? "#ffffff") &&
+      within((sheet?.conditionalFormats ?? []).flatMap(rule => rule.ranges ?? [])) &&
+      !(own === undefined && within((sheet?.bandedRanges ?? []).map(band => band.range))) ? shown : undefined;
+  };
   return {
     cell,
     entered: (...at) => entered(cell(...at)?.userEnteredValue),
     shown: (...at) => cell(...at)?.formattedValue ?? null,
     format: (...at) => {
       let effective = cell(...at)?.effectiveFormat;
-      let fontFamily = effective?.textFormat?.fontFamily;
-      return effective ? { ...projectFormat(effective), ...(fontFamily ? { fontFamily } : {}) } : null;
+      if (!effective) return null;
+      let fontFamily = effective.textFormat?.fontFamily;
+      let rotation = effective.textRotation?.angle;
+      let ruled = ruleFill(...at);
+      return {
+        ...projectFormat(effective), ...(fontFamily ? { fontFamily } : {}),
+        ...(rotation ? { rotation } : {}), ...(ruled ? { ruleFill: ruled } : {}),
+      };
     },
     line: (sheetId, axis, index) => lines.get(`${sheetId}:${axis}:${index}`),
     sheet: sheetId => sheets.get(sheetId),
-    theme: new Map((rests[0]?.properties?.spreadsheetTheme?.themeColors ?? []).flatMap(({ colorType, color }) => {
-      let hex = sheetColor(color);
-      return colorType && hex ? [[colorType, hex] as const] : [];
-    })),
+    theme,
   };
 }
 
@@ -242,17 +273,20 @@ export function mergeAnchors(drawn: DrawnCells, rest: RestDrawing): SimulatedAre
   }).slice(0, room);
 }
 
+// A cell's format with what only a drawing reads of it, which replaying queued formats over it keeps.
+type DrawnLook = SheetCellFormat & { fontFamily?: string; rotation?: number; ruleFill?: string };
+
 // A format as it is drawn: without the number format, which `text` already shows, with false
 // flags left out and theme colours resolved.
-function drawnFormat(format: SheetCellFormat & { fontFamily?: string }, theme: BaseDrawing["theme"]): SheetDrawnFormat {
+function drawnFormat(format: DrawnLook, theme: BaseDrawing["theme"]): SheetDrawnFormat {
   let color = (named: SheetColor | undefined) => named?.startsWith("#") ? named : theme.get(named ?? "");
-  let { numberFormat: _shown, borders, ...rest } = format;
+  let { numberFormat: _shown, ruleFill, borders, ...rest } = format;
   let edges = Object.entries(borders ?? {}).map(([side, { style, color: named }]) => {
     let shade = color(named);
     return [side, { style, ...(shade ? { color: shade } : {}) }];
   });
   let look = {
-    ...rest, textColor: color(format.textColor), fillColor: color(format.fillColor),
+    ...rest, textColor: color(format.textColor), fillColor: ruleFill ?? color(format.fillColor),
     borders: edges.length > 0 ? Object.fromEntries(edges) : undefined,
   };
   return Object.fromEntries(Object.entries(look).filter(([, value]) => value !== undefined && value !== false));
@@ -322,6 +356,35 @@ function chartsOf(sheet: SimSheet, held: RestDrawnSheet | undefined): NonNullabl
       offsetX: offsetXPixels, offsetY: offsetYPixels, width: widthPixels, height: heightPixels,
     }] : [];
   });
+}
+
+// How many lines `text` takes in a cell `width` pixels wide. Google's own measure of the text is
+// not read, so text that wraps is taken to have letters of the width its font's size averages.
+function textLines(text: string, { wrap, fontSize = 10, bold }: SheetDrawnFormat, width: number): number {
+  let lines = text.split("\n");
+  if (wrap !== "WRAP") return lines.length;
+  let room = Math.max(1, Math.floor((width - 6) / (fontSize * (bold ? 0.8 : 0.73))));
+  return lines.reduce((count, line) => {
+    let at = 0;
+    for (let { length } of line.split(" ")) {
+      // A word that does not fit starts a line, and one longer than a line is broken over several.
+      if (at > 0 && at + 1 + length > room) [count, at] = [count + 1, 0];
+      at += (at > 0 ? 1 : 0) + length;
+      if (at > room) [count, at] = [count + Math.ceil(at / room) - 1, at % room || room];
+    }
+    return count + 1;
+  }, 0);
+}
+
+/** The family Google Fonts would know a cell's font by: the first that its `fontFamily` lists. */
+export const fontFamilyOf = (named: string) => named.split(",")[0].replace(/["']/g, "").trim();
+
+/** The font families the cells of `rests` are set in, as Google holds them. */
+export function fontFamiliesOf(rests: readonly RestDrawing[]): string[] {
+  return rests.flatMap(rest => rest.sheets ?? []).flatMap(sheet => sheet.data ?? [])
+    .flatMap(data => data.rowData ?? []).flatMap(row => row.values ?? [])
+    .flatMap(cell => [cell.effectiveFormat?.textFormat, ...(cell.textFormatRuns ?? []).map(run => run.format)])
+    .flatMap(format => format?.fontFamily ? [fontFamilyOf(format.fontFamily)] : []);
 }
 
 const listed = ({ id, title, index, rowCount, columnCount, hidden }: SheetMeta) =>
@@ -420,14 +483,29 @@ export function drawingOf(
   let filter = layout?.basicFilter && placed(sheet, rectOf(layout.basicFilter.range));
   let charts = chartsOf(sheet, layout);
   let merges = mergesIn(drawn, layout);
+  let columns = drawn.columns.map(position => drawnLine(grid, drawn, "columns", position, base));
+  let widths = new Map(columns.map(line => [line.number - 1, line.hidden ? 0 : line.size]));
+  let merged = new Map(merges.map(rect => [`${rect.startRow}:${rect.startColumn}`, rect]));
   // Google reports a row nobody has resized at the default size, though it draws the row as tall
-  // as its largest text. Text merged down several rows is in none of them alone.
-  let deep = new Set(merges.filter(rect => rect.endRow - rect.startRow > 1).map(rect => `${rect.startRow}:${rect.startColumn}`));
+  // as its tallest text. Text merged down several rows is in none of them alone.
   let fitted = (line: SheetDrawnLine, r: number): SheetDrawnLine => line.size !== DEFAULT_SIZE.rows ? line : {
     ...line,
-    size: Math.max(line.size, ...cells[r].map((cell, c) =>
-      cell?.text && cell.format !== undefined && !deep.has(`${drawn.rows[r]}:${drawn.columns[c]}`)
-        ? Math.round((formats[cell.format].fontSize ?? 10) * 1.6) + 5 : 0)),
+    size: Math.max(line.size, ...cells[r].map((cell, c) => {
+      let { startColumn, endColumn, endRow } = merged.get(`${drawn.rows[r]}:${drawn.columns[c]}`) ??
+        cellRect(drawn.rows[r], drawn.columns[c]);
+      if (!cell?.text || cell.format === undefined || endRow - drawn.rows[r] > 1) return 0;
+      let format = formats[cell.format];
+      let width = Array.from({ length: Math.min(endColumn, sheet.columnCount) - startColumn },
+        (_column, n) => widths.get(startColumn + n) ?? DEFAULT_SIZE.columns).reduce((sum, size) => sum + size, 0);
+      // A cell of hidden columns is not drawn, so it makes its row no taller.
+      if (width <= 0) return 0;
+      let line = (format.fontSize ?? 10) * 1.6;
+      if (!format.rotation) return Math.round(textLines(cell.text, format, width) * line) + 5;
+      // Turned, the text's length stands up by as much as it is turned.
+      let turn = Math.abs(format.rotation) * Math.PI / 180;
+      let length = Math.max(...cell.text.split("\n").map(text => text.length)) * (format.fontSize ?? 10) * (format.bold ? 0.8 : 0.73);
+      return Math.round(Math.sin(turn) * length + Math.cos(turn) * line) + 5;
+    })),
   };
   return {
     range: a1Of(sheet.title, window.rect),
@@ -436,7 +514,7 @@ export function drawingOf(
       ...(layout?.properties?.gridProperties?.hideGridlines ? { gridlinesHidden: true as const } : {}),
     },
     rows: drawn.rows.map((position, r) => fitted(drawnLine(grid, drawn, "rows", position, base), r)),
-    columns: drawn.columns.map(position => drawnLine(grid, drawn, "columns", position, base)),
+    columns,
     cells,
     formats,
     merges: merges.map(rectName),

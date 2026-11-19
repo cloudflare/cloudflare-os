@@ -596,7 +596,8 @@ Scope of the first version, which is what can be drawn as Google draws it from w
 API returns:
 
 - **Drawn:** each cell's displayed value, its effective format (conditional formatting included),
-  font, number format, alignment, wrap and borders; merges; row heights and column widths; hidden
+  font, number format, alignment, wrap, borders and text turned on its side (text turned by less
+  is drawn level); merges; row heights and column widths; hidden
   and frozen rows and columns; hidden gridlines; the sheet tabs, with added, renamed, moved and
   deleted sheets marked.
 - **Changes:** a cell a queued change enters a value in or formats is marked and names its
@@ -614,6 +615,7 @@ Session reads, on `GoogleSpreadsheetSession`:
 ```ts
 getPendingChanges(sheet: string): Promise<SpreadsheetPendingChanges>;  // { changes, areas, sheets }
 readDrawing(range: string): Promise<SpreadsheetDrawing>;               // one window of one sheet
+readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;
 ```
 
 - A sheet is too large to return whole, so `getPendingChanges()` returns, beside `changes`, the
@@ -623,6 +625,16 @@ readDrawing(range: string): Promise<SpreadsheetDrawing>;               // one wi
   change touches it, plus the sizes, merges, frozen and hidden lines the window needs. A sheet's
   frozen rows and columns come with every window and count toward its cells. A merge that starts
   outside the window comes with its first cell, up to 20 a window.
+- A fill a conditional rule gives a cell is kept under a fill a queued change sets, as Google
+  draws the rule's over the cell's own. The rule is not worked out again: one that a queued value
+  would switch on or off is drawn as it stands now.
+- Google reports a row nobody has resized at the default height, though it draws the row as tall
+  as its text. The drawing gives such a row the height of its tallest cell, counting the lines of
+  wrapped text by an average letter width, since Google's own measure of the text is not read. A
+  header that wraps can so be a line taller or shorter than Google draws it.
+- Fonts come through the session as they do for Slides, without a listing: `readFont()` reads a
+  family that the saved cells of a drawing already read are set in, and no other, so a font only
+  a pending change sets is not fetched until the change is saved.
 - An area a change touches names its change and what it does; rows and columns a change deletes
   are a seam with their count where they stood, not their saved contents.
 - A read that fails once a sheet is drawn leaves the drawing in place and offers to try again;

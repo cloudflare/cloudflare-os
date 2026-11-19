@@ -91,7 +91,13 @@ afterEach(() => frame?.remove())
 async function draw(book: Book, width = 900) {
   const reads: string[] = []
   const asked: string[] = []
+  const fonts: [string, number, boolean][] = []
   const gadget = {
+    // No font is served: the cells are drawn in what the browser has.
+    readFont: async (...font: [string, number, boolean]) => {
+      fonts.push(font)
+      throw new Error('readFont: Google Fonts does not serve this font.')
+    },
     getSpreadsheet: async () => ({ id: 'book', title: 'Book', sheets: book.sheets.map(info) }),
     getPendingChanges: async (title: string) => {
       asked.push(title)
@@ -128,6 +134,8 @@ async function draw(book: Book, width = 900) {
     reads,
     /** The sheets whose pending changes were asked for, in order. */
     asked,
+    /** The fonts asked for, in order: family, weight and whether italic. */
+    fonts,
     cells,
     /** The element drawn for the cell named, such as `B2`. */
     cell: (name: string) => cells().find(({ at }) => `${letters(at.column + 1)}${at.row + 1}` === name)!,
@@ -229,12 +237,58 @@ it('draws a sheet as the session gives it: looks, sizes, merges, frozen and hidd
   expect(Math.round(chart.getBoundingClientRect().width)).toBe(180)
 })
 
+it('asks for the fonts its cells are set in, and draws without one it cannot have', async () => {
+  const { fonts, cell, look } = await draw({ sheets: [{
+    id: 1, title: 'Fonts', index: 0, rowCount: 3, columnCount: 2,
+    formats: [{ bold: true, fontFamily: 'Poppins' }, { fontFamily: 'arial,sans,sans-serif' }, { fontFamily: 'Poppins', bold: true, fontSize: 14 }],
+    cells: { A1: { text: 'Title', format: 0 }, A2: { text: 'Plain', format: 1 }, A3: { text: 'Large', format: 2 } },
+  }] })
+
+  // Arial is the browser's own, and a font is asked for once however many formats name it. A
+  // weight that is not served falls back to the family's regular.
+  await expect.poll(() => fonts).toEqual([['Poppins', 700, false], ['Poppins', 400, false]])
+  expect(look(cell('A1')).fontFamily).toContain('Poppins')
+})
+
+it('draws text turned on its side up its cell, with its alignments turned too', async () => {
+  const { cell, look } = await draw({ sheets: [{
+    id: 1, title: 'Months', index: 0, rowCount: 2, columnCount: 2,
+    rows: { 1: { size: 60 } },
+    formats: [{ rotation: 90 }, { rotation: -90, verticalAlignment: 'TOP' }],
+    cells: { A1: { text: 'Jan', format: 0 }, B1: { text: 'Feb', format: 1 } },
+  }] })
+
+  const drawn = (name: string) => {
+    const text = document.createRange()
+    text.selectNodeContents(cell(name)!)
+    return [text.getBoundingClientRect(), cell(name)!.getBoundingClientRect()]
+  }
+  // Read from the bottom up, it starts at the foot of its cell, where level text would sit.
+  const [up, first] = drawn('A1')
+  expect(look(cell('A1')).writingMode).toBe('sideways-lr')
+  expect(up.height).toBeGreaterThan(up.width)
+  expect(first.bottom - up.bottom).toBeLessThan(6)
+  // Read from the top down, text set at the top of its cell starts there.
+  const [down, second] = drawn('B1')
+  expect(look(cell('B1')).writingMode).toBe('vertical-rl')
+  expect(down.top - second.top).toBeLessThan(6)
+})
+
 it('leaves out the gridlines of a sheet that hides them', async () => {
   const { cell, look } = await draw({ sheets: [{ ...SALES, gridlinesHidden: true }] })
 
   expect(look(cell('B8')).borderRightWidth).toBe('0px')
   // A border the spreadsheet sets is still drawn.
   expect(look(cell('A2')).borderBottomWidth).toBe('2px')
+})
+
+it('opens on a sheet that was there before one a pending change adds, which is empty', async () => {
+  const { doc } = await draw({
+    saved: [small(1, 'Sales', 0)].map(info),
+    sheets: [small(9, 'Plan', 0, { touched: true }), small(1, 'Sales', 1, { touched: true })],
+  })
+
+  expect(doc.querySelector('#strip b')!.textContent).toBe('Sales')
 })
 
 const CHANGED: Book = {
