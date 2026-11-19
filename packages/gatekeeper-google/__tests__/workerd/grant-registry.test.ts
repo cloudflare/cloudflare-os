@@ -406,7 +406,9 @@ describe("Google grants shared by several connections", () => {
     // Neither the stage nor Google can say which account signed in.
     google.profileFails = true;
     await reconnect(google, moved, "moved-again", grace, false);
-    expect(await moved.stored("grantSubject")).toBeUndefined();
+    // Recorded for no credentials, and still listed by the first account's registry.
+    expect(await moved.stored("grantCredentialsId")).toBeUndefined();
+    expect(await moved.stored("grantSubject")).toBe(ada);
 
     google.profileFails = false;
     await moved.refresh();
@@ -419,19 +421,48 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-adas"]);
   });
 
-  it("stops counting for the first Google account as soon as a reconnect signs in as another", async () => {
+  it("stops counting for the first Google account as soon as a reconnect is known to sign in as another", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada, grace} = googleAccounts();
     const moved = await connection(google, "moved", ada);
     const other = await connection(google, "other", ada);
-    // Not recorded for the second account yet: its profile cannot be read.
-    google.profileFails = true;
-    await reconnect(google, moved, "moved-again", grace, false);
+    await reconnect(google, moved, "moved-again", grace);
 
     // The reconnect took it out of the first account's registry, whose last connection revokes.
     await other.disconnect();
     expect(google.revoked).toEqual(["refresh-other"]);
+  });
+
+  // Revoking under a connection in use is the worse mistake, so a reconnect that may be of the
+  // same Google account goes on holding its grant until it is known not to be.
+  it("goes on holding through a reconnect whose Google account cannot be read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const renewed = await connection(google, "renewed", ada);
+    const other = await connection(google, "other", ada);
+    google.profileFails = true;
+    await reconnect(google, renewed, "renewed-again", ada, false);
+    expect(await renewed.stored("grantSubject")).toBe(ada);
+    await other.disconnect();
+    expect(google.revoked).toEqual([]);
+
+    // One that turns out to be another account's lets go once that is read.
+    google.profileFails = false;
+    const moved = await connection(google, "moved", ada);
+    const last = await connection(google, "last", ada);
+    google.profileFails = true;
+    await reconnect(google, moved, "moved-again", grace, false);
+    google.profileFails = false;
+    await moved.refresh();
+    await moved.holds(grace);
+    await renewed.refresh();
+    await renewed.holds(ada);
+    await renewed.disconnect();
+    expect(google.revoked).toEqual([]);
+    await last.disconnect();
+    expect(google.revoked).toEqual(["refresh-last"]);
   });
 
   it("no longer counts, once it reconnects as another Google account, on an answer it gave before", async () => {
@@ -521,7 +552,7 @@ describe("Google grants shared by several connections", () => {
     const graces = await connection(google, "graces", grace);
     google.profileFails = true;
     await reconnect(google, spared, "spared-again", grace, false);
-    expect(await spared.stored("grantSubject")).toBeUndefined();
+    expect(await spared.stored("grantCredentialsId")).toBeUndefined();
     google.profileFails = false;
     await spared.disconnect();
     expect(google.revoked).toEqual([]);
@@ -532,7 +563,7 @@ describe("Google grants shared by several connections", () => {
     await graces.disconnect();
     google.profileFails = true;
     await reconnect(google, revoking, "revoking-again", grace, false);
-    expect(await revoking.stored("grantSubject")).toBeUndefined();
+    expect(await revoking.stored("grantCredentialsId")).toBeUndefined();
     google.profileFails = false;
     await revoking.disconnect();
     expect(google.revoked).toEqual(["refresh-graces", "refresh-revoking-again"]);

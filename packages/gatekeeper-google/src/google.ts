@@ -847,17 +847,19 @@ export class UserAccount extends DurableObject<Env> {
       // The record of the grant this object holds was made for the credentials replaced here. It
       // stands for the new ones only when they are known to be the same Google account's and it
       // was complete for the old ones; when it was not complete, #holdGrant finishes it, below or
-      // at a refresh. A reconnect may have signed in as another Google account: unless the new
-      // credentials are known to be the same account's, this object lets go of the grant recorded
+      // at a refresh. A reconnect may have signed in as another Google account: once the new
+      // credentials are known to be another account's, this object lets go of the grant recorded
       // before, and tells that account's registry, so that an answer it gave while it still held
-      // that grant no longer counts.
-      let sameAccount =
-          staged.subject !== undefined && staged.subject === kv.get<string>(GRANT_SUBJECT_KEY);
+      // that grant no longer counts. While it is not known which account they are, it goes on
+      // holding that grant until #holdGrant learns, since revoking under a connection in use is
+      // the worse mistake.
+      let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
+      let sameAccount = staged.subject !== undefined && staged.subject === recordedSubject;
       if (sameAccount && recorded) {
         kv.put<string>(GRANT_CREDENTIALS_KEY, credentialsId);
         return;
       }
-      if (sameAccount) {
+      if (sameAccount || staged.subject === undefined) {
         kv.delete(GRANT_CREDENTIALS_KEY);
       } else {
         await this.#dropGrant().catch(error => {
