@@ -27,10 +27,13 @@ import {
   VIEWER,
   webFetchRequest,
   type MessageDraft,
+  type MessageSource,
 } from './mock/scenario'
 import { SCENARIOS } from './mock/scenarios'
 
 const viewer = { viewerId: VIEWER.id }
+// A keep that made a commit for each of `gadgetIds`.
+const kept = (...gadgetIds: number[]) => (sequence: number) => ({ ...merge()(sequence), commits: gadgetIds.map((gadgetId) => ({ gadgetId, commitId: `c${gadgetId}` })) })
 const feed = (...sources: Parameters<typeof history>[0]) => toChatFeed(history(sources), viewer)
 /** Everything the feed shows, top to bottom. */
 const rows = ({ items, pinned }: ChatFeed): ChatItem[] => [...items, ...pinned]
@@ -448,27 +451,32 @@ describe('toChatFeed', () => {
   })
 
   describe('system rows', () => {
-    it('marks saved edits, keeps and discards, as the viewer’s own or by name', () => {
+    it('marks keeps and discards, as the viewer’s own or by name, but not edits, which are what waits to be kept', () => {
       const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
-      const result = feed(changes({ author: AGENT }), merge(), changes({ author: other }), revert(2, other), changes(), merge(other))
+      const result = feed(changes({ author: AGENT }), merge(), changes({ author: other }), revert(2, other), changes(), merge(other), changes(), merge())
       expect(only(result, 'divider').map(({ marks, label }) => [marks, label])).toEqual([
         ['merge', 'You kept changes'],
-        ['changes', 'Grace Hopper saved edits'],
         ['revert', 'Grace Hopper discarded changes'],
-        ['changes', 'You saved edits'],
         ['merge', 'Grace Hopper kept changes'],
+        ['merge', 'You kept changes'],
       ])
     })
 
-    it('says nothing more of the keep that saving the viewer’s own edits makes', () => {
-      expect(only(feed(changes(), merge()), 'divider').map(({ label }) => label)).toEqual(['You saved edits'])
+    it('names what a keep kept where the conversation made it, and counts it where it did not or there are more', () => {
+      const made = changes({ author: AGENT, createdGadgets: [{ gadgetId: 1, title: 'Report', bindingName: 'REPORT' }, { gadgetId: 2, title: 'Notes', bindingName: 'NOTES' }] })
+      const labels = (...messages: MessageSource[]) => only(feed(made, ...messages), 'divider').map(({ label }) => label)
+      expect(labels(kept(1))).toEqual(['You kept changes to “Report”'])
+      expect(labels(kept(1, 2, 2))).toEqual(['You kept changes to “Report” and “Notes”'])
+      expect(labels(kept(1, 9))).toEqual(['You kept changes to 2 apps'])
+      expect(labels(kept(1, 2, 9))).toEqual(['You kept changes to 3 apps'])
+      expect(labels(kept(9))).toEqual(['You kept changes'])
     })
 
     it('puts what someone did after an answer below what the answer produced', () => {
       const turn = [user('make a report'), agent({ text: 'Here it is', toolCalls: [createGadget(1)] }), created(1), changes(), merge()]
       const open = feed(...turn)
       expect(kinds(open)).toEqual(['user', 'assistant', 'output', 'divider'])
-      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You saved edits' }])
+      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You kept changes' }])
 
       expect(kinds(feed(...turn, user('thanks')))).toEqual(['user', 'assistant', 'output', 'divider', 'user'])
     })
@@ -482,7 +490,7 @@ describe('toChatFeed', () => {
         merge({ type: 'user', id: 'grace@example.com', name: 'Grace Hopper' }),
       )
       expect(rows(result).map((row) => (row.kind === 'divider' ? row.label : row.kind))).toEqual([
-        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'Grace Hopper kept changes',
+        'user', 'assistant', 'assistant', 'output', 'Grace Hopper kept changes',
       ])
     })
 

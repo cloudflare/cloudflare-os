@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react'
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Annotation, Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction, type Extension, type Range, type Text } from '@codemirror/state'
 import {
@@ -9,7 +9,7 @@ import { bracketMatching, codeFolding, foldGutter, foldKeymap, indentOnInput, in
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyField, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { highlightSelectionMatches, openSearchPanel, searchKeymap } from '@codemirror/search'
-import { getChunks, getOriginalDoc, MergeView, unifiedMergeView, type Chunk } from '@codemirror/merge'
+import { Chunk, getChunks, getOriginalDoc, MergeView, unifiedMergeView } from '@codemirror/merge'
 import type { CodeLanguage } from '@/files/codeLanguage'
 import { codeEditorTheme } from './codeEditorTheme'
 import { codeIndentGuides } from './codeIndentGuides'
@@ -33,6 +33,12 @@ export type CodeEditorStatus = {
   /** Where it is shown as a diff, how many lines the change added and took away. */
   diff?: { added: number; removed: number }
 }
+
+/**
+ * One edit typed in it, as CodeMirror's ChangeSet has it in JSON: sections over the whole text
+ * before it, a number keeping that many UTF-16 units and `[deleted, ...lines]` replacing them.
+ */
+export type CodeTextChange = (number | [number, ...string[]])[]
 
 /** What can be asked of the editor from outside, as from a menu. */
 export type CodeEditorHandle = {
@@ -65,11 +71,14 @@ export type CodeEditorProps = {
   /**
    * It can be typed in: with undo and redo, brackets closed as they are opened, lines indented as
    * they are begun, Tab to indent (Escape then Tab leaves it, as CodeMirror's tab focus mode has
-   * it), and Cmd or Ctrl with / to comment lines out. Never a diff.
+   * it), and Cmd or Ctrl with / to comment lines out. A diff is typed in on its side after.
    */
   editable?: boolean
-  /** Its text, as it is typed: not as it is given from outside (`text`). */
-  onChange?: (text: string) => void
+  /**
+   * Its text as it is typed, with the edit that made it: not as it is given from outside (`text`).
+   * Says whether the edit was taken: one that was not is undone, back to `text`.
+   */
+  onChange?: (text: string, change: CodeTextChange) => boolean
   /** Cmd or Ctrl with S. */
   onSave?: () => void
   /**
@@ -107,6 +116,17 @@ const KEPT_PLACES = 64
 const histories = new Map<string, { doc: string }>()
 const KEPT_HISTORIES = 32
 
+// The diff in one column, over `original`, or none: what is unchanged folded away where it is
+// `collapsed`.
+const inlineDiff = (original: string | undefined, collapsed: boolean): Extension => original === undefined ? [] : unifiedMergeView({
+  original,
+  highlightChanges: true,
+  gutter: true,
+  mergeControls: false,
+  syntaxHighlightDeletions: true,
+  ...(collapsed ? { collapseUnchanged: { margin: 3, minSize: 6 } } : {}),
+})
+
 // A change of the text from outside (`text`), which is not told back (`onChange`).
 const fromOutside = Annotation.define<boolean>()
 
@@ -130,6 +150,19 @@ const countChanges = (chunks: readonly Chunk[], before: Text, after: Text) => ch
   (sum, chunk) => ({ added: sum.added + linesIn(after, chunk.fromB, chunk.toB), removed: sum.removed + linesIn(before, chunk.fromA, chunk.toA) }),
   { added: 0, removed: 0 },
 )
+
+// The one span that turns `from` into `to`: what is between what they start and end with alike,
+// never splitting a UTF-16 surrogate pair.
+const changedSpan = (from: string, to: string) => {
+  const most = Math.min(from.length, to.length)
+  let start = 0
+  while (start < most && from.charCodeAt(start) === to.charCodeAt(start)) start++
+  if (start > 0 && /[\uD800-\uDBFF]/.test(from[start - 1]!)) start--
+  let end = 0
+  while (end < most - start && from.charCodeAt(from.length - 1 - end) === to.charCodeAt(to.length - 1 - end)) end++
+  if (end > 0 && /[\uDC00-\uDFFF]/.test(from[from.length - end]!)) end--
+  return { from: start, to: from.length - end, insert: to.slice(start, to.length - end) }
+}
 
 const statusOf = (state: EditorState, indent: string, diff?: CodeEditorStatus['diff']): CodeEditorStatus => {
   const { main } = state.selection
@@ -156,9 +189,10 @@ const editing = (editable: boolean, label: string, save: () => boolean): Extensi
  * line numbers that pick lines out, blocks that fold, guides down each step of indentation, matching
  * brackets, the other places a selected word comes up, find (Cmd or Ctrl with F) and go to line
  * (Ctrl with G) in the app's own bars, and the caret and selection keys. It is read, or typed in
- * where it is `editable`, and text given from outside replaces what is in it. Coloured once its
- * language has loaded, which happens the first time one is shown. Given what it was before
- * (`diff`), it is shown as the change from that.
+ * where it is `editable`, and text given from outside replaces what is in it where it differs,
+ * so that the caret, the scroll and the undo history stay. Coloured once its language has loaded,
+ * which happens the first time one is shown. Given what it was before (`diff`), it is shown as
+ * the change from that. Lines end only at a line feed, so that its places are the text's.
  */
 export const CodeEditor = ({
   text, language, label, diff, wrap = false, picked: pickedLines, onPick, onStatus, memoryKey, editable = false, onChange, onSave, historyKey, className, ref,
@@ -187,8 +221,10 @@ export const CodeEditor = ({
   const undo = useRef(new Compartment())
   const textNow = useRef(text)
   textNow.current = text
-  // The text last told of as typed, which coming back as `text` changes nothing.
+  // The text last told of as typed, and the text last taken in, which coming back as `text`
+  // change nothing.
   const typed = useRef<string>(undefined)
+  const taken = useRef<string>(undefined)
   const editableNow = useRef(editable)
   editableNow.current = editable
   const historyKeyNow = useRef(historyKey)
@@ -199,8 +235,15 @@ export const CodeEditor = ({
   pickedNow.current = pickedLines
   const original = diff?.original
   const layout = diff?.layout
-  // A diff is drawn again for new text; anything else takes it in place, below.
-  const diffText = original === undefined ? undefined : text
+  // Two columns are an editor of their own, made again as the diff comes and goes; one column is
+  // this one, which takes the diff on and off in place, so that typing in a file that changes it
+  // into a diff keeps the caret, the focus and the undo history.
+  const splitOriginal = layout === 'split' ? original : undefined
+  const inline = layout === 'split' ? undefined : original
+  const inlineNow = useRef(inline)
+  inlineNow.current = inline
+  const merging = useRef(new Compartment())
+  const inlineShown = useRef<string>(undefined)
   // Bumped once the language a diff waits for has loaded.
   const [languageLoads, setLanguageLoads] = useState(0)
 
@@ -210,21 +253,37 @@ export const CodeEditor = ({
     // A language that has loaded colours the text from the start, so a file shown again never
     // flashes plain. A diff waits for it: what was taken away is coloured once, as it is drawn.
     const support = language && loadedCodeLanguage(language)
-    if (language && !support && original !== undefined) {
+    if (language && !support && (splitOriginal ?? inlineNow.current) !== undefined) {
       let waiting = true
       void loadCodeLanguage(language).then(() => waiting && setLanguageLoads((count) => count + 1), () => waiting && setLanguageLoads((count) => count + 1))
       return () => { waiting = false }
     }
     const doc = textNow.current
+    taken.current = doc
     const { unit, label: indentLabel } = detectIndent(doc)
     let anchor: number | undefined
     let counted: CodeEditorStatus['diff']
+    // How a diff's lines changed, counted again as its text changes.
+    let count: ((state: EditorState) => CodeEditorStatus['diff']) | undefined
     const report = EditorView.updateListener.of((update) => {
-      if (update.selectionSet || update.docChanged) callbacks.current.onStatus?.(statusOf(update.state, indentLabel, counted))
+      const reconfigured = update.transactions.some((transaction) => transaction.reconfigured)
+      if ((update.docChanged || reconfigured) && count) counted = count(update.state)
+      if (update.selectionSet || update.docChanged || reconfigured) callbacks.current.onStatus?.(statusOf(update.state, indentLabel, counted))
       if (update.docChanged && !update.transactions.some((transaction) => transaction.annotation(fromOutside))) {
         const now = update.state.doc.toString()
         typed.current = now
-        callbacks.current.onChange?.(now)
+        // Not taken, as where the agent began meanwhile: put back as given, once this update is done.
+        if (callbacks.current.onChange?.(now, update.changes.toJSON() as CodeTextChange) === false) {
+          typed.current = undefined
+          queueMicrotask(() => {
+            const editor = view.current
+            if (editor !== update.view) return
+            const given = textNow.current
+            const was = editor.state.doc.toString()
+            taken.current = given
+            if (was !== given) editor.dispatch({ changes: changedSpan(was, given), annotations: [fromOutside.of(true), Transaction.addToHistory.of(false)] })
+          })
+        }
       }
     })
     const save = () => {
@@ -232,7 +291,9 @@ export const CodeEditor = ({
       return true
     }
     const base = (side: 'a' | 'b'): Extension => [
-      side === 'a' ? editing(false, `${label}, before`, save) : typing.current.of(editing(original === undefined && editableNow.current, label, save)),
+      side === 'a' ? editing(false, `${label}, before`, save) : typing.current.of(editing(editableNow.current, label, save)),
+      side === 'a' ? [] : undo.current.of(editableNow.current ? history() : []),
+      EditorState.lineSeparator.of('\n'),
       EditorState.tabSize.of(unit === '\t' ? 4 : unit.length),
       indentUnit.of(unit),
       lineNumbers({
@@ -271,9 +332,9 @@ export const CodeEditor = ({
     let editors: EditorView[]
     let scroller: HTMLElement
     let destroy: () => void
-    if (original !== undefined && layout === 'split') {
+    if (splitOriginal !== undefined) {
       const merge = new MergeView({
-        a: { doc: original, extensions: [base('a')] },
+        a: { doc: splitOriginal, extensions: [base('a')] },
         b: { doc, extensions: [base('b'), codeFind, codeGoToLine, keys, report] },
         parent,
         highlightChanges: true,
@@ -283,24 +344,14 @@ export const CodeEditor = ({
       editors = [merge.a, merge.b]
       view.current = merge.b
       scroller = merge.dom
-      counted = countChanges(merge.chunks, merge.a.state.doc, merge.b.state.doc)
+      count = (state) => countChanges(Chunk.build(merge.a.state.doc, state.doc), merge.a.state.doc, state.doc)
+      counted = count(merge.b.state)
       destroy = () => merge.destroy()
     } else {
-      const extensions = [base('b'), codeFind, codeGoToLine, keys, report]
-      if (original !== undefined) {
-        extensions.push(unifiedMergeView({
-          original,
-          highlightChanges: true,
-          gutter: true,
-          mergeControls: false,
-          syntaxHighlightDeletions: true,
-          collapseUnchanged: { margin: 3, minSize: 6 },
-        }))
-      } else {
-        extensions.push(undo.current.of(editableNow.current ? history() : []))
-      }
-      // Taken up again where it was left, typed in, with its undo history.
-      const kept = historyKeyNow.current && original === undefined && editableNow.current ? histories.get(historyKeyNow.current) : undefined
+      inlineShown.current = inlineNow.current
+      const extensions = [base('b'), codeFind, codeGoToLine, keys, report, merging.current.of(inlineDiff(inlineNow.current, true))]
+      // Taken up again where it was left, typed in, with its undo history, as its change too.
+      const kept = historyKeyNow.current && editableNow.current ? histories.get(historyKeyNow.current) : undefined
       const state = kept?.doc === doc
         ? EditorState.fromJSON(kept, { extensions }, { history: historyField })
         : EditorState.create({ doc, extensions })
@@ -308,9 +359,11 @@ export const CodeEditor = ({
       editors = [editor]
       view.current = editor
       scroller = editor.scrollDOM
-      const chunks = original !== undefined ? getChunks(editor.state) : null
-      const before = original !== undefined ? getOriginalDoc(editor.state) : undefined
-      if (chunks && before) counted = countChanges(chunks.chunks, before, editor.state.doc)
+      count = (now) => {
+        const chunks = getChunks(now)
+        return chunks ? countChanges(chunks.chunks, getOriginalDoc(now), now.doc) : undefined
+      }
+      counted = count(editor.state)
       destroy = () => editor.destroy()
     }
 
@@ -336,7 +389,7 @@ export const CodeEditor = ({
     return () => {
       cancelled = true
       const keptUnder = historyKeyNow.current
-      if (keptUnder && original === undefined && main.state.field(historyField, false)) {
+      if (keptUnder && main.state.field(historyField, false)) {
         histories.delete(keptUnder)
         histories.set(keptUnder, main.state.toJSON({ history: historyField }) as { doc: string })
         if (histories.size > KEPT_HISTORIES) histories.delete(histories.keys().next().value!)
@@ -352,25 +405,34 @@ export const CodeEditor = ({
     }
     // The picked lines, wrapping, text and typing are applied as they change, below, not by
     // starting over.
-  }, [diffText, original, layout, language, label, memoryKey, languageLoads])
+  }, [splitOriginal, language, label, memoryKey, languageLoads])
 
-  // Text given from outside, as where a file is put back as it was: in place, without the undo
-  // history, whose steps were of the text it replaces.
+  // The diff in one column, put on, changed or taken off in place, with nothing folded away: it is
+  // come to from the file as it was being read or typed in, whose place would move.
   useEffect(() => {
     const editor = view.current
-    if (!editor || original !== undefined || text === typed.current || editor.state.doc.toString() === text) return
-    editor.dispatch({
-      changes: { from: 0, to: editor.state.doc.length, insert: text },
-      annotations: [fromOutside.of(true), Transaction.addToHistory.of(false)],
-      effects: undo.current.reconfigure([]),
-    })
+    if (!editor || editorsNow.current.length !== 1 || inlineShown.current === inline) return
+    inlineShown.current = inline
+    editor.dispatch({ effects: merging.current.reconfigure(inlineDiff(inline, false)) })
+  }, [inline])
+
+  // Text given from outside, as someone else's edit or a file put back as it was: only the span
+  // that differs, so that the caret and the scroll stay where they are, and out of the undo
+  // history, which steps over it. Each render, before anything is drawn, as an edit typed here
+  // that was not taken leaves the text it was given the same.
+  useLayoutEffect(() => {
+    const editor = view.current
+    if (!editor || text === taken.current || text === typed.current) return
+    const doc = editor.state.doc.toString()
+    taken.current = text
+    if (doc === text) return
+    editor.dispatch({ changes: changedSpan(doc, text), annotations: [fromOutside.of(true), Transaction.addToHistory.of(false)] })
     typed.current = undefined
-    if (editableNow.current) editor.dispatch({ effects: undo.current.reconfigure(history()) })
-  }, [text, original])
+  })
 
   useEffect(() => {
     const editor = view.current
-    if (!editor || original !== undefined) return
+    if (!editor) return
     const save = () => {
       callbacks.current.onSave?.()
       return true

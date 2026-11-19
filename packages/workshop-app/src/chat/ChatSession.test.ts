@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
+import type { FileChange } from '@gadgets/workshop-shared/code-change'
 import type {
   ActionLogEntry,
   AiChatAuthorInfo,
@@ -95,6 +96,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     listSlashCommands: vi.fn<Overseer['listSlashCommands']>(async () => []),
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
+    submitCodeChange: vi.fn<Overseer['submitCodeChange']>(async (_chatId, { generation, revision }) => ({ generation, revision: revision + 1 })),
     getChatAttachmentContent: vi.fn<Overseer['getChatAttachmentContent']>(async (_chatId, id) => new TextEncoder().encode(id)),
     markChatRead: vi.fn<Overseer['markChatRead']>(async () => {}),
     markChatUnread: vi.fn<Overseer['markChatUnread']>(async () => true),
@@ -208,6 +210,10 @@ const down = () => {
 
 /** A chat with changes waiting to gadget 1. */
 const proposing = (activeAgent?: AiChatAuthorInfo): AiChatMetadata => ({ ...chat(0, 'Chat', 1, activeAgent), proposedChangeWorkpieces: [1] })
+// A chat whose metadata says `codeBase`, and its code, held.
+const coded = (codeBase: AiChatMetadata['codeBase']) => ({ ...chat(0, 'Chat', 1), codeBase })
+const codeOf = (session: ChatSession) => session.holdCode().code
+
 const changes = (sequence: number, extra: Partial<Extract<AiChatMessage, { type: 'changes' }>> = {}): AiChatMessage =>
   ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'changes', ...extra })
 const binding = { addedBindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }] }
@@ -1067,7 +1073,9 @@ describe('ChatSession', () => {
 
       await vi.advanceTimersByTimeAsync(1500)
       expect(ready(session).keep).toEqual({
-        changes: { created: [], edited: [], bindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }], updates: [], mainline: false, conflicts: [] },
+        changes: { created: [], edited: [], bindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }], updates: [], mainline: false, conflicts: [], files: {} },
+        sending: false,
+        epoch: undefined,
       })
     })
 
@@ -1088,15 +1096,32 @@ describe('ChatSession', () => {
     })
 
     it('reads back to the last keep to say what they do', async () => {
-      // The binding is on a page before the one shown; the keep that opened the epoch is at 2.
+      // The binding is on a page before the one shown, which starts at the keep that opened the epoch, at 2.
       const { fake, session, endTurn } = await workingOn(
         [changes(5)],
         { pins: [], generation: 1, revision: 0, epoch: 2 },
-        [{ messages: [changes(3, binding)], nextBeforeSequence: 3 }],
+        [{ messages: [changes(3, binding)], nextBeforeSequence: 2 }],
       )
       await endTurn()
       await vi.waitFor(() => expect(ready(session).keep?.changes.bindings).toHaveLength(1), { timeout: 3000 })
       expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
+    })
+
+    it('says edits beside the chat are on their way, until they are in it', async () => {
+      const fake = fakeOverseer(Promise.resolve([{ ...proposing(), codeBase: { pins: [], generation: 1, revision: 0 } }]), { 0: page(changes(1, { change: { 1: [] } })) })
+      let answer: (() => void) | undefined
+      fake.submitCodeChange.mockImplementationOnce(() => new Promise((resolve) => { answer = () => resolve({ generation: 1, revision: 1 }) }))
+      const session = await started(fake)
+      await vi.waitFor(() => expect(ready(session).keep).toMatchObject({ sending: false }))
+      const code = codeOf(session)
+      await vi.waitFor(() => expect(code.getSnapshot().status).toBe('ready'))
+      code.edit(1, [['a.js', { set: 'b' }]], 'head')
+      expect(ready(session).keep?.sending).toBe(true)
+      await vi.waitFor(() => expect(fake.submitCodeChange).toHaveBeenCalledOnce())
+      answer?.()
+      const { clientId, seq } = fake.submitCodeChange.mock.calls[0][1]
+      fake.server().changeApplied(0, 1, 1, agentAuthor, { 1: [['a.js', { set: 'b' }]] }, { clientId, seq })
+      await vi.waitFor(() => expect(ready(session).keep?.sending).toBe(false))
     })
 
     it('never asks about changes kept meanwhile', async () => {
@@ -1139,6 +1164,82 @@ describe('ChatSession', () => {
       const { fake, session } = await workingOn([changes(1, binding)])
       await session.discardChanges()
       expect(fake.revertChanges).toHaveBeenCalledExactlyOnceWith(0, 0)
+    })
+  })
+
+  describe('its code', () => {
+    const edit: [string, FileChange][] = [['a.js', { set: 'b' }]]
+
+    it('reads back to where the changes were last kept, and has them with the rows since', async () => {
+      const codeBase = { pins: [{ gadgetId: 1, baseCommit: 'c', mergedCommit: 'c' }], generation: 2, revision: 2, epoch: 3 }
+      const fake = fakeOverseer(Promise.resolve([coded(codeBase)]))
+      const pages = [
+        page(changes(6, { change: { 1: [['a.js', { set: 'a' }]] }, watermark: { changesGeneration: 2, throughRevision: 1 } })),
+        { messages: [userMessage(3, 'go'), userMessage(4, 'on')], nextBeforeSequence: 3 },
+      ]
+      fake.getChatHistory.mockImplementation(async (_chatId, before) => (before === undefined ? { ...pages[0], nextBeforeSequence: 6 } : pages[1]))
+      const session = await started(fake)
+      // A row the stream took before anything showed the code.
+      fake.server().changeApplied(0, 2, 2, agentAuthor, { 1: [['a.js', { set: 'row' }]] })
+      const code = codeOf(session)
+
+      await vi.waitFor(() => expect(code.getSnapshot().status).toBe('ready'))
+      expect(fake.getChatHistory).toHaveBeenCalledWith(0, 6, expect.any(Number))
+      const snapshot = code.getSnapshot()
+      expect(snapshot.status === 'ready' && snapshot.gadgets.get(1)).toMatchObject({ base: 'c', files: new Map([['a.js', { set: 'row' }]]) })
+    })
+
+    it('reads back however far the changes were last kept, as many messages a page as it may', async () => {
+      const codeBase = { pins: [{ gadgetId: 1, baseCommit: 'c', mergedCommit: 'c' }], generation: 1, revision: 0, epoch: 1 }
+      const fake = fakeOverseer(Promise.resolve([coded(codeBase)]))
+      // Thirty pages back, each one message, the first of them the change.
+      fake.getChatHistory.mockImplementation(async (_chatId, before = 31) => (before === 2
+        ? page(changes(1, { change: { 1: [['a.js', { set: 'a' }]] } }))
+        : { messages: [userMessage(before - 1, 'go')], nextBeforeSequence: before - 1 }))
+      const session = await started(fake)
+      const code = codeOf(session)
+
+      await vi.waitFor(() => expect(code.getSnapshot().status).toBe('ready'))
+      expect(fake.getChatHistory).toHaveBeenCalledWith(0, 2, 200)
+      const snapshot = code.getSnapshot()
+      expect(snapshot.status === 'ready' && snapshot.gadgets.get(1)).toMatchObject({ files: new Map([['a.js', { set: 'a' }]]) })
+    })
+
+    it('reads back again a while after a page could not be had', async () => {
+      const codeBase = { pins: [{ gadgetId: 1, baseCommit: 'c', mergedCommit: 'c' }], generation: 1, revision: 0, epoch: 1 }
+      const fake = fakeOverseer(Promise.resolve([coded(codeBase)]))
+      let failed = false
+      fake.getChatHistory.mockImplementation(async (_chatId, before) => {
+        if (before === undefined) return { messages: [userMessage(5, 'go')], nextBeforeSequence: 5 }
+        if (!failed) {
+          failed = true
+          throw new Error('Peer closed WebSocket')
+        }
+        return page(changes(1, { change: { 1: [['a.js', { set: 'a' }]] } }))
+      })
+      const session = await started(fake)
+      const code = codeOf(session)
+
+      await vi.waitFor(() => expect(code.getSnapshot().status).toBe('ready'), { timeout: 4000 })
+      expect(fake.getChatHistory).toHaveBeenCalledTimes(3)
+    })
+
+    it('sends edits through the workspace', async () => {
+      const fake = fakeOverseer(Promise.resolve([coded({ pins: [], generation: 1, revision: 0 })]))
+      const session = await started(fake)
+      const code = codeOf(session)
+      await vi.waitFor(() => expect(code.getSnapshot().status).toBe('ready'))
+      code.edit(1, edit, 'head')
+      await vi.waitFor(() => expect(fake.submitCodeChange).toHaveBeenCalledOnce())
+      expect(fake.submitCodeChange.mock.calls[0]).toMatchObject([0, { generation: 1, revision: 0, pins: [{ gadgetId: 1, baseCommit: 'head' }] }])
+    })
+
+    it('says the agent works, so nothing is edited', async () => {
+      const fake = fakeOverseer(Promise.resolve([{ ...coded(undefined), activeAgent: agentAuthor }]))
+      const session = await started(fake)
+      const code = codeOf(session)
+      await vi.waitFor(() => expect(code.getSnapshot()).toMatchObject({ status: 'ready', agentActive: true }))
+      expect(code.edit(1, edit, 'head')).toBe(false)
     })
   })
 

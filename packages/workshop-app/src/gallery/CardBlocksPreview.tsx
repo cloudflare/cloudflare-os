@@ -109,6 +109,7 @@ const WorkspaceRowsPreview = () => {
 /** What an answer produces or asks for: the cards kept under it. */
 export const CardBlocksPreview = () => {
   const { of } = useOpen()
+  const keep = useOpen(['connection', 'two'])
   const { report, say, after, later } = useReport()
   const [hookEnabled, setHookEnabled] = useState(true)
   const [documentStarred, setDocumentStarred] = useState(true)
@@ -186,21 +187,35 @@ export const CardBlocksPreview = () => {
           <ActionCard {...request} state="denied" resolution="Denied by Ada Lovelace" {...of('denied')} />
         </Column>
       </Section>
-      <Section title="KeepChangesCard (a chat's changes, waiting at the end of the conversation as nothing is kept until someone keeps it: what they do and what to know first, Keep, and Discard, which asks again; a gadget given a connection, a blueprint's update with conflicts, and code alone)">
+      <Section title="KeepChangesCard (a chat's changes, waiting at the end of the conversation as nothing is kept until someone keeps it: a line that asks, with Discard, which asks again, and Keep, for everything at once, and opens to what to know first, where there is something, each app it changes with its icon and how many files, opened beside the chat, and what else they do; a gadget given a connection, a blueprint's update with conflicts, code alone with edits still on their way, which Keep waits for, and two apps' code; the first and last open)">
         <Column>
           <KeepChangesCard
             changes={['Creates “Standup notes”', 'Connects “Standup notes” to “Jira · Platform board”']}
             reason="Connecting a gadget to something needs your OK."
+            apps={[{ gadgetId: 9, title: 'Standup notes', icon: 'notebook', files: 3 }]}
+            onOpen={() => {}}
             onKeep={after('kept')}
             onDiscard={() => void after('discarded')()}
+            {...keep.of('connection')}
           />
           <KeepChangesCard
-            changes={['Brings its blueprint’s update into “Tip Jar”', 'Leaves 2 files with conflicts']}
-            reason="Look over the conflicts before keeping them."
+            changes={['Updates “Tip Jar” to its template’s latest version', 'Leaves 2 files with conflicts to fix']}
+            reason="Some files have conflicts to look over first."
+            apps={[{ gadgetId: 3, title: 'Tip Jar', files: 4 }]}
+            onOpen={() => {}}
             onKeep={after('kept')}
             onDiscard={() => void after('discarded')()}
+            {...keep.of('update')}
           />
-          <KeepChangesCard changes={['Changes “Tip Jar”']} reason="They’re only in this chat until you keep them." onKeep={after('kept')} onDiscard={() => void after('discarded')()} />
+          <KeepChangesCard changes={[]} apps={[{ gadgetId: 3, title: 'Personal App', files: 1 }]} onOpen={() => {}} sending onKeep={after('kept')} onDiscard={() => void after('discarded')()} {...keep.of('code')} />
+          <KeepChangesCard
+            changes={[]}
+            apps={[{ gadgetId: 3, title: 'Personal Site', files: 2 }, { gadgetId: 4, title: 'Design Learnings from IanSilber.com', icon: 'fileText', files: 1 }]}
+            onOpen={() => {}}
+            onKeep={after('kept')}
+            onDiscard={() => void after('discarded')()}
+            {...keep.of('two')}
+          />
         </Column>
       </Section>
       <Section title="HookCard (switchable, off, deleted)">

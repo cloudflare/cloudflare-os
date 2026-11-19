@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import type { CodeBrowserEditing, CodeBrowserSave } from '@/blocks/CodeBrowser'
-import { useChatBeside } from '@/chat/useChatSession'
 import { readEditChat, writeEditChat } from '@/prefs/editChats'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -10,13 +9,13 @@ import {
 } from './codeDrafts'
 import { readCodeText } from './codeReads'
 import type { CodeFile } from './gadgetCode'
-import { AGENT_WORKING, CHAT_PROPOSES, saveCode } from './saveCode'
+import { saveCode } from './saveCode'
 import type { CodeFileState, CodeFilesState } from './useGadgetCode'
 
 export type UseCodeEditingOptions = {
   workspaceId: string
-  /** The gadget, by its id and its title, and the chat it is shown beside, where it is. */
-  gadget: { id: number; title: string; chatId?: number }
+  /** The gadget, by its id and its title. */
+  gadget: { id: number; title: string }
   /** Its head, as the code shown was read at. */
   commitId: string | undefined
   /** A past version is compared, which is only read. */
@@ -33,22 +32,20 @@ const beforeOf = (read: { kind: string; text?: string } | undefined): DraftBefor
   read?.kind === 'text' ? { kind: 'text', text: read.text ?? '' } : read?.kind === 'absent' || !read ? { kind: 'absent' } : { kind: 'other' }
 
 /**
- * A gadget's code as it is edited: its draft (`codeDrafts`), the files listed and the one shown
- * with the draft over them, and what `CodeBrowser` is given to edit them with, or nothing where a
- * past version is compared.
+ * A gadget's code as it is edited where it is shown as kept, as on its own page: its draft
+ * (`codeDrafts`), the files listed and the one shown with the draft over them, and what
+ * `CodeBrowser` is given to edit them with, or nothing where a past version is compared. Beside a
+ * chat, edits go into the chat instead (`useLiveCodeEditing`).
  *
- * Beside a chat it is editable only while the chat's agent is not working and the chat proposes
- * nothing not kept yet, as saving keeps everything the chat proposes. A save (`saveCode`) goes into
- * that chat, or on the gadget's own page into the chat this device last made for its edits, or a new
- * one. A saved draft goes once the head shown is the one it was kept as, so that the code never
- * shows as it was before the save in between.
+ * A save (`saveCode`) goes into the chat this device last made for its edits, or a new one. A saved
+ * draft goes once the head shown is the one it was kept as, so that the code never shows as it was
+ * before the save in between.
  */
 export const useCodeEditing = ({ workspaceId, gadget, commitId, comparing }: UseCodeEditingOptions) => {
   const { api } = useApi()
   const notice = useConnectionNotice()
   const key = draftKey(workspaceId, gadget.id)
   const draft = useSyncExternalStore(codeDrafts.subscribe, () => codeDrafts.get(key))
-  const { chat } = useChatBeside(gadget.chatId === undefined ? undefined : { workspaceId, chatId: gadget.chatId })
   const [save, setSave] = useState<CodeBrowserSave>()
   // A save that was kept, whose draft goes once the head shown is the one it was kept as.
   const [landed, setLanded] = useState<{ draftId: number; head?: string }>()
@@ -86,13 +83,7 @@ export const useCodeEditing = ({ workspaceId, gadget, commitId, comparing }: Use
   }, [settled])
 
   const busy = save?.status === 'saving' || (landed !== undefined && !settled)
-  const blocked = !commitId ? 'Reading its code…'
-    : gadget.chatId === undefined ? undefined
-      : chat.status === 'loading' ? 'Reading the chat…'
-        : chat.status !== 'ready' ? 'The chat it’s shown from can’t be read.'
-          : chat.agentActive ? AGENT_WORKING
-            : chat.proposesChanges && !busy ? CHAT_PROPOSES
-              : undefined
+  const blocked = commitId ? undefined : 'Reading its code…'
 
   const discard = () => {
     codeDrafts.set(key, undefined)
@@ -143,7 +134,7 @@ export const useCodeEditing = ({ workspaceId, gadget, commitId, comparing }: Use
         gadgetId: gadget.id,
         draft: saving,
         anyway,
-        chat: gadget.chatId !== undefined ? { beside: gadget.chatId } : { title: gadget.title, reuse: readEditChat(key) },
+        chat: { title: gadget.title, reuse: readEditChat(key) },
         onChatMade: (chatId) => writeEditChat(key, chatId),
       })
       if (result.status === 'saved') {
@@ -162,6 +153,7 @@ export const useCodeEditing = ({ workspaceId, gadget, commitId, comparing }: Use
       }
     }
     return {
+      kind: 'draft',
       blocked,
       changes: changeCount(draft),
       save: busy ? { status: 'saving' } : save,
@@ -172,9 +164,10 @@ export const useCodeEditing = ({ workspaceId, gadget, commitId, comparing }: Use
       onEdit: (path, text) => {
         const entry = codeDrafts.get(key)?.files.get(path)
         // What it was is what was shown of it at the head, before it was first typed in.
-        if (!entry && (path !== shown || headFile.status !== 'text')) return
+        if (!entry && (path !== shown || headFile.status !== 'text')) return false
         const before: DraftBefore = entry?.before ?? { kind: 'text', text: headFile.status === 'text' ? headFile.text : '' }
         codeDrafts.update(key, (was) => withFile(was, commitId, path, before, text))
+        return true
       },
       check: (name, at) => checkName(live, name, at),
       onCreate: (path) => {

@@ -1,6 +1,6 @@
 import type { RpcStub } from 'capnweb'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer, CapsuleSpecifier, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, ChatCodeBase, Overseer, CapsuleSpecifier, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
   toChatFeed,
@@ -14,6 +14,9 @@ import {
 } from './chatItems'
 import { agentKeyOf, namedAgentKey } from '@/automations/agents'
 import { answerParts } from './answerParts'
+import { ChatCode, NotSent } from './code/ChatCode'
+import type { StreamRow } from './code/changeStream'
+import { epochCode } from './code/epochCode'
 import { proposedChanges, type ProposedChanges } from './proposedChanges'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
@@ -27,6 +30,10 @@ import { NO_USAGE, sameUsage, usageOf, type ChatUsage } from './chatUsage'
  */
 export type KeepAsk = {
   changes: ProposedChanges
+  /** Edits made beside the chat are still on their way into it, which keeping now would leave out. */
+  sending: boolean
+  /** Where the chat's changes were last kept (`ChatCodeBase.epoch`), which tells one ask from the next. */
+  epoch: number | undefined
 }
 
 export type ChatSnapshot =
@@ -69,11 +76,6 @@ export type ChatSnapshot =
       usage: ChatUsage
       /** An assistant turn is running. */
       agentActive: boolean
-      /**
-       * It proposes changes not kept yet (`AiChatMetadata.proposedChangeWorkpieces`), which keeping
-       * anything through it would keep too.
-       */
-      proposesChanges: boolean
       /**
        * What was sent to the running agent that it has not read yet, oldest first, whoever sent
        * it. Stopping the agent drops these, for whoever stops it to put back in their draft.
@@ -120,6 +122,7 @@ type Calls =
   | 'mergeChanges'
   | 'updateChatFromMainline'
   | 'revertChanges'
+  | 'submitCodeChange'
   | 'markChatRead'
   | 'markChatUnread'
   | 'viewChat'
@@ -197,8 +200,15 @@ const DELETED: ChatSnapshot = { status: 'deleted' }
 const HISTORY_PAGE_SIZE = 50
 /** How many earlier pages are fetched in search of the message a reply quotes. */
 const QUOTE_SEARCH_PAGES = 20
-/** How many earlier pages are fetched to see everything a chat's changes would keep. */
-const EPOCH_SEARCH_PAGES = 20
+/** How many rows of a chat's change stream are kept for its code, should it be shown. */
+const MAX_KEPT_ROWS = 500
+/**
+ * How many messages each earlier page holds that is fetched to see everything a chat's changes
+ * would keep, as many as one page may: however far back that is, it is read.
+ */
+const EPOCH_PAGE_SIZE = 200
+/** How long the code waits to read back again where a page could not be had, at first and at most. */
+const CODE_RETRY = { first: 2000, most: 60_000 }
 /** How many fetched files a session keeps, so a chat's tiles and what is opened share their bytes. */
 const KEPT_ATTACHMENTS = 24
 /**
@@ -246,8 +256,6 @@ export class ChatSession {
   // is not connected to again.
   #deleted = false
   #agentActive = false
-  // It proposes changes not kept yet, as its metadata last said.
-  #proposes = false
   // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
   #liveMetadata = false
   #messages = new Map<number, AiChatMessage>()
@@ -291,8 +299,24 @@ export class ChatSession {
   #reading: Promise<void> = Promise.resolve()
   // What the user is asked to keep, and the wait before asking, from when the turn ended.
   #keep: KeepAsk | undefined
+  // The epoch it is asked over, to say again what it is as more is written into it.
+  #keepEpoch: number | undefined
   #keepTimer: ReturnType<typeof setTimeout> | undefined
   #turnEndedAt = 0
+  // The chat's code, made once something shows it (`holdCode`), and how many do. It is fed the
+  // code base its metadata last said (once it has said), and the rows of its change stream, kept
+  // here meanwhile so that it can be made at any time: the history, read again, takes the older ones in.
+  #code: ChatCode | undefined
+  #codeHolders = 0
+  // Edits made to it are on their way, so that its changes are not kept without them.
+  #codeSending = false
+  // The run the history is being read back for it in, and when that is tried again, having failed, and after how long.
+  #codeReading: number | undefined
+  #codeRetry: ReturnType<typeof setTimeout> | undefined
+  #codeRetryDelay = 0
+  #codeBase: { known: boolean; base?: ChatCodeBase } = { known: false }
+  #codeFed = ''
+  #rows: StreamRow[] = []
 
   /** `open` connects to the chat's workspace; the session disposes what it returns. */
   constructor(
@@ -325,6 +349,106 @@ export class ChatSession {
     clearTimeout(this.#retry)
     this.#reset()
     this.#release()
+    this.#code?.dispose()
+    this.#code = undefined
+    this.#codeHolders = 0
+    this.#codeSending = false
+    clearTimeout(this.#codeRetry)
+    this.#codeRetry = undefined
+    this.#codeRetryDelay = 0
+  }
+
+  /**
+   * The chat's code, live (`ChatCode`): while it is held, the history is read back to where the
+   * chat's changes were last kept, as far as that takes. Let go of with what comes back with it,
+   * which stops that, but not the code, which lives as long as the session does, so that what was
+   * edited is still sent.
+   */
+  holdCode = (): { code: ChatCode; release: () => void } => {
+    if (!this.#code) {
+      this.#code = new ChatCode({ submit: this.#submitCode, reread: () => this.reconnect() })
+      this.#code.subscribe(this.#heardCode)
+    }
+    const code = this.#code
+    this.#codeHolders++
+    this.#codeFed = ''
+    for (const row of this.#rows) code.row(row)
+    this.#feedCode()
+    let held = true
+    return {
+      code,
+      release: () => {
+        if (!held) return
+        held = false
+        this.#codeHolders = Math.max(0, this.#codeHolders - 1)
+      },
+    }
+  }
+
+  #heardCode = () => {
+    const snapshot = this.#code?.getSnapshot()
+    const sending = snapshot?.status === 'ready' && snapshot.sending
+    if (sending === this.#codeSending) return
+    this.#codeSending = sending
+    if (!this.#keep) return
+    this.#keep = { ...this.#keep, sending }
+    this.#publishReady()
+  }
+
+  #submitCode = (submission: Parameters<Overseer['submitCodeChange']>[1]) => {
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) return Promise.reject(new NotSent('The conversation is reconnecting.'))
+    return overseer.submitCodeChange(this.chatId, submission)
+  }
+
+  // Tells the chat's code what the history says of it, once that reaches back to its epoch and
+  // has changed since it was last told, and whether the agent works.
+  #feedCode() {
+    const code = this.#code
+    if (!code || !this.#loaded || !this.#codeBase.known) return
+    code.agent(this.#agentActive)
+    const base = this.#codeBase.base
+    const epoch = base?.epoch
+    const before = this.#nextBeforeSequence
+    if (before !== undefined && (epoch === undefined || before > epoch)) {
+      // Read back once at a time, and, where a page could not be had, again a while later, longer each time.
+      const run = this.#run
+      if (this.#codeHolders === 0 || this.#codeReading === run) return
+      this.#codeReading = run
+      clearTimeout(this.#codeRetry)
+      this.#reading = this.#reading.then(async () => {
+        const reached = await this.#loadedSince(run, epoch)
+        if (this.#codeReading === run) this.#codeReading = undefined
+        if (run !== this.#run) return
+        if (reached) {
+          this.#codeRetryDelay = 0
+          return this.#feedCode()
+        }
+        this.#codeRetryDelay = Math.min(this.#codeRetryDelay * 2 || CODE_RETRY.first, CODE_RETRY.most)
+        this.#codeRetry = setTimeout(() => this.#feedCode(), this.#codeRetryDelay)
+      })
+      return
+    }
+    const fed = JSON.stringify([base?.generation, epoch, base?.pins, base?.prior, this.#lastCodeMessage()])
+    if (fed === this.#codeFed) return
+    this.#codeFed = fed
+    code.history(epochCode([...this.#messages.values()], base), base?.pins ?? [])
+  }
+
+  // The latest message that says something of the chat's code, so that one that changes it tells it again.
+  #lastCodeMessage() {
+    let latest = -1
+    for (const { sequence, type } of this.#messages.values()) {
+      if ((type === 'changes' || type === 'merge' || type === 'revert') && sequence > latest) latest = sequence
+    }
+    return latest
+  }
+
+  #applyRow(chatId: number, row: StreamRow) {
+    if (chatId !== this.chatId) return
+    const generation = this.#codeBase.base?.generation ?? 0
+    this.#rows = [...this.#rows.filter((each) => each.generation >= generation), row].slice(-MAX_KEPT_ROWS)
+    this.#code?.row(row)
   }
 
   /**
@@ -649,12 +773,20 @@ export class ChatSession {
     return loading
   }
 
-  /** Fetches one older page. Concurrent calls are ignored; failures are retryable. */
+  /**
+   * Fetches one older page. Concurrent calls are ignored; failures are retryable, and the code,
+   * should it have stopped short of where its changes were last kept for one, reads on.
+   */
   loadEarlier = async () => {
+    await this.#loadEarlier(HISTORY_PAGE_SIZE)
+    this.#feedCode()
+  }
+
+  async #loadEarlier(size: number) {
     const overseer = this.#overseer
     const before = this.#nextBeforeSequence
     if (!overseer || !this.#loaded || this.#failure || this.#loadingEarlier || before === undefined) return
-    const fetching = this.#fetchEarlier(overseer, before)
+    const fetching = this.#fetchEarlier(overseer, before, size)
     this.#earlier = fetching
     try {
       await fetching
@@ -663,13 +795,13 @@ export class ChatSession {
     }
   }
 
-  async #fetchEarlier(overseer: ChatOverseer, before: number) {
+  async #fetchEarlier(overseer: ChatOverseer, before: number, size: number) {
     const run = this.#run
     this.#loadingEarlier = true
     this.#historyError = undefined
     this.#publishReady()
     try {
-      const page = await overseer.getChatHistory(this.chatId, before, HISTORY_PAGE_SIZE)
+      const page = await overseer.getChatHistory(this.chatId, before, size)
       if (run !== this.#run) return
       // Live updates (e.g. an approval resolved during the read) take precedence over the page.
       for (const message of page.messages) {
@@ -753,7 +885,6 @@ export class ChatSession {
     this.#requiresParticipation = false
     this.#deleted = false
     this.#agentActive = false
-    this.#proposes = false
     this.#liveMetadata = false
     this.#messages = new Map()
     this.#feed = EMPTY_FEED
@@ -774,6 +905,8 @@ export class ChatSession {
     this.#reading = Promise.resolve()
     clearTimeout(this.#keepTimer)
     this.#keep = undefined
+    this.#codeBase = { known: false }
+    this.#codeFed = ''
   }
 
   #publish(snapshot: ChatSnapshot) {
@@ -811,7 +944,6 @@ export class ChatSession {
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
       agentActive: this.#agentActive,
-      proposesChanges: this.#proposes,
       waiting: this.#waitingTexts(),
       pinned: this.#feed.pinned,
       sendError: this.#sendError,
@@ -872,6 +1004,9 @@ export class ChatSession {
       this.#holdView()
       for (const apply of this.#early.splice(0)) apply()
       this.#publishReady()
+      this.#feedCode()
+      // What failed to be sent over the old connection goes over this one.
+      this.#code?.retry()
     } catch (error) {
       this.#lost(run, error)
     }
@@ -901,6 +1036,7 @@ export class ChatSession {
       },
       metadata: (chat) => live(() => this.#applyMetadata(run, chat)),
       message: (message) => live(() => this.#applyMessage(message)),
+      changeApplied: (chatId, generation, revision, _author, change, submission) => live(() => this.#applyRow(chatId, { generation, revision, change, submission })),
       stream: (chatId, event) => live(() => this.#applyStream(chatId, event)),
       // Not held for the history, which is beside the point once the chat is gone.
       deleted: (chatId) => {
@@ -919,6 +1055,7 @@ export class ChatSession {
     if (this.#liveMetadata) return
     this.#readMetadata(chat)
     this.#publishReady()
+    this.#feedCode()
     this.#offerKeep(run, chat, false)
   }
 
@@ -935,6 +1072,7 @@ export class ChatSession {
       this.#compacting = false
     }
     this.#publishReady()
+    this.#feedCode()
     if (turnEnded) this.options.onTurnEnded?.()
     this.#offerKeep(run, chat, turnEnded)
   }
@@ -972,34 +1110,35 @@ export class ChatSession {
    * ended, and only if nothing has changed meanwhile, saying what they do by then.
    */
   #askToKeep(epoch: number | undefined) {
-    // What was kept while this was worked out (edits saved through the chat keep at once) is not asked about.
+    // What was kept while this was worked out (a save on the gadget's own page, through its own chat, keeps at once) is not asked about.
     if (this.#proposed === '') return this.#stopAsking()
     clearTimeout(this.#keepTimer)
     const run = this.#run
     const proposed = this.#proposed
     this.#keepTimer = setTimeout(() => {
       if (run !== this.#run || proposed !== this.#proposed || this.#agentActive) return
-      this.#keep = { changes: proposedChanges([...this.#messages.values()], epoch) }
+      this.#keep = { changes: proposedChanges([...this.#messages.values()], epoch), sending: this.#codeSending, epoch }
+      this.#keepEpoch = epoch
       this.#publishReady()
     }, Math.max(0, this.#turnEndedAt + KEEP_GRACE - Date.now()))
   }
 
-  /** Fetches earlier pages until every message after `epoch` is in, or the search gives up. */
+  /** Fetches earlier pages until every message after `epoch` is in, or one cannot be fetched. */
   async #loadedSince(run: number, epoch: number | undefined) {
-    for (let pages = 0; ; pages++) {
+    for (;;) {
       const before = this.#nextBeforeSequence
-      if (before === undefined || (epoch !== undefined && before <= epoch + 1)) return true
-      if (run !== this.#run || pages === EPOCH_SEARCH_PAGES) return false
-      await (this.#earlier ?? this.loadEarlier())
+      if (before === undefined || (epoch !== undefined && before <= epoch)) return true
+      if (run !== this.#run) return false
+      await (this.#earlier ?? this.#loadEarlier(EPOCH_PAGE_SIZE))
       if (run !== this.#run || this.#nextBeforeSequence === before) return false
     }
   }
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    this.#codeBase = { known: true, base: chat.codeBase }
     const usage = usageOf(chat)
     if (!sameUsage(this.#usage, usage)) this.#usage = usage
-    this.#proposes = (chat.proposedChangeWorkpieces?.length ?? 0) > 0
     const agentName = chat.spawnerName || 'Agent'
     this.#agent = chat.spawnerId !== undefined ? { key: agentKeyOf(chat.spawnerId), name: agentName }
       : chat.spawnerName !== undefined ? { key: namedAgentKey(agentName), name: agentName } : undefined
@@ -1033,10 +1172,13 @@ export class ChatSession {
       if (arrived !== -1) this.#steers = this.#steers.toSpliced(arrived, 1)
     }
     this.#rebuildFeed()
+    // What is asked about says what more was written into it meanwhile, such as edits typed beside the chat.
+    if (message.type === 'changes' && this.#keep) this.#keep = { ...this.#keep, changes: proposedChanges([...this.#messages.values()], this.#keepEpoch) }
     // A finished step replaces what streamed of it; updates to an agent's approval/tool cards do not.
     if (message.type === 'message' && message.author.type === 'agent' &&
       (this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)) this.#discardProvisional()
     this.#publishReady()
+    if (message.type === 'changes' || message.type === 'merge' || message.type === 'revert') this.#feedCode()
   }
 
   /** Refreshes the copy of an action's record that its chat message carries. */

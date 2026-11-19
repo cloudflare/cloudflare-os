@@ -91,7 +91,7 @@ render(await gadget.getDocument())
 export class MockGadget {
   #document: { title: string; tasks: Task[] }
 
-  constructor(title: string, private readonly backUp: () => Promise<void>, private readonly ui: () => string = () => UI_CODE, private readonly onDone?: (task: string) => void) {
+  constructor(title: string, private readonly backUp: () => Promise<void>, private readonly ui: (chatId?: number) => string = () => UI_CODE, private readonly onDone?: (task: string) => void) {
     this.#document = {
       title,
       tasks: [
@@ -120,10 +120,10 @@ export class MockGadget {
       if (handle.broken) throw handle.broken
     }
     return {
-      getUiBundle: async (): Promise<UiBundle | null> => {
+      getUiBundle: async (chatId?: number): Promise<UiBundle | null> => {
         await reachable()
         await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
-        return { jsCode: this.ui() }
+        return { jsCode: this.ui(chatId) }
       },
       getExportFormats: async () => {
         await reachable()

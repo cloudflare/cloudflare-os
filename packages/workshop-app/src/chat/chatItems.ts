@@ -478,11 +478,25 @@ const creationOf = (
   return { workpieceId: call.output.gadgetId, title: call.input.title, type: 'gadget', draft: state === 'pending' }
 }
 
+// Edits alone are not said: the server writes what is typed into a message whenever it needs it
+// (as the gadget beside the chat loads again), so one says nothing of when anyone did anything, and
+// what is waiting to be kept says them already.
 const changesText = (message: Message<'changes'>, actor: string) => {
   if (message.mainlineMerge) return `${actor} brought in the latest accepted changes`
   if (message.createdGadgets?.length) return `${actor} created ${message.createdGadgets.map(({ title }) => `“${title}”`).join(', ')}`
   if (message.blueprintMerges?.length) return `${actor} proposed updating to ${message.blueprintMerges.map(({ title }) => `“${title}”`).join(', ')}`
-  return `${actor} saved edits`
+  return undefined
+}
+
+// What a keep kept, by the gadgets it made commits for, named where the conversation made them:
+// two by name, more or any it does not name counted, and none, as for a keep of nothing but
+// connections, not said.
+const keptText = (message: Message<'merge'>, actor: string, titles: ReadonlyMap<number, string>) => {
+  const gadgets = [...new Set(message.commits.map(({ gadgetId }) => gadgetId))]
+  const named = gadgets.flatMap((gadgetId) => titles.get(gadgetId) ?? [])
+  if (gadgets.length === 0 || (gadgets.length === 1 && named.length === 0)) return `${actor} kept changes`
+  if (gadgets.length > 2 || named.length < gadgets.length) return `${actor} kept changes to ${gadgets.length} apps`
+  return `${actor} kept changes to ${named.map((title) => `“${title}”`).join(' and ')}`
 }
 
 /**
@@ -498,6 +512,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     ...(previous?.items ?? []).flatMap((item) => (item.kind === 'assistant' ? item.trace : [])),
   ])
   const creationState = creationStates(messages)
+  const createdTitles = new Map(messages.flatMap((message) => (message.type === 'changes' ? message.createdGadgets ?? [] : []).map(({ gadgetId, title }) => [gadgetId, title] as const)))
   const waitingFetches = messages.flatMap((message) => (message.type === 'webFetchRequest' && message.state === 'pending' ? [message.requestId] : []))
   const { viewerId, compactedTo } = context
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
@@ -729,18 +744,15 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       case 'changes':
         // The agent's own edits are part of its work; the migration's bookkeeping is nobody's action.
         if (message.author.type === 'user' && !message.conversionBoundary) {
-          act(message, 'changes', changesText(message, actor(message.author)))
+          const text = changesText(message, actor(message.author))
+          if (text) act(message, 'changes', text)
         }
         break
 
-      case 'merge': {
-        // Nothing is kept until someone keeps it, so each keep is marked, as a discard is. The
-        // viewer's own just after they saved edits is part of saving them, which says it already.
-        const before = messages[index - 1]
-        const saved = before?.type === 'changes' && before.author.id === viewerId && message.author.id === viewerId
-        if (!saved) act(message, 'merge', `${actor(message.author)} kept changes`)
+      case 'merge':
+        // Nothing is kept until someone keeps it, so each keep is marked, as a discard is.
+        act(message, 'merge', keptText(message, actor(message.author), createdTitles))
         break
-      }
 
       case 'revert':
         act(message, 'revert', `${actor(message.author)} discarded changes`)

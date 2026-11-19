@@ -1,21 +1,5 @@
 import type { AiChatMessage } from '@gadgets/workshop-shared/api'
-
-type Changes = Extract<AiChatMessage, { type: 'changes' }>
-
-/**
- * The batches of changes a chat still proposes: those after the merge that opened its epoch
- * (`ChatCodeBase.epoch`) that no revert has discarded since.
- */
-const proposedBatches = (messages: readonly AiChatMessage[], epoch: number | undefined) => {
-  let batches: Changes[] = []
-  for (const message of messages.toSorted((a, b) => a.sequence - b.sequence)) {
-    if (epoch !== undefined && message.sequence <= epoch) continue
-    if (message.type === 'changes') batches.push(message)
-    else if (message.type === 'merge') batches = batches.filter(({ sequence }) => sequence > message.mergeThrough)
-    else if (message.type === 'revert') batches = batches.filter(({ sequence }) => sequence < message.revertFrom)
-  }
-  return batches
-}
+import { epochBatches } from './code/epochCode'
 
 /** What a chat's still-proposed changes would do, as far as the user is asked to keep them. */
 export type ProposedChanges = {
@@ -37,14 +21,24 @@ export type ProposedChanges = {
   mainline: boolean
   /** Files left with conflict markers, by path, which keeping them would keep as they are. */
   conflicts: string[]
+  /** How many files they change of each gadget whose code they change, by its id. */
+  files: Record<number, number>
 }
 
 /** What the batches a chat still proposes add up to. `messages` must reach back to its epoch. */
 export const proposedChanges = (messages: readonly AiChatMessage[], epoch: number | undefined): ProposedChanges => {
-  const batches = proposedBatches(messages, epoch)
+  const batches = epochBatches(messages, epoch)
   const created = batches.flatMap(({ createdGadgets = [] }) => createdGadgets.map(({ gadgetId, title }) => ({ gadgetId, title })))
   const made = new Set(created.map(({ gadgetId }) => gadgetId))
   const edited = new Set(batches.flatMap(({ change = {} }) => Object.keys(change).map(Number)).filter((gadgetId) => !made.has(gadgetId)))
+  const paths = new Map<number, Set<string>>()
+  for (const { change = {} } of batches) {
+    for (const [gadgetId, entries] of Object.entries(change)) {
+      const of = paths.get(Number(gadgetId)) ?? new Set<string>()
+      for (const [path] of entries) of.add(path)
+      paths.set(Number(gadgetId), of)
+    }
+  }
   const conflicts = new Set<string>()
   for (const { blueprintMerges = [], mainlineMerge } of batches) {
     for (const { conflictPaths } of blueprintMerges) conflictPaths.forEach((path) => conflicts.add(path))
@@ -58,5 +52,6 @@ export const proposedChanges = (messages: readonly AiChatMessage[], epoch: numbe
     updates: batches.flatMap(({ blueprintMerges = [] }) => blueprintMerges.filter(({ gadgetId }) => !made.has(gadgetId)).map(({ gadgetId, title }) => ({ gadgetId, title }))),
     mainline: batches.some(({ mainlineMerge }) => mainlineMerge !== undefined),
     conflicts: [...conflicts],
+    files: Object.fromEntries([...paths].map(([gadgetId, of]) => [gadgetId, of.size])),
   }
 }

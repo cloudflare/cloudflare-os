@@ -31,6 +31,7 @@ src/
   workspaces/   The user's workspace list, and one workspace's page (`WorkspacePane`)
   chat/         One chat: `ChatSession` (plain class, no React), the mapping from server
                 messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
+  chat/code/    A chat's code, live: its stream of changes and the edits made here (`ChatCode`)
   chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
   aside/        What is open beside the page (a file, an output), and the ways to open it
   library/      Everything the user's workspaces have made (`useLibrary`), and the Library page
@@ -188,19 +189,30 @@ turn's are kept apart (`pinned`) and rendered under the conversation. Once the u
 request it is history and stays where it was answered: below what had been written by then, above
 what came after, never moved back up among earlier messages. An action a standing rule approved
 was decided as it was made, and is shown there the same way. What a person then did to the chat's
-changes (saved edits, kept, discarded) follows the artefacts, as a divider. Keep these rules
+changes (kept, discarded, brought in) follows the artefacts, as a divider; edits alone are not
+marked, as the server writes them into a message whenever it needs to, and what waits to be kept
+says them. Keep these rules
 when adding a kind.
 
 Nothing a chat changes is kept until someone keeps it. Until then its changes are only beside
 that chat (see Beside the page): a gadget's own page, the library and everyone else have it as it
 was kept. Once its turn ends, or when it is opened with changes waiting, the end of the
 conversation asks (`KeepChangesCard`, from `ChatSession`'s `keep`, a moment after the turn so that
-what it last changed is in): what they make, change, give and bring in (`chat/proposedChanges.ts`,
-read back to the last keep, and `chat/keepChanges.ts`, both plain and tested), what to know first
-(conflicts, a connection given, an update brought in, or else that they are only in the chat), Keep
-and Discard. Keep brings in what was kept elsewhere first where that has moved on, unless that
-leaves conflicts. Each keep is marked in the conversation, as a discard is, but the one saving the
-viewer's edits makes, which says so already.
+what it last changed is in), folded to its question ("Keep changes to Tip Jar?", or how many apps)
+with Discard and Keep, which are for everything at once, as a chat's changes are only kept or
+discarded whole (`mergeChanges`, `revertChanges`), under all it opens to and halving its width
+where they have no room beside the question; whoever asked knows what they asked for. The question,
+or a click anywhere on the card but its buttons, opens it, as a row does (`DisclosureStore`, each
+ask afresh, folded), to what to know first, which describes Keep folded too, where there is something (conflicts, a connection given, an update brought in;
+nothing for code alone), each app they change with its format's icon and how many of its files
+(`chat/proposedChanges.ts`, read back to the last keep however far that is, and again as more is
+written, plain and tested), opened beside the chat from its row, and what else they make, give and
+bring in (`chat/keepChanges.ts`, plain and tested), each gadget named and drawn as the workspace
+has it (`useGadgetTitles`) where the conversation does not. Keep waits while edits typed beside the
+chat are on their way (`KeepAsk.sending`), as it would leave them out, and brings in what was kept
+elsewhere first where that has moved on, unless that leaves conflicts. Each keep is marked in the
+conversation, as a discard is, naming what it kept where the conversation made it ("You kept
+changes to “Tip Jar”", or how many apps).
 
 A message sent while the agent works ends the conversation, dimmed, until the agent reads it. It
 is the same row before and after, so being read only brings it to full strength. Its key is its
@@ -1280,32 +1292,61 @@ app's size (`--control-size`, `--control-text`), and nothing in it is under `tex
 cap or a change's letter. Cmd or Ctrl with P to go to a file (`CodeQuickOpen`), and a status line. Its
 history (`useCodeHistory`, `getCommitLog()`) lists each time the code was kept; picking one shows
 only what changed then, each file as a diff from the commit before (`@codemirror/merge`, unified
-or side by side, `prefs/codePrefs`), with what was compared over it and the way back. Reads are
+first, or side by side for as long as the file is shown), with what was compared over it and the way back. Reads are
 kept by commit, which never changes (`gadgets/codeReads`). A gadget's first commit, which it was
 made with and is empty, is not listed.
 
-A gadget's View code is edited as `plans/code-editing.md` designs it, with nothing asked of the
-kernel: what is typed, and its files made (a `/` in the name makes folders), renamed or moved,
-duplicated, deleted and put back from the tree's ⋯ menus and +, is a draft per gadget
-(`gadgets/codeDrafts`, tested, kept for the tab's life, a `beforeunload` warning while any is
-left) that is saved or discarded by hand, never on its own. Renaming or deleting the file the
-gadget is built from (`client.*`, `server.*`) asks first, in a dialog (`CodeFileCautionDialog`,
-held by `CodeFileMenu`, so that the tree and the tabs have it alike) that says what stops working,
-and the menu says nothing of it. Each file of it is dotted in the tree
-and quick open, and the status line counts it beside Discard (which asks) and Save. Saving
-(`gadgets/saveCode`, tested) reads the head first and stops, naming the files, where someone
+A gadget's code is edited in one of two ways, by where it is shown (`GadgetCodeView`), both with
+the same file actions: what is typed, and its files made (a `/` in the name makes folders),
+renamed or moved, duplicated, deleted and put back from the tree's ⋯ menus and +. Renaming or
+deleting the file the gadget is built from (`client.*`, `server.*`) asks first, in a dialog
+(`CodeFileCautionDialog`, held by `CodeFileMenu`, so that the tree and the tabs have it alike) that
+says what stops working, and the menu says nothing of it. Undo is per file and outlives switching
+files (`historyKey`). Nothing can be edited while a past version is compared, and a worktree's
+code stays read only.
+
+Beside a chat it is the chat's code, and there is no Save: what is typed goes straight into the
+chat, and keeping the chat's changes is the only step, as in the old app. `chat/code/` holds it,
+plain and tested, with no React: `ChatSession.holdCode()` makes a `ChatCode` (`useChatCode`), fed
+the history back to the last keep, however far back that is, in pages as large as may be
+(`epochCode`), and each row of the chat's change stream as the
+server took it (`changeStream`, which waits out gaps and finishes a keep's last rows before the
+next generation), with what is edited here on top (`localEdits`): one change sent at a time, as it
+was should it fail, and moved past everyone else's with the shared `transformCodeChange`. Its first edit to a gadget declares the commit it is shown over as its pin.
+The client never holds the chat's files: the changes compose without them, and a file's text is
+read at its commit only as it is shown (`useChatGadgetCode`, `gadgets/chatCodeFiles.ts`), with the
+changes on top. What the chat changed, compared with what it last brought in (the pin's
+`mergedCommit`), is listed over the tree as Changes, and a file that changed shows as its change,
+in one column, as soon as it does, typed in there too: the editor takes the diff on in place
+(`CodeEditor`), so typing in a file that this makes a diff keeps the caret, focus and undo, and,
+unlike a file opened as its diff, folds nothing away; the status line says it is only in the chat until kept
+(`gadgets/useLiveCodeEditing`). The editor reports each edit as CodeMirror's ChangeSet, which is
+the wire's `TextChange`, and takes text from outside in as the span that differs, so that the
+agent's or someone else's edits never move the caret. An edit is over what was drawn
+(`ChatCode.shown`), so what arrived before it was drawn is moved past it; one that cannot be taken,
+as when the agent began meanwhile, is undone in the editor. It can't be edited while the chat's agent
+works. One not sent while the conversation reconnects is tried again as long as that takes, without
+saying so; one refused is tried three more times, waiting longer each time, and then what was
+edited is undone and that is said, and the chat read again, as edits lost with the chat's changes are: discarded, or not
+matched, where the stream started over from the history, as after waiting too long for the last
+rows of a keep. Only what the server cannot have is said to be lost: what was not sent yet, or was
+refused and waits to be sent again, and what was on its way only once the server says it did not
+take it. A page of the history that could not be had is read again a while later.
+
+On the gadget's own page it is as kept, and is edited as `plans/code-editing.md` designs it: a
+draft per gadget (`gadgets/codeDrafts`, tested, kept for the tab's life, a `beforeunload` warning
+while any is left) that is saved or discarded by hand, never on its own. Each file of it is dotted
+in the tree and quick open, and the status line counts it beside Discard (which asks) and Save.
+Saving (`gadgets/saveCode`, tested) reads the head first and stops, naming the files, where someone
 changed one the draft changed since it was read, offering to discard the draft's or save it
-anyway; otherwise it is one `submitCodeChange` of whole files (`toChange`), at the chat's place in
-its stream and pinned at the head unless the chat pins the gadget already, then `mergeChanges`.
-A stale keep is taken back out of the chat (`revertChanges`) and checked again, once. Beside a
-chat it goes through that chat; on its own the last chat this device made for it is reused
-(`prefs/editChats`) while it can take it, else a chat is made with the agent off, saying what was
-edited, titled "Edits to …". It can't be edited while that chat's agent works or the chat proposes
-changes not kept yet, or while a past version is compared, and the status line says why
-(`gadgets/useCodeEditing`, which ties it to `CodeBrowser`). Undo is per file and outlives switching
-files (`historyKey`). The `output` scenario's gadget can be edited and saved, and its scenario menu
-has someone else change its client.js, for a conflict; the gallery has each state. A worktree's code
-stays read only.
+anyway; otherwise it is one `submitCodeChange` of whole files (`toChange`), pinned at the head,
+then `mergeChanges`, through the last chat this device made for it (`prefs/editChats`) while it
+can take it, else a chat made with the agent off, saying what was edited, titled "Edits to …". A
+stale keep is taken back out of the chat (`revertChanges`) and checked again, once
+(`gadgets/useCodeEditing`). The scripted chats' server keeps a chat's code as the real one does
+(`chat/mock/MockChatCode`), so the `output` scenario's gadget can be edited beside its chat and on
+its page, and its scenario menu has someone else change its client.js, for a conflict; the gallery
+has each state.
 
 A worktree (a repository an agent checked out, `WorktreeSummary`) is shown as its code
 (`WorktreeView` over `CodeBrowser`, read by `aside/useWorktree`): as kept (`pinBase`), opening on

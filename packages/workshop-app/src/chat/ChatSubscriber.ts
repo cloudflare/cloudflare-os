@@ -1,8 +1,9 @@
 import { RpcTarget } from 'capnweb'
 import type { ActionLogEntry, ActionsSubscriber, AiChatSubscriber } from '@gadgets/workshop-shared/api'
 
-/** The notifications this app acts on. Code changes (`changeApplied`) are not part of it. */
-export type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'>
+/** The notifications this app acts on: the changes to a chat's code (`changeApplied`) only where its code is read. */
+export type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'> &
+  Partial<Pick<AiChatSubscriber, 'changeApplied'>>
 
 /**
  * What the server calls with chat activity. A class, because the server must receive a single stub
@@ -33,7 +34,9 @@ export class ChatSubscriber extends RpcTarget implements AiChatSubscriber {
     this.events.deleted(...args)
   }
 
-  changeApplied() {}
+  changeApplied(...args: Parameters<AiChatSubscriber['changeApplied']>) {
+    this.events.changeApplied?.(...args)
+  }
 }
 
 /**

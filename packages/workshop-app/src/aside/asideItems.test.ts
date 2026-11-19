@@ -11,7 +11,7 @@ const user = (id: number, files: string[], sentAt?: Date): UserItem => ({
   kind: 'user', id, key: `user:${id}`, text: '', parts: [], sentAt, attachments: files.map((name) => ({ id: name, name, mimeType: 'text/plain', size: 1 })),
 })
 const ready = (items: ChatItem[], pinned: OutputItem[] = []): ChatSnapshot => ({
-  status: 'ready', title: undefined, notificationsRequireParticipation: false, agent: undefined, usage: {}, items, pinned, activity: undefined, work: [], agentActive: false, proposesChanges: false, waiting: [],
+  status: 'ready', title: undefined, notificationsRequireParticipation: false, agent: undefined, usage: {}, items, pinned, activity: undefined, work: [], agentActive: false, waiting: [],
   sendError: undefined, keep: undefined, actionError: undefined, hasEarlier: false, loadingEarlier: false, historyError: undefined,
 })
 

@@ -31,6 +31,9 @@ import { continuesRun, EMPTY_FEED, outOfCreditsAt, type ActionItem, type ChatAtt
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { bindingKey, useBindingTitles } from './useBindingTitles'
+import { useGadgetTitles, type GadgetTitle } from './useGadgetTitles'
+import type { ProposedChanges } from './proposedChanges'
+import type { KeepAsk } from './ChatSession'
 import { quoteLine, withQuote } from './replyQuote'
 import { ChatStatusLine } from './ChatStatusLine'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
@@ -83,17 +86,61 @@ export type ChatPaneProps = {
   onDeleted: () => void
 }
 
+// A gadget's output, where the chat shows one.
+const outputOf = (items: readonly ChatItem[], gadgetId: number) =>
+  items.find((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)
+
 // A gadget by the title the chat shows its output under, where it shows one.
-const outputTitle = (items: readonly ChatItem[], gadgetId: number) =>
-  items.find((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)?.title
+const outputTitle = (items: readonly ChatItem[], gadgetId: number) => outputOf(items, gadgetId)?.title
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
 const NO_BINDINGS: { gadgetId: number; name: string }[] = []
+const NO_IDS: number[] = []
+// What is asked about is opened to as a row is, kept as the conversation's own rows are: each
+// ask afresh, folded, once the changes asked about before are kept.
+const keepKey = ({ epoch }: KeepAsk) => `keep:${epoch ?? ''}`
+
+// Every gadget a chat's waiting changes are about, and what they reach.
+const keptGadgetIds = ({ created, edited, bindings, updates }: ProposedChanges) => [
+  ...created.map(({ gadgetId }) => gadgetId), ...edited, ...bindings.flatMap(({ gadgetId, target }) => [gadgetId, target]), ...updates.map(({ gadgetId }) => gadgetId),
+]
+
+// The gadgets the changes are to, each once: those made, then changed, updated, and given something.
+const keptApps = ({ created, edited, updates, bindings }: ProposedChanges): number[] =>
+  [...new Set([...created.map(({ gadgetId }) => gadgetId), ...edited, ...updates.map(({ gadgetId }) => gadgetId), ...bindings.map(({ gadgetId }) => gadgetId)])]
+
+// A gadget the changes are to by the title the conversation shows it under, else the workspace
+// has it by, else the changes gave it.
+const keptTitle = (output: OutputItem | undefined, known: GadgetTitle | undefined, changes: ProposedChanges, gadgetId: number) =>
+  output?.title ?? known?.title ?? changes.created.find((made) => made.gadgetId === gadgetId)?.title
+
+// A gadget the changes are about, as an output to show, as its row in the conversation has it
+// where it has one, else a draft where the changes make it.
+const keptOutput = (items: readonly ChatItem[], changes: ProposedChanges, gadgetId: number, title: string | undefined): OutputItem =>
+  outputOf(items, gadgetId)
+    ?? { kind: 'output', id: 0, key: `keep-${gadgetId}`, workpieceId: gadgetId, title: title ?? 'Untitled', type: 'gadget', draft: changes.created.some((made) => made.gadgetId === gadgetId) }
 
 export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAgent, onOpenAgents, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onOpenAutomation, automationHref, onSetUpConnection, onAlwaysApprove, onApproveCreation, onDeleted }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   // What the bindings it waits to keep reach, by the names people know them by.
-  const keepBindings = useBindingTitles(workspaceId, chatId, chat.status === 'ready' ? chat.keep?.changes.bindings ?? NO_BINDINGS : NO_BINDINGS)
+  const keeping = chat.status === 'ready' ? chat.keep?.changes : undefined
+  const keepBindings = useBindingTitles(workspaceId, chatId, keeping?.bindings ?? NO_BINDINGS)
+  // The gadgets they change that the conversation does not name, by the titles the workspace has.
+  const keepGadgets = useGadgetTitles(workspaceId, keeping ? keptGadgetIds(keeping) : NO_IDS)
+  // The apps they are to, named, each opened from them.
+  const keepApps = chat.status === 'ready' && keeping
+    ? keptApps(keeping).map((gadgetId) => {
+      const output = outputOf([...chat.items, ...chat.pinned], gadgetId)
+      const known = keepGadgets.get(gadgetId)
+      return {
+        gadgetId,
+        title: keptTitle(output, known, keeping, gadgetId),
+        icon: output?.format?.icon ?? known?.icon,
+        files: keeping.files[gadgetId],
+      }
+    })
+    : []
+
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
   const connection = useConnectionNotice()
@@ -111,6 +158,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   // Shown or put away for every chat at once, and kept: developer mode turns it on (`writeDevMode`).
   const [liveWorkOpen, setLiveWorkOpen] = useLiveWorkOpen()
   const openWork = useOpenKeys(disclosure, work.map(({ key }) => key))
+  const keepKeys = useMemo(() => (chat.status === 'ready' && chat.keep ? [keepKey(chat.keep)] : []), [chat])
+  const keepOpen = useOpenKeys(disclosure, keepKeys)
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
   // What the chat's cards show it set up to run by itself and was not deleted, for the header's clock.
@@ -456,10 +505,15 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
             {chat.keep && (
               <LiveRows.Row key="keep">
                 <KeepChangesCard
-                  changes={keepChangeLines(chat.keep, (gadgetId) => outputTitle([...chat.items, ...chat.pinned], gadgetId), (gadgetId, name) => keepBindings.get(bindingKey(gadgetId, name)))}
+                  changes={keepChangeLines(chat.keep, (gadgetId) => outputTitle([...chat.items, ...chat.pinned], gadgetId) ?? keepGadgets.get(gadgetId)?.title, (gadgetId, name) => keepBindings.get(bindingKey(gadgetId, name)))}
                   reason={keepReason(chat.keep)}
                   onKeep={actions.keepChanges}
+                  sending={chat.keep.sending}
                   onDiscard={() => void actions.discardChanges()}
+                  apps={keepApps}
+                  onOpen={onOpenOutput && keeping ? (gadgetId) => onOpenOutput(keptOutput([...chat.items, ...chat.pinned], keeping, gadgetId, keepApps.find((app) => app.gadgetId === gadgetId)?.title)) : undefined}
+                  open={keepOpen.has(keepKey(chat.keep))}
+                  onToggle={() => chat.keep && disclosure.toggle(keepKey(chat.keep))}
                 />
               </LiveRows.Row>
             )}

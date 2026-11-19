@@ -30,7 +30,15 @@ describe('proposedChanges', () => {
       updates: [{ gadgetId: 5, title: 'Docs' }],
       mainline: true,
       conflicts: ['a.js'],
+      files: { 4: 0 },
     })
+  })
+
+  it('counts the files each gadget’s code changes, each once however often', () => {
+    expect(proposedChanges([
+      changes(1, { change: { 4: [['a.js', { set: 'a' }], ['b.js', { set: 'b' }]] } }),
+      changes(2, { change: { 4: [['a.js', { set: 'again' }]], 5: [['c.js', { remove: true }]] } }),
+    ], undefined).files).toEqual({ 4: 2, 5: 1 })
   })
 
   it('says a gadget it makes once, with its blueprint’s release and code as part of it', () => {

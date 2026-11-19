@@ -15,7 +15,8 @@ import { usePointerNearTop } from '@/hooks/usePointerNearTop'
 import { accessNotConfirmed, useAskAccessAgain } from '@/connections/ObserverAccessProvider'
 import type { CodeLines } from '@/components/CodeEditor'
 import { agentKeyOf } from '@/automations/agents'
-import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
+import { historyEntry } from '@/gadgets/codeHistory'
+import { GadgetCodeView } from '@/gadgets/GadgetCodeView'
 import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
 import { DEFAULT_GADGET_SETTINGS_TAB, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
@@ -213,6 +214,7 @@ export const AsidePane = (props: AsidePaneProps) => {
             workspaceId={gadget.workspaceId}
             gadget={{ id: gadget.workpieceId, title, chatId: gadget.chatId }}
             commitId={snapshot.commitId}
+            known={snapshot.title !== undefined}
             file={codeHere?.file}
             onShowFile={(file) => setCode({ key: item.key, open: true, file })}
             lines={codeHere?.lines}

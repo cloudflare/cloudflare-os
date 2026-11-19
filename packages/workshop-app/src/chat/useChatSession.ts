@@ -1,4 +1,5 @@
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
+import type { ChatCode, ChatCodeSnapshot } from './code/ChatCode'
 import type { ChatSession, ChatSnapshot } from './ChatSession'
 import { useChatSessions } from './ChatSessionsContext'
 
@@ -9,8 +10,10 @@ export type ChatActions = Pick<
 >
 
 const LOADING: ChatSnapshot = { status: 'loading' }
+const CODE_LOADING: ChatCodeSnapshot = { status: 'loading' }
 const noSubscription = () => () => {}
 const loading = () => LOADING
+const codeLoading = () => CODE_LOADING
 
 /**
  * One chat, live, while the calling component is mounted: its session is shared with whoever else
@@ -38,4 +41,25 @@ export const useChatBeside = (chat: { workspaceId: string; chatId: number } | un
   const session = useHeldSession(chat)
   const snapshot = useSyncExternalStore(session?.subscribe ?? noSubscription, session?.getSnapshot ?? loading)
   return { chat: snapshot, actions: session }
+}
+
+/**
+ * A chat's code, live (`ChatCode`), while the calling component is mounted, and the way to edit it.
+ * Loading, with nothing to edit it by, until it has been read, and for no chat.
+ */
+export const useChatCode = (chat: { workspaceId: string; chatId: number } | undefined): { code: ChatCodeSnapshot; edits: ChatCode | undefined } => {
+  const session = useHeldSession(chat)
+  const [held, setHeld] = useState<{ session: ChatSession; code: ChatCode }>()
+  useEffect(() => {
+    if (!session) return
+    const { code, release } = session.holdCode()
+    setHeld({ session, code })
+    return () => {
+      release()
+      setHeld(undefined)
+    }
+  }, [session])
+  const code = held?.session === session ? held?.code : undefined
+  const snapshot = useSyncExternalStore(code?.subscribe ?? noSubscription, code?.getSnapshot ?? codeLoading)
+  return { code: snapshot, edits: code }
 }

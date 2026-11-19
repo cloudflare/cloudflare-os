@@ -1,17 +1,19 @@
 import { useMemo, useState } from 'react'
-import type { CommitInfo } from '@gadgets/workshop-shared/api'
-import { CodeBrowser, type CodeBrowserCommit, type CodeBrowserProps } from '@/blocks/CodeBrowser'
+import { CodeBrowser, type CodeBrowserProps } from '@/blocks/CodeBrowser'
 import type { CodeLines } from '@/components/CodeEditor'
-import { formatActivity } from '@/workspaces/formatActivity'
+import { ChatGadgetCodeView } from './ChatGadgetCodeView'
+import { historyEntry, keptWhen } from './codeHistory'
 import { useCodeEditing } from './useCodeEditing'
 import { useCodeHistory, useGadgetCode, type CodeComparison } from './useGadgetCode'
 
 export type GadgetCodeViewProps = {
   workspaceId: string
-  /** The gadget, by its id and title, and the chat it is shown beside, where it is: what edits are saved through. */
+  /** The gadget, by its id and title, and the chat it is shown beside, where it is, which it is shown and edited as. */
   gadget: { id: number; title: string; chatId?: number }
-  /** The commit its code was last kept in: its head. Nothing is shown until it is known. */
+  /** The commit its code was last kept in: its head. Nothing is shown as kept until it is known. */
   commitId: string | undefined
+  /** The workspace has said what its head is: none, for one a chat made that is not kept yet. */
+  known: boolean
   /** The file asked for, as the page's address says; the first is shown without one. */
   file?: string
   onShowFile: (path: string) => void
@@ -26,27 +28,21 @@ export type GadgetCodeViewProps = {
   empty?: string
 } & Pick<CodeBrowserProps, 'frame' | 'className'>
 
-/** A commit as the history lists it: its message's first line, who kept it, and when. */
-export const historyEntry = ({ oid, message, author, timestamp }: CommitInfo): CodeBrowserCommit =>
-  ({ id: oid, summary: message.split('\n')[0]?.trim() || 'Kept changes', author: author.name, time: formatActivity(timestamp) })
-
-// When the code shown was kept, as the footer says it: "Kept 5 min ago", "Kept yesterday", "Kept on Aug 2".
-const keptWhen = (date: Date) => {
-  const when = formatActivity(date)
-  if (when.endsWith('ago')) return `Kept ${when}`
-  if (when === 'Just now' || when === 'Yesterday') return `Kept ${when.toLowerCase()}`
-  return `Kept on ${when}`
-}
-
 /**
- * A gadget's code as it was last kept (`CodeBrowser`), and its history: each time a chat's changes
- * to it were kept, newest first, which opens to what changed then, compared with the time before.
- * The first commit, which a gadget is made with and has nothing in it, is left out. The code as it
- * is now is edited (`useCodeEditing`), as a draft saved through a chat.
+ * A gadget's code (`CodeBrowser`), and its history: each time a chat's changes to it were kept,
+ * newest first, which opens to what changed then, compared with the time before. The first
+ * commit, which a gadget is made with and has nothing in it, is left out.
+ *
+ * Beside a chat it is the chat's (`ChatGadgetCodeView`), edited live. Anywhere else it is as it was
+ * last kept, and edited as a draft saved through a chat of its own (`useCodeEditing`).
  */
-export const GadgetCodeView = ({
+export const GadgetCodeView = ({ gadget, known, ...props }: GadgetCodeViewProps) => gadget.chatId !== undefined
+  ? <ChatGadgetCodeView {...props} gadget={{ id: gadget.id, title: gadget.title }} chatId={gadget.chatId} known={known} />
+  : <KeptGadgetCodeView {...props} gadget={gadget} />
+
+const KeptGadgetCodeView = ({
   workspaceId, gadget, commitId, file, onShowFile, lines, onLinesChange, linkTo, active = true, empty, frame, className,
-}: GadgetCodeViewProps) => {
+}: Omit<GadgetCodeViewProps, 'known'>) => {
   const [comparing, setComparing] = useState<string>()
   const history = useCodeHistory(workspaceId, commitId, active)
   const log = history.status === 'ready' ? history.commits : undefined

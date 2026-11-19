@@ -93,6 +93,43 @@ export const ChangeMark = ({ change }: { change: NonNullable<CodeTreeEntry['chan
   </span>
 )
 
+/**
+ * The files that changed, flat, in the order given, each by its name and the folder it is in,
+ * with the letter of how it changed: what to look at first, over the tree.
+ */
+export const CodeChangeList = ({ files, shown, onShow }: { files: readonly CodeTreeEntry[]; shown?: string; onShow: (path: string) => void }) => (
+  <ul aria-label="Changes" className="flex flex-col gap-0.5">
+    {files.map((file) => {
+      const at = file.path.lastIndexOf('/')
+      const name = file.path.slice(at + 1)
+      const folder = at === -1 ? '' : file.path.slice(0, at)
+      const Icon = codeFileIcon(file.path)
+      const selected = file.path === shown
+      return (
+        <li key={file.path} className="flex">
+          <button
+            type="button"
+            aria-current={selected ? 'true' : undefined}
+            title={file.change ? `${file.path} · ${CHANGE[file.change].label}` : file.path}
+            onClick={() => onShow(file.path)}
+            className={cn(
+              'flex min-h-(--control-size) min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-xl py-1.5 ps-3 pe-3 text-left text-(length:--control-text) outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring',
+              selected ? 'bg-kumo-base text-kumo-default shadow-xs ring-1 ring-kumo-line' : 'text-kumo-default hover:bg-kumo-fill',
+            )}
+          >
+            <Icon aria-hidden="true" className={cn('size-[1.125em] shrink-0', selected ? 'text-kumo-default' : 'text-kumo-subtle')} />
+            <span className="flex min-w-0 flex-1 items-baseline gap-2 leading-5">
+              <span className={cn('truncate', file.change === 'removed' && 'text-kumo-subtle line-through decoration-kumo-subtle/60')}>{name}</span>
+              {folder && <span className="min-w-0 truncate text-sm text-kumo-subtle">{folder}</span>}
+            </span>
+            {file.change && <ChangeMark change={file.change} />}
+          </button>
+        </li>
+      )
+    })}
+  </ul>
+)
+
 // A row's room before it, by how deep it is: the width of a caret for each folder it is in.
 const indent = (depth: number) => ({ paddingInlineStart: `${12 + depth * 16}px` })
 // A file in a folder sits under the folder's name, past its caret.
@@ -241,6 +278,14 @@ export const CodeFileTree = ({ files, shown, onShow, editing, adding, onAddingEn
         const change = file.change && CHANGE[file.change]
         const offers = editing && file.offers
         const deleted = file.change === 'removed' || file.edit === 'deleted'
+        // How it changed is last on its row, after its menu where it has one.
+        const marked = file.change !== undefined || file.edit !== undefined
+        const marks = (
+          <>
+            {file.change && <ChangeMark change={file.change} />}
+            {file.edit && <EditDot edit={file.edit} />}
+          </>
+        )
         const item = (
           <button
             key={key}
@@ -264,30 +309,32 @@ export const CodeFileTree = ({ files, shown, onShow, editing, adding, onAddingEn
             className={cn(
               'flex min-w-0 flex-1 shrink-0 cursor-pointer items-center gap-2.5 rounded-xl py-1.5 text-left text-(length:--control-text) outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring',
               'min-h-(--control-size)',
-              offers ? 'pe-11' : 'pe-3',
+              offers ? (marked ? 'pe-16' : 'pe-11') : 'pe-3',
               selected ? 'bg-kumo-base text-kumo-default shadow-xs ring-1 ring-kumo-line' : 'text-kumo-default hover:bg-kumo-fill',
             )}
           >
             <Icon aria-hidden="true" className={cn('size-[1.125em] shrink-0', selected ? 'text-kumo-default' : 'text-kumo-subtle')} />
             <span className={cn('min-w-0 flex-1 truncate leading-5', deleted && 'text-kumo-subtle line-through decoration-kumo-subtle/60')}>{node.name}</span>
-            {file.change && <ChangeMark change={file.change} />}
-            {file.edit && <EditDot edit={file.edit} />}
+            {!offers && marks}
           </button>
         )
         if (!offers || !editing) return item
         return (
           <div key={key} role="none" className="group relative flex">
             {item}
-            <span className="absolute inset-y-0 end-1 flex items-center opacity-0 transition-opacity duration-75 group-hover:opacity-100 group-has-focus-visible:opacity-100 group-has-data-popup-open:opacity-100 pointer-coarse:opacity-100 motion-reduce:transition-none">
-              <CodeFileMenu
-                name={node.name}
-                offers={offers}
-                blocked={editing.blocked}
-                onRename={() => naming.rename(file.path)}
-                onDuplicate={() => duplicate(file.path)}
-                onDelete={() => editing.onDelete(file.path)}
-                onRestore={() => editing.onRestore(file.path)}
-              />
+            <span className="pointer-events-none absolute inset-y-0 end-1 flex items-center gap-1">
+              <span className="pointer-events-auto opacity-0 transition-opacity duration-75 group-hover:opacity-100 group-has-focus-visible:opacity-100 group-has-data-popup-open:opacity-100 pointer-coarse:opacity-100 motion-reduce:transition-none">
+                <CodeFileMenu
+                  name={node.name}
+                  offers={offers}
+                  blocked={editing.blocked}
+                  onRename={() => naming.rename(file.path)}
+                  onDuplicate={() => duplicate(file.path)}
+                  onDelete={() => editing.onDelete(file.path)}
+                  onRestore={() => editing.onRestore(file.path)}
+                />
+              </span>
+              {marked && <span className="flex items-center pe-2">{marks}</span>}
             </span>
           </div>
         )

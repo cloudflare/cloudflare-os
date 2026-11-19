@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatMetadata, CodeChangeSubmission, FileAtCommit, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { withFile, type CodeDraft } from './codeDrafts'
-import { AGENT_WORKING, CHAT_PROPOSES, saveCode, type SaveCodeOptions, type SavingOverseer } from './saveCode'
+import { saveCode, type SaveCodeOptions, type SavingOverseer } from './saveCode'
 
 const GADGET = 7
 const text = (value: string) => ({ kind: 'text', text: value }) as const
@@ -46,10 +46,10 @@ const fakeWorkspace = ({ heads = ['c1'], files = {}, chats = [chat(1)], merges =
 const draftOf = (base = 'c1'): CodeDraft => withFile(withFile(undefined, base, 'client.ts', text('a'), 'A'), base, 'styles.css', text('s'), null)!
 
 const save = (overseer: ReturnType<typeof fakeWorkspace>, options: Partial<SaveCodeOptions> = {}) =>
-  saveCode(() => overseer as unknown as SavingOverseer, { gadgetId: GADGET, draft: draftOf(), chat: { beside: 1 }, newClientId: () => 'client', ...options })
+  saveCode(() => overseer as unknown as SavingOverseer, { gadgetId: GADGET, draft: draftOf(), chat: { title: 'Counter', reuse: 1 }, newClientId: () => 'client', ...options })
 
 describe('saveCode', () => {
-  it('submits the draft to the chat beside, pinned at the head, and keeps it', async () => {
+  it('submits the draft to the chat it reuses, pinned at the head, and keeps it', async () => {
     const overseer = fakeWorkspace({ heads: ['c1', 'c2'] })
     expect(await save(overseer)).toEqual({ status: 'saved', head: 'c2' })
     expect(overseer.submitCodeChange).toHaveBeenCalledWith(1, {
@@ -96,11 +96,10 @@ describe('saveCode', () => {
     expect(overseer.submitCodeChange).not.toHaveBeenCalled()
   })
 
-  it('does not save beside a chat whose agent works, or that proposes changes', async () => {
-    expect(await save(fakeWorkspace({ chats: [chat(1, { activeAgent: { type: 'agent', id: 'm', name: 'M' } })] })))
-      .toEqual({ status: 'failed', message: AGENT_WORKING })
-    expect(await save(fakeWorkspace({ chats: [chat(1, { proposedChangeWorkpieces: [3] })] })))
-      .toEqual({ status: 'failed', message: CHAT_PROPOSES })
+  it('makes another chat where the one it made is working, as keeping it would keep that too', async () => {
+    const overseer = fakeWorkspace({ chats: [chat(1, { activeAgent: { type: 'agent', id: 'm', name: 'M' } })] })
+    expect((await save(overseer)).status).toBe('saved')
+    expect(overseer.submitCodeChange.mock.calls[0]?.[0]).toBe(9)
   })
 
   it('takes a stale keep back out of the chat, checks again, and saves', async () => {

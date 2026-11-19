@@ -177,14 +177,15 @@ const DRAFTED: CodeBrowserFile[] = [
   { path: 'lib/theme.css', edit: 'added', offers: { rename: true, duplicate: true, delete: true, restore: true } },
 ]
 
-const editingAs = (extra: Partial<CodeBrowserEditing> = {}): CodeBrowserEditing => ({
+const editingAs = (extra: Partial<Omit<Extract<CodeBrowserEditing, { kind: 'draft' }>, 'kind'>> = {}): CodeBrowserEditing => ({
+  kind: 'draft',
   check: (name) => (name === 'server.ts' ? { problem: 'There’s already a server.ts here.' } : name ? { path: name } : { none: true }),
   onCreate: () => {},
   onRename: () => {},
   onDuplicate: async () => undefined,
   onDelete: () => {},
   onRestore: () => {},
-  onEdit: () => {},
+  onEdit: () => true,
   changes: 3,
   onSave: () => {},
   onDiscard: () => {},
@@ -201,6 +202,53 @@ const Drafted = ({ editing, className = 'h-80' }: { editing: CodeBrowserEditing;
     className={className}
   />
 )
+
+// The tip jar beside a chat that changed it: client.js changed, a stylesheet made, the README taken away.
+const IN_CHAT: CodeBrowserFile[] = [
+  { path: 'client.js', change: 'modified', offers: { rename: true, duplicate: true, delete: true, restore: true, caution: 'Tip jar stops working without this file.' } },
+  { path: 'server.ts', offers: { rename: true, duplicate: true, delete: true, restore: false } },
+  { path: 'lib/protocol.ts', offers: { rename: true, duplicate: true, delete: true, restore: false } },
+  { path: 'lib/theme.css', change: 'added', offers: { rename: true, duplicate: true, delete: true, restore: true } },
+  { path: 'README.md', change: 'removed', offers: { rename: false, duplicate: false, delete: 'It’s deleted in this chat.', restore: true } },
+]
+const IN_CHAT_BEFORE: Record<string, string> = { 'client.js': CLIENT_BEFORE, 'lib/theme.css': '', 'README.md': README }
+
+const liveAs = (extra: Partial<Omit<Extract<CodeBrowserEditing, { kind: 'live' }>, 'kind'>> = {}): CodeBrowserEditing => ({
+  kind: 'live',
+  check: (name) => (name ? { path: name } : { none: true }),
+  onCreate: () => {},
+  onRename: () => {},
+  onDuplicate: async () => undefined,
+  onDelete: () => {},
+  onRestore: () => {},
+  onEdit: () => true,
+  sending: false,
+  onDismissLost: () => {},
+  ...extra,
+})
+
+// Typed in as it is shown beside the chat: each edit is the chat's at once, with no Save.
+const LiveInChat = ({ className = 'h-[480px]', editing }: { className?: string; editing?: CodeBrowserEditing }) => {
+  const [shown, setShown] = useState('client.js')
+  const [texts, setTexts] = useState<Record<string, string>>({ ...TEXTS, 'lib/theme.css': ':root {\n  --tip: #f6821f;\n}\n', 'README.md': '' })
+  return (
+    <CodeBrowser
+      frame="card"
+      files={{ status: 'ready', files: IN_CHAT }}
+      shown={shown}
+      onShow={setShown}
+      file={{ status: 'text', text: texts[shown] ?? '' }}
+      before={IN_CHAT_BEFORE[shown] === undefined ? undefined : { status: 'text', text: IN_CHAT_BEFORE[shown] }}
+      editing={editing ?? liveAs({ onEdit: (path, text) => {
+        setTexts((was) => ({ ...was, [path]: text }))
+        return true
+      } })}
+      history={{ commits: { status: 'ready', commits: HISTORY }, onCompare: () => {} }}
+      note="Only in this chat until it’s kept"
+      className={className}
+    />
+  )
+}
 
 const Fixed = (props: Omit<CodeBrowserProps, 'onShow'>) => <CodeBrowser frame="card" {...props} onShow={() => {}} onRetry={() => {}} />
 
@@ -224,15 +272,24 @@ export const CodePreview = () => (
         </div>
       </div>
     </Section>
-    <Section title="CodeBrowser, editing (typed in and its files made, renamed, copied, deleted and put back from the tree, as a draft each file of which is dotted, until it is saved or discarded by hand), then saving, saved, when someone changed what was edited meanwhile, when it could not be saved, and why it can’t be edited now">
+    <Section title="CodeBrowser, editing on a gadget’s own page (typed in and its files made, renamed, copied, deleted and put back from the tree, as a draft each file of which is dotted, until it is saved or discarded by hand), then saving, saved, when someone changed what was edited meanwhile, when it could not be saved, and while its code is read">
       <div className="grid w-full max-w-6xl gap-4">
         <Drafted editing={editingAs()} className="h-[420px]" />
         <Drafted editing={editingAs({ save: { status: 'saving' } })} />
         <Drafted editing={editingAs({ changes: 0, save: { status: 'saved' } })} />
         <Drafted editing={editingAs({ save: { status: 'conflict', message: 'Tip jar was changed while you were editing: client.js.', onSaveAnyway: () => {}, onDiscardMine: () => {} } })} />
         <Drafted editing={editingAs({ save: { status: 'failed', message: 'The workspace didn’t answer.' } })} />
-        <Drafted editing={editingAs({ blocked: 'You can edit when the agent is done.' })} />
-        <Fixed files={{ status: 'ready', files: FILES }} shown="client.js" file={{ status: 'text', text: CLIENT }} editing={editingAs({ changes: 0, blocked: 'This chat has changes that aren’t kept yet. Keep or discard them in the chat to edit here.' })} note="Kept 12 min ago" className="h-80" />
+        <Fixed files={{ status: 'ready', files: FILES }} shown="client.js" file={{ status: 'text', text: CLIENT }} editing={editingAs({ changes: 0, blocked: 'Reading its code…' })} note="Kept 12 min ago" className="h-80" />
+      </div>
+    </Section>
+    <Section title="CodeBrowser beside a chat (what the chat changed listed over the tree, each file opening as its change, typed in there, every edit the chat’s at once with no Save: Keep in the chat keeps it), then sending, when the edits couldn’t be saved and were undone, when the chat’s changes were discarded with them, and while the agent works">
+      <div className="grid w-full max-w-6xl gap-4">
+        <LiveInChat />
+        <div className="h-[560px] w-full max-w-[480px] overflow-hidden rounded-3xl"><LiveInChat className="h-full" /></div>
+        <LiveInChat className="h-80" editing={liveAs({ sending: true })} />
+        <LiveInChat className="h-80" editing={liveAs({ lost: 'Your latest edits couldn’t be saved, so they were undone.' })} />
+        <LiveInChat className="h-80" editing={liveAs({ lost: 'The chat’s changes were discarded, and your edits with them.' })} />
+        <LiveInChat className="h-80" editing={liveAs({ blocked: 'You can edit when the agent is done.' })} />
       </div>
     </Section>
     <Section title="CodeBrowser, while reading, and when it could not be read, or there is no code yet">

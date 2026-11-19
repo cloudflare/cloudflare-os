@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent } from '@gadgets/workshop-shared/api'
+import type { CodeChange } from '@gadgets/workshop-shared/code-change'
+import type { StreamRow } from '../code/changeStream'
 import { createMockApi } from './mockApi'
 import { withFile, type CodeDraft } from '@/gadgets/codeDrafts'
 import { saveCode, type SavingOverseer } from '@/gadgets/saveCode'
@@ -20,15 +22,20 @@ const subscribed = (overseer: MockOverseer) => {
   const metadata: AiChatMetadata[] = []
   const stream: AiChatStreamEvent[] = []
   const deleted: number[] = []
+  const rows: StreamRow[] = []
   void overseer.subscribeToChat({
     streamGeneration: () => {},
     message: (message) => void messages.push(message),
     metadata: (chat) => void metadata.push(chat),
     stream: (_chatId, event) => void stream.push(event),
     deleted: (chatId) => void deleted.push(chatId),
+    changeApplied: (_chatId, generation, revision, _author, change, submission) => void rows.push({ generation, revision, change, submission }),
   })
-  return { messages, metadata, stream, deleted }
+  return { messages, metadata, stream, deleted, rows }
 }
+
+// Sets gadget 3's notes.
+const set = (text: string): CodeChange => ({ 3: [['notes.md', { set: text }]] })
 
 describe('MockOverseer', () => {
   it('pages history backwards from the tail, as the real server does with a limit', async () => {
@@ -143,7 +150,7 @@ describe('MockOverseer', () => {
     expect(() => workspace.getGadget(3)).toThrow('No gadget 3.')
   })
 
-  it('keeps edits saved through the chat, and holds them back once someone else changed their file', async () => {
+  it('keeps edits saved through a chat, and holds them back once someone else changed their file', async () => {
     const { overseer, session } = createMockApi(scenario({ history: history([user('hi')]) }))
     const workspace = session.api.openWorkspace('mock')
     workspace.getGadget(3)
@@ -154,7 +161,7 @@ describe('MockOverseer', () => {
     const read = async (commit: string) => (await workspace.readFilesAtCommit(commit, ['client.js']))[0]![1]
     const was = await read(head)
     if (was.kind !== 'text') throw new Error('No client.js')
-    const save = (draft: CodeDraft) => saveCode(() => overseer.open() as unknown as SavingOverseer, { gadgetId: 3, draft, chat: { beside: 0 }, newClientId: () => 'client' })
+    const save = (draft: CodeDraft) => saveCode(() => overseer.open() as unknown as SavingOverseer, { gadgetId: 3, draft, chat: { title: 'Tip jar', reuse: 0 }, newClientId: () => 'client' })
 
     expect((await save(withFile(undefined, head, 'client.js', was, 'h1 { font-size: 28px }')!)).status).toBe('saved')
     const saved = heads.at(-1)!
@@ -164,6 +171,37 @@ describe('MockOverseer', () => {
 
     overseer.keepElsewhere()
     expect(await save(withFile(undefined, saved, 'client.js', { kind: 'text', text: 'h1 { font-size: 28px }' }, 'mine')!)).toEqual({ status: 'conflict', paths: ['client.js'] })
+  })
+
+  it('takes each edit to the chat’s code as the server does, and records what it took once kept', async () => {
+    const { overseer, session } = createMockApi(scenario({ history: history([user('hi')]) }))
+    const workspace = session.api.openWorkspace('mock')
+    workspace.getGadget(3)
+    let head = ''
+    const subscriber = { entry: ({ commitId }: { commitId?: string }) => void (head = commitId ?? head), removed: () => {}, ready: () => {} }
+    await workspace.subscribeToWorkpieces(subscriber as unknown as Parameters<typeof workspace.subscribeToWorkpieces>[0])
+    const seen = subscribed(overseer)
+    const generation = (await overseer.listChats())[0]?.codeBase?.generation ?? 0
+
+    // Unpinned, it has to say the head it is over.
+    await expect(overseer.submitCodeChange(0, { generation, revision: 0, clientId: 'a', seq: 1, change: set('a') })).rejects.toThrow('isn’t pinned at its head')
+    const first = { generation, revision: 0, clientId: 'a', seq: 1, pins: [{ gadgetId: 3, baseCommit: head }], change: set('a') }
+    expect(await overseer.submitCodeChange(0, first)).toEqual({ generation, revision: 1 })
+    // Sent again, it is taken once.
+    expect(await overseer.submitCodeChange(0, first)).toEqual({ generation, revision: 1 })
+    // Made over what came before the first, it lands after it, and wins as the later one.
+    expect(await overseer.submitCodeChange(0, { generation, revision: 0, clientId: 'b', seq: 1, change: set('b') })).toEqual({ generation, revision: 2 })
+    expect(seen.rows.map(({ revision, submission }) => [revision, submission?.clientId])).toEqual([[1, 'a'], [2, 'b']])
+    expect((await overseer.listChats())[0]?.codeBase?.pins).toEqual([{ gadgetId: 3, baseCommit: head, mergedCommit: head }])
+
+    expect(await overseer.mergeChanges(0)).toEqual({ outcome: 'merged' })
+    const recorded = seen.messages.find((message) => message.type === 'changes' && message.watermark)
+    expect(recorded).toMatchObject({ watermark: { changesGeneration: generation, throughRevision: 2 } })
+    expect((await overseer.listChats())[0]?.codeBase).toMatchObject({ generation: generation + 1, prior: { generation, finalRevision: 2 } })
+    const merged = seen.messages.at(-1)
+    if (merged?.type !== 'merge') throw new Error('It wasn’t marked as kept.')
+    expect(merged.commits.map(({ gadgetId }) => gadgetId)).toEqual([3])
+    expect(await overseer.readFilesAtCommit(merged.commits[0]!.commitId, ['notes.md'])).toEqual([['notes.md', { kind: 'text', text: 'b' }]])
   })
 
   it('deletes the chat, which its subscribers hear of and the workspace no longer lists', async () => {

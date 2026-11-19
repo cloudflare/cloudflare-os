@@ -19,7 +19,7 @@ export const SystemBlocksPreview = () => {
           <SystemRow icon="code" detail={'{ key: "PLAT-230" }'}>onTicket() with env.TICKETS</SystemRow>
           <SystemRow icon="info">A message this version can’t show</SystemRow>
           <FeedDivider>Context compacted</FeedDivider>
-          <FeedDivider>You saved edits</FeedDivider>
+          <FeedDivider>You kept changes to “Tip Jar”</FeedDivider>
           <FeedDivider>Grace Hopper applied changes</FeedDivider>
           <FeedDivider>Grace Hopper discarded changes</FeedDivider>
         </Column>

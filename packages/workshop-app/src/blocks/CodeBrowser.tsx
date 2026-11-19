@@ -3,18 +3,18 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import {
   ArrowLeftIcon, CheckIcon, ClockCounterClockwiseIcon, CopyIcon, DotsThreeIcon, DownloadSimpleIcon, LinkSimpleIcon, ListNumbersIcon,
-  MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, TextAlignLeftIcon, WarningCircleIcon, XIcon,
+  GitDiffIcon, MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, TextAlignLeftIcon, WarningCircleIcon, XIcon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
-import type { CodeEditorHandle, CodeEditorStatus, CodeLines } from '@/components/CodeEditor'
+import type { CodeEditorHandle, CodeEditorStatus, CodeLines, CodeTextChange } from '@/components/CodeEditor'
 import { CODE_LANGUAGE_NAMES } from '@/components/codeLanguages'
 import { ConfirmMenu } from '@/components/ConfirmMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { Markdown } from '@/components/Markdown'
 import { codeLanguage } from '@/files/codeLanguage'
 import { codePrefs, type CodePrefs } from '@/prefs/codePrefs'
-import { changeLabel, CodeFileTree, editLabel, type CodeFileEditing, type CodeTreeEntry } from './CodeFileTree'
+import { changeLabel, CodeChangeList, CodeFileTree, editLabel, type CodeFileEditing, type CodeTreeEntry } from './CodeFileTree'
 import { CodeFileStrip } from './CodeFileStrip'
 import { CodeIconButton } from './CodeIconButton'
 import { CodeQuickOpen } from './CodeQuickOpen'
@@ -44,24 +44,39 @@ export type CodeBrowserSave =
   /** Someone changed what was edited meanwhile, which saving would go over. */
   | { status: 'conflict'; message: string; onSaveAnyway: () => void; onDiscardMine: () => void }
 
-/**
- * The code typed in, and its files made, renamed, copied and deleted (`CodeFileEditing`), as a
- * draft saved or discarded by hand. Out of use, with why, where it is `blocked`, and while a past
- * version is compared.
- */
-export type CodeBrowserEditing = CodeFileEditing & {
-  /** The file at `path`, as typed. */
-  onEdit: (path: string, text: string) => void
+/** Edits made as a draft, which is saved or discarded by hand. */
+export type CodeBrowserDraft = {
+  kind: 'draft'
   /** How many files the draft changes: none where there is no draft. */
   changes: number
   onSave: () => void
   onDiscard: () => void
   save?: CodeBrowserSave
+}
+
+/** Edits that go where the code is as they are made, as into the chat it is shown beside. */
+export type CodeBrowserLive = {
+  kind: 'live'
+  /** Edits are on their way. */
+  sending: boolean
+  /** Edits that were lost, and why: refused, say, or discarded with the chat's changes. Until `onDismissLost`. */
+  lost?: string
+  onDismissLost: () => void
+}
+
+/**
+ * The code typed in, and its files made, renamed, copied and deleted (`CodeFileEditing`): as a
+ * draft (`CodeBrowserDraft`), or live (`CodeBrowserLive`). Out of use, with why, where it is
+ * `blocked`, and while a past version is compared.
+ */
+export type CodeBrowserEditing = CodeFileEditing & {
+  /** The file at `path`, as typed, with the edit typed. Says whether it was taken. */
+  onEdit: (path: string, text: string, change: CodeTextChange) => boolean
   /** Each file's undo history is kept under this, with its path, while it stays the same. */
   historyKey?: string
   /** What was just done, for a screen reader to hear: "Renamed styles.css to theme.css". */
   said?: string
-}
+} & (CodeBrowserDraft | CodeBrowserLive)
 
 export type CodeBrowserProps = {
   files:
@@ -77,7 +92,11 @@ export type CodeBrowserProps = {
     /** It has no text to show, and why. */
     | { status: 'other'; message: string }
     | { status: 'failed'; message: string }
-  /** The shown file before the change being looked at, to show it as the change: empty where it was added. */
+  /**
+   * The shown file before the change being looked at, to show it as the change: empty where it was
+   * added. Where it is not a past version that is compared, a file that changed (`change`) is
+   * shown as the change, and can be shown whole.
+   */
   before?: { status: 'loading' } | { status: 'text'; text: string }
   /** Reads it all again, after it failed. */
   onRetry?: () => void
@@ -151,6 +170,15 @@ const Segmented = <Value extends string>({ value, options, onChange, label }: {
   </div>
 )
 
+// What went wrong with edits, under the status line, with what can be done about it.
+const Problem = ({ message, children }: { message: string; children?: ReactNode }) => (
+  <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-kumo-line px-4 py-2.5 text-sm text-kumo-default">
+    <WarningCircleIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-danger" />
+    <span className="min-w-0 flex-1">{message}</span>
+    {children && <span className="flex shrink-0 gap-2">{children}</span>}
+  </div>
+)
+
 const Kbd = ({ children }: { children: ReactNode }) => (
   <kbd className="rounded-[5px] bg-kumo-base px-1.5 font-sans text-xs leading-5 text-kumo-subtle ring-1 ring-kumo-line">{children}</kbd>
 )
@@ -158,9 +186,21 @@ const Kbd = ({ children }: { children: ReactNode }) => (
 const mac = typeof navigator !== 'undefined' && /mac|iphone|ipad/i.test(navigator.platform)
 const MOD = mac ? '⌘' : 'Ctrl '
 
-// The end of the status line where the code can be edited: the draft, and Discard and Save; how a
-// save is going; or why it can't be edited now; else what version of the code it is.
-const DraftStatus = ({ editing, note }: { editing: CodeBrowserEditing; note?: string }) => {
+// The end of the status line where the code is edited live: why it can't be edited now, or what
+// version of the code it is, after edits on their way, should they take a moment.
+const LiveStatus = ({ editing, note }: { editing: CodeBrowserLive & { blocked?: string }; note?: string }) => {
+  if (editing.blocked) return <span className="truncate" title={editing.blocked}>{editing.blocked}</span>
+  return (
+    <span className="flex min-w-0 items-center gap-3">
+      {editing.sending && <span role="status" className="appears-late shrink-0">Sending…</span>}
+      {note && <span className="truncate">{note}</span>}
+    </span>
+  )
+}
+
+// The end of the status line where the code can be edited as a draft: the draft, and Discard and
+// Save; how a save is going; or why it can't be edited now; else what version of the code it is.
+const DraftStatus = ({ editing, note }: { editing: CodeBrowserDraft & { blocked?: string }; note?: string }) => {
   const { changes, save, blocked } = editing
   if (save?.status === 'saving') return <span role="status" className="truncate">Saving…</span>
   if (changes > 0) {
@@ -197,9 +237,13 @@ const DraftStatus = ({ editing, note }: { editing: CodeBrowserEditing; note?: st
  * shown as it reads, with its source a click away. Where it is narrow, as beside a chat, the files
  * are not a tree but a row of pills along the top of the code (`CodeFileStrip`).
  *
- * Where it can be edited (`editing`), the code is typed in and its files changed from the tree, as
- * a draft: the status line ends with how many files it changes, Discard (which asks first) and
- * Save, or else why it can't be edited now, and what came of a save is said under it.
+ * Where it can be edited (`editing`), the code is typed in and its files changed from the tree. As
+ * a draft, the status line ends with how many files it changes, Discard (which asks first) and
+ * Save, or else why it can't be edited now, and what came of a save is said under it. Live, each
+ * edit goes as it is made, and only what went wrong is said under it.
+ *
+ * Files that changed from what they are compared with (`change`, where no past version is) are
+ * listed apart over the tree, and each opens as its change (`before`), typed in there too.
  */
 export const CodeBrowser = ({
   files, shown, onShow, file, before, onRetry, empty, history, lines, onLinesChange, linkTo, note, editing: editingProp, frame = 'pane', className,
@@ -220,6 +264,14 @@ export const CodeBrowser = ({
   const [status, setStatus] = useState<CodeEditorStatus>()
   const [copied, setCopied] = useState<'copied' | 'failed'>()
   const [source, setSource] = useState(false)
+  // A file that changed is shown as its change, typed in or not, in one column, until it is asked
+  // for whole or in two, for as long as it is shown.
+  const [view, setView] = useState<{ path: string; whole: boolean; columns: 1 | 2 }>()
+  const viewed = view?.path === shown ? view : undefined
+  const whole = viewed?.whole ?? false
+  const columns = viewed?.columns ?? 1
+  const setWhole = (next: boolean) => shown !== undefined && setView({ path: shown, whole: next, columns })
+  const setColumns = (next: 1 | 2) => shown !== undefined && setView({ path: shown, whole, columns: next })
   const editor = useRef<CodeEditorHandle>(null)
   const root = useRef<HTMLDivElement>(null)
 
@@ -229,18 +281,24 @@ export const CodeBrowser = ({
     return () => clearTimeout(timer)
   }, [copied])
   // Each file starts as it reads; its source is a click away.
-  useEffect(() => setSource(false), [shown])
+  useEffect(() => {
+    setSource(false)
+  }, [shown])
 
   const comparing = history?.comparing
   const commits = history?.commits.status === 'ready' ? history.commits.commits : []
   const compared = comparing ? commits.find(({ id }) => id === comparing) : undefined
-  const asDiff = comparing !== undefined && shownFile?.change !== undefined && before?.status === 'text' && file.status === 'text'
+  const asDiff = (comparing !== undefined || !whole) && shownFile?.change !== undefined && before?.status === 'text' && file.status === 'text'
+  // What changed, apart from the rest, where it is not a past version that is compared.
+  const changed = comparing === undefined ? list.filter(({ change }) => change !== undefined) : []
   const markdown = language === 'markdown' && !asDiff && file.status === 'text'
   const showMarkdown = markdown && !source
   // A past version, compared, is only read.
   const editing = comparing === undefined ? editingProp : undefined
-  const saving = editing?.save?.status === 'saving'
-  const typeable = editing !== undefined && !editing.blocked && !saving && shownFile?.edit !== 'deleted' && file.status === 'text'
+  const draft = editing?.kind === 'draft' ? editing : undefined
+  const live = editing?.kind === 'live' ? editing : undefined
+  const saving = draft?.save?.status === 'saving'
+  const typeable = editing !== undefined && !editing.blocked && !saving && shownFile?.edit !== 'deleted' && shownFile?.change !== 'removed' && file.status === 'text'
   // A new file is named in the folder of the one shown.
   const [adding, setAdding] = useState<string>()
   const edits = editing ? new Map(list.flatMap(({ path, edit }) => (edit ? [[path, edit] as const] : []))) : undefined
@@ -302,6 +360,13 @@ export const CodeBrowser = ({
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-3 pt-1 pb-4">
+        {changed.length > 0 && (
+          <>
+            <h4 className="px-3 pt-1 pb-1.5 text-sm font-medium text-kumo-subtle">Changes ({COUNT.format(changed.length)})</h4>
+            <CodeChangeList files={changed} shown={shown} onShow={onShow} />
+            <h4 className="px-3 pt-4 pb-1.5 text-sm font-medium text-kumo-subtle">Files</h4>
+          </>
+        )}
         {files.status === 'loading'
           ? <p role="status" className="appears-late px-3 py-2 text-sm text-kumo-subtle">Reading its files…</p>
           : list.length === 0
@@ -321,7 +386,7 @@ export const CodeBrowser = ({
   )
 
   // A draft's state and its buttons take the room of what is said of the file but where the caret is.
-  const drafting = editing !== undefined && (editing.changes > 0 || editing.save !== undefined)
+  const drafting = draft !== undefined && (draft.changes > 0 || draft.save !== undefined)
   const statusLine = status && file.status === 'text' && !showMarkdown && (
     <>
       <span className="shrink-0 whitespace-nowrap tabular-nums">
@@ -437,7 +502,7 @@ export const CodeBrowser = ({
             )}
             {asDiff && (
               <span className="hidden @3xl:flex">
-                <Segmented label="Show the change" value={prefs.diff} options={[{ value: 'unified', label: 'Unified' }, { value: 'split', label: 'Split' }]} onChange={(value) => changePrefs({ diff: value })} />
+                <Segmented label="Show the change" value={columns === 2 ? 'split' : 'unified'} options={[{ value: 'unified', label: 'Unified' }, { value: 'split', label: 'Split' }]} onChange={(value) => setColumns(value === 'split' ? 2 : 1)} />
               </span>
             )}
             {history && (
@@ -490,6 +555,12 @@ export const CodeBrowser = ({
                 <span className="min-w-0 flex-1">Go to line</span>
                 <span className="text-sm text-kumo-subtle">⌃G</span>
               </DropdownMenu.Item>
+              {comparing === undefined && shownFile?.change !== undefined && shownFile.change !== 'removed' && (
+                <DropdownMenu.Item icon={GitDiffIcon} onSelect={() => setWhole(!whole)}>
+                  <span className="min-w-0 flex-1">Show the change</span>
+                  {!whole && <CheckIcon aria-label="On" weight="bold" className="size-4" />}
+                </DropdownMenu.Item>
+              )}
               <DropdownMenu.Separator />
               {shown && <DropdownMenu.Item icon={CopyIcon} onSelect={() => copy(shown)}>Copy path</DropdownMenu.Item>}
               {shown && linkTo && (
@@ -517,15 +588,15 @@ export const CodeBrowser = ({
                     text={file.text}
                     language={language}
                     label={shown ?? 'Code'}
-                    diff={asDiff && before?.status === 'text' ? { original: before.text, layout: prefs.diff } : undefined}
+                    diff={asDiff && before?.status === 'text' ? { original: before.text, layout: columns === 2 ? 'split' : 'unified' } : undefined}
                     wrap={prefs.wrap}
                     picked={lines}
                     onPick={onLinesChange}
                     onStatus={setStatus}
                     memoryKey={shown && `${comparing ?? ''}:${shown}`}
                     editable={typeable}
-                    onChange={editing && shown ? (text) => editing.onEdit(shown, text) : undefined}
-                    onSave={editing && editing.changes > 0 && !saving ? editing.onSave : undefined}
+                    onChange={editing && shown ? (text, change) => editing.onEdit(shown, text, change) : undefined}
+                    onSave={draft && draft.changes > 0 && !saving ? draft.onSave : undefined}
                     historyKey={editing?.historyKey && shown && `${editing.historyKey}:${shown}`}
                     className="appears"
                   />
@@ -552,22 +623,23 @@ export const CodeBrowser = ({
             <span className="ms-auto flex min-w-0 items-center gap-3">
               {file.status === 'text' && language && <span className={cn('hidden shrink-0', !drafting && '@md:inline')}>{CODE_LANGUAGE_NAMES[language]}</span>}
               {file.status === 'text' && status && !showMarkdown && <span className={cn('hidden shrink-0 tabular-nums', !drafting && '@sm:inline')}>{plural(status.lines, 'line')}</span>}
-              {editing ? <DraftStatus editing={editing} note={note} /> : note && !comparing && <span className="truncate">{note}</span>}
+              {draft ? <DraftStatus editing={draft} note={note} /> : live ? <LiveStatus editing={live} note={note} /> : note && !comparing && <span className="truncate">{note}</span>}
             </span>
           </footer>
-          {editing?.save && (editing.save.status === 'failed' || editing.save.status === 'conflict') && (
-            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-kumo-line px-4 py-2.5 text-sm text-kumo-default">
-              <WarningCircleIcon aria-hidden="true" className="size-4 shrink-0 text-kumo-danger" />
-              <span className="min-w-0 flex-1">
-                {editing.save.status === 'failed' ? `Couldn’t save: ${editing.save.message}` : editing.save.message}
-              </span>
-              {editing.save.status === 'conflict' && (
-                <span className="flex shrink-0 gap-2">
-                  <Button onClick={editing.save.onDiscardMine} className="h-8 px-4 text-sm">Discard mine</Button>
-                  <Button variant="primary" onClick={editing.save.onSaveAnyway} className="h-8 px-4 text-sm">Save mine anyway</Button>
-                </span>
+          {draft?.save && (draft.save.status === 'failed' || draft.save.status === 'conflict') && (
+            <Problem message={draft.save.status === 'failed' ? `Couldn’t save: ${draft.save.message}` : draft.save.message}>
+              {draft.save.status === 'conflict' && (
+                <>
+                  <Button onClick={draft.save.onDiscardMine} className="h-8 px-4 text-sm">Discard mine</Button>
+                  <Button variant="primary" onClick={draft.save.onSaveAnyway} className="h-8 px-4 text-sm">Save mine anyway</Button>
+                </>
               )}
-            </div>
+            </Problem>
+          )}
+          {live?.lost && (
+            <Problem message={live.lost}>
+              <Button onClick={live.onDismissLost} className="h-8 px-4 text-sm">OK</Button>
+            </Problem>
           )}
           {editing && <p role="status" className="sr-only">{editing.said}</p>}
 

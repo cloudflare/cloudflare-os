@@ -175,11 +175,11 @@ export type FileOffers = {
  * What can be done to a listed file. A file whose mode a change can't carry (an executable, a link,
  * another project) is not renamed, as it would come out a plain file, and one with no text is only
  * deleted. The last file there is is not deleted: a gadget needs at least one. A deleted file is
- * only brought back.
+ * only brought back, which `deleted` says.
  */
-export const fileOffers = (file: DraftedFile, files: readonly DraftedFile[], gadget: string, readable: boolean): FileOffers => {
+export const fileOffers = (file: DraftedFile, files: readonly DraftedFile[], gadget: string, readable: boolean, deleted = 'It’s deleted until you save.'): FileOffers => {
   const restore = file.edit !== undefined
-  if (file.edit === 'deleted') return { rename: false, duplicate: false, delete: 'It’s deleted until you save.', restore }
+  if (file.edit === 'deleted') return { rename: false, duplicate: false, delete: deleted, restore }
   const plain = file.kind === 'file'
   const others = files.some((each) => each.path !== file.path && each.edit !== 'deleted')
   return {

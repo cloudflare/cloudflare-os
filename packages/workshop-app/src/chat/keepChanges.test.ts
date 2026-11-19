@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { ProposedChanges } from './proposedChanges'
 import { keepChangeLines, keepReason } from './keepChanges'
 
-const none: ProposedChanges = { created: [], edited: [], bindings: [], updates: [], mainline: false, conflicts: [] }
-const ask = (changes: Partial<ProposedChanges>) => ({ changes: { ...none, ...changes } })
+const none: ProposedChanges = { created: [], edited: [], bindings: [], updates: [], mainline: false, conflicts: [], files: {} }
+const ask = (changes: Partial<ProposedChanges>) => ({ changes: { ...none, ...changes }, sending: false, epoch: undefined })
 const titles = new Map([[3, 'Tip Jar'], [20, 'Joke'], [21, 'Paul Pierce']])
 const titleOf = (id: number) => titles.get(id)
 
@@ -40,9 +40,9 @@ describe('keepChangeLines', () => {
       .toEqual(['Lets “Tip Jar” use Claude Haiku'])
   })
 
-  it('names the gadgets whose code changes', () => {
+  it('says nothing of a gadget whose code alone changes, which is listed as itself', () => {
     expect(keepChangeLines(ask({ created: [{ gadgetId: 9, title: 'Standup notes' }], edited: [3, 4] }), titleOf))
-      .toEqual(['Creates “Standup notes”', 'Changes “Tip Jar”', 'Changes a gadget'])
+      .toEqual(['Creates “Standup notes”'])
   })
 
   it('counts the files left with conflicts', () => {
@@ -58,7 +58,7 @@ describe('keepReason', () => {
     expect(keepReason(ask({ updates: [{ gadgetId: 3, title: 'Docs' }] }))).toMatch(/updates/)
   })
 
-  it('says that code alone is only in the chat until it is kept', () => {
-    expect(keepReason(ask({ edited: [3] }))).toBe('They’re only in this chat until you keep them.')
+  it('has nothing to say of code alone', () => {
+    expect(keepReason(ask({ edited: [3] }))).toBeUndefined()
   })
 })

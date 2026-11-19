@@ -126,11 +126,11 @@ export const CodeFileStrip = ({ files, message, shown, onShow, onFind, editing, 
                       <span className={cn('whitespace-nowrap', deleted && 'line-through decoration-kumo-subtle/60')}>
                         {names.get(nameOf(file.path)) === 1 ? nameOf(file.path) : file.path}
                       </span>
-                      {file.change && <ChangeMark change={file.change} />}
-                      {file.edit && <EditDot edit={file.edit} />}
+                      {!offers && file.change && <ChangeMark change={file.change} />}
+                      {!offers && file.edit && <EditDot edit={file.edit} />}
                     </button>
                     {offers && editing && (
-                      <span className="pe-0.5">
+                      <span className={cn('flex items-center gap-1', file.change || file.edit ? 'pe-3' : 'pe-0.5')}>
                         <CodeFileMenu
                           name={nameOf(file.path)}
                           offers={offers}
@@ -141,6 +141,9 @@ export const CodeFileStrip = ({ files, message, shown, onShow, onFind, editing, 
                           onRestore={() => editing.onRestore(file.path)}
                           quiet
                         />
+                        {/* How it changed is last in its tab, after its menu. */}
+                        {file.change && <ChangeMark change={file.change} />}
+                        {file.edit && <EditDot edit={file.edit} />}
                       </span>
                     )}
                   </div>

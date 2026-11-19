@@ -24,7 +24,7 @@ export const keepChangeLines = (
   }
   const lines = [
     ...changes.created.map(({ gadgetId }) => `Creates ${name(gadgetId)}`),
-    ...changes.edited.map((gadgetId) => `Changes ${name(gadgetId)}`),
+    // A gadget whose code changes is listed as itself, with how many of its files, not as a line.
     ...changes.bindings.map(({ gadgetId, name: binding, target }) => {
       // The name the code reaches it by means nothing to most people, so it is never said.
       const titled = titleOf(target)
@@ -41,10 +41,10 @@ export const keepChangeLines = (
   return [...new Set(lines)]
 }
 
-/** What to know before keeping them, the weightiest first: else that nobody else has them yet. */
-export const keepReason = ({ changes }: KeepAsk): string => {
+/** What to know before keeping them, the weightiest first: nothing, for code alone. */
+export const keepReason = ({ changes }: KeepAsk): string | undefined => {
   if (changes.conflicts.length) return 'Some files have conflicts to look over first.'
   if (changes.bindings.length) return 'Connecting a gadget to something needs your OK.'
   if (changes.updates.length || changes.mainline) return 'Look the updates over before you keep them.'
-  return 'They’re only in this chat until you keep them.'
+  return undefined
 }

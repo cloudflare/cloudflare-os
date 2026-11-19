@@ -10,7 +10,6 @@ import type {
   ChatAttachmentHandle,
   ChatReadState,
   ChatAttachmentRef,
-  ChatCodeBase,
   CodeChangeSubmission,
   CollaboratorInfo,
   CommitInfo,
@@ -25,7 +24,8 @@ import type {
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, UI_CODE, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
-import { AGENT, changes, merge, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
+import { MockChatCode } from './MockChatCode'
+import { AGENT, changes, merge, revert, stamp, TEMPLATE, TEMPLATE_TAKEN, VIEWER, type MessageSource, type MockWorktree, type Scenario, type ScriptStep } from './scenario'
 
 // Who else has the workspace open, beside the viewer.
 const COLLABORATORS = [
@@ -38,7 +38,8 @@ const CHAT_ID = 0
 /** The one workspace there is, which the fake API lists. */
 export const MOCK_WORKSPACE_ID = 'mock'
 
-type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'>
+type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'> &
+  Partial<Pick<AiChatSubscriber, 'changeApplied'>>
 type ReadStateEvents = Pick<UnreadStateSubscriber, 'updated' | 'chatUpdated'>
 type ActionEvents = Pick<ActionsSubscriber, 'entry'>
 type ActionMessage = Extract<AiChatMessage, { type: 'action' }>
@@ -153,10 +154,10 @@ export class MockOverseer {
   // What each gadget's code was kept as since its made-up history, by its id: saved edits, and
   // what someone else kept.
   #kept = new Map<number, KeptCode[]>()
-  // The chat's change to each gadget's code, not kept yet: its files as the change leaves them.
-  #proposed = new Map<number, Record<string, string>>()
-  // The gadgets the script's changes and a template's update propose something to, not kept yet,
-  // as the server says of a chat: only the code saved here is had as files.
+  // The chat's code not kept yet, as the server keeps it.
+  #code = new MockChatCode()
+  // The gadgets the script's changes and a template's update propose something to other than
+  // code, not kept yet: what they make, connect and update.
   #waiting = new Set<number>()
   // Deleted, which no longer are, whatever their id.
   #removedGadgets = new Set<number>()
@@ -280,7 +281,10 @@ export class MockOverseer {
     if (this.#removedGadgets.has(id)) throw new Error(`No gadget ${id}.`)
     let gadget = this.#gadgets.get(id)
     if (!gadget) {
-      const ui = () => this.#filesAt(this.#head(id))?.['client.js'] ?? UI_CODE
+      // As the chat has it, beside the chat, else as it is kept.
+      const ui = (chatId?: number) => (chatId === CHAT_ID
+        ? this.#code.files(id, (commit) => this.#filesAt(commit ?? this.#head(id)))
+        : this.#filesAt(this.#head(id)))?.['client.js'] ?? UI_CODE
       this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp(), ui, (task) => this.#ask(task))))
       for (const subscriber of this.#workpieceSubscribers) subscriber.entry(this.#gadgetSummary(id))
     }
@@ -328,84 +332,74 @@ export class MockOverseer {
   }
 
   /**
-   * One change to the chat's code, as edits are saved: whole files set or removed, each gadget
-   * pinned at its head by its first change, as the server checks.
+   * One change to the chat's code, as the server takes it (`MockChatCode`): moved past what was
+   * taken since it was made, each gadget pinned at its head by its first change, and told to
+   * whoever listens. Not while the agent works.
    */
-  async submitCodeChange(chatId: number, { generation, revision, pins, change }: CodeChangeSubmission) {
+  async submitCodeChange(chatId: number, submission: CodeChangeSubmission) {
     if (chatId !== CHAT_ID || this.#deleted) throw new Error(`No chat ${chatId}.`)
-    if (this.#metadata.activeAgent) throw new Error('The agent is working. Try again once it’s done.')
-    const base: ChatCodeBase = this.#metadata.codeBase ?? { pins: [], generation: 0, revision: 0 }
-    if (generation !== base.generation || revision !== base.revision) throw new Error('The chat’s changes moved on.')
-    const pinned = [...base.pins]
-    for (const [key, files] of Object.entries(change)) {
-      const id = Number(key)
-      let pin = pinned.find(({ gadgetId }) => gadgetId === id)
-      if (!pin) {
-        const declared = (pins ?? []).find(({ gadgetId }) => gadgetId === id)
-        if (declared?.baseCommit !== this.#head(id)) throw new Error(`Gadget ${id} isn’t pinned at its head.`)
-        pin = { ...declared, mergedCommit: declared.baseCommit }
-        pinned.push(pin)
-      }
-      const after = { ...(this.#proposed.get(id) ?? this.#filesAt(pin.baseCommit)) }
-      for (const [path, edit] of files) {
-        if ('remove' in edit) delete after[path]
-        else if ('set' in edit) after[path] = edit.set
-        else throw new Error('A scripted chat takes whole files only.')
-      }
-      this.#proposed.set(id, after)
+    if (this.#metadata.activeAgent) throw new Error('Agent is running, wait for it to finish.')
+    const { row, again } = this.#code.submit(submission, (id) => this.#head(id))
+    if (!again) {
+      this.#setMetadata({ codeBase: this.#code.base(this.#metadata.codeBase?.epoch), proposedChangeWorkpieces: this.#proposedWorkpieces() })
+      this.#chatSubscribers.forEach((subscriber) => subscriber.changeApplied?.(CHAT_ID, row.generation, row.revision, VIEWER, row.change, row.submission))
     }
-    this.#setMetadata({ codeBase: { ...base, pins: pinned, revision: revision + 1 }, proposedChangeWorkpieces: this.#proposedWorkpieces() })
-    return { generation, revision: revision + 1 }
+    return { generation: row.generation, revision: row.revision }
   }
 
   /**
    * Keeps what the chat proposes: stale where a gadget's head has moved past its pin, as the
-   * server refuses to merge then. Code saved here is recorded in the chat as saved, then kept.
+   * server refuses to merge then. What was edited and not recorded yet is recorded first, as the
+   * viewer's, then kept, which closes the chat's stream with its content carried over.
    */
   async mergeChanges(chatId: number) {
-    const base = this.#metadata.codeBase ?? { pins: [], generation: 0, revision: 0 }
-    if (chatId !== CHAT_ID || (this.#proposed.size === 0 && this.#waiting.size === 0)) return { outcome: 'merged' } as const
-    if (base.pins.some(({ gadgetId, mergedCommit }) => mergedCommit !== this.#head(gadgetId))) return { outcome: 'stale' } as const
-    for (const [id, files] of this.#proposed) this.#keep(id, { message: `Accept changes from chat: ${this.#metadata.title}`, author: { name: VIEWER.name, email: VIEWER.id }, files })
-    if (this.#proposed.size > 0) this.#append(changes())
-    this.#proposed.clear()
-    this.#waiting.clear()
-    this.#append(merge())
-    this.#setMetadata({
-      codeBase: { pins: [], generation: base.generation + 1, revision: 0, epoch: this.#messages.at(-1)?.sequence },
-      proposedChangeWorkpieces: undefined,
+    if (chatId !== CHAT_ID || (!this.#code.proposes && this.#waiting.size === 0)) return { outcome: 'merged' } as const
+    if (this.#code.pins.some(({ gadgetId, mergedCommit }) => mergedCommit !== this.#head(gadgetId))) return { outcome: 'stale' } as const
+    const commits = this.#code.gadgets.map((id) => {
+      const files = this.#code.files(id, (commit) => this.#filesAt(commit ?? this.#head(id)))
+      this.#keep(id, { message: `Accept changes from chat: ${this.#metadata.title}`, author: { name: VIEWER.name, email: VIEWER.id }, files })
+      return { gadgetId: id, commitId: this.#head(id) }
     })
+    const recorded = this.#code.record()
+    if (recorded) this.#append(changes(recorded))
+    this.#append((sequence: number) => ({ ...merge()(sequence), commits }))
+    this.#code.kept()
+    this.#waiting.clear()
+    this.#setMetadata({ codeBase: this.#code.base(this.#messages.at(-1)?.sequence), proposedChangeWorkpieces: undefined })
     return { outcome: 'merged' } as const
   }
 
-  /** Throws away what the chat proposes, not kept yet. */
-  async revertChanges(chatId: number) {
-    const base = this.#metadata.codeBase ?? { pins: [], generation: 0, revision: 0 }
+  /** Throws away what the chat proposes from `revertFrom` on, which is all of it here. */
+  async revertChanges(chatId: number, revertFrom: number) {
     if (chatId !== CHAT_ID) return
-    this.#proposed.clear()
+    this.#append(revert(revertFrom))
+    this.#code.discarded()
     this.#waiting.clear()
-    this.#setMetadata({ codeBase: { pins: [], generation: base.generation + 1, revision: 0, epoch: base.epoch }, proposedChangeWorkpieces: undefined })
+    this.#setMetadata({ codeBase: this.#code.base(this.#metadata.codeBase?.epoch), proposedChangeWorkpieces: undefined })
   }
 
   #proposedWorkpieces() {
-    const ids = new Set([...this.#proposed.keys(), ...this.#waiting])
+    const ids = new Set([...this.#code.gadgets, ...this.#waiting])
     return ids.size > 0 ? [...ids] : undefined
   }
 
   /** What a message the script or a template's update adds proposes, or keeps, as the server says. */
   #heard(message: AiChatMessage) {
-    if (message.type === 'merge') this.#waiting.clear()
-    else if (message.type === 'changes') {
-      const ids = [
-        ...(message.createdGadgets ?? []).map(({ gadgetId }) => gadgetId),
-        ...Object.keys(message.change ?? {}).map(Number),
-        ...(message.blueprintMerges ?? []).map(({ gadgetId }) => gadgetId),
-        ...(message.addedBindings ?? []).map(({ gadgetId }) => gadgetId),
-      ]
-      if (ids.length === 0) return
-      ids.forEach((id) => this.#waiting.add(id))
-    } else return
-    this.#setMetadata({ proposedChangeWorkpieces: this.#proposedWorkpieces() })
+    if (message.type === 'merge') {
+      this.#waiting.clear()
+      this.#code.kept()
+      this.#setMetadata({ codeBase: this.#code.base(message.sequence), proposedChangeWorkpieces: undefined })
+      return
+    }
+    if (message.type !== 'changes') return
+    if (message.change) this.#code.recorded(message.change)
+    const ids = [
+      ...(message.createdGadgets ?? []).map(({ gadgetId }) => gadgetId),
+      ...(message.blueprintMerges ?? []).map(({ gadgetId }) => gadgetId),
+      ...(message.addedBindings ?? []).map(({ gadgetId }) => gadgetId),
+    ]
+    ids.forEach((id) => this.#waiting.add(id))
+    if (ids.length || message.change) this.#setMetadata({ proposedChangeWorkpieces: this.#proposedWorkpieces() })
   }
 
   /** Gives the gadget another title, which those listening to the workpieces hear of. */
@@ -627,6 +621,8 @@ export class MockOverseer {
   subscribeToChat(subscriber: ChatEvents) {
     this.#chatSubscribers.add(subscriber)
     subscriber.streamGeneration(this.#generation)
+    // What the chat's stream took that no message records yet, as the server sends it again.
+    for (const row of this.#code.unrecorded) subscriber.changeApplied?.(CHAT_ID, row.generation, row.revision, VIEWER, row.change, row.submission)
     this.player.fire('onStart')
     return lease(() => this.#chatSubscribers.delete(subscriber))
   }

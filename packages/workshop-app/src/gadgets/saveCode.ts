@@ -2,12 +2,6 @@ import { RpcTarget, type RpcStub } from 'capnweb'
 import { MAX_READ_FILES_PER_CALL, type FileAtCommit, type Overseer, type WorkpieceSummary, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { conflictsWith, editedLine, rebase, toChange, type CodeDraft, type DraftBefore } from './codeDrafts'
 
-/** Why code can't be edited beside a chat whose agent is working. */
-export const AGENT_WORKING = 'You can edit when the agent is done.'
-
-/** Why code can't be edited beside a chat that proposes changes not kept yet: saving would keep them too. */
-export const CHAT_PROPOSES = 'This chat has changes that aren’t kept yet. Keep or discard them in the chat to edit here.'
-
 /**
  * The part of a workspace's Overseer a save uses, and the lease that must be disposed. The
  * subscribe call takes the subscriber object itself, as a call through a stub does.
@@ -20,11 +14,11 @@ export type SaveCodeOptions = {
   gadgetId: number
   draft: CodeDraft
   /**
-   * The chat the save is kept through: the one the code is shown beside, or, on the gadget's own
-   * page, the chat this device last made for its edits where it can still take them (`reuse`),
-   * else a new one, titled for the gadget (`title`), whose agent is off.
+   * The chat the save is kept through: the one this device last made for the gadget's edits where
+   * it can still take them (`reuse`), else a new one, titled for the gadget (`title`), whose agent
+   * is off. Beside a chat, edits go into that chat as they are made, and keeping it keeps them.
    */
-  chat: { beside: number } | { title: string; reuse?: number }
+  chat: { title: string; reuse?: number }
   /** Saves the files the draft touches as it has them, over what others changed in them since. */
   anyway?: boolean
   /** Told of a chat made for the save, for the next save of the gadget to reuse. */
@@ -113,7 +107,7 @@ export const saveCode = async (open: () => SavingOverseer, options: SaveCodeOpti
   const { gadgetId, anyway = false, onChatMade, newClientId = () => crypto.randomUUID() } = options
   const overseer = open()
   let draft = options.draft
-  let chatId: number | undefined = 'beside' in options.chat ? options.chat.beside : undefined
+  let chatId: number | undefined
   // A chat the change is in, not kept: it is taken back out should the save fail.
   let submitted: number | undefined
   try {
@@ -131,11 +125,7 @@ export const saveCode = async (open: () => SavingOverseer, options: SaveCodeOpti
 
       const chats = await overseer.listChats()
       let chat = chats.find(({ id }) => id === chatId)
-      if ('beside' in options.chat) {
-        if (!chat) return { status: 'failed', message: 'The chat is no longer there.' }
-        if (chat.activeAgent) return { status: 'failed', message: AGENT_WORKING }
-        if (chat.proposedChangeWorkpieces?.length) return { status: 'failed', message: CHAT_PROPOSES }
-      } else if (!chat) {
+      if (!chat) {
         const { title, reuse } = options.chat
         const reused = chats.find(({ id }) => id === reuse)
         if (reused && !reused.activeAgent && !reused.proposedChangeWorkpieces?.length) {
