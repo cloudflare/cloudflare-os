@@ -412,12 +412,35 @@ describe("Google grants shared by several connections", () => {
     await last.disconnect();
     expect(google.revoked).toEqual([]);
 
-    // Read as another account's, it lets go of the first account's grant, which is then revoked.
+    // Asked again once Google answers, it reads which account it is, though nothing used it: another
+    // account's, so it lets go of the first account's grant, which is then revoked.
     google.profileFails = false;
-    await moved.refresh();
-    await moved.holds(grace);
     expect(await last.alarm()).toBe(true);
     expect(google.revoked).toEqual(["refresh-last"]);
+    await moved.holds(grace);
+  });
+
+  it("does not count an answer it gave before a reconnect left it unsure which account it is", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const first = await connection(google, "first", ada);
+    const moved = await connection(google, "moved", ada);
+    // Its answer, that it holds the grant, is on its way back when it reconnects, as another
+    // Google account it cannot yet read.
+    await moved.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    const disconnecting = first.disconnect();
+    await vi.waitFor(async () => expect(await moved.stored("test:grantCheckHeld")).toBe(true), {timeout: 5000});
+    google.profileFails = true;
+    await reconnect(google, moved, "moved-again", grace, false);
+    await moved.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+    await disconnecting;
+    expect(google.revoked).toEqual([]);
+
+    // Asked again, it could not say, so the revocation waited, and is sent once it can.
+    google.profileFails = false;
+    expect(await first.alarm()).toBe(true);
+    expect(google.revoked).toEqual(["refresh-first"]);
   });
 
   it("puts off a disconnect's revocation while a holder of the grant cannot be asked", async () => {

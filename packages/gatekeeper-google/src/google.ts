@@ -898,8 +898,19 @@ export class UserAccount extends DurableObject<Env> {
         kv.put<string>(GRANT_CREDENTIALS_KEY, credentialsId);
         return;
       }
-      if (sameAccount || staged.subject === undefined) {
+      if (sameAccount) {
         kv.delete(GRANT_CREDENTIALS_KEY);
+      } else if (staged.subject === undefined) {
+        kv.delete(GRANT_CREDENTIALS_KEY);
+        // Listed again, so that an answer it gave the registry about the credentials replaced
+        // here, on its way back, is not believed: asked again, it says it cannot yet say.
+        if (recordedSubject !== undefined) {
+          await this.#grantRegistry(recordedSubject).add(this.ctx.id.toString()).catch(error => {
+            logger.warn("failed to record a Google grant's holder", {
+              event: "google.grant.hold.failed", error,
+            });
+          });
+        }
       } else {
         await this.#dropGrant().catch(error => {
           logger.warn("failed to stop holding the Google grant a reconnect replaced", {
@@ -1051,11 +1062,21 @@ export class UserAccount extends DurableObject<Env> {
       return false;
     }
     // Listed under this grant for credentials a reconnect replaced, not yet known to be the same
-    // Google account's, it may hold another's: it cannot say until that is read.
+    // Google account's, it may hold another's: which it is is read now, and when it cannot be,
+    // it cannot say.
     let installed = this.#credentialsId();
     if (kv.get<string>(GRANT_CREDENTIALS_KEY) !== installed &&
         this.#accountSubject(installed) !== subject) {
-      return "unknown";
+      let read = await this.#readAccountSubject(refreshToken).catch(() => undefined);
+      if (kv.get<string>("refreshToken") !== refreshToken) return await this.holdsGrantIn(registryId);
+      if (read === undefined) return "unknown";
+      if (read === null) return false;
+      if (installed !== undefined && kv.get<string>("credentialsId") === installed) {
+        kv.put<AccountSubject>(ACCOUNT_SUBJECT_KEY, { credentialsId: installed, subject: read });
+        // Recorded as it is now: kept, or moved to the account read.
+        void this.#holdGrant();
+      }
+      return read === subject;
     }
     // An access token that has not expired was minted within the hour, so Google honoured the
     // refresh token then. One that has, as on a connection left unused, says nothing: Google may
@@ -1067,6 +1088,33 @@ export class UserAccount extends DurableObject<Env> {
     // A reconnect replaced the credentials while Google was asked: the answer is about them now.
     if (kv.get<string>("refreshToken") !== refreshToken) return await this.holdsGrantIn(registryId);
     return lives;
+  }
+
+  /**
+   * Which Google account `refreshToken`'s credentials belong to, read with the stored access token
+   * or, once it has expired, one a refresh mints and drops; null when Google refuses the refresh
+   * token for good, which is then recorded as dead while it is still installed. Without the
+   * credentials mutex, as holdsGrantIn() is. Throws when Google cannot say.
+   */
+  async #readAccountSubject(refreshToken: string): Promise<string | null> {
+    let stored = this.ctx.storage.kv.get<GoogleAccessToken>("accessToken");
+    let token = stored !== undefined && stored.expires.valueOf() > Date.now() ? stored.token : undefined;
+    if (token === undefined) {
+      let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+      if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
+      let result = await getAccessToken(refreshToken, clientId, clientSecret,
+          AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+      if (!result.ok) {
+        if (result.reason !== "revoked" || isCloudSessionExpiry(result)) {
+          throw new Error("Google would not refresh these credentials to say whose they are.");
+        }
+        let kv = this.ctx.storage.kv;
+        if (kv.get<string>("refreshToken") === refreshToken) kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+        return null;
+      }
+      token = result.token.token;
+    }
+    return (await getGoogleAccountProfile(token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
   }
 
   /**
