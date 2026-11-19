@@ -91,6 +91,7 @@ export class FakeGatekeeperVerifier
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
+const pausedDescriptions = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>();
 
 /** A ticket a FakeGatekeeperAccount redeems when its UI is next opened, by account name. */
 const stashedTickets = new Map<string, string>();
@@ -111,6 +112,8 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
 
   async describe(): Promise<AccountDescription> {
     this.#record("describe");
+    const paused = pausedDescriptions.get(this.ctx.props.name);
+    if (paused) await paused.promise;
     if (this.ctx.props.failDescribe) throw new Error("describe failed");
     return {
       displayName: this.ctx.props.name,
@@ -173,6 +176,14 @@ export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
 
   async calls(): Promise<string[]> {
     return accountCalls.get(this.ctx.props.name) ?? [];
+  }
+
+  async pauseDescriptions(paused: boolean): Promise<void> {
+    if (paused) pausedDescriptions.set(this.ctx.props.name, Promise.withResolvers<void>());
+    else {
+      pausedDescriptions.get(this.ctx.props.name)?.resolve();
+      pausedDescriptions.delete(this.ctx.props.name);
+    }
   }
 }
 
@@ -261,6 +272,14 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async accountCalls(accountName: string): Promise<string[]> {
     return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
+  }
+
+  async unavailableAccount(accountName: string): Promise<Fetcher<FakeGatekeeperAccount>> {
+    return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName, failDescribe: true } });
+  }
+
+  async pauseAccountDescriptions(accountName: string, paused: boolean): Promise<void> {
+    await this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).pauseDescriptions(paused);
   }
 }
 

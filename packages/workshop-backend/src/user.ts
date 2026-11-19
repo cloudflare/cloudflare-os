@@ -2348,10 +2348,33 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * callers (gadget open, app nav) provision and read the accounts back in a single round trip to this
    * DO. Callers filter on `description.singleton` (ambient capsules / catalog) or
    * `description.providesUi` (management-UI listing).
+   * `refreshDescriptions` updates cached metadata for app discovery, including accounts whose
+   * gatekeeper added a UI after connection. Ordinary agent reads use the saved descriptions.
    */
-  async listProvidedAccounts(): Promise<ProvidedAccountInfo[]> {
+  async listProvidedAccounts(refreshDescriptions = false): Promise<ProvidedAccountInfo[]> {
     await this.#ensureAutoProvisionedAccounts();
     let config = await readAdminConfig(this.env);
+    if (refreshDescriptions) {
+      await Promise.all(Array.from(this.#connectedAccountRecords(), async rec => {
+        if (config.disabledGatekeepers.includes(rec.vendorId) ||
+            (rec.autoProvisioned && ambientGatekeeperMode(config, rec.vendorId) === "disabled")) return;
+        try {
+          let previous = JSON.stringify(rec.description);
+          let description = await rec.account.describe();
+          if (JSON.stringify(description) === previous) return;
+          let current = this.storage.connectedAccounts.get(rec.id);
+          // Disconnect/reconnect may run while describe yields. Never restore a deleted account
+          // or replace a description another operation has already updated.
+          if (current && JSON.stringify(current.description) === previous) {
+            this.storage.connectedAccounts.put({ ...current, description });
+          }
+        } catch (error) {
+          logger.warn("failed to refresh an account description for app discovery", {
+            event: "account.describe.refresh.failed", vendorId: rec.vendorId, accountId: rec.id, error,
+          });
+        }
+      }));
+    }
     let result: ProvidedAccountInfo[] = [];
     for (let rec of this.#connectedAccountRecords()) {
       if (!rec.description.singleton && !rec.description.providesUi) continue;
