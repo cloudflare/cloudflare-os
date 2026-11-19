@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { asideItemFor, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
+import { asideItemFor, carriedOpen, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown, rememberShown } from '@/aside/lastShown'
 import { carryAside, useAsideNavigation, type BesideRef } from '@/aside/useAsideNavigation'
@@ -46,7 +46,7 @@ import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ObserverAccessProvider } from '@/connections/ObserverAccessProvider'
 import { sidebarConnections } from '@/connections/sidebarConnections'
 import { useConnections } from '@/connections/useConnections'
-import { AppSearch } from './-AppSearch'
+import { AppSearch, type SearchContext } from './-AppSearch'
 
 /** Everything under here needs the backend; routes outside it (the gallery) work without one. */
 export const Route = createFileRoute('/_app')({
@@ -425,8 +425,31 @@ const AppFrame = () => {
     : undefined
   const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
 
+  // What search can do where the user is, in a workspace's chat or on its page: a new chat in the
+  // workspace as the page's own button starts one, keeping what is shown beside it, and inviting
+  // people, which the page's own dialog is asked for (`?invite`).
+  const searchWorkspaceId = chatPage?.params.workspaceId ?? workspacePage?.params.workspaceId
+  const searchNewChat = () => {
+    if (searchWorkspaceId !== undefined) void navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId: searchWorkspaceId }, search: { open: carriedOpen(besideOf?.search.open) } })
+  }
+  const searchContext: SearchContext | undefined = searchWorkspaceId === undefined
+    ? undefined
+    : chatPage
+      ? { kind: 'chat', workspaceId: searchWorkspaceId, onNewChat: searchNewChat }
+      : {
+          kind: 'workspace',
+          workspaceId: searchWorkspaceId,
+          onNewChat: searchNewChat,
+          onInvite: () => void router.navigate({ to: '.', search: (previous: Record<string, unknown>) => ({ ...previous, invite: true as const }) }),
+        }
+
   // Over the page, whichever shell it is in, and reached by ⌘K from either.
-  const search = <AppSearch open={searching} onOpenChange={setSearching} />
+  const search = <AppSearch
+      open={searching}
+      onOpenChange={setSearching}
+      connections={connectionsState.status === 'ready' ? connectionsState.connections : []}
+      context={searchContext}
+    />
 
   if (narrow) {
     return (

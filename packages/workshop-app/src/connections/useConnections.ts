@@ -11,6 +11,11 @@ export type ConnectionsState =
       connections: Connection[]
       /** The services that could not be asked what they offer, by name, which are not listed. */
       unreachable: string[]
+      /**
+       * What can be added as it is has been asked for, whether or not it could be told: until then
+       * a service of that kind may only not be listed yet.
+       */
+      complete: boolean
     }
   | { status: 'failed'; message: string; retry: () => void }
 
@@ -27,6 +32,7 @@ export const useConnections = (): { state: ConnectionsState; reloadAddable: () =
   const { api, reconnecting } = useApi()
   const [vendors, setVendors] = useState<GatekeeperVendorInfo[]>()
   const [addable, setAddable] = useState<GatekeeperVendorInfo[]>([])
+  const [addableAsked, setAddableAsked] = useState(false)
   const [accounts, setAccounts] = useState<ConnectedAccount[]>()
   const [problem, setProblem] = useState<string>()
   // Bumped to ask again after a failure.
@@ -44,8 +50,12 @@ export const useConnections = (): { state: ConnectionsState; reloadAddable: () =
     }, fail)
     // Without them the page still lists everything else.
     api.listAddableGatekeepers().then((list) => {
-      if (!cancelled) setAddable(list)
-    }, () => {})
+      if (cancelled) return
+      setAddable(list)
+      setAddableAsked(true)
+    }, () => {
+      if (!cancelled) setAddableAsked(true)
+    })
     // The user's own, not a workspace's, so no workspace restarting breaks it; the backend puts it
     // back itself after a restart of its own, and tells of every account again.
     const subscription = api.subscribeConnectedAccounts(new ConnectedAccounts((next) => {
@@ -68,7 +78,7 @@ export const useConnections = (): { state: ConnectionsState; reloadAddable: () =
 
   // What was read stays up when reading it again fails, as over a connection that then drops.
   const state: ConnectionsState = vendors && accounts
-    ? { status: 'ready', connections: connectionsOf({ vendors, addable, accounts }), unreachable: unreachableServices(vendors) }
+    ? { status: 'ready', connections: connectionsOf({ vendors, addable, accounts }), unreachable: unreachableServices(vendors), complete: addableAsked }
     : problem !== undefined
       ? { status: 'failed', message: problem, retry }
       : { status: 'loading' }

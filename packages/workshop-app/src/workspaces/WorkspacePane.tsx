@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { CaretRightIcon, ChatCircleIcon, CirclesFourIcon, UserPlusIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
@@ -18,6 +18,7 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { useHandler } from '@/hooks/useHandler'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useNow } from '@/hooks/useNow'
 import { PageLayout } from '@/layouts/PageLayout'
@@ -75,6 +76,10 @@ export type WorkspacePaneProps = {
   link?: string
   /** Leaves the page once the workspace has been deleted, or removed from the viewer's list. */
   onRemoved: () => void
+  /** The dialog to invite people is asked for, as search does, to be shown once the viewer is known to be able to. */
+  inviteRequested?: boolean
+  /** The request has been answered, by showing the dialog or because the viewer may not: it is forgotten. */
+  onInviteHandled?: () => void
 }
 
 /**
@@ -87,7 +92,7 @@ export type WorkspacePaneProps = {
  * viewer is said over the tabs, whichever is chosen, and counted
  * on the Agents tab.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenAgent, agentHref, onOpenItem, itemHref, outputHref, onOpenSettings, onNewChat, link, onRemoved, inviteRequested = false, onInviteHandled }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -104,6 +109,17 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const people = standing ? workspaceMembers(standing.owner, shared.collaborators).map(({ profile }) => profile) : []
   // Until its own metadata is read, the list's role says whether the viewer could.
   const canInvite = link !== undefined && (standing ? standing.canShare : workspace !== undefined && workspace.role !== 'use')
+
+  // Asked for from outside (search): shown once the workspace is listed, which says whether the viewer
+  // may, and the request forgotten either way, so that it is not asked again.
+  const answerInviteRequest = useHandler(() => {
+    if (canInvite) setInviting(true)
+    onInviteHandled?.()
+  })
+  const listed = workspace !== undefined
+  useEffect(() => {
+    if (inviteRequested && listed) answerInviteRequest()
+  }, [inviteRequested, listed, answerInviteRequest])
 
   // Whether the viewer owns it, from its own metadata once read and the list's until then.
   const metadata = shared?.metadata ?? workspace

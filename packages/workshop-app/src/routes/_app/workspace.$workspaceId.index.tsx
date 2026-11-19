@@ -10,19 +10,21 @@ const validateTab = (value: unknown): WorkspaceTab | undefined =>
  * One workspace: its chats, or with `?tab=`, its agents, what it has made, what runs in it by
  * itself or who has access to it, and what is shown beside it (`?open=`, see `asideItems`), which
  * the frame lays out (`_app`). The old app's `?chat=`, which a notification opens, goes to that
- * chat's own page before this (`legacyTarget`).
+ * chat's own page before this (`legacyTarget`). `?invite` asks for the dialog to invite people, which
+ * search does, and is forgotten once it has been.
  */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/')({
-  validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab; open?: string } => ({
+  validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab; open?: string; invite?: true } => ({
     tab: validateTab(search.tab),
     open: validateAsideParam(search.open),
+    invite: search.invite === true || search.invite === 'true' ? true : undefined,
   }),
   component: Workspace,
 })
 
 function Workspace() {
   const { workspaceId } = Route.useParams()
-  const { tab = 'chats', open } = Route.useSearch()
+  const { tab = 'chats', open, invite } = Route.useSearch()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -53,6 +55,9 @@ function Workspace() {
       itemHref={(item) => router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library', open: item.key } }).href}
       outputHref={(output) => router.buildLocation(outputPage(output)).href}
       onOpenSettings={(output) => navigate(outputSettings(output))}
+      inviteRequested={invite === true}
+      // In place, with the rest of the address as it was, so that going back does not ask again.
+      onInviteHandled={() => navigate({ to: '.', search: (previous: Record<string, unknown>) => ({ ...previous, invite: undefined }), replace: true })}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId }, search: { open: carriedOpen(open) } })}
       // Its own address, whole, as it is copied to be opened elsewhere.
       link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}

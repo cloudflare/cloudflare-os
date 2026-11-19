@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { PuzzlePieceIcon } from '@phosphor-icons/react'
 import { ConnectDialog } from '@/blocks/ConnectDialog'
 import { ConnectionCard } from '@/blocks/ConnectionCard'
@@ -10,6 +10,7 @@ import { CardGrid } from '@/components/CardGrid'
 import { GroupedList } from '@/components/GroupedList'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { useHandler } from '@/hooks/useHandler'
 import { useListView } from '@/hooks/useListView'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
@@ -28,7 +29,12 @@ import { useConnections } from './useConnections'
  * connect it, which signs in to the service in a window of its own. An account that is connected
  * opens one of what it has access to, and what can be done with it.
  */
-export const ConnectionsPane = () => {
+export const ConnectionsPane = ({ requested, onRequestHandled }: {
+  /** The `key` of a connection whose dialog is shown once it is listed, where it was asked for by address (search does). */
+  requested?: string
+  /** Its dialog is up, or it is no longer listed: the address forgets it. */
+  onRequestHandled: () => void
+}) => {
   const { api } = useApi()
   const notice = useConnectionNotice()
   const { state, reloadAddable } = useConnections()
@@ -84,6 +90,18 @@ export const ConnectionsPane = () => {
       closeDialog()
     }),
   }
+
+  // Waits for all of the list, which an address can arrive before. One that is not listed (it was
+  // connected or disconnected since, or is gone) is only forgotten.
+  const asked = requested === undefined ? undefined : all.find(({ key }) => key === requested)
+  const listed = state.status === 'ready' && state.complete
+  const takeRequest = useHandler(() => {
+    if (asked) actions.open(asked)
+    onRequestHandled()
+  })
+  useEffect(() => {
+    if (requested !== undefined && listed) takeRequest()
+  }, [requested, listed, takeRequest])
 
   const dialogProps = dialog && {
     open: dialog.open,
