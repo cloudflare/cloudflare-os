@@ -4,11 +4,10 @@
 
 import {
   docsLinkDestination,
-  type Border, type EmbeddedObject, type GoogleDocsTab, type Paragraph, type ParagraphElement,
-  type ParagraphStyle, type Positioning, type SectionStyle, type StructuralElement, type Table,
-  type TextStyle,
+  type Border, type Color, type Dimension, type EmbeddedObject, type GoogleDocsTab, type Paragraph,
+  type ParagraphElement, type ParagraphStyle, type Positioning, type SectionStyle,
+  type StructuralElement, type Table, type TableCell, type TextStyle,
 } from "./docs-api";
-import { cssColor, drawnTableCells, fill, lineCounter, points } from "./docs-styles";
 import type { Segment } from "./markdown-converter";
 import type {
   GoogleDocBlock, GoogleDocBorder, GoogleDocTableCell, GoogleDocDrawing, GoogleDocListLevel,
@@ -40,6 +39,57 @@ export type DocBlockPlace = { mdStart: number; segments?: Segment[] };
 
 /** A tab's drawing, and where Google serves each of its images for a short while. */
 export type DocTabDrawing = { drawing: GoogleDocDrawing; imageUris: Record<string, string> };
+
+/** A length in points. Google leaves a zero out of its JSON, so one that is absent is zero. */
+const points = (length: Dimension | undefined) => length && (length.magnitude ?? 0);
+
+/** A color as `#rrggbb`, a channel Google leaves out being zero. */
+function cssColor(color: Color | undefined): string | undefined {
+  let rgb = color?.color?.rgbColor;
+  if (!rgb) return undefined;
+  let channel = (value = 0) => Math.round(value * 255).toString(16).padStart(2, "0");
+  return `#${channel(rgb.red)}${channel(rgb.green)}${channel(rgb.blue)}`;
+}
+
+/** White behind text on a white page is no highlight, though pasted text often carries one. */
+const fill = (color: Color | undefined) => {
+  let css = cssColor(color);
+  return css === "#ffffff" ? undefined : css;
+};
+
+/** Whether `cell` has no text, as the cells a merged one covers have none. */
+const isBlank = (cell: TableCell) => (cell.content ?? []).every(({ paragraph }) =>
+  paragraph?.elements.every(({ textRun }) => textRun && !textRun.content.trim()));
+
+/**
+ * The cells of `table` that are drawn, a row at a time. Google lists every grid position, so the
+ * ones a merged cell covers are left out: they hold nothing, and the merged cell spans them. A
+ * row that lists only its own cells puts one where a covered cell would be, and it is kept.
+ */
+export function drawnTableCells(table: Table): TableCell[][] {
+  let covered = new Set<string>();
+  return (table.tableRows ?? []).map((row, rowIndex) =>
+    (row.tableCells ?? []).filter((cell, columnIndex) => {
+      if (covered.has(`${rowIndex},${columnIndex}`) && isBlank(cell)) return false;
+      let { rowSpan = 1, columnSpan = 1 } = cell.tableCellStyle ?? {};
+      for (let down = 0; down < rowSpan; down++) {
+        for (let across = 0; across < columnSpan; across++) {
+          covered.add(`${rowIndex + down},${columnIndex + across}`);
+        }
+      }
+      return true;
+    }));
+}
+
+/** Counts the lines of `markdown` before each position asked for, which must not go backwards. */
+function lineCounter(markdown: string): (position: number) => number {
+  let line = 0;
+  let scanned = 0;
+  return position => {
+    for (; scanned < position; scanned++) if (markdown.charCodeAt(scanned) === 10) line++;
+    return line;
+  };
+}
 
 /** `value` without the entries that say nothing: undefined and zero. */
 function set<T extends object>(value: T): T {

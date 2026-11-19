@@ -14,8 +14,7 @@ import type {
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
 import type {
-  DocMetadata, GoogleDocImage, GoogleDocPendingChanges, GoogleDocSession, GoogleDocStyles,
-  GoogleDocTab,
+  DocMetadata, GoogleDocImage, GoogleDocPendingChanges, GoogleDocSession, GoogleDocTab,
 } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
@@ -491,10 +490,6 @@ export class TestHooks extends DurableObject<Env> {
 
   async readPendingChanges(facetName: string, tabId: string): Promise<GoogleDocPendingChanges> {
     return this.#withSession(facetName, session => session.getPendingChanges(tabId));
-  }
-
-  async readStyles(facetName: string, tabId: string): Promise<GoogleDocStyles> {
-    return this.#withSession(facetName, session => session.getStyles(tabId));
   }
 
   /** In one session: list the tab's images when `list` is set, then read each of `imageIds`. */

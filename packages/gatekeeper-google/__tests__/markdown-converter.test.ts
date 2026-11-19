@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Paragraph, TextStyle } from "../src/docs-api";
+import type { GoogleDocParagraph, GoogleDocTable } from "../src/docs-rendering-types";
 import {
   applyMarkdownEdit, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
   computeReplaceOperations,
@@ -806,14 +807,15 @@ describe("Google Docs tables", () => {
     let paragraphs = tab.body.content.filter(element => element.paragraph).map(element => element.paragraph!);
     paragraphs[4].paragraphStyle.spacingMode = "NEVER_COLLAPSE";
 
-    let { styles } = docTabToMarkdown(tab);
+    let { drawing } = docTabToMarkdown(tab);
 
-    expect(styles.paragraphs.map(({ look }) => look)).toEqual([
-      undefined, { spaceBelow: 0 }, { spaceAbove: 0 }, { spaceBelow: 0 }, undefined,
-    ]);
+    expect((drawing.blocks as GoogleDocParagraph[]).map(({ look }) => {
+      let { spaceAbove = 0, spaceBelow = 0 } = drawing.paragraphLooks[look]!;
+      return [spaceAbove, spaceBelow];
+    })).toEqual([[10, 4], [10, 0], [0, 4], [10, 0], [10, 4]]);
   });
 
-  it("gives each paragraph's style by its line, and only what it sets over its named style", () => {
+  it("draws each paragraph, run and cell by its line, in its look in full", () => {
     let tab = buildTab([
       { runs: ["Report\n"], namedStyleType: "TITLE" },
       { runs: ["Plain\n"] },
@@ -850,40 +852,40 @@ describe("Google Docs tables", () => {
     };
     cell.content![0].paragraph!.paragraphStyle.alignment = "CENTER";
 
-    let { markdown, styles } = docTabToMarkdown(tab);
+    let { markdown, drawing } = docTabToMarkdown(tab);
 
     let lines = markdown.split("\n");
-    expect(lines[styles.tables[0].line]).toBe("<table>");
-    expect(styles.paragraphs.map(({ line }) => lines[line]))
+    let [title, plain, table, centered, coded] = drawing.blocks as
+      [GoogleDocParagraph, GoogleDocParagraph, GoogleDocTable, GoogleDocParagraph, GoogleDocParagraph];
+    let set = (block: GoogleDocParagraph) => drawing.paragraphLooks[block.look];
+    let type = (block: GoogleDocParagraph) => block.runs.map(run => drawing.textLooks[run.look]);
+    let normal = { fontFamily: "Arial", fontSize: 11, weight: 400 };
+    expect(lines[table.line!]).toBe("<table>");
+    expect([title, plain, centered, coded].map(({ line }) => lines[line!]))
       .toEqual(["# Report", "Plain", "Red and centered", "plain code plain"]);
-    expect(styles).toEqual({
-      page: { width: 612, marginTop: 72, marginRight: 0, marginLeft: 54 },
-      named: {
-        NORMAL_TEXT: { fontFamily: "Arial", fontSize: 11, bold: false, alignment: "start", lineSpacing: 1.15 },
-        TITLE: {
-          fontFamily: "Arial", fontSize: 26, bold: false, color: "#0000ff", alignment: "start",
-          lineSpacing: 1.15, spaceBelow: 3,
-        },
-      },
-      paragraphs: [
-        // What a link to the heading names it by.
-        { line: expect.any(Number), style: "TITLE", headingId: "h.report" },
-        { line: expect.any(Number), style: "NORMAL_TEXT" },
-        { line: expect.any(Number), style: "NORMAL_TEXT", look: { color: "#ff0000", alignment: "center" } },
-        // A stretch drawn differently from the rest of its line, by where it is in the line.
-        { line: expect.any(Number), style: "NORMAL_TEXT", runs: [{ start: 6, end: 10, look: 0 }] },
-      ],
-      runLooks: [{ fontFamily: "Consolas", highlight: "#ffff00" }],
-      // The usual 1pt black edge is left out; an edge with no width is said.
-      tables: [{
-        line: expect.any(Number),
-        rows: [[{
-          background: "#00ff00", verticalAlign: "middle",
-          borders: { top: { width: 0, color: "#000000" } },
-          look: { alignment: "center" },
-        }]],
-      }],
+    expect(drawing.sections[0]!.margins).toMatchObject({ top: 72, right: 0, left: 54 });
+
+    // What a link to the heading names it by, and what its named style sets over Normal text.
+    expect(title).toMatchObject({ style: "TITLE", headingId: "h.report" });
+    expect(set(title)).toEqual({ lineSpacing: 1.15, spaceBelow: 3 });
+    expect(type(title)).toEqual([{ ...normal, fontSize: 26, color: "#0000ff" }]);
+    expect([set(plain), type(plain)]).toEqual([{ lineSpacing: 1.15 }, [normal]]);
+    expect(drawing.named).toEqual({
+      NORMAL_TEXT: { paragraph: plain.look, text: plain.runs[0]!.look },
+      TITLE: { paragraph: title.look, text: title.runs[0]!.look },
     });
+    // What a paragraph sets itself.
+    expect(set(centered)).toEqual({ lineSpacing: 1.15, alignment: "center" });
+    expect(type(centered)).toEqual([{ ...normal, color: "#ff0000" }]);
+    // A stretch drawn differently from the rest of its line, by where it is in the line.
+    expect(coded.runs).toMatchObject([{ at: 0 }, { text: "code", at: 6 }, { at: 10 }]);
+    expect(type(coded)).toEqual([normal, { ...normal, fontFamily: "Consolas", highlight: "#ffff00" }, normal]);
+    // An edge with no width is left out, and the others are Google Docs' usual 1pt black line.
+    let edge = { width: 1, color: "#000000" };
+    let drawn = table.rows[0]!.cells[0]!;
+    expect(drawn).toMatchObject({ background: "#00ff00", verticalAlign: "middle" });
+    expect(drawn.borders).toEqual({ right: edge, bottom: edge, left: edge });
+    expect(set(drawn.blocks[0] as GoogleDocParagraph)).toEqual({ lineSpacing: 1.15, alignment: "center" });
   });
 
   it("lists a tab's images in the order it writes their placeholders", () => {
@@ -975,7 +977,7 @@ describe("Google Docs tables", () => {
       ["g", "h", ""],
     ] }]);
 
-    let { markdown, styles } = docTabToMarkdown(tab);
+    let { markdown, drawing } = docTabToMarkdown(tab);
 
     let rows = markdown.split("</tr>").slice(0, -1).map(row => row.match(/<td[^>]*>/g));
     expect(rows).toEqual([
@@ -983,8 +985,8 @@ describe("Google Docs tables", () => {
       ["<td>", "<td>", '<td rowspan="2">'],
       ["<td>", "<td>"],
     ]);
-    // The styles have a cell for each one written.
-    expect(styles.tables[0].rows.map(row => row.length)).toEqual([2, 3, 2]);
+    // The drawing has a cell for each one written.
+    expect((drawing.blocks[0] as GoogleDocTable).rows.map(row => row.cells.length)).toEqual([2, 3, 2]);
   });
 
   it("keeps a cell with text beside a merged cell in a row that lists only its own cells", () => {

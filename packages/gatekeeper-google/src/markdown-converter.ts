@@ -7,10 +7,8 @@ import {
   type EmbeddedObject, type GoogleDocsTab, type Paragraph, type ParagraphElement,
   type StructuralElement, type Table, type TableCell, type TextStyle,
 } from "./docs-api";
-import { docTabDrawing, type DocBlockPlace } from "./docs-drawing";
+import { docTabDrawing, drawnTableCells, type DocBlockPlace } from "./docs-drawing";
 import type { GoogleDocDrawing } from "./docs-rendering-types";
-import { docTabStyles, drawnTableCells } from "./docs-styles";
-import type { GoogleDocStyles } from "./docs-types";
 
 // ---------------------------------------------------------------------------
 // Source map types
@@ -41,8 +39,6 @@ export type DocTabSnapshot = {
   bodyEndIndex: number;
   /** One entry per `[Image]` placeholder in `markdown`, in the order they appear. */
   images: DocTabImage[];
-  /** How the tab looks beyond what `markdown` says. */
-  styles: GoogleDocStyles;
   /** The tab as Google Docs draws it. */
   drawing: GoogleDocDrawing;
   /** Where Google serves, for a short while, each image `drawing` names that has bytes. */
@@ -170,8 +166,6 @@ class MarkdownWriter {
 export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   let writer = new MarkdownWriter();
   let blocks: BlockMapping[] = [];
-  let starts: Parameters<typeof docTabStyles>[2] = [];
-  let tables: Parameters<typeof docTabStyles>[3] = [];
   let places = new Map<StructuralElement, DocBlockPlace>();
   let protectedRanges: MarkdownRange[] = [];
   let previousListId: string | undefined;
@@ -189,7 +183,6 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     if (structure !== undefined) {
       let mdStart = writer.length;
       if (writer.length > 0) writer.append("\n");
-      if (elem.table) tables.push({ mdStart: writer.length, table: elem.table });
       places.set(elem, { mdStart: writer.length });
       writer.append(`${structure}\n`);
       protectedRanges.push({ mdStart, mdEnd: writer.length });
@@ -229,7 +222,6 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
       }
     }
     let mdStart = writer.length;
-    starts.push({ mdStart, paragraph: para, segments });
     places.set(elem, { mdStart, segments });
 
     // Paragraph prefix (heading markers, list markers, etc.).
@@ -270,7 +262,6 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
     images: tabImages(tab, elements),
-    styles: docTabStyles(tab, writer.text, starts, tables),
     ...docTabDrawing(tab, writer.text, places),
   };
 }

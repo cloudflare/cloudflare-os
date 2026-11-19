@@ -302,7 +302,7 @@ Everything specific to one vendor is in this section and in `packages/gatekeeper
 ### Session reads
 
 On `GoogleDocSession` (`docs-types.d.ts`, what an agent sees; implemented in `docs.ts`). A
-preview's reads are declared there although they add more than half again to what every agent
+preview's reads are declared there although they add about a third to what every agent
 given a Doc is sent: a forked preview is edited by an agent, which learns the session from
 these types alone. Sheets and Slides do the same. Each
 reads one tab and takes a required `tabId`: `getContent()` lets it be omitted for a one-tab
@@ -313,8 +313,7 @@ getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;  // { savedM
 readDrawing(tabId: string): Promise<GoogleDocDrawing>;   // the saved tab as Google Docs lays it out
 readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at most 10 MB
 getRenderingTypes(): Promise<string>;                    // the declarations of readDrawing()
-getStyles(tabId: string): Promise<GoogleDocStyles>;      // superseded by readDrawing()
-listImages(tabId: string): Promise<GoogleDocImage[]>;    // superseded by readDrawing()
+listImages(tabId: string): Promise<GoogleDocImage[]>;    // one for each [Image] in getContent()
 ```
 
 - `getPendingChanges()` follows section 2: the changes are `replaceText` and `appendText`, and
@@ -329,16 +328,18 @@ listImages(tabId: string): Promise<GoogleDocImage[]>;    // superseded by readDr
   body names its line of `savedMarkdown`, and each run where it starts in that line, so a caller
   lays the drawing over the Markdown diff it already has. It says nothing about pending text.
 - Its types are apart, in `docs-rendering-types.d.ts`, and `getRenderingTypes()` returns them:
-  they would nearly double the session's declarations, and an agent that only reads and edits a
+  they would double the session's declarations, and an agent that only reads and edits a
   Doc never needs them. An agent editing a forked preview is told by `getRenderingTypes()`'s
   comment to fetch them first. Sheets and Slides keep their reads that only render apart the
   same way.
 - The drawing is cached with the tab's snapshot and has a version of its own
   (`DOC_DRAWING_VERSION`), so a change to it discards cached snapshots without marking queued
   edits stale as a change to the Markdown rendering would.
-- `getStyles()` and `listImages()` are what the preview read before the drawing. Nothing in the
-  repository calls them now; they are still to be removed, with the first Docs commit, rather
-  than shipped.
+- `listImages()` is for an agent, not the preview, which takes its images from the drawing. An
+  agent sees an image only as an `[Image]` placeholder in `getContent()`, and `listImages()`
+  gives each placeholder's ID, size and alt text in order, so that `readImage()` can be called
+  without the drawing or its types. `getStyles()`, which the preview read before the drawing,
+  is gone: the drawing holds all it returned, in full.
 - Image bytes are returned whole, not streamed: a stream from the backend session does not reach
   the UI frame (capnweb 0.12.0). Google's image addresses lapse; a read that finds one lapsed
   reads the document again. Any other failure to fetch an image is reported as it is: only a
@@ -448,7 +449,7 @@ a document's colors are chosen against its paper.
 
 - Docs actions suite (workerd): pending changes in order with their arguments, one observation,
   stale changes, tab filtering, the unknown-tab error, a tab still to be added, applied and
-  rejected changes, the lost-response case, styles, images (listing, refusals, the size
+  rejected changes, the lost-response case, images (listing, refusals, the size
   limit, a lapsed address), and the drawing (its observation, the unknown-tab error, and the
   declarations `getRenderingTypes()` returns).
 - The drawing itself (`docs-drawing.test.ts`): each block's line and each run's place in the
@@ -541,8 +542,7 @@ a document's colors are chosen against its paper.
 - **Mobile.** Auto-open and the reopen button are desktop-only.
 - **Google Docs:** comments and suggestions in the preview; bookmark links; text on both sides
   of a wrapped image; a paragraph's own tab stops; more families in `DOCS_MEASURES` as documents
-  that need them turn up; removing `getStyles()` and `listImages()`, and `docs-styles.ts` with
-  them but for the helpers the drawing shares.
+  that need them turn up.
 - **Google Docs, found by review and left:**
   - *The drawing is stored inside the tab's snapshot*, which it grows by about two thirds
     (measured: 313 KB to 530 KB for an 83,000-character tab), and is built on every snapshot
