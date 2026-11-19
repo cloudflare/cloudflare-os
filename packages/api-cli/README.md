@@ -65,6 +65,16 @@ pnpm cf-os api open-workspace <id> merge-changes <chatId>
 
 If `--timeout` runs out, the turn keeps going: wait again, or `stop-agent <chatId>`.
 
+## An admin's read of content
+
+An admin reads a workspace's content through a view opened for content, and only while a grant is
+live for that workspace. `--out <file>` saves a file the answer streams:
+
+```sh
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" --options '{"access": "content"}' get-chat <chatId>
+pnpm cf-os api get-admin-api inspect-workspace <workspaceId> "<reason>" --options '{"access": "content"}' read-file <gadgetId> <path> --out <file>
+```
+
 ## Gatekeeper app UIs, and what needs a browser
 
 `get-gatekeeper-app <vendor> ui` continues with the typed commands of the interface the gatekeeper

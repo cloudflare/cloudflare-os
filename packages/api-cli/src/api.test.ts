@@ -966,3 +966,45 @@ test("--dry-run of JSON nested too deep fails as a usage error, not a stack over
   await usageError(h.api("--dry-run", "open-notebook", "n", "connect", "call", "echo", "@deep.json"),
     "call echo argument 1 is nested more than 128 levels deep, more than cf-os api sends.");
 });
+
+/** The chain a dry run of `tokens` prints. */
+async function chainOf(h: ReturnType<typeof harness>, ...tokens: string[]): Promise<unknown[]> {
+  assert.equal(await h.api("--dry-run", ...tokens), 0);
+  return (h.json.at(-1) as { chain: unknown[] }).chain;
+}
+
+test("--dry-run decodes an admin's content reads on a view opened for content, and the request for a second admin's approval", async (t) => {
+  const real = harness(t, { table: realTable });
+  const view = ["get-admin-api", "inspect-workspace", "w1", "The owner asked for help", "--options", '{"access": "content"}'];
+  const opened = [
+    { method: "getAdminApi", args: [] },
+    { method: "inspectWorkspace", args: ["w1", "The owner asked for help", { access: "content" }] },
+  ];
+  assert.deepEqual(await chainOf(real, ...view, "get-chat", "1"), [...opened, { method: "getChat", args: [1] }]);
+  // The page before a sequence is an optional parameter, so an option: a second positional has no place.
+  assert.deepEqual(await chainOf(real, ...view, "get-chat", "1", "--before-sequence", "5"), [...opened, { method: "getChat", args: [1, 5] }]);
+  await usageError(real.api("--dry-run", ...view, "get-chat", "1", "5"),
+    'get-chat returns a value, which ends the chain: nothing can follow it, but "5" does.');
+  // "full" is no level a view is opened at.
+  await usageError(real.api("--dry-run", "get-admin-api", "inspect-workspace", "w1", "why", "--options", '{"access": "full"}', "get-chat", "1"),
+    '--options.access must be AdminViewAccess; got "full".');
+
+  // A file's answer is JSON that may hold the file's bytes as a stream: --out names the file they go to.
+  assert.deepEqual(await chainOf(real, ...view, "read-file", "1", "src/index.ts", "--out", "index.ts"),
+    [...opened, { method: "readFile", args: [1, "src/index.ts"] }]);
+  assert.equal(existsSync(join(real.root, "index.ts")), false);
+  await usageError(real.api("--dry-run", ...view, "read-file", "1", "src/index.ts", "--out", "-"),
+    "read-file --out -: the result is printed on stdout, so its bytes need a file (--out <file>).");
+  // An attachment's answer is the stream itself, which stdout may take.
+  assert.deepEqual(await chainOf(real, ...view, "read-chat-attachment", "1", "a1", "--out", "-"),
+    [...opened, { method: "readChatAttachment", args: [1, "a1"] }]);
+
+  // A request to read a workspace's content takes the workspace and the reason, and nothing else.
+  assert.deepEqual(await chainOf(real, "get-admin-api", "request-content-access", "w1", "The owner is away"), [
+    { method: "getAdminApi", args: [] },
+    { method: "requestContentAccess", args: ["w1", "The owner is away"] },
+  ]);
+  await usageError(real.api("--dry-run", "get-admin-api", "request-content-access", "w1"),
+    "request-content-access needs <reason>. Run `cf-os api get-admin-api request-content-access w1 --help` for its arguments.");
+  assert.equal(real.server.opened, 0);
+});
