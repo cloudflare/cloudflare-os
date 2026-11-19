@@ -5,7 +5,10 @@
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import type { AdminAgentQueue, AdminGatekeeper } from "@gadgets/workshop-shared/admin-gatekeeper";
+import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
+import type {
+  AdminAgentApi, AdminAgentQueue, AdminGatekeeper,
+} from "@gadgets/workshop-shared/admin-gatekeeper";
 import type {
   AccountDescription,
   ActionKind,
@@ -23,6 +26,7 @@ import type {
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { resourceTypeUrlPattern, workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
+import { ADMIN_ACTIONS, type AdminActions } from "./actions.js";
 import type { DeploymentConfiguratorRpc } from "./configurator/deployment-configurator-types";
 import { ADMIN_SUBRESOURCE, type AdminSession, forwarderFor } from "./forward.js";
 import DEPLOYMENT_CONFIGURATOR_HTML from "./generated/deployment-configurator-ui.txt";
@@ -63,13 +67,22 @@ const TYPES = `${generatedDeclarations()}\n${TYPES_CODE}`;
 
 /**
  * The workspace facet. Its sessions forward to the Admin API the Workshop lends each of them
- * through its queue; the facet itself holds nothing, and queues no action.
+ * through its queue, and queue what would write to a workspace or ask for its content as an
+ * action. The facet holds the journal of those actions and nothing that could carry one out: an
+ * approved action runs on the Admin API the Workshop lends for it.
  */
 @validateRpc()
 export class AdminGatekeeperImpl
   extends DurableObject<Cloudflare.Env>
   implements AdminGatekeeper<AdminSession>
 {
+  /** The Admin API lent for each action being applied, by action id, for as long as it is. */
+  readonly #lent = new Map<number, RpcStub<AdminAgentApi>>();
+  readonly #journal = new ActionJournal<TaggedAction<AdminActions>>(
+      this.ctx.storage.kv, { namespace: "admin" });
+  readonly #actions = ADMIN_ACTIONS.bind(
+      this.#journal, { lentFor: (action) => this.#lent.get(action) });
+
   /** Describes the admin binding. */
   async describe(): Promise<ResourceDescription> {
     return {
@@ -86,13 +99,14 @@ export class AdminGatekeeperImpl
     return TYPES;
   }
 
-  /** Reports no action kinds. */
+  /** The action kinds a rule may apply: none, since both kinds wait for a person. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
+    return this.#actions.autoApprovableKinds();
   }
 
   /**
-   * Opens a session that forwards each Admin API read to what `queue` lends it.
+   * Opens a session that forwards each Admin API read to what `queue` lends it, and queues the
+   * rest as actions.
    *
    * Skips validation: capnweb-validate builds a method's return validator from its declared
    * type, and the session's type declares none of its Admin API methods (they are defined from
@@ -104,8 +118,8 @@ export class AdminGatekeeperImpl
   @skipRpcValidation()
   async startSession(queue: RpcStub<AdminAgentQueue>): Promise<AdminSession> {
     // The queue is disposed when this call returns, so the session keeps its own copy.
-    return new (forwarderFor(ADMIN_SCHEMA.entry))(
-        queue.dup(), { restricted: true, subresource: ADMIN_SUBRESOURCE });
+    return new (forwarderFor(ADMIN_SCHEMA.entry))(queue.dup(),
+        { restricted: true, subresource: ADMIN_SUBRESOURCE, actions: this.#actions });
   }
 
   /** Returns no catalog: the binding's types say everything there is to know. */
@@ -138,26 +152,35 @@ export class AdminGatekeeperImpl
     return [];
   }
 
-  /** Refuses: this gatekeeper queues no action. */
-  applyAction(action: number, _cache: RpcStub<GitCache>): Promise<void> {
-    throw noAction(action);
+  /**
+   * Applies approved action `action` with `admin`, which the Workshop lent for its one call. The
+   * handler finds `admin` by the action's id, and only for as long as this call runs.
+   */
+  async applyAdminAction(action: number, admin: RpcStub<AdminAgentApi>): Promise<void> {
+    this.#lent.set(action, admin);
+    try {
+      await this.#actions.apply(action);
+    } finally {
+      this.#lent.delete(action);
+    }
   }
 
-  /** Refuses: this gatekeeper queues no action. */
-  rejectAction(action: number): Promise<void> {
-    throw noAction(action);
+  /** Refuses: an action runs only on the Admin API lent for it (applyAdminAction()). */
+  applyAction(_action: number, _cache: RpcStub<GitCache>): Promise<void> {
+    throw new Error("The admin gatekeeper applies an action only with the Admin API lent for it.");
   }
 
-  /** Refuses: this gatekeeper queues no action. */
+  /** Withdraws an action: nothing was written or filed for it. */
+  async rejectAction(action: number): Promise<void> {
+    await this.#actions.reject(action);
+  }
+
+  /** Refuses: a write and a filed request cannot be taken back from here. */
   revertAction(
-    action: number,
+    _action: number,
   ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
-    throw noAction(action);
+    throw new Error("The admin gatekeeper's actions cannot be reverted.");
   }
-}
-
-function noAction(action: number): Error {
-  return new Error(`The admin gatekeeper has no action ${action}.`);
 }
 
 /**
@@ -266,10 +289,10 @@ export class GatekeeperVendor
       tagline: "Give a deployment admin's agents this deployment's Admin API",
       description: "For deployment admins only. Agents in a workspace you add it to use this " +
         "deployment's Admin API as you: they read what admins read (users, workspaces, " +
-        "settings, the audit log and audited views of workspaces and accounts), and nothing " +
-        "else. A workspace it is added to admits only deployment admins. Removing this " +
-        "account ends every connection made with it, in every workspace you own, until you " +
-        "add it again.",
+        "settings, the audit log and audited views of workspaces and accounts), and what " +
+        "they would write to a workspace or ask of the admins is queued as an action. A " +
+        "workspace it is added to admits only deployment admins. Removing this account ends " +
+        "every connection made with it, in every workspace you own, until you add it again.",
       autoProvisionsAccount: true,
       providesAuth: false,
     };

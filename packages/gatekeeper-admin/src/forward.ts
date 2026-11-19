@@ -1,7 +1,8 @@
 // The sessions the admin binding opens, built from the Admin API's schema: one class per service,
 // with one method per method of that service, each a forward to the Admin API the Workshop lent
-// the session (or to a view that API returned). A session decides nothing: the Workshop checks
-// and records each call where it lands.
+// the session (or to a view that API returned), except an "act" method, which is queued as one of
+// the facet's actions. A session decides nothing: the Workshop checks and records each call where
+// it lands.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { checkArguments } from "@gadgets/api-schema/check";
@@ -11,8 +12,10 @@ import {
   ADMIN_BINDING_SUBRESOURCE, ADMIN_GATEKEEPER_VENDOR_ID,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminAgentQueue } from "@gadgets/workshop-shared/admin-gatekeeper";
+import type { AdminApi } from "@gadgets/workshop-shared/api";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { ADMIN_SCHEMA, SERVICES } from "./surface.js";
+import { type BoundAdminActions, requestArgs, requestReason } from "./actions.js";
+import { type ActMethod, ADMIN_SCHEMA, SERVICES, kindOf } from "./surface.js";
 
 // Event names only: a call's arguments, its result and the Admin API's errors (which can quote an
 // argument) are deployment admin data, kept in the workspace's activity and the audit log.
@@ -27,12 +30,17 @@ const logger = createLogger<{ vendorId: string }>({
  */
 export const ADMIN_SUBRESOURCE = ADMIN_BINDING_SUBRESOURCE;
 
-/** What one forwarder is made with: what each of its observations carries. */
+/** What one forwarder is made with: what each of its observations carries, and its actions. */
 export interface ForwarderOptions {
   /** Whether what it reads marks the workspace as holding restricted data. */
   restricted: boolean;
   /** The one subresource id that says which capability made the observation. */
   subresource: string;
+  /**
+   * The facet's actions, which a session of the entry service queues its "act" calls through. A
+   * session made without them refuses those calls, and a view never has them.
+   */
+  actions?: BoundAdminActions;
 }
 
 /** A capability a forwarder forwards to: the lent Admin API, or a view it returned. */
@@ -48,6 +56,24 @@ export type AdminSession = RpcTarget & Disposable;
  */
 export type ForwarderClass =
     new (queue: RpcStub<AdminAgentQueue>, options: ForwarderOptions, target?: Target) => AdminSession;
+
+/**
+ * Queues the action of one "act" method of AdminApi, whose arguments fit the schema. It reads
+ * nothing and observes nothing: the card is made from the arguments alone, so queuing does not
+ * mark the workspace.
+ */
+type ActRoute<M extends ActMethod> = (
+  actions: BoundAdminActions, queue: RpcStub<AdminAgentQueue>, ...args: Parameters<AdminApi[M]>
+) => Promise<unknown>;
+
+/** The route of each "act" method of AdminApi: which kind a call is queued as. */
+const ACT_ROUTES: { [M in ActMethod]: ActRoute<M> } = {
+  writeWorkspace: (actions, queue, workspaceId, action, args, reason) => actions.submit(
+      queue, "workspaceWriteRequest",
+      { workspaceId, action, args: requestArgs(action, args), reason: requestReason(reason) }),
+  requestContentAccess: (actions, queue, workspaceId, reason) => actions.submit(
+      queue, "contentAccessRequest", { workspaceId, reason: requestReason(reason) }),
+};
 
 const ROOT = ADMIN_SCHEMA.entry;
 
@@ -172,15 +198,24 @@ class Forwarder extends RpcTarget {
   }
 
   /**
-   * Checks the arguments, then forwards the call: lent first, observed second, called third. A
-   * method the schema says returns a view answers with a forwarder over it, which observes as
-   * this one does.
+   * Checks the arguments, then queues an "act" call as its action and forwards any other: lent
+   * first, observed second, called third. A method the schema says returns a view answers with a
+   * forwarder over it, which observes as this one does.
    */
   async #call(name: string, args: unknown[]): Promise<unknown> {
     const service = this.#service;
     const problems = checkArguments(ADMIN_SCHEMA, service, name, args);
     if (problems.length > 0) {
       throw new TypeError(`Invalid arguments for ${service}.${name}: ${problems.join("; ")}`);
+    }
+    if (service === ROOT && kindOf(name) === "act") {
+      const actions = this.#options.actions;
+      const route = Object.hasOwn(ACT_ROUTES, name) ? ACT_ROUTES[name as ActMethod] : undefined;
+      if (!actions || !route) throw new Error(`${service}.${name}() has no action defined for it.`);
+      // The arguments fit the schema, which is what the route's parameters are typed from.
+      await Reflect.apply(route, undefined, [actions, this.#queue, ...args]);
+      // An "act" call resolves to undefined, as the generated declarations say.
+      return undefined;
     }
     // The lend is awaited before anything is observed, and no read is pipelined through a
     // pending lend. An observation that says its read holds restricted data marks the workspace
