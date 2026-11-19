@@ -997,15 +997,45 @@ export class UserAccount extends DurableObject<Env> {
 
   /**
    * Whether this object holds credentials and is recorded as a holder in the grant registry with
-   * this id. The registry asks before it believes a holder it lists. Only reads, without the
-   * credentials mutex: the registry asks while another account's disconnect waits on it.
+   * this id, with a refresh token Google still honours. The registry asks before it believes a
+   * holder it lists. Without the credentials mutex: the registry asks while another account's
+   * disconnect waits on it.
    */
   async holdsGrantIn(registryId: string): Promise<boolean> {
     let kv = this.ctx.storage.kv;
     let subject = kv.get<string>(GRANT_SUBJECT_KEY);
-    return kv.get<string>("refreshToken") !== undefined &&
-        kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) !== true && subject !== undefined &&
-        this.ctx.exports.GoogleGrantRegistry.idFromName(subject).toString() === registryId;
+    let refreshToken = kv.get<string>("refreshToken");
+    if (refreshToken === undefined || kv.get<boolean>(REFRESH_TOKEN_DEAD_KEY) === true ||
+        subject === undefined ||
+        this.ctx.exports.GoogleGrantRegistry.idFromName(subject).toString() !== registryId) {
+      return false;
+    }
+    // An access token that has not expired was minted within the hour, so Google honoured the
+    // refresh token then. One that has, as on a connection left unused, says nothing: Google may
+    // have ended the refresh token meanwhile, and a holder whose token holds no grant would keep
+    // the last working connection from revoking it.
+    let stored = kv.get<GoogleAccessToken>("accessToken");
+    if (stored !== undefined && stored.expires.valueOf() > Date.now()) return true;
+    return await this.#refreshTokenLives(refreshToken);
+  }
+
+  /**
+   * Whether Google still honours `refreshToken`, asked with a refresh whose token is dropped.
+   * Without the credentials mutex, which a disconnect asking the registry may hold; the answer is
+   * recorded only while `refreshToken` is still the installed one. Throws when Google gives none,
+   * which the registry counts as holding.
+   */
+  async #refreshTokenLives(refreshToken: string): Promise<boolean> {
+    let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
+    if (!clientId || !clientSecret) throw new Error("The Google Gatekeeper is not configured.");
+    let result = await getAccessToken(refreshToken, clientId, clientSecret,
+        AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
+    // A Google Cloud session that ran out, or an admin's restriction, leaves the refresh token
+    // standing, as at a mint.
+    if (result.ok || result.reason !== "revoked" || isCloudSessionExpiry(result)) return true;
+    let kv = this.ctx.storage.kv;
+    if (kv.get<string>("refreshToken") === refreshToken) kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
+    return false;
   }
 
   /**

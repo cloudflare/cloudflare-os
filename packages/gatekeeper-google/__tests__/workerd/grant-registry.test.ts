@@ -718,6 +718,31 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual([]);
   });
 
+  // A connection left unused has no live access token to say Google still honours its refresh
+  // token, which Google may have ended meanwhile: one it no longer honours holds no grant.
+  it("asks Google whether an idle holder's refresh token still works before counting it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const lapse = (account: ReturnType<typeof accountHandle>, name: string) => account.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: `access-${name}`, expires: new Date(Date.now() - 1000)});
+    });
+    const ended = await connection(google, "ended", ada);
+    const working = await connection(google, "working", ada);
+    await lapse(ended, "ended");
+    google.refused.set("refresh-ended", null);
+    await working.disconnect();
+    expect(google.revoked).toEqual(["refresh-working"]);
+    expect(await ended.stored("refreshTokenDead")).toBe(true);
+
+    // One Google still honours goes on counting.
+    const idle = await connection(google, "idle", grace);
+    const leaving = await connection(google, "leaving", grace);
+    await lapse(idle, "idle");
+    await leaving.disconnect();
+    expect(google.revoked).toEqual(["refresh-working"]);
+  });
+
   it("stops counting a refused connection whose removal the registry never received", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
