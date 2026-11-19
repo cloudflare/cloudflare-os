@@ -175,7 +175,8 @@ export type ConnectFormField = {
  * nonce in the hidden field `CONNECT_FORM_NONCE_FIELD`. Every value is escaped. Serve it with
  * `formPageResponse()`, not `htmlResponse()`, and read its submission with `readConnectForm()`.
  * @param options The page's heading and introduction, where the form posts, the nonce that names
- * this attempt, the inputs in order, and the submit button's label (default "Connect").
+ * this attempt, the inputs in order, the submit button's label (default "Connect"), and `error`,
+ * which says above the inputs why the last submission was refused, when the form is shown again.
  * @returns Escaped HTML.
  * @throws Error for no fields, a malformed or repeated field name, or one named `nonce`.
  *
@@ -197,6 +198,7 @@ export function connectFormHtml(options: {
   nonce: string;
   fields: readonly ConnectFormField[];
   submitLabel?: string;
+  error?: string;
 }): string {
   const names = options.fields.map(({ name }) => name);
   if (names.length === 0 || new Set(names).size !== names.length
@@ -218,7 +220,7 @@ export function connectFormHtml(options: {
 <title>${title}</title><style>${PAGE_STYLE}${FORM_STYLE}</style></head>
 <body><main><h1>${title}</h1>
 <p class="sub">${escapeHtml(options.intro)}</p>
-<form method="post" action="${escapeHtml(options.action)}">
+${options.error !== undefined ? `<p class="err" role="alert">${escapeHtml(options.error)}</p>\n` : ""}<form method="post" action="${escapeHtml(options.action)}">
 <input type="hidden" name="${CONNECT_FORM_NONCE_FIELD}" value="${escapeHtml(options.nonce)}">
 ${inputs}
 <button type="submit">${escapeHtml(options.submitLabel ?? "Connect")}</button>

@@ -125,6 +125,23 @@ if (form instanceof Response) return form;
 const result = await account.acceptKey(form.get(CONNECT_FORM_NONCE_FIELD) ?? "", form.get("key") ?? "");
 ```
 
+A key the provider refuses need not send the user back to the Workshop. The account has already
+claimed the form's nonce, so it gives the attempt back under a new one with `reofferOAuth()` and
+the route shows the form again, with `error` saying why:
+
+```ts
+const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+if (attempt === null) return null;
+if (!(await providerAccepts(key))) {
+  const retryNonce = reofferOAuth(kv, attempt, Date.now());
+  return retryNonce === null ? { refused } : { retry: retryNonce };
+}
+```
+
+The attempt keeps its original expiry, so retrying never extends it, and `reofferOAuth()` returns
+`null` once it has run out or a newer connect link has been stored. Reoffer only a submission that
+changed nothing: not after credentials were written or `complete()` was called.
+
 Serve the form with `formPageResponse()`, never `htmlResponse()`: a page that sends no referrer
 posts its forms with `Origin: null`, and `readConnectForm()` refuses that as cross-site.
 `readConnectForm()` checks the method, origin, encoding and size and nothing else, and the origin

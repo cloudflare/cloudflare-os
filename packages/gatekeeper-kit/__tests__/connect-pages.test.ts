@@ -224,6 +224,12 @@ describe("connect forms", () => {
     expect(html).not.toContain("<script>");
   });
 
+  it("says why the last submission was refused, when given an error", () => {
+    expect(form()).not.toContain('class="err"');
+    expect(form({ error: "Vendor refused <that> key." }))
+      .toContain('<p class="err" role="alert">Vendor refused &lt;that&gt; key.</p>');
+  });
+
   // A quote with no `<` or `>` after it: what closes an attribute and opens another.
   it("escapes quotes in attribute values", () => {
     const hostile = 'x" onfocus="alert(1)';

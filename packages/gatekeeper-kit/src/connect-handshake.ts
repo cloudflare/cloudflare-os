@@ -133,6 +133,39 @@ export function claimOAuth<Extra extends object = Record<never, never>>(
 }
 
 /**
+ * Gives a claimed attempt back under a new nonce, for a flow whose user may try again: a form
+ * whose pasted key the provider refused. The attempt keeps its metadata and its original expiry,
+ * so retrying never extends it. Call it only for a submission that changed nothing, and not after
+ * `complete()`.
+ * @param kv Durable Object nonce storage.
+ * @param claim What `claimOAuth` returned.
+ * @param now Current Unix time in milliseconds.
+ * @returns The new nonce, or `null` when the attempt has expired or another connect link or
+ * attempt has been stored since the claim, which wins.
+ *
+ * @example
+ * ```ts
+ * const attempt = claimOAuth<ConnectAttempt>(kv, formNonce, Date.now());
+ * if (attempt === null) return null;
+ * if (!(await providerAccepts(key))) {
+ *   const retryNonce = reofferOAuth(kv, attempt, Date.now());
+ *   return retryNonce === null ? { refused } : { retry: retryNonce };
+ * }
+ * ```
+ */
+export function reofferOAuth<Extra extends object>(
+  kv: ConnectNonceKv,
+  claim: StoredNonce<Extra>,
+  now: number,
+): string | null {
+  if (claim.stage !== "oauth" || !Number.isFinite(now) || !(now < claim.expiresAt)) return null;
+  if (kv.get(NONCE_KEY) !== undefined) return null;
+  const oauthNonce = generateNonce();
+  kv.put(NONCE_KEY, { ...claim, value: oauthNonce } satisfies StoredNonce);
+  return oauthNonce;
+}
+
+/**
  * Whether this account has called `GatekeeperConnectCallback.complete()`. Each call stages another
  * Workshop ticket, and an unredeemed ticket revokes the account, so a second call can destroy the
  * connection the first made, even when the first threw or lost its reply. Refuse the connect when

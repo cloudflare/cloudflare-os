@@ -12,6 +12,10 @@ import {
 } from "../src/connect-pages";
 
 const NONCE = "f".repeat(64);
+/** The nonce of the form shown again after a refused key. */
+const RETRY_NONCE = "e".repeat(64);
+/** The key the server takes for a typo. */
+const WRONG_KEY = "wrong";
 
 /** What the server saw of each submission: the `Origin` the browser sent and the fields it read. */
 type Submission = { origin: string | undefined; fields: Record<string, string> | undefined };
@@ -26,9 +30,11 @@ let otherSite: string;
 const submissions: Submission[] = [];
 
 /** The form, posting to the gatekeeper's own `/key` whichever origin serves the page. */
-const form = (): string => connectFormHtml({
-  title: "Connect Vendor", intro: "Paste a key.", action: `${baseUrl}/key`, nonce: NONCE,
+const form = (retry?: { error: string }): string => connectFormHtml({
+  title: "Connect Vendor", intro: "Paste a key.", action: `${baseUrl}/key`,
+  nonce: retry ? RETRY_NONCE : NONCE,
   fields: [{ name: "key", label: "API key", secret: true }],
+  error: retry?.error,
 });
 
 async function toRequest(incoming: IncomingMessage): Promise<Request> {
@@ -58,7 +64,10 @@ async function respond(req: Request): Promise<Response> {
       origin: req.headers.get("Origin") ?? undefined,
       fields: refused ? undefined : Object.fromEntries(read),
     });
-    return refused ? read : htmlResponse("<!DOCTYPE html><title>Accepted</title><h1>Accepted</h1>");
+    if (refused) return read;
+    // As an account does with a key the provider refuses: the form again, under a new nonce.
+    if (read.get("key") === WRONG_KEY) return formPageResponse(form({ error: "Vendor refused that key." }), 422);
+    return htmlResponse("<!DOCTYPE html><title>Accepted</title><h1>Accepted</h1>");
   }
   return new Response("Not found", { status: 404 });
 }
@@ -90,12 +99,9 @@ afterEach(async () => {
   submissions.length = 0;
 });
 
-/** Opens `url`, types a key into the form and submits it; resolves with the page that answers. */
-async function submitFrom(url: string): Promise<{ status: number | undefined; heading: string }> {
-  page = await browser.newPage();
-  page.setDefaultTimeout(5_000);
-  await page.goto(url);
-  await page.getByLabel("API key").fill("s3cret key&=");
+/** Types a key into the form the page shows and submits it; resolves with the page that answers. */
+async function submit(key: string): Promise<{ status: number | undefined; heading: string }> {
+  await page.getByLabel("API key").fill(key);
   const [response] = await Promise.all([
     page.waitForResponse(posted => posted.request().method() === "POST"),
     page.getByRole("button", { name: "Connect" }).click(),
@@ -103,6 +109,14 @@ async function submitFrom(url: string): Promise<{ status: number | undefined; he
   // The answer is a new document: wait for it, so the heading read is not the form's own.
   await page.waitForURL(`${baseUrl}/key`);
   return { status: response.status(), heading: await page.getByRole("heading").innerText() };
+}
+
+/** Opens `url` and submits its form. */
+async function submitFrom(url: string): Promise<{ status: number | undefined; heading: string }> {
+  page = await browser.newPage();
+  page.setDefaultTimeout(5_000);
+  await page.goto(url);
+  return submit("s3cret key&=");
 }
 
 describe("the connect form in Chromium", () => {
@@ -113,6 +127,23 @@ describe("the connect form in Chromium", () => {
       origin: baseUrl,
       fields: { [CONNECT_FORM_NONCE_FIELD]: NONCE, key: "s3cret key&=" },
     }]);
+  });
+
+  // The form shown again is the answer to a POST, and must still name its origin when posted.
+  it("shows the form again after a refused key, and submits from it", async () => {
+    page = await browser.newPage();
+    page.setDefaultTimeout(5_000);
+    await page.goto(`${baseUrl}/form`);
+
+    expect(await submit(WRONG_KEY)).toEqual({ status: 422, heading: "Connect Vendor" });
+    expect(await page.getByRole("alert").innerText()).toBe("Vendor refused that key.");
+    expect(await page.getByLabel("API key").inputValue()).toBe("");
+
+    expect(await submit("right")).toEqual({ status: 200, heading: "Accepted" });
+    expect(submissions).toEqual([
+      { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: NONCE, key: WRONG_KEY } },
+      { origin: baseUrl, fields: { [CONNECT_FORM_NONCE_FIELD]: RETRY_NONCE, key: "right" } },
+    ]);
   });
 
   it("masks the key and focuses it", async () => {

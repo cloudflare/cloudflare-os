@@ -205,6 +205,8 @@ export function advanceToOAuth<Extra extends object>(
   kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
   kv, oauthNonce: string, now: number): StoredNonce<Extra> | null;
+export function reofferOAuth<Extra extends object>(
+  kv, claim: StoredNonce<Extra>, now: number): string | null;
 ```
 
 `advanceToOAuth` verifies the initiation nonce (constant time, TTL, stage) and mints the OAuth-stage
@@ -217,6 +219,14 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 `meta` and `advanceToOAuth`'s `extra` parameters, which both exclude them statically and reject them
 at runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
+
+`reofferOAuth` gives a claimed attempt back under a new nonce, for a pasted-key form whose key the
+provider refused: without it a typo spends the nonce and the user starts again from the Workshop.
+The claim stays one-shot, so a submission is still exclusive while the provider is asked, and the
+new record keeps the claimed one's metadata and **original expiry**, so retries cannot hold an
+attempt open. It returns `null` for an expired attempt and when any nonce has been stored since the
+claim, so a newer link wins. An OAuth callback has no use for it: its provider will not call back
+twice.
 
 Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
 "reconnect" from `stored() !== undefined` at callback time (GitLab's and X's original check)
@@ -281,7 +291,8 @@ The guarded form is the three pieces a pasted-credential flow would otherwise wr
 easily gets wrong: a form served through `htmlResponse` renders and can never be submitted. `connectFormHtml({ title, intro, action, nonce, fields,
 submitLabel? })` renders a `PAGE_STYLE` page whose form posts `application/x-www-form-urlencoded`
 to `action`, with the attempt's nonce in the hidden field `CONNECT_FORM_NONCE_FIELD` and one input
-per `{ name, label, secret?, placeholder? }`; it escapes every value and throws on no fields, on a
+per `{ name, label, secret?, placeholder? }`, and `error?` above them when the form is shown again
+after a refused submission (§4.2, `reofferOAuth`); it escapes every value and throws on no fields, on a
 repeated or malformed field name, and on a field named `nonce`. `formPageResponse` is `htmlResponse` with
 `Referrer-Policy: same-origin`. `readConnectForm(req, { origin, maxBytes = 16 KiB })` refuses a
 non-POST (405), runs `connectMutationError` (403, 415), reads the body through `readTextCapped`
@@ -293,7 +304,7 @@ form is shown. These are leaves, with no opinion on the account.
 
 `readConnectForm` and `formPageResponse` fit any guarded form. `connectFormHtml` is narrower: it
 serves a single pasted key, its first use, and does not yet express what homeassistant's and
-gatekeeper-mcp's forms need — the form shown again with an error, a `url` input, a hint under a
+gatekeeper-mcp's forms need — a `url` input, a hint under a
 field, rich help, and a nonce carried in the path rather than a hidden field. Those ports, and
 `tokenAuth` (§5.4), either widen it or keep their own page and take the other two.
 
