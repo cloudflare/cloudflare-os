@@ -1174,7 +1174,7 @@ export class UserAccount extends DurableObject<Env> {
    * When the account is not known, or a registry cannot be asked, the grant is revoked: nothing
    * then says another connection would lose it. Called with the credentials mutex held.
    */
-  async #releaseGrant(): Promise<GrantRelease> {
+  async #releaseGrant(refreshToken: string): Promise<GrantRelease> {
     let kv = this.ctx.storage.kv;
     let installed = this.#credentialsId();
     let known = this.#accountSubject(installed);
@@ -1204,13 +1204,12 @@ export class UserAccount extends DurableObject<Env> {
       }
       // Not known for these credentials: a sign-in, a connection older than the registry that
       // has not refreshed a token since, or one whose recording failed or has not finished, as
-      // after a reconnect, whose earlier record may name another Google account. Its stored access
-      // token, while it lasts, says which account it is; minting another would need the mutex this
-      // call holds. Asked until it expires: one that lapses during the read fails it, and revokes.
-      let stored = kv.get<GoogleAccessToken>("accessToken");
-      if (!stored || stored.expires.valueOf() <= Date.now()) return { revoke: true };
-      subject = (await getGoogleAccountProfile(
-          stored.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS))).sub;
+      // after a reconnect, whose earlier record may name another Google account. Google is asked
+      // which account it is, with the stored access token or one a refresh mints, which needs no
+      // lock; a refresh token it refuses for good holds no grant to spare.
+      let read = await this.#readAccountSubject(refreshToken);
+      if (read === null) return { revoke: true };
+      subject = read;
       return released(await this.#grantRegistry(subject).remove(this.ctx.id.toString()), subject);
     } catch (error) {
       logger.warn("failed to release a Google grant; revoking it", {
@@ -1565,7 +1564,7 @@ export class UserAccount extends DurableObject<Env> {
       if (!refreshToken && this.ctx.storage.kv.get(PENDING_REVOCATION_KEY) !== undefined) return;
       let pending: PendingRevocation | undefined;
       if (refreshToken) {
-        let release = await this.#releaseGrant();
+        let release = await this.#releaseGrant(refreshToken);
         // Not revoked for a holder that could not be asked, which may hold nothing: the grant's
         // registry is asked again later, as for a revocation Google did not take.
         if (release.unsure) {

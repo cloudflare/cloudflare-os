@@ -323,14 +323,27 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual([]);
   });
 
+  // Made before the registry and unused since, it has no live access token to say whose it is:
+  // a refresh mints one, which needs no lock.
+  it("spares the others when a connection it never recorded, with no live access token, is disconnected", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    await connection(google, "recorded", ada);
+    const older = await storedAccount(google, "older", ada);
+    await older.disconnect();
+    expect(google.revoked).toEqual([]);
+  });
+
   it("revokes when it cannot tell which Google account it holds", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada} = googleAccounts();
     await connection(google, "recorded", ada);
-    // No access token to ask with, and none can be minted while disconnecting.
+    // Google does not say whose its token is.
     const unknown = await storedAccount(google, "unknown", ada);
+    google.profileFails = true;
     await unknown.disconnect();
+    google.profileFails = false;
     expect(google.revoked).toEqual(["refresh-unknown"]);
 
     // An access token Google will not name the account of.
@@ -534,11 +547,11 @@ describe("Google grants shared by several connections", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
     const {ada} = googleAccounts();
-    // Made before the registry, with no access token to say whose it is.
+    // Made before the registry, and Google would not say whose it is when it was disconnected.
     const older = await storedAccount(google, "older", ada);
-    google.revocationFails = true;
+    google.revocationFails = google.profileFails = true;
     await older.disconnect();
-    google.revocationFails = false;
+    google.revocationFails = google.profileFails = false;
 
     const later = await connection(google, "later", ada);
     expect(await older.alarm()).toBe(true);
@@ -548,9 +561,9 @@ describe("Google grants shared by several connections", () => {
 
     // One Google refuses for good holds no grant, and is not revoked.
     const dead = await storedAccount(google, "dead", ada);
-    google.revocationFails = true;
+    google.revocationFails = google.profileFails = true;
     await dead.disconnect();
-    google.revocationFails = false;
+    google.revocationFails = google.profileFails = false;
     google.refused.set("refresh-dead", null);
     expect(await dead.alarm()).toBe(true);
     expect(google.revoked).toEqual([]);
