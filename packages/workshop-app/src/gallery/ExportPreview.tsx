@@ -67,7 +67,7 @@ export const ExportPreview = () => {
 
   return (
     <>
-      <Section title="ExportItems (Export on a gadget’s settings opens to what it can be exported as, read each time it opens; each saves to the device when chosen, and while one exports the others wait. Then the kinds of file it can be saved as in the user’s accounts, with an update of the file the last such save made before its kind. Loading, a failure with Try again, which keeps the menu open, and a gadget with no exports are said in its place)">
+      <Section title="ExportItems (Export on a gadget’s settings, and in its header’s more, opens to what it can be exported as, read each time it opens; each saves to the device when chosen, and while one exports the others wait. Then the kinds of file it can be saved as in the user’s accounts, with an update of the file the last such save made before its kind. Loading, a failure with Try again, which keeps the menu open, and a gadget with no exports are said in its place)">
         {Object.entries(MENUS).map(([key, label]) => (
           <Button key={key} variant={key === menu ? 'primary' : 'secondary'} onClick={() => setMenu(key as keyof typeof MENUS)}>{label}</Button>
         ))}

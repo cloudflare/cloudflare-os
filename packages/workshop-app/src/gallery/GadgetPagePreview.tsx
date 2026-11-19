@@ -22,7 +22,7 @@ export const GadgetPagePreview = () => {
   const [stands, setStands] = useState<'none' | 'changes' | 'current'>('none')
   const [viewingCode, setViewingCode] = useState(false)
   return (
-    <Section title="SidePane as a gadget's page (the title shown starts the header; the title, with a chevron as a chat's has, opens the gadget's settings; Chat, the one labelled control and the header’s one primary button, last of all, opens to New chat and up to four of the workspace's chats, those that last had it beside them first and saying so, or with no chats starts a new one at once; Share, where it can be shared, opens a menu of Invite user, which lets others use the app with the same data, and a template item that says where the app stands, Create template, which lets others copy it, Release update, while it has changes, or Copy template link, once it is up to date, each saying so under its name, and takes the link’s place, which moves into more; the switch at the start of the header shows its code in its place and back)">
+    <Section title="SidePane as a gadget's page (the title shown starts the header; the title, with a chevron as a chat's has, opens the gadget's settings; Chat, the one labelled control and the header’s one primary button, last of all, opens to New chat and up to four of the workspace's chats, those that last had it beside them first and saying so, or with no chats starts a new one at once; Share, where it can be shared, opens a menu of Invite user, which lets others use the app with the same data, and a template item that says where the app stands, Create template, which lets others copy it, Release update, while it has changes, or Copy template link, once it is up to date, each saying so under its name, and takes the link’s place, which moves into more; more has Export, opening to what it can be exported as and saved to; the switch at the start of the header shows its code in its place and back)">
       <div className="flex flex-wrap gap-2">
         <Button onClick={() => setChats('some')}>With chats</Button>
         <Button onClick={() => setChats('none')}>No chats yet</Button>
@@ -45,6 +45,13 @@ export const GadgetPagePreview = () => {
           active={{ key: 'slides', title: 'Slides', icon: <PresentationIcon /> }}
           link="https://example.com/app/slides"
           onReload={() => say('reloaded Slides')}
+          exports={{
+            choices: { status: 'ready', formats: [{ id: 'pdf', label: 'PDF' }, { id: 'pptx', label: 'PowerPoint' }], saves: [{ key: 'slides', title: 'Google Slides' }] },
+            onOpen: () => {},
+            onExport: (id) => say(`exported Slides as ${id === 'pdf' ? 'PDF' : 'PowerPoint'}`),
+            onSave: () => say('asked where to save Slides in Google Slides'),
+            onUpdate: () => {},
+          }}
           onOpenSettings={() => say('opened the settings of Slides')}
           onInvite={shareable ? () => say('opened Invite user') : undefined}
           template={shareable ? { stands, onOpen: () => say(stands === 'current' ? 'copied the template’s link' : stands === 'changes' ? 'opened Release update' : 'opened Create template') } : undefined}

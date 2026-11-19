@@ -3,7 +3,7 @@ import { animate, motion, useMotionValue, useMotionValueEvent, useTransform } fr
 import { useReducedMotion } from '@/hooks/useReducedMotion'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon,
-  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, GearSixIcon, ShareNetworkIcon, XIcon,
+  CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, FileArrowDownIcon, GearSixIcon, ShareNetworkIcon, XIcon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
@@ -16,6 +16,7 @@ import { clampSize, resistSize } from '@/components/resizing'
 import { IconSwitch } from '@/components/IconSwitch'
 import { motionTransition } from '@/hooks/motionTransition'
 import { CopyLinkButton } from './CopyLinkButton'
+import { ExportItems, type ExportItemsProps } from './ExportItems'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
 import { SidePaneTitle } from './SidePaneTitle'
@@ -66,6 +67,8 @@ export type SidePaneProps = Placement & {
   onReload?: () => void
   /** Saves the one shown to this device. */
   onDownload?: () => void
+  /** What the one shown, a gadget, can be exported as and saved to, from more (`ExportItems`). */
+  exports?: ExportItemsProps
   /** Goes to the settings of the one shown, a gadget, for whoever may change it, from its menu and its title. */
   onOpenSettings?: () => void
   /**
@@ -156,7 +159,7 @@ const AWAY_AFTER = 1000
  * pull. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, agents, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, exports, onOpenSettings, onViewCode, viewingCode = false, onInvite, template, agents, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -280,7 +283,7 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {active && (onReload || onDownload || shareInMore || codeInMore || onOpenSettings || (beside?.onExpand && !narrow)) && (
+            {active && (onReload || onDownload || exports || shareInMore || codeInMore || onOpenSettings || (beside?.onExpand && !narrow)) && (
               <HeaderBubble origin="end">
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {codeInMore && (viewingCode
@@ -289,8 +292,16 @@ export const SidePane = (props: SidePaneProps) => {
                   {shareInMore && <ShareItems onInvite={onInvite} template={template} />}
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
+                  {exports && (
+                    // Its items are only there while it is open, so that each opening reads what there is again.
+                    <DropdownMenu.Submenu label="Export" icon={FileArrowDownIcon}>
+                      <div className="overflow-y-auto overscroll-contain p-1.5">
+                        <ExportItems {...exports} />
+                      </div>
+                    </DropdownMenu.Submenu>
+                  )}
                   {beside?.onExpand && !narrow && <DropdownMenu.Item icon={ArrowsOutSimpleIcon} onSelect={beside.onExpand}>Expand</DropdownMenu.Item>}
-                  {onOpenSettings && (onReload || onDownload || shareInMore || codeInMore || (beside?.onExpand && !narrow)) && <DropdownMenu.Separator />}
+                  {onOpenSettings && (onReload || onDownload || exports || shareInMore || codeInMore || (beside?.onExpand && !narrow)) && <DropdownMenu.Separator />}
                   {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>App settings</DropdownMenu.Item>}
                 </DropdownMenu>
               </HeaderBubble>

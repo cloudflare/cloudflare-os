@@ -979,11 +979,12 @@ phone it is not in the header but in more, as Show the code or Show the app, fir
 Switching to the code shows it in the gadget's place in the pane (`GadgetCodeView`), at once and
 with nothing of the gadget showing, which is hidden rather than gone, so that it keeps running. The
 title says nothing of it: the switch is the one place that shows which is on. The code opened again
-is at the file it was left at. The pull tab only has the header to do with. The menu is only Reload
-and, beside a chat, Expand, then after a separator, at its foot, App settings for whoever may build
-there (a file has Download in place of the settings). That goes to its settings page
+is at the file it was left at. The pull tab only has the header to do with. The menu is only Reload,
+Export (a submenu of `ExportItems`, for whoever can use it, as in the settings) and, beside a chat,
+Expand, then after a separator, at its foot, App settings for whoever may build there (a file has
+Download in place of Export and the settings). That goes to its settings page
 (`/app/<id>/settings`, `GadgetSettingsPane`), as does the title's bubble, a button ending in a
-chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting, making a template of it,
+chevron as a chat's title is, beside a chat as much as on the gadget's own page. Everything else done to a gadget, such as renaming, exporting (which more has too), making a template of it,
 updating and deleting it, is on that page, and copying its link is in Share.
 The page is laid out as a skill's
 page is: what it is drawn as, its title, renamed where it is, and what its template says it is for,
@@ -1044,7 +1045,7 @@ Someone it was shared with to use is told its settings are not theirs. What the 
 here (who has access, its automations, changing what it is drawn as,
 switching it to another template, and updating one whose template is not known) is not here yet.
 
-The settings also have Export, as the backend lets whoever can use a gadget export it
+The settings also have Export, as does the header's more, as the backend lets whoever can use a gadget export it
 (`useGadgetExports`, over `GadgetExports`, plain and tested): it opens to what the gadget can be
 exported as (`ExportItems`), read each time it opens, with the chat's changes where
 it is shown from one, each saved to the device when chosen, one at a time (`files/saveStream.ts`:

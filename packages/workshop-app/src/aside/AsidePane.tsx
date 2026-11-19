@@ -7,6 +7,7 @@ import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { UiUnderway } from '@/blocks/UiUnderway'
 import { PaneNotice } from '@/blocks/PaneNotice'
+import { PaneStatus } from '@/blocks/PaneStatus'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { WorktreeView } from '@/blocks/WorktreeView'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -16,6 +17,7 @@ import type { CodeLines } from '@/components/CodeEditor'
 import { agentKeyOf } from '@/automations/agents'
 import { GadgetCodeView, historyEntry } from '@/gadgets/GadgetCodeView'
 import { GadgetSettingsPane } from '@/gadgets/GadgetSettingsPane'
+import { useGadgetExports } from '@/gadgets/useGadgetExports'
 import { DEFAULT_GADGET_SETTINGS_TAB, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsView'
 import { outputKey } from '@/library/libraryList'
 import { recordLibraryOpen } from '@/prefs/libraryOpened'
@@ -119,6 +121,9 @@ export const AsidePane = (props: AsidePaneProps) => {
     : undefined
   const readsCode = gadget !== undefined && listed !== undefined && listed.role !== 'use'
   const title = snapshot.title ?? item.title
+  // Exported by whoever can use it, as the backend lets them, with the chat's changes where it is
+  // shown from one; saved to their accounts by whoever builds where it is.
+  const exports = useGadgetExports(gadget, title, { saves: readsCode })
   // Its code, shown in its place, over it: the gadget keeps running under it, so that going back is
   // to it as it was, and the code, opened again, is at the file it was left at. Kept by the item it
   // is of, so that another starts as itself.
@@ -258,6 +263,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+    exports: exports.menu,
     onOpenSettings: openSettings,
     onViewCode: readsCode ? () => setCode({ ...codeHere, key: item.key, open: !viewingCode }) : undefined,
     viewingCode,
@@ -267,6 +273,14 @@ export const AsidePane = (props: AsidePaneProps) => {
     narrow,
   }
 
+  // What became of an export, over the foot of the pane, and what a save asks with; then sharing.
+  const exported = (
+    <>
+      {exports.status && <PaneStatus {...exports.status} />}
+      {share}
+      {exports.dialogs}
+    </>
+  )
   const pane = props.placement === 'beside' ? (
     <SidePane
       {...shared}
@@ -275,12 +289,12 @@ export const AsidePane = (props: AsidePaneProps) => {
       onExpand={props.onExpand}
     >
       {content}
-      {share}
+      {exported}
     </SidePane>
   ) : (
     <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange} pointerNearTop={pointer.near}>
       {content}
-      {share}
+      {exported}
     </SidePane>
   )
 
