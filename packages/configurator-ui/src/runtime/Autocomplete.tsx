@@ -44,8 +44,9 @@ export const Autocomplete = ({
   const query = forgetQuery ? "" : storedQuery;
 
   const [suggestions, setSuggestions] = useState<OptionsState>({ status: "loading" });
-  // A value the module set, rather than the user picked, has put no text in the field.
-  const shownValue = useRef(value);
+  // A value the module set, rather than the user picked, has put no text in the field, including one
+  // set while the field was not rendered: a field that mounts blank has shown nothing yet.
+  const shownValue = useRef(query === "" ? null : value);
   useEffect(() => {
     if (value === shownValue.current) return;
     shownValue.current = value;

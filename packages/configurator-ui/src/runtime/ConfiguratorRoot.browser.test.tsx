@@ -439,6 +439,17 @@ describe("Autocomplete", () => {
     await expect.element(input()).toHaveValue("pro");
   });
 
+  it("shows a value the module set while the field was not rendered, once it is", async () => {
+    const spec = autocompleteSpec(folders);
+    const render = spec.render;
+    spec.initial = { folderId: null, shown: null };
+    spec.render = context => context.values.shown ? render(context) : null;
+    const { session } = await mount(spec);
+    await act(() => session.store.setValues({ folderId: "projects" }));
+    await act(() => session.store.setValues({ shown: "yes" }));
+    await expect.element(input()).toHaveValue("projects");
+  });
+
   it("keeps focus and stays closed when a pick renders the field twice", async () => {
     const loadOptions = vi.fn(folders);
     await mount(inspectingSpec(loadOptions));
