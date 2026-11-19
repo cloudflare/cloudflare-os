@@ -123,9 +123,15 @@ export const useComposerEditorLayout = ({
       width = entry.contentRect.width;
     });
     observer.observe(textarea);
+    // Back in the textarea, the user must see the caret and the text they are about to edit.
+    const realign = () => {
+      if (overscrollRef.current) fitPreviewRef.current();
+    };
+    textarea.addEventListener("focus", realign);
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frame);
+      textarea.removeEventListener("focus", realign);
     };
   }, [mirrorRef, textareaRef]);
 
@@ -133,18 +139,19 @@ export const useComposerEditorLayout = ({
     measureUrlLineOffset();
   }, [activeTextOffset, text]);
 
-  // Refits for the preview and scrolls to its newest words, past the textarea's own range if they
-  // run beyond it, unless the user is working at a caret or selection earlier in the textarea.
+  // Refits for the preview and scrolls to its newest words, unless the user is working at a caret
+  // or selection earlier in the textarea. Past the textarea's own range only while the user is
+  // elsewhere, because the caret can't follow there.
   const fitPreview = () => {
     const textarea = textareaRef.current;
     if (!textarea) return;
     resizeTextarea(textarea);
+    const focused = document.activeElement === textarea;
     const end = textarea.value.length;
-    const editingEarlier = document.activeElement === textarea &&
-      (textarea.selectionStart !== end || textarea.selectionEnd !== end);
+    const atEnd = textarea.selectionStart === end && textarea.selectionEnd === end;
     overscrollRef.current = 0;
-    if (previewRef.current && !editingEarlier) {
-      textarea.scrollTop = textarea.scrollHeight;
+    if (previewRef.current && (!focused || atEnd)) textarea.scrollTop = textarea.scrollHeight;
+    if (previewRef.current && !focused) {
       overscrollRef.current = Math.max(0, contentHeightRef.current - textarea.scrollHeight);
     }
     syncMirrorScroll(textarea);

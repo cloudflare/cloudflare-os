@@ -745,6 +745,13 @@ export const ChatComposer = ({
   const canSend = !isSending && !isAgentActive && !isBlocked &&
     (displayedText.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
     !hasUnreadyAttachment && !isCreatingResource;
+  const prompt = isBlocked
+    ? blockedReason
+    : isAgentActive
+      ? "Message the agent while it works…"
+      : newChat
+        ? "Start a new conversation…"
+        : "Ask a follow-up…";
   // While the agent works, a plain message steers it (see ChatInterface's handleSend).
   const canSteer = isAgentActive && !isSending && !isStopping && !isBlocked &&
     displayedText.trim().length > 0 && selectedSlashCommand === null && capsules.length === 0 &&
@@ -890,18 +897,10 @@ export const ChatComposer = ({
                 syncMirrorScroll(e.currentTarget);
               }}
               disabled={isBlocked}
-              // The empty textarea's placeholder would paint over dictated words in the mirror.
-              placeholder={
-                dictation.text
-                  ? undefined
-                  : isBlocked
-                    ? blockedReason
-                    : isAgentActive
-                      ? "Message the agent while it works…"
-                      : newChat
-                        ? "Start a new conversation…"
-                        : "Ask a follow-up…"
-              }
+              // The placeholder, which names the field, would paint over dictated words in the
+              // mirror; while it gives way to them, the same words name the field instead.
+              placeholder={dictation.text ? undefined : prompt}
+              aria-label={dictation.text ? prompt : undefined}
               autoFocus={autoFocus}
               rows={minRows}
               onPaste={(e) => {

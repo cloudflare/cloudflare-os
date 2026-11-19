@@ -48,15 +48,23 @@ const settle = () => act(() => new Promise((resolve) => {
   requestAnimationFrame(() => requestAnimationFrame(resolve));
 }));
 
-// Where the mirror paints its last character, which the clip must not hide.
-const lastCharacterRect = (mirror: HTMLElement) => {
+// Where the mirror paints its first or last character.
+const characterRect = (mirror: HTMLElement, which: "first" | "last") => {
   const walker = document.createTreeWalker(mirror, NodeFilter.SHOW_TEXT);
-  let last: Text | null = null;
-  while (walker.nextNode()) last = walker.currentNode as Text;
+  const texts: Text[] = [];
+  while (walker.nextNode()) texts.push(walker.currentNode as Text);
+  const text = which === "first" ? texts[0] : texts[texts.length - 1];
+  const offset = which === "first" ? 0 : text.length - 1;
   const range = document.createRange();
-  range.setStart(last!, last!.length - 1);
-  range.setEnd(last!, last!.length);
+  range.setStart(text, offset);
+  range.setEnd(text, offset + 1);
   return range.getBoundingClientRect();
+};
+
+const expectVisible = (rect: DOMRect, clip: HTMLElement) => {
+  const visible = clip.getBoundingClientRect();
+  expect(rect.top).toBeGreaterThanOrEqual(visible.top);
+  expect(rect.bottom).toBeLessThanOrEqual(visible.bottom);
 };
 
 describe("composer editor layout", () => {
@@ -123,12 +131,9 @@ describe("composer editor layout", () => {
 
   it("stops at four rows and still shows the newest preview words", async () => {
     const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
-    const lastCharacter = lastCharacterRect(mirror);
-    const visible = clip.getBoundingClientRect();
 
     expect(textarea.getBoundingClientRect().height).toBe(4 * 22);
-    expect(lastCharacter.top).toBeGreaterThanOrEqual(visible.top);
-    expect(lastCharacter.bottom).toBeLessThanOrEqual(visible.bottom);
+    expectVisible(characterRect(mirror, "last"), clip);
   });
 
   it("refits the preview when the composer narrows", async () => {
@@ -136,11 +141,18 @@ describe("composer editor layout", () => {
     container!.style.width = "200px";
     await settle();
     await settle();
-    const lastCharacter = lastCharacterRect(mirror);
-    const visible = clip.getBoundingClientRect();
 
     expect(textarea.getBoundingClientRect().height).toBe(4 * 22);
-    expect(lastCharacter.top).toBeGreaterThanOrEqual(visible.top);
-    expect(lastCharacter.bottom).toBeLessThanOrEqual(visible.bottom);
+    expectVisible(characterRect(mirror, "last"), clip);
+  });
+
+  // The textarea can't scroll to words it doesn't hold, so only the mirror was showing them.
+  it("lines the mirror back up with the textarea when the user returns to it", async () => {
+    const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
+    await act(async () => textarea.focus());
+    await settle();
+
+    expectVisible(characterRect(mirror, "first"), clip);
+    expect(textarea.style.caretColor).toBe("");
   });
 });

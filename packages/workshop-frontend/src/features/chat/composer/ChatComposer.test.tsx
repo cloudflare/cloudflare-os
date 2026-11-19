@@ -179,6 +179,9 @@ describe("ChatComposer", () => {
     expect(dictatedText()).toBe(" a dash");
     expect(document.getElementById(textarea.getAttribute("aria-describedby")!)?.textContent)
       .toBe("Dictated so far: a dash");
+    // The placeholder gives way to the dictated words, but its words still name the field.
+    expect(textarea.placeholder).toBe("");
+    expect(textarea.getAttribute("aria-label")).toBe("Ask a follow-up…");
 
     const first = { text: "a dashboard", final: true };
     await act(async () => speech.report(0, first, { text: " with fil", final: false }));
@@ -302,6 +305,21 @@ describe("ChatComposer", () => {
     });
     expect(textarea.value).toBe("Note: call the bank");
     expect(testState.addToast).not.toHaveBeenCalled();
+  });
+
+  it("keeps only finalized words when an agent blocks the composer mid-dictation", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer({ isAgentActive: true });
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    await act(async () => speech.report(
+      0,
+      { text: "call", final: true },
+      { text: " the bank tomorrow maybe", final: false },
+    ));
+    await renderDictationComposer({ isAgentActive: true, blockedReason: "Approve the request first" });
+    expect(speech.abort).toHaveBeenCalledOnce();
+    expect(textarea.value).toBe("call");
   });
 
   it("discards dictation on Escape even with the slash command picker open", async () => {

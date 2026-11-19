@@ -140,9 +140,13 @@ export const useComposerDictation = ({
   }, [text]);
   // Layout effects, so a new chat or draft never renders with the old one's words.
   useLayoutEffect(() => cancel, [chatKey, draftStorageKey, seedNonce]);
-  // Whatever disables dictation (a send, a resource flow, a blocked composer) keeps the words shown.
+  // Send and the resource flows finish dictation before they disable it, so whatever disables it
+  // here, such as an agent blocking the composer, is not the user keeping the words: only
+  // finalized ones survive, as when the browser ends on its own.
   useLayoutEffect(() => {
-    if (disabled) finish();
+    if (!disabled) return;
+    const session = discard();
+    if (session) keep(session.transcript);
   }, [disabled]);
 
   const toggle = async () => {
