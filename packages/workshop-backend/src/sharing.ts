@@ -572,8 +572,15 @@ export class SharingManager {
     return undefined;
   }
 
-  /** Mints another key for an existing link. */
-  async newShareLinkKey(opts: { caller: SharingCaller; linkId: string }): Promise<{ key: string }> {
+  /**
+   * Mints another key for an existing link. `requireViewSharing` throws unless the deployment
+   * allows view grants; it is awaited for a view link once the caller may copy it.
+   */
+  async newShareLinkKey(opts: {
+    caller: SharingCaller;
+    linkId: string;
+    requireViewSharing: () => Promise<void>;
+  }): Promise<{ key: string }> {
     let link = this.#requireLink(opts.linkId);
     let ceiling = this.#existingCeiling(link);
     if (link.revoked || !ceiling) {
@@ -584,6 +591,7 @@ export class SharingManager {
     // The caller may have lost "build" since creating the link, which left it conferring nothing
     // (see computeEffectiveAccess): a fresh key must not hand it out.
     this.#requireCanShare(opts.caller);
+    if (link.mode === "view") await opts.requireViewSharing();
 
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();

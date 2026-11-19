@@ -302,10 +302,12 @@ function linkAccess(rendered: HTMLElement): string | undefined {
   return rendered.querySelector(`button[aria-label^="${prefix}"]`)?.getAttribute('aria-label')?.slice(prefix.length)
 }
 
-// The choices of the "Anyone with your link" menu, which the mock renders beside its trigger.
-function linkAccessChoices(rendered: HTMLElement): (string | null)[] {
-  const menu = rendered.querySelector('button[aria-label^="Anyone with your link: "]')?.parentElement
-  return [...menu?.querySelectorAll('[role="menuitemradio"]') ?? []].map(item => item.textContent)
+// The choices of the access menu whose trigger's aria-label starts with `menu`, which the mock
+// renders beside its trigger.
+function accessChoices(rendered: HTMLElement, menu: string): (string | null)[] {
+  const items = rendered.querySelector(`button[aria-label^="${menu}"]`)?.parentElement
+    ?.querySelectorAll('[role="menuitemradio"]')
+  return [...items ?? []].map(item => item.textContent)
 }
 
 // Picks `label` in the access menu whose trigger's aria-label starts with `menu`, such as a person's
@@ -424,17 +426,19 @@ describe('ShareModal', () => {
   // way its parent would (the component stays mounted either way), and on the metadata so a test
   // can deliver a live update.
   let renderTree: (open: boolean, metadata?: WorkspaceMetadata) => ReactNode
+  let serverConfig: ServerConfig
 
   async function render(
     overseer: RpcStub<Overseer>,
     authenticatedApi = fakeAuthenticatedApi(),
     metadata: WorkspaceMetadata = METADATA,
-    { userSearchEnabled = true, target = { kind: 'workspace' } as ShareTarget } = {},
+    { userSearchEnabled = true, snapshotSharingEnabled = true,
+      target = { kind: 'workspace' } as ShareTarget } = {},
   ) {
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
-    const serverConfig = { userSearchEnabled } as ServerConfig
+    serverConfig = { userSearchEnabled, snapshotSharingEnabled } as ServerConfig
     renderTree = (open, currentMetadata = metadata) => (
       <ServerConfigContext.Provider value={serverConfig}>
         <ShareModal
@@ -459,8 +463,15 @@ describe('ShareModal', () => {
     await act(async () => { await Promise.resolve() })
   }
 
-  function renderGadget(overseer: RpcStub<Overseer>, authenticatedApi = fakeAuthenticatedApi()) {
-    return render(overseer, authenticatedApi, METADATA, { target: GADGET_TARGET })
+  // Delivers a changed ServerConfig to the open dialog, as a reconnect does.
+  async function setSnapshotSharing(snapshotSharingEnabled: boolean) {
+    serverConfig = { ...serverConfig, snapshotSharingEnabled }
+    await setOpen(true)
+  }
+
+  function renderGadget(overseer: RpcStub<Overseer>, authenticatedApi = fakeAuthenticatedApi(),
+                        { snapshotSharingEnabled = true } = {}) {
+    return render(overseer, authenticatedApi, METADATA, { target: GADGET_TARGET, snapshotSharingEnabled })
   }
 
   async function updateMetadata(metadata: WorkspaceMetadata) {
@@ -1627,7 +1638,7 @@ describe('ShareModal', () => {
       const rendered = await renderGadget(fakeOverseer({ shareLinks, createShareLink, newShareLinkKey }))
 
       expect(linkAccess(rendered)).toBe('Requires invite')
-      expect(linkAccessChoices(rendered)).toEqual(['Can use', 'Can view', 'Requires invite'])
+      expect(accessChoices(rendered, 'Anyone with your link: ')).toEqual(['Can use', 'Can view', 'Requires invite'])
       // Nobody else can open the gadget and there is no link to hand out, so there's nothing to copy.
       expect(footerCopyLink(rendered).disabled).toBe(true)
 
@@ -1919,18 +1930,86 @@ describe('ShareModal', () => {
       expect(revokeShareLink).toHaveBeenCalledWith(mine.linkId, [])
     })
 
-    it('offers the snapshot page only once someone may open the snapshot', async () => {
-      const card = (rendered: HTMLElement) => [...rendered.querySelectorAll('button')]
-        .find(candidate => candidate.textContent?.startsWith('Viewers can see a snapshot'))
+    const snapshotCard = (rendered: HTMLElement) => [...rendered.querySelectorAll('button')]
+      .find(candidate => candidate.textContent?.startsWith('Viewers can see a snapshot'))
 
-      expect(card(await renderGadget(fakeOverseer()))).toBeUndefined()
+    it('offers the snapshot page only once someone may open the snapshot', async () => {
+      expect(snapshotCard(await renderGadget(fakeOverseer()))).toBeUndefined()
       act(() => root?.unmount())
       container?.remove()
-      expect(card(await renderGadget(fakeOverseer({ collaborators: [VIEWER] })))).toBeDefined()
+      expect(snapshotCard(await renderGadget(fakeOverseer({ collaborators: [VIEWER] })))).toBeDefined()
       act(() => root?.unmount())
       container?.remove()
       // People who can use it open it live or not at all, so protected resources alone offer none.
-      expect(card(await renderGadget(fakeOverseer({ requirements: [DOC_REQUIREMENT] })))).toBeUndefined()
+      expect(snapshotCard(await renderGadget(fakeOverseer({ requirements: [DOC_REQUIREMENT] })))).toBeUndefined()
+    })
+
+    it('shares only for use while the deployment forbids views, leaving existing views to upgrade', async () => {
+      const mine: ShareLinkInfo = {
+        linkId: 'link-mine', created: CREATED, createdBy: CURRENT_USER, role: 'use', gadgetId: 0,
+        default: true, mode: 'view',
+      }
+      const viewerLink: ShareLinkInfo = {
+        linkId: 'link-viewer', note: 'Viewer link', created: CREATED, createdBy: CURRENT_USER,
+        role: 'use', gadgetId: 0, mode: 'view',
+      }
+      const addCollaborator = vi.fn<Overseer['addCollaborator']>(async (userId, grant) => profileFor(userId, grant, 'Ada'))
+      const newShareLinkKey = vi.fn<Overseer['newShareLinkKey']>(async () => ({ key: 'fresh' }))
+      const rendered = await renderGadget(
+        fakeOverseer({
+          collaborators: [VIEWER, GADGET_RECIPIENT], shareLinks: [mine, viewerLink], addCollaborator,
+          newShareLinkKey,
+        }),
+        undefined, { snapshotSharingEnabled: false })
+
+      expect(rendered.querySelector('button[aria-label^="Invite access: "]')).toBeNull()
+      await invite(rendered, 'ada')
+      expect(addCollaborator).toHaveBeenCalledWith('ada@example.com', { gadgetId: 0 }, undefined)
+      // Nobody can be narrowed to a view, but a viewer can still be given the full gadget.
+      expect(accessChoices(rendered, 'Gus: ')).toEqual([])
+      expect(accessChoices(rendered, 'Vi: ')).toEqual(['Can use'])
+      expect(linkAccess(rendered)).toBe('Can view')
+      expect(accessChoices(rendered, 'Anyone with your link: ')).toEqual(['Can use', 'Requires invite'])
+      expect(snapshotCard(rendered)).toBeUndefined()
+
+      // A view link mints no URL that someone could join through only to open nothing: the footer
+      // copies the gadget's plain URL instead, and a custom view link can't be copied.
+      await click(footerCopyLink(rendered))
+      expect(copyToClipboard).toHaveBeenCalledWith(GADGET_URL)
+      await openAdvanced(rendered)
+      expect(button(rendered, 'Copy Viewer link').disabled).toBe(true)
+      expect(newShareLinkKey).not.toHaveBeenCalled()
+    })
+
+    it('disables Copy link when only dormant viewers could use the plain URL', async () => {
+      const rendered = await renderGadget(fakeOverseer({ collaborators: [VIEWER] }))
+      expect(footerCopyLink(rendered).disabled).toBe(false)
+
+      await setSnapshotSharing(false)
+      expect(footerCopyLink(rendered).disabled).toBe(true)
+    })
+
+    it('sends no view share drafted before views were forbidden until live use is chosen', async () => {
+      const addCollaborator = vi.fn<Overseer['addCollaborator']>(async (userId, grant) => profileFor(userId, grant, 'Ada'))
+      const createShareLink = vi.fn<Overseer['createShareLink']>(async () => ({ key: 'k', linkId: 'link-new' }))
+      const rendered = await renderGadget(fakeOverseer({ addCollaborator, createShareLink }))
+      await chooseAccess(rendered, 'Invite access: ', 'Can view')
+      await openAdvanced(rendered)
+      await click(button(rendered, 'Create a custom share link'))
+      await chooseAccess(rendered, 'Link access: ', 'Can view')
+
+      await setSnapshotSharing(false)
+      expect(button(rendered, 'Create link').disabled).toBe(true)
+      await click(button(rendered, 'Create link'))
+      expect(createShareLink).not.toHaveBeenCalled()
+      expect(accessChoices(rendered, 'Link access: ')).toEqual(['Can use'])
+
+      await invite(rendered, 'ada')
+      expect(addCollaborator).not.toHaveBeenCalled()
+      expect(button(rendered, 'Invite').disabled).toBe(true)
+      await chooseAccess(rendered, 'Invite access: ', 'Can use')
+      await click(button(rendered, 'Invite'))
+      expect(addCollaborator).toHaveBeenCalledExactlyOnceWith('ada@example.com', { gadgetId: 0 }, undefined)
     })
 
     describe('asking the agent to fix the snapshot', () => {

@@ -36,6 +36,8 @@ import {
   WorkpiecesSubscriber,
   NotificationMute,
   AiChatMetadata,
+  SNAPSHOT_SHARING_ERROR_CODES,
+  getSnapshotSharingErrorCode,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -1478,6 +1480,8 @@ export default function GadgetEditor() {
   // - A use-only collaborator given only a gadget's snapshot opens that static snapshot, which
   //   verifies nothing, so it can't be refused for their accounts; nothing offers the live gadget.
   //   One given the gadget itself always opens it live, as above, and never its snapshot.
+  //   While the deployment forbids snapshots, the server refuses one, and the failure says why; the
+  //   server is asked each time, so Try again opens it once an admin allows snapshots again.
   const [gadgetOpenFailure, setGadgetOpenFailure] =
     useState<{ id: WorkpieceId; message: string } | null>(null)
   const [gadgetOpenAttempt, setGadgetOpenAttempt] = useState(0)
@@ -1507,7 +1511,9 @@ export default function GadgetEditor() {
       setGadget(null)
       setGadgetOpenFailure({
         id: selectedGadgetId,
-        message: observerOpenFailureMessage(caught, 'gadget') ?? 'This gadget couldn’t be opened.',
+        message: getSnapshotSharingErrorCode(caught) === SNAPSHOT_SHARING_ERROR_CODES.disabled
+          ? 'Viewing gadget snapshots is turned off on this deployment.'
+          : observerOpenFailureMessage(caught, 'gadget') ?? 'This gadget couldn’t be opened.',
       })
     }
 

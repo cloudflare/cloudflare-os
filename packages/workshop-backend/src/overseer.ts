@@ -3,7 +3,8 @@ import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-s
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
+  createAdminAccessError, createSnapshotSharingError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
@@ -5551,6 +5552,17 @@ class OverseerImpl implements AgentHooks {
   // mint persistent stubs either. Each is recorded in `gadgetSnapshots` before it is cloned, and
   // deleted when its session disposes it or its gadget is deleted; the next instance deletes any
   // this one leaves behind.
+
+  // Throw unless the deployment allows sharing gadgets to view only (see
+  // AdminConfig.snapshotSharingEnabled). Opening or refreshing a snapshot checks it, as does
+  // making a view grant or minting a view link's key through the Overseer API, so turning it off
+  // suspends the view grants already made, untouched. A view link's existing keys still redeem,
+  // into view grants as dormant as those.
+  async requireSnapshotSharing(): Promise<void> {
+    if (!(await readAdminConfig(this.env)).snapshotSharingEnabled) {
+      throw createSnapshotSharingError(SNAPSHOT_SHARING_ERROR_CODES.disabled);
+    }
+  }
 
   // Copy gadget `gadgetId`'s stored state into a new snapshot of it.
   createGadgetSnapshot(gadgetId: WorkpieceId): GadgetSnapshot {
@@ -13166,6 +13178,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>> {
+    await this.impl.requireSnapshotSharing();
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new GadgetSnapshotClientImpl(
@@ -14275,6 +14288,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async addCollaborator(username: string, grant: CollaboratorGrant, note?: string)
       : Promise<CollaboratorInfo | null> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
     // Look up the user DO to check if the account exists.
     let userDoId = this.impl.users.idFromName(username);
     let userDo = this.impl.users.get(userDoId);
@@ -14299,6 +14313,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId,
                            keepView?: boolean): Promise<AffectedCollaborator[]> {
+    // Before the mutation, which severs their grants in the same step as it gives the view.
+    if (keepView) await this.impl.requireSnapshotSharing();
     let affected = (await this.impl.getSharingManager())
         .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId, keepView);
     let refresh = this.impl.refreshAffectedCollaboratorListings(affected);
@@ -14348,13 +14364,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }> {
+    if (grant !== "workspace" && grant.mode === "view") await this.impl.requireSnapshotSharing();
     return (await this.impl.getSharingManager()).createShareLink(
         { caller: this.#sharingCaller(), grant, note, default: options?.default });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
-    return (await this.impl.getSharingManager())
-        .newShareLinkKey({ caller: this.#sharingCaller(), linkId });
+    return (await this.impl.getSharingManager()).newShareLinkKey({
+      caller: this.#sharingCaller(), linkId,
+      requireViewSharing: () => this.impl.requireSnapshotSharing(),
+    });
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {
@@ -14544,6 +14563,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // gadget, through verification, and nothing else. Any other gadget is refused the same way, as
   // is a refresh once the grant is no longer a view alone.
   async getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>> {
+    await this.impl.requireSnapshotSharing();
     let mayOpen = async () => await this.impl.gadgetOpenMode(this.clientProfileId, id) === "view";
     if (!await mayOpen()) throw new Error(`No such gadget: ${id}`);
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
@@ -15502,7 +15522,8 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
 class GadgetSnapshotClientImpl extends RpcTarget implements GadgetSnapshotClient {
   #snapshot: GadgetSnapshot;
 
-  // `mayOpen` says whether its holder may still open the gadget, checked before each refresh.
+  // `mayOpen` says whether its holder may still open the gadget, checked before each refresh
+  // after the deployment's own check (see OverseerImpl.requireSnapshotSharing).
   constructor(private impl: OverseerImpl,
               private mayOpen: () => Promise<boolean>, snapshot: GadgetSnapshot) {
     super();
@@ -15536,6 +15557,7 @@ class GadgetSnapshotClientImpl extends RpcTarget implements GadgetSnapshotClient
 
   async refresh(): Promise<Date> {
     let {gadgetId} = this.#current;
+    await this.impl.requireSnapshotSharing();
     if (!await this.mayOpen()) throw new Error(`No such gadget: ${gadgetId}`);
     // Re-read after the await, so a refresh racing dispose (or another refresh) replaces only the
     // snapshot still held.
