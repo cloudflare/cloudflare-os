@@ -31,8 +31,10 @@ export const GadgetSnapshotCard = ({ ownerName, refreshedAt }: Props) => {
           <p className="truncate text-sm font-medium text-kumo-default">
             {`You're viewing a snapshot of ${ownerName ? `${ownerName}'s` : 'this'} gadget`}
           </p>
-          <p className="truncate text-xs text-kumo-subtle">
-            <span title={formatFullTimestamp(refreshedAt)}>Updated {formatRelativeTime(refreshedAt)}</span>
+          {/* Wraps rather than truncates, so the note about refresh is never cut off. */}
+          <p className="text-pretty text-xs text-kumo-subtle">
+            <span title={formatFullTimestamp(refreshedAt)}>Updated {formatRelativeTime(refreshedAt)}.</span>
+            {' '}Any changes made to the snapshot are discarded on refresh.
           </p>
         </div>
         <span aria-hidden="true" className="h-5 w-px shrink-0 bg-kumo-line" />
