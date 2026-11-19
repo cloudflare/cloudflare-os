@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { RpcTarget, env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { limitedSessionProxy, releasingSessionProxy, type OverseerDurableObject } from "../src/overseer.js";
+import { detachRpcResult, limitedSessionProxy, releasingSessionProxy, type OverseerDurableObject } from "../src/overseer.js";
 import { KeyedConcurrencyLimiter } from "../src/concurrency-limiter.js";
 import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage";
 
@@ -28,12 +28,21 @@ type Impl = {
 const CALLER = { from: "gadget", gadgetId: 1, chatId: 1 } as GatekeeperCaller;
 const TARGET = { type: "gatekeeper", id: 5 };
 
+class Counter extends RpcTarget {
+  value = 7;
+  read() { return this.value; }
+}
+
 class FakeSession extends RpcTarget {
   constructor(private onDispose: () => void, private fail = false) { super(); }
   ping(n: number) {
     if (this.fail) throw new Error("upstream failed");
     return { pong: n };
   }
+  rows(n: number) {
+    return { rows: Array.from({ length: n }, (_, i) => ({ i, label: `row ${i}` })) };
+  }
+  counter() { return { counter: new Counter() }; }
   [Symbol.dispose]() { this.onDispose(); }
 }
 
@@ -124,5 +133,51 @@ describe("GatekeeperLoopback concurrency cap", () => {
     await expect(make().ping(1)).rejects.toThrow(/restarting/);
     await expect(make().ping(2)).rejects.toThrow(/restarting/);
     await vi.waitFor(() => expect(limiter.stats("ws")).toEqual({ active: 0, waiting: 0 }));
+  });
+});
+
+// The loopback returns the result of its own RPC call to the overseer. Returned as received, that
+// result keeps the loopback invocation open until the gadget's execution context ends (hours, for
+// a facet), holding the payload in the loopback isolate; this filled the isolate past its memory
+// limit on 2026-11-19. Reproduced in workerd with a relay entrypoint: returning the received result
+// ended the relay with the caller's context, returning a structured clone ended it on return.
+describe("GatekeeperLoopback results", () => {
+  it("returns a plain copy of a data result, detached from the RPC call", async () => {
+    let overseer = await overseerWith(async () => new FakeSession(() => {}));
+    let raw = await overseer.startGatekeeperSession(TARGET, CALLER).rows(3);
+    expect(typeof raw[Symbol.dispose]).toBe("function");
+
+    let loopback = releasingSessionProxy(overseer.startGatekeeperSession(TARGET, CALLER));
+    let result = await loopback.rows(3);
+    expect(result).toEqual({ rows: [0, 1, 2].map(i => ({ i, label: `row ${i}` })) });
+    expect(result[Symbol.dispose]).toBeUndefined();
+  });
+
+  it("passes a result holding a stub through unchanged, so the stub still works", async () => {
+    let overseer = await overseerWith(async () => new FakeSession(() => {}));
+    let loopback = releasingSessionProxy(overseer.startGatekeeperSession(TARGET, CALLER));
+    let result = await loopback.counter();
+    expect(await result.counter.read()).toBe(7);
+    result[Symbol.dispose]();
+  });
+
+  it("leaves primitives and non-RPC values alone", () => {
+    expect(detachRpcResult(5)).toBe(5);
+    expect(detachRpcResult(null)).toBe(null);
+    let plain = { a: 1 };
+    expect(detachRpcResult(plain)).toBe(plain);
+  });
+
+  it("disposes the original once it has a copy, and keeps an uncloneable value", () => {
+    let disposed = 0;
+    let data = { a: [1, 2], [Symbol.dispose]() { disposed++; } };
+    let copy = detachRpcResult(data);
+    expect(copy).toEqual({ a: [1, 2] });
+    expect(copy).not.toBe(data);
+    expect(disposed).toBe(1);
+
+    let withFn = { f: () => 1, [Symbol.dispose]() { disposed++; } };
+    expect(detachRpcResult(withFn)).toBe(withFn);
+    expect(disposed).toBe(1);
   });
 });

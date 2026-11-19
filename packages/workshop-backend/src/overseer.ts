@@ -12315,13 +12315,47 @@ export function releasingSessionProxy(session: Promise<any>, onRelease?: () => v
           release();
           throw err;
         }
-        return Promise.resolve(result).finally(release);
+        return Promise.resolve(result).then(detachRpcResult).finally(release);
       };
     },
     getPrototypeOf(target) {
       return WorkerEntrypoint.prototype;
     },
   });
+}
+
+/**
+ * Turn the result of an RPC call the loopback made into a plain value it can return without
+ * staying alive, and release the original.
+ *
+ * A WorkerEntrypoint that returns the result of its own outgoing RPC call re-exports that result,
+ * so the runtime keeps the invocation open until the caller's execution context ends rather than
+ * when the method returns. Gadget calls arrive from long-lived facet contexts, so in production
+ * each loopback invocation held its response payload for 30 minutes to 5 hours ("canceled" when
+ * the facet finally went away), and the payloads of every scheduled run that morning piled up in
+ * the shared loopback isolate until it exceeded its memory limit and failed every open call
+ * together. A structured-clone copy carries no reference back to the call, so the invocation
+ * ends as soon as the method returns.
+ *
+ * A result that cannot be cloned (it holds RPC stubs, functions or streams) is returned as it
+ * is, keeping the invocation open exactly as long as those references need it.
+ */
+export function detachRpcResult<T>(result: T): T {
+  if (result === null || typeof result !== "object") return result;
+  let dispose = (result as {[Symbol.dispose]?: unknown})[Symbol.dispose];
+  if (typeof dispose !== "function") return result;
+  let copy: T;
+  try {
+    copy = structuredClone(result);
+  } catch {
+    return result;
+  }
+  try {
+    Reflect.apply(dispose, result, []);
+  } catch {
+    // The copy is already independent of the call; a failed release changes nothing for it.
+  }
+  return copy;
 }
 
 /**
