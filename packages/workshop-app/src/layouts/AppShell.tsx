@@ -1,8 +1,10 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { AnimatePresence, animate, motion, useIsPresent, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform, type Variants } from 'motion/react'
+import { AnimatePresence, animate, motion, useIsPresent, useMotionValue, useMotionValueEvent, useTransform, type Variants } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { cn } from '@cloudflare/kumo/utils'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { clampSize, resistSize, settleSize } from '@/components/resizing'
+import { motionTransition } from '@/hooks/motionTransition'
 import { SplitLayout, type SplitLayoutProps } from './SplitLayout'
 import { SCROLLBARS_AWAY, useScrollbarsAway } from './useScrollbarsAway'
 
@@ -114,7 +116,7 @@ export const AppShell = ({
     size.jump(to)
     snap.jump(from - to)
     if (reduceMotion) snap.jump(0)
-    else animate(snap, 0, SNAP_TIMING)
+    else animate(snap, 0, motionTransition(SNAP_TIMING))
   }
   const rested = (asCollapsed: boolean, at: number) => {
     setRest(at)

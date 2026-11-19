@@ -1,4 +1,5 @@
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { XIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { ServiceLogo } from '@/components/ServiceLogo'

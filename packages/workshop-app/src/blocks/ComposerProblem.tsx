@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Banner } from '@cloudflare/kumo'
-import { motion, useReducedMotion } from 'motion/react'
+import { motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { InfoIcon, XIcon } from '@phosphor-icons/react'
 
 const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const

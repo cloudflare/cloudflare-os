@@ -19,7 +19,7 @@ export type SettingsMenuProps = {
  * under its name and a chevron at its end, as it is gone into.
  */
 export const SettingsMenu = ({ user, groups, onSelect, onSignOut }: SettingsMenuProps) => (
-  <nav aria-label="Settings" className="appears mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8">
+  <nav aria-label="Settings" className="mx-auto flex w-full max-w-3xl flex-col gap-4 pt-2 pb-8">
     <div className="flex flex-col items-center gap-2 py-4 text-center">
       <Avatar name={user.name} src={user.avatarUrl} className="size-16 text-xl" />
       <div className="flex max-w-full flex-col leading-snug">

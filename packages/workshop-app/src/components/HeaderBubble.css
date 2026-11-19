@@ -4,6 +4,8 @@
 .header-bubble[data-bubble] {
   /* From the side a header starts at, so a bubble grows out along its line. */
   transform-origin: left center;
+  /* How small it is as it comes and goes. */
+  --header-bubble-scale: 0.6;
 }
 
 .header-bubble[data-bubble][data-origin='end'] {
@@ -29,7 +31,7 @@
 }
 
 @keyframes header-bubble-grow {
-  from { scale: 0.6; }
+  from { scale: var(--header-bubble-scale); }
 }
 
 @keyframes header-bubble-clear {
@@ -38,13 +40,24 @@
 
 @keyframes header-bubble-leave {
   to {
-    scale: 0.6;
+    scale: var(--header-bubble-scale);
     opacity: 0;
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .header-bubble[data-bubble] {
-    animation: none;
-  }
+:root[data-motion='off'] .header-bubble[data-bubble] {
+  animation: none;
+}
+
+/* Calm: it is simply there when it arrives, and when it goes it fades with hardly any shrinking. */
+:root[data-motion='calm'] .header-bubble[data-bubble] {
+  --header-bubble-scale: 0.95;
+}
+
+:root[data-motion='calm'] .header-bubble[data-bubble='arriving'] {
+  animation: none;
+}
+
+:root[data-motion='calm'] .header-bubble[data-bubble='leaving'] {
+  animation: header-bubble-leave 200ms ease-out forwards;
 }

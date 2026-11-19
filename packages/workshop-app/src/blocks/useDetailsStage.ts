@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { isMotionOff } from '@/prefs/motion'
 
 /**
  * Where a message's details are between away and shown. `arriving` and `full` are both all of
@@ -27,7 +28,7 @@ export const useDetailsStage = (open: boolean, folds: boolean): DetailsStage => 
   useEffect(() => {
     if (open || (stage !== 'row' && stage !== 'leaving')) return
     const [to, wait] = stage === 'row' ? ['leaving', folds ? FOLD : 0] as const : ['gone', LEAVE] as const
-    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const still = isMotionOff()
     const timer = setTimeout(() => setStage(to), still ? 0 : wait)
     return () => clearTimeout(timer)
   }, [open, stage, folds])

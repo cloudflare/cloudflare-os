@@ -21,7 +21,8 @@ export const AgentsBubble = ({ names, onOpen, compact = false }: AgentsBubblePro
   const one = names.length === 1
   const label = one ? `Agent: ${names[0]}` : `Agents: ${names.join(', ')}`
   return (
-    <HeaderBubble className={compact ? 'shrink-0' : 'min-w-0 shrink'}>
+    // Compact, it is among the buttons at a header's end, which it grows out from.
+    <HeaderBubble origin={compact ? 'end' : 'start'} className={compact ? 'shrink-0' : 'min-w-0 shrink'}>
       {compact && one ? (
         <Button icon={<AgentMark size="small" />} aria-label={label} title={label} onClick={onOpen} />
       ) : (

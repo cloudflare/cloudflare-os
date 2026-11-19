@@ -17,8 +17,6 @@
   opacity: 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .disclosure-panel {
-    transition: none;
-  }
+:root[data-motion='off'] .disclosure-panel {
+  transition: none;
 }

@@ -3,6 +3,9 @@
 @import "tailwindcss";
 @import "./theme.css";
 @custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
+/* The motion variants follow the app's motion level (`prefs/motion.ts`), not only the system's. */
+@custom-variant motion-reduce (&:where(:root[data-motion="off"] *));
+@custom-variant motion-safe (&:where(:root:not([data-motion="off"]) *));
 
 /* Without this macOS thickens text with subpixel rendering, so browser weights read heavier than
    the same weights in Figma. On `html` so portaled content (menus, dialogs) inherits it. */
@@ -104,7 +107,8 @@
   }
 }
 
-/* What a page opens on is faded in rather than cut to, as a conversation is once it has loaded.
+/* What comes up over a page, or takes a moment to load (a conversation, a file, a notice), is faded in
+   rather than cut to. A page, tab or list that is changed to is not: it is simply there.
    The note that something is loading is held back first: most loads are over before it is due,
    and it would only flash by. */
 @keyframes appears {
@@ -118,14 +122,13 @@
 .appears-late {
   animation: appears 200ms 300ms ease-out backwards;
 }
-@media (prefers-reduced-motion: reduce) {
-  .appears {
-    animation: none;
-  }
-  /* Still held back, then simply there. */
-  .appears-late {
-    animation-duration: 0s;
-  }
+/* Below full motion nothing is faded to: a page, or what is on it, is simply there. */
+:root:not([data-motion='full']) .appears {
+  animation: none;
+}
+/* Still held back, then simply there. */
+:root:not([data-motion='full']) .appears-late {
+  animation-duration: 0s;
 }
 
 /* The chat's edge fades, driven by the messages' own scroll position. Each is a 0-1 amount: 0 while

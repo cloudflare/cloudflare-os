@@ -2,6 +2,7 @@ import { createElement, isValidElement, useRef, type CSSProperties, type Element
 import { Menu } from '@cloudflare/kumo/primitives/menu'
 import { cn } from '@cloudflare/kumo/utils'
 import { CaretDownIcon, CaretRightIcon, CheckIcon, XIcon } from '@phosphor-icons/react'
+import { useMotionLevel } from '@/hooks/useMotionLevel'
 import { Button, type ButtonProps } from './Button'
 import { useMenuMorph } from './useMenuMorph'
 import './DropdownMenu.css'
@@ -95,7 +96,7 @@ const DropdownMenuRoot = ({
   keepTrigger = false,
   duration = 360,
   raised = false,
-  fade = false,
+  fade: fadeOnly = false,
   open,
   onOpenChange,
   persistent = false,
@@ -108,7 +109,11 @@ const DropdownMenuRoot = ({
   const labelNode = caret && label !== undefined
     ? <>{label}<span className="-me-1 flex"><CaretDownIcon aria-hidden="true" weight="bold" className="size-3" /></span></>
     : label
-  const keepsTrigger = keepTrigger && !inPlace
+  // Only at full motion does the surface morph out of the trigger. Otherwise the trigger stays
+  // as it is, or fades out under a menu that opens over it, and the menu fades in.
+  const morphs = useMotionLevel() === 'full'
+  const fade = fadeOnly || (inPlace && !morphs)
+  const keepsTrigger = (keepTrigger || (!morphs && !fadeOnly)) && !inPlace
   const closesFromTrigger = !inPlace && !keepsTrigger
   // Stays mounted: the × must persist while it fades out during the closing morph,
   // after Kumo has already reported the menu as closed.

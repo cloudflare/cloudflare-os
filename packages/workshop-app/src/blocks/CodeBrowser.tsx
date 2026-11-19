@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import {
   ArrowLeftIcon, CheckIcon, ClockCounterClockwiseIcon, CopyIcon, DotsThreeIcon, DownloadSimpleIcon, LinkSimpleIcon, ListNumbersIcon,
   MagnifyingGlassIcon, PlusIcon, SidebarSimpleIcon, TextAlignLeftIcon, WarningCircleIcon, XIcon,

@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
+import { motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { ArrowBendUpLeftIcon, XIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 

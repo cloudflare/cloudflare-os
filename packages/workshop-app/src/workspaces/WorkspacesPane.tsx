@@ -164,8 +164,8 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
         )}
         {starProblem && <p role="alert" className="px-4 text-base text-kumo-subtle">{starProblem}</p>}
         {shown.length > 0 && (
-          // Another order or view is another list, faded to rather than moved to row by row.
-          <div key={`${list.mode}:${list.order.id}`} className="appears">
+          // Another order or view is another list, cut to rather than moved to row by row.
+          <div key={`${list.mode}:${list.order.id}`}>
             {list.mode === 'list'
               ? (
                   <GroupedList

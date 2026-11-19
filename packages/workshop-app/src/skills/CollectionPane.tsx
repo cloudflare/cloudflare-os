@@ -225,7 +225,7 @@ export const CollectionPane = ({ collectionId, tab, onTabChange, onOpenSkill, sk
               </p>
             )}
             {shown.length > 0 && (
-              <ul key={list.order.id} aria-label="Skills" className="appears flex flex-col rounded-3xl bg-kumo-tint p-1.5">
+              <ul key={list.order.id} aria-label="Skills" className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
                 {shown.map(({ value, time }) => (
                   <li key={value.id}>
                     <SkillRow

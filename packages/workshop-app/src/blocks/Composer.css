@@ -52,8 +52,6 @@
   padding-right: calc(16px * var(--composer-sweep));
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .composer {
-    transition: none;
-  }
+:root[data-motion='off'] .composer {
+  transition: none;
 }

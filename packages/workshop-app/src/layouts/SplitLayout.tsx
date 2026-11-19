@@ -1,8 +1,10 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { AnimatePresence, animate, motion, useMotionValue, useMotionValueEvent, usePresence, useReducedMotion, useTransform, type MotionValue } from 'motion/react'
+import { AnimatePresence, animate, motion, useMotionValue, useMotionValueEvent, usePresence, useTransform, type MotionValue } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { cn } from '@cloudflare/kumo/utils'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { clampSize, resistSize, settleSize } from '@/components/resizing'
+import { motionTransition } from '@/hooks/motionTransition'
 import { CLICK_SLOP, CLOSING_DIM, EDGE_GAP, OPENING_TIMING, useEdgeHint } from './useEdgeHint'
 import { SCROLLBARS_AWAY, useScrollbarsAway } from './useScrollbarsAway'
 
@@ -99,7 +101,7 @@ const useFullScreen = (fullScreen: boolean, reduceMotion: boolean) => {
       if (!fullScreen) setLifted(false)
       return
     }
-    const moves = edges.map((edge, index) => animate(edge, to[index], FULL_SCREEN_TIMING))
+    const moves = edges.map((edge, index) => animate(edge, to[index], motionTransition(FULL_SCREEN_TIMING)))
     if (!fullScreen) void Promise.all(moves).then(() => setLifted(false))
     return () => moves.forEach((move) => move.stop())
   }, [fullScreen, reduceMotion, top, right, bottom, left, corner])

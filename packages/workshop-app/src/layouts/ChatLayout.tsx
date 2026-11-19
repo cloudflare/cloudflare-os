@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { animate, useMotionValue, useReducedMotion, type MotionValue } from 'motion/react'
+import { animate, useMotionValue, type MotionValue } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { publishHeight } from './publishHeight'
 
 // The card at the header's end, open, is 17rem wide, 0.75rem in from the edge (the header's padding),

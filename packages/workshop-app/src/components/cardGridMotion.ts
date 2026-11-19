@@ -1,5 +1,6 @@
+import { isMotionOff } from '@/prefs/motion'
 import { arrowPlace, isArrowKey, nearestSlot, type Slot } from './cardGridLayout'
-import { springCurve } from './springCurve'
+import { motionCurve } from './springCurve'
 
 /** A group as the motion knows it: its cards' keys, and how to put them in another order, if it can. */
 export type CardMotionGroup = { key: string; cards: string[]; reorder?: (keys: string[]) => void }
@@ -8,7 +9,7 @@ export type CardMotionGroup = { key: string; cards: string[]; reorder?: (keys: s
 // picking a card up once held this long unless it has moved further than SLOP, a mouse once it has
 // moved this far.
 const DURATION = 420
-const ease = springCurve(0.03, 0.6)
+const ease = motionCurve(0.03, 0.6)
 const LONG_PRESS = 350
 const SLOP = 8
 const DRAG_START = 4
@@ -61,7 +62,6 @@ export class CardGridMotion {
   private drag: Drag | undefined
   private swallowClick = false
   private focused: HTMLElement | null = null
-  private readonly reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
   private readonly observer = new ResizeObserver(() => this.measure())
 
   constructor(
@@ -95,7 +95,7 @@ export class CardGridMotion {
   sync(groups: CardMotionGroup[]) {
     this.groups = groups
     const now = performance.now()
-    const animate = this.initialized && !this.reduced.matches
+    const animate = this.initialized && !isMotionOff()
     const before = new Map(this.cards.map((card) => [card.key, { card, ...this.seenAt(card, now) }]))
 
     this.cards = Array.from(this.grid.querySelectorAll<HTMLElement>('[data-card]'), (element) => {
@@ -335,7 +335,7 @@ export class CardGridMotion {
     if (card) {
       const x = drag.x - card.slot.left
       const y = drag.y - card.slot.top
-      card.slide = drop && !this.reduced.matches && (x !== 0 || y !== 0) ? { x, y, start: performance.now() } : undefined
+      card.slide = drop && !isMotionOff() && (x !== 0 || y !== 0) ? { x, y, start: performance.now() } : undefined
       card.dropping = true
     }
     // After the click the drag ends with, which comes before this.

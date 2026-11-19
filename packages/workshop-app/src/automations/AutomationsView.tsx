@@ -77,8 +77,8 @@ export const AutomationsView = ({ status, groups, total, reading, unreachable, c
               </p>
             )}
             {shown > 0 && (
-              // Another order is another list, faded to rather than moved to row by row.
-              <div key={order?.value} className="appears flex flex-col gap-6">
+              // Another order is another list, cut to rather than moved to row by row.
+              <div key={order?.value} className="flex flex-col gap-6">
                 {/* Under their names, as a workspace's tab has them: what needs seeing to says so. */}
                 {groups.map(({ key, label, rows }) => (
                   <section key={key} className="flex flex-col gap-2">

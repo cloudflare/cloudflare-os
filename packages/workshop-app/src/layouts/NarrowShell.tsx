@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { AnimatePresence, spring, usePresence, useReducedMotion } from 'motion/react'
+import { AnimatePresence, spring, usePresence } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { SidebarSimpleIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { HeaderBubble } from '@/components/HeaderBubble'

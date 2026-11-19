@@ -4,6 +4,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { LinkButton } from '@/components/LinkButton'
+import { isMotionOff } from '@/prefs/motion'
 
 export type PromoItem = {
   key: string
@@ -41,8 +42,6 @@ const GLOW = 'bg-[radial-gradient(circle_at_25%_15%,color-mix(in_oklch,var(--col
 /** How long a tile is shown before the next comes along. */
 const DWELL = 5000
 
-const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches
-
 /**
  * A banner that makes something of a few items: a heading and a line on the tinted surface, then
  * a tile each, in the workspaces' colours, along a line that runs out under the banner's end. The
@@ -63,14 +62,14 @@ export const PromoCarousel = ({ title, description, items }: PromoCarouselProps)
     const step = (tile?.offsetWidth ?? row.clientWidth) + 12
     const atEnd = row.scrollLeft + row.clientWidth >= row.scrollWidth - 1
     const atStart = row.scrollLeft <= 1
-    const behavior = reducedMotion() ? 'auto' : 'smooth'
+    const behavior = isMotionOff() ? 'auto' : 'smooth'
     if (way === 1 && atEnd) row.scrollTo({ left: 0, behavior })
     else if (way === -1 && atStart) row.scrollTo({ left: row.scrollWidth, behavior })
     else row.scrollBy({ left: way * step, behavior })
   }
 
   useEffect(() => {
-    if (held || items.length < 2 || reducedMotion()) return
+    if (held || items.length < 2 || isMotionOff()) return
     const timer = setInterval(() => move(1), DWELL)
     return () => clearInterval(timer)
   }, [held, items.length])

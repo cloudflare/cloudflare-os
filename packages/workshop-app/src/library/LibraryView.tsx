@@ -199,13 +199,13 @@ export const LibraryView = ({
           </HeaderBubble>
           {/* Apart as a breadcrumb's bubbles are: the header has no gap of its own between them. */}
           <div className="ms-auto flex items-center gap-1.5">
-            <HeaderBubble>
+            <HeaderBubble origin="end">
               {/* A word of it at least on a narrow screen, where New is its icon alone: a compass by itself says little. */}
               {narrow
                 ? <Button icon={CompassIcon} aria-label="Explore templates" onClick={onExplore}>Explore</Button>
                 : <Button icon={CompassIcon} onClick={onExplore}>Explore templates</Button>}
             </HeaderBubble>
-            <HeaderBubble>{startNew}</HeaderBubble>
+            <HeaderBubble origin="end">{startNew}</HeaderBubble>
           </div>
         </>
       )}
@@ -241,8 +241,8 @@ export const LibraryView = ({
               </p>
             )}
             {groups.length > 0 && (
-              // Another tab, order or view is another list, faded to rather than moved to row by row.
-              <div key={`${current}:${list.mode}:${list.order.id}`} className="appears">
+              // Another tab, order or view is another list, cut to rather than moved to row by row.
+              <div key={`${current}:${list.mode}:${list.order.id}`}>
                 {list.mode === 'list'
                   ? (
                       <GroupedList

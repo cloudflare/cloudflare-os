@@ -103,6 +103,19 @@ with growing waits until the history (or the UI) is in. Register `onRpcBroken` o
 for longer than a call, or what it feeds goes silently still. The `workspace-restart` scenario
 plays one (a script's `restart` step).
 
+Motion has three levels (`prefs/motion.ts`): `full` (springs with some bounce), `calm` (the same
+springs without the overshoot) and `off` (nothing moves). The person's choice in Settings wins;
+until they choose, the system's reduce-motion setting gives `off`, else `full`. Never ask the
+browser for `prefers-reduced-motion` or use `motion/react`'s `useReducedMotion`, which hear only of
+the system: use `useReducedMotion()` (true when `off`), `isMotionOff()` outside React, and CSS under
+`:root[data-motion='off']`. Springs go through `useMotionTransition(t)` or `motionTransition(t)` (a
+`calm` spring has its bounce taken out, an `off` one takes no time); a curve by `motionCurve`; and a
+bouncy flourish with no calm form (a shake, a recoil) is skipped unless `readMotionLevel() === 'full'`.
+`MotionProvider` (in `main.tsx`) has `motion` elements without a transition of their own follow it too.
+Tailwind's `motion-reduce:` and `motion-safe:` follow the level too (`styles.css`): `off` and not `off`.
+Below `full` a `DropdownMenu` does not morph out of its trigger at all: the trigger stays as it is
+and the menu fades in with a nudge of a few pixels (`DropdownMenu.css`), instantly at `off`.
+
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
 there so its states can be reviewed in isolation.
 

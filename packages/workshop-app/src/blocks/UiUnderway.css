@@ -46,9 +46,7 @@
 }
 
 /* Nothing moves: the window is shown put together. */
-@media (prefers-reduced-motion: reduce) {
-  .ui-underway-piece,
-  .ui-underway-piece::after {
-    animation: none;
-  }
+:root[data-motion='off'] .ui-underway-piece,
+:root[data-motion='off'] .ui-underway-piece::after {
+  animation: none;
 }

@@ -1,9 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { animate, AnimatePresence, motion, useMotionValue, usePresence, useReducedMotion, type MotionStyle, type PanInfo } from 'motion/react'
+import { animate, AnimatePresence, motion, useMotionValue, usePresence, type MotionStyle, type PanInfo } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
 import { ShimmerText } from '@/components/ShimmerText'
-import { springCurve } from '@/components/springCurve'
+import { motionCurve } from '@/components/springCurve'
+import { motionTransition } from '@/hooks/motionTransition'
+import { readMotionLevel } from '@/prefs/motion'
 import './ConnectionIsland.css'
 
 export type ConnectionIslandState =
@@ -99,13 +102,13 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
 
   useLayoutEffect(() => {
     if (reduced) return
-    const opening = animate(open, 1, { duration: OPEN.duration, ease: springCurve(RECOIL.down / ARRIVAL_SPEED, OPEN.peak) })
+    const opening = animate(open, 1, { duration: OPEN.duration, ease: motionCurve(RECOIL.down / ARRIVAL_SPEED, OPEN.peak) })
     return () => opening.stop()
   }, [open, reduced])
 
   // Knocked either way with each shake of the mascot, unless it is being held.
   const knock = () => {
-    if (reduced || dragging.current) return
+    if (reduced || readMotionLevel() !== 'full' || dragging.current) return
     animate(x, 0, { ...KNOCK, velocity: KNOCK.velocity * (Math.random() < 0.5 ? -1 : 1) })
   }
 
@@ -130,7 +133,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
       const next = element.offsetWidth
       setTarget(next)
       if (first || reduced) width.jump(next)
-      else animate(width, next, RESIZE)
+      else animate(width, next, motionTransition(RESIZE))
       first = false
     }
     measure()

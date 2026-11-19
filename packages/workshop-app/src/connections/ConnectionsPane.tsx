@@ -137,8 +137,8 @@ export const ConnectionsPane = () => {
         {/* In the dialog while that is up, which is over this. */}
         {problem && !dialog?.open && <p role="alert" className="px-4 text-base text-kumo-subtle">{problem}</p>}
         {shown.length > 0 && (
-          // Another view is another list, faded to rather than moved to row by row.
-          <div key={list.mode} className="appears">
+          // Another view is another list, cut to rather than moved to row by row.
+          <div key={list.mode}>
             {list.mode === 'list'
               ? (
                   <GroupedList

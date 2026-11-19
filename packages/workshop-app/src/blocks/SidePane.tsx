@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
-import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
+import { animate, motion, useMotionValue, useMotionValueEvent, useTransform } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon,
   CodeIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, EyeIcon, CheckIcon, GearSixIcon, ShareNetworkIcon, XIcon,
@@ -12,6 +13,7 @@ import { Grabber } from '@/components/Grabber'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
 import { IconSwitch } from '@/components/IconSwitch'
+import { motionTransition } from '@/hooks/motionTransition'
 import { CopyLinkButton } from './CopyLinkButton'
 import { GadgetChatMenu, type GadgetChatMenuProps } from './GadgetChatMenu'
 import { AgentsBubble, type AgentsBubbleProps } from './AgentsBubble'
@@ -159,7 +161,7 @@ export const SidePane = (props: SidePaneProps) => {
   const showHeader = (shown: boolean) => {
     setHeaderShown(shown)
     if (reduceMotion) reveal.jump(shown ? 1 : 0)
-    else animate(reveal, shown ? 1 : 0, { type: 'spring', duration: 0.3, bounce: 0.1 })
+    else animate(reveal, shown ? 1 : 0, motionTransition({ type: 'spring', duration: 0.3, bounce: 0.1 }))
   }
 
   // With the header away, the surface's top is the card's, which has an edge of its own.
@@ -192,7 +194,7 @@ export const SidePane = (props: SidePaneProps) => {
   const page = props.placement === 'page' ? props : undefined
   // The header's one primary action: the way to a chat with it beside it.
   const chat = page?.chat && active && !fullScreen && (
-    <HeaderBubble key="chat">
+    <HeaderBubble key="chat" origin="end">
       <GadgetChatMenu {...page.chat} title={active.title} compact={narrow} />
     </HeaderBubble>
   )
@@ -235,12 +237,12 @@ export const SidePane = (props: SidePaneProps) => {
                 path to it, where it would read as a step further in. */}
             {active && agents && !viewingCode && <AgentsBubble {...agents} compact />}
             {people.length > 0 && (
-              <HeaderBubble className="me-1.5">
+              <HeaderBubble origin="end" className="me-1.5">
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
             {active && (onReload || onDownload || shareInMore || codeInMore || onOpenSettings || (beside?.onExpand && !narrow)) && (
-              <HeaderBubble>
+              <HeaderBubble origin="end">
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {codeInMore && (viewingCode
                     ? <DropdownMenu.Item icon={EyeIcon} onSelect={onViewCode}>Show the app</DropdownMenu.Item>
@@ -256,7 +258,7 @@ export const SidePane = (props: SidePaneProps) => {
             )}
             {/* Keyed, so that the one button swaps for the other. In more instead where there is no room. */}
             {active && shares && !crammed && (
-              <HeaderBubble key="share">
+              <HeaderBubble key="share" origin="end">
                 <DropdownMenu
                   icon={template?.copy === 'copied' ? CheckIcon : template?.copy === 'failed' ? XIcon : ShareNetworkIcon}
                   aria-label={template?.copy === 'copied' ? 'Template link copied' : template?.copy === 'failed' ? 'Couldn’t copy the template link' : 'Share'}
@@ -268,7 +270,7 @@ export const SidePane = (props: SidePaneProps) => {
               </HeaderBubble>
             )}
             {active && link && !shares && (
-              <HeaderBubble key="copy-link">
+              <HeaderBubble key="copy-link" origin="end">
                 <CopyLinkButton link={link} title={active.title} />
               </HeaderBubble>
             )}
@@ -276,20 +278,20 @@ export const SidePane = (props: SidePaneProps) => {
             {page?.onCollapse && chat}
             {/* Keyed, so that expanding swaps the one button for the other in its place. On a narrow screen the back button at the start puts it away. */}
             {beside && !narrow && (
-              <HeaderBubble key="hide">
+              <HeaderBubble key="hide" origin="end">
                 <Button icon={ArrowLineRightIcon} aria-label="Hide pane" title="Hide pane" onClick={beside.onHide} />
               </HeaderBubble>
             )}
             {page && !narrow && (
               // Keyed, so that the one button swaps for the other.
-              <HeaderBubble key={fullScreen ? 'exit-full-screen' : 'full-screen'}>
+              <HeaderBubble key={fullScreen ? 'exit-full-screen' : 'full-screen'} origin="end">
                 {fullScreen
                   ? <Button icon={CornersInIcon} aria-label="Exit full screen" title="Exit full screen" onClick={() => page.onFullScreenChange(false)} />
                   : <Button icon={CornersOutIcon} aria-label="Full screen" title="Full screen" onClick={() => page.onFullScreenChange(true)} />}
               </HeaderBubble>
             )}
             {page?.onCollapse && !fullScreen && !narrow && (
-              <HeaderBubble key="collapse">
+              <HeaderBubble key="collapse" origin="end">
                 <Button icon={ArrowsInSimpleIcon} aria-label="Collapse" title="Collapse" onClick={page.onCollapse} />
               </HeaderBubble>
             )}

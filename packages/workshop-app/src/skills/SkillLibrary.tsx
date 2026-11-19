@@ -142,10 +142,10 @@ export const SkillLibrary = ({ onOpenSkill, skillHref }: SkillLibraryProps) => {
         </p>
       )}
       {shown.length > 0 && (
-        // Another order is another list, faded to rather than moved to row by row. No taller than
+        // Another order is another list, cut to rather than moved to row by row. No taller than
         // ten rows or so, or than most of the window: the rest are scrolled to, so that the group
         // under it is not pushed out of reach.
-        <ScrollArea key={list.order.id} className="appears max-h-[min(40rem,70dvh)] rounded-3xl bg-kumo-tint">
+        <ScrollArea key={list.order.id} className="max-h-[min(40rem,70dvh)] rounded-3xl bg-kumo-tint">
           <ul aria-label="Skills" className="flex flex-col p-1.5">
             {rows}
           </ul>

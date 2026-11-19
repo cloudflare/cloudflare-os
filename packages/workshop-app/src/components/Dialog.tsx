@@ -1,6 +1,7 @@
 import { createContext, use, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Dialog as BaseDialog } from '@cloudflare/kumo/primitives/dialog'
 import { cn } from '@cloudflare/kumo/utils'
+import { isMotionOff } from '@/prefs/motion'
 import { pageMotion } from './dialogPageMotion'
 import { SurfaceGlide } from './surfaceGlide'
 
@@ -147,7 +148,7 @@ const DialogSurface = ({ open, onOpenChange, wide, narrow, page, children }: Dia
     Object.assign(incoming.style, { position: 'relative', width: `${to}px`, alignSelf: 'center' })
     const uncut = glide.current.cut()
     glide.current.refresh()
-    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const reduced = isMotionOff()
     const targets = { surface: popup, incoming, outgoing }
     const animations = pageMotion({ from, to, forward: leaving.forward, reduced }).map(({ target, keyframes, options }) => targets[target].animate(keyframes, options))
     // Into the new page, unless it has taken the focus itself (a field's `autoFocus`).

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from 'react'
+import { isMotionOff, subscribeMotionLevel } from '@/prefs/motion'
 
 type Bounds = { top: number; height: number }
 type Target = {
@@ -34,7 +35,6 @@ export const useWorkspaceUnderlay = (rowSelector = '[data-workspace-id]') => {
     const underlay = underlayRef.current!
     const hoverUnderlay = hoverUnderlayRef.current!
     const scroller = list.parentElement!
-    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)')
     const canHover = matchMedia('(hover: hover)')
     let rows: HTMLButtonElement[] = []
     let hovered: HTMLButtonElement | undefined
@@ -94,11 +94,11 @@ export const useWorkspaceUnderlay = (rowSelector = '[data-workspace-id]') => {
       const hoverBox = measure(hovered)
       const previous = target
       if (previous?.selected === selected && previous?.hovered === hovered && previous?.neighbour === neighbour &&
-          sameBounds(previous?.activeBox, activeBox) && sameBounds(previous?.hoverBox, hoverBox) && !reducedMotion.matches) return
+          sameBounds(previous?.activeBox, activeBox) && sameBounds(previous?.hoverBox, hoverBox) && !isMotionOff()) return
 
       const selectionChanged = previous?.selected !== selected
       const selectingJoined = selectionChanged && selected === previous?.neighbour && connected
-      const motion = previous !== undefined && !reducedMotion.matches
+      const motion = previous !== undefined && !isMotionOff()
       const wasConnected = connected
       const activeFrom = readSurface(underlay)
       const hoverFrom = readSurface(hoverUnderlay)
@@ -213,7 +213,7 @@ export const useWorkspaceUnderlay = (rowSelector = '[data-workspace-id]') => {
     list.addEventListener('pointerleave', onPointerLeave)
     list.addEventListener('pointercancel', onPointerLeave)
     scroller.addEventListener('scroll', onScroll, { passive: true })
-    reducedMotion.addEventListener('change', onLayout)
+    const unsubscribeMotion = subscribeMotionLevel(onLayout)
     canHover.addEventListener('change', onLayout)
     return () => {
       refreshRef.current = null
@@ -228,7 +228,7 @@ export const useWorkspaceUnderlay = (rowSelector = '[data-workspace-id]') => {
       list.removeEventListener('pointerleave', onPointerLeave)
       list.removeEventListener('pointercancel', onPointerLeave)
       scroller.removeEventListener('scroll', onScroll)
-      reducedMotion.removeEventListener('change', onLayout)
+      unsubscribeMotion()
       canHover.removeEventListener('change', onLayout)
     }
   }, [])

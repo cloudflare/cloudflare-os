@@ -1,5 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from 'motion/react'
+import { animate, motion, useMotionValue, useSpring, useTransform } from 'motion/react'
+import { useMotionLevel } from '@/hooks/useMotionLevel'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { motionTransition } from '@/hooks/motionTransition'
 import { cn } from '@cloudflare/kumo/utils'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
 import { clampSize } from './resizing'
@@ -45,6 +48,9 @@ const PILL_ROOM = 60
 const PILL_MARGIN = 8
 const ARRIVING_SCALE = 0.15
 const LEAVING_SCALE = 0.01
+// Calm, it hardly grows or shrinks, and is mostly faded in and out.
+const CALM_SCALE = 0.8
+const CALM_FADE = { duration: 0.2, ease: 'easeOut' } as const
 // Kept while leaving, so it shrinks to a dot that fades rather than to nothing.
 const LEAVING_HEIGHT = 6
 // The height of the pill at the edge, where it does not answer to how near the pointer is.
@@ -73,6 +79,7 @@ export const ResizeHandle = ({
   value, min, max, onDragStart, onDrag, onDragEnd, onStep, onReset, edge, hint = false, onReach, reach = REACH, 'aria-label': label,
 }: ResizeHandleProps) => {
   const reduceMotion = useReducedMotion()
+  const calmly = useMotionLevel() === 'calm'
   const atEdge = edge !== undefined
   const [shown, setShown] = useState(false)
   const [held, setHeld] = useState(false)
@@ -100,7 +107,8 @@ export const ResizeHandle = ({
   const calm = useCalm(pointerX, pointerY)
 
   const height = useTransform(() => {
-    const amount = (reduceMotion ? proximity : easedProximity).get()
+    // Below full motion it does not answer to how near the pointer is: it is as it is with the pointer on it.
+    const amount = calmly || reduceMotion ? 1 : easedProximity.get()
     const idle = between(IDLE_LENGTH, amount)
     const full = atEdge ? EDGE_HEIGHT : idle + (between(HELD_LENGTH, amount) - idle) * grip.get()
     return Math.max(floor.get(), full * scale.get())
@@ -116,9 +124,12 @@ export const ResizeHandle = ({
     scale.stop()
     fade.stop()
     floor.jump(0)
-    fade.jump(1)
-    scale.jump(reduceMotion ? 1 : ARRIVING_SCALE)
-    if (!reduceMotion) animate(scale, 1, BOUNCY)
+    // Calm, it fades in, from where it was if it is called back while still fading out.
+    if (!calmly) fade.jump(1)
+    else if (!shown) fade.jump(0)
+    scale.jump(reduceMotion ? 1 : calmly ? CALM_SCALE : ARRIVING_SCALE)
+    if (!reduceMotion) animate(scale, 1, motionTransition(BOUNCY))
+    if (calmly) animate(fade, 1, CALM_FADE)
     setShown(true)
     onReach?.(true)
   }
@@ -130,11 +141,10 @@ export const ResizeHandle = ({
     scale.stop()
     fade.stop()
     if (reduceMotion) return setShown(false)
-    floor.jump(LEAVING_HEIGHT)
-    animate(scale, LEAVING_SCALE, BOUNCY)
+    floor.jump(calmly ? 0 : LEAVING_HEIGHT)
+    animate(scale, calmly ? CALM_SCALE : LEAVING_SCALE, motionTransition(BOUNCY))
     animate(fade, 0, {
-      duration: 0.25,
-      ease: [0.23, 1, 0.32, 1],
+      ...(calmly ? CALM_FADE : { duration: 0.25, ease: [0.23, 1, 0.32, 1] as const }),
       // Unless it was called back meanwhile.
       onComplete: () => {
         if (leaving.current) setShown(false)
@@ -145,7 +155,7 @@ export const ResizeHandle = ({
   const setGrip = (taken: boolean) => {
     grip.stop()
     if (reduceMotion) grip.jump(taken ? 1 : 0)
-    else animate(grip, taken ? 1 : 0, taken ? BOUNCY : { type: 'spring', ...SMOOTH })
+    else animate(grip, taken ? 1 : 0, taken ? motionTransition(BOUNCY) : { type: 'spring', ...SMOOTH })
   }
 
   // Where the pill is when it keeps to the middle of the gap.

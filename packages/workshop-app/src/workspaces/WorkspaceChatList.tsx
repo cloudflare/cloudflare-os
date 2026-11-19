@@ -55,8 +55,8 @@ export const WorkspaceChatList = ({ workspaceId, onOpenChat, chatHref, builds = 
           <Button variant="ghost" onClick={list.showAll}>Show all</Button>
         </p>
       )}
-      {/* Another order is another list, faded to rather than moved to row by row. */}
-      <div key={list.order.id} className="appears flex flex-col gap-3">
+      {/* Another order is another list, cut to rather than moved to row by row. */}
+      <div key={list.order.id} className="flex flex-col gap-3">
         {groups.map(({ key, label, entries }) => (
           <ListGroup key={key} label={label}>
             {entries.map(({ value: chat }) => (

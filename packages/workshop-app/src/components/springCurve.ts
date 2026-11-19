@@ -1,3 +1,5 @@
+import { readMotionLevel } from '@/prefs/motion'
+
 /**
  * A spring released from rest that overshoots its end by `overshoot` (as a fraction of the travel)
  * once, at `peak` (as a fraction of the time), then settles: progress over time, both from 0 to 1.
@@ -14,4 +16,14 @@ export const springCurve = (overshoot: number, peak: number) => {
     const envelope = Math.exp(-damping * frequency * t)
     return 1 - envelope * (Math.cos(damped * t) + (damping / Math.sqrt(1 - damping ** 2)) * Math.sin(damped * t))
   }
+}
+
+/**
+ * `springCurve`, as the motion level in force has it, read each time it is sampled: overshooting
+ * as asked at `full`, and settling without overshoot otherwise.
+ */
+export const motionCurve = (overshoot: number, peak: number) => {
+  const bouncy = springCurve(overshoot, peak)
+  const settled = springCurve(0, peak)
+  return (t: number) => (readMotionLevel() === 'full' ? bouncy : settled)(t)
 }

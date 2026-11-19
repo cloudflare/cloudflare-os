@@ -1,4 +1,5 @@
-import { AnimatePresence, MotionConfig, motion, useReducedMotion } from 'motion/react'
+import { AnimatePresence, MotionConfig, motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { ComposerAttachmentCard } from './ComposerAttachmentCard'
 import type { ComposerAttachment } from './useComposerAttachments'
 
@@ -15,7 +16,7 @@ export const ComposerAttachmentTray = ({ attachments, onRemove }: {
   const transition = reducedMotion ? { duration: 0 } : TRANSITION
 
   return (
-    <MotionConfig reducedMotion="user" transition={transition}>
+    <MotionConfig transition={transition}>
       {/* Stay mounted so the final card can leave before the tray closes. Its natural height
           drives the form directly, without a second measured-height animation chasing it. */}
       <motion.div

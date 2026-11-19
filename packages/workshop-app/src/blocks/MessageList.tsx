@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
 import { ArrowDownIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
+import { isMotionOff, readMotionLevel } from '@/prefs/motion'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
 import { useMessageScroll } from './useMessageScroll'
 import { useScrollFadeFallback } from './useScrollFadeFallback'
@@ -34,7 +35,12 @@ export type MessageListHandle = {
 }
 
 /** The clock of Arrival.css, which a row opens on so that what is below moves with what grows in. */
-const ARRIVAL = { duration: 420, easing: 'linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1)' }
+const arrival = (): KeyframeAnimationOptions => ({
+  duration: 420,
+  easing: readMotionLevel() === 'full'
+    ? 'linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1)'
+    : 'linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 0.99 60%, 1)',
+})
 
 /**
  * Lets a row arrive: it opens from nothing to its height, pushing what is below it down
@@ -48,9 +54,9 @@ const markArriving = (row: Element) => {
   // will end at, or it would jump to it when the animation was over.
   const { height } = row.getBoundingClientRect()
   row.setAttribute('data-arriving', '')
-  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (!isMotionOff()) {
     // A row of no height would still be given the list's `gap-2`, so it starts by taking that back.
-    row.animate([{ height: '0px', marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], ARRIVAL)
+    row.animate([{ height: '0px', marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], arrival())
   }
   const arrivals = row.getAnimations({ subtree: true }).map(({ finished }) => finished)
   void Promise.allSettled(arrivals).then(() => row.removeAttribute('data-arriving'))

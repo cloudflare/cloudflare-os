@@ -1,3 +1,4 @@
+import { isMotionOff, subscribeMotionLevel } from '@/prefs/motion'
 import { circlePath } from './circlePath'
 import { LoadingMotion } from './loadingMotion'
 import { alignPoints, inverseTransformPoints, orderHalves, roundedPointsToPath, samplePath, splitOutline, transformPoints, type Point, type Pose } from './morph'
@@ -114,10 +115,8 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   let happyReplay = false
   const spin = { rotation: 0, from: 0, target: 0, elapsed: 1, duration: 0.85 }
 
-  const media = window.matchMedia('(prefers-reduced-motion: reduce)')
-  let reduced = media.matches
-  const onMotionChange = () => { reduced = media.matches }
-  media.addEventListener('change', onMotionChange)
+  let reduced = isMotionOff()
+  const unsubscribeMotion = subscribeMotionLevel(() => { reduced = isMotionOff() })
   const pointer = { x: 0, y: 0, localX: 32, localY: 28, influence: 0, active: false }
   let reach = DEFAULT_REACH
   const lobes = [
@@ -759,7 +758,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       for (const type of touchEvents) window.removeEventListener(type, onTouch)
       document.removeEventListener('pointerleave', resetPointer)
       window.removeEventListener('blur', onWindowBlur)
-      media.removeEventListener('change', onMotionChange)
+      unsubscribeMotion()
     },
   }
 }

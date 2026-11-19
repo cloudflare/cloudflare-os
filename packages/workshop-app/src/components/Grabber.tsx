@@ -1,5 +1,7 @@
 import { useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react'
-import { animate, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react'
+import { animate, motion, useMotionValue, useTransform } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { motionTransition } from '@/hooks/motionTransition'
 import { cn } from '@cloudflare/kumo/utils'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
 import { clampSize } from './resizing'
@@ -61,7 +63,7 @@ export const Grabber = ({ 'aria-label': label, expanded, onDragStart, onDrag, on
   const setGrip = (taken: boolean) => {
     grip.stop()
     if (reduceMotion) grip.jump(taken ? 1 : 0)
-    else animate(grip, taken ? 1 : 0, taken ? BOUNCY : { type: 'spring', ...SMOOTH })
+    else animate(grip, taken ? 1 : 0, taken ? motionTransition(BOUNCY) : { type: 'spring', ...SMOOTH })
   }
 
   const point = (at: boolean) => {

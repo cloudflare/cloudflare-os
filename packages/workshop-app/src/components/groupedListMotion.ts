@@ -1,13 +1,14 @@
+import { isMotionOff } from '@/prefs/motion'
 import { SPACING, boundaryOf, dragPlace, layOut, surfaceRuns, type LayoutItem } from './groupedLayout'
 import { planList, type PlanItem, type PlannedItem } from './groupedPlan'
-import { springCurve } from './springCurve'
+import { motionCurve } from './springCurve'
 
 /** A group as the motion knows it: its rows' keys, and how to put them in another order, if it can. */
 export type MotionGroup = { key: string; rows: string[]; reorder?: (keys: string[]) => void }
 
 // Everything moves this long, on a spring that barely overshoots.
 const DURATION = 420
-const ease = springCurve(0.03, 0.6)
+const ease = motionCurve(0.03, 0.6)
 // Held this long, a finger picks a row up; moved further than SLOP before then, it scrolls instead.
 const LONG_PRESS = 350
 const SLOP = 8
@@ -73,7 +74,6 @@ export class GroupedListMotion {
   private drag: Drag | undefined
   private swallowClick = false
   private focused: HTMLElement | null = null
-  private readonly reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
   private readonly observer = new ResizeObserver(() => this.measure())
 
   constructor(
@@ -111,7 +111,7 @@ export class GroupedListMotion {
   sync(groups: MotionGroup[]) {
     this.groups = groups
     const now = performance.now()
-    const animate = this.initialized && !this.reduced.matches
+    const animate = this.initialized && !isMotionOff()
     const elements = new Map(Array.from(this.list.querySelectorAll<HTMLElement>(':scope > [data-row]'), (element) => [element.dataset.row!, element]))
     const after = groups.flatMap(({ key, rows }) => rows.map((row) => ({ key: row, group: key })))
 
@@ -412,7 +412,7 @@ export class GroupedListMotion {
     const item = this.items[index]
     if (item) {
       const from = drag.top - this.layoutAt(now).tops[index]
-      item.lift = drop && !this.reduced.matches && from !== 0 ? { from, to: 0, start: now } : settled(0)
+      item.lift = drop && !isMotionOff() && from !== 0 ? { from, to: 0, start: now } : settled(0)
       item.dropping = true
     }
     // After the click the drag ends with, which comes before this.

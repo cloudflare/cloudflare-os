@@ -147,16 +147,14 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  [data-arriving] [data-role] {
-    animation: none;
-  }
+:root[data-motion='off'] [data-arriving] [data-role] {
+  animation: none;
+}
 
-  .message-details,
-  .message-details[data-stage='leaving'],
-  .message-details-surface,
-  .message-details[data-stage='leaving'] .message-details-surface,
-  .message-details-more {
-    transition: none;
-  }
+:root[data-motion='off'] .message-details,
+:root[data-motion='off'] .message-details[data-stage='leaving'],
+:root[data-motion='off'] .message-details-surface,
+:root[data-motion='off'] .message-details[data-stage='leaving'] .message-details-surface,
+:root[data-motion='off'] .message-details-more {
+  transition: none;
 }

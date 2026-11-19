@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { AnimatePresence, motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
 import { CaretDownIcon, CaretRightIcon, CheckCircleIcon, ShieldCheckIcon, ShieldWarningIcon, WarningCircleIcon, WarningIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'

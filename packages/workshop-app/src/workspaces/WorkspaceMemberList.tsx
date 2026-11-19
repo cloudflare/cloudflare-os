@@ -55,8 +55,7 @@ export const WorkspaceMemberList = ({ snapshot, session, onInvite }: WorkspaceMe
       {snapshot.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading members…</p>}
       {snapshot.status === 'failed' && <p className="px-4 text-center text-base text-kumo-subtle">Couldn’t load members: {snapshot.message}</p>}
       {standing && (
-        // Faded in as it arrives, as the Library's lists are.
-        <div className="appears flex flex-col gap-4">
+        <div className="flex flex-col gap-4">
           {members.length > 0 && shown.length === 0 && (
             <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
               No members match.

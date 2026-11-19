@@ -114,7 +114,7 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
             </HeaderBubble>
           </nav>
           {/* What the page offers to do, at the header's end, as the library's New is. */}
-          <HeaderBubble className="ms-auto">
+          <HeaderBubble origin="end" className="ms-auto">
             <CreateTemplateMenu apps={apps} onCreate={onCreateTemplate} />
           </HeaderBubble>
         </>
@@ -200,8 +200,8 @@ export const TemplateStoreView = ({ tab, onTabChange, templates, status, list, s
               </p>
             )}
             {!front && shown.length > 0 && (
-              // Another tab or order is another list, faded to rather than moved to card by card.
-              <div key={`${current}:${list.order.id}`} className="appears">
+              // Another tab or order is another list, cut to rather than moved to card by card.
+              <div key={`${current}:${list.order.id}`}>
                 <CardGrid
                   wide
                   groups={list.arrange(shown).map(({ key, label, entries }) => ({

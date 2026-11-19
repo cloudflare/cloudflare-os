@@ -9,6 +9,8 @@
 // frame in it is placed by the window throughout (`ResourceConfiguratorFrame`). Settled, it is as
 // tall as what it holds, as if nothing had been done.
 
+import { isMotionOff } from '@/prefs/motion'
+
 /** How stiff the glide is: it is within a pixel or two of where it goes after about 280 ms. */
 const STIFFNESS = 24
 
@@ -47,7 +49,6 @@ export class SurfaceGlide {
   private readonly heights = new WeakMap<Element, number>()
   private readonly sizes: ResizeObserver
   private readonly changes: MutationObserver
-  private readonly reduced = matchMedia('(prefers-reduced-motion: reduce)')
 
   constructor(private readonly surface: HTMLElement) {
     // Only noted, for `heightOf`: what is done about a change is done as it is made.
@@ -113,7 +114,7 @@ export class SurfaceGlide {
   private readonly measure = () => {
     this.target = this.natural()
     // Its first height it opens at; with reduced motion, every one it takes at once.
-    if (this.height === undefined || this.reduced.matches) {
+    if (this.height === undefined || isMotionOff()) {
       this.height = this.target
       this.velocity = 0
     } else if (!this.frame && !glideSettled({ height: this.height, velocity: this.velocity, target: this.target })) {

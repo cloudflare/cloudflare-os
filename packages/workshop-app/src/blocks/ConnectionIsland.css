@@ -93,8 +93,6 @@
   transition: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .connection-island-items {
-    transition: none;
-  }
+:root[data-motion='off'] .connection-island-items {
+  transition: none;
 }

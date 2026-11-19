@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { MagnifyingGlassIcon } from '@phosphor-icons/react'
-import { motion, useReducedMotion } from 'motion/react'
+import { motion } from 'motion/react'
+import { useReducedMotion } from '@/hooks/useReducedMotion'
+import { useMotionTransition } from '@/hooks/useMotionTransition'
 import { codeFileIcon } from './codeFileIcon'
 import { EditDot, type CodeTreeEntry } from './CodeFileTree'
 import { matchPaths } from './codeTree'
@@ -35,12 +37,15 @@ const Marked = ({ text, indices, offset }: { text: string; indices: ReadonlySet<
  * open. A colon and a number goes to that line of the file shown instead. Over the code, within it:
  * it is part of the code, not the page.
  */
+const PANEL_SPRING = { type: 'spring', duration: 0.25, bounce: 0.1 } as const
+
 export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, onClose }: CodeQuickOpenProps) => {
   const [typed, setTyped] = useState('')
   const [active, setActive] = useState(0)
   const listId = useId()
   const list = useRef<HTMLDivElement>(null)
-  const reduceMotion = useReducedMotion() ?? false
+  const reduceMotion = useReducedMotion()
+  const transition = useMotionTransition(PANEL_SPRING)
   const line = /^:(\d+)$/.exec(typed.trim())?.[1]
   const found = useMemo(() => {
     if (line) return []
@@ -93,7 +98,7 @@ export const CodeQuickOpen = ({ paths, shown, edits, lines, onOpen, onGoToLine, 
         className="relative flex max-h-[min(26rem,80%)] w-[min(34rem,100%)] flex-col self-start overflow-hidden rounded-3xl bg-kumo-base text-kumo-default shadow-xl ring-1 ring-kumo-contrast/6"
         initial={reduceMotion ? false : { opacity: 0, scale: 0.97, y: -6 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        transition={{ type: 'spring', duration: 0.25, bounce: 0.1 }}
+        transition={transition}
       >
         <div className="flex items-center gap-3 border-b border-kumo-line px-5">
           <MagnifyingGlassIcon aria-hidden="true" className="size-[1.125em] shrink-0 text-kumo-subtle" />

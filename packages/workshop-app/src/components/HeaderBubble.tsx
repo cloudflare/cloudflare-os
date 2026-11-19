@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
+import { isMotionOff } from '@/prefs/motion'
 import './HeaderBubble.css'
 
 export type HeaderBubbleProps<State> = {
@@ -74,7 +75,7 @@ export const HeaderBubble = <State,>({ name, state, children, className, origin 
   // to the popping.
   useLayoutEffect(() => {
     const from = predecessor?.left
-    if (from === undefined || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    if (from === undefined || isMotionOff()) return
     const element = ref.current!
     const offset = from - element.getBoundingClientRect().left
     if (Math.abs(offset) < 1) return

@@ -152,7 +152,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
             {/* Only once there is someone besides the viewer: it goes to the members. */}
             {people.length > 1 && (
-              <HeaderBubble>
+              <HeaderBubble origin="end">
                 <Button
                   aria-label={`Members: ${people.map(({ name }) => name).join(', ')}`}
                   title="Members"
@@ -165,7 +165,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
               </HeaderBubble>
             )}
             {canInvite && (
-              <HeaderBubble>
+              <HeaderBubble origin="end">
                 {narrow
                   ? <Button icon={UserPlusIcon} aria-label="Invite" title="Invite" onClick={() => setInviting(true)} />
                   : <Button icon={UserPlusIcon} onClick={() => setInviting(true)}>Invite</Button>}

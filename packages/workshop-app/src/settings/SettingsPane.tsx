@@ -120,8 +120,8 @@ export const SettingsPane = ({ section, onSectionChange, sectionHref, onOpenSkil
       >
         {info
           ? (
-              // Another part is another page, faded to.
-              <div key={info.id} className="appears mx-auto flex w-full max-w-3xl flex-col gap-12 pt-4 pb-12">
+              // Another part is another page, cut to.
+              <div key={info.id} className="mx-auto flex w-full max-w-3xl flex-col gap-12 pt-4 pb-12">
                 {isAdminSection(info.id) && !admin
                   ? <p role="status" className="appears-late px-5 text-base text-kumo-subtle">Loading…</p>
                   : parts[info.id]}
