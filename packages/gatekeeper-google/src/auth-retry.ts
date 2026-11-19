@@ -181,7 +181,7 @@ export async function fetchWithAuthRetry(
       // and never once the caller's own signal has aborted it.
       if (replayable && idempotent && attempt < retries - 1 && !init.signal?.aborted) {
         await backoff(backoffDelayMs(attempt, null), init.signal);
-        token = await getAccessToken();
+        token = await untilAborted(getAccessToken(), init.signal);
         attempt++;
         continue;
       }
@@ -223,7 +223,7 @@ export async function fetchWithAuthRetry(
       await backoff(delay, init.signal);
       // Asked again, so that a provider that stops serving a connection disconnected meanwhile
       // (see AccessTokenCache) stops its retries too.
-      token = await getAccessToken();
+      token = await untilAborted(getAccessToken(), init.signal);
       attempt++;
       continue;
     }
@@ -251,6 +251,27 @@ function backoff(ms: number, signal: AbortSignal | null | undefined): Promise<vo
       resolve();
     }, ms);
     signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/**
+ * `promise`, or the reason `signal` aborted with as soon as it does. What `promise` does goes on,
+ * as a token refresh other requests share must.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      promise.catch(() => {});
+      reject(signal.reason);
+      return;
+    }
+    let abort = () => {
+      promise.catch(() => {});
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
 
