@@ -61,7 +61,7 @@ styleSheet.textContent = `
      the text is wrapped round as the text does. */
   ins, del { text-decoration-line: none; }
   ins, del, :is(.added, .removed) > :is(span, a):not(.lift, .row, .obj, .tick, .marker, .chip) {
-    padding-bottom: calc((var(--ls, 1) - 1) * var(--h, 0pt)); -webkit-box-decoration-break: clone;
+    padding-bottom: calc(var(--l, 1.18em) - 1.18em); -webkit-box-decoration-break: clone;
     box-decoration-break: clone; }
   ins, .added > :is(span, a):not(.lift, .row, .obj, .tick) { background-color: var(--mark); }
   del, .removed > :is(span, a):not(.lift, .row, .obj, .tick) { background-color: var(--gone); }

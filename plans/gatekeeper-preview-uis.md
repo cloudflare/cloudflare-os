@@ -359,14 +359,37 @@ Found against real documents, and each is drawn as near as the API allows:
   height cannot be recovered.
 - **Where a header sits when the document does not say.** Unless
   `documentStyle.useCustomHeaderFooterMargins` is set, Google Docs ignores `marginHeader` and
-  `marginFooter`. Measured in the editor, the header then starts 5pt from the top of the sheet,
-  the footer ends 3.6pt *below* the bottom margin's edge, and a header deeper than the top margin
-  keeps 6pt between itself and the body (`headerGap`). All three are measured, not documented,
-  and the last two rest on one document each.
-- **Font metrics.** Google Docs sets a line as tall as the font's ascent plus descent, rounded
-  up to a whole pixel at 100%, times the line spacing, with the extra below the text. For Roboto
-  Slab it uses Roboto's ascent and descent, not the font file's. The client holds such
-  exceptions in one table (`DOCS_MEASURES` in `draw.js`), which has that one entry.
+  `marginFooter`. Measured in the editor, the header then starts 5.25pt (7px) from the top of
+  the sheet, the footer ends 3.6pt *below* the bottom margin's edge, and a header deeper than
+  the top margin keeps 5.25pt between itself and the body (`headerGap`). All three are measured,
+  not documented; the footer's rests on one document.
+- **How Google Docs sets a line.** None of this is documented. It was read off the pages the
+  editor draws at 100% (every line's text, font and baseline, and every image's rectangle) for
+  five documents in six families, and the client's drawing of four of them was compared with
+  it line by line. The client (`draw.js`, `pages.js`) follows these rules:
+  - *Every font is set alike.* A line of text is 1.18 times its size tall, times the
+    paragraph's line spacing, with the baseline 0.96 of the size under the line's top and the
+    rest under the text. A font's own ascent and descent play no part. A line of mixed sizes
+    takes the largest.
+  - *Each line is rounded up to a whole pixel*, after the paragraph's space above is added to
+    its first line and its space below to its last. A paragraph of one line is rounded once,
+    with both.
+  - *Between two paragraphs only the larger space is kept*, of the upper's space below and the
+    lower's space above. Measured where the space above is the larger; assumed the other way
+    round. At the top of a page the space above is kept.
+  - *Letters are as wide as the font draws them.* Chrome on Linux rounds each letter's advance
+    unless `text-rendering: geometricPrecision` is set, which moved where lines wrap.
+  - *No line ends at a hyphen inside a word*: of 644 lines, 53 hold one and none ends at it.
+  - *A paragraph that ends in a page break* leaves no empty line on the next page.
+  - *A line goes on a page only if its whole box fits*, space included: half a pixel over
+    moved a line to the next page.
+  - *An object is a whole number of pixels wide and tall.* An inline image stands on the
+    baseline, 2px under its line's top when it is taller than the text, and its line is the
+    image's height plus 2px plus what a text line of the run's size has under the baseline.
+    How far a browser's text reaches under the baseline is measured in the page, since Chrome
+    rounds a font's ascent and descent its own way.
+  - *Consolas* is Google's own copy, 1126/2048 of its size wide. Whatever fixed-width font
+    stands in for it is letter-spaced to that (`FIXED_WIDTHS`).
 
 ### Client
 
@@ -492,10 +515,14 @@ a document's colors are chosen against its paper.
   under the closed card until it is scrolled up.
 - **Large documents.** The client fetches, diffs and pages the whole tab. Nothing caps a tab's
   size or keeps only the text around each edit.
-- **Page breaks are close, not Google's.** A sheet ends where the browser's line breaking and
-  the measured rules above put it. A line that fits by a pixel in one and not the other moves a
-  paragraph across a page, so a break can differ from the editor's by a line, and more in a
-  font whose measures Google Docs overrides and `DOCS_MEASURES` does not know.
+- **Page breaks follow measured rules, not documented ones.** A sheet ends where the browser's
+  line breaking and the rules above put it, which matched the editor on the documents compared.
+  A line that fits by a fraction of a pixel in one and not the other still moves a paragraph
+  across a page, and that is likeliest where the rules are assumed or unmeasured: a space
+  below larger than the next space above, tables, columns, footnotes, a font the browser
+  swaps for another, and a header the Docs API does not return.
+- **A full-width inline image** is drawn 2px further right by Google Docs than here, and the
+  place of a tethered object is not rounded to a whole pixel.
 - **Text wraps an image on one side.** Google Docs runs text down both sides of an image set in
   the middle of a column; here it keeps to the wider side.
 - **Tab stops** are drawn at the default spacing, not at the stops a paragraph sets.
@@ -541,8 +568,8 @@ a document's colors are chosen against its paper.
   per refresh. A combined read would halve that and widen the session API.
 - **Mobile.** Auto-open and the reopen button are desktop-only.
 - **Google Docs:** comments and suggestions in the preview; bookmark links; text on both sides
-  of a wrapped image; a paragraph's own tab stops; more families in `DOCS_MEASURES` as documents
-  that need them turn up.
+  of a wrapped image; a paragraph's own tab stops; the width of more families only Google
+  hands out (`FIXED_WIDTHS`) as documents that need them turn up.
 - **Google Docs, found by review and left:**
   - *The drawing is stored inside the tab's snapshot*, which it grows by about two thirds
     (measured: 313 KB to 530 KB for an 83,000-character tab), and is built on every snapshot

@@ -45,7 +45,7 @@ describe("a Google Doc tab's drawing", () => {
   it("sets a header and a footer where Google Docs does when the document says nowhere", () => {
     let unset = docTabToMarkdown({ ...buildTab([{ runs: ["Body\n"] }]), documentStyle: { marginHeader: pt(36), marginFooter: pt(36) } });
     // Google Docs ignores both margins until the document is told to use them.
-    expect(unset.drawing.sections[0]).toMatchObject({ margins: { header: 5, footer: -3.6, top: 72 }, headerGap: 6 });
+    expect(unset.drawing.sections[0]).toMatchObject({ margins: { header: 5.25, footer: -3.6, top: 72 }, headerGap: 5.25 });
 
     let custom = docTabToMarkdown({
       ...buildTab([{ runs: ["Body\n"] }]),
