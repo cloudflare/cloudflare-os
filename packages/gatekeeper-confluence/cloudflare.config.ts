@@ -5,7 +5,7 @@ import {
 export default defineGadgetsWorker({
   name: "gatekeeper-confluence",
   entrypoint: ".wrangler/validate/src/confluence.ts",
-  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
   observability: OBSERVABILITY,
 });
 

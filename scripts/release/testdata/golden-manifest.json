@@ -101,7 +101,8 @@
       ],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [
         {
@@ -538,7 +539,8 @@
       "bindings": [],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [],
       "installable": true,
@@ -643,7 +645,8 @@
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
-        "global_fetch_strictly_public"
+        "global_fetch_strictly_public",
+        "nodejs_als"
       ],
       "inputs": [],
       "installable": true,
@@ -686,7 +689,8 @@
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
         "allow_irrevocable_stub_storage",
-        "global_fetch_strictly_public"
+        "global_fetch_strictly_public",
+        "nodejs_als"
       ],
       "inputs": [],
       "installable": true,
@@ -831,7 +835,8 @@
       ],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [
         {
@@ -1020,7 +1025,8 @@
       ],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [
         {
@@ -1088,7 +1094,8 @@
       ],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [
         {
@@ -1207,7 +1214,8 @@
       ],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [],
       "installable": true,
@@ -1333,7 +1341,8 @@
       ],
       "compatibilityDate": "2026-09-04",
       "compatibilityFlags": [
-        "allow_irrevocable_stub_storage"
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
       ],
       "inputs": [
         {

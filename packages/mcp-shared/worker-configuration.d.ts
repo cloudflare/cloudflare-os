@@ -1,5 +1,5 @@
 /* eslint-disable */
-// Runtime types generated with workerd@1.20261113.1 2026-09-04 allow_irrevocable_stub_storage,global_fetch_strictly_public
+// Runtime types generated with workerd@1.20261113.1 2026-09-04 allow_irrevocable_stub_storage,global_fetch_strictly_public,nodejs_als
 // Begin runtime types
 /*! *****************************************************************************
 Copyright (c) Cloudflare. All rights reserved.
