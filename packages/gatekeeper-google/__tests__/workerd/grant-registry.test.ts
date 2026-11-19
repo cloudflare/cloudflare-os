@@ -396,6 +396,33 @@ describe("Google grants shared by several connections", () => {
     expect(await later.refresh()).toBe("access-later");
   });
 
+  it("reads the Google account of a revocation to try again that none was known for", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    // Made before the registry, with no access token to say whose it is.
+    const older = await storedAccount(google, "older", ada);
+    google.revocationFails = true;
+    await older.disconnect();
+    google.revocationFails = false;
+
+    const later = await connection(google, "later", ada);
+    expect(await older.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await older.isEmpty()).toBe(true);
+    expect(await later.refresh()).toBe("access-later");
+
+    // One Google refuses for good holds no grant, and is not revoked.
+    const dead = await storedAccount(google, "dead", ada);
+    google.revocationFails = true;
+    await dead.disconnect();
+    google.revocationFails = false;
+    google.refused.set("refresh-dead", null);
+    expect(await dead.alarm()).toBe(true);
+    expect(google.revoked).toEqual([]);
+    expect(await dead.isEmpty()).toBe(true);
+  });
+
   // An answer Google gave about the credentials a reconnect replaced says nothing of the new ones.
   it("answers for the credentials a reconnect installed while an idle holder's check was out", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
