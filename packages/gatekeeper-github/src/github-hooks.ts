@@ -150,8 +150,9 @@ export class GitHubHookDriver extends DurableObject<Env> {
    * it.
    */
   #viewerReads = new SerialTaskQueue();
-  #hooks = new HookRegistry<GitHubEventHookTarget, GitHubWebhookEvent, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped a GitHub event after repeated delivery failures", { event: "hooks.delivery.dropped" });
+  #hooks = new HookRegistry<GitHubEventHookTarget, GitHubWebhookEvent, Registration>(this.ctx.storage.kv, {
+    onRunReport: report => logger.warn("GitHub hook deliveries failed, timed out or were dropped",
+      { event: "hooks.delivery.report", ...report }),
   });
 
   async register(key: string, userObjectId: string, registration: Registration,

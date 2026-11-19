@@ -8,7 +8,8 @@
 
 import type { RpcStub, RpcTarget } from "cloudflare:workers";
 import type { ApprovalQueue, HookInitiator } from "@gadgets/workshop-shared/gatekeeper";
-import { HookDeliveryQueue, disposeStubs } from "./hook-delivery-queue";
+import { untilAborted, within } from "./deadline";
+import { DeliveryTimeout, HookDeliveryQueue, disposeStubs, type RunReport } from "./hook-delivery-queue";
 import type { KvScannable } from "./kv";
 
 /** What a hook's delivery stub reaches: its binding's facet, narrowed to delivering. */
@@ -27,6 +28,8 @@ export type HookCapabilities<Hook extends RpcTarget, Message> = {
 };
 
 type StartHook<Hook extends RpcTarget> = HookInitiator<Hook>["startHook"];
+/** A started firing as a delivery receives it: its own to dispose. */
+type Firing<Hook extends RpcTarget> = Disposable & Awaited<ReturnType<StartHook<Hook>>>;
 
 /**
  * A hook's stored stubs as a delivery calls them: the interfaces themselves, since Worker RPC's
@@ -36,19 +39,21 @@ type StartHook<Hook extends RpcTarget> = HookInitiator<Hook>["startHook"];
 type Held<Hook extends RpcTarget, Message> = {
   [Stub in keyof HookCapabilities<Hook, Message>]: {
     delivery: Disposable & Pick<HookDelivery<Hook, Message>, "deliver">;
-    initiator: { startHook(...args: Parameters<StartHook<Hook>>): Promise<Disposable & Awaited<ReturnType<StartHook<Hook>>>> };
+    initiator: { startHook(...args: Parameters<StartHook<Hook>>): Promise<Firing<Hook>> };
   }[Stub];
 };
 
 const REGISTRATIONS = "reg:";
 const CAPABILITIES = "caps:";
+/** How long a delivery waits for its firing: `startHook()` is one KV read in the kernel. */
+const DISPATCH_BY_MS = 30_000;
 
 /**
  * A driver's enabled hooks, stored under `reg:{key}` (what the driver filters events by) and
  * `caps:{key}` (the hook's stubs), with their `HookDeliveryQueue`. Every method but `run()` is
  * synchronous, so a driver can change its own records and a hook's in one turn. The driver owns its
  * alarm, as with the queue: it brings it forward after `enqueue()`, calls `run()` from it, and sets
- * it for `nextDue()` afterwards.
+ * or deletes it for `nextDue()` afterwards.
  *
  * The records live only in storage, so a driver may read them itself, and may delete all of its
  * storage at once, as on disconnecting, passing each `caps:{key}` to `disposeStubs()`
@@ -60,7 +65,9 @@ const CAPABILITIES = "caps:";
  *
  * @example
  * ```ts
- * #hooks = new HookRegistry<EventHook, Event, Registration>(this.ctx.storage.kv, () => logger.warn("dropped an event"));
+ * #hooks = new HookRegistry<EventHook, Event, Registration>(this.ctx.storage.kv, {
+ *   onRunReport: report => logger.warn("hook deliveries failed", { event: "hooks.delivery.report", ...report }),
+ * });
  *
  * async ingest(event: Event) {
  *   for (const [key, registration] of this.#hooks.entries()) {
@@ -70,9 +77,15 @@ const CAPABILITIES = "caps:";
  * }
  *
  * async alarm() {
- *   await this.#hooks.run(Date.now());
- *   const next = this.#hooks.nextDue();
- *   if (next !== undefined) await this.ctx.storage.setAlarm(next);
+ *   await this.ctx.storage.setAlarm(Date.now() + MINUTE_MS); // the retry if this handler fails or is killed
+ *   try {
+ *     await this.#hooks.run(Date.now());
+ *     const next = this.#hooks.nextDue();
+ *     if (next !== undefined) await this.ctx.storage.setAlarm(next);
+ *     else await this.ctx.storage.deleteAlarm();
+ *   } catch (error) {
+ *     logger.error("hook driver alarm failed", { event: "hooks.alarm.failed", error }); // the fallback alarm stands
+ *   }
  * }
  * ```
  */
@@ -83,11 +96,12 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
 
   /**
    * @param kv The driver's `ctx.storage.kv`.
-   * @param onDrop Called once for each message dropped after repeated delivery failures.
+   * @param options.onRunReport Called once at the end of a run in which a delivery failed or timed
+   * out or a message was dropped, as `HookDeliveryQueue` reports it.
    */
-  constructor(kv: KvScannable, onDrop: () => void) {
+  constructor(kv: KvScannable, options: { onRunReport: (report: RunReport) => void }) {
     this.#kv = kv;
-    this.#queue = new HookDeliveryQueue<Message>(kv, onDrop);
+    this.#queue = new HookDeliveryQueue<Message>(kv, options);
   }
 
   /**
@@ -134,11 +148,12 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
   }
 
   /**
-   * Deliver what has come due, as `HookDeliveryQueue.run()` does. A call made while one is in flight
-   * joins it, as two runs would each deliver the same messages.
+   * Deliver what has come due, as `HookDeliveryQueue.run()` does: a firing that hasn't started
+   * within 30 s is given up on as a dispatch timeout. A call made while one is in flight joins it,
+   * as two runs would each deliver the same messages.
    */
   run(now: number): Promise<void> {
-    return this.#running ??= this.#queue.run(now, (key, message) => this.#deliver(key, message))
+    return this.#running ??= this.#queue.run(now, (key, message, signal) => this.#deliver(key, message, signal))
       .finally(() => { this.#running = undefined; });
   }
 
@@ -147,17 +162,23 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
     return this.#queue.nextDue();
   }
 
-  async #deliver(key: string, message: Message): Promise<void> {
+  async #deliver(key: string, message: Message, signal: AbortSignal): Promise<void> {
     // A disabled hook's rows are finished, and it gets no new ones.
     const capabilities = this.#kv.get<Held<Hook, Message>>(CAPABILITIES + key);
     if (!capabilities) return;
+    let firing: Promise<Firing<Hook>> | undefined;
     try {
       // A refused firing is retried like a failed one, being indistinguishable from a transient
       // failure; disabling the hook ends the retries. Awaited, not pipelined: workerd can't pass a
-      // property of a pending result into another call.
-      using firing = await capabilities.initiator.startHook();
-      await capabilities.delivery.deliver(firing.callback, firing.approvalQueue, message);
+      // property of a pending result into another call. Started inside the `try`, so a throw still
+      // releases the stubs.
+      firing = capabilities.initiator.startHook();
+      const started = await within(firing, DISPATCH_BY_MS, () => new DeliveryTimeout("dispatch"), signal);
+      await untilAborted(capabilities.delivery.deliver(started.callback, started.approvalQueue, message), signal);
     } finally {
+      // By T_kit at the latest. A firing that missed the cutoff is never handed on, only released
+      // when it arrives.
+      firing?.then(started => { try { started[Symbol.dispose](); } catch {} }, () => {});
       disposeStubs(capabilities);
     }
   }

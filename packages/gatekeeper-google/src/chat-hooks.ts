@@ -99,8 +99,9 @@ const DISCONNECTED = "This Google account has been disconnected.";
 export class ChatHookDriver extends DurableObject<Env> {
   /** Subscription creations in flight, by account, which concurrent enables and renewals join. */
   #subscribing = new SingleFlight();
-  #hooks = new HookRegistry<ChatMessageHookTarget, ChatMessageRaw, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped a Chat message after repeated delivery failures", { event: "chat.hooks.delivery.dropped" });
+  #hooks = new HookRegistry<ChatMessageHookTarget, ChatMessageRaw, Registration>(this.ctx.storage.kv, {
+    onRunReport: report => logger.warn("Chat hook deliveries failed, timed out or were dropped",
+      { event: "chat.hooks.delivery.report", ...report }),
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {

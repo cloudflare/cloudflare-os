@@ -102,7 +102,7 @@ export class FixtureHookDelivery extends WorkerEntrypoint {
 
 /** A driver's registry over a real DO's storage, which hands back a fresh stub on every read. */
 export class HookHost extends DurableObject {
-  readonly #hooks = new HookRegistry<FixtureHook, string, unknown>(this.ctx.storage.kv, () => {});
+  readonly #hooks = new HookRegistry<FixtureHook, string, unknown>(this.ctx.storage.kv, { onRunReport: () => {} });
   readonly #received: string[] = [];
 
   /** Enables `key` in a transaction, with a registration storage refuses unless `storable`. */

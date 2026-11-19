@@ -242,7 +242,8 @@ One `OutlookHookDriver` Durable Object per connection and mailbox:
   at most a read;
 - checks each notification's `clientState` against its secret before acting;
 - queues each message for each hook on that folder in the kit's `HookDeliveryQueue`, keyed by
-  message ID.
+  message ID, whose `attempts` counts the attempts started, each stored before its call and given
+  up on after 4 minutes.
 
 Each delivery goes through the binding's own `[restore]` stub, which re-reads the message and checks
 it with the binding's guard, so the driver's own filtering is only a prefilter. The notification
