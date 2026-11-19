@@ -7,8 +7,9 @@ import { createExecutionContext } from "cloudflare:test";
 import { DurableObject, RpcStub, RpcTarget, env } from "cloudflare:workers";
 import type { ApiShape } from "@gadgets/api-schema/schema";
 import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
+import { ADMIN_WRITE_ARGS, type AdminWriteAction } from "@gadgets/workshop-shared/api";
 import {
-  matchesResourceUrlPattern, type ObservationDescription,
+  type ActionDescription, matchesResourceUrlPattern, type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it, vi } from "vitest";
 import { ADMIN_SUBRESOURCE, forwarderFor } from "../../src/forward.js";
@@ -94,6 +95,10 @@ function workshop() {
       if (this.refuseObservations) throw new Error("The approval queue refused this observation.");
     }
 
+    async submitAction(_action: number, description: ActionDescription): Promise<void> {
+      log.push(`submit ${description.actionKind?.tag}`);
+    }
+
     [Symbol.dispose](): void {
       this.disposed++;
     }
@@ -136,10 +141,18 @@ function sample(shape: ApiShape): unknown {
   }
 }
 
-/** Arguments that fit `service.name`: one for each required parameter. */
+/**
+ * Arguments that fit `service.name`: one for each required parameter. A write's are those its
+ * sample action takes, which the schema does not say.
+ */
 function sampleArguments(service: string, name: string): unknown[] {
   const method = ADMIN_SCHEMA.services[service]!.methods.find((candidate) => candidate.name === name)!;
-  return method.params.filter((param) => !param.optional).map((param) => sample(param.type));
+  const args = method.params.filter((param) => !param.optional).map((param) => sample(param.type));
+  if (service === ROOT && name === "writeWorkspace") {
+    const { required } = ADMIN_WRITE_ARGS[args[1] as AdminWriteAction];
+    args[2] = Object.fromEntries(required.map((argument) => [argument, 1]));
+  }
+  return args;
 }
 
 /** An account and the vendor, as the Workshop reaches them: through the Worker's exports. */
@@ -147,6 +160,7 @@ const account = () => createExecutionContext().exports.AdminAccount({});
 const vendor = () => createExecutionContext().exports.GatekeeperVendor({});
 
 const READS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "read");
+const ACTS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "act");
 
 describe("the facet", () => {
   it("describes the binding", async () => {
@@ -169,17 +183,8 @@ describe("the facet", () => {
     expect(HAND_WRITTEN_TYPES).not.toMatch(/^export interface (AdminApi|AdminWorkspaceView) /m);
   });
 
-  it("has no action: none is auto-approvable, and each entry point refuses", async () => {
-    const gatekeeper = facet();
-    expect(await gatekeeper.getAutoApprovableActions()).toEqual([]);
-    expect(await gatekeeper.getAgentCatalog()).toBeNull();
-    const refusals = await Promise.all([
-      rejection(gatekeeper.applyAction(7, new RpcStub(new (class extends RpcTarget {})()) as never)),
-      rejection(gatekeeper.rejectAction(7)),
-      rejection(gatekeeper.revertAction(7)),
-    ]);
-    expect(refusals.map((refusal) => refusal.message))
-        .toEqual(Array(3).fill("The admin gatekeeper has no action 7."));
+  it("has no agent catalog", async () => {
+    expect(await facet().getAgentCatalog()).toBeNull();
   });
 
   it("allows every observer it is asked about for its own subresource, none for another, and keeps no observer state", async () => {
@@ -542,12 +547,41 @@ describe("a view a session opened", () => {
 });
 
 describe("what a session refuses", () => {
+  it("to run an act method: it is queued, and nothing is lent, observed or forwarded", async () => {
+    const { log, admin, queue } = workshop();
+    using session = await openSession(queue);
+
+    expect(ACTS.toSorted()).toEqual(["requestContentAccess", "writeWorkspace"]);
+    for (const name of ACTS) {
+      expect(await session[name]!(...sampleArguments(ROOT, name)), name).toBeUndefined();
+    }
+
+    expect(log.toSorted()).toEqual(
+        ["submit content-access-request", "submit workspace-write-request"]);
+    expect(admin.calls).toEqual([]);
+    expect(queue.observations).toEqual([]);
+  });
+
+  it("an act method on a session that was given no actions", async () => {
+    const { log, queue } = workshop();
+    using session = new (forwarderFor(ROOT))(
+        new RpcStub(queue) as never, { restricted: true, subresource: ADMIN_SUBRESOURCE },
+    ) as unknown as Session;
+
+    for (const name of ACTS) {
+      expect((await rejection(session[name]!(...sampleArguments(ROOT, name)))).message, name)
+          .toBe(`AdminApi.${name}() has no action defined for it.`);
+    }
+
+    expect(log).toEqual([]);
+  });
+
   it("an omitted method, and every name the schema does not hold", async () => {
     const { log, queue } = workshop();
     using session = await openSession(queue);
 
     // Every name on an RPC stub is callable, so only the call's rejection says it is not served.
-    for (const name of ["setSiteName", "getUpdateStatus", "checkForUpdates", "serving",
+    for (const name of ["setSiteName", "getUpdateStatus", "approveContentAccess", "serving",
       "#call", "#lend", "#queue", "describe"]) {
       expect((await rejection(session[name]!("x"))).message, name).not.toBe("did not reject");
     }
@@ -586,6 +620,9 @@ describe("disposal", () => {
     view[Symbol.dispose]();
     await vi.waitFor(() => expect(views[0]!.disposed).toBe(1));
     expect([queue.disposed, admin.disposed]).toEqual([0, 0]);
+    // A view carries what it observes with, and nothing to queue an action through.
+    expect((await rejection(view.writeWorkspace!("workspace-1", "restartWorkspace", {}, "x")))
+        .message).not.toBe("did not reject");
 
     session[Symbol.dispose]();
     await vi.waitFor(() => expect([queue.disposed, admin.disposed]).toEqual([1, 1]));
