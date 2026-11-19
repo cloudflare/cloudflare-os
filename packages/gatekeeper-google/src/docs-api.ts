@@ -46,19 +46,61 @@ export type GoogleDocsTab = {
   /** Objects placed in the text, by the ID an `inlineObjectElement` names. */
   inlineObjects?: Record<string, { inlineObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
   /** Objects tethered to a paragraph, by the ID its `positionedObjectIds` names. */
-  positionedObjects?:
-    Record<string, { positionedObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
+  positionedObjects?: Record<string, {
+    positionedObjectProperties?: { embeddedObject?: EmbeddedObject; positioning?: Positioning };
+  }>;
   /** What each named style (`NORMAL_TEXT`, `TITLE`, `HEADING_1`, ...) sets. */
   namedStyles?: {
     styles?: { namedStyleType?: string; textStyle?: TextStyle; paragraphStyle?: ParagraphStyle }[];
   };
-  /** The tab's page size and margins. */
-  documentStyle?: {
-    pageSize?: { width?: Dimension };
-    marginTop?: Dimension;
-    marginRight?: Dimension;
-    marginLeft?: Dimension;
+  /** What the top of a page repeats, by the ID a document or section style names. */
+  headers?: Record<string, { content?: StructuralElement[] }>;
+  /** What the foot of a page repeats, by the ID a document or section style names. */
+  footers?: Record<string, { content?: StructuralElement[] }>;
+  /** Each footnote's text, by the ID a `footnoteReference` names. */
+  footnotes?: Record<string, { content?: StructuralElement[] }>;
+  /** The tab's page, and what its sections take where they set nothing of their own. */
+  documentStyle?: SectionStyle & {
+    pageSize?: { width?: Dimension; height?: Dimension };
+    background?: { color?: Color };
+    /** Whether even pages take the `evenPage` header and footer. */
+    useEvenPageHeaderFooter?: boolean;
+    useCustomHeaderFooterMargins?: boolean;
+    /** `PAGELESS` for a document that is one sheet as long as its content. */
+    documentFormat?: { documentMode?: string };
   };
+}
+
+/** Where a positioned object sits against the paragraph it is tethered to, and how text meets it. */
+export type Positioning = {
+  /** `WRAP_TEXT`, `BREAK_LEFT`, `BREAK_RIGHT`, `BREAK_LEFT_RIGHT`, `IN_FRONT_OF_TEXT` or `BEHIND_TEXT`. */
+  layout?: string;
+  leftOffset?: Dimension;
+  topOffset?: Dimension;
+}
+
+/** What a section sets: a document's style holds the same fields for its sections to fall back on. */
+export type SectionStyle = {
+  marginTop?: Dimension;
+  marginBottom?: Dimension;
+  marginRight?: Dimension;
+  marginLeft?: Dimension;
+  marginHeader?: Dimension;
+  marginFooter?: Dimension;
+  defaultHeaderId?: string;
+  defaultFooterId?: string;
+  firstPageHeaderId?: string;
+  firstPageFooterId?: string;
+  evenPageHeaderId?: string;
+  evenPageFooterId?: string;
+  useFirstPageHeaderFooter?: boolean;
+  pageNumberStart?: number;
+  flipPageOrientation?: boolean;
+  /** `CONTINUOUS` or `NEXT_PAGE`. */
+  sectionType?: string;
+  columnProperties?: { width?: Dimension; paddingEnd?: Dimension }[];
+  /** `BETWEEN_EACH_COLUMN` draws a line between columns. */
+  columnSeparatorStyle?: string;
 }
 
 /** A length. Google leaves out a `magnitude` of zero. */
@@ -68,9 +110,34 @@ export type Dimension = { magnitude?: number; unit?: string };
 export type EmbeddedObject = {
   /** Alt text. */
   description?: string;
+  title?: string;
   size?: { width?: { magnitude?: number }; height?: { magnitude?: number } };
+  marginTop?: Dimension;
+  marginRight?: Dimension;
+  marginBottom?: Dimension;
+  marginLeft?: Dimension;
+  embeddedObjectBorder?: Border & { propertyState?: string };
   /** Present only for an image, whose `contentUri` serves its bytes for a short while. */
-  imageProperties?: { contentUri?: string };
+  imageProperties?: {
+    contentUri?: string;
+    /** Each a fraction of the image's own size cut from that edge. */
+    cropProperties?: {
+      offsetLeft?: number; offsetRight?: number; offsetTop?: number; offsetBottom?: number;
+    };
+    /** Clockwise, in radians. */
+    angle?: number;
+    transparency?: number;
+  };
+}
+
+/** A line drawn at an edge: of a paragraph, a table cell or an object. */
+export type Border = {
+  color?: Color;
+  width?: Dimension;
+  /** `SOLID`, `DOT` or `DASH`. */
+  dashStyle?: string;
+  /** The space between a paragraph's border and its text. */
+  padding?: Dimension;
 }
 
 /** Named ranges grouped by name, as `documents.get` returns them. */
@@ -93,6 +160,13 @@ export type NestingLevel = {
   startNumber?: number;
   /** If set, this is an unordered (bullet) list level. e.g. "●" */
   glyphSymbol?: string;
+  /** The marker's text, with `%0` to `%8` standing for the number at each level. */
+  glyphFormat?: string;
+  /** `START`, `CENTER` or `END`: how the marker sits in the space before the text. */
+  bulletAlignment?: string;
+  indentFirstLine?: Dimension;
+  indentStart?: Dimension;
+  textStyle?: TextStyle;
 }
 
 /** A structural element in the document body. */
@@ -100,9 +174,9 @@ export type StructuralElement = {
   startIndex: number;
   endIndex: number;
   paragraph?: Paragraph;
-  sectionBreak?: {};
+  sectionBreak?: { sectionStyle?: SectionStyle };
   table?: Table;
-  tableOfContents?: {};
+  tableOfContents?: { content?: StructuralElement[] };
 }
 
 // The collections in the table types below are optional: the API omits an empty one from its
@@ -118,13 +192,20 @@ export type Table = {
 }
 
 /** One edge of a table cell. */
-export type TableCellBorder = { color?: Color; width?: Dimension };
+export type TableCellBorder = Border;
 
 /** One row in a Google Docs table. */
 export type TableRow = {
   startIndex: number;
   endIndex: number;
   tableCells?: TableCell[];
+  tableRowStyle?: {
+    minRowHeight?: Dimension;
+    /** Whether the row is repeated at the top of each page the table reaches. */
+    tableHeader?: boolean;
+    /** Whether the row is kept whole on one page. */
+    preventOverflow?: boolean;
+  };
 }
 
 /** One table cell, whose contents use the same recursive structure as the document body. */
@@ -142,6 +223,10 @@ export type TableCell = {
     borderRight?: TableCellBorder;
     borderBottom?: TableCellBorder;
     borderLeft?: TableCellBorder;
+    paddingTop?: Dimension;
+    paddingRight?: Dimension;
+    paddingBottom?: Dimension;
+    paddingLeft?: Dimension;
   };
 }
 
@@ -167,12 +252,29 @@ export type ParagraphStyle = {
   spaceBelow?: Dimension;
   /** `COLLAPSE_LISTS` leaves out the space between this paragraph and an item of its list beside it. */
   spacingMode?: string;
+  /** `RIGHT_TO_LEFT` for a paragraph that starts at the right. */
+  direction?: string;
+  indentStart?: Dimension;
+  indentEnd?: Dimension;
+  indentFirstLine?: Dimension;
+  keepLinesTogether?: boolean;
+  keepWithNext?: boolean;
+  avoidWidowAndOrphan?: boolean;
+  pageBreakBefore?: boolean;
+  borderTop?: Border;
+  borderBottom?: Border;
+  borderLeft?: Border;
+  borderRight?: Border;
+  borderBetween?: Border;
+  tabStops?: { offset?: Dimension; alignment?: string }[];
 }
 
 /** Present on paragraphs that are list items. */
 export type Bullet = {
   listId: string;
   nestingLevel?: number;
+  /** What this item's marker sets over its list level's style. */
+  textStyle?: TextStyle;
 }
 
 /** An element within a paragraph (text run, smart chip, horizontal rule, etc.). */
@@ -220,7 +322,11 @@ type GoogleDocsLink =
 export type TextStyle = {
   bold?: boolean;
   italic?: boolean;
+  underline?: boolean;
   strikethrough?: boolean;
+  smallCaps?: boolean;
+  /** `SUPERSCRIPT` or `SUBSCRIPT`. */
+  baselineOffset?: string;
   link?: GoogleDocsLink;
   fontSize?: Dimension;
   weightedFontFamily?: { fontFamily?: string; weight?: number };
@@ -231,6 +337,26 @@ export type TextStyle = {
 
 /** A color, absent when none is set. Channels run from 0 to 1, and Google leaves out a zero. */
 export type Color = { color?: { rgbColor?: { red?: number; green?: number; blue?: number } } };
+
+function internalDocsDestination(kind: "bookmark" | "heading", id: string, tabId?: string): string {
+  let tab = tabId ? `?tab=${encodeURIComponent(tabId)}` : "";
+  return `${tab}#${kind}=${encodeURIComponent(id)}`;
+}
+
+/** A link as a tab's Markdown writes its destination: an address, or a place in the document. */
+export function docsLinkDestination(link: TextStyle["link"]): string | undefined {
+  if (!link) return undefined;
+  if ("url" in link) return link.url;
+  if ("tabId" in link) return `?tab=${encodeURIComponent(link.tabId)}`;
+  if ("bookmark" in link) {
+    return internalDocsDestination("bookmark", link.bookmark.id, link.bookmark.tabId);
+  }
+  if ("heading" in link) {
+    return internalDocsDestination("heading", link.heading.id, link.heading.tabId);
+  }
+  if ("bookmarkId" in link) return internalDocsDestination("bookmark", link.bookmarkId);
+  return internalDocsDestination("heading", link.headingId);
+}
 
 type GoogleDocsResponse = Pick<
   GoogleDocsDocument, "documentId" | "title" | "revisionId"
@@ -279,8 +405,10 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
       seen.add(tabId);
 
       if (!documentTab || typeof documentTab !== "object") throw new Error(INVALID_TAB);
-      let { body, lists, namedRanges, inlineObjects, positionedObjects, namedStyles, documentStyle } =
-        documentTab as Record<string, unknown>;
+      let {
+        body, lists, namedRanges, inlineObjects, positionedObjects, namedStyles, documentStyle,
+        headers, footers, footnotes,
+      } = documentTab as Record<string, unknown>;
       // A real body always holds at least a section break, and `bodyEndIndex` arithmetic assumes
       // it: an empty one would place an append at index -1.
       if (!body || typeof body !== "object" || !("content" in body) ||
@@ -303,6 +431,9 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
         positionedObjects: tabCollection<GoogleDocsTab["positionedObjects"]>(positionedObjects),
         namedStyles: tabCollection<GoogleDocsTab["namedStyles"]>(namedStyles),
         documentStyle: tabCollection<GoogleDocsTab["documentStyle"]>(documentStyle),
+        headers: tabCollection<GoogleDocsTab["headers"]>(headers),
+        footers: tabCollection<GoogleDocsTab["footers"]>(footers),
+        footnotes: tabCollection<GoogleDocsTab["footnotes"]>(footnotes),
       });
 
       if (childTabs === undefined) continue;

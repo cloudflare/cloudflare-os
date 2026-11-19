@@ -670,6 +670,16 @@ folder.move("file-1", "folder-9");
 `)).toEqual([]);
   });
 
+  it("declares what renders a document apart from its bundle, which it compiles against", () => {
+    // It declares every type it names, so it has no module prefix.
+    let rendering = source("docs-rendering-types.txt");
+    expect(docBundle()).toContain("getRenderingTypes(): Promise<string>;");
+    expect(docBundle()).not.toContain("readDrawing(tabId");
+    expect(rendering).toContain("readDrawing(tabId");
+    expect(rendering).not.toContain("import ");
+    expect(compileAgentTypes([docBundle(), rendering].join("\n"))).toEqual([]);
+  });
+
   it("points each Sheets and Slides session at its comments with a read-only Drive URL", () => {
     for (const [name, bundle] of [
       ["sheets-types.d.ts", sheetsBundle], ["slides-types.d.ts", slidesBundle],

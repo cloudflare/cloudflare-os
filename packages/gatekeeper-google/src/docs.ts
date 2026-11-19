@@ -37,6 +37,8 @@ import type { DocSuggestion, DriveComment, DriveCommentReply } from "./drive-typ
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
+import DOCS_RENDERING_TYPES_CODE from "./docs-rendering-types.txt";
+import type { GoogleDocDrawing, GoogleDocRenderingReads } from "./docs-rendering-types";
 import COMMENT_TYPES_CODE from "./comment-types.txt";
 import DOCS_PREVIEW_CLIENT from "./previews/docs/client.txt";
 import { SHARED_PREVIEW_FILES } from "./previews/shared-files";
@@ -696,7 +698,8 @@ type GoogleDocSelectedContent = GoogleDocSimulatedContent & {
  * GoogleDocEditSessionImpl, with no comment method, read and write.
  */
 @validateRpc()
-export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
+export class GoogleDocSessionImpl extends RpcTarget
+    implements GoogleDocSession, GoogleDocRenderingReads {
   #docsApi: GoogleDocReader;
   #driveApi: DriveApi;
   #documentId: string;
@@ -1039,7 +1042,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
   /** The tab a read of what is saved names: one Google has, or an added one, empty until it is. */
   #savedTab(
     snapshot: GoogleDocSnapshot, tabId: string,
-    operation: "getStyles" | "listImages" | "readImage",
+    operation: "getStyles" | "readDrawing" | "listImages" | "readImage",
   ): GoogleDocTabSnapshot {
     let { tabs } = this.#replay(snapshot);
     return resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
@@ -1055,6 +1058,23 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
       description: "Read the styles of one tab of the document.",
     });
     return tab.styles;
+  }
+
+  async readDrawing(tabId: string): Promise<GoogleDocDrawing> {
+    let tab = await this.#readSettled(taken => this.#savedTab(taken, tabId, "readDrawing"), tab => ({
+      title: "Read Google Doc drawing",
+      description: `Read tab ${googleDocTabLabel(tab)} as Google Docs draws it.`,
+    }), {
+      // As in getContent(), the error says whether that tab exists.
+      title: "Read Google Doc drawing",
+      description: "Read one tab of the document as Google Docs draws it.",
+    });
+    return tab.drawing;
+  }
+
+  async getRenderingTypes(): Promise<string> {
+    // The same text for every document, saying nothing of this one, so no read of it is reported.
+    return DOCS_RENDERING_TYPES_CODE;
   }
 
   async listImages(tabId: string): Promise<GoogleDocImage[]> {
@@ -1073,7 +1093,8 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
       description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
     }), DOC_IMAGES_OBSERVATION);
     let contentUri = (tab: GoogleDocTabSnapshot) => {
-      let uri = tab.images.find(image => image.id === imageId)?.contentUri;
+      // An image of the body's text, or one a drawing names, as a header's is.
+      let uri = tab.images.find(image => image.id === imageId)?.contentUri ?? tab.imageUris[imageId];
       if (!uri) {
         throw new Error(
           `readImage: tab "${tab.tabId}" has no readable image with ID "${imageId}". ` +

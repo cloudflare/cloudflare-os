@@ -2,10 +2,13 @@
 // with source mapping to allow Markdown-level edits to be translated back
 // to Google Docs batchUpdate operations.
 
-import type {
-  EmbeddedObject, GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table, TableCell,
-  TextStyle,
+import {
+  docsLinkDestination,
+  type EmbeddedObject, type GoogleDocsTab, type Paragraph, type ParagraphElement,
+  type StructuralElement, type Table, type TableCell, type TextStyle,
 } from "./docs-api";
+import { docTabDrawing, type DocBlockPlace } from "./docs-drawing";
+import type { GoogleDocDrawing } from "./docs-rendering-types";
 import { docTabStyles, drawnTableCells } from "./docs-styles";
 import type { GoogleDocStyles } from "./docs-types";
 
@@ -40,6 +43,10 @@ export type DocTabSnapshot = {
   images: DocTabImage[];
   /** How the tab looks beyond what `markdown` says. */
   styles: GoogleDocStyles;
+  /** The tab as Google Docs draws it. */
+  drawing: GoogleDocDrawing;
+  /** Where Google serves, for a short while, each image `drawing` names that has bytes. */
+  imageUris: Record<string, string>;
 }
 
 /** An image, drawing or chart that `markdown` shows as an `[Image]` placeholder. */
@@ -165,6 +172,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   let blocks: BlockMapping[] = [];
   let starts: Parameters<typeof docTabStyles>[2] = [];
   let tables: Parameters<typeof docTabStyles>[3] = [];
+  let places = new Map<StructuralElement, DocBlockPlace>();
   let protectedRanges: MarkdownRange[] = [];
   let previousListId: string | undefined;
   let listNumbers = new Map<string, number[]>();
@@ -182,6 +190,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
       let mdStart = writer.length;
       if (writer.length > 0) writer.append("\n");
       if (elem.table) tables.push({ mdStart: writer.length, table: elem.table });
+      places.set(elem, { mdStart: writer.length });
       writer.append(`${structure}\n`);
       protectedRanges.push({ mdStart, mdEnd: writer.length });
       previousListId = undefined;
@@ -221,6 +230,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     }
     let mdStart = writer.length;
     starts.push({ mdStart, paragraph: para, segments });
+    places.set(elem, { mdStart, segments });
 
     // Paragraph prefix (heading markers, list markers, etc.).
     let prefix = getParagraphPrefix(para, listItem, markdownListNumber);
@@ -261,6 +271,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     bodyEndIndex,
     images: tabImages(tab, elements),
     styles: docTabStyles(tab, writer.text, starts, tables),
+    ...docTabDrawing(tab, writer.text, places),
   };
 }
 
@@ -298,25 +309,6 @@ function tabImages(
     }
   }
   return images;
-}
-
-function internalDocsDestination(kind: "bookmark" | "heading", id: string, tabId?: string): string {
-  let tab = tabId ? `?tab=${encodeURIComponent(tabId)}` : "";
-  return `${tab}#${kind}=${encodeURIComponent(id)}`;
-}
-
-function docsLinkDestination(link: TextStyle["link"]): string | undefined {
-  if (!link) return undefined;
-  if ("url" in link) return link.url;
-  if ("tabId" in link) return `?tab=${encodeURIComponent(link.tabId)}`;
-  if ("bookmark" in link) {
-    return internalDocsDestination("bookmark", link.bookmark.id, link.bookmark.tabId);
-  }
-  if ("heading" in link) {
-    return internalDocsDestination("heading", link.heading.id, link.heading.tabId);
-  }
-  if ("bookmarkId" in link) return internalDocsDestination("bookmark", link.bookmarkId);
-  return internalDocsDestination("heading", link.headingId);
 }
 
 /**
