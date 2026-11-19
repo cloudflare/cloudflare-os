@@ -22,7 +22,6 @@ const testState = vi.hoisted(() => ({
 }));
 
 vi.mock("./prepareChatAttachment", () => ({
-  MAX_CHAT_ATTACHMENT_TOTAL_BYTES: 5 * 1024 * 1024,
   prepareChatAttachment: async (file: File) => ({
     blob: testState.uploadBlob,
     mimeType: file.type,

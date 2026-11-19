@@ -2,11 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { RpcStub } from "capnweb";
 import type { ChatAttachmentHandle, Overseer } from "@gadgets/workshop-shared/api";
 import { reportIssue } from "../../../../errorReporting";
-import { formatAttachmentSize } from "../../attachmentFormatting";
-import {
-  MAX_CHAT_ATTACHMENT_TOTAL_BYTES,
-  prepareChatAttachment,
-} from "./prepareChatAttachment";
+import { prepareChatAttachment } from "./prepareChatAttachment";
 
 export const MAX_COMPOSER_ATTACHMENTS = 5;
 
@@ -119,16 +115,6 @@ export const useComposerAttachments = ({
       const { file, blob, mimeType } = result.value;
       if (attachmentsRef.current.length >= MAX_COMPOSER_ATTACHMENTS) {
         onErrorRef.current(`You can attach up to ${MAX_COMPOSER_ATTACHMENTS} attachments`);
-        continue;
-      }
-      const totalBytes = attachmentsRef.current.reduce(
-        (sum, attachment) => sum + attachment.blob.size,
-        0,
-      );
-      if (totalBytes + blob.size > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
-        onErrorRef.current(
-          `Attached files must total ${formatAttachmentSize(MAX_CHAT_ATTACHMENT_TOTAL_BYTES)} or less`,
-        );
         continue;
       }
 

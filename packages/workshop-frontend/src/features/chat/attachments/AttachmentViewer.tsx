@@ -8,7 +8,7 @@ import { ATTACHMENT_KIND_ICONS } from "./attachmentKindIcons";
 import { AttachmentPreviewBoundary } from "./AttachmentPreviewBoundary";
 import { ATTACHMENT_PREVIEWERS } from "./attachmentPreviewers";
 import type { AttachmentContentLoader, AttachmentFile } from "./attachmentFile";
-import { looksLikeText, previewFormat } from "./previewFormat";
+import { looksLikeText, MAX_PREVIEW_BYTES, previewFormat } from "./previewFormat";
 import { saveAttachment } from "./saveAttachment";
 
 const displayName = (attachment: AttachmentFile) => attachment.name ?? "Attached file";
@@ -57,6 +57,15 @@ const AttachmentPreview = ({ attachment, loadContent, onDownload }: {
   onDownload: () => void;
 }) => {
   const known = previewFormat(attachment.mimeType, attachment.name);
+  if (known !== "image" && attachment.size > MAX_PREVIEW_BYTES) {
+    return (
+      <NoPreview
+        attachment={attachment}
+        message="This file is too large to preview."
+        onDownload={onDownload}
+      />
+    );
+  }
   const untyped = attachmentKind(attachment.mimeType, attachment.name) === "file";
   // A file with a type that has no previewer is never fetched just to say so.
   const bytes = known || untyped ? use(loadContent(attachment.id)) : undefined;
