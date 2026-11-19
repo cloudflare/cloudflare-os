@@ -5,7 +5,7 @@ import {
 
 /**
  * No bindings: the Worker holds no credential and makes no request of its own. The Workshop lends
- * it the Admin API of a workspace's owner, a session at a time.
+ * it the Admin API of a workspace's owner, a session or an approved action at a time.
  */
 export default defineGadgetsWorker({
   name: "gatekeeper-admin",
@@ -27,7 +27,7 @@ export const wrangler = {
   rules: textModules(["**/*.txt"]),
 } satisfies WranglerExtras;
 
-/** The facet class is reached through ctx.exports; no binding is required. */
+/** Both classes are reached through ctx.exports; no binding is required. */
 export const migrations: DurableObjectMigration[] = [
-  { tag: "v1", new_sqlite_classes: ["AdminGatekeeperImpl"] },
+  { tag: "v1", new_sqlite_classes: ["AdminGatekeeperImpl", "IssueReportHookDriver"] },
 ];

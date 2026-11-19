@@ -1,9 +1,11 @@
-// The admin gatekeeper's actions: what an agent would ask of the admins, a write to a workspace or
-// access to its content. Each is queued when called and runs only once it is approved, as the one
-// Admin API call the Workshop lends that action.
+// The admin gatekeeper's actions: what an agent would post to an issue report, set on one or ask
+// of the admins. Each is queued when called and runs only once it is approved, as the one Admin
+// API call the Workshop lends that action.
 
 import type { RpcStub } from "cloudflare:workers";
-import { buildDescription, sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
+import {
+  buildDescription, plainInline, sanitizeTitle,
+} from "@gadgets/gatekeeper-kit/action-description";
 import {
   type ActionContext, ActionApplyError, ActionOutcomeUnknownError, type ActionPresentation,
   type BoundActionSet, defineActions,
@@ -14,9 +16,31 @@ import {
 import type { AdminAgentApi } from "@gadgets/workshop-shared/admin-gatekeeper";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_WRITE_ARGS, type AdminWriteAction,
-  type AdminWriteArgs, MAX_ADMIN_ACCESS_REASON_LENGTH, getAdminAccessErrorCode,
-  getAdminGrantErrorCode,
+  type AdminWriteArgs, ISSUE_REPORT_ERROR_CODES, type IssueReportStatus, MAX_ADMIN_ACCESS_REASON_LENGTH,
+  MAX_ISSUE_REPORT_TEXT_LENGTH, getAdminAccessErrorCode, getAdminGrantErrorCode, getIssueReportErrorCode,
+  issueReportStatusForReporter,
 } from "@gadgets/workshop-shared/api";
+
+/** An entry to add to a report's thread: a reply through the admin binding, or a note. */
+export type EntryPayload = { reportId: string; text: string };
+
+/** A reply from a session limited to one report, with what its card says of that report. */
+export type ScopedReplyPayload = EntryPayload & {
+  /** Shown on the card and never sent: the reporter's name, when the report was filed (ISO),
+   * and how its text begins. */
+  report: { reporter: string; filedAt: string; firstLine: string };
+};
+
+/** A status to set on a report. */
+export type StatusPayload = { reportId: string; status: IssueReportStatus };
+
+/** A report to claim for the workspace's owner, or to release. */
+export type AssignmentPayload = { reportId: string; assignment: "claim" | "release" };
+
+/** What an agent is told when it asks to take a report over. */
+export const TAKE_OVER_BY_PERSON = "Only a person takes an issue report from the admin who " +
+  "holds it: an admin does, in the Workshop, the CLI or the API. Call claimIssueReport() " +
+  "without takeOverFrom, which is refused when another admin holds the report.";
 
 /** A write to make, as writeWorkspace() takes it. */
 export type WritePayload = {
@@ -28,6 +52,11 @@ export type ContentRequestPayload = { workspaceId: string; reason: string };
 
 /** The payload of each action kind, by its name in ADMIN_AGENT_ACTIONS. */
 export type AdminActions = {
+  issueReportReply: EntryPayload;
+  issueReportScopedReply: ScopedReplyPayload;
+  issueReportNote: EntryPayload;
+  issueReportStatus: StatusPayload;
+  issueReportAssignment: AssignmentPayload;
   workspaceWriteRequest: WritePayload;
   contentAccessRequest: ContentRequestPayload;
 };
@@ -40,6 +69,19 @@ export interface AdminActionHost {
 
 /** The actions bound to one facet's journal. */
 export type BoundAdminActions = BoundActionSet<AdminActions>;
+
+/**
+ * `text` as an entry of a report's thread holds it: trimmed. Throws for a text the Admin API
+ * would refuse, so that no card is built for a call that cannot be made.
+ */
+export function entryText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === "" || trimmed.length > MAX_ISSUE_REPORT_TEXT_LENGTH) {
+    throw new TypeError(
+        `The text must be non-blank and at most ${MAX_ISSUE_REPORT_TEXT_LENGTH} characters.`);
+  }
+  return trimmed;
+}
 
 /**
  * `reason` as a write or a content request holds it: trimmed. Throws for a reason the Admin API
@@ -84,12 +126,17 @@ export function requestArgs(action: AdminWriteAction, args: AdminWriteArgs): Adm
 /**
  * The coded refusals after which an action can never apply: the Admin API makes each before it
  * writes anything, and the action is not run again, even once what refused it has passed (a
- * pending request that was decided). The Workshop keeps it pending until a person rejects it.
- * For a write, writes are off or the workspace's id names no workspace; for a content request,
- * content access is off, the workspace's id is malformed or the directory does not list it, a
- * request for it is already pending, or too many are.
+ * holder who released the report). The Workshop keeps it pending until a person rejects it.
+ * For an entry, a status or an assignment, the report does not exist, its thread is full, it is
+ * closed or another admin holds it; for a write, writes are off or the workspace's id names no
+ * workspace; for a content request, content access is off, the workspace's id is malformed or
+ * the directory does not list it, a request for it is already pending, or too many are.
  */
 export const TERMINAL_REFUSALS: ReadonlySet<string> = new Set([
+  ISSUE_REPORT_ERROR_CODES.notFound,
+  ISSUE_REPORT_ERROR_CODES.threadFull,
+  ISSUE_REPORT_ERROR_CODES.closed,
+  ISSUE_REPORT_ERROR_CODES.assigned,
   ADMIN_ACCESS_ERROR_CODES.writesOff,
   ADMIN_ACCESS_ERROR_CODES.workspaceNotFound,
   ADMIN_ACCESS_ERROR_CODES.contentOff,
@@ -100,8 +147,8 @@ export const TERMINAL_REFUSALS: ReadonlySet<string> = new Set([
 
 const NOT_LENT = "This action was given no Admin API to apply with.";
 
-const OUTCOME_UNKNOWN = "The Admin API did not say whether this was done. Check the audit log " +
-  "before rejecting this action.";
+const OUTCOME_UNKNOWN = "The Admin API did not say whether this was done. Check the report's " +
+  "thread (or the audit log, for a write or a request) before rejecting this action.";
 
 /**
  * What a handler throws for `error`, the rejection of its one call on the lent Admin API:
@@ -115,7 +162,8 @@ const OUTCOME_UNKNOWN = "The Admin API did not say whether this was done. Check 
  *     never run again.
  */
 export function classifyApplyFailure(error: unknown): unknown {
-  const code = getAdminGrantErrorCode(error) ?? getAdminAccessErrorCode(error);
+  const code = getIssueReportErrorCode(error) ?? getAdminGrantErrorCode(error) ??
+      getAdminAccessErrorCode(error);
   if (code !== undefined && TERMINAL_REFUSALS.has(code)) {
     return new ActionApplyError(error instanceof Error ? error.message : code, { cause: error });
   }
@@ -143,21 +191,146 @@ async function callLent(
   }
 }
 
+/** What a reporter reads for a status, where the Workshop's page for reporters words it otherwise
+ * than STATUS_LABELS: "withAdmin" is what "fixSuggested" and "fixInProgress" are given to them as. */
+const REPORTER_READS: Partial<Record<IssueReportStatus, string>> = { withAdmin: "With the admins" };
+
+/** `iso`, an ISO timestamp, as a card shows it: the same text wherever it is read. */
+function utc(iso: string): string {
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+const STATUS_LABELS: Record<IssueReportStatus, string> = {
+  new: "New",
+  investigating: "Investigating",
+  answered: "Answered",
+  waitingOnReporter: "Waiting on the reporter",
+  withAdmin: "With an admin",
+  fixSuggested: "Fix suggested",
+  fixInProgress: "Fix in progress",
+  fixProposed: "Fix proposed",
+  closed: "Closed",
+};
+
 /** A card: its title on one line, the builder's text and fields, and nothing to revert. */
 function card(title: string, rendered: ReturnType<typeof buildDescription>): ActionPresentation {
   return { title: sanitizeTitle(title), ...rendered.finish(), implementsRevert: false };
 }
 
+
 /**
- * The two action kinds, one per entry of ADMIN_AGENT_ACTIONS, which gives each its tag and its
+ * The seven action kinds, one per entry of ADMIN_AGENT_ACTIONS, which gives each its tag and its
  * verdict: the Workshop enforces the same table, so the two cannot differ. Unfenced: the
  * authority is lent per apply and checked by the Workshop, so there is no connection to pin.
  *
- * Both kinds await their decision: a write or a request is in no read until it is applied. Both
- * claim before they apply, so that neither runs twice: a second run would be a second write or a
- * second request.
+ * Every kind awaits its decision: an entry, a status, an assignment, a write or a request is in
+ * no read until it is applied. Every kind claims before it applies, so that none runs twice: a
+ * second run would be a second entry, a second write or a second request, a status set again
+ * after someone changed it would undo their change, with a second status line and a second end
+ * of an investigation, and a report claimed again after its holder released it would be held
+ * once more.
  */
 export const ADMIN_ACTIONS = defineActions<AdminActionHost, AdminActions>({
+  issueReportReply: {
+    kind: ADMIN_AGENT_ACTIONS.issueReportReply.kind,
+    // Never auto-approved (write-gatekeeper rule 2): it sends text to the reporter, a person
+    // outside this binding, written by code that can read what only admins see.
+    autoApprovable: ADMIN_AGENT_ACTIONS.issueReportReply.autoApprovable,
+    delivery: "await-decision",
+    claimBeforeApply: true,
+    describe: ({ reportId, text }) => card(
+        `Reply to the reporter of issue report ${reportId}`,
+        buildDescription("Posts this reply in the report's public thread, where its reporter " +
+            "reads it. It was written with access to what only admins see: read it before " +
+            "approving.")
+            .inline("Report", reportId)
+            .verbatim("Reply", text)),
+    apply: ({ reportId, text }, host, ctx) =>
+      callLent(host, ctx, (admin) => admin.addIssueReportEntry(reportId, text, "public")),
+  },
+
+  issueReportScopedReply: {
+    kind: ADMIN_AGENT_ACTIONS.issueReportScopedReply.kind,
+    autoApprovable: ADMIN_AGENT_ACTIONS.issueReportScopedReply.autoApprovable,
+    delivery: "await-decision",
+    claimBeforeApply: true,
+    describe: ({ reportId, text, report }) => card(
+        `Reply to ${report.reporter} on issue report ${reportId}`,
+        buildDescription("Posts this reply in the public thread of the report " +
+            `${plainInline(report.reporter)} filed on ${utc(report.filedAt)}. Sent from a ` +
+            "session limited to this report.")
+            .inline("Report", reportId)
+            .inline("Reporter", report.reporter)
+            .inline("Filed", utc(report.filedAt))
+            .verbatim("Report begins", report.firstLine)
+            .verbatim("Reply", text)),
+    apply: ({ reportId, text }, host, ctx) =>
+      callLent(host, ctx, (admin) => admin.addIssueReportEntry(reportId, text, "public")),
+  },
+
+  issueReportNote: {
+    kind: ADMIN_AGENT_ACTIONS.issueReportNote.kind,
+    autoApprovable: ADMIN_AGENT_ACTIONS.issueReportNote.autoApprovable,
+    delivery: "await-decision",
+    claimBeforeApply: true,
+    describe: ({ reportId, text }) => card(
+        `Add an admins-only note to issue report ${reportId}`,
+        buildDescription("Adds this note to the report's thread. Only admins read it.")
+            .inline("Report", reportId)
+            .verbatim("Note", text)),
+    apply: ({ reportId, text }, host, ctx) =>
+      callLent(host, ctx, (admin) => admin.addIssueReportEntry(reportId, text, "admins")),
+  },
+
+  // The card names no earlier status: the action is lent no read, so it could not check one, and
+  // setting a status over a newer one is what the approver agreed to.
+  issueReportStatus: {
+    kind: ADMIN_AGENT_ACTIONS.issueReportStatus.kind,
+    autoApprovable: ADMIN_AGENT_ACTIONS.issueReportStatus.autoApprovable,
+    delivery: "await-decision",
+    claimBeforeApply: true,
+    describe: ({ reportId, status }) => {
+      const rendered = buildDescription("Changes the report's status. Its reporter sees the " +
+          "change in the thread, unless they read the old status and the new one as the same.")
+          .inline("Report", reportId)
+          .inline("Status", STATUS_LABELS[status]);
+      const reporterReads = issueReportStatusForReporter(status);
+      if (reporterReads !== status) rendered.inline("Reporter reads",
+          REPORTER_READS[reporterReads] ?? STATUS_LABELS[reporterReads]);
+      return card(`Set issue report ${reportId} to ${STATUS_LABELS[status]}`, rendered);
+    },
+    apply: ({ reportId, status }, host, ctx) =>
+      callLent(host, ctx, (admin) => admin.setIssueReportStatus(reportId, status)),
+  },
+
+  // The card names the owner in words, never by a read: queuing reads nothing. Which admin
+  // that is, the Workshop decides where the call lands.
+  issueReportAssignment: {
+    kind: ADMIN_AGENT_ACTIONS.issueReportAssignment.kind,
+    autoApprovable: ADMIN_AGENT_ACTIONS.issueReportAssignment.autoApprovable,
+    delivery: "await-decision",
+    claimBeforeApply: true,
+    describe: ({ reportId, assignment }) => assignment === "claim"
+      ? card(
+          `Assign issue report ${reportId} to this workspace's owner`,
+          buildDescription("Makes this workspace's owner, the admin this connection acts " +
+              "as, the report's assignee, whoever approves this. Every admin sees who holds " +
+              "a report. Nothing changes if the owner already holds it, and it is refused " +
+              "if another admin does: it never takes a report from anyone.")
+              .inline("Report", reportId)
+              .inline("Assignee", "This workspace's owner"))
+      : card(
+          `Release issue report ${reportId} from this workspace's owner`,
+          buildDescription("Leaves the report with no assignee, if this workspace's owner, " +
+              "the admin this connection acts as, holds it. Nothing changes if nobody " +
+              "holds it, and it is refused if another admin does.")
+              .inline("Report", reportId)
+              .inline("Released by", "This workspace's owner")),
+    apply: ({ reportId, assignment }, host, ctx) => callLent(host, ctx, (admin) =>
+        assignment === "claim"
+            ? admin.claimIssueReport(reportId) : admin.releaseIssueReport(reportId)),
+  },
+
   workspaceWriteRequest: {
     kind: ADMIN_AGENT_ACTIONS.workspaceWriteRequest.kind,
     // Never auto-approved: once approved it runs at once, as the owner, a deployment admin, in

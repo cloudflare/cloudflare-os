@@ -37,13 +37,16 @@ export default defineConfig({
     textModules,
     capnwebValidate(),
     cloudflareTest({
-      main: "./src/worker.ts",
+      // The production entrypoints, and the Workshop's side of a hook beside them.
+      main: "./__tests__/workerd/worker.ts",
       miniflare: {
         compatibilityDate,
         compatibilityFlags,
         durableObjects: {
-          // Declared only here; production reaches this class through facets.
+          // Declared only here; production reaches the first class through facets and the
+          // second through ctx.exports.
           ADMIN_GATEKEEPER: { className: "AdminGatekeeperImpl", useSQLite: true },
+          ISSUE_REPORT_HOOK_DRIVER: { className: "IssueReportHookDriver", useSQLite: true },
         },
       },
     }),

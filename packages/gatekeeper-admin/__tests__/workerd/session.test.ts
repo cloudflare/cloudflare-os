@@ -4,15 +4,20 @@
 // every Admin API method.
 
 import { createExecutionContext } from "cloudflare:test";
-import { DurableObject, RpcStub, RpcTarget, env } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, env } from "cloudflare:workers";
 import type { ApiShape } from "@gadgets/api-schema/schema";
 import { ADMIN_BINDING_SUBRESOURCE } from "@gadgets/workshop-shared/admin-agent";
-import { ADMIN_WRITE_ARGS, type AdminWriteAction } from "@gadgets/workshop-shared/api";
+import {
+  ADMIN_WRITE_ARGS, type AdminWriteAction, ISSUE_REPORT_IMAGE_TYPES, ISSUE_REPORT_PRIORITIES,
+  ISSUE_REPORT_STATUSES, MAX_ISSUE_REPORT_TEXT_LENGTH, issueReportStatusForReporter,
+} from "@gadgets/workshop-shared/api";
 import {
   type ActionDescription, matchesResourceUrlPattern, type ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it, vi } from "vitest";
+import { TAKE_OVER_BY_PERSON } from "../../src/actions.js";
 import { ADMIN_SUBRESOURCE, forwarderFor } from "../../src/forward.js";
+import { REPORT_SUBRESOURCE } from "../../src/report-session.js";
 import { ADMIN_SCHEMA, SERVICES, generatedDeclarations, kindOf } from "../../src/surface.js";
 import HAND_WRITTEN_TYPES from "../../src/types.txt";
 import * as WORKER from "../../src/worker.js";
@@ -56,6 +61,7 @@ function recordingTarget(service: string, names: readonly string[], log: Log,
   return new Recording();
 }
 
+const BYTES = new Uint8Array([1, 2, 3, 4]);
 
 /** The Workshop's side of one session: the queue, the Admin API it lends, and the views opened. */
 function workshop() {
@@ -74,6 +80,7 @@ function workshop() {
           views.push(view);
           return view;
         }
+        if (name === "readIssueReportImage") return new Blob([BYTES]).stream();
         return { answered: name };
       });
 
@@ -162,6 +169,9 @@ const vendor = () => createExecutionContext().exports.GatekeeperVendor({});
 const READS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "read");
 const ACTS = SERVICES.get(ROOT)!.filter((name) => kindOf(name) === "act");
 
+/** `values` as a declaration writes a union of string literals. */
+const union = (values: readonly string[]) => values.map((value) => `"${value}"`).join(" | ");
+
 describe("the facet", () => {
   it("describes the binding", async () => {
     expect(await facet().describe()).toEqual({
@@ -170,6 +180,7 @@ describe("the facet", () => {
       snippet: "This deployment's Admin API, as the workspace's owner.",
       suggestedBindingName: "ADMIN",
       tsType: "AdminBinding",
+      hookTsType: "IssueReportHook",
     });
   });
 
@@ -183,11 +194,45 @@ describe("the facet", () => {
     expect(HAND_WRITTEN_TYPES).not.toMatch(/^export interface (AdminApi|AdminWorkspaceView) /m);
   });
 
+  it("declares the report session by hand, in full, with the values the Admin API has", () => {
+    expect(HAND_WRITTEN_TYPES).toMatch(/^ {2}openIssueReport\(reportId: string\): Promise<IssueReportSession>;$/m);
+    expect(HAND_WRITTEN_TYPES).toMatch(/^export interface IssueReportSession \{$/m);
+    expect(HAND_WRITTEN_TYPES).toMatch(/^export interface ScopedIssueReport \{$/m);
+    for (const signature of [
+      "get(): Promise<ScopedIssueReport>;",
+      "readImage(imageId: string): Promise<ReadableStream<Uint8Array>>;",
+      "reply(text: string): Promise<void>;",
+      "inspectWorkspace(reason: string): Promise<AdminWorkspaceView>;",
+    ]) {
+      expect(HAND_WRITTEN_TYPES).toContain(`\n  ${signature}\n`);
+    }
+    expect(HAND_WRITTEN_TYPES).toContain(`priority: ${union(ISSUE_REPORT_PRIORITIES)};`);
+    // The statuses a reporter reads, which are all a report session returns. A union that
+    // does not fit its line is wrapped after a bar.
+    const read = ISSUE_REPORT_STATUSES.filter(
+        (status) => issueReportStatusForReporter(status) === status);
+    expect(read).toEqual([
+      "new", "investigating", "answered", "waitingOnReporter", "withAdmin", "fixProposed", "closed",
+    ]);
+    const unwrapped = HAND_WRITTEN_TYPES.replace(/ \|\n +/g, " | ");
+    expect(unwrapped).toContain(`\n  status: ${union(read)};`);
+    expect(unwrapped).toContain(`\n    status?: ${union(read)};`);
+    expect(HAND_WRITTEN_TYPES).toContain(`type: ${union(ISSUE_REPORT_IMAGE_TYPES)};`);
+    expect(HAND_WRITTEN_TYPES).toContain(`at most ${MAX_ISSUE_REPORT_TEXT_LENGTH} characters`);
+    // What a restricted reporter's workspace does to the workspace that reads it.
+    expect(HAND_WRITTEN_TYPES.replace(/\n +\* /g, " ")).toContain(
+        "When that workspace holds restricted data, every answer of the view marks THIS " +
+        "workspace as holding restricted data too");
+    // How a session is handed to a spawned agent: never from the report id.
+    expect(HAND_WRITTEN_TYPES).toContain("never from the report id");
+    expect(HAND_WRITTEN_TYPES).toContain("crypto.randomUUID()");
+  });
+
   it("has no agent catalog", async () => {
     expect(await facet().getAgentCatalog()).toBeNull();
   });
 
-  it("allows every observer it is asked about for its own subresource, none for another, and keeps no observer state", async () => {
+  it("allows every observer it is asked about for its own subresources, none for another, and keeps no observer state", async () => {
     const worker = createExecutionContext().exports;
     const gatekeeper = facet();
     const observers = [
@@ -197,6 +242,8 @@ describe("the facet", () => {
     await expect(gatekeeper.verifyObserverAccess(observers, [ADMIN_SUBRESOURCE]))
         .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
     await expect(gatekeeper.verifyObserverAccess(observers, []))
+        .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
+    await expect(gatekeeper.verifyObserverAccess(observers, [REPORT_SUBRESOURCE, ADMIN_SUBRESOURCE]))
         .resolves.toEqual({ allowedObserverIds: ["owner", "second-admin"] });
     for (const unknown of ["admin:other", "", "global"]) {
       await expect(gatekeeper.verifyObserverAccess(observers, [ADMIN_SUBRESOURCE, unknown]))
@@ -289,8 +336,12 @@ describe("the vendor", () => {
         .not.toBe("did not reject");
   });
 
-  it("serves the binding's declarations", async () => {
+  it("serves the binding's declarations, and takes the report store's events", async () => {
     expect(await vendor().getTypeScriptTypes()).toBe(await facet().getTypeScriptTypes());
+    await expect(vendor().issueReportEvents([
+      { kind: "reported", id: "e1", reportId: "r1", priority: "low", at: new Date(0) },
+      { kind: "investigationComplete", id: "e2", reportId: "r1", status: "answered", at: new Date(1) },
+    ])).resolves.toBeUndefined();
   });
 });
 
@@ -310,12 +361,18 @@ describe("the Worker", () => {
         JSON.parse(WRANGLER_CONFIG.replace(/^\s*\/\/.*$/gm, ""));
     const migrated = config.migrations.flatMap(
         (migration) => [...(migration.new_sqlite_classes ?? []), ...(migration.new_classes ?? [])]);
-    expect(migrated).toEqual(["AdminGatekeeperImpl"]);
+    expect(migrated).toEqual(["AdminGatekeeperImpl", "IssueReportHookDriver"]);
     const exported: Record<string, unknown> = WORKER;
     for (const name of migrated) {
       const exportedClass = exported[name] as { prototype?: unknown } | undefined;
       expect(exportedClass?.prototype, name).toBeInstanceOf(DurableObject);
     }
+  });
+
+  // The facet mints a hook's controller through ctx.exports, which holds only what the entry
+  // module exports.
+  it("exports the hook controller", () => {
+    expect(WORKER.IssueReportHookController.prototype).toBeInstanceOf(WorkerEntrypoint);
   });
 });
 
@@ -333,6 +390,23 @@ describe("a session's reads", () => {
       title: "Admin API: listUsers",
       description: "Call `listUsers()` of this deployment's Admin API, as this workspace's owner.",
       fields: [{ label: "Arguments", kind: "json", value: JSON.stringify([{ limit: 2 }], null, 2) }],
+      subresources: [ADMIN_BINDING_SUBRESOURCE],
+      containsRestrictedData: true,
+    }]);
+  });
+
+  it("ask who the binding's admin is as any read: observed, flagged and forwarded", async () => {
+    const { log, admin, queue } = workshop();
+    using session = await openSession(queue);
+
+    expect(READS).toContain("whoami");
+    expect(await session.whoami!()).toEqual({ answered: "whoami" });
+
+    expect(log).toEqual(["getAdminApi", "observe Admin API: whoami", "AdminApi.whoami"]);
+    expect(admin.calls).toEqual([{ name: "whoami", args: [] }]);
+    expect(queue.observations).toEqual([{
+      title: "Admin API: whoami",
+      description: "Call `whoami()` of this deployment's Admin API, as this workspace's owner.",
       subresources: [ADMIN_BINDING_SUBRESOURCE],
       containsRestrictedData: true,
     }]);
@@ -448,6 +522,18 @@ describe("a session's reads", () => {
     expect(log).toEqual(
         ["getAdminApi", "observe Admin API: listWorkspaces", "AdminApi.listWorkspaces"]);
   });
+
+  it("hand a stream to the caller unread", async () => {
+    const { queue } = workshop();
+    using session = await openSession(queue);
+
+    const stream = await session.readIssueReportImage!("report-1", "image-1");
+
+    expect(stream).toBeInstanceOf(ReadableStream);
+    expect(new Uint8Array(await new Response(stream as ReadableStream).arrayBuffer())).toEqual(BYTES);
+    expect(queue.observations.map((observation) => observation.title))
+        .toEqual(["Admin API: readIssueReportImage"]);
+  });
 });
 
 describe("a view a session opened", () => {
@@ -455,23 +541,23 @@ describe("a view a session opened", () => {
     const { log, views, queue } = workshop();
     using session = await openSession(queue);
 
-    using view = await session.inspectWorkspace!("workspace-1", "a check", { lifetimeSeconds: 60 }) as Session;
+    using view = await session.inspectWorkspace!("workspace-1", "a check", { access: "metadata" }) as Session;
     await session.getSettings!();
-    expect(await view.getChatState!(4)).toEqual({ answered: "getChatState" });
+    expect(await view.getChat!(4, 9)).toEqual({ answered: "getChat" });
     expect(await view.describe!()).toEqual({ answered: "describe" });
 
     expect(log).toEqual([
       "getAdminApi", "observe Admin API: inspectWorkspace", "AdminApi.inspectWorkspace",
       "observe Admin API: getSettings", "AdminApi.getSettings",
-      "observe Admin view: getChatState", "AdminWorkspaceView.getChatState",
+      "observe Admin view: getChat", "AdminWorkspaceView.getChat",
       "observe Admin view: describe", "AdminWorkspaceView.describe",
     ]);
     expect(views).toHaveLength(1);
-    expect(views[0]!.calls).toEqual([{ name: "getChatState", args: [4] }, { name: "describe", args: [] }]);
+    expect(views[0]!.calls).toEqual([{ name: "getChat", args: [4, 9] }, { name: "describe", args: [] }]);
     expect(queue.observations.at(-2)).toEqual({
-      title: "Admin view: getChatState",
-      description: "Call `getChatState()` of an admin's view of a workspace.",
-      fields: [{ label: "Arguments", kind: "json", value: JSON.stringify([4], null, 2) }],
+      title: "Admin view: getChat",
+      description: "Call `getChat()` of an admin's view of a workspace.",
+      fields: [{ label: "Arguments", kind: "json", value: JSON.stringify([4, 9], null, 2) }],
       subresources: [ADMIN_BINDING_SUBRESOURCE],
       containsRestrictedData: true,
     });
@@ -498,7 +584,7 @@ describe("a view a session opened", () => {
     });
 
     log.length = 0;
-    for (const name of ["getChatState", "listFiles", "inspectUser", "listUsers"]) {
+    for (const name of ["getChat", "readFile", "inspectUser", "listUsers"]) {
       expect((await rejection(view[name]!(1))).message, name).not.toBe("did not reject");
     }
     expect(log).toEqual([]);
@@ -510,8 +596,8 @@ describe("a view a session opened", () => {
     using view = await session.inspectWorkspace!("workspace-1", "a check") as Session;
     log.length = 0;
 
-    expect((await rejection(view.getChatState!("four"))).message)
-        .toMatch(/^Invalid arguments for AdminWorkspaceView\.getChatState: /);
+    expect((await rejection(view.getChat!("four"))).message)
+        .toMatch(/^Invalid arguments for AdminWorkspaceView\.getChat: /);
     expect((await rejection(view.listUsers!())).message).not.toBe("did not reject");
     expect((await rejection(view.inspectWorkspace!("workspace-2", "another"))).message)
         .not.toBe("did not reject");
@@ -551,14 +637,48 @@ describe("what a session refuses", () => {
     const { log, admin, queue } = workshop();
     using session = await openSession(queue);
 
-    expect(ACTS.toSorted()).toEqual(["requestContentAccess", "writeWorkspace"]);
+    expect(ACTS.toSorted()).toEqual([
+      "addIssueReportEntry", "claimIssueReport", "releaseIssueReport", "requestContentAccess",
+      "setIssueReportStatus", "writeWorkspace",
+    ]);
     for (const name of ACTS) {
       expect(await session[name]!(...sampleArguments(ROOT, name)), name).toBeUndefined();
     }
 
-    expect(log.toSorted()).toEqual(
-        ["submit content-access-request", "submit workspace-write-request"]);
+    // The sample entry is an admins-only one.
+    expect(log.toSorted()).toEqual([
+      "submit content-access-request", "submit issue-report-assignment",
+      "submit issue-report-assignment", "submit issue-report-note", "submit issue-report-status",
+      "submit workspace-write-request",
+    ]);
     expect(admin.calls).toEqual([]);
+    expect(queue.observations).toEqual([]);
+  });
+
+  it("to take a report over: the claim is rejected, and nothing is queued", async () => {
+    const { log, admin, queue } = workshop();
+    using session = await openSession(queue);
+
+    // Whoever it names, an admin or nobody.
+    for (const takeOverFrom of ["grace@example.test", ""]) {
+      expect((await rejection(session.claimIssueReport!("report-1", { takeOverFrom }))).message)
+          .toBe(TAKE_OVER_BY_PERSON);
+    }
+    expect(TAKE_OVER_BY_PERSON).toMatch(/^Only a person takes an issue report/);
+    expect(TAKE_OVER_BY_PERSON).toContain("without takeOverFrom");
+    // An option the claim does not have is the argument check's to refuse.
+    expect((await rejection(session.claimIssueReport!("report-1", { takeOverFrom: true }))).message)
+        .toMatch(/^Invalid arguments for AdminApi\.claimIssueReport: /);
+    expect((await rejection(session.releaseIssueReport!("report-1", { takeOverFrom: "grace" })))
+        .message).toMatch(/^Invalid arguments for AdminApi\.releaseIssueReport: /);
+    expect(log).toEqual([]);
+    expect(admin.calls).toEqual([]);
+
+    // Without the option, or with it unset, the claim is queued.
+    expect(await session.claimIssueReport!("report-1", { takeOverFrom: undefined }))
+        .toBeUndefined();
+    expect(await session.claimIssueReport!("report-1")).toBeUndefined();
+    expect(log).toEqual(["submit issue-report-assignment", "submit issue-report-assignment"]);
     expect(queue.observations).toEqual([]);
   });
 
@@ -582,7 +702,7 @@ describe("what a session refuses", () => {
 
     // Every name on an RPC stub is callable, so only the call's rejection says it is not served.
     for (const name of ["setSiteName", "getUpdateStatus", "approveContentAccess", "serving",
-      "#call", "#lend", "#queue", "describe"]) {
+      "#call", "#lend", "#queue", "describe", "get", "reply", "readImage"]) {
       expect((await rejection(session[name]!("x"))).message, name).not.toBe("did not reject");
     }
 
@@ -621,8 +741,8 @@ describe("disposal", () => {
     await vi.waitFor(() => expect(views[0]!.disposed).toBe(1));
     expect([queue.disposed, admin.disposed]).toEqual([0, 0]);
     // A view carries what it observes with, and nothing to queue an action through.
-    expect((await rejection(view.writeWorkspace!("workspace-1", "restartWorkspace", {}, "x")))
-        .message).not.toBe("did not reject");
+    expect((await rejection(view.addIssueReportEntry!("report-1", "x", "admins"))).message)
+        .not.toBe("did not reject");
 
     session[Symbol.dispose]();
     await vi.waitFor(() => expect([queue.disposed, admin.disposed]).toEqual([1, 1]));

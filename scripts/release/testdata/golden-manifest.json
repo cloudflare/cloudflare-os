@@ -31,7 +31,8 @@
       "migrations": [
         {
           "new_sqlite_classes": [
-            "AdminGatekeeperImpl"
+            "AdminGatekeeperImpl",
+            "IssueReportHookDriver"
           ],
           "tag": "v1"
         }

@@ -23,7 +23,7 @@ export default {
     return <Section>
       <Field
         label="This deployment's Admin API"
-        description="Agents in this workspace, and the code of any gadget bound to this connection (a blueprint's included), can read, as you, what this deployment's admins can read: its settings, users and audit log, and the metadata of its workspaces and accounts, and a workspace's content only while that workspace has a live grant. They can also ask to change a workspace, or to read one's content without its owner: each such request waits as a card in this workspace, and runs only once a person approves it, and a request for content then needs another admin's approval too. Once it is added, only deployment admins can open this workspace, and once anything in it has read through the connection, removing the connection will not let other collaborators back in.">
+        description="Agents in this workspace, and the code of any gadget bound to this connection (a blueprint's included), can read, as you, what this deployment's admins can read: its settings, users, audit log and issue reports, and the metadata of its workspaces and accounts, and a workspace's content only while that workspace has a live grant. They can also ask to reply to an issue report or set its status or assignee, to change a workspace, or to read one's content without its owner: each such request waits as a card in this workspace, and runs only once a person approves it, and a request for content then needs another admin's approval too. Once it is added, only deployment admins can open this workspace, and once anything in it has read through the connection, removing the connection will not let other collaborators back in.">
       </Field>
     </Section>;
   },

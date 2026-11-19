@@ -3,11 +3,11 @@
 // own: the Workshop lends each session the Admin API of the workspace's owner, and decides what
 // each call may do.
 
-import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { ActionJournal, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import type {
-  AdminAgentApi, AdminAgentQueue, AdminGatekeeper,
+  AdminAgentApi, AdminAgentQueue, AdminGatekeeper, AdminGatekeeperVendor,
 } from "@gadgets/workshop-shared/admin-gatekeeper";
 import type {
   AccountDescription,
@@ -18,7 +18,6 @@ import type {
   GatekeeperConnectOptions,
   GatekeeperUser,
   GatekeeperUserVerifier,
-  GatekeeperVendor as GatekeeperVendorInterface,
   GitCache,
   ResourceConfiguratorFrame,
   ResourceDescription,
@@ -26,10 +25,15 @@ import type {
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { resourceTypeUrlPattern, workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
-import { ADMIN_ACTIONS, type AdminActions } from "./actions.js";
+import { ADMIN_ACTIONS, type AdminActions, type BoundAdminActions } from "./actions.js";
 import type { DeploymentConfiguratorRpc } from "./configurator/deployment-configurator-types";
 import { ADMIN_SUBRESOURCE, type AdminSession, forwarderFor } from "./forward.js";
 import DEPLOYMENT_CONFIGURATOR_HTML from "./generated/deployment-configurator-ui.txt";
+import {
+  IssueReportHookDeliveryImpl, type IssueReportHookKind, type IssueReportHookParams,
+  type IssueReportHookTarget, type SentIssueReportEvent, bindIssueReportHook, issueReportHookDriver,
+} from "./hooks.js";
+import { IssueReportSession, REPORT_SUBRESOURCE } from "./report-session.js";
 import { ADMIN_SCHEMA, generatedDeclarations } from "./surface.js";
 import TYPES_CODE from "./types.txt";
 
@@ -65,11 +69,83 @@ const NO_CONNECT_FLOW = "The admin gatekeeper is auto-provisioned and has no con
 /** The binding's declarations: the ones generated from the schema, then the hand-written ones. */
 const TYPES = `${generatedDeclarations()}\n${TYPES_CODE}`;
 
+// The hook controller and the hooks' driver are reached through ctx.exports, so the entry module
+// exports them.
+export { IssueReportHookController, IssueReportHookDriver } from "./hooks.js";
+
+/** Binds `hook` on the session's queue as a hook of `kind`: the facet's part of subscribing. */
+type Subscribe = (
+  queue: RpcStub<AdminAgentQueue>, kind: IssueReportHookKind, hook: RpcStub<IssueReportHookTarget>,
+) => Promise<void>;
+
+/**
+ * The session of the whole binding: the schema's methods, and beside them the ones AdminBinding
+ * declares by hand. It borrows the queue its base owns.
+ *
+ * No @validateRpc(), as its base has none: a validator built from this class would refuse every
+ * method the schema defines. So a method written here checks its own arguments.
+ */
+class BindingSession extends forwarderFor(ADMIN_SCHEMA.entry) {
+  readonly #queue: RpcStub<AdminAgentQueue>;
+  readonly #actions: BoundAdminActions;
+  readonly #subscribe: Subscribe;
+
+  constructor(queue: RpcStub<AdminAgentQueue>, actions: BoundAdminActions, subscribe: Subscribe) {
+    super(queue, { restricted: true, subresource: ADMIN_SUBRESOURCE, actions });
+    this.#queue = queue;
+    this.#actions = actions;
+    this.#subscribe = subscribe;
+  }
+
+  /**
+   * Opens a session limited to the report `reportId`, over a queue of its own. It reads nothing
+   * and observes nothing, since it returns a capability and no data: a report that does not
+   * exist is refused by the session's first call.
+   */
+  async openIssueReport(reportId: string): Promise<IssueReportSession> {
+    if (typeof reportId !== "string") {
+      throw new TypeError("Invalid arguments for AdminBinding.openIssueReport: reportId must " +
+          "be a string.");
+    }
+    return new IssueReportSession(reportId, this.#queue.dup(), this.#actions);
+  }
+
+  /**
+   * Binds `hook`, a persistent stub, to be called for each issue report filed. It reads nothing
+   * through the binding and observes nothing: the hook is bound on the queue, disabled until a
+   * person enables it.
+   */
+  async subscribeIssueReported(hook: RpcStub<IssueReportHookTarget>): Promise<void> {
+    await this.#bind("subscribeIssueReported", "reported", hook);
+  }
+
+  /** As subscribeIssueReported(), for each investigation that ends. */
+  async subscribeInvestigationComplete(hook: RpcStub<IssueReportHookTarget>): Promise<void> {
+    await this.#bind("subscribeInvestigationComplete", "investigationComplete", hook);
+  }
+
+  /** As subscribeIssueReported(), for each write to a report after it was filed. */
+  async subscribeIssueReportChanged(hook: RpcStub<IssueReportHookTarget>): Promise<void> {
+    await this.#bind("subscribeIssueReportChanged", "changed", hook);
+  }
+
+  async #bind(
+    method: string, kind: IssueReportHookKind, hook: RpcStub<IssueReportHookTarget>,
+  ): Promise<void> {
+    // A stub arrives as an object or, for one that may be a function, as a function.
+    if ((typeof hook !== "object" && typeof hook !== "function") || hook === null) {
+      throw new TypeError(`Invalid arguments for AdminBinding.${method}: hook must be a ` +
+          "persistent stub of the callback.");
+    }
+    await this.#subscribe(this.#queue, kind, hook);
+  }
+}
+
 /**
  * The workspace facet. Its sessions forward to the Admin API the Workshop lends each of them
- * through its queue, and queue what would write to a workspace or ask for its content as an
- * action. The facet holds the journal of those actions and nothing that could carry one out: an
- * approved action runs on the Admin API the Workshop lends for it.
+ * through its queue, and queue what would post, set or ask anything as an action. The facet
+ * holds the journal of those actions and nothing that could carry one out: an approved action
+ * runs on the Admin API the Workshop lends for it.
  */
 @validateRpc()
 export class AdminGatekeeperImpl
@@ -91,6 +167,7 @@ export class AdminGatekeeperImpl
       snippet: "This deployment's Admin API, as the workspace's owner.",
       suggestedBindingName: "ADMIN",
       tsType: "AdminBinding",
+      hookTsType: "IssueReportHook",
     };
   }
 
@@ -99,7 +176,7 @@ export class AdminGatekeeperImpl
     return TYPES;
   }
 
-  /** The action kinds a rule may apply: none, since both kinds wait for a person. */
+  /** The action kinds a rule may apply: every kind but the two whose verdict is false. */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return this.#actions.autoApprovableKinds();
   }
@@ -118,8 +195,16 @@ export class AdminGatekeeperImpl
   @skipRpcValidation()
   async startSession(queue: RpcStub<AdminAgentQueue>): Promise<AdminSession> {
     // The queue is disposed when this call returns, so the session keeps its own copy.
-    return new (forwarderFor(ADMIN_SCHEMA.entry))(queue.dup(),
-        { restricted: true, subresource: ADMIN_SUBRESOURCE, actions: this.#actions });
+    return new BindingSession(queue.dup(), this.#actions,
+        (bindOn, kind, hook) => bindIssueReportHook(this.ctx, bindOn, kind, hook));
+  }
+
+  /**
+   * What a hook's delivery stub reaches: a target that delivers events of the hook's kind, never
+   * the facet itself.
+   */
+  [restore](params: IssueReportHookParams): IssueReportHookDeliveryImpl {
+    return new IssueReportHookDeliveryImpl(params);
   }
 
   /** Returns no catalog: the binding's types say everything there is to know. */
@@ -134,16 +219,17 @@ export class AdminGatekeeperImpl
   async removeObserver(_id: string): Promise<void> {}
 
   /**
-   * Allows every observer it is asked about for the subresource this Worker reports, the
-   * binding's, and none for any other. Who may see what the binding read is a question of who is
-   * a deployment admin, which this Worker cannot tell: the Workshop admits to a workspace with
-   * this connection, beside its owner, only users who are deployment admins at that moment.
+   * Allows every observer it is asked about for the subresources this Worker reports (the whole
+   * binding's and a report session's), and none for any other. Who may see what the binding read
+   * is a question of who is a deployment admin, which this Worker cannot tell: the Workshop admits
+   * to a workspace with this connection, beside its owner, only users who are deployment admins at
+   * that moment.
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
-    const known = subresources.every((id) => id === ADMIN_SUBRESOURCE);
+    const known = subresources.every((id) => id === ADMIN_SUBRESOURCE || id === REPORT_SUBRESOURCE)
     return { allowedObserverIds: known ? observers.map((observer) => observer.id) : [] };
   }
 
@@ -170,12 +256,12 @@ export class AdminGatekeeperImpl
     throw new Error("The admin gatekeeper applies an action only with the Admin API lent for it.");
   }
 
-  /** Withdraws an action: nothing was written or filed for it. */
+  /** Withdraws an action: nothing was posted, set or filed for it. */
   async rejectAction(action: number): Promise<void> {
     await this.#actions.reject(action);
   }
 
-  /** Refuses: a write and a filed request cannot be taken back from here. */
+  /** Refuses: an entry, a status and a filed request cannot be taken back from here. */
   revertAction(
     _action: number,
   ): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
@@ -276,10 +362,7 @@ export class AdminVerifier
 }
 
 @validateRpc()
-export class GatekeeperVendor
-  extends WorkerEntrypoint<Cloudflare.Env>
-  implements GatekeeperVendorInterface
-{
+export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
   /** Describes the auto-provisioned admin gatekeeper vendor. */
   async describe(): Promise<VendorDescription> {
     return {
@@ -289,8 +372,8 @@ export class GatekeeperVendor
       tagline: "Give a deployment admin's agents this deployment's Admin API",
       description: "For deployment admins only. Agents in a workspace you add it to use this " +
         "deployment's Admin API as you: they read what admins read (users, workspaces, " +
-        "settings, the audit log and audited views of workspaces and accounts), and what " +
-        "they would write to a workspace or ask of the admins is queued as an action. A " +
+        "settings, the audit log, issue reports and audited views of workspaces), and what " +
+        "they would post to an issue report or ask of the admins is queued as an action. A " +
         "workspace it is added to admits only deployment admins. Removing this account ends " +
         "every connection made with it, in every workspace you own, until you add it again.",
       autoProvisionsAccount: true,
@@ -328,6 +411,22 @@ export class GatekeeperVendor
   async getTypeScriptTypes(): Promise<string> {
     return TYPES;
   }
+
+  /**
+   * Takes the issue report store's events for the hooks subscribed to them, and resolves once
+   * the driver has stored each for delivery. An event with no subscriber, or of a kind or
+   * with a label this Worker does not know, is dropped there, never refused: the store would
+   * send its whole call again.
+   */
+  async issueReportEvents(events: SentIssueReportEvent[]): Promise<void> {
+    await issueReportHookDriver(this.ctx.exports).ingest(events);
+  }
 }
 
-export default GatekeeperVendor;
+/**
+ * Not `implements AdminGatekeeperVendor`: capnweb-validate sharpens an implemented
+ * interface's signatures onto the generated validator, which would refuse an event of a kind
+ * this build does not know where issueReportEvents() takes it and drops it. The class is
+ * checked against the contract here instead.
+ */
+export default GatekeeperVendor satisfies new (...args: never[]) => AdminGatekeeperVendor;

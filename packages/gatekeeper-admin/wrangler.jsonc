@@ -34,7 +34,8 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
-        "AdminGatekeeperImpl"
+        "AdminGatekeeperImpl",
+        "IssueReportHookDriver"
       ]
     }
   ]

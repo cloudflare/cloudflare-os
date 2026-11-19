@@ -14195,6 +14195,10 @@ declare namespace CloudflareWorkersModule {
     export const exports: Cloudflare.Exports;
     export const cache: CacheContext;
     export const tracing: Tracing;
+
+    // TODO: Fix bug in runtime types where this isn't declared in the types. It is actually
+    // exported by the runtime.
+    export const restore: symbol;
 }
 declare module 'cloudflare:workers' {
     export = CloudflareWorkersModule;
