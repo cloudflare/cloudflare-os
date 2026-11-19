@@ -150,15 +150,17 @@ describe('scenarios', () => {
     expect(of(ready().items, 'connection').map(({ vendorName, state }) => [vendorName, state])).toEqual([['ClickHouse', 'connected'], ['Grafana', 'denied']])
   })
 
-  it('output: the card stays under the answer, a draft until the changes are accepted', async () => {
-    const { ready, rows, seen } = await watch(scenario('output'), (chat) => of(chat.rows(), 'output').map(({ draft }) => draft))
+  it('output: the card stays under the answer, a draft until its changes are kept, which is asked', async () => {
+    const { session, ready, rows, seen } = await watch(scenario('output'), (chat) => of(chat.rows(), 'output').map(({ draft }) => draft))
 
-    expect(seen).toEqual(new Set([true, false]))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant', 'output', 'divider'])
-    expect(ready().pinned).toMatchObject([
-      { kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } },
-      { label: 'You saved edits' },
-    ])
+    expect(seen).toEqual(new Set([true]))
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant', 'output'])
+    expect(ready().pinned).toMatchObject([{ kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } }])
+    await vi.waitFor(() => expect(ready().keep?.changes.created).toMatchObject([{ title: 'Q3 platform review' }]), { timeout: 3000 })
+
+    await session.keepChanges()
+    await vi.waitFor(() => expect(of(rows(), 'output').map(({ draft }) => draft)).toEqual([false]))
+    expect(ready().keep).toBeUndefined()
   })
 
   it('errors: only the last error can be retried, and running out of credits offers to continue', async () => {

@@ -733,11 +733,14 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         }
         break
 
-      case 'merge':
-        // The viewer's own are accepted on their own as each turn ends (see autoAccept.ts), which
-        // says nothing they would not expect, so only someone else's is marked.
-        if (message.author.id !== viewerId) act(message, 'merge', `${message.author.name} applied changes`)
+      case 'merge': {
+        // Nothing is kept until someone keeps it, so each keep is marked, as a discard is. The
+        // viewer's own just after they saved edits is part of saving them, which says it already.
+        const before = messages[index - 1]
+        const saved = before?.type === 'changes' && before.author.id === viewerId && message.author.id === viewerId
+        if (!saved) act(message, 'merge', `${actor(message.author)} kept changes`)
         break
+      }
 
       case 'revert':
         act(message, 'revert', `${actor(message.author)} discarded changes`)

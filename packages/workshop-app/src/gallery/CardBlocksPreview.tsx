@@ -186,7 +186,7 @@ export const CardBlocksPreview = () => {
           <ActionCard {...request} state="denied" resolution="Denied by Ada Lovelace" {...of('denied')} />
         </Column>
       </Section>
-      <Section title="KeepChangesCard (a chat's changes that couldn't be kept on their own, at the end of the conversation: what they do and why they wait, Keep, and Discard, which asks again; a gadget given a connection, a blueprint's update with conflicts, and code in a workspace others work in too)">
+      <Section title="KeepChangesCard (a chat's changes, waiting at the end of the conversation as nothing is kept until someone keeps it: what they do and what to know first, Keep, and Discard, which asks again; a gadget given a connection, a blueprint's update with conflicts, and code alone)">
         <Column>
           <KeepChangesCard
             changes={['Creates “Standup notes”', 'Connects “Standup notes” to “Jira · Platform board”']}
@@ -200,7 +200,7 @@ export const CardBlocksPreview = () => {
             onKeep={after('kept')}
             onDiscard={() => void after('discarded')()}
           />
-          <KeepChangesCard changes={[]} reason="Others work in this workspace too, so changes wait for you." onKeep={after('kept')} onDiscard={() => void after('discarded')()} />
+          <KeepChangesCard changes={['Changes “Tip Jar”']} reason="They’re only in this chat until you keep them." onKeep={after('kept')} onDiscard={() => void after('discarded')()} />
         </Column>
       </Section>
       <Section title="HookCard (switchable, off, deleted)">

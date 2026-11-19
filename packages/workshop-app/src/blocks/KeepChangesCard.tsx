@@ -8,7 +8,7 @@ import { usePending, type ActionResult } from './usePending'
 export type KeepChangesCardProps = {
   /** What the changes do, one line each: "Connects “Tip Jar” to “Platform board”". */
   changes: string[]
-  /** Why they wait for the user, rather than being kept as a turn's changes are. */
+  /** What to know before keeping them: that they are only in the chat until then, or more. */
   reason: string
   onKeep: () => ActionResult
   /** Throws them away, once the user has said so again: what is discarded is gone. */
@@ -16,9 +16,9 @@ export type KeepChangesCardProps = {
 }
 
 /**
- * A chat's changes that could not be kept on their own, waiting for the user at the end of the
- * conversation: what they would do, why they wait, and the two answers. Discarding asks again,
- * as what is discarded cannot be had back.
+ * A chat's changes, waiting for the user at the end of the conversation, as nothing is kept until
+ * someone keeps it: what they would do, what to know before keeping them, and the two answers.
+ * Discarding asks again, as what is discarded cannot be had back.
  */
 export const KeepChangesCard = ({ changes, reason, onKeep, onDiscard }: KeepChangesCardProps) => {
   const id = useId()

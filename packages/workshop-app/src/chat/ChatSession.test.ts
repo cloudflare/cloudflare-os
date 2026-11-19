@@ -91,7 +91,6 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
     disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
     setChatTitle: vi.fn<Overseer['setChatTitle']>(async () => {}),
-    listCollaborators: vi.fn<Overseer['listCollaborators']>(async () => []),
     mergeChanges: vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' })),
     listSlashCommands: vi.fn<Overseer['listSlashCommands']>(async () => []),
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
@@ -226,7 +225,6 @@ const workingOn = async (history: AiChatMessage[], codeBase?: AiChatMetadata['co
   const endTurn = async () => {
     fake.listChats.mockResolvedValue([{ ...proposing(), codeBase }])
     fake.server().metadata({ ...proposing(), codeBase })
-    await vi.waitFor(() => expect(fake.listCollaborators).toHaveBeenCalled())
     await flush()
   }
   return { fake, session, endTurn }
@@ -1056,75 +1054,6 @@ describe('ChatSession', () => {
     })
   })
 
-  describe('accepting changes on its own', () => {
-    it('accepts the agent’s code when its turn ends', async () => {
-      const { fake, endTurn } = await workingOn([userMessage(0, 'fix it'), changes(1)])
-      expect(fake.mergeChanges).not.toHaveBeenCalled()
-
-      await endTurn()
-      expect(fake.mergeChanges).toHaveBeenCalledExactlyOnceWith(0)
-    })
-
-    it('accepts what was left proposed when the chat is opened', async () => {
-      const fake = fakeOverseer(Promise.resolve([proposing()]), { 0: page(changes(1)) })
-      await started(fake)
-      await vi.waitFor(() => expect(fake.mergeChanges).toHaveBeenCalledExactlyOnceWith(0))
-    })
-
-    it('leaves the changes proposed when they bind a resource to the gadget', async () => {
-      const { fake, endTurn } = await workingOn([changes(1, binding)])
-      await endTurn()
-      expect(fake.mergeChanges).not.toHaveBeenCalled()
-    })
-
-    it('leaves the changes proposed when someone else is in the workspace', async () => {
-      const { fake, endTurn } = await workingOn([changes(1)])
-      fake.listCollaborators.mockResolvedValue([{ profile: userAuthor, addedBy: [], access: { role: "build" } }])
-      await endTurn()
-      expect(fake.mergeChanges).not.toHaveBeenCalled()
-    })
-
-    it('reads back to the last accept before deciding', async () => {
-      // The binding is on a page before the one shown; the accept that opened the epoch is at 2.
-      const { fake, endTurn } = await workingOn(
-        [changes(5)],
-        { pins: [], generation: 1, revision: 0, epoch: 2 },
-        [{ messages: [changes(3, binding)], nextBeforeSequence: 3 }],
-      )
-      await endTurn()
-      await vi.waitFor(() => expect(fake.getChatHistory).toHaveBeenCalledWith(0, 5, expect.any(Number)))
-      await flush()
-
-      expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
-      expect(fake.mergeChanges).not.toHaveBeenCalled()
-    })
-
-    it('reports an accept that failed', async () => {
-      const { fake, session, endTurn } = await workingOn([changes(1)])
-      fake.mergeChanges.mockRejectedValueOnce(new Error('Gadget is locked'))
-      await endTurn()
-      await vi.waitFor(() => expect(ready(session).actionError).toBe('The changes couldn’t be accepted: Gadget is locked'))
-    })
-
-    it('keeps them after another chat’s, bringing in what that one kept when it merges cleanly', async () => {
-      const { fake, endTurn } = await workingOn([changes(1)])
-      fake.mergeChanges.mockResolvedValueOnce({ outcome: 'stale' })
-      await endTurn()
-      await vi.waitFor(() => expect(fake.mergeChanges).toHaveBeenCalledTimes(2))
-      expect(fake.updateChatFromMainline).toHaveBeenCalledExactlyOnceWith(0)
-    })
-
-    it('asks when what another chat kept conflicts with them, naming the files', async () => {
-      const { fake, session, endTurn } = await workingOn([changes(1)])
-      fake.mergeChanges.mockResolvedValueOnce({ outcome: 'stale' })
-      fake.updateChatFromMainline.mockResolvedValueOnce({ conflictPaths: ['TRACKER/client.js'] })
-      await endTurn()
-      await vi.waitFor(() => expect(ready(session).keep?.changes.conflicts).toEqual(['TRACKER/client.js']), { timeout: 3000 })
-      expect(ready(session).keep?.changes.mainline).toBe(true)
-      expect(fake.mergeChanges).toHaveBeenCalledOnce()
-    })
-  })
-
   describe('asking to keep changes', () => {
     afterEach(() => {
       vi.useRealTimers()
@@ -1138,21 +1067,39 @@ describe('ChatSession', () => {
 
       await vi.advanceTimersByTimeAsync(1500)
       expect(ready(session).keep).toEqual({
-        changes: { created: [], bindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }], updates: [], mainline: false, conflicts: [] },
-        shared: false,
+        changes: { created: [], edited: [], bindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }], updates: [], mainline: false, conflicts: [] },
       })
     })
 
-    it('asks about code too while someone else is in the workspace', async () => {
-      const { fake, session, endTurn } = await workingOn([changes(1)])
-      fake.listCollaborators.mockResolvedValue([{ profile: userAuthor, addedBy: [], access: { role: "build" } }])
+    it('asks about the agent’s code too, keeping nothing itself', async () => {
+      const { fake, session, endTurn } = await workingOn([userMessage(0, 'fix it'), changes(1, { change: { 1: [] } })])
       vi.useFakeTimers()
       await endTurn()
       await vi.advanceTimersByTimeAsync(1500)
-      expect(ready(session).keep).toMatchObject({ shared: true })
+      expect(ready(session).keep?.changes.edited).toEqual([1])
+      expect(fake.mergeChanges).not.toHaveBeenCalled()
     })
 
-    it('never asks about changes kept meanwhile, as the workspace keeps a turn’s own', async () => {
+    it('asks about what was left waiting when the chat is opened', async () => {
+      const fake = fakeOverseer(Promise.resolve([proposing()]), { 0: page(changes(1, { change: { 1: [] } })) })
+      const session = await started(fake)
+      await vi.waitFor(() => expect(ready(session).keep?.changes.edited).toEqual([1]))
+      expect(fake.mergeChanges).not.toHaveBeenCalled()
+    })
+
+    it('reads back to the last keep to say what they do', async () => {
+      // The binding is on a page before the one shown; the keep that opened the epoch is at 2.
+      const { fake, session, endTurn } = await workingOn(
+        [changes(5)],
+        { pins: [], generation: 1, revision: 0, epoch: 2 },
+        [{ messages: [changes(3, binding)], nextBeforeSequence: 3 }],
+      )
+      await endTurn()
+      await vi.waitFor(() => expect(ready(session).keep?.changes.bindings).toHaveLength(1), { timeout: 3000 })
+      expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
+    })
+
+    it('never asks about changes kept meanwhile', async () => {
       const { fake, session, endTurn } = await workingOn([changes(1, binding)])
       vi.useFakeTimers()
       await endTurn()

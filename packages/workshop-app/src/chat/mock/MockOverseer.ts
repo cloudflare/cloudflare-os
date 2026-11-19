@@ -155,6 +155,9 @@ export class MockOverseer {
   #kept = new Map<number, KeptCode[]>()
   // The chat's change to each gadget's code, not kept yet: its files as the change leaves them.
   #proposed = new Map<number, Record<string, string>>()
+  // The gadgets the script's changes and a template's update propose something to, not kept yet,
+  // as the server says of a chat: only the code saved here is had as files.
+  #waiting = new Set<number>()
   // Deleted, which no longer are, whatever their id.
   #removedGadgets = new Set<number>()
   #workpieceSubscribers = new Set<WorkpiecesSubscriber>()
@@ -351,21 +354,22 @@ export class MockOverseer {
       }
       this.#proposed.set(id, after)
     }
-    this.#setMetadata({ codeBase: { ...base, pins: pinned, revision: revision + 1 }, proposedChangeWorkpieces: [...this.#proposed.keys()] })
+    this.#setMetadata({ codeBase: { ...base, pins: pinned, revision: revision + 1 }, proposedChangeWorkpieces: this.#proposedWorkpieces() })
     return { generation, revision: revision + 1 }
   }
 
   /**
-   * Keeps what the chat proposes of code: stale where a gadget's head has moved past its pin, as
-   * the server refuses to merge then. The change is recorded in the chat as saved, then kept.
+   * Keeps what the chat proposes: stale where a gadget's head has moved past its pin, as the
+   * server refuses to merge then. Code saved here is recorded in the chat as saved, then kept.
    */
   async mergeChanges(chatId: number) {
-    const base = this.#metadata.codeBase
-    if (chatId !== CHAT_ID || !base || this.#proposed.size === 0) return { outcome: 'merged' } as const
+    const base = this.#metadata.codeBase ?? { pins: [], generation: 0, revision: 0 }
+    if (chatId !== CHAT_ID || (this.#proposed.size === 0 && this.#waiting.size === 0)) return { outcome: 'merged' } as const
     if (base.pins.some(({ gadgetId, mergedCommit }) => mergedCommit !== this.#head(gadgetId))) return { outcome: 'stale' } as const
     for (const [id, files] of this.#proposed) this.#keep(id, { message: `Accept changes from chat: ${this.#metadata.title}`, author: { name: VIEWER.name, email: VIEWER.id }, files })
+    if (this.#proposed.size > 0) this.#append(changes())
     this.#proposed.clear()
-    this.#append(changes())
+    this.#waiting.clear()
     this.#append(merge())
     this.#setMetadata({
       codeBase: { pins: [], generation: base.generation + 1, revision: 0, epoch: this.#messages.at(-1)?.sequence },
@@ -374,12 +378,34 @@ export class MockOverseer {
     return { outcome: 'merged' } as const
   }
 
-  /** Throws away the chat's change to code not kept yet, as nothing else in a scripted chat is proposed. */
+  /** Throws away what the chat proposes, not kept yet. */
   async revertChanges(chatId: number) {
-    const base = this.#metadata.codeBase
-    if (chatId !== CHAT_ID || !base) return
+    const base = this.#metadata.codeBase ?? { pins: [], generation: 0, revision: 0 }
+    if (chatId !== CHAT_ID) return
     this.#proposed.clear()
+    this.#waiting.clear()
     this.#setMetadata({ codeBase: { pins: [], generation: base.generation + 1, revision: 0, epoch: base.epoch }, proposedChangeWorkpieces: undefined })
+  }
+
+  #proposedWorkpieces() {
+    const ids = new Set([...this.#proposed.keys(), ...this.#waiting])
+    return ids.size > 0 ? [...ids] : undefined
+  }
+
+  /** What a message the script or a template's update adds proposes, or keeps, as the server says. */
+  #heard(message: AiChatMessage) {
+    if (message.type === 'merge') this.#waiting.clear()
+    else if (message.type === 'changes') {
+      const ids = [
+        ...(message.createdGadgets ?? []).map(({ gadgetId }) => gadgetId),
+        ...Object.keys(message.change ?? {}).map(Number),
+        ...(message.blueprintMerges ?? []).map(({ gadgetId }) => gadgetId),
+        ...(message.addedBindings ?? []).map(({ gadgetId }) => gadgetId),
+      ]
+      if (ids.length === 0) return
+      ids.forEach((id) => this.#waiting.add(id))
+    } else return
+    this.#setMetadata({ proposedChangeWorkpieces: this.#proposedWorkpieces() })
   }
 
   /** Gives the gadget another title, which those listening to the workpieces hear of. */
@@ -411,6 +437,7 @@ export class MockOverseer {
     if (blueprintId !== TEMPLATE.id) throw new Error(`No template ${blueprintId}.`)
     const { title, version, commitId = '' } = TEMPLATE.metadata
     this.#append(changes({ blueprintMerges: [{ gadgetId, blueprintId, title, version, commitId, kind: 'fastForward', baseCommit: TEMPLATE_TAKEN, conflictPaths: [] }] }))
+    this.#heard(this.#messages.at(-1)!)
     return { outcome: 'proposed', chatId: CHAT_ID } as const
   }
 
@@ -795,7 +822,10 @@ export class MockOverseer {
     if ('restart' in step) this.#restart(step.restart)
     else if ('disconnect' in step) this.#disconnect(step.disconnect)
     else if ('stream' in step) this.#chatSubscribers.forEach((subscriber) => subscriber.stream(CHAT_ID, step.stream))
-    else if ('message' in step) this.#append(step.message)
+    else if ('message' in step) {
+      this.#append(step.message)
+      this.#heard(this.#messages.at(-1)!)
+    }
     else if ('metadata' in step) this.#setMetadata(step.metadata)
     else if (step.agentActive) this.#setMetadata({ activeAgent: AGENT })
     else this.#endTurn()

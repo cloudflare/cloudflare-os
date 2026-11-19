@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { ProposedChanges } from './autoAccept'
+import type { ProposedChanges } from './proposedChanges'
 import { keepChangeLines, keepReason } from './keepChanges'
 
-const none: ProposedChanges = { created: [], bindings: [], updates: [], mainline: false, conflicts: [] }
-const ask = (changes: Partial<ProposedChanges>, shared = false) => ({ changes: { ...none, ...changes }, shared })
+const none: ProposedChanges = { created: [], edited: [], bindings: [], updates: [], mainline: false, conflicts: [] }
+const ask = (changes: Partial<ProposedChanges>) => ({ changes: { ...none, ...changes } })
 const titles = new Map([[3, 'Tip Jar'], [20, 'Joke'], [21, 'Paul Pierce']])
 const titleOf = (id: number) => titles.get(id)
 
@@ -40,6 +40,11 @@ describe('keepChangeLines', () => {
       .toEqual(['Lets “Tip Jar” use Claude Haiku'])
   })
 
+  it('names the gadgets whose code changes', () => {
+    expect(keepChangeLines(ask({ created: [{ gadgetId: 9, title: 'Standup notes' }], edited: [3, 4] }), titleOf))
+      .toEqual(['Creates “Standup notes”', 'Changes “Tip Jar”', 'Changes a gadget'])
+  })
+
   it('counts the files left with conflicts', () => {
     expect(keepChangeLines(ask({ mainline: true, conflicts: ['a.ts', 'b.ts'] }), titleOf))
       .toEqual(['Brings in changes kept elsewhere since this chat began', 'Leaves 2 files with conflicts to fix'])
@@ -49,7 +54,11 @@ describe('keepChangeLines', () => {
 describe('keepReason', () => {
   it('gives the weightiest reason', () => {
     expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }], conflicts: ['a.ts'] }))).toMatch(/conflicts/)
-    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }] }, true))).toMatch(/needs your OK/)
-    expect(keepReason(ask({}, true))).toMatch(/Others/)
+    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }] }))).toMatch(/needs your OK/)
+    expect(keepReason(ask({ updates: [{ gadgetId: 3, title: 'Docs' }] }))).toMatch(/updates/)
+  })
+
+  it('says that code alone is only in the chat until it is kept', () => {
+    expect(keepReason(ask({ edited: [3] }))).toBe('They’re only in this chat until you keep them.')
   })
 })

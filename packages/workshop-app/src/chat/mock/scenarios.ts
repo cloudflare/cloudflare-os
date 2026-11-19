@@ -361,7 +361,7 @@ const output: Scenario = {
   title: 'Q3 review doc',
   description:
     'The agent creates a document and keeps writing. The card stays under the answer, as a draft until the ' +
-    'changes are accepted (scripted here: the edits and the accept arrive on their own). The request has files ' +
+    'changes are kept, which the end of the conversation asks once the turn is over. The request has files ' +
     'attached: they and the document open beside the chat. The document follows a template with a newer ' +
     'version, which its More menu offers to update it to, proposed in this chat.',
   history: history([user('Write up the Q3 platform review as a doc.', { attachments: REVIEW_FILES })]),
@@ -377,12 +377,10 @@ const output: Scenario = {
       { message: agent({ toolCalls: [writeDoc] }), delay: 300 },
       say(agent({
         text:
-          'The review is drafted with the highlights first. Two things worth a look before you accept it:\n\n' +
+          'The review is drafted with the highlights first. Two things worth a look before you keep it:\n\n' +
           '- the time-to-close figure uses the median, not the mean\n- Q2 numbers are from the old board',
       })),
     ),
-    { message: changes(), delay: 2500 },
-    { message: merge(), delay: 2500 },
   ],
 }
 

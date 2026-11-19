@@ -188,16 +188,19 @@ turn's are kept apart (`pinned`) and rendered under the conversation. Once the u
 request it is history and stays where it was answered: below what had been written by then, above
 what came after, never moved back up among earlier messages. An action a standing rule approved
 was decided as it was made, and is shown there the same way. What a person then did to the chat's
-changes (saved edits, accepted, discarded) follows the artefacts, as a divider. Keep these rules
+changes (saved edits, kept, discarded) follows the artefacts, as a divider. Keep these rules
 when adding a kind.
 
-A chat's changes are accepted on their own once its turn ends (`ChatSession`, rules in
-`chat/autoAccept.ts`), so the agent's code takes effect as it is written, but only while the
-viewer is the only one working on them: nobody else is in the workspace, and no other chat has
-changes waiting to the same gadgets. Only code is: a binding the chat proposes is the user's to
-grant, and a blueprint's update or the latest accepted changes brought into the chat were asked
-for to be looked at first. Those stay proposed. The viewer's own accepts are not marked in the
-conversation, as they are what is expected; someone else's are.
+Nothing a chat changes is kept until someone keeps it. Until then its changes are only beside
+that chat (see Beside the page): a gadget's own page, the library and everyone else have it as it
+was kept. Once its turn ends, or when it is opened with changes waiting, the end of the
+conversation asks (`KeepChangesCard`, from `ChatSession`'s `keep`, a moment after the turn so that
+what it last changed is in): what they make, change, give and bring in (`chat/proposedChanges.ts`,
+read back to the last keep, and `chat/keepChanges.ts`, both plain and tested), what to know first
+(conflicts, a connection given, an update brought in, or else that they are only in the chat), Keep
+and Discard. Keep brings in what was kept elsewhere first where that has moved on, unless that
+leaves conflicts. Each keep is marked in the conversation, as a discard is, but the one saving the
+viewer's edits makes, which says so already.
 
 A message sent while the agent works ends the conversation, dimmed, until the agent reads it. It
 is the same row before and after, so being read only brings it to full strength. Its key is its

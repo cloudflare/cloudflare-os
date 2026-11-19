@@ -24,6 +24,7 @@ export const keepChangeLines = (
   }
   const lines = [
     ...changes.created.map(({ gadgetId }) => `Creates ${name(gadgetId)}`),
+    ...changes.edited.map((gadgetId) => `Changes ${name(gadgetId)}`),
     ...changes.bindings.map(({ gadgetId, name: binding, target }) => {
       // The name the code reaches it by means nothing to most people, so it is never said.
       const titled = titleOf(target)
@@ -40,11 +41,10 @@ export const keepChangeLines = (
   return [...new Set(lines)]
 }
 
-/** Why the changes wait for the user, the weightiest reason first. */
-export const keepReason = ({ changes, shared }: KeepAsk): string => {
+/** What to know before keeping them, the weightiest first: else that nobody else has them yet. */
+export const keepReason = ({ changes }: KeepAsk): string => {
   if (changes.conflicts.length) return 'Some files have conflicts to look over first.'
   if (changes.bindings.length) return 'Connecting a gadget to something needs your OK.'
-  if (changes.updates.length || changes.mainline) return 'Updates wait for you to look them over.'
-  if (shared) return 'Others work in this workspace, so changes wait for you to keep them.'
-  return 'These changes need you to keep them.'
+  if (changes.updates.length || changes.mainline) return 'Look the updates over before you keep them.'
+  return 'They’re only in this chat until you keep them.'
 }

@@ -14,7 +14,7 @@ import {
 } from './chatItems'
 import { agentKeyOf, namedAgentKey } from '@/automations/agents'
 import { answerParts } from './answerParts'
-import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
+import { proposedChanges, type ProposedChanges } from './proposedChanges'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { uploadAttachments } from './uploadAttachments'
@@ -22,13 +22,11 @@ import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber
 import { NO_USAGE, sameUsage, usageOf, type ChatUsage } from './chatUsage'
 
 /**
- * The chat's changes are waiting for the user to keep or discard them: they could not be kept on
- * their own (see autoAccept.ts), because of what they do or because others work on them too.
+ * The chat's changes are waiting for the user to keep or discard them, as nothing is kept until
+ * someone does: until then they are only beside this chat, and nobody else sees them.
  */
 export type KeepAsk = {
   changes: ProposedChanges
-  /** Someone else is in the workspace, whose work in progress keeping them could overtake. */
-  shared: boolean
 }
 
 export type ChatSnapshot =
@@ -119,7 +117,6 @@ type Calls =
   | 'enableHook'
   | 'disableHook'
   | 'setChatTitle'
-  | 'listCollaborators'
   | 'mergeChanges'
   | 'updateChatFromMainline'
   | 'revertChanges'
@@ -200,14 +197,14 @@ const DELETED: ChatSnapshot = { status: 'deleted' }
 const HISTORY_PAGE_SIZE = 50
 /** How many earlier pages are fetched in search of the message a reply quotes. */
 const QUOTE_SEARCH_PAGES = 20
-/** How many earlier pages are fetched to see everything a chat's changes would accept. */
+/** How many earlier pages are fetched to see everything a chat's changes would keep. */
 const EPOCH_SEARCH_PAGES = 20
 /** How many fetched files a session keeps, so a chat's tiles and what is opened share their bytes. */
 const KEPT_ATTACHMENTS = 24
 /**
- * How long after a turn ends its changes are left before the user is asked to keep them: the
- * workspace keeps a turn's changes on its own too, a moment after it ends, and a question that
- * came and went at once would only flash by.
+ * How long after a turn ends its changes are left before the user is asked to keep them: what the
+ * turn last changed can be recorded a moment after it ends, and another turn can start at once on
+ * what was sent meanwhile, which a question asked at once would only flash by before.
  */
 const KEEP_GRACE = 1500
 
@@ -288,10 +285,10 @@ export class ChatSession {
   // Set when the subscription fails, for the rest of the run: a conversation that is no longer
   // live must not go back to looking ready because the initial load finished.
   #failure: string | undefined
-  // The workpieces the chat proposes changes to, as last seen, and the accepts tried one after
+  // The workpieces the chat proposes changes to, as last seen, and what they do read one after
   // another so two never race.
   #proposed = ''
-  #accepting: Promise<void> = Promise.resolve()
+  #reading: Promise<void> = Promise.resolve()
   // What the user is asked to keep, and the wait before asking, from when the turn ended.
   #keep: KeepAsk | undefined
   #keepTimer: ReturnType<typeof setTimeout> | undefined
@@ -774,7 +771,7 @@ export class ChatSession {
     this.#historyError = undefined
     this.#failure = undefined
     this.#proposed = ''
-    this.#accepting = Promise.resolve()
+    this.#reading = Promise.resolve()
     clearTimeout(this.#keepTimer)
     this.#keep = undefined
   }
@@ -922,7 +919,7 @@ export class ChatSession {
     if (this.#liveMetadata) return
     this.#readMetadata(chat)
     this.#publishReady()
-    this.#offerAccept(run, chat, false)
+    this.#offerKeep(run, chat, false)
   }
 
   #applyMetadata(run: number, chat: AiChatMetadata) {
@@ -939,90 +936,52 @@ export class ChatSession {
     }
     this.#publishReady()
     if (turnEnded) this.options.onTurnEnded?.()
-    this.#offerAccept(run, chat, turnEnded)
+    this.#offerKeep(run, chat, turnEnded)
   }
 
   /**
-   * Accepts the chat's changes once nobody is working on them: when its turn ends, or when what it
-   * proposes changes while its agent is not running (as on opening), so the agent's code takes
-   * effect as it is written. Changes that cannot be accepted without asking stay proposed (see
-   * autoAccept.ts).
+   * Asks the user to keep the chat's changes once nobody is working on them: when its turn ends, or
+   * when what it proposes changes while its agent is not running (as on opening). Nothing is kept
+   * without asking.
    */
-  #offerAccept(run: number, chat: AiChatMetadata, turnEnded: boolean) {
+  #offerKeep(run: number, chat: AiChatMetadata, turnEnded: boolean) {
     const proposed = (chat.proposedChangeWorkpieces ?? []).join()
     const changed = proposed !== this.#proposed
     this.#proposed = proposed
     if (turnEnded) this.#turnEndedAt = Date.now()
     // Kept, discarded, or worked on again: what was asked no longer stands.
-    if (changed || chat.activeAgent) this.#askToKeep(undefined)
+    if (changed || chat.activeAgent) this.#stopAsking()
     if (proposed === '' || chat.activeAgent || !(turnEnded || changed)) return
-    this.#accepting = this.#accepting.then(() => this.#accept(run))
+    const epoch = chat.codeBase?.epoch
+    this.#reading = this.#reading.then(async () => {
+      // What is asked about is what has been loaded, should the start of the epoch be out of reach.
+      await this.#loadedSince(run, epoch)
+      if (run === this.#run && !this.#agentActive) this.#askToKeep(epoch)
+    })
+  }
+
+  #stopAsking() {
+    clearTimeout(this.#keepTimer)
+    if (this.#keep === undefined) return
+    this.#keep = undefined
+    this.#publishReady()
   }
 
   /**
-   * Asks the user to keep the changes, or stops asking. Asked no sooner than `KEEP_GRACE` after the
-   * turn ended, and only if nothing has changed meanwhile.
+   * Asks the user to keep the changes since `epoch`, no sooner than `KEEP_GRACE` after the turn
+   * ended, and only if nothing has changed meanwhile, saying what they do by then.
    */
-  #askToKeep(ask: KeepAsk | undefined) {
-    clearTimeout(this.#keepTimer)
+  #askToKeep(epoch: number | undefined) {
     // What was kept while this was worked out (edits saved through the chat keep at once) is not asked about.
-    if (!ask || this.#proposed === '') {
-      if (this.#keep === undefined) return
-      this.#keep = undefined
-      return void this.#publishReady()
-    }
+    if (this.#proposed === '') return this.#stopAsking()
+    clearTimeout(this.#keepTimer)
     const run = this.#run
     const proposed = this.#proposed
     this.#keepTimer = setTimeout(() => {
       if (run !== this.#run || proposed !== this.#proposed || this.#agentActive) return
-      this.#keep = ask
+      this.#keep = { changes: proposedChanges([...this.#messages.values()], epoch) }
       this.#publishReady()
     }, Math.max(0, this.#turnEndedAt + KEEP_GRACE - Date.now()))
-  }
-
-  async #accept(run: number) {
-    const overseer = this.#overseer
-    if (!overseer || run !== this.#run) return
-    let chat: AiChatMetadata | undefined
-    let alone: boolean
-    try {
-      // Read afresh, as this may run well after what prompted it.
-      const [chats, collaborators] = await Promise.all([overseer.listChats(), overseer.listCollaborators()])
-      chat = chats.find(({ id }) => id === this.chatId)
-      if (!chat?.proposedChangeWorkpieces?.length || chat.activeAgent) return
-      alone = acceptsAlone(chat, collaborators.length > 0)
-    } catch {
-      // What cannot be checked is left proposed, and asked about.
-      alone = false
-    }
-    const epoch = chat?.codeBase?.epoch
-    // What is asked about is what has been loaded, should the start of the epoch be out of reach.
-    const complete = await this.#loadedSince(run, epoch)
-    // The accept takes whatever is proposed by the time it lands, so a turn begun since would
-    // have it take that turn's changes unchecked.
-    if (run !== this.#run || this.#agentActive) return
-    // `conflicts`: those bringing in what was kept elsewhere left, which the message recording it
-    // may not have brought yet.
-    const ask = (conflicts: string[] = []) => {
-      const changes = proposedChanges([...this.#messages.values()], epoch)
-      const brought = conflicts.length ? { ...changes, mainline: true, conflicts: [...new Set([...changes.conflicts, ...conflicts])] } : changes
-      this.#askToKeep({ changes: brought, shared: !alone })
-    }
-    if (!alone || !complete || !proposesOnlyCode([...this.#messages.values()], epoch)) return ask()
-    try {
-      if ((await overseer.mergeChanges(this.chatId)).outcome === 'merged' || run !== this.#run || this.#agentActive) return
-      // Another chat's changes to these gadgets were kept first. What it kept is brought in, as
-      // keeping by hand does, and these are kept on top of it if that left no conflicts.
-      const { conflictPaths } = await overseer.updateChatFromMainline(this.chatId)
-      if (run !== this.#run || this.#agentActive) return
-      if (conflictPaths.length) return ask(conflictPaths)
-      // Stale again: yet another was kept meanwhile, which is left to the user.
-      if ((await overseer.mergeChanges(this.chatId)).outcome === 'stale' && run === this.#run) ask()
-    } catch (error) {
-      if (run !== this.#run) return
-      this.#actionError = `The changes couldn’t be accepted: ${messageOf(error)}`
-      this.#publishReady()
-    }
   }
 
   /** Fetches earlier pages until every message after `epoch` is in, or the search gives up. */

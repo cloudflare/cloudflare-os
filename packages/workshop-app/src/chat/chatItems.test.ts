@@ -448,16 +448,20 @@ describe('toChatFeed', () => {
   })
 
   describe('system rows', () => {
-    it('marks saved edits, accepts and discards, as the viewer’s own or by name, but not the viewer’s own accepts', () => {
+    it('marks saved edits, keeps and discards, as the viewer’s own or by name', () => {
       const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
-      const result = feed(changes(), merge(), changes({ author: other }), revert(2, other), changes(), merge(other))
+      const result = feed(changes({ author: AGENT }), merge(), changes({ author: other }), revert(2, other), changes(), merge(other))
       expect(only(result, 'divider').map(({ marks, label }) => [marks, label])).toEqual([
-        ['changes', 'You saved edits'],
+        ['merge', 'You kept changes'],
         ['changes', 'Grace Hopper saved edits'],
         ['revert', 'Grace Hopper discarded changes'],
         ['changes', 'You saved edits'],
-        ['merge', 'Grace Hopper applied changes'],
+        ['merge', 'Grace Hopper kept changes'],
       ])
+    })
+
+    it('says nothing more of the keep that saving the viewer’s own edits makes', () => {
+      expect(only(feed(changes(), merge()), 'divider').map(({ label }) => label)).toEqual(['You saved edits'])
     })
 
     it('puts what someone did after an answer below what the answer produced', () => {
@@ -478,7 +482,7 @@ describe('toChatFeed', () => {
         merge({ type: 'user', id: 'grace@example.com', name: 'Grace Hopper' }),
       )
       expect(rows(result).map((row) => (row.kind === 'divider' ? row.label : row.kind))).toEqual([
-        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'Grace Hopper applied changes',
+        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'Grace Hopper kept changes',
       ])
     })
 

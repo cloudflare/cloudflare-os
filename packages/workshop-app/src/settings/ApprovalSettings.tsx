@@ -53,8 +53,8 @@ export const ApprovalSettings = () => {
       {/* In lots, by what each is about: the user's own code, what reaches outside a workspace, and what the assistant is given access to. */}
       <SettingsGroup title="Permission defaults" description="What applies to everything your rules below don’t cover." plain>
         <SettingsCard>
-          <SettingRow title="Code changes" description="Changes the assistant makes to your gadgets’ code. Auto-accepted only while you’re the only one working on them." soon>
-            <SoonSelect label="Code changes" options={[{ id: 'accept', label: 'Auto-accept' }, ASK]} />
+          <SettingRow title="Code changes" description="Changes the assistant makes to your gadgets’ code, which wait in the chat until you keep them." soon>
+            <SoonSelect label="Code changes" options={[ASK, { id: 'accept', label: 'Auto-accept' }]} />
           </SettingRow>
           <SettingRow title="Collaborators’ code changes" description="Code changes from other members’ chats in workspaces you share." soon>
             <SoonSelect label="Collaborators’ code changes" options={[ASK, { id: 'accept', label: 'Auto-accept' }]} />
