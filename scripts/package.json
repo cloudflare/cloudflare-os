@@ -45,6 +45,10 @@
       "types": "./property-runs.ts",
       "import": "./property-runs.ts"
     },
+    "./cloudflare-workers-stub": {
+      "types": "./cloudflare-workers-stub.ts",
+      "import": "./cloudflare-workers-stub.ts"
+    },
     "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {

@@ -7,7 +7,7 @@ export default defineConfig({
     main: "./__tests__/workerd/worker.ts",
     miniflare: {
       compatibilityDate: "2026-09-04",
-      compatibilityFlags: ["allow_irrevocable_stub_storage"],
+      compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
       durableObjects: {
         TRACKER_HOST: { className: "TrackerHost", useSQLite: true },
         HOOK_HOST: { className: "HookHost", useSQLite: true },

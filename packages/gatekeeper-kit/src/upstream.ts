@@ -1,0 +1,813 @@
+/**
+ * The client a gatekeeper sends its upstream calls through. It owns what every such call needs
+ * and no provider differs in: a timeout per attempt, the retry of a request that is safe to send
+ * twice, the redirect mode, a replay hook, and one subservice metric point per attempt
+ * (`subservice/v1`, see `@gadgets/observability/metrics`). The gatekeeper owns the rest: its
+ * vendor id, the table of its services, the names of its requests, what counts as a success,
+ * auth, response schemas, provider errors, host allowlists and pagination.
+ *
+ * Every string of a point is a closed word. The gatekeeper's code spells out the vendor id, a
+ * service, a key of a route tree, and a literal operation, reason or detail. This module writes
+ * an HTTP method or `OTHER` for the operation of a request that has no name, and the reasons
+ * `rate`, `http`, `timeout`, `network`, `parse` and `exception`. The client builds none from a
+ * URL, a host, a header, a body or an error.
+ *
+ * The tally of the work that is running is kept in an `AsyncLocalStorage` from
+ * `node:async_hooks`, so a Worker that imports this module needs that module: the `nodejs_als`
+ * (or `nodejs_compat`) compatibility flag provides it.
+ */
+
+// oxlint-disable-next-line typescript/triple-slash-reference -- Types `node:async_hooks` in a program that has no Node types.
+/// <reference path="../../observability/src/node-async-hooks.d.ts" />
+
+import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  recordSubserviceCall, subserviceTally, type SubserviceCallInput, type SubserviceOutcome,
+  type SubserviceTally,
+} from "@gadgets/observability/metrics";
+import { requirePositiveInt } from "./positive-int";
+import { routeOperation, type Routes } from "./route-operation";
+
+/**
+ * A fetch implementation, called detached: `globalThis.fetch`, a service binding's (as
+ * `binding.fetch.bind(binding)`), or a guarded one of the gatekeeper's own.
+ */
+export type UpstreamFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/**
+ * How one call is counted, where its HTTP status alone does not say. `reason` and `detail` are
+ * closed words, literals in the gatekeeper's code (by convention `api` is the reason of an error
+ * that a successful status carries), never text taken from an answer. `providerCode` is the
+ * service's numeric error code.
+ */
+export type CallAnswer = {
+  outcome: SubserviceOutcome;
+  reason?: string;
+  detail?: string;
+  providerCode?: number;
+};
+
+/**
+ * When a request is sent again after a transient failure. Members left out take the default:
+ * 3 attempts, a base delay of 500 ms and a longest delay of 10 000 ms.
+ */
+export type RetryPolicy = {
+  /** Sends of one request at most, the first included. A positive integer. Default 3. */
+  attempts?: number;
+  /**
+   * The first backoff ceiling in milliseconds, doubled with each attempt: a wait is a random
+   * share of it (full jitter). Not negative. Default 500.
+   */
+  baseDelayMs?: number;
+  /**
+   * The longest wait in milliseconds, a `Retry-After` included. Not negative. Default 10 000. No
+   * wait is longer than 2 147 483 647 ms, the longest a timer takes.
+   */
+  maxDelayMs?: number;
+  /**
+   * Whether an attempt answered with `status` is sent again. The default sends again a request
+   * that is idempotent (a GET or HEAD, or one marked `idempotent`) and was answered 429, 502, 503
+   * or 504, so a write is never sent twice unless it is marked or this says so. It is asked only
+   * while attempts remain and the body can be sent again, and is not asked about an attempt that
+   * threw: that one is sent again only when the request is idempotent.
+   */
+  retryable?: (
+    status: number, request: { method: string; operation: string; idempotent: boolean },
+  ) => boolean;
+};
+
+/** Configures an `Upstream`. */
+export type UpstreamOptions = {
+  /**
+   * The gatekeeper's vendor id, a metric word (a letter or digit, then letters, digits, `.`, `_`
+   * and `-`) of at most 49 characters. The source of every point is `gatekeeper.<vendorId>.api`.
+   */
+  vendorId: string;
+  /**
+   * The service a request goes to: a literal, or a function returning a literal or a value of a
+   * closed table, never a host. The function is given the request's parsed URL, or undefined
+   * where the URL cannot be parsed or the call has none; where it throws, the service is the
+   * vendor id. Default `vendorId`.
+   */
+  service?: string | ((url: URL | undefined) => string);
+  /** The paths the gatekeeper calls, by which a request is named (`routeOperation`). */
+  routes?: Routes;
+  /**
+   * A namer of the gatekeeper's own, asked before `routes` with the method in upper case. It
+   * returns a literal, or undefined for a request it does not name. A request it throws on is
+   * named by its method.
+   */
+  operation?: (method: string, url: URL) => string | undefined;
+  /**
+   * Milliseconds each attempt may take, the reading of its body included. A positive integer, or
+   * `null` for no timeout. Default 30 000.
+   */
+  timeoutMs?: number | null;
+  /** The retry policy, or `null` to send every request once. Default: see `RetryPolicy`. */
+  retry?: RetryPolicy | null;
+  /** The redirect mode handed to `fetch`. Default `"follow"`, which is handed over unset. */
+  redirect?: "follow" | "manual";
+  /**
+   * Whether `status` is the success of the request named `operation`. Default: below 400 for a
+   * request that follows redirects, and below 300 for one whose redirect mode is `"manual"`. One
+   * that throws is read as the default.
+   */
+  succeeded?: (status: number, operation: string) => boolean;
+  /** The fetch every attempt is sent with. Default `globalThis.fetch`, read at each attempt. */
+  fetch?: UpstreamFetch;
+  /**
+   * How an attempt whose `fetch` threw is counted, asked with what it threw where the attempt
+   * would be counted (see `Upstream`). `null` says that nothing was sent, as where a guard in
+   * `fetch` refused the request: the attempt is not counted and the request is not sent again.
+   * Undefined, or a throw, counts the attempt as a `timeout` or `network` error.
+   */
+  thrown?: (error: unknown) => CallAnswer | null | undefined;
+};
+
+/** A request's own options, beside those of `fetch`. None of them is handed to `fetch`. */
+export type UpstreamRequestInit = RequestInit & {
+  /**
+   * The request's name, a literal, for a request its URL cannot name: a token's exchange and its
+   * refresh share a URL, as every GraphQL request does.
+   */
+  operation?: string;
+  /** The service the request goes to, a literal, in place of the upstream's. */
+  service?: string;
+  /** Asserts that this request, though no GET or HEAD, is safe to send twice. */
+  idempotent?: boolean;
+  /** This request's timeout per attempt, in place of the upstream's; `null` for none. */
+  timeoutMs?: number | null;
+  /**
+   * This request's retry policy: its members replace the upstream's one by one (the default's,
+   * where the upstream has none), and `null` sends the request once.
+   */
+  retry?: RetryPolicy | null;
+  /**
+   * This request's redirect mode, `"follow"` or `"manual"`, in place of the upstream's. It has
+   * the type `fetch` gives it, so that a `RequestInit` is a request's init, and any other mode is
+   * handed to `fetch` as given.
+   */
+  redirect?: RequestInit["redirect"];
+  /**
+   * Headers for each attempt, asked anew before every one and set over the request's own. A
+   * request that has it must not set the same headers itself.
+   */
+  authorize?: () => HeadersInit | Promise<HeadersInit>;
+  /**
+   * Asked after an answered attempt is counted and before the retry policy: true sends the
+   * request again, with `authorize` asked anew and no attempt of the retry policy used. It is
+   * asked only while the body can be sent again and fewer than two replays were made. A
+   * rejection cancels the answer's body and fails the request. It reads the body from a clone
+   * only: an answer that is not sent again is the caller's to read.
+   */
+  replay?: (response: Response) => boolean | Promise<boolean>;
+  /**
+   * How an answered attempt is counted, asked for each before it is counted; undefined, a throw
+   * or what is no answer counts it by its status. It reads the body from a clone only, as the
+   * answer is the caller's to read.
+   */
+  answer?: (response: Response) => CallAnswer | undefined | Promise<CallAnswer | undefined>;
+};
+
+/**
+ * One gatekeeper's client for its upstream calls (`defineUpstream`).
+ *
+ * Every request is sent under these rules:
+ * - **Names.** The operation is the request's own `operation`, else what the upstream's
+ *   `operation` namer returns, else what its `routes` give (`routeOperation`), else the HTTP
+ *   method in upper case (`OTHER` for one that is not HTTP's own), which also names a URL that
+ *   cannot be parsed. The service is the request's own `service`, else the upstream's, else the
+ *   vendor id.
+ * - **Timeout.** Each attempt has a fresh `AbortSignal.timeout`, combined with the caller's
+ *   signal. The signal is handed to `fetch` and so bounds the reading of the body too: a stream
+ *   or a long download passes `null` or a higher value.
+ * - **Retry.** An answered attempt is sent again while attempts remain, its body can be sent
+ *   again (it is absent, a string, bytes, a `Blob`, `URLSearchParams` or `FormData`, and not the
+ *   body of a `Request` input) and `retryable` says so. An attempt that threw is sent again under
+ *   the same conditions when the request is idempotent, unless the upstream's `thrown` says that
+ *   nothing was sent. A write is never sent twice unless it is marked `idempotent` or the
+ *   gatekeeper's `retryable` says so, and nothing is sent again once the caller's signal has
+ *   aborted. The wait is the answer's `Retry-After` in its delta-seconds form, capped at
+ *   `maxDelayMs`, else `Math.random() * min(baseDelayMs * 2 ** attempt, maxDelayMs)`. The body of
+ *   the answer is cancelled before the wait, which ends at once when the caller's signal aborts,
+ *   after an answer and after a throw alike.
+ * - **Replay.** See `UpstreamRequestInit.replay`: at most two more sends of a request.
+ * - **What is sent.** The input goes to `fetch` as given. The init is the caller's without the
+ *   options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
+ *   `authorize` is given, `signal` set where there is a timeout or a caller's signal, and
+ *   `redirect` set where the request or the upstream declares one.
+ * - **Counting.** Each attempt is one point (`recordCall`) with the milliseconds from its send
+ *   to its answer or throw. An answered attempt is a `success` when `succeeded` says so, else
+ *   `refused` with the reason `rate` for a 429, else an `error` with the reason `http`, each with
+ *   its status, unless the request's `answer` says otherwise. The redirect mode that decides the
+ *   default of `succeeded` is the request's, else the upstream's, else that of a `Request` input.
+ *   An attempt that threw is an `error` with the reason `timeout` when the timeout fired or the
+ *   caller's signal aborted with a `TimeoutError`, and with the reason `network` otherwise,
+ *   unless the upstream's `thrown` says otherwise. It is not counted when the caller's signal had
+ *   aborted before it was sent, nor when the caller aborted it for any other reason. Counting
+ *   never throws, never waits and never changes what a request answers or throws.
+ */
+export interface Upstream {
+  /** The gatekeeper's vendor id. */
+  readonly vendorId: string;
+  /** The source of every point: `gatekeeper.<vendorId>.api`. */
+  readonly source: string;
+  /**
+   * The name a request gets from the upstream's namer and routes, with no request made.
+   * @param method The HTTP method, in either case; GET where none is given.
+   * @param url The request's URL.
+   * @returns The operation, which is the method in upper case (`OTHER` for one that is not
+   * HTTP's own) for a request neither names and for a URL that cannot be parsed. Never throws.
+   */
+  operationOf(method: string | undefined, url: string | URL): string;
+  /**
+   * Sends one request under the rules above, and counts every attempt.
+   * @param input The URL or `Request`, handed to `fetch` as given.
+   * @param init The `fetch` init and this request's own options.
+   * @returns The answer of the last attempt, whatever its status.
+   * @throws What `fetch`, `authorize`, `replay` or `retryable` threw; the reason of the caller's
+   * signal, where that had aborted when the request was to be sent again; and an `Error` for a
+   * `timeoutMs` or `retry` that is not valid.
+   */
+  request(input: string | URL | Request, init?: UpstreamRequestInit): Promise<Response>;
+  /**
+   * Sends as `request` does, then parses the answer and counts its attempt by what was parsed,
+   * which is how an error inside a 200 is counted. The attempts before the last are counted as
+   * `request` counts them.
+   * @param input The URL or `Request`.
+   * @param init The `fetch` init and this request's own options.
+   * @param parse Reads the answer. When it throws, what is left of the body is cancelled and the
+   * error propagates. The attempt is then counted by its status where that is no success. Where
+   * it is one, the attempt is an `error` with the reason `parse`, unless the reading was cut off,
+   * which the attempt's signal does to it: it is an `error` with the reason `timeout` once the
+   * timeout has fired or the caller's signal has aborted with a `TimeoutError`, and is not
+   * counted once the caller's signal has aborted for any other reason.
+   * @param answer How the parsed answer is counted; undefined, a throw or what is no answer (a
+   * promise is not awaited) counts it by its status. By convention an error inside a success is
+   * an `error` with the reason `api`.
+   * @returns What `parse` returned.
+   */
+  read<T>(
+    input: string | URL | Request,
+    init: UpstreamRequestInit | undefined,
+    parse: (response: Response) => T | Promise<T>,
+    answer?: (parsed: T, response: Response) => CallAnswer | undefined,
+  ): Promise<T>;
+  /**
+   * Counts one call that is no HTTP request, such as an RPC binding's method or a WebSocket
+   * command, with the milliseconds `work` took. It imposes no timeout and sends nothing again.
+   * @param operation The call's name, a literal.
+   * @param work Makes the call.
+   * @param hooks `service` names the service, in place of the upstream's. `answer` counts a
+   * result otherwise than as a `success`. `thrown` counts an error: `null` leaves it uncounted,
+   * and undefined counts it as an `error` with the reason `timeout` when it is named
+   * `TimeoutError` and `exception` otherwise.
+   * @returns What `work` returned; what it threw propagates.
+   */
+  call<T>(
+    operation: string,
+    work: () => T | Promise<T>,
+    hooks?: {
+      service?: string;
+      answer?: (result: T) => CallAnswer | undefined;
+      thrown?: (error: unknown) => CallAnswer | null | undefined;
+    },
+  ): Promise<T>;
+  /**
+   * Runs `work` with every call counted in it, however deep and across awaits, summed and
+   * written as one point per kind of call when `work` returns or throws or, where it returns a
+   * `Promise`, when that settles. An operation that pages through hundreds of requests so stays
+   * under the 250 points Analytics Engine takes from one invocation. Under a tally that is
+   * running, `work` sums into that one and nothing is written here. Work that `work` leaves
+   * running once it has settled is outside the tally: each of its calls is written at once, and
+   * a `summed` in it starts a tally of its own. A thenable that is no `Promise` is returned as
+   * any other value is, and its `then` is not called.
+   * @param work The work whose calls are summed.
+   * @returns What `work` returned.
+   */
+  summed<T>(work: () => T): T;
+  /**
+   * A fetch-shaped function for code that takes one, such as a remote key set, an SDK or a git
+   * transport: each call is `request(input, { ...init, ...defaults })`. Of a call's own init
+   * only what `fetch` takes is read: a member named as one of a request's own options is
+   * dropped, so that the code handed the function sets none of them.
+   * @param defaults Options of every request it sends. A `redirect` in a call's own init is used
+   * where `defaults` has none.
+   * @returns The function.
+   */
+  fetcher(defaults?: Pick<UpstreamRequestInit,
+    "operation" | "service" | "idempotent" | "timeoutMs" | "retry" | "redirect" | "authorize"
+    | "replay" | "answer">,
+  ): (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+  /**
+   * An upstream of the same vendor with some options replaced, such as the service of calls to
+   * an identity provider or a binding's `fetch`. It sums into the same running tally.
+   * @param overrides The options to replace. One given as undefined takes its default.
+   * @returns The new upstream.
+   */
+  with(overrides: Partial<Omit<UpstreamOptions, "vendorId">>): Upstream;
+}
+
+// A string column's value, as the metrics write it: anything else is written as `invalid`.
+const WORD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// The methods that name a request neither the namer nor the routes do.
+const HTTP_METHODS: ReadonlySet<string> = new Set([
+  "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
+]);
+const DEFAULT_TIMEOUT_MS = 30_000;
+const RETRIED_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
+const DEFAULT_RETRY: Required<RetryPolicy> = {
+  attempts: 3,
+  baseDelayMs: 500,
+  maxDelayMs: 10_000,
+  retryable: (status, request) => request.idempotent && RETRIED_STATUSES.has(status),
+};
+// A replay answers a 401 with a fresh token and a 403 with a reloaded one: two, and no loop.
+const MAX_REPLAYS = 2;
+// The longest wait a timer takes: a longer one fires at once.
+const LONGEST_TIMER_MS = 2 ** 31 - 1;
+// A request's own options, which are not `fetch`'s: `send` hands none of them on.
+const OWN_OPTIONS: ReadonlySet<string> = new Set([
+  "operation", "service", "idempotent", "timeoutMs", "retry", "authorize", "replay", "answer",
+] satisfies (keyof UpstreamRequestInit)[]);
+
+// The tally of the work that is running, when `summedInto` or `Upstream.summed` started one.
+const runningTally = new AsyncLocalStorage<SubserviceTally>();
+// The tallies `Upstream.summed` has written. Work left running under one is outside it.
+const writtenTallies = new WeakSet<SubserviceTally>();
+
+// The tally that is running, or undefined where there is none or it has been written.
+function openTally(): SubserviceTally | undefined {
+  const tally = runningTally.getStore();
+  return tally && !writtenTallies.has(tally) ? tally : undefined;
+}
+
+/**
+ * Records one subservice call: summed into the tally of the running work (`summedInto`,
+ * `Upstream.summed`), written at once (`recordSubserviceCall`) outside one and once
+ * `Upstream.summed` has written its tally. For a point a gatekeeper counts itself; the calls an
+ * `Upstream` makes are counted by it. Never throws.
+ * @param input The call. Every string is a closed word.
+ */
+export function recordCall(input: SubserviceCallInput): void {
+  try {
+    const tally = openTally();
+    if (tally) tally.add(input);
+    else recordSubserviceCall(input);
+  } catch {
+    // The call goes uncounted: a metric cannot fail the work it counts.
+  }
+}
+
+/**
+ * Runs `work` with every `recordCall` made in it, however deep and across awaits, summed into
+ * `tally` rather than written. For work that owns a tally, adds points of its own to it and
+ * flushes it itself; `Upstream.summed` is the one that flushes for its caller. Work left running
+ * once `work` has settled sums there still, and what it records after the tally's last flush is
+ * never written. A stream that `work` returns is read outside it.
+ * @param tally The tally to sum into, in place of any already running.
+ * @param work The work whose calls are summed.
+ * @returns What `work` returned.
+ */
+export function summedInto<T>(tally: SubserviceTally, work: () => T): T {
+  return runningTally.run(tally, work);
+}
+
+/**
+ * Creates a gatekeeper's client for its upstream calls.
+ * @param options The vendor id, how requests are named, and the timeout, retry and redirect
+ * policy of every request.
+ * @returns The client. See `Upstream` for the rules of a request.
+ * @throws When `vendorId` is no metric word of at most 49 characters, `timeoutMs` is neither a
+ * positive integer nor `null`, or `retry` has `attempts` below 1 or a delay that is negative or
+ * not finite.
+ *
+ * @example
+ * ```ts
+ * const upstream = defineUpstream({
+ *   vendorId: "vendor",
+ *   routes: [["https://api.vendor.example/v1/", { threads: { [ID]: { modify: "POST" } } }]],
+ * });
+ * // Counted as `threads.get` of the service `vendor`, under `gatekeeper.vendor.api`.
+ * const response = await upstream.request("https://api.vendor.example/v1/threads/18c2", {
+ *   authorize: async () => ({ Authorization: `Bearer ${await accessToken()}` }),
+ * });
+ * ```
+ */
+export function defineUpstream(options: UpstreamOptions): Upstream {
+  const { vendorId } = options;
+  const source = `gatekeeper.${vendorId}.api`;
+  if (typeof vendorId !== "string" || !WORD.test(vendorId) || !WORD.test(source)) {
+    throw new Error("vendorId must be a metric word of at most 49 characters.");
+  }
+  const upstreamTimeoutMs = timeoutOf(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const upstreamRetry = retryOf(options.retry, DEFAULT_RETRY);
+
+  // A request's name, from the upstream's namer and routes. Never throws.
+  function nameOf(method: string, url: URL | undefined): string {
+    // A method is a name only where it is one of HTTP's own, so that no other word a caller
+    // passes for one is written.
+    const fallback = HTTP_METHODS.has(method) ? method : "OTHER";
+    if (!url) return fallback;
+    try {
+      const named = options.operation?.(method, url);
+      if (typeof named === "string") return named;
+      return (options.routes && routeOperation(options.routes, method, url)) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  // The service of a request or call. Never throws.
+  function serviceOf(own: string | undefined, url: URL | undefined): string {
+    if (own !== undefined) return own;
+    const { service } = options;
+    if (typeof service !== "function") return service ?? vendorId;
+    try {
+      return service(url) ?? vendorId;
+    } catch {
+      return vendorId;
+    }
+  }
+
+  // Whether `status` is the success of `operation`.
+  function succeeded(status: number, operation: string, manual: boolean): boolean {
+    try {
+      if (options.succeeded) return options.succeeded(status, operation);
+    } catch {
+      // Read as the default.
+    }
+    return status < (manual ? 300 : 400);
+  }
+
+  // Sends one request, attempt after attempt. Every attempt is counted as it ends but, with
+  // `deferred`, the one returned: its caller counts that through `count`, once.
+  async function send(
+    input: string | URL | Request, init: UpstreamRequestInit, deferred: boolean,
+  ): Promise<Sent> {
+    const {
+      operation: named, service: ownService, idempotent: marked, timeoutMs: ownTimeoutMs,
+      retry: ownRetry, authorize, replay, answer, ...rest
+    } = init;
+    const request = input instanceof Request ? input : undefined;
+    const method = (rest.method ?? request?.method ?? "GET").toUpperCase();
+    const url = parsedUrl(input instanceof Request ? input.url : input);
+    const operation = named ?? nameOf(method, url);
+    const idempotent = method === "GET" || method === "HEAD" || marked === true;
+    const timeoutMs = timeoutOf(ownTimeoutMs, upstreamTimeoutMs);
+    const retry = retryOf(ownRetry, upstreamRetry);
+    const redirect = rest.redirect ?? options.redirect;
+    // A `Request` that follows no redirects is answered its 3xx, whoever declared the mode.
+    const manual = (redirect ?? request?.redirect) === "manual";
+    const caller = rest.signal ?? request?.signal ?? undefined;
+    const resendable = canResend(rest.body) && !request?.body;
+    const call = { source, service: serviceOf(ownService, url), operation };
+
+    let attempt = 0;
+    let replays = 0;
+    for (;;) {
+      // Nothing is sent again once the caller's signal has aborted, and no header is asked for.
+      if (attempt + replays > 0) caller?.throwIfAborted();
+      const sent: RequestInit = { ...rest };
+      if (authorize) {
+        const headers = new Headers(rest.headers ?? request?.headers);
+        new Headers(await authorize()).forEach((value, name) => headers.set(name, value));
+        sent.headers = headers;
+      }
+      // A fresh timeout for each attempt, so that a retry has the whole of it.
+      const timeout = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
+      if (timeout) sent.signal = caller ? AbortSignal.any([timeout, caller]) : timeout;
+      if (redirect !== undefined) sent.redirect = redirect;
+
+      // An attempt begun once its caller's signal has aborted is failed by `fetch` unsent.
+      const unsent = caller?.aborted === true;
+      const startedAt = Date.now();
+      let response: Response;
+      try {
+        response = await (options.fetch ?? globalThis.fetch)(input, sent);
+      } catch (error) {
+        // A request its caller gave up is not one the service failed, and is not counted. A
+        // caller that times its own wait aborts with a `TimeoutError`, though, and that is the
+        // service not answering, unless the wait ran out before this attempt was sent.
+        const waitedOut = errorName(caller?.reason) === "TimeoutError";
+        const durationMs = Date.now() - startedAt;
+        const counted = !unsent && (!caller?.aborted || waitedOut);
+        // A `null` is the gatekeeper saying that nothing was sent: there is no attempt to count
+        // or to make again.
+        const given = counted ? askedNow(() => options.thrown?.(error)) : undefined;
+        if (counted && given !== null) {
+          count({ ...call, durationMs }, given ?? {
+            outcome: "error", reason: timeout?.aborted || waitedOut ? "timeout" : "network",
+          });
+        }
+        // Whether the service applied the request is not known, so it is sent again only when
+        // that is safe.
+        if (given !== null && resendable && idempotent && retry && attempt < retry.attempts - 1
+            && !caller?.aborted) {
+          await pause(backoffMs(retry, attempt, null), caller);
+          attempt++;
+          continue;
+        }
+        throw error;
+      }
+
+      const answered = { ...call, durationMs: Date.now() - startedAt, httpStatus: response.status };
+      const verdict = (answer && await asked(() => answer(response)))
+        ?? byStatus(response.status, succeeded(response.status, operation, manual));
+      let counted = false;
+      const countOnce = (given: CallAnswer) => {
+        if (counted) return;
+        counted = true;
+        count(answered, given);
+      };
+      if (!deferred) countOnce(verdict);
+      // Asks a hook whether to send again. An answer that is not returned is counted here, and
+      // its body cancelled, whether the hook says yes or throws.
+      const sendsAgain = async (hook: () => boolean | Promise<boolean>): Promise<boolean> => {
+        try {
+          if (!await hook()) return false;
+        } catch (error) {
+          countOnce(verdict);
+          release(response);
+          throw error;
+        }
+        countOnce(verdict);
+        release(response);
+        return true;
+      };
+
+      if (replay && resendable && replays < MAX_REPLAYS && await sendsAgain(() => replay(response))) {
+        replays++;
+        continue;
+      }
+      if (resendable && retry && attempt < retry.attempts - 1
+          && await sendsAgain(() => retry.retryable(response.status, { method, operation, idempotent }))) {
+        await pause(backoffMs(retry, attempt, response.headers.get("Retry-After")), caller);
+        attempt++;
+        continue;
+      }
+      return {
+        response,
+        verdict,
+        count: countOnce,
+        // The attempt's signal bounds the reading of its answer too, and is read as it is for an
+        // attempt that threw: a caller's abort first, which is no failure of the service.
+        cutOff: () => {
+          if (caller?.aborted && errorName(caller.reason) !== "TimeoutError") return "abort";
+          return timeout?.aborted || caller?.aborted ? "timeout" : undefined;
+        },
+      };
+    }
+  }
+
+  const upstream: Upstream = {
+    vendorId,
+    source,
+    operationOf(method, url) {
+      return nameOf(typeof method === "string" ? method.toUpperCase() : "GET", parsedUrl(url));
+    },
+    async request(input, init) {
+      return (await send(input, init ?? {}, false)).response;
+    },
+    read(input, init, parse, answer) {
+      return send(input, init ?? {}, true).then(({ response, verdict, count: countLast, cutOff }) =>
+        settling(() => parse(response)).then(
+          parsed => {
+            countLast(askedNow(() => answer?.(parsed, response)) ?? verdict);
+            return parsed;
+          },
+          error => {
+            // A success that could not be read is a malformed answer only where its reading was
+            // not cut off.
+            if (verdict.outcome !== "success") {
+              countLast(verdict);
+            } else {
+              const cut = cutOff();
+              if (cut !== "abort") countLast({ outcome: "error", reason: cut ?? "parse" });
+            }
+            release(response);
+            throw error;
+          },
+        ));
+    },
+    call(operation, work, hooks) {
+      const call = { source, service: serviceOf(hooks?.service, undefined), operation };
+      const startedAt = Date.now();
+      return settling(work).then(
+        result => {
+          count({ ...call, durationMs: Date.now() - startedAt },
+            askedNow(() => hooks?.answer?.(result)) ?? { outcome: "success" });
+          return result;
+        },
+        error => {
+          const given = askedNow(() => hooks?.thrown?.(error));
+          if (given !== null) {
+            count({ ...call, durationMs: Date.now() - startedAt }, given ?? {
+              outcome: "error",
+              reason: errorName(error) === "TimeoutError" ? "timeout" : "exception",
+            });
+          }
+          throw error;
+        },
+      );
+    },
+    summed(work) {
+      if (openTally()) return work();
+      const tally = subserviceTally();
+      const flush = () => {
+        writtenTallies.add(tally);
+        try {
+          tally.flush();
+        } catch {
+          // Nothing is written: a metric cannot fail the work it counts.
+        }
+      };
+      let result: ReturnType<typeof work>;
+      try {
+        result = runningTally.run(tally, work);
+      } catch (error) {
+        flush();
+        throw error;
+      }
+      // Only a `Promise` is waited for: the `then` of any other thenable may be what starts its
+      // work, and the caller is the one to call it.
+      if (result instanceof Promise) result.then(flush, flush);
+      else flush();
+      return result;
+    },
+    fetcher(defaults = {}) {
+      const given = Object.fromEntries(
+        Object.entries(defaults).filter(([, value]) => value !== undefined));
+      return (input, init) =>
+        send(input, { ...fetchInit(init), ...given }, false).then(sent => sent.response);
+    },
+    with(overrides) {
+      return defineUpstream({ ...options, ...overrides, vendorId });
+    },
+  };
+  return upstream;
+}
+
+// The answer of a request's last attempt, how its status counts, the counting of it, and how the
+// reading of it was cut off where the attempt's signal has aborted.
+type Sent = {
+  response: Response;
+  verdict: CallAnswer;
+  count: (answer: CallAnswer) => void;
+  cutOff: () => "timeout" | "abort" | undefined;
+};
+
+// The init of a `fetcher`'s caller, without what is named as one of a request's own options.
+function fetchInit(init: RequestInit | undefined): RequestInit {
+  return Object.fromEntries(Object.entries(init ?? {}).filter(([name]) => !OWN_OPTIONS.has(name)));
+}
+
+// The words of a call that are the same whatever its answer.
+type CountedCall = {
+  source: string; service: string; operation: string; durationMs: number; httpStatus?: number;
+};
+
+// Counts one call. Only the four members of an answer are read, so that a hook's answer can
+// replace no other column. Never throws.
+function count(call: CountedCall, answer: CallAnswer): void {
+  try {
+    recordCall({
+      ...call,
+      outcome: answer.outcome,
+      reason: answer.reason,
+      detail: answer.detail,
+      providerCode: answer.providerCode,
+    });
+  } catch {
+    // The call goes uncounted.
+  }
+}
+
+// How an answered attempt counts by its status alone.
+function byStatus(status: number, success: boolean): CallAnswer {
+  if (success) return { outcome: "success" };
+  return status === 429 ? { outcome: "refused", reason: "rate" } : { outcome: "error", reason: "http" };
+}
+
+// What a counting hook answers, or undefined where it answers nothing or throws.
+async function asked(
+  hook: () => CallAnswer | undefined | Promise<CallAnswer | undefined>,
+): Promise<CallAnswer | undefined> {
+  try {
+    return answerOf(await hook());
+  } catch {
+    return undefined;
+  }
+}
+
+// As `asked`, of a hook that answers at once. A `null` is passed on: a `thrown` hook answers it.
+function askedNow<A extends CallAnswer | null | undefined>(hook: () => A): A | undefined {
+  try {
+    const given = hook();
+    return given === null ? given : answerOf(given);
+  } catch {
+    return undefined;
+  }
+}
+
+// A hook's answer, where it is one: an object with an outcome, which a promise is not.
+function answerOf<A>(given: A): A | undefined {
+  return typeof given === "object" && given !== null && "outcome" in given
+    && typeof given.outcome === "string" ? given : undefined;
+}
+
+// The promise of what `work` returns or throws, a throw before its first await included.
+function settling<T>(work: () => T | Promise<T>): Promise<T> {
+  return new Promise<T>(resolve => resolve(work()));
+}
+
+// The name of an error or an abort reason, read from nothing else of it. Never throws.
+function errorName(error: unknown): string | undefined {
+  try {
+    if (typeof error !== "object" || error === null || !("name" in error)) return undefined;
+    return typeof error.name === "string" ? error.name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The URL of a request, or undefined for what is not one. Never throws.
+function parsedUrl(url: string | URL): URL | undefined {
+  try {
+    return typeof url === "string" ? URL.parse(url) ?? undefined : url;
+  } catch {
+    return undefined;
+  }
+}
+
+// Whether a body can be sent a second time. A stream is consumed by its first send, as an
+// iterator may be, so only what `fetch` serializes anew each time counts.
+function canResend(body: RequestInit["body"]): boolean {
+  return body === undefined || body === null || typeof body === "string"
+    || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof Blob
+    || body instanceof URLSearchParams || body instanceof FormData;
+}
+
+// A timeout: the one given, validated, or the one inherited where none is given.
+function timeoutOf(given: number | null | undefined, inherited: number | null): number | null {
+  if (given === undefined) return inherited;
+  return given === null ? null : requirePositiveInt("timeoutMs", given);
+}
+
+// A retry policy: the members given, validated, over the one inherited (the defaults, where that
+// is none). Null sends once.
+function retryOf(
+  given: RetryPolicy | null | undefined, inherited: Required<RetryPolicy> | null,
+): Required<RetryPolicy> | null {
+  if (given === undefined) return inherited;
+  if (given === null) return null;
+  const base = inherited ?? DEFAULT_RETRY;
+  return {
+    attempts: requirePositiveInt("retry.attempts", given.attempts ?? base.attempts),
+    baseDelayMs: delayOf("retry.baseDelayMs", given.baseDelayMs ?? base.baseDelayMs),
+    maxDelayMs: delayOf("retry.maxDelayMs", given.maxDelayMs ?? base.maxDelayMs),
+    retryable: given.retryable ?? base.retryable,
+  };
+}
+
+function delayOf(label: string, value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be a finite number of milliseconds, not negative, got ${value}.`);
+  }
+  return value;
+}
+
+// The wait before the attempt after `attempt`: the server's `Retry-After` in its delta-seconds
+// form, else exponential backoff with full jitter. Never longer than the policy's longest delay.
+function backoffMs(retry: Required<RetryPolicy>, attempt: number, retryAfter: string | null): number {
+  if (retryAfter !== null && /^\s*\d+\s*$/.test(retryAfter)) {
+    return Math.min(Number(retryAfter) * 1000, retry.maxDelayMs);
+  }
+  return Math.random() * Math.min(retry.baseDelayMs * 2 ** attempt, retry.maxDelayMs);
+}
+
+// Waits `ms`, or until `signal` aborts. A wait of nothing sets no timer, and no wait is longer
+// than a timer takes.
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise(resolve => {
+    if (ms <= 0 || signal?.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, Math.min(ms, LONGEST_TIMER_MS));
+    signal?.addEventListener("abort", done);
+  });
+}
+
+// Cancels what is left of an answer's body, so that its connection is not held. The cancelling
+// is not waited for: that of a body a hook cloned ends only once the clone is read. Never throws.
+function release(response: Response): void {
+  try {
+    // A body that is locked or errored has nothing left to release.
+    response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Nor has one whose cancelling throws.
+  }
+}
