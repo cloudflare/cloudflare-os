@@ -719,15 +719,15 @@ describe("Google Chat gatekeeper behaviors", () => {
 
   it("rechecks the authoritative account before delayed apply and undo", async () => {
     const backend = chatBackend();
-    let sub = "subject-a";
-    const chat = chatHarness(backend, () => ({sub}));
+    // A reconnect as another Google account stores that account's token.
+    const chat = chatHarness(backend, token => ({sub: token === "Bearer replacement" ? "subject-b" : "subject-a"}));
     await chat.call("space.post", ["hello"]);
-    sub = "subject-b";
+    await chat.setToken("replacement");
     await expect(chat.applyAction(1)).rejects.toThrow(/different Google account/);
     expect(backend.state.creates).toEqual([]);
-    sub = "subject-a";
+    await chat.setToken("access-token");
     await chat.applyAction(1);
-    sub = "subject-b";
+    await chat.setToken("replacement");
     await expect(chat.revertAction(1)).rejects.toThrow(/different Google account/);
     expect(backend.state.deletes).toEqual([]);
   });
@@ -838,12 +838,28 @@ describe("Google Chat gatekeeper behaviors", () => {
   // reconnect to a different Google account, "my own messages" must not silently become somebody
   // else's.
   it("refuses to act once the connected Google account changes", async () => {
-    let sub = "subject-a";
-    const chat = chatHarness(chatBackend(), () => ({sub}));
+    const chat = chatHarness(chatBackend(), token => ({sub: token === "Bearer replacement" ? "subject-b" : "subject-a"}));
     await chat.call("space.listMessages", [{}]);
-    sub = "subject-b";
+    await chat.setToken("replacement");
     await expect(chat.call("space.listMessages", [{}]))
       .rejects.toThrow(/different Google account/);
+  });
+
+  // The account is asked for the token again every minute, and whenever the binding needs its own
+  // identity: the token it answers was checked already, and Chat works while user info does not.
+  it("reads which Google account a token belongs to once", async () => {
+    let profileReads = 0;
+    let down = false;
+    const chat = chatHarness(chatBackend(), () => {
+      profileReads++;
+      if (down) throw new Error("Google user info is down.");
+      return {sub: "subject-a"};
+    });
+    await chat.call("space.listMessages", [{}]);
+    expect(profileReads).toBe(1);
+    down = true;
+    await chat.call("space.listMessages", [{}]);
+    expect(profileReads).toBe(1);
   });
 
   it("allows post then edit before sending without changing the original approved post", async () => {

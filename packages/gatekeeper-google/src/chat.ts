@@ -789,6 +789,8 @@ async function queueChatMessage(
 
 /** Most people besides the caller that a direct message or group chat can be set up with. */
 const MAX_CONVERSATION_PEOPLE = 49;
+/** How long reading which Google account a newly loaded token belongs to may take. */
+const PROFILE_TIMEOUT_MS = 10 * 1000;
 /** Sends denied after an attempt that are remembered; the oldest go first. */
 const MAX_WITHDRAWN_ATTEMPTS = 100;
 const WITHDRAWN_ATTEMPT = "but an earlier attempt may already have posted it in Google Chat. " +
@@ -1526,22 +1528,29 @@ export class GoogleChatGatekeeperImpl
   #inFlight = new Set<number>();
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
   #settingUp = new SingleFlight();
+  /** The last token checked to belong to this binding's Google account. */
+  #verifiedToken?: string;
   #tokens = new AccessTokenCache(async opts => {
     const account = this.ctx.exports.UserAccount.get(
       this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
     let token = await account.getAccessToken(opts);
+    // A token already checked is the same account's still: the account is asked again each minute
+    // to learn that the connection still serves it (see AccessTokenCache), not who it belongs to.
+    if (token.token === this.#verifiedToken) return token;
     // Every newly loaded token is checked before either Chat or People can use it, including a
     // refresh on a live session. A reconnect must never silently change this binding's authority.
+    // Bounded, so that a slow answer cannot serve a token long after the account was asked.
     const profile = await getGoogleAccountProfile(async retry => {
       if (retry) token = await account.getAccessToken(retry);
       return token.token;
-    });
+    }, AbortSignal.timeout(PROFILE_TIMEOUT_MS));
     const pinned = this.ctx.storage.kv.get<string>("chat:accountSubject");
     if (pinned !== undefined && pinned !== profile.sub) {
       throw new Error("This Google Chat binding belongs to a different Google account. Reconnect the original account.");
     }
     if (pinned === undefined) this.ctx.storage.kv.put("chat:accountSubject", profile.sub);
     this.#self = { id: `users/${profile.sub}`, ...(profile.name ? { name: profile.name } : {}), type: "human" };
+    this.#verifiedToken = token.token;
     return token;
   });
 

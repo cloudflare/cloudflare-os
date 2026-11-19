@@ -89,6 +89,30 @@ describe("AccessTokenCache memo age", () => {
   });
 });
 
+describe("AccessTokenCache memo age from the account check", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // A mint can check the token after the account answered (Chat reads whose it is): that time is
+  // part of the minute, or a slow check would give a disconnected connection's token a fresh one.
+  it("counts the time the mint took", async () => {
+    vi.useFakeTimers();
+    let asked = 0;
+    let cache = new AccessTokenCache(async () => {
+      asked++;
+      vi.advanceTimersByTime(30_000);
+      return { token: "tok", expires: new Date(Date.now() + 3600_000) };
+    });
+
+    expect(await cache.get()).toBe("tok");
+    vi.advanceTimersByTime(29_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(1);
+    vi.advanceTimersByTime(1_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(2);
+  });
+});
+
 describe("fetchWithAuthRetry", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

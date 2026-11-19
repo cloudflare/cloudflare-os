@@ -322,9 +322,12 @@ export class AccessTokenCache {
   async get(opts?: AccessTokenRequest): Promise<string> {
     let cached = this.#cached;
     if (!this.#satisfies(cached, opts)) {
+      // The memo's age runs from when the account was asked, not from when `mint` returned, which
+      // may have checked the token first.
+      let asked = Date.now();
       cached = await this.#mint(opts);
       this.#cached = cached;
-      this.#cachedAt = Date.now();
+      this.#cachedAt = asked;
     }
     return cached.token;
   }
