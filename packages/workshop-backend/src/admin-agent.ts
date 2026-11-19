@@ -11,7 +11,7 @@ import {
   type AdminApi,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, type AdminAgentAction,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, adminAgentActionMethods, type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminAgentApi, AdminAgentMethod } from "@gadgets/workshop-shared/admin-gatekeeper";
 import { ADMIN_METHOD_ANSWERS } from "./admin-access";
@@ -28,8 +28,8 @@ const logger = createWorkshopLogger("workshop.admin.agent");
  *     the session directly from the connection, outside any chat: such a session is lent
  *     nothing unless the opener is the owner, because its records would name the owner and
  *     leave no trace of who called;
- *   - an approved action of `kind`: ONE call, of the method ADMIN_AGENT_ACTIONS names for it.
- *     `autoApproved` says the approval was a rule's, not a person's,
+ *   - an approved action of `kind`: ONE call, one of the calls ADMIN_AGENT_ACTIONS names for
+ *     it, with its visibility. `autoApproved` says the approval was a rule's, not a person's,
  *     and `decidedBy` is the profile id of whoever approved (the rule's enabler for a rule).
  */
 export type AdminAgentUse =
@@ -42,12 +42,13 @@ export type AdminAgentUse =
 export type AdminAgentLend = { api: RpcStub<AdminAgentApi>; end(): void };
 
 /**
- * Why `method` may not run under `use`, or undefined when it may. Pure: no clock, no
+ * Why `method` with `args` may not run under `use`, or undefined when it may. Pure: no clock, no
  * environment. A name that is not an AdminApi method, an "omitted" method, an "act" method in a
- * session, anything but the action's own method in an action, each has a message that names the
- * method and says what to do instead.
+ * session, anything but the action's own call in an action (with its visibility), each has a
+ * message that names the method and says what to do instead. No argument is quoted.
  */
-export function adminAgentRefusal(use: AdminAgentUse, method: string): string | undefined {
+export function adminAgentRefusal(use: AdminAgentUse, method: string, args: readonly unknown[])
+    : string | undefined {
   // An own key only: "constructor", "toString" and "__proto__" are not methods of the API.
   if (!Object.hasOwn(ADMIN_AGENT_KINDS, method)) return `AdminApi has no method ${method}.`;
   let kind = ADMIN_AGENT_KINDS[method as keyof typeof ADMIN_AGENT_KINDS];
@@ -58,7 +59,13 @@ export function adminAgentRefusal(use: AdminAgentUse, method: string): string | 
     return kind === "act" ? `AdminApi.${method}() runs only as an approved action.` : undefined;
   }
   let action = ADMIN_AGENT_ACTIONS[use.kind];
-  if (method !== action.method) return `This action may only call AdminApi.${action.method}().`;
+  let methods = adminAgentActionMethods(use.kind);
+  if (!methods.includes(method)) {
+    return `This action may only call AdminApi.${methods.join("() or AdminApi.")}().`;
+  }
+  if (action.visibility !== undefined && args[2] !== action.visibility) {
+    return `This action may only write a "${action.visibility}" entry.`;
+  }
   return undefined;
 }
 
@@ -271,7 +278,7 @@ export function restrictAdminApi(api: AdminApi, env: Cloudflare.Env, admin: stri
 
   let lent = answerBy(async (name, args) => {
     await check();
-    let refusal = adminAgentRefusal(use, name);
+    let refusal = adminAgentRefusal(use, name, args);
     if (refusal !== undefined) throw new Error(refusal);
     let view = Object.hasOwn(ADMIN_AGENT_VIEWS, name)
         ? ADMIN_AGENT_VIEWS[name as AdminAgentViewMethod] : undefined;

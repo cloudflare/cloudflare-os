@@ -14,7 +14,7 @@ import {
   getAdminAccessErrorCode,
 } from "@gadgets/workshop-shared/api";
 import {
-  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, type AdminAgentAction,
+  ADMIN_AGENT_ACTIONS, ADMIN_AGENT_KINDS, adminAgentActionMethods, type AdminAgentAction,
 } from "@gadgets/workshop-shared/admin-agent";
 import type { AdminApi } from "@gadgets/workshop-shared/api";
 import { ADMIN_METHOD_ANSWERS } from "../src/admin-access.js";
@@ -37,6 +37,16 @@ const SESSION: AdminAgentUse = { for: "session", until: T0 + 60_000, live: () =>
 const action = (kind: AdminAgentAction, autoApproved = false): AdminAgentUse =>
     ({ for: "action", kind, autoApproved, decidedBy: ADMIN });
 
+// Arguments of `method` that the action `kind` allows.
+function allowedArgs(kind: AdminAgentAction): unknown[] {
+  let { method, visibility } = ADMIN_AGENT_ACTIONS[kind];
+  if (method === "addIssueReportEntry") return ["report", "text", visibility];
+  if (method === "setIssueReportStatus") return ["report", "answered"];
+  if (typeof method !== "string") return ["report"];
+  if (method === "requestContentAccess") return ["workspace", "reason"];
+  return ["workspace", "stopAgent", { chatId: 3 }, "reason"];
+}
+
 async function rejection(call: Promise<unknown>): Promise<Error> {
   try {
     await call;
@@ -49,7 +59,7 @@ async function rejection(call: Promise<unknown>): Promise<Error> {
 describe("adminAgentRefusal", () => {
   it("lets a session read, and refuses it every act and omitted method", () => {
     for (let method of METHODS) {
-      let refusal = adminAgentRefusal(SESSION, method);
+      let refusal = adminAgentRefusal(SESSION, method, []);
       let kind = ADMIN_AGENT_KINDS[method];
       if (kind === "read") expect(refusal, method).toBeUndefined();
       if (kind === "act") {
@@ -62,30 +72,79 @@ describe("adminAgentRefusal", () => {
   });
 
   it.each(ACTIONS)("lets an action of kind %s make its own call and no other", kind => {
-    let own = ADMIN_AGENT_ACTIONS[kind].method;
+    let own = adminAgentActionMethods(kind);
     for (let method of METHODS) {
-      let refusal = adminAgentRefusal(action(kind), method);
-      if (method === own) {
+      let refusal = adminAgentRefusal(action(kind), method, allowedArgs(kind));
+      if (own.includes(method)) {
         expect(refusal, method).toBeUndefined();
       } else if (ADMIN_AGENT_KINDS[method] === "omitted") {
         expect(refusal).toBe(`AdminApi.${method}() is not available through the admin gatekeeper.`);
       } else {
-        expect(refusal).toBe(`This action may only call AdminApi.${own}().`);
+        expect(refusal).toBe(`This action may only call AdminApi.${own.join("() or AdminApi.")}().`);
       }
     }
   });
 
+  it("lets an approved assignment claim or release, and nothing else", () => {
+    let assignment = action("issueReportAssignment");
+    expect(adminAgentRefusal(assignment, "claimIssueReport", ["report"])).toBeUndefined();
+    expect(adminAgentRefusal(assignment, "releaseIssueReport", ["report"])).toBeUndefined();
+    for (let method of ["whoami", "getIssueReport", "setIssueReportStatus", "addIssueReportEntry"]) {
+      expect(adminAgentRefusal(assignment, method, ["report"])).toBe("This action may only call " +
+          "AdminApi.claimIssueReport() or AdminApi.releaseIssueReport().");
+    }
+  });
+
+  it("refuses a claim and a release to a session and to every other kind", () => {
+    for (let method of ["claimIssueReport", "releaseIssueReport"]) {
+      expect(adminAgentRefusal(SESSION, method, ["report"]))
+          .toBe(`AdminApi.${method}() runs only as an approved action.`);
+      for (let kind of ACTIONS) {
+        if (kind === "issueReportAssignment") continue;
+        expect(adminAgentRefusal(action(kind), method, allowedArgs(kind)), kind).toBe(
+            `This action may only call AdminApi.${ADMIN_AGENT_ACTIONS[kind].method}().`);
+      }
+    }
+  });
+
+  it("holds an entry to its kind's visibility", () => {
+    let entry = (kind: AdminAgentAction, visibility: unknown) =>
+        adminAgentRefusal(action(kind), "addIssueReportEntry", ["report", "text", visibility]);
+    for (let kind of ["issueReportReply", "issueReportScopedReply"] as const) {
+      expect(entry(kind, "public")).toBeUndefined();
+      for (let other of ["admins", undefined, "PUBLIC", ["public"]]) {
+        expect(entry(kind, other)).toBe(`This action may only write a "public" entry.`);
+      }
+    }
+    expect(entry("issueReportNote", "admins")).toBeUndefined();
+    for (let other of ["public", undefined]) {
+      expect(entry("issueReportNote", other)).toBe(`This action may only write a "admins" entry.`);
+    }
+  });
+
   it("keeps a request for content apart from a write", () => {
-    expect(adminAgentRefusal(action("contentAccessRequest"), "writeWorkspace"))
+    expect(adminAgentRefusal(action("contentAccessRequest"), "writeWorkspace",
+        ["workspace", "stopAgent", { chatId: 3 }, "why"]))
         .toBe("This action may only call AdminApi.requestContentAccess().");
-    expect(adminAgentRefusal(action("workspaceWriteRequest"), "requestContentAccess"))
+    expect(adminAgentRefusal(action("workspaceWriteRequest"), "requestContentAccess",
+        ["workspace", "why"]))
         .toBe("This action may only call AdminApi.writeWorkspace().");
   });
 
   it("refuses a name that is not a method, whatever the use", () => {
     for (let use of [SESSION, ...ACTIONS.map(kind => action(kind))]) {
       for (let name of NOT_METHODS) {
-        expect(adminAgentRefusal(use, name)).toBe(`AdminApi has no method ${name}.`);
+        expect(adminAgentRefusal(use, name, [])).toBe(`AdminApi has no method ${name}.`);
+      }
+    }
+  });
+
+  it("quotes no argument", () => {
+    let secret = "secret-argument";
+    for (let use of [SESSION, ...ACTIONS.map(kind => action(kind))]) {
+      for (let method of [...METHODS, ...NOT_METHODS]) {
+        let refusal = adminAgentRefusal(use, method, [secret, secret, secret, secret]);
+        expect(refusal ?? "").not.toContain(secret);
       }
     }
   });
@@ -121,9 +180,9 @@ describe("capViewLifetime", () => {
   });
 
   it("keeps the other options and leaves the caller's object alone", () => {
-    let options = { access: "content", lifetimeSeconds: 3600 };
+    let options = { access: "content", forIssueReport: "report-1", lifetimeSeconds: 3600 };
     expect(capViewLifetime(["ws", "why", options], FIVE_MINUTES))
-        .toEqual(["ws", "why", { access: "content", lifetimeSeconds: 300 }]);
+        .toEqual(["ws", "why", { access: "content", forIssueReport: "report-1", lifetimeSeconds: 300 }]);
     expect(options.lifetimeSeconds).toBe(3600);
   });
 
@@ -218,8 +277,8 @@ describe("restrictAdminApi", () => {
 
   it("refuses a session every act and omitted method and every name that is no method", async () => {
     let { api, calls } = lendOver(SESSION);
-    expect((await rejection(api.writeWorkspace("ws", "stopAgent", { chatId: 3 }, "why"))).message)
-        .toBe("AdminApi.writeWorkspace() runs only as an approved action.");
+    expect((await rejection(api.addIssueReportEntry("report", "text", "admins"))).message)
+        .toBe("AdminApi.addIssueReportEntry() runs only as an approved action.");
     expect((await rejection(api.setSiteName("x"))).message)
         .toBe("AdminApi.setSiteName() is not available through the admin gatekeeper.");
     expect((await rejection(api.approveContentAccess("request"))).message)
@@ -373,54 +432,68 @@ describe("restrictAdminApi", () => {
       }
     }
     expect(ACTIONS.filter(kind => !ADMIN_AGENT_ACTIONS[kind].autoApprovable))
-        .toEqual(["workspaceWriteRequest", "contentAccessRequest"]);
+        .toEqual(["issueReportReply", "workspaceWriteRequest", "contentAccessRequest"]);
     // A person's approval of the same kinds is lent to.
-    expect(() => lendOver(action("workspaceWriteRequest"))).not.toThrow();
+    expect(() => lendOver(action("issueReportReply"))).not.toThrow();
     expect(() => lendOver(action("contentAccessRequest"))).not.toThrow();
   });
 
   it("answers an action's one call and refuses a second", async () => {
-    let { api, calls } = lendOver(action("workspaceWriteRequest"));
-    expect(await api.writeWorkspace("ws", "stopAgent", { chatId: 3 }, "why"))
-        .toBe("writeWorkspace answered");
-    expect((await rejection(api.writeWorkspace("ws", "restartWorkspace", {}, "why"))).message)
+    let { api, calls } = lendOver(action("issueReportNote"));
+    expect(await api.addIssueReportEntry("report", "a note", "admins"))
+        .toBe("addIssueReportEntry answered");
+    expect((await rejection(api.addIssueReportEntry("report", "another", "admins"))).message)
         .toBe("This action has made its one call.");
     expect(calls).toEqual([
-      { method: "writeWorkspace", args: ["ws", "stopAgent", { chatId: 3 }, "why"] },
+      { method: "addIssueReportEntry", args: ["report", "a note", "admins"] },
     ]);
+  });
+
+  it("answers an assignment's one call, a claim or a release, and refuses the other after it", async () => {
+    let claim = lendOver(action("issueReportAssignment"));
+    expect(await claim.api.claimIssueReport("report")).toBe("claimIssueReport answered");
+    expect((await rejection(claim.api.releaseIssueReport("report"))).message)
+        .toBe("This action has made its one call.");
+    expect(claim.calls).toEqual([{ method: "claimIssueReport", args: ["report"] }]);
+
+    let release = lendOver(action("issueReportAssignment", true));
+    expect(await release.api.releaseIssueReport("report")).toBe("releaseIssueReport answered");
+    expect(release.calls).toEqual([{ method: "releaseIssueReport", args: ["report"] }]);
   });
 
   it("makes one call of two an action starts together", async () => {
-    let { api, calls } = lendOver(action("contentAccessRequest"));
+    let { api, calls } = lendOver(action("issueReportStatus"));
     let results = await Promise.allSettled([
-      api.requestContentAccess("ws", "first"),
-      api.requestContentAccess("ws", "second"),
+      api.setIssueReportStatus("report", "answered"),
+      api.setIssueReportStatus("report", "closed"),
     ]);
     expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
-    expect(calls).toEqual([{ method: "requestContentAccess", args: ["ws", "first"] }]);
+    expect(calls).toEqual([{ method: "setIssueReportStatus", args: ["report", "answered"] }]);
   });
 
   it("leaves an action no call once its first was refused", async () => {
-    let { api, calls } = lendOver(action("workspaceWriteRequest"));
-    expect((await rejection(api.requestContentAccess("ws", "why"))).message)
-        .toBe("This action may only call AdminApi.writeWorkspace().");
-    expect((await rejection(api.writeWorkspace("ws", "stopAgent", { chatId: 3 }, "why"))).message)
+    let { api, calls } = lendOver(action("issueReportNote"));
+    expect((await rejection(api.addIssueReportEntry("report", "a reply", "public"))).message)
+        .toBe(`This action may only write a "admins" entry.`);
+    expect((await rejection(api.addIssueReportEntry("report", "a note", "admins"))).message)
         .toBe("This action has made its one call.");
     expect(calls).toEqual([]);
   });
 
   it("refuses an action's lend after end(), its call made or not", async () => {
-    let unused = lendOver(action("contentAccessRequest"));
+    let unused = lendOver(action("issueReportStatus"));
     unused.lend.end();
-    expect((await rejection(unused.api.requestContentAccess("ws", "why"))).message)
+    expect((await rejection(unused.api.setIssueReportStatus("report", "closed"))).message)
         .toBe("This Admin API session has ended. Open a new one.");
     expect(unused.calls).toEqual([]);
   });
 
   it("passes a returned stream on to the caller", async () => {
     let bytes = new Uint8Array([1, 2, 3, 4]);
-    let { api } = lendOver(SESSION, { getSettings: () => new Response(bytes).body });
-    let stream: ReadableStream<Uint8Array> = await api.getSettings();
+    let { api } = lendOver(SESSION, {
+      readIssueReportImage: () => new Response(bytes).body,
+    });
+    let stream: ReadableStream<Uint8Array> = await api.readIssueReportImage("report", "image");
     expect(new Uint8Array(await new Response(stream).arrayBuffer())).toEqual(bytes);
   });
 });
