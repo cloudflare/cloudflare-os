@@ -10,7 +10,7 @@
 // followed only by a click, in a new browser tab, from a cell Google Sheets has saved.
 
 import {
-  flash, leaveOutline, lineIcon, loadOnRefresh, make, outlineList, page, setOutline, setStops, showError,
+  flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, outlineList, page, setOutline, setStops, showError,
   showLoading, showPage, showStale, status,
 } from './ui/chrome.js';
 
@@ -343,31 +343,7 @@ function writeLook(format, index) {
 // ---------------------------------------------------------------------------------------------
 // Fonts: the spreadsheet's own, which the session reads from Google Fonts for this frame
 
-// Families every browser has, or has a match for, which Google Fonts does not serve.
-const SYSTEM_FONT = /^(arial|helvetica( neue)?|sans|times new roman|courier new|georgia|verdana|tahoma|trebuchet ms|comic sans ms|impact|calibri|cambria)$/i;
-// Each font asked for, by family, weight and slant: whether it arrived.
-const faces = new Map();
-// Only a font that arrives, or may yet, counts against the limit.
-let fontsHeld = 0;
-
-function readFace(family, weight, italic) {
-  const key = `${family}\u0000${weight}\u0000${italic}`;
-  if (faces.has(key)) return faces.get(key);
-  if (fontsHeld >= MAX_FONTS) return Promise.resolve(false);
-  fontsHeld++;
-  const arrived = gadget.readFont(family, weight, italic).then(async bytes => {
-    const face = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal' });
-    await face.load();
-    document.fonts.add(face);
-    return true;
-  }).catch(() => {
-    fontsHeld--;
-    // Without the weight the browser makes one from the family's regular, when that is there.
-    return (weight !== 400 || italic) && readFace(family, 400, false);
-  });
-  faces.set(key, arrived);
-  return arrived;
-}
+const fonts = fontReader((...font) => gadget.readFont(...font), MAX_FONTS);
 
 // Reads the fonts a drawing's formats name that have not been asked for, and says whether any
 // arrived, which changes how far its text runs.

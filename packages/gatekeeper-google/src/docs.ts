@@ -48,6 +48,7 @@ import { cappedStream } from "./byte-stream";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
+import { downloadFont, isFontRequest } from "./slides-media";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
 import { officeFileError, officeLabel } from "./office-conversion";
@@ -718,6 +719,8 @@ export class GoogleDocSessionImpl extends RpcTarget
   #changes: DocChangeQueue;
   #source: DocSource;
   #comments: DocCommentSession | undefined;
+  /** The font families readDrawing() has returned. */
+  #fonts = new Set<string>();
 
   constructor(options: GoogleDocSessionOptions) {
     super();
@@ -1078,12 +1081,24 @@ export class GoogleDocSessionImpl extends RpcTarget
       description: "Read one tab of the document as Google Docs draws it.",
     });
     if (!tab.drawing) throw new Error("readDrawing: this document is too large to read as it is drawn.");
+    // What readFont() may then fetch: the families the saved tab is set in.
+    for (let look of tab.drawing.textLooks) this.#fonts.add(look.fontFamily);
     return tab.drawing;
   }
 
   async getRenderingTypes(): Promise<string> {
     // The same text for every document, saying nothing of this one, so no read of it is reported.
     return DOCS_RENDERING_TYPES_CODE;
+  }
+
+  async readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array> {
+    // A font is public, and says nothing of the document but that it names the family, which
+    // readDrawing() reports. Only a family so named is fetched, so nothing else reaches Google Fonts.
+    if (!this.#fonts.has(family) || !isFontRequest(family, weight)) {
+      throw new Error(`readFont: no drawing read names a font "${family}" that Google Fonts ` +
+        "could serve at that weight. Pass a `fontFamily` readDrawing() returned.");
+    }
+    return downloadFont(family, weight, italic);
   }
 
   async listImages(tabId: string): Promise<GoogleDocImage[]> {

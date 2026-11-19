@@ -313,6 +313,7 @@ document only because callers older than tabs exist, and these reads are new.
 getPendingChanges(tabId: string): Promise<GoogleDocPendingChanges>;  // { savedMarkdown, markdown, changes }
 readDrawing(tabId: string): Promise<GoogleDocDrawing>;   // the saved tab as Google Docs lays it out
 readImage(imageId: string, tabId: string): Promise<GoogleDocImageBytes>;  // at most 10 MB
+readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array>;  // a family the drawing named
 getRenderingTypes(): Promise<string>;                    // the declarations of readDrawing()
 listImages(tabId: string): Promise<GoogleDocImage[]>;    // one for each [Image] in getContent()
 ```
@@ -341,6 +342,9 @@ listImages(tabId: string): Promise<GoogleDocImage[]>;    // one for each [Image]
   gives each placeholder's ID, size and alt text in order, so that `readImage()` can be called
   without the drawing or its types. `getStyles()`, which the preview read before the drawing,
   is gone: the drawing holds all it returned, in full.
+- Fonts come through the session as they do for Sheets and Slides: `readFont()` reads a family
+  the drawing of a tab already read names, and no other, from Google Fonts. A family Google
+  Fonts does not serve is drawn in the browser's nearest.
 - Image bytes are streamed, read from Google as the frame reads them, and fail partway past
   10 MB where Google did not state the size. (A stream from the backend session reaches the UI
   frame from capnweb 0.13.0.) Google's image addresses lapse; a read that finds one lapsed
@@ -371,8 +375,8 @@ Found against real documents, and each is drawn as near as the API allows:
   it line by line. The client (`draw.js`, `pages.js`) follows these rules:
   - *Every font is set alike.* A line of text is 1.18 times its size tall, times the
     paragraph's line spacing, with the baseline 0.96 of the size under the line's top and the
-    rest under the text. A font's own ascent and descent play no part. A line of mixed sizes
-    takes the largest.
+    rest under the text. A font's own ascent and descent play no part, so each font read for
+    the document is given those two as overrides. A line of mixed sizes takes the largest.
   - *Each line is rounded up to a whole pixel*, after the paragraph's space above is added to
     its first line and its space below to its last. A paragraph of one line is rounded once,
     with both.
@@ -500,12 +504,14 @@ a document's colors are chosen against its paper.
   views, sheets with their headers, footers and page numbers, saved and pending page breaks,
   images kept through an edit, the looks pending words take, and the Markdown fallback.
 - Against Google Docs itself. A harness draws a captured drawing beside a screenshot of the
-  same document in the editor at 100%, and the baselines of matching lines are compared. A
-  brochure (first-page header and footer, positioned and wrapped images) is within 2px down
-  its first page; class notes in Roboto Slab with inline images are exact on the second page
-  and within 5px at the foot of the first, where each inline image sits about 1.7px lower in
-  Google Docs than here, for a reason not found. A 21-page A4 design document paginates
-  without overflow and was not compared line by line.
+  same document, and the editor's own drawing calls are recorded in a browser tab (the text,
+  font and baseline of every line and the rectangle of every image), then compared with the
+  client's lines. A 20-page A4 design document in Droid Sans and Consolas makes the same 20
+  pages, with each of its 450 lines holding the same words within half a pixel of where the
+  editor puts it. Class notes in Roboto Slab with inline images match line for line, images
+  included. A brochure (first-page header and footer, positioned and wrapped images) is
+  within a pixel down its first page; its second starts 22px high, because the Docs API does
+  not return the header Google draws there (see above).
 - Two documents that are mostly table, each one page in the editor and one here. A form
   brought in from Word (merged cells, shaded cells, no stated padding) has its table's columns
   on the editor's pixels and its text where the editor has it in every row that wraps as the

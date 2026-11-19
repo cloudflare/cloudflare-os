@@ -10,7 +10,8 @@ export interface GoogleDocRenderingReads {
    * each block of the body here names its line of that `savedMarkdown`. To read or edit the
    * tab's text call `getContent()`, whose answer is far smaller.
    *
-   * `readImage()` reads the bytes of an object named here.
+   * `readImage()` reads the bytes of an object named here, and `readFont()` a font of a family
+   * named here.
    */
   readDrawing(tabId: string): Promise<GoogleDocDrawing>;
 }

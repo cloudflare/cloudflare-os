@@ -2316,6 +2316,16 @@ describe("Google Doc drawing", () => {
     expect(observations).toEqual([]);
   });
 
+  // Only a family the drawing names is fetched, so a session cannot be made to ask Google Fonts for another.
+  it("reads no font of a family the tab's drawing does not name", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    docs.install();
+
+    expect(await hooks().readFont("drawing-font", MAIN_TAB, "Open Sans"))
+      .toContain('no drawing read names a font "Open Sans"');
+  });
+
   it("keeps a document readable whose drawing makes it too large to store", async () => {
     let docs = new DocsModel();
     // Text that fits one stored value as the tab's Markdown, and not again in its drawing.
