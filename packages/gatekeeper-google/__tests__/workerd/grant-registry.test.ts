@@ -600,6 +600,31 @@ describe("Google grants shared by several connections", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain(BLOCKED_DESCRIPTION);
   });
 
+  // Only a disconnect needs to know whether another connection holds the grant: a holder that
+  // lets go otherwise must not wait while the registry asks the others.
+  it("lets go of a grant without waiting on the other holders, unless it is disconnected", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const slow = await connection(google, "slow", ada);
+    const dead = await connection(google, "dead", ada);
+    const moved = await connection(google, "moved", ada);
+    // Asked whether it still holds the grant, the first connection keeps its answer back.
+    await slow.run((_instance, state) => { state.storage.kv.put("test:holdGrantCheck", true); });
+    const asked = () => slow.stored<boolean>("test:grantCheckHeld");
+    try {
+      google.refused.set("refresh-dead", null);
+      await expect(dead.refresh()).rejects.toThrow(/expired or been revoked/);
+      await reconnect(google, moved, "moved-again", grace);
+      expect(await asked()).toBeUndefined();
+    } finally {
+      await slow.run((_instance, state) => { state.storage.kv.delete("test:holdGrantCheck"); });
+    }
+    // Neither is listed any more: the first connection is the Google account's last.
+    await slow.disconnect();
+    expect(google.revoked).toEqual(["refresh-slow"]);
+  });
+
   it("stops counting a refused connection whose removal the registry never received", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
@@ -607,7 +632,7 @@ describe("Google grants shared by several connections", () => {
     const dead = await connection(google, "dead", ada);
     const working = await connection(google, "working", ada);
     google.refused.set("refresh-dead", null);
-    vi.spyOn(GoogleGrantRegistry.prototype, "remove").mockImplementationOnce(async () => {
+    vi.spyOn(GoogleGrantRegistry.prototype, "drop").mockImplementationOnce(async () => {
       throw new Error("registry unavailable");
     });
     await expect(dead.refresh()).rejects.toThrow(/expired or been revoked/);

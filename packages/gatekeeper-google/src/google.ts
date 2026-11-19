@@ -860,7 +860,7 @@ export class UserAccount extends DurableObject<Env> {
       if (sameAccount) {
         kv.delete(GRANT_CREDENTIALS_KEY);
       } else {
-        await this.#forgetGrant().catch(error => {
+        await this.#dropGrant().catch(error => {
           logger.warn("failed to stop holding the Google grant a reconnect replaced", {
             event: "google.grant.forget.failed", error,
           });
@@ -936,7 +936,7 @@ export class UserAccount extends DurableObject<Env> {
         // A reconnect may have signed in as another Google account. The grant recorded before is
         // let go first, and the new one is named before its registry lists this object, so that
         // the registry this object names is the only one it tells it holds a grant in.
-        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) await this.#forgetGrant();
+        if (kv.get<string>(GRANT_SUBJECT_KEY) !== sub) await this.#dropGrant();
         await this.#recordHolder(sub, installed);
       });
     } catch (error) {
@@ -983,12 +983,27 @@ export class UserAccount extends DurableObject<Env> {
    * Called with the credentials mutex held.
    */
   async #forgetGrant(): Promise<{ last: boolean } | undefined> {
+    let subject = this.#unrecordGrant();
+    if (subject === undefined) return undefined;
+    return await this.#grantRegistry(subject).remove(this.ctx.id.toString());
+  }
+
+  /**
+   * As #forgetGrant, for a caller that does not revoke and so need not wait while the registry
+   * asks the other holders whether any is left.
+   */
+  async #dropGrant(): Promise<void> {
+    let subject = this.#unrecordGrant();
+    if (subject !== undefined) await this.#grantRegistry(subject).drop(this.ctx.id.toString());
+  }
+
+  /** Deletes this object's record of the grant it holds, and says whose grant that was. */
+  #unrecordGrant(): string | undefined {
     let kv = this.ctx.storage.kv;
     let subject = kv.get<string>(GRANT_SUBJECT_KEY);
-    if (subject === undefined) return undefined;
     kv.delete(GRANT_SUBJECT_KEY);
     kv.delete(GRANT_CREDENTIALS_KEY);
-    return await this.#grantRegistry(subject).remove(this.ctx.id.toString());
+    return subject;
   }
 
   /**
@@ -1244,7 +1259,7 @@ export class UserAccount extends DurableObject<Env> {
           // Recorded first, so that a recording of this object as a holder that began before the
           // refusal, and finishes after it, records nothing.
           this.ctx.storage.kv.put<boolean>(REFRESH_TOKEN_DEAD_KEY, true);
-          await this.#forgetGrant().catch(forgetError => {
+          await this.#dropGrant().catch(forgetError => {
             logger.warn("failed to stop holding a Google grant whose refresh was refused", {
               event: "google.grant.forget.failed", error: forgetError,
             });

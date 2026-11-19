@@ -24,6 +24,14 @@ export class GoogleGrantRegistry extends DurableObject<Env> {
   }
 
   /**
+   * Forgets the holder, whether or not it was recorded, asking no other holder anything: for one
+   * that lets go without revoking the grant.
+   */
+  async drop(userObjectId: string): Promise<void> {
+    this.ctx.storage.kv.delete(HOLDER_PREFIX + userObjectId);
+  }
+
+  /**
    * Forgets the holder, whether or not it was recorded, and says whether no holder is left: only
    * then does revoking the grant at Google end no other connection.
    *
