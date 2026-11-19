@@ -98,15 +98,18 @@ the model's context window, which compaction cannot repair. A later upload into 
 attachment worktree also reaches the agent as a user change, whose diff is shown only within the same
 limit. Images with an edge above 8000 pixels or unrecognized dimension headers stay
 workspace-only on every model replay; no resize/transcode changes their original bytes.
-Every request resends the chat's images and PDFs, so replay chooses which go inline across the
-whole chat: the newest `MAX_INLINE_ATTACHMENTS` (20, past which Anthropic lowers its pixel limit),
-each at most `MAX_INLINE_ATTACHMENT_BYTES` (7 MiB, under Anthropic's 10 MB of base64 per image)
-and together at most `MAX_INLINE_ATTACHMENTS_TOTAL_BYTES` (10 MiB, under Gemini's 20 MB inline
-request limit once encoded). The rest are named by workspace path, and replay reads no
-attachment's bytes unless it could inline them, so no upload can make a provider refuse a request
-for its attachments. Choosing newest first means a new attachment that overflows these limits
-changes the prompt from an older message on, so that turn misses the provider's cache from there.
-A PDF's page count is not checked. Originals remain unchanged. New images are read from the same
+An image or PDF goes inline if it is at most `MAX_INLINE_ATTACHMENT_BYTES` (7 MiB, under
+Anthropic's 10 MB of base64 per image) and its message's inline attachments stay within
+`MAX_INLINE_ATTACHMENTS_TOTAL_BYTES` (10 MiB, under Gemini's 20 MB inline request limit once
+encoded). The decision depends only on its own message, so a later message never changes how an
+earlier one is shown: rewriting an earlier message would invalidate the model's preserved thinking
+after it, and miss the provider's cache. Every request resends them all, so once the chat's pass
+`MAX_INLINE_ATTACHMENTS` (20, past which Anthropic lowers its pixel limit) or
+`MAX_INLINE_ATTACHMENTS_TOTAL_BYTES`, the turn compacts first, keeping the newest messages whose
+attachments fit; compaction rewrites the history anyway. Until then, and in the turn if compaction
+fails, the older ones are named by workspace path. Replay reads no attachment's bytes unless it
+could inline them, so no upload can make a provider refuse a request for its attachments. A PDF's
+page count is not checked. Originals remain unchanged. New images are read from the same
 immutable blob for previews; there is no separate payload copy in attachment records, and a chat
 message carries the bytes only of images up to 4 MiB to clients, which stream larger attachments
 with `readBlob()`. Uploads are limited to 100 MiB per file and five files per message.

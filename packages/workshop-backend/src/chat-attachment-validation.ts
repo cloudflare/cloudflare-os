@@ -16,16 +16,18 @@ export const MAX_INLINE_ATTACHMENT_BYTES = 7 * 1024 * 1024;
 
 /**
  * The most image and PDF bytes one model request carries inline, across the whole replayed
- * chat, since every turn resends them all. Base64-encoded, this stays under Gemini's 20 MB
- * inline request limit with room left for the text, and the request stays small beside the
- * Durable Object's 128 MB of memory.
+ * chat, since every turn resends them all: a message inlines its own only within it, and a chat
+ * whose messages together pass it compacts first (see the replay in agent.ts). Base64-encoded,
+ * this stays under Gemini's 20 MB inline request limit with room left for the text, and the
+ * request stays small beside the Durable Object's 128 MB of memory.
  */
 export const MAX_INLINE_ATTACHMENTS_TOTAL_BYTES = 10 * 1024 * 1024;
 
 /**
- * The most images and PDFs one model request carries inline. Past 20, Anthropic refuses images
- * over a lower pixel limit than canInlineChatAttachmentImage() allows, and Bedrock and Vertex
- * count PDFs toward that too; well past it, providers refuse the request outright.
+ * The most images and PDFs one model request carries inline; a chat that passes it compacts
+ * first. Past 20, Anthropic refuses images over a lower pixel limit than
+ * canInlineChatAttachmentImage() allows, and Bedrock and Vertex count PDFs toward that too; well
+ * past it, providers refuse the request outright.
  */
 export const MAX_INLINE_ATTACHMENTS = 20;
 

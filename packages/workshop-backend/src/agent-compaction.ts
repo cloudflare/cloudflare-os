@@ -287,10 +287,12 @@ export function buildSummaryPrompt(
  * Choose the first sequence to retain, or undefined if the boundary cannot advance. `contextTokens`
  * must be positive: the caller supplies an estimate when provider usage is unavailable.
  * `protectedFromSequence` is the first sequence holding state the checkpoint cannot own.
+ * `retainFrom` is the earliest sequence the retained tail may start at, when one is required: the
+ * first after the attachments a prompt has too many of (see the replay in agent.ts).
  */
 export function findCompactionBoundary(
     projection: CompactionProjectionMessage[], inputBudget: number, contextTokens: number,
-    compactedTo = 0, protectedFromSequence?: number): number | undefined {
+    compactedTo = 0, protectedFromSequence?: number, retainFrom?: number): number | undefined {
   // Walk backward until the retained messages fill the target budget, then move the cut to a record
   // boundary. Provider tokenizers differ, so character weights divide the measured token count among
   // messages; the weights affect only where the cut lands.
@@ -306,6 +308,11 @@ export function findCompactionBoundary(
 
   while (keepFrom >= 0 && !projection[keepFrom].canCut) --keepFrom;
   let sequence = projection[keepFrom]?.sequence;
+  // A required start moves the cut to the first record at or after it, unless the budget cuts later.
+  if (retainFrom !== undefined && !(sequence !== undefined && sequence >= retainFrom)) {
+    sequence = projection.find(entry => entry.canCut && entry.sequence !== undefined &&
+        entry.sequence >= retainFrom)?.sequence;
+  }
   // The walk runs off the front when one record fills the budget alone, and when the prompt is
   // already under the target -- which is every explicit `/compact` on a short chat. Falling back to
   // the newest cut summarizes all but the last record, so the command always does what it says.

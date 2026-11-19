@@ -2322,26 +2322,37 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
-  // Images and PDFs a request can carry inline, chosen across the whole replay since every request
-  // resends them all: the newest MAX_INLINE_ATTACHMENTS, each within MAX_INLINE_ATTACHMENT_BYTES
-  // and together within MAX_INLINE_ATTACHMENTS_TOTAL_BYTES. The rest are named by workspace path
-  // instead, so that no upload makes a request a provider refuses for its attachments. Choosing
-  // newest first does mean that once one overflows these, the next turn's prompt changes from
-  // an older message on, so the provider's cache misses from there. Parts count even if their
-  // headers later rule them out.
+  // Which images and PDFs go inline. Whether one does depends only on its own message, so a
+  // request never changes what an earlier request showed (rewriting an earlier message would
+  // invalidate the model's preserved thinking after it): it must be within
+  // MAX_INLINE_ATTACHMENT_BYTES, and leave its message's inline attachments within
+  // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES. Parts count even if their headers later rule them out.
+  // Every request resends them all, so once the chat's pass MAX_INLINE_ATTACHMENTS or
+  // MAX_INLINE_ATTACHMENTS_TOTAL_BYTES, the turn compacts to the newest messages whose attachments
+  // fit, which start at `attachmentsFitFrom`. Until it does, the older ones are named by workspace
+  // path instead, unread; the model sees them so only if compaction fails.
   const isInlineCandidate = (mimeType: string) => isAllowedChatAttachmentImageMimeType(mimeType) ||
       (mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api));
   const inlineAttachmentIds = new Set<string>();
+  let attachmentsFitFrom: number | undefined;
   let inlineAttachmentBytes = 0;
   for (let msg of chatMessages.toReversed()) {
-    for (let attachment of msg.type === "message" ? msg.attachments?.toReversed() ?? [] : []) {
-      if (isInlineCandidate(attachment.mimeType) && inlineAttachmentIds.size < MAX_INLINE_ATTACHMENTS &&
-          attachment.size <= MAX_INLINE_ATTACHMENT_BYTES &&
-          inlineAttachmentBytes + attachment.size <= MAX_INLINE_ATTACHMENTS_TOTAL_BYTES) {
-        inlineAttachmentBytes += attachment.size;
-        inlineAttachmentIds.add(attachment.id);
+    if (msg.type !== "message") continue;
+    let messageIds: string[] = [], messageBytes = 0;
+    for (let attachment of msg.attachments ?? []) {
+      if (isInlineCandidate(attachment.mimeType) && attachment.size <= MAX_INLINE_ATTACHMENT_BYTES &&
+          messageBytes + attachment.size <= MAX_INLINE_ATTACHMENTS_TOTAL_BYTES) {
+        messageBytes += attachment.size;
+        messageIds.push(attachment.id);
       }
     }
+    if (inlineAttachmentIds.size + messageIds.length > MAX_INLINE_ATTACHMENTS ||
+        inlineAttachmentBytes + messageBytes > MAX_INLINE_ATTACHMENTS_TOTAL_BYTES) {
+      attachmentsFitFrom = msg.sequence + 1;
+      break;
+    }
+    inlineAttachmentBytes += messageBytes;
+    for (let id of messageIds) inlineAttachmentIds.add(id);
   }
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
@@ -4552,10 +4563,11 @@ async function runAgentPass(
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.
   let compactionTurn = isCompactionTurn(chatMessages);
-  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
+  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget) ||
+      attachmentsFitFrom !== undefined) {
     let compactedTo = findCompactionBoundary(
         projection, inputBudget, contextTokens,
-        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages));
+        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages), attachmentsFitFrom);
     if (compactedTo !== undefined) {
       emitStreamEvent({type: "compacting"});
       try {
