@@ -1931,7 +1931,8 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     }
     try {
       await this.overseers.get(id).applyAdminWrite({
-        action, args, reason, admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via,
+        action, args, reason, admin: this.adminUserId, sessionId: this.#sessionId,
+        ...this.#label(),
       });
     } catch (error) {
       await this.#dropIfMissing(id, error);
@@ -1953,7 +1954,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   // Who takes a step of a content access request through this capability, as its audit record
   // says.
   #grantActor(): AdminGrantActor {
-    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.caller.via };
+    return { admin: this.adminUserId, sessionId: this.#sessionId, ...this.#label() };
   }
 
   async requestContentAccess(workspaceId: string, reason: string): Promise<AdminContentRequest> {
@@ -1983,7 +1984,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       id: crypto.randomUUID(), workspaceId: id.toString(),
       workspaceTitle: cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH),
       workspaceOwner: auditOwnerId(listing.ownerId), reason, requestedBy: this.adminUserId,
-      via: this.caller.via, requestedAt,
+      ...this.#label(), requestedAt,
       expiresAt: new Date(requestedAt.getTime() + ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS * 1000),
       state: "pending",
     };

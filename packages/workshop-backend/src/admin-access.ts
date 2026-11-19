@@ -153,7 +153,7 @@ export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" |
 
 /** Who takes a step of a request to read a workspace's content without its owner, as its
  * AdminGrantRecord says. */
-export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "via">;
+export type AdminGrantActor = Pick<AdminGrantRecord, "admin" | "sessionId" | "via" | "agent">;
 
 /** What OverseerDurableObject.grantAdminContent() is given: a claimed content access request, and
  * the admin who approved it, through which session, for the AdminGrantRecord the workspace
@@ -178,7 +178,8 @@ export type AdminCaller =
  * that is absent or a whole number. Throws TypeError for anything else, a "gatekeeper" without an
  * origin and an origin without "gatekeeper" included. THE one check of a `via`: AdminApiImpl
  * labels everything it sends with what this returns, so a view's terms reach openForAdmin()
- * checked.
+ * checked, and applyAdminWrite(), endAdminGrant() and the issue report store, which are handed
+ * a label over a Durable Object binding, call it instead of comparing strings.
  */
 export function adminCallerTerms(caller: { via: unknown; agent?: unknown })
     : Pick<AdminAccessRecord, "via" | "agent"> {
