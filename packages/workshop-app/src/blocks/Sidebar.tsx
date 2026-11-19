@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { AnimatePresence, motion, useReducedMotion, type Variants } from 'motion/react'
 import { CirclesFourIcon, FolderIcon, GearIcon, LightningIcon, MagnifyingGlassIcon, PuzzlePieceIcon, SignOutIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Avatar } from '@/components/Avatar'
@@ -10,9 +11,9 @@ import { Markdown } from '@/components/Markdown'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
-import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
+import { WorkspaceNav, type SidebarWorkspace, type SidebarWorkspaceChatsSlot } from './WorkspaceNav'
 
-export type { SidebarWorkspace }
+export type { SidebarWorkspace, SidebarWorkspaceChatsSlot }
 
 /** A service as the connect button shows it. */
 export type SidebarConnection = {
@@ -70,6 +71,50 @@ export type SidebarProps = {
    * the two, until one is chosen and the other removed.
    */
   layout?: 'icons' | 'rows'
+  /** Each workspace's chats under it, opened and closed by a caret on its row. Not on the rail. */
+  chats?: SidebarWorkspaceChatsSlot
+  /**
+   * Where a workspace's chats are listed, under it here or in a panel beside the sidebar, chosen in
+   * the user's own menu. Kept to compare the two, until one is chosen and the other removed.
+   */
+  chatsPlacement?: { value: ChatsPlacementChoice; onChange: (value: ChatsPlacementChoice) => void }
+  /**
+   * The sidebar goes into a workspace while one of its chats is on screen: `inside` is what it
+   * shows then in place of the workspaces (that workspace's chats, under a header that goes back),
+   * named by `key`. The workspaces slide out one way and it comes in from the other, and back
+   * again; from one workspace's chats to another's, the two fade. Not on the rail.
+   */
+  zoom?: { inside?: { key: string; content: ReactNode } }
+}
+
+/** Where a workspace's chats are listed, as the user's own menu offers it. */
+export type ChatsPlacementChoice = 'zoom' | 'sidebar' | 'panel'
+
+// Into a workspace (1) the workspaces leave to the left and its chats come from the right; back out
+// (-1) the other way; across (0), they only fade. As a dialog's pages go (`dialogPageMotion.ts`):
+// a little way, the one leaving gone before the other is much there, so that the two never show
+// through each other, on a clock that eases out with no overshoot. Only fading with reduced motion.
+const ZOOM_SHIFT = 18
+const ZOOM_EASE = [0.2, 0, 0.15, 1] as const
+type ZoomCustom = { direction: number; still: boolean }
+const ZOOM: Variants = {
+  enter: ({ direction, still }: ZoomCustom) => ({ opacity: 0, x: still ? 0 : direction * ZOOM_SHIFT }),
+  here: ({ direction, still }: ZoomCustom) => {
+    const delay = still || direction === 0 ? 0 : 0.1
+    return {
+      opacity: 1,
+      x: 0,
+      transition: {
+        opacity: { duration: still || direction === 0 ? 0.15 : 0.22, delay, ease: 'easeOut' },
+        x: { duration: 0.34, delay, ease: ZOOM_EASE },
+      },
+    }
+  },
+  leave: ({ direction, still }: ZoomCustom) => ({
+    opacity: 0,
+    x: still ? 0 : -direction * ZOOM_SHIFT,
+    transition: { opacity: { duration: still || direction === 0 ? 0.15 : 0.12, ease: 'easeOut' }, x: { duration: 0.2, ease: 'easeIn' } },
+  }),
 }
 
 /** A short line between one stretch of a rail's buttons and the next. */
@@ -164,6 +209,9 @@ export const Sidebar = ({
   onSearch,
   collapsed = false,
   layout = 'rows',
+  chats,
+  chatsPlacement,
+  zoom,
 }: SidebarProps) => {
   const narrow = useNarrowScreen()
   const rows = layout === 'rows'
@@ -226,6 +274,17 @@ export const Sidebar = ({
     >
       <DropdownMenu.Item icon={GearIcon} onSelect={settingsPage?.onOpen}>Settings</DropdownMenu.Item>
       {onSignOut && <DropdownMenu.Item icon={SignOutIcon} onSelect={onSignOut}>Sign out</DropdownMenu.Item>}
+      {chatsPlacement && (
+        <>
+          <DropdownMenu.Separator />
+          <DropdownMenu.Label>Chats</DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={chatsPlacement.value} onValueChange={chatsPlacement.onChange} aria-label="Chats">
+            <DropdownMenu.RadioItem value="zoom">In place of the workspaces</DropdownMenu.RadioItem>
+            <DropdownMenu.RadioItem value="sidebar">Under each workspace</DropdownMenu.RadioItem>
+            <DropdownMenu.RadioItem value="panel">Beside the sidebar</DropdownMenu.RadioItem>
+          </DropdownMenu.RadioGroup>
+        </>
+      )}
     </DropdownMenu>
   )
   const connect = (
@@ -244,7 +303,32 @@ export const Sidebar = ({
       notice={notice}
       rail={collapsed}
       fades={rows}
+      chats={chats}
     />
+  )
+  // Which way it goes, worked out as what it shows changes.
+  const still = useReducedMotion() ?? false
+  const zoomKey = zoom?.inside?.key
+  const [shown, setShown] = useState({ key: zoomKey, direction: 0 })
+  if (shown.key !== zoomKey) setShown({ key: zoomKey, direction: shown.key === undefined ? 1 : zoomKey === undefined ? -1 : 0 })
+  const zoomCustom = { direction: shown.direction, still }
+  // The workspaces, or what is inside one, stacked in one place while one goes and the other comes.
+  const middle = zoom === undefined ? nav : (
+    <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
+      <AnimatePresence initial={false} custom={zoomCustom}>
+        <motion.div
+          key={zoomKey ?? 'workspaces'}
+          custom={zoomCustom}
+          variants={ZOOM}
+          initial="enter"
+          animate="here"
+          exit="leave"
+          className="flex min-h-0 min-w-0 flex-col [grid-area:1/1]"
+        >
+          {zoom.inside ? zoom.inside.content : nav}
+        </motion.div>
+      </AnimatePresence>
+    </div>
   )
 
   if (rows && collapsed) {
@@ -288,7 +372,7 @@ export const Sidebar = ({
           )}
         </header>
         {said}
-        {nav}
+        {middle}
         <footer className="mt-0.5">
           <NavRows>
             <NavRow icon={<FolderIcon />} label="Workspaces" current={workspacesPage?.current} onClick={workspacesPage?.onOpen} />
@@ -346,7 +430,7 @@ export const Sidebar = ({
         {search}
       </header>
       {said}
-      {nav}
+      {middle}
       <footer className="flex items-center justify-between">
         {account}
         {connect}

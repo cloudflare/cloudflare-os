@@ -13,6 +13,7 @@ import { ConnectionIsland, type ConnectionIslandState } from '@/blocks/Connectio
 import { SettingsSidebar } from '@/blocks/SettingsSidebar'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
+import { gadgetKey } from '@/gadgets/WaitingAsks'
 import { useWaitingAsks, WaitingAsksProvider } from '@/gadgets/WaitingAsksProvider'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
@@ -21,7 +22,7 @@ import { useUnread } from '@/notifications/UnreadContext'
 import { UnreadProvider } from '@/notifications/UnreadProvider'
 import { useBrowserPushSync } from '@/notifications/useBrowserPush'
 import { useTaskNotices } from '@/notifications/useTaskNotices'
-import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
+import { readLayoutPrefs, writeLayoutPrefs, type ChatsPlacement } from '@/prefs/layoutPrefs'
 import { useApi } from '@/rpc/ApiContext'
 import { signOut } from '@/rpc/signOut'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -37,6 +38,8 @@ import { FIRST_SECTION, isSettingsSection, settingsNavGroups } from '@/settings/
 import { useOwnAvatar } from '@/settings/useOwnAvatar'
 import { useReadSkills } from '@/skills/useSkills'
 import { ShareLinkGate } from '@/workspaces/ShareLinkGate'
+import { SidebarChats, WorkspaceChatsPanel, type SidebarChatLinks } from '@/workspaces/SidebarChats'
+import { WorkspaceInsideSidebar, type InsideLinks } from '@/workspaces/WorkspaceInsideSidebar'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -106,6 +109,13 @@ const AppFrame = () => {
   const { workspaceId } = useParams({ strict: false })
   const [prefs] = useState(readLayoutPrefs)
   const narrow = useNarrowScreen()
+  // Where a workspace's chats are listed, kept to compare the two (`LayoutPrefs.chatsIn`).
+  const [chatsIn, setChatsIn] = useState<ChatsPlacement>(prefs.chatsIn ?? 'zoom')
+  // Under each workspace: those the user opened or closed with its caret. The one on screen is
+  // open until closed.
+  const [toggledChats, setToggledChats] = useState<ReadonlyMap<string, boolean>>(new Map())
+  // Beside the sidebar: put away, until a workspace is chosen in the sidebar again.
+  const [panelClosed, setPanelClosed] = useState(false)
   // Whether the deployment's own settings are listed after the user's.
   const admin = useIsAdmin()
   const asks = useWaitingAsks()
@@ -119,6 +129,7 @@ const AppFrame = () => {
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
   const chatPage = useMatch({ from: '/_app/workspace/$workspaceId/chat/$chatId', shouldThrow: false })
   const newChatPage = useMatch({ from: '/_app/workspace/$workspaceId/new', shouldThrow: false })
+  const chatSettingsPage = useMatch({ from: '/_app/workspace/$workspaceId/chat/$chatId_/settings', shouldThrow: false })
   const appPage = useMatch({ from: '/_app/app/$itemId', shouldThrow: false })
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
@@ -217,6 +228,96 @@ const AppFrame = () => {
       params: { workspaceId: output.workspaceId, chatId },
       search: { open: formatAsideRef({ kind: 'output', workpieceId: output.workpieceId }) },
     })
+
+  // How a workspace's chats in the sidebar, or beside it, go places.
+  const chatLinks = (inWorkspace: string): SidebarChatLinks => ({
+    chatHref: (toChat) => router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: inWorkspace, chatId: toChat } }).href,
+    onOpenChat: (toChat) => {
+      leaveSidebar()
+      void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: inWorkspace, chatId: toChat.id }, state: { chatTitle: toChat.title } })
+    },
+    workspaceHref: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: inWorkspace } }).href,
+    onOpenWorkspace: () => {
+      leaveSidebar()
+      void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: inWorkspace } })
+    },
+    newChatHref: router.buildLocation({ to: '/workspace/$workspaceId/new', params: { workspaceId: inWorkspace } }).href,
+    onNewChat: () => {
+      leaveSidebar()
+      void navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId: inWorkspace } })
+    },
+  })
+  const chatsExpanded = (id: string) => toggledChats.get(id) ?? id === workspaceId
+  const sidebarChats = chatsIn === 'sidebar'
+    ? {
+        isExpanded: chatsExpanded,
+        onToggle: (id: string) => setToggledChats((current) => new Map(current).set(id, !chatsExpanded(id))),
+        // A chat's id is its workspace's own, so only that workspace has it on screen.
+        render: (id: string) => <SidebarChats workspaceId={id} builds={builds(id)} currentChatId={chatRef?.workspaceId === id ? chatId : undefined} links={chatLinks(id)} />,
+      }
+    : undefined
+  // In place of the workspaces: everything of the workspace whose chat, one about to be made, a
+  // chat's settings, one of its agents or one of its gadgets is on screen. Its own page and every
+  // other page list the workspaces.
+  const insideId = (chatPage ?? newChatPage ?? chatSettingsPage ?? agentPage)?.params.workspaceId ?? pageItem?.workspaceId
+  const insideWorkspace = chatsIn === 'zoom' && insideId !== undefined && workspacesState.status === 'ready'
+    ? workspacesState.workspaces.find(({ id }) => id === insideId)
+    : undefined
+  const insideLinks = (inWorkspace: string): InsideLinks => {
+    const tab = (to?: 'library' | 'agents') => ({
+      href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: inWorkspace }, search: { tab: to } }).href,
+      onOpen: () => {
+        leaveSidebar()
+        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: inWorkspace }, search: { tab: to } })
+      },
+    })
+    return {
+      ...chatLinks(inWorkspace),
+      gadgetHref: (item) => router.buildLocation({ ...pageOf(inWorkspace, item), search: {} }).href,
+      // Beside the chat on screen, as its workspace's Library tab opens it beside its page; or else
+      // as its own page.
+      onOpenGadget: (item) => {
+        leaveSidebar()
+        if (chatRef?.workspaceId === inWorkspace) return aside.show(item.key, chatRef)
+        void navigate({ ...pageOf(inWorkspace, item), search: {} })
+      },
+      agentHref: (agentKey) => router.buildLocation({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: inWorkspace, agentKey } }).href,
+      onOpenAgent: (agentKey) => {
+        leaveSidebar()
+        void navigate({ to: '/workspace/$workspaceId/agent/$agentKey', params: { workspaceId: inWorkspace, agentKey } })
+      },
+      more: { chats: tab(), gadgets: tab('library'), agents: tab('agents') },
+    }
+  }
+  const sidebarZoom = chatsIn === 'zoom'
+    ? {
+        inside: insideWorkspace && {
+          key: insideWorkspace.id,
+          content: (
+            <WorkspaceInsideSidebar
+              workspace={insideWorkspace}
+              look={looks[insideWorkspace.id]}
+              attention={waitingWords({
+                runs: waiting.get(insideWorkspace.id)?.runs ?? 0,
+                chats: waiting.get(insideWorkspace.id)?.chats ?? 0,
+                gadgets: gadgetsWaitingIn(insideWorkspace.id, asks.byGadget),
+              })}
+              current={{
+                chatId: chatPage?.params.chatId ?? chatSettingsPage?.params.chatId,
+                newChat: newChatPage !== undefined,
+                gadgetKey: pageItem ? formatAsideRef(pageItem.ref) : named ? formatAsideRef(named) : undefined,
+                agentKey: agentPage?.params.agentKey,
+              }}
+              gadgetWaiting={(workpieceId) => asks.byGadget.get(gadgetKey(insideWorkspace.id, workpieceId)) ?? 0}
+              links={insideLinks(insideWorkspace.id)}
+            />
+          ),
+        },
+      }
+    : undefined
+  const panelWorkspace = chatsIn === 'panel' && !panelClosed && workspacesState.status === 'ready'
+    ? workspacesState.workspaces.find(({ id }) => id === workspaceId)
+    : undefined
 
   let asideElement: ReactNode = null
   // Takes the aside's item to a page of its own, from its Expand and from dragging the divider all the way over.
@@ -335,10 +436,22 @@ const AppFrame = () => {
     <Sidebar
       user={{ name: user.name, avatarUrl }}
       workspaces={workspaces}
-      selectedWorkspaceId={workspaceId}
+      // Under each workspace, the chat on screen is the one marked, not its workspace as well.
+      selectedWorkspaceId={chatsIn === 'sidebar' && chatId !== undefined ? undefined : workspaceId}
+      chats={sidebarChats}
+      zoom={sidebarZoom}
+      chatsPlacement={{
+        value: chatsIn,
+        onChange: (value) => {
+          setChatsIn(value)
+          setPanelClosed(false)
+          writeLayoutPrefs({ chatsIn: value })
+        },
+      }}
       // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
       onSelectWorkspace={(id) => {
         leaveSidebar()
+        setPanelClosed(false)
         // What is shown beside one of the workspace's pages stays beside its own.
         const open = besideOf?.params.workspaceId === id ? carryAside(besideOf.search.open, { workspaceId: id }) : undefined
         void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id }, search: { open } })
@@ -462,6 +575,16 @@ const AppFrame = () => {
       status={status}
       initialSidebar={prefs.sidebar}
       onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}
+      panel={panelWorkspace && !inSettings ? (
+        <WorkspaceChatsPanel
+          workspaceId={panelWorkspace.id}
+          builds={panelWorkspace.role !== 'use'}
+          currentChatId={chatRef?.workspaceId === panelWorkspace.id ? chatId : undefined}
+          links={chatLinks(panelWorkspace.id)}
+          workspace={{ title: panelWorkspace.title, workspaceLabel: workspaceLabel(panelWorkspace.title), workspaceLook: looks[panelWorkspace.id] }}
+          onClose={() => setPanelClosed(true)}
+        />
+      ) : undefined}
       initialAsideShare={prefs.asideShare}
       onAsideShareChange={(asideShare) => writeLayoutPrefs({ asideShare })}
       aside={asideElement}

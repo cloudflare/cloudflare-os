@@ -16,6 +16,11 @@ export type AppShellProps = {
   initialSidebar?: SidebarSize
   /** The sidebar came to rest on the rail or at another width, to be kept for the next time. */
   onSidebarChange?: (size: SidebarSize) => void
+  /**
+   * What is open beside the sidebar, between it and the page, such as a workspace's chats. It
+   * slides open and shut as it comes and goes.
+   */
+  panel?: ReactNode
   children: ReactNode
 } & Pick<SplitLayoutProps, 'status' | 'aside' | 'asideAlone' | 'asideFullScreen' | 'onOpenAside' | 'onCloseAside' | 'onExpandAside' | 'initialAsideShare' | 'onAsideShareChange'>
 
@@ -27,6 +32,9 @@ const RAIL = 52
 // to the rail, and dragged back past there it expands again.
 const COLLAPSES_AT = (RAIL + SIDEBAR.min) / 2
 const GAP = 12
+// The panel beside the sidebar, in pixels.
+const PANEL = 264
+const PANEL_TIMING = { type: 'spring', duration: 0.3, bounce: 0 } as const
 // Over the rail, the handle's pill comes out only for a pointer in the gap or the rail's padding,
 // not one on the rail's buttons. Over the page it reaches as far as ever.
 const RAIL_REACH = { left: GAP / 2 + 4, right: 28 }
@@ -82,7 +90,7 @@ const SidebarLayout = ({ instant, children }: { instant: boolean; children: Reac
  * covers it instead (`asideFullScreen`).
  */
 export const AppShell = ({
-  sidebar, initialSidebar, onSidebarChange, status, children, aside, asideAlone, asideFullScreen = false, onOpenAside, onCloseAside, onExpandAside, initialAsideShare, onAsideShareChange,
+  sidebar, initialSidebar, onSidebarChange, panel, status, children, aside, asideAlone, asideFullScreen = false, onOpenAside, onCloseAside, onExpandAside, initialAsideShare, onAsideShareChange,
 }: AppShellProps) => {
   const reduceMotion = useReducedMotion() ?? false
   const [start] = useState(() => ({
@@ -214,6 +222,22 @@ export const AppShell = ({
           />
         </div>
       </div>
+      <AnimatePresence initial={false}>
+        {panel !== undefined && (
+          // Its width opens, with the gap after it, so that the page beside it gives way as it comes.
+          <motion.div
+            key="panel"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: PANEL + GAP, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={reduceMotion ? { duration: 0 } : PANEL_TIMING}
+            inert={asideFullScreen}
+            className="flex shrink-0 overflow-hidden"
+          >
+            <div style={{ width: PANEL }} className="flex shrink-0 flex-col">{panel}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       {/* The inset is this frame's own padding. */}
       <SplitLayout
         aside={aside}

@@ -11,13 +11,22 @@ export type LayoutPrefs = {
   contextOpen?: boolean
   /** What a chat makes is shown beside it as it is made, rather than when asked for. It is, until switched off. */
   opensNewOutputs?: boolean
+  /**
+   * Where a workspace's chats are listed: in the sidebar's place for the workspaces while one of
+   * them is on screen, under each workspace in the sidebar, or in a panel beside the sidebar. Kept
+   * to compare them, until one is chosen and the others removed.
+   */
+  chatsIn?: ChatsPlacement
 }
+
+/** Where a workspace's chats are listed (`LayoutPrefs.chatsIn`). */
+export type ChatsPlacement = 'zoom' | 'sidebar' | 'panel'
 
 const finite = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
 
 const parse = (value: unknown): LayoutPrefs | undefined => {
   if (!isRecord(value)) return undefined
-  const { sidebar, asideShare, asideOpen, contextOpen, opensNewOutputs } = value
+  const { sidebar, asideShare, asideOpen, contextOpen, opensNewOutputs, chatsIn } = value
   const width = isRecord(sidebar) ? finite(sidebar.width) : undefined
   return {
     sidebar: isRecord(sidebar) && width !== undefined ? { collapsed: sidebar.collapsed === true, width } : undefined,
@@ -25,6 +34,7 @@ const parse = (value: unknown): LayoutPrefs | undefined => {
     asideOpen: typeof asideOpen === 'boolean' ? asideOpen : undefined,
     contextOpen: typeof contextOpen === 'boolean' ? contextOpen : undefined,
     opensNewOutputs: typeof opensNewOutputs === 'boolean' ? opensNewOutputs : undefined,
+    chatsIn: chatsIn === 'zoom' || chatsIn === 'sidebar' || chatsIn === 'panel' ? chatsIn : undefined,
   }
 }
 

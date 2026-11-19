@@ -23,6 +23,11 @@ export type WorkspaceListItemProps = {
   /** The workspace's address, so that it can be opened in another tab. */
   href?: string
   onSelect: () => void
+  /**
+   * It is drawn in a row that has a toggle at its end (`WorkspaceNav`'s `chats`), which draws its
+   * fills: it leaves the room for the toggle, and fills nothing itself.
+   */
+  withToggle?: boolean
 }
 
 /** One workspace in the sidebar: its icon, title, subtitle and unread dot, or what waits on the user in it. */
@@ -37,7 +42,9 @@ export const WorkspaceListItem = ({
   selected,
   href,
   onSelect,
+  withToggle = false,
 }: WorkspaceListItemProps) => (
+
   <LinkButton
     href={href}
     data-workspace-id={id}
@@ -46,8 +53,9 @@ export const WorkspaceListItem = ({
     className={cn(
       // A rectangular hit area keeps hover stable at the rounded corners as the underlay grows.
       "relative after:absolute after:inset-0 after:content-['']",
-      'flex w-full items-center gap-3 rounded-2xl px-3 py-3 pr-4 text-left text-base not-data-underlay:hover:bg-kumo-fill',
-      selected && 'not-data-underlay:bg-kumo-fill',
+      'flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-base',
+      withToggle ? 'pr-11' : 'pr-4 not-data-underlay:hover:bg-kumo-fill',
+      selected && !withToggle && 'not-data-underlay:bg-kumo-fill',
     )}
   >
     <WorkspaceIcon label={workspaceLabel} {...workspaceLook} />
