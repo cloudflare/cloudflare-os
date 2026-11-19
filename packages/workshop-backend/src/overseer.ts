@@ -2150,20 +2150,26 @@ class OverseerImpl implements AgentHooks {
     return record;
   }
 
-  // Create a new worktree workpiece rooted at the given commit id, provisional to (and permanently
-  // private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
+  // Create a new worktree workpiece, empty or rooted at the given commit id, provisional to
+  // (and permanently private to) the given chat. The id is resolved -- and the commit pulled, if only a gatekeeper
   // has it -- by WorkspaceGitCache.fetchCommit. Like createGadget, the
   // caller (the agent's createWorktree tool) is responsible for getting the creation recorded in
   // the chat log -- `createdWorktrees` on the step's "changes" message -- which makes the pending
   // record permanent. The worktree is not pinned in the chat by its creation: it reads as its
   // accepted commit (`pinBase`) until the first modification pins it (see commitAgentStep).
-  async createWorktree(title: string, chatId: number, commitId: string)
+  async createWorktree(title: string, chatId: number, commitId?: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}> {
     title = title.trim();
     if (!title) {
       throw new Error("A worktree requires a non-empty title.");
     }
-    let baseCommit = await this.gitCache.fetchCommit(commitId);
+    // Share a canonical empty root; this initialization has no user-authored content.
+    let baseCommit = commitId === undefined
+        ? await this.gitCache.writeFilesAsCommit(new Map(), {
+          parents: [], message: "Initialize empty worktree", timestamp: new Date(0),
+          author: {name: "Cloudflare OS", email: "worktree@localhost"},
+        })
+        : await this.gitCache.fetchCommit(commitId);
 
     // The awaits above could have outlived the chat; a pending record for a deleted chat would
     // never be reaped.
@@ -2842,6 +2848,21 @@ class OverseerImpl implements AgentHooks {
 
   invalidateChatContent(chatId: number): void {
     this.#chatContentCache.delete(chatId);
+  }
+
+  async getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined> {
+    const record = this.storage.gadgets.get(id);
+    if (record?.type !== "worktree" || record.chatId !== chatId) {
+      throw new Error(`No worktree in this chat: ${id}`);
+    }
+    const value = turn.getOverlayFiles(id).get(path);
+    if (value !== undefined) {
+      return typeof value === "string" ? this.gitCache.writeBlob(new TextEncoder().encode(value)).oid : value.oid;
+    }
+    if (turn.getRemovedPaths(id).has(path)) return undefined;
+    const base = turn.getBaseCommit(id);
+    return base === undefined ? undefined : this.gitCache.fileOidAtCommit(base, path);
   }
 
   // Live row count that triggers materialization (see submitCodeChange). A field so tests can
@@ -6424,7 +6445,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<PreparedScratchWorktree | undefined> {
     if (files.size === 0 || this.#scratchWorktree(chatId) !== undefined) return undefined;
     let bindingName = fallbackBindingName(
-        "SCRATCH", name => this.chatScopeNames(chatId).has(name));
+        "ATTACHMENTS", name => this.chatScopeNames(chatId).has(name));
     let commitId = (await this.#writeWorkspaceAttachmentCommit(files, author))!;
     return {commitId, bindingName};
   }
@@ -6441,7 +6462,7 @@ class OverseerImpl implements AgentHooks {
     let record: WorktreeRecord = {
       type: "worktree",
       id: this.allocateWorkpieceId(),
-      title: "Scratch space",
+      title: "Attachments",
       created: new Date(),
       chatId,
       baseCommit: prepared.commitId,
