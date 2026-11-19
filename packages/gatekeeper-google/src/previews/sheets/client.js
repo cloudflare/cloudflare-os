@@ -11,7 +11,7 @@
 
 import {
   flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, outlineList, page, setOutline, setStops, showError,
-  showLoading, showPage, showStale, status,
+  showLoading, showPage, showStale, status, touch,
 } from './ui/chrome.js';
 
 // The session main() is handed, which every read below goes through.
@@ -192,8 +192,8 @@ styleSheet.textContent = `
   #outline .tab.cut .name { cursor: default; }
   #outline .tab.cut .name > span:first-of-type { text-decoration: line-through; }
   #outline .tab.away { opacity: .55; }
-  .said { flex: none !important; padding: 0 6px; border-radius: 999px; background: var(--mark);
-    color: var(--mark-ink); font-size: 10px; font-weight: 400; line-height: 16px; }
+  .said { flex: none !important; padding: 0 6px; border-radius: 999px; background: var(--edit);
+    color: var(--edit-ink); font-size: 10px; font-weight: 400; line-height: 16px; }
   .tab.cut .said { background: var(--gone); color: var(--gone-ink); }
 `;
 document.head.append(styleSheet);
@@ -856,13 +856,15 @@ function renderOutline() {
   const tabs = tabsOf(info.sheets);
   outlineList.replaceChildren(...tabs.map(({ sheet: listed, added, renamed, moved, deleted }) => {
     const on = listed.id === sheet.id && !deleted;
-    const touched = listed.touched && !added;
-    const row = make('div', `tab${on ? ' on' : ''}${added ? ' new' : ''}${deleted ? ' cut' : ''}${listed.hidden ? ' away' : ''}`);
-    const name = row.appendChild(make('button', touched ? 'name touched' : 'name'));
+    const row = make('div', `tab${on ? ' on' : ''}${deleted ? ' cut' : ''}${listed.hidden ? ' away' : ''}`);
+    const name = row.appendChild(make('button', 'name'));
     name.append(lineIcon(SHEET_ICON), make('span', '', listed.title));
+    // A sheet added or deleted is that whatever else is done to it; any other a change touches is edited.
+    const kind = added ? 'added' : deleted ? 'removed' : listed.touched && 'changed';
+    const dot = touch(name, kind ? [kind] : []);
     const says = [
       added && 'new, not yet added', renamed && `renamed from “${renamed}”`, moved && 'moved',
-      deleted && 'deleted by a pending change', listed.hidden && 'hidden', touched && 'has pending changes',
+      deleted && 'deleted by a pending change', listed.hidden && 'hidden', kind === 'changed' && dot,
     ].filter(Boolean);
     name.title = says.length ? `${listed.title} (${says.join('; ')})` : listed.title;
     for (const tag of [renamed && 'renamed', moved && 'moved', deleted && 'deleted']) {

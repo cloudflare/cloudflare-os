@@ -10,8 +10,8 @@
 // saved: text of a pending change is not yet approved.
 
 import {
-  dataUrl, flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline, outlineList, page, setOutline,
-  setStops, showError, showLoading, showPage, showStale, status, SYSTEM_FONT,
+  dataUrl, flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline, outlineList, page,
+  partNavigator, setOutline, setStops, showError, showLoading, showPage, showStale, status, SYSTEM_FONT,
 } from './ui/chrome.js';
 import { boxOf, drawSlide, LINE_HEIGHT } from './slide.js';
 
@@ -49,7 +49,8 @@ styleSheet.textContent = `
   .tags:empty { display: none; }
   .tag { display: flex; align-items: center; gap: 4px; padding: 0 8px; border-radius: 999px;
     background: var(--chip); color: var(--dim); font-size: 11px; line-height: 1.8; white-space: nowrap; }
-  .tag.added, .tag.changed { background: var(--mark); color: var(--mark-ink); }
+  .tag.added { background: var(--mark); color: var(--mark-ink); }
+  .tag.changed { background: var(--edit); color: var(--edit-ink); }
   .tag.gone { background: var(--gone); color: var(--gone-ink); }
   /* The slide as it will be, or as it is saved: one control of two halves. */
   .views { display: flex; flex: none; margin-left: auto; padding: 2px; border-radius: 999px;
@@ -76,7 +77,7 @@ styleSheet.textContent = `
   /* What a pending change touches: ringed where it is and numbered, and named under the slide,
      where a name covers nothing. The rings are on the slide, so they keep one color on either
      desk, with a pale edge that shows on a dark slide. */
-  .marks { position: absolute; inset: 0; pointer-events: none; --spot: #188038; --lost: #d93025; }
+  .marks { position: absolute; inset: 0; pointer-events: none; --spot: #188038; --lost: #d93025; --edited: #8430ce; }
   .spot { position: absolute; box-sizing: content-box; margin: -5px; padding: 3.5px; min-width: 4px;
     min-height: 4px; border: 1.5px solid var(--spot); border-radius: 6px; color: var(--spot);
     box-shadow: 0 0 0 1px rgb(255 255 255 / .75), 0 0 0 4px color-mix(in srgb, currentColor 16%, transparent);
@@ -84,6 +85,7 @@ styleSheet.textContent = `
     animation: arrive .3s ease-out .1s backwards; }
   .spot.gone { border-style: dashed; border-color: var(--lost); color: var(--lost);
     background: color-mix(in srgb, currentColor 6%, transparent); }
+  .spot.edit { border-color: var(--edited); color: var(--edited); }
   .spot.off { visibility: hidden; }
   .spot > i, .change > i { display: grid; flex: none; place-items: center; box-sizing: border-box;
     min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px; color: #fff; font-size: 9.5px;
@@ -92,6 +94,7 @@ styleSheet.textContent = `
   .spot > i { position: absolute; top: -9px; left: -9px; background: var(--spot);
     box-shadow: 0 0 0 1.5px rgb(255 255 255 / .9); }
   .spot.gone > i { background: var(--lost); }
+  .spot.edit > i { background: var(--edited); }
   .spot:is(.here, .lit) { box-shadow: 0 0 0 1px rgb(255 255 255 / .75), 0 0 0 7px color-mix(in srgb, currentColor 32%, transparent); }
   .changes { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
   .change { display: flex; align-items: center; gap: 6px; padding: 3px 9px 3px 4px; border: 0;
@@ -100,6 +103,8 @@ styleSheet.textContent = `
   .change > i { background: var(--mark-ink); color: var(--page); }
   .change.gone { background: var(--gone); color: var(--gone-ink); }
   .change.gone > i { background: var(--gone-ink); }
+  .change.edit { background: var(--edit); color: var(--edit-ink); }
+  .change.edit > i { background: var(--edit-ink); }
   .change.off { opacity: .55; }
   .change:is(:hover, .here) { box-shadow: 0 0 0 1.5px currentColor; }
 
@@ -137,16 +142,19 @@ styleSheet.textContent = `
     transition: background .12s; }
   #outline .film:hover { background: var(--chip); }
   .film:focus-visible { outline-offset: -2px; }
-  .film > i { display: flex; flex: none; flex-direction: column; align-items: flex-end; gap: 9px;
-    width: 22px; padding-top: 1px; font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; }
+  .film > i { flex: none; width: 22px; padding-top: 1px; font-size: 11px; font-style: normal;
+    font-variant-numeric: tabular-nums; text-align: right; }
   .film[aria-current="true"] > i { color: var(--link); font-weight: 700; }
   .mini { position: relative; display: block; flex: 1; min-width: 0; aspect-ratio: var(--ratio);
     overflow: hidden; border-radius: 4px; background-color: #fff; box-shadow: 0 0 0 1px var(--line);
     pointer-events: none; transition: box-shadow .15s ease-out; }
   .film.listed > .mini { display: flex; align-items: center; gap: 6px; padding: 0 8px; aspect-ratio: auto;
     min-height: 28px; background: var(--chip); box-shadow: none; color: var(--ink); font-size: 11px; }
+  /* Ringed in the color the other previews' outlines give their dot. The slide being read is
+     ringed in blue whatever is to happen to it, and it alone glows. */
   .film.added > .mini { box-shadow: 0 0 0 2px var(--mark-ink); }
   .film.gone > .mini { box-shadow: 0 0 0 2px var(--gone-ink); }
+  .film.changed > .mini { box-shadow: 0 0 0 2px var(--edit-ink); }
   #outline .film[aria-current="true"] > .mini { box-shadow: 0 0 0 2px var(--link), 0 0 0 5px color-mix(in srgb, var(--link) 22%, transparent); }
   .mini > .tags { position: absolute; top: 4px; right: 4px; gap: 3px; }
   .mini .tag { padding: 0 6px; font-size: 9.5px; font-weight: 700; box-shadow: 0 0 0 1.5px #fff; }
@@ -562,9 +570,11 @@ function fill(card, slide) {
   });
   // Each is a ring on the slide and a name under it, which share a number.
   for (const [n, spot] of card.spots.entries()) {
-    spot.node = make('div', spot.gone ? 'spot gone' : 'spot');
+    // Colored as the filmstrip's rings are: what is added, what is deleted, and what is edited.
+    const kind = spot.gone ? ' gone' : spot.before ? ' edit' : '';
+    spot.node = make('div', `spot${kind}`);
     spot.node.append(make('i', '', String(n + 1)));
-    spot.chip = make('button', spot.gone ? 'change gone' : 'change', spot.name);
+    spot.chip = make('button', `change${kind}`, spot.name);
     spot.chip.prepend(make('i', '', String(n + 1)));
     const light = on => () => spot.node.classList.toggle('lit', on);
     for (const [event, on] of [['pointerenter', true], ['focus', true], ['pointerleave', false], ['blur', false]]) spot.chip.addEventListener(event, light(on));
@@ -609,9 +619,7 @@ function renderFilmstrip() {
     }
     mini.querySelector('.tags')?.remove();
     mini.append(tags);
-    // The dot the Docs outline puts on a heading whose section holds a change.
-    const place = make('i', row.tags.some(({ short }) => short === 'Changed') ? 'touched' : '', row.slide ? String(++number) : '–');
-    film.append(place, mini);
+    film.append(make('i', '', row.slide ? String(++number) : '–'), mini);
     film.addEventListener('click', () => {
       card.node.scrollIntoView({ block: 'start', behavior: motion() });
       flash(card.node);
@@ -625,13 +633,21 @@ function renderFilmstrip() {
   markSlide();
 }
 
-/** Marks the slide the view is on, and keeps it in the filmstrip. */
+const pager = partNavigator('slide');
+
+/** Marks the slide the view is on, in the slide navigator and in the filmstrip, where it keeps it. */
 function markSlide() {
-  if (outline.hidden) return;
   let on = 0;
   rows.forEach(({ id }, n) => {
     if (cards.get(id).node.getBoundingClientRect().top <= innerHeight / 3) on = n;
   });
+  // Numbered as the filmstrip numbers them: a slide to be deleted goes by none.
+  const total = rows.filter(row => row.slide).length;
+  const before = rows.slice(0, on).filter(row => row.slide).length;
+  const nodes = rows.map(({ id }) => cards.get(id).node);
+  if (rows[on]?.slide) pager.show(nodes, on, before + 1, total);
+  else pager.show(nodes, on, '–', total, `Deleted slide, ${before ? `after slide ${before}` : 'before slide 1'} of ${total}`);
+  if (outline.hidden) return;
   films.forEach((film, n) => film.setAttribute('aria-current', String(n === on)));
   if (on === 0) outline.scrollTop = 0;
   else if (on !== current) films[on]?.scrollIntoView({ block: 'nearest' });
@@ -640,6 +656,8 @@ function markSlide() {
 
 addEventListener('scroll', () => requestAnimationFrame(markSlide), { passive: true });
 outline.addEventListener('outlinechange', markSlide);
+// The slides are drawn after they are laid out, which moves those under them.
+new ResizeObserver(() => markSlide()).observe(page);
 
 // ---------------------------------------------------------------------------------------------
 // Loading and refreshing
@@ -820,6 +838,7 @@ async function load() {
     const scrollTop = document.scrollingElement.scrollTop;
     layOut(drawn);
     showStale(pending.changes.filter(change => change.stale).length, 'presentation');
+    pager.lift(pending.changes.length > 0);
     showPage();
     renderFilmstrip();
     document.scrollingElement.scrollTop = scrollTop;

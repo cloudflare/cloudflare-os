@@ -442,9 +442,13 @@ it('lists the sheets as tabs, marking the ones added, renamed, moved and deleted
   }, 1100)
 
   expect(tabs().map(tab => tab.title)).toEqual([
-    'Notes (moved)', 'Sales', 'Spend (renamed from “Costs”; has pending changes)',
+    'Notes (moved)', 'Sales', 'Spend (renamed from “Costs”; has pending edits)',
     'Old (deleted by a pending change)', 'Plan (new, not yet added)',
   ])
+  // The dot is green on a sheet added, red on one deleted, and purple on one otherwise changed.
+  expect(tabs().map(tab => tab.dataset.touched)).toEqual([undefined, undefined, 'changed', 'removed', 'added'])
+  const dots = tabs().map(tab => getComputedStyle(tab, '::after').backgroundColor)
+  expect(new Set(dots.slice(2)).size).toBe(3)
   // It opens on the first sheet the changes touch.
   expect(doc.querySelector('#strip b')!.textContent).toBe('Spend')
   expect(tabs()[3].getAttribute('aria-disabled')).toBe('true')

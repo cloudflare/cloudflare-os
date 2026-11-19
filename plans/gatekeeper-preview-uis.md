@@ -577,9 +577,19 @@ change. One pull request, stacked on the Google Docs one.
 - **One folder per preview**, each with its own `client.js`: `previews/docs/`, `previews/sheets/`,
   `previews/slides/`. The gatekeeper returns each preview's files with the modules it shares.
 - **Shared modules** (`previews/shared/`), taken out of the Docs client before the other two are
-  written: the theme tokens, the outline sheet, the change navigator, the stale banner, the
-  loading, updating and error states, `make()` and `lineIcon()`, and the refresh handling. The
-  three previews then look and behave as one product.
+  written: the theme tokens, the outline sheet, the change navigator, the part navigator, the
+  stale banner, the loading, updating and error states, `make()` and `lineIcon()`, and the
+  refresh handling. The three previews then look and behave as one product.
+- **One dot for a change, in three colors.** The outline marks what holds a change with a dot
+  (`touch()` in `chrome.js`): green where every change in it adds, red where every one removes,
+  and purple (`--edit`, `--edit-ink`) where they edit, or both add and remove. The title of what
+  it marks says the same in words ("has pending additions", "deletions", "edits"), as the outline
+  names everything else. Docs takes each heading's section from its rows: a paragraph added or
+  removed whole is that, an edited one is what its changed words are, and one written over
+  another or restyled with its words left alone is an edit; a section folded away adds its
+  changes to the heading it is folded under. Sheets has only what its listing says of a sheet:
+  added, deleted, or touched, which is an edit (a sheet's renamed and moved chips are purple
+  too). Slides rings the thumbnail instead (below).
 - **What each keeps to itself:** how it reads and draws its resource.
 - **Every read is authorized**, a picture's as for Docs images and each window of a sheet: a
   listing or drawing tells of a picture, not its bytes, and skipping the check would also skip a
@@ -676,8 +686,17 @@ shows only what is saved, and a pending change has to be drawn.
   recolouring or mask, video, charts beyond their last picture, and the handles of some presets
   (braces, curved and bent arrows, ribbons, waves).
 - **Changes:** the slide is shown as it will be, with each changed element outlined and naming
-  its change. A toggle shows the slide as saved. A filmstrip lists the slides with added, changed,
-  moved, skipped and deleted ones marked. Speaker notes are diffed as text.
+  its change, in green where it is added, red where it is deleted and purple where it is
+  edited. A toggle shows the slide as saved. A filmstrip lists the slides with added, changed,
+  moved, skipped and deleted ones marked: in place of the dot, the thumbnail is ringed green for
+  a new slide, red for a deleted one, and purple for one changed, moved, skipped or shown again,
+  with its tag in the same color, there and over the slide. The slide being read keeps its
+  blue ring, whatever is to happen to it, and is the only thumbnail with a glow.
+- **Stepping through slides.** The page navigator of Docs, as "Slide" ("4 / 27"), steps from
+  card to card and follows the slide the filmstrip marks as read, with the same lift above the
+  Workshop's card. It counts and numbers the slides there will be, as the filmstrip does, and
+  steps to a slide to be deleted too, which reads "– / 27" and is named "Deleted slide, after
+  slide 7 of 27". Speaker notes are diffed as text.
 - **Checked against Google's own rendering.** `getSlideThumbnail()` is the reference for a saved
   slide: a slide drawn as saved is compared with its thumbnail.
 
