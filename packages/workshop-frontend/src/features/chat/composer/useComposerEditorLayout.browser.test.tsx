@@ -147,12 +147,16 @@ describe("composer editor layout", () => {
   });
 
   // The textarea can't scroll to words it doesn't hold, so only the mirror was showing them.
-  it("lines the mirror back up with the textarea when the user returns to it", async () => {
+  it("lines the mirror up with the textarea while the user is in it, and only then", async () => {
     const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
     await act(async () => textarea.focus());
     await settle();
 
     expectVisible(characterRect(mirror, "first"), clip);
     expect(textarea.style.caretColor).toBe("");
+
+    await act(async () => textarea.blur());
+    await settle();
+    expectVisible(characterRect(mirror, "last"), clip);
   });
 });

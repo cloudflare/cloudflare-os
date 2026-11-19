@@ -123,15 +123,21 @@ export const useComposerEditorLayout = ({
       width = entry.contentRect.width;
     });
     observer.observe(textarea);
-    // Back in the textarea, the user must see the caret and the text they are about to edit.
+    // Back in the textarea, the user must see the caret and the text they are about to edit; out
+    // of it again, the newest words that Send would include.
     const realign = () => {
       if (overscrollRef.current) fitPreviewRef.current();
     };
+    const follow = () => {
+      if (previewRef.current) fitPreviewRef.current();
+    };
     textarea.addEventListener("focus", realign);
+    textarea.addEventListener("blur", follow);
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frame);
       textarea.removeEventListener("focus", realign);
+      textarea.removeEventListener("blur", follow);
     };
   }, [mirrorRef, textareaRef]);
 

@@ -66,7 +66,8 @@ type Session = {
   recognition: Recognition;
   listeners: AbortController;
   started: boolean;
-  stopRequested: boolean;
+  // The finalized words and the words on screen when the user pressed Stop.
+  stopped?: { transcript: string; shown: string };
   transcript: string;
   interim: string;
 };
@@ -159,7 +160,7 @@ export const useComposerDictation = ({
       }
       // stop() lets the browser return its last words, which the end event then keeps.
       setStatus("stopping");
-      current.stopRequested = true;
+      current.stopped = { transcript: current.transcript, shown: shown.current };
       current.recognition.stop();
       return;
     }
@@ -179,9 +180,7 @@ export const useComposerDictation = ({
     }
     const listeners = new AbortController();
     const { signal } = listeners;
-    const session: Session = {
-      recognition, listeners, started: false, stopRequested: false, transcript: "", interim: "",
-    };
+    const session: Session = { recognition, listeners, started: false, transcript: "", interim: "" };
     active.current = session;
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -204,11 +203,14 @@ export const useComposerDictation = ({
       session.interim = interim.join("");
       setText((session.transcript + session.interim).trim());
     }, { signal });
-    // The browser may end without finalizing its last guess. Stop is the user keeping the words on
-    // screen; otherwise, as after an error, only finalized words survive.
+    // The browser may end without finalizing its last guess, and after Stop it can still revise
+    // one that never reaches the screen. So only finalized words survive, unless Stop finalized
+    // nothing more: then Stop keeps the words that were on screen when it was pressed.
     recognition.addEventListener("end", () => {
       const ended = detach();
-      if (ended) keep(ended.transcript + (ended.stopRequested ? ended.interim : ""));
+      if (!ended) return;
+      const { stopped } = ended;
+      keep(stopped && ended.transcript === stopped.transcript ? stopped.shown : ended.transcript);
     }, { signal });
     recognition.addEventListener("error", (event) => {
       const { error } = event as Event & { error: string };

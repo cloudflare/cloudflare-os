@@ -242,7 +242,7 @@ describe("ChatComposer", () => {
     const lateResult = { text: "Late", final: true };
     await act(async () => {
       // Recognized, but not yet rendered, when Enter arrives.
-      first.report(0, sentence, { text: " four cats", final: false });
+      first.report(1, sentence, { text: " four cats", final: false });
       textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
       first.report(0, lateResult);
     });
@@ -305,6 +305,21 @@ describe("ChatComposer", () => {
     });
     expect(textarea.value).toBe("Note: call the bank");
     expect(testState.addToast).not.toHaveBeenCalled();
+  });
+
+  it("keeps the words on screen at Stop, not a guess revised after it", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    const sentence = { text: "Show me the", final: true };
+    await act(async () => speech.report(0, sentence, { text: " forecast", final: false }));
+    await act(async () => voiceButton("Stop")!.click());
+    await act(async () => {
+      speech.report(1, sentence, { text: " four cats", final: false });
+      speech.dispatchEvent(new Event("end"));
+    });
+    expect(textarea.value).toBe("Show me the forecast");
   });
 
   it("keeps only finalized words when an agent blocks the composer mid-dictation", async () => {
