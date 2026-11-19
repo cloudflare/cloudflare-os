@@ -45,9 +45,10 @@ export const Autocomplete = ({
 
   const [suggestions, setSuggestions] = useState<OptionsState>({ status: "loading" });
   // A value the module set, rather than the user picked, has put no text in the field, including one
-  // set while the field was not rendered: a field that mounts blank has shown nothing yet.
+  // set while the field was not rendered: a field that mounts blank has shown nothing yet. Shown before
+  // paint, so the field never takes input while its text is still due, which would then overwrite it.
   const shownValue = useRef(query === "" ? null : value);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (value === shownValue.current) return;
     shownValue.current = value;
     if (value && query === "") {
