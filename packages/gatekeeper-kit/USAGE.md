@@ -1180,7 +1180,6 @@ The kit supplies defaults where they apply across consumers:
 | --- | ---: |
 | `maxPending` | 50 |
 | `maxTrackedCollections` | 1000 |
-| `maxObservers` | 10 |
 | `remotePageSize` | 100 |
 | cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
@@ -1196,10 +1195,9 @@ The kit requires values where no general default is safe:
 Size limits from the provider and the disclosure shape. `maxTrackedCollections` is a cumulative budget: it
 bounds the distinct collections this binding has *ever* disclosed, including markers a fail-closed read
 left behind, so size it from the whole resource rather than one page — a per-page value starts
-refusing valid reads once later pages reveal new collections. `maxObservers` must account for the Workers
-invocation ceiling because every observer costs a verifier call on each `collections` read; it
-refuses such a read, never an admission, so it does not limit a binding whose reads all report
-`subresources`. `remotePageSize`
+refusing valid reads once later pages reveal new collections. Observers are not capped: each costs a verifier call on a
+`collections` read, throttled by `concurrency`, and the Workers limits such a fan-out could meet
+are on call depth, not on the number of calls. `remotePageSize`
 cannot exceed the provider's page cap. Lower `maxProviderPagesPerCall` for a provider that bills
 each row it returns: a filter that drops whole pages otherwise pays for up to ten per `next()`, and
 `1` with a `pageSize` no provider page exceeds makes each `next()` one provider request.

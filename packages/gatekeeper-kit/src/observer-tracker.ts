@@ -71,9 +71,6 @@ export const OBSERVER_ATTEMPT_LIFETIME_MS = 10 * 60 * 1000;
 
 const DEFAULT_MAX_TRACKED_COLLECTIONS = 1000;
 
-// A request may make 32 Worker invocations, and each verifier spends a second one on its account.
-const DEFAULT_MAX_OBSERVERS = 10;
-
 /** Internal: default concurrent verifier round trips, for the tracker and `observerAccessVerifier`. */
 export const DEFAULT_CONCURRENCY = 6;
 
@@ -212,12 +209,6 @@ export type ObserverTrackerOptions<V> = {
    * a crash is kept permanently, since a lost reply may still have recorded the observation.
    */
   maxTrackedCollections?: number;
-  /**
-   * Most observers one `prepareObservation` will fan out over; a read over a larger roster is
-   * refused before it writes or asks anything. It does not cap admission, and bounds no check
-   * made outside this tracker.
-   */
-  maxObservers?: number;
   /** Concurrent verifier round trips. */
   concurrency?: number;
   /** Vendor id for log attribution. */
@@ -245,7 +236,6 @@ export class ObserverTracker<V> {
   readonly #collectionPrefix: string;
   readonly #canonicalCollectionId: (collectionId: string) => CanonicalCollectionId;
   readonly #maxTrackedCollections: number;
-  readonly #maxObservers: number;
   readonly #concurrency: number;
   readonly #logger: typeof logger;
 
@@ -264,8 +254,6 @@ export class ObserverTracker<V> {
     // A cap of zero refuses every read, and a window of zero never advances.
     this.#maxTrackedCollections = requirePositiveInt(
       "maxTrackedCollections", options.maxTrackedCollections ?? DEFAULT_MAX_TRACKED_COLLECTIONS);
-    this.#maxObservers = requirePositiveInt(
-      "maxObservers", options.maxObservers ?? DEFAULT_MAX_OBSERVERS);
     this.#concurrency = requirePositiveInt(
       "concurrency", options.concurrency ?? DEFAULT_CONCURRENCY);
 
@@ -438,13 +426,6 @@ export class ObserverTracker<V> {
     // Canonicalized up front, so the keys written, the state compared, and the ids the oracle is
     // asked about are all the same spelling.
     const canonical = [...new Set(collectionIds.map(collectionId => this.#canonicalCollectionId(collectionId)))];
-    // Refused before anything is written: each observer costs a verifier call on this read.
-    const observers = [...this.#observers()];
-    if (observers.length > this.#maxObservers) {
-      throw new Error(
-        `This binding is shared with ${observers.length} collaborators, more than the ` +
-        `${this.#maxObservers} it can verify on one read. Remove a collaborator and try again.`);
-    }
     // Both partitions come from one state read per collection, before the first await, so the "pending"
     // writes below reflect storage as a concurrent addObserver will scan it.
     const states = canonical.map(collectionId => [collectionId, this.#state(collectionId)] as const);
@@ -467,6 +448,9 @@ export class ObserverTracker<V> {
     const claimed = canonical.map(collectionId => this.#collectionKey(collectionId));
     claimSets(claims, claimed, new Set(untracked.map(collectionId => this.#collectionKey(collectionId))));
 
+    // Not capped: the Workers limits a fan-out could meet are on call depth, which the number of
+    // observers does not change. `concurrency` throttles it.
+    const observers = [...this.#observers()];
     const access = await mapLimit(observers, this.#concurrency, async ([id, verifier]) => {
       try {
         // Copied per verifier: the oracle may chunk destructively, and the exclusion check below
