@@ -78,7 +78,8 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCommitLogDepth,
+  ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCallerTerms,
+  adminCommitLogDepth,
   adminContentRefusal, adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId,
   blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
   commitHoldsContent, creationHoldsContent, cutAdminAuditText, fileHoldsContent,
@@ -12327,8 +12328,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * Refuses, writing and recording nothing:
    *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
    *     and again once its owner has been read;
-   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that is not "api" or
-   *     "cli", or arguments that are not the action's;
+   *   - a malformed call (TypeError): a blank or over-long reason, a `via` that
+   *     adminCallerTerms() refuses, or arguments that are not the action's. A write through the
+   *     admin gatekeeper is its workspace owner's, made once a member approved its action;
    *   - an admin who is no longer a deployment admin (`notAdmin`), and writes turned off
    *     (`writesOff`), both read from this workspace's own environment.
    *
@@ -12348,9 +12350,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     let reason = validateAdminAccessReason(call.reason);
-    if (call.via !== "api" && call.via !== "cli") {
-      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
-    }
+    let terms = adminCallerTerms(call);
     let args = adminWriteArgs(call.action, call.args);
 
     // Read from the OverseerImpl's environment, so that the checks hold for this workspace's
@@ -12375,7 +12375,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       at: new Date(),
       admin: call.admin,
       sessionId: call.sessionId,
-      via: call.via,
+      ...terms,
       workspaceId: impl.ctx.id.toString(),
       workspaceOwner: ownerId,
       workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
@@ -12533,8 +12533,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * Durable Object binding.
    *
    * Refuses, writing and recording nothing: a workspace never initialised or since deleted
-   * (`workspaceNotFound`), a blank or over-long reason and a `via` that is not "api" or "cli"
-   * (TypeError), an actor who is not a deployment admin (`notAdmin`), and an id that names no
+   * (`workspaceNotFound`), a blank or over-long reason and a `via` that adminCallerTerms()
+   * refuses or that is "gatekeeper" (TypeError: ending the admins' grant is never an agent's
+   * step), an actor who is not a deployment admin (`notAdmin`), and an id that names no
    * live grant with source "admins" here (`notFound`): an owner's grant is the owner's to end.
    * It asks for no level: ending a grant only takes access away.
    *
@@ -12549,8 +12550,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
     }
     let endReason = validateAdminAccessReason(reason);
-    if (actor.via !== "api" && actor.via !== "cli") {
-      throw new TypeError("An admin's via must be \"api\" or \"cli\".");
+    if (adminCallerTerms(actor).via === "gatekeeper") {
+      throw new TypeError("An admin grant is never ended through the admin gatekeeper.");
     }
     if (!isDeploymentAdmin(impl.env, actor.admin)) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);

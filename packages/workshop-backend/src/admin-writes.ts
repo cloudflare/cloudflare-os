@@ -5,7 +5,8 @@ import type { AdminWriteAction, AdminWriteArgs, AdminWriteRecord } from "@gadget
 
 /** What OverseerDurableObject.applyAdminWrite() is given: the write, and the admin who makes it,
  * through which session, for the AdminWriteRecord the workspace appends. */
-export type AdminWriteCall = Pick<AdminWriteRecord, "admin" | "sessionId" | "via" | "reason"> & {
+export type AdminWriteCall =
+    Pick<AdminWriteRecord, "admin" | "sessionId" | "via" | "agent" | "reason"> & {
   action: AdminWriteAction;
   args: AdminWriteArgs;
 };

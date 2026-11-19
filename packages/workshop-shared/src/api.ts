@@ -2533,8 +2533,8 @@ export type AdminWriteArgs = {
  * members see only what the write did (a stopped turn, ended sessions), as a member's would look.
  */
 export type AdminWriteRecord = Pick<AdminAccessRecord,
-    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
-    "args" | "reason"> & {
+    "at" | "admin" | "sessionId" | "via" | "agent" | "workspaceId" | "workspaceOwner" |
+    "workspaceTitle" | "args" | "reason"> & {
   /** Distinguishes this from the other kinds of AdminAuditRecord. */
   kind: "write";
   /** The action. Named `method` as on the other records, so that AdminAuditQuery.method filters
@@ -2588,6 +2588,10 @@ export type AdminContentRequest = {
   requestedBy: string;
   /** How the requester's calls reached the deployment (see AdminVia). */
   via: AdminVia;
+  /** Where the request came from, when an agent filed it through the admin gatekeeper (see
+   * AdminAgentOrigin): present exactly when `via` is "gatekeeper". The list of pending approvals
+   * shows it. */
+  agent?: AdminAgentOrigin;
   /** When it was made. */
   requestedAt: Date;
   /** When it stops being approvable: ADMIN_CONTENT_REQUEST_LIFETIME_SECONDS after it was made. */
@@ -2624,8 +2628,8 @@ export type AdminGrantMethod = typeof ADMIN_GRANT_METHODS[number];
  * that runs out records nothing. Nothing of any step is shown in the workspace.
  */
 export type AdminGrantRecord = Pick<AdminAccessRecord,
-    "at" | "admin" | "sessionId" | "via" | "workspaceId" | "workspaceOwner" | "workspaceTitle" |
-    "reason"> & {
+    "at" | "admin" | "sessionId" | "via" | "agent" | "workspaceId" | "workspaceOwner" |
+    "workspaceTitle" | "reason"> & {
   /** Distinguishes this from the other kinds of AdminAuditRecord. */
   kind: "grant";
   /** The step. */
