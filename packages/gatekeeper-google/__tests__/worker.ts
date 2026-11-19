@@ -16,6 +16,7 @@ import type { DriveAccessLevel } from "../src/resources";
 import type {
   DocMetadata, GoogleDocImage, GoogleDocPendingChanges, GoogleDocSession, GoogleDocTab,
 } from "../src/docs-types";
+import type { GoogleDocRenderingReads } from "../src/docs-rendering-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetRenderingReads, SpreadsheetDrawing } from "../src/sheets-rendering-types";
@@ -491,6 +492,14 @@ export class TestHooks extends DurableObject<Env> {
 
   async readPendingChanges(facetName: string, tabId: string): Promise<GoogleDocPendingChanges> {
     return this.#withSession(facetName, session => session.getPendingChanges(tabId));
+  }
+
+  /** In one session: read the tab's drawing, then a font of `family`. Returns why it was refused. */
+  async readFont(facetName: string, tabId: string, family: string): Promise<string | undefined> {
+    return this.#withSession(facetName, async session => {
+      await (session as GoogleDocSession & GoogleDocRenderingReads).readDrawing(tabId);
+      return session.readFont(family, 400, false).then(() => undefined, (error: Error) => error.message);
+    });
   }
 
   /** In one session: list the tab's images when `list` is set, then read each of `imageIds`. */

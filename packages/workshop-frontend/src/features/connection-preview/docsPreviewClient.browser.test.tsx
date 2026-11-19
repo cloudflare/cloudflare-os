@@ -23,7 +23,13 @@ const text = (element: Element) => element.textContent!.replaceAll('⁠', '')
  * holds answers in place of the scripted session's own.
  */
 async function draw(doc: Doc, session: { [method: string]: (...given: never[]) => Promise<unknown> } = {}) {
+  const fonts: [string, number, boolean][] = []
   const gadget = {
+    // No font is served here: each is asked for, and the text is drawn without.
+    readFont: async (...font: [string, number, boolean]) => {
+      fonts.push(font)
+      throw new Error('no such font')
+    },
     listTabs: async () => (doc.tabs ?? ['t.0']).map((id, index) =>
       ({ id, title: doc.titles?.[index] ?? `Tab ${index + 1}`, index, nestingLevel: 0, ...doc.edited?.includes(id) && { pending: true } })),
     getPendingChanges: async (tabId: string) => {
@@ -51,6 +57,8 @@ async function draw(doc: Doc, session: { [method: string]: (...given: never[]) =
   const blocks = () => [...page()!.querySelectorAll<HTMLElement>('.col > *')]
   return {
     page: page()!,
+    /** The fonts asked for, in order: family, weight and whether italic. */
+    fonts,
     blocks,
     sheets: () => [...page()!.querySelectorAll<HTMLElement>('.sheet')],
     look: (element: Element) => frame!.contentWindow!.getComputedStyle(element),
@@ -317,6 +325,15 @@ it('keeps the images of a paragraph a pending change edits, and wraps its text r
   const words = run(edited, 'Beside').getBoundingClientRect()
   expect(words.left).toBeGreaterThanOrEqual(tethered.getBoundingClientRect().right - 1)
   expect(words.top).toBeLessThan(tethered.getBoundingClientRect().bottom)
+})
+
+it('asks for the fonts the drawing is set in, each once, and none the browser has', async () => {
+  const set = drawing([paragraph(0, 'Words')], {
+    textLooks: [{ ...ARIAL, fontFamily: 'Open Sans' }, { ...ARIAL, fontFamily: 'Open Sans', weight: 700 }, { ...ARIAL, fontFamily: 'Consolas' }],
+  })
+  const { fonts } = await draw({ savedMarkdown: 'Words\n', drawing: set })
+
+  await expect.poll(() => fonts).toEqual([['Open Sans', 400, false], ['Open Sans', 700, false]])
 })
 
 it('draws a tab again once it is saved anew, though its Markdown reads the same', async () => {

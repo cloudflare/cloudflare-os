@@ -10,8 +10,8 @@
 // saved: text of a pending change is not yet approved.
 
 import {
-  dataUrl, flash, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline, outlineList, page, setOutline,
-  setStops, showError, showLoading, showPage, showStale, status,
+  dataUrl, flash, fontReader, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline, outlineList, page, setOutline,
+  setStops, showError, showLoading, showPage, showStale, status, SYSTEM_FONT,
 } from './ui/chrome.js';
 import { boxOf, drawSlide, LINE_HEIGHT } from './slide.js';
 
@@ -291,11 +291,6 @@ function wordChanges(before, after) {
 // ---------------------------------------------------------------------------------------------
 // Fonts: the presentation's own, which the session reads from Google Fonts for this frame
 
-// Families every browser has, or has a match for, which Google Fonts does not serve.
-const SYSTEM_FONT = /^(arial|helvetica|times new roman|courier new|georgia|verdana|tahoma|trebuchet ms|comic sans ms|impact|calibri|cambria)$/i;
-// Each font asked for, by family, weight and slant: whether it arrived.
-const faces = new Map();
-const faceKey = (family, weight, italic) => `${family}\u0000${weight}\u0000${italic}`;
 // The families listFonts() named, which are the ones readFont() reads, and the ones it did not.
 let listed = new Set();
 const unlisted = new Set();
@@ -332,40 +327,15 @@ function measuresOf(bytes) {
   return { ascentOverride: `${ascent * 100}%`, descentOverride: `${(LINE_HEIGHT - ascent) * 100}%`, lineGapOverride: '0%' };
 }
 
-// Only a font that arrives, or may yet, counts against the limit.
-let fontsHeld = 0;
-
-function readFace(family, weight, italic) {
-  const key = faceKey(family, weight, italic);
-  if (faces.has(key)) return faces.get(key);
-  if (fontsHeld >= MAX_FONTS) return Promise.resolve(false);
-  fontsHeld++;
-  const arrived = gadget.readFont(family, weight, italic).then(async bytes => {
-    const face = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal', ...measuresOf(bytes) });
-    await face.load();
-    document.fonts.add(face);
-    return true;
-  }).catch(() => {
-    fontsHeld--;
-    // Without the weight the browser makes one from the family's regular, when that is there.
-    return (weight !== 400 || italic) && readFace(family, 400, false);
-  });
-  faces.set(key, arrived);
-  return arrived;
-}
+const faces = fontReader((...font) => gadget.readFont(...font), MAX_FONTS, measuresOf);
 
 // Reads the fonts these slides are set in that have not been asked for, and says whether any
 // arrived, which changes how every slide already drawn is laid out.
 async function readFonts(slides) {
-  const wanted = new Map();
-  for (const slide of slides) {
-    for (const { fontFamily, fontWeight, italic = false } of looksOf(slide)) {
-      const key = faceKey(fontFamily, fontWeight, italic);
-      if (!SYSTEM_FONT.test(fontFamily) && !faces.has(key)) wanted.set(key, [fontFamily, fontWeight, italic]);
-    }
-  }
-  if (!wanted.size) return false;
-  const families = [...new Set([...wanted.values()].map(([family]) => family))];
+  const wanted = slides.flatMap(slide => [...looksOf(slide)].map(({ fontFamily, fontWeight, italic = false }) => [fontFamily, fontWeight, italic]))
+    .filter(font => !SYSTEM_FONT.test(font[0]) && !faces.asked(...font));
+  if (!wanted.length) return false;
+  const families = [...new Set(wanted.map(([family]) => family))];
   if (families.some(family => !listed.has(family) && !unlisted.has(family))) {
     listing ??= gadget.listFonts().then(fonts => {
       listed = new Set(fonts.map(font => font.family));
@@ -374,9 +344,7 @@ async function readFonts(slides) {
     // A family the listing leaves out is not asked about again.
     if (await listing) for (const family of families) if (!listed.has(family)) unlisted.add(family);
   }
-  const arrived = await Promise.all([...wanted.values()]
-    .filter(([family]) => listed.has(family)).map(font => readFace(...font)));
-  return arrived.some(Boolean);
+  return faces.read(wanted.filter(([family]) => listed.has(family)));
 }
 
 // ---------------------------------------------------------------------------------------------

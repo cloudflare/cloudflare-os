@@ -206,6 +206,47 @@ export const dataUrl = async (content, type) => {
   });
 };
 
+/** Families every browser has, or has a match for, which Google Fonts does not serve. */
+export const SYSTEM_FONT = /^(arial|helvetica( neue)?|sans|times new roman|courier new|georgia|verdana|tahoma|trebuchet ms|comic sans ms|impact|calibri|cambria|consolas)$/i;
+
+/**
+ * Brings fonts into this frame through `read(family, weight, italic)`, a session's readFont(): at
+ * most `most` of them, each asked for once. `measures(bytes, family)` gives what a face sets over
+ * its file's own measures. `asked(...font)` says whether a font was asked for, and `read(fonts)`
+ * reads those of `[family, weight, italic]` that were not, and says whether any arrived.
+ */
+export function fontReader(read, most, measures = () => ({})) {
+  // Each font asked for: whether it arrived. Only one that does, or may yet, counts against the limit.
+  const faces = new Map();
+  let held = 0;
+  const key = font => font.join('\u0000');
+  const face = (family, weight, italic) => {
+    const font = key([family, weight, italic]);
+    if (faces.has(font)) return faces.get(font);
+    if (held >= most) return Promise.resolve(false);
+    held++;
+    const arrived = Promise.resolve().then(() => read(family, weight, italic)).then(async bytes => {
+      const loaded = new FontFace(family, bytes, { weight: String(weight), style: italic ? 'italic' : 'normal', ...measures(bytes, family) });
+      await loaded.load();
+      document.fonts.add(loaded);
+      return true;
+    }).catch(() => {
+      held--;
+      // Without the weight the browser makes one from the family's regular, when that is there.
+      return (weight !== 400 || italic) && face(family, 400, false);
+    });
+    faces.set(font, arrived);
+    return arrived;
+  };
+  return {
+    asked: (...font) => faces.has(key(font)),
+    read: async fonts => {
+      const fresh = new Map(fonts.filter(font => font[0] && !SYSTEM_FONT.test(font[0]) && !faces.has(key(font))).map(font => [key(font), font]));
+      return (await Promise.all([...fresh.values()].map(font => face(...font)))).some(Boolean);
+    },
+  };
+}
+
 export const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
 
 /** Restarts an element's glow, which an animation already run would not play again. */

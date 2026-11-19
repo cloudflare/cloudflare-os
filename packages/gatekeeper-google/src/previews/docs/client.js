@@ -12,11 +12,11 @@
 // or a heading, and out to the web, in a new browser tab, from text Google Docs has saved.
 
 import {
-  addControl, dataUrl, flash, foldArrow, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline,
-  outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale, status,
-  touch, ITSELF,
+  addControl, dataUrl, flash, foldArrow, fontReader, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion,
+  outline, outlineList, page, partNavigator, press, segmented, setOutline, setStops, showError, showPage, showStale,
+  status, touch, ITSELF,
 } from './ui/chrome.js';
-import { drawer, headingLevel, newList, showPicture } from './draw.js';
+import { drawer, faceMeasures, headingLevel, newList, showPicture } from './draw.js';
 import { paginate } from './pages.js';
 import { BOLD, ITALIC, STRIKE, blockKey, diff, pairEdits, parseBlocks, tablesOf, wordsOf } from './text.js';
 
@@ -154,6 +154,10 @@ function namedOf(style) {
   const found = named[style];
   return found ? { paragraph: paragraphLooks[found.paragraph], text: textLooks[found.text] } : PLAIN[style] ?? PLAIN.NORMAL_TEXT;
 }
+
+// The most fonts read for one document, and the reader that brings them into this frame.
+const MAX_FONTS = 24;
+const fonts = fontReader((...font) => gadget.readFont(...font), MAX_FONTS, () => faceMeasures);
 
 // Per tab: the saved Markdown and the revision its drawing was read for, and the drawing. The
 // revision tells of a change to how the tab is drawn that its Markdown does not show.
@@ -833,7 +837,26 @@ async function load() {
     tab = { drawing, savedMarkdown, markdown, rows, drawnOf: fits ? drawnOf : () => undefined, changed: rows.some(row => row.mark) };
     if (!tab.changed) view = 'after';
 
+    // The text is set in each font as it arrives, and the first time waits a moment for them:
+    // a page set in a stand-in breaks its lines, and so its pages, somewhere else.
+    // Bold and italic are read too where the pending changes write them, which no saved look may.
+    const writes = flag => rows.some(({ item, mark, words }) => mark && mark !== 'removed' && item.type !== 'table' &&
+      (words ?? wordsOf(item.text)).some(word => word.style & flag && word.mark !== 'removed'));
+    const [bold, italic] = [writes(BOLD), writes(ITALIC)];
+    let drawn = false;
+    const arriving = fonts.read(drawing.textLooks.flatMap(({ fontFamily, weight, italic: slanted }) => [
+      [fontFamily, weight, !!slanted],
+      ...bold ? [[fontFamily, 700, false]] : [],
+      ...italic ? [[fontFamily, 400, true]] : [],
+    ])).then(any => {
+      if (!any) return;
+      if (drawn && current === generation) render(false, readingPlace());
+    });
+    if (!loaded) await Promise.race([arriving, new Promise(resolve => setTimeout(resolve, 1500))]);
+    if (current !== generation) return;
+
     render(true);
+    drawn = true;
     showStale(stale, 'document');
     status('');
     loaded = true;
