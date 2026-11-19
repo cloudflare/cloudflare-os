@@ -231,7 +231,11 @@ class Printer {
     const lines: Block = [["{"]];
     const id = method.extension("x-operation-id");
     const tag = typeof id === "string" ? `\`${id}\`` : "";
-    const doc = method.summary && tag ? `${method.summary} (${tag})` : method.summary || tag;
+    const title = method.summary && tag ? `${method.summary} (${tag})` : method.summary || tag;
+    // Shown, never acted on: a description can list alternatives as if every one were needed.
+    const scopes = method.extension("x-declared-scopes");
+    const doc = typeof scopes === "string"
+      ? `${title}${title ? "\n\n" : ""}Scopes the description declares: ${scopes}` : title;
     if (doc || method.deprecated) {
       lines.unshift(...docLines(doc, method.deprecated));
     }

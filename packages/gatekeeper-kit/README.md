@@ -122,7 +122,7 @@ bracket convention for arrays, takes an array even where the document declares a
 ```sh
 gatekeeper-openapi-schema <spec.json or https URL> --out src/generated/openapi \
   [--sha256 <hex>] [--group-by tag] [--operations operations.txt] [--omit-header Accept]... \
-  [--writable id]... [--patch openapi-patch.json]
+  [--writable id]... [--patch openapi-patch.json] [--scopes-extension x-scopes]
 ```
 
 `--sha256` is the document's SHA-256, which a URL needs: a run fails when the document is not the
@@ -135,7 +135,10 @@ versioning `Accept` header. `--writable` clears `readOnly` from every property o
 document that marks a field read-only although requests send it, such as an `id` that references
 must name. `--patch` applies a JSON Patch (RFC 6902) of `add`, `replace` and `remove` operations to
 the document first, to correct what it gets wrong; each operation needs a `reason` member saying
-why. The output directory holds only generated files and is replaced on each run. Commit the
+why. Each operation's comment names the scopes its `security` declares, to read and not to act on: a
+description can list alternatives as if each were needed. `--scopes-extension` names an extension to
+read them from instead, for a document that keeps them in one. The output directory holds only
+generated files and is replaced on each run. Commit the
 output: generating needs Forge's native binary and jco, which builds the plugin on first use and
 caches it under `node_modules/.cache`.
 
