@@ -161,6 +161,29 @@ it('embeds a snapshotted path without a frame and preserves its bytes when reope
   await expect.poll(() => pixel(image('Result'))).toEqual([255, 0, 0, 255])
 })
 
+it('loads a large pinned image through a Blob with only a bounded JavaScript header read', async () => {
+  const source = 'worktree://OUTPUTS/large.png', oid = 'a'.repeat(40)
+  vi.spyOn(Response.prototype, 'arrayBuffer').mockRejectedValue(new Error('Whole-image arrays are forbidden'))
+  const sizes: number[] = [], arrayBuffer = Blob.prototype.arrayBuffer
+  vi.spyOn(Blob.prototype, 'arrayBuffer').mockImplementation(function (this: Blob) {
+    sizes.push(this.size)
+    return arrayBuffer.call(this)
+  })
+  const readBlob = vi.fn<Overseer['readBlob']>(async () => new ReadableStream({
+    start(controller) {
+      controller.enqueue(png('cyan'))
+      const padding = new Uint8Array(1024 * 1024)
+      for (let i = 0; i < 16; i++) controller.enqueue(padding)
+      controller.close()
+    },
+  }))
+  await show(`![Large](${source})`, { oids: { [source]: oid }, readBlob })
+  await expect.poll(() => pixel(image('Large'))).toEqual([0, 255, 255, 255])
+  expect(sizes.length).toBeGreaterThan(0)
+  expect(Math.max(...sizes)).toBeLessThanOrEqual(1024)
+  expect(readBlob).toHaveBeenCalledExactlyOnceWith(oid)
+})
+
 it('cancels an in-progress byte download when its snapshot leaves and releases the final object URL', async () => {
   const source = 'worktree://REPO/result.png', a = 'a'.repeat(40), b = 'b'.repeat(40)
   const cancel = vi.fn<() => void>()

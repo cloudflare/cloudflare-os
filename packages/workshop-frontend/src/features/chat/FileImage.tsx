@@ -19,14 +19,15 @@ export const FileImage = ({ oid, alt = '', title, readBlob, layout }: {
 }) => {
   const ref = useRef<HTMLSpanElement>(null)
   const [nearViewport, setNearViewport] = useState(false)
-  const [state, setState] = useState<{ oid: string; bytes: Uint8Array; mimeType: string } | { error: string }>()
+  const [state, setState] = useState<{ oid: string; blob: Blob; mimeType: string } | { error: string }>()
   const read = useEffectEvent(async (oid: string, signal: AbortSignal) => {
-    if (state && 'bytes' in state && state.oid === oid) return
+    if (state && 'blob' in state && state.oid === oid) return
     setState(undefined)
     const stream = await readBlob(oid)
     if (signal.aborted) { await stream.cancel(); return }
-    const bytes = new Uint8Array(await new Response(stream.pipeThrough(new TransformStream(), { signal })).arrayBuffer())
-    return { oid, bytes, mimeType: isSvgImage(bytes.subarray(0, 1024)) ? 'image/svg+xml' : '' }
+    const blob = await new Response(stream.pipeThrough(new TransformStream(), { signal })).blob()
+    const header = new Uint8Array(await blob.slice(0, 1024).arrayBuffer())
+    return { oid, blob, mimeType: isSvgImage(header) ? 'image/svg+xml' : '' }
   })
   const scrollRoot = layout?.scrollRoot
   useEffect(() => {
@@ -51,9 +52,9 @@ export const FileImage = ({ oid, alt = '', title, readBlob, layout }: {
     return () => controller.abort()
   }, [oid, readBlob, nearViewport])
 
-  const image = state && 'bytes' in state && state.oid === oid ? state : undefined
+  const image = state && 'blob' in state && state.oid === oid ? state : undefined
   // SVGs reuse attachment previews' originless URLs, safe when opened separately as well.
-  const url = useObjectUrl(image?.bytes, image?.mimeType ?? '')
+  const url = useObjectUrl(image?.blob, image?.mimeType ?? '')
   const error = !oid || state && 'error' in state
   return <span ref={ref}>{image && url && !error ? <img
     src={url} data-blob-oid={oid} alt={alt} title={title} className="max-w-full h-auto"

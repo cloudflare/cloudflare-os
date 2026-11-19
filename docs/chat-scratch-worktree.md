@@ -24,6 +24,8 @@ HTML and SVG, so saved files do not run in the Workshop origin.
 Generated images can appear directly in an answer as Markdown:
 `![Mandelbrot set](worktree://OUTPUTS/mandelbrot.png)`. The same scheme works in literal
 `<img src="worktree://OUTPUTS/mandelbrot.png">` tags inside `<inline-html>` for custom layouts.
+Inline views load these images in the ordinary document, including images cloned from HTML
+templates. Worktree images inside Shadow DOM are not supported; use ordinary image tags or Markdown.
 Use any worktree binding available to the chat, including `ATTACHMENTS`, and percent-encode special
 characters in paths. The host parser resolves the path once as the answer streams and records
 its immutable Git blob OID in the message's `embeds` map. Rendering reads that saved OID through the
