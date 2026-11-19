@@ -1022,11 +1022,9 @@ export class UserAccount extends DurableObject<Env> {
       // has not refreshed a token since, or one whose recording failed or has not finished, as
       // after a reconnect, whose earlier record may name another Google account. Its stored access
       // token, while it lasts, says which account it is; minting another would need the mutex this
-      // call holds.
+      // call holds. Asked until it expires: one that lapses during the read fails it, and revokes.
       let stored = kv.get<GoogleAccessToken>("accessToken");
-      if (!stored || stored.expires.valueOf() <= Date.now() + ACCESS_TOKEN_EXPIRY_SAFETY_MS) {
-        return true;
-      }
+      if (!stored || stored.expires.valueOf() <= Date.now()) return true;
       let { sub } = await getGoogleAccountProfile(
           stored.token, AbortSignal.timeout(GRANT_SUBJECT_TIMEOUT_MS));
       return (await this.#grantRegistry(sub).remove(this.ctx.id.toString())).last;

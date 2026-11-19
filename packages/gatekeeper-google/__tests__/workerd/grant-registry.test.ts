@@ -259,6 +259,19 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual([]);
   });
 
+  it("spares the others when a connection it never recorded is disconnected in its token's last minute", async () => {
+    const google = fakeGoogle();
+    const {ada} = googleAccounts();
+    await connection(google, "recorded", ada);
+    const older = await storedAccount(google, "older", ada);
+    await older.run((_instance, state) => {
+      state.storage.kv.put("accessToken", {token: "access-older", expires: new Date(Date.now() + 30_000)});
+    });
+
+    await older.disconnect();
+    expect(google.revoked).toEqual([]);
+  });
+
   it("revokes when it cannot tell which Google account it holds", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();
