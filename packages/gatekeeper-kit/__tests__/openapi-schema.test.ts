@@ -212,6 +212,29 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
     expect(both.stderr).toContain("usage:");
   });
 
+  it("names the scopes an operation declares in its comment, from security or a named extension", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const out = join(dir, "out");
+      writeFileSync(join(dir, "patch.json"), JSON.stringify([
+        { op: "add", path: "/paths/~1users~1{username}/get/security",
+          value: [{ oauth: ["users:read", "users:admin"] }, { key: [] }, { other: ["profile"] }],
+          reason: "Tests declared scopes." },
+        { op: "add", path: "/paths/~1users~1{username}/get/x-scope", value: "users.read", reason: "Tests an extension." },
+      ]));
+      writeFileSync(join(dir, "ops.txt"), "users/get\n");
+      const args = ["--patch", join(dir, "patch.json"), "--operations", join(dir, "ops.txt")];
+      expect(generate(join(fixture, "spec.json"), out, ...args).status).toBe(0);
+      expect(readTree(out)["index.d.ts"])
+        .toContain("     * Scopes the description declares: `users:read`, `users:admin` or `profile`\n");
+
+      expect(generate(join(fixture, "spec.json"), out, ...args, "--scopes-extension", "x-scope").status).toBe(0);
+      expect(readTree(out)["index.d.ts"]).toContain("     * Scopes the description declares: `users.read`\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to replace an output directory holding a file it did not generate", () => {
     const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
     try {
