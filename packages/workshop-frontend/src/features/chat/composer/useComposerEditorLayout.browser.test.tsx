@@ -16,20 +16,16 @@ const SHORT_TEXT = "The quick brown fox jumps over the lazy dog.";
 // Past the four rows the textarea grows to, so it scrolls.
 const LONG_TEXT = `${SHORT_TEXT} `.repeat(20);
 
-// `preview` is text the mirror paints after the textarea's value, as dictation does.
-const Editor = ({ text, preview = "" }: { text: string; preview?: string }) => {
+const Editor = ({ text }: { text: string }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const mirrorRef = useRef<ComposerMirrorHandle>(null);
-  const painted = text + preview;
   const { resizeTextarea } = useComposerEditorLayout({
-    textareaRef, wrapperRef, mirrorRef, text: painted, activeTextOffset: undefined,
-    preview: preview ? { start: text.length, end: painted.length } : undefined,
-    minRows: 2, maxRows: 4,
+    textareaRef, wrapperRef, mirrorRef, text, activeTextOffset: undefined, minRows: 2, maxRows: 4,
   });
   return (
     <div ref={wrapperRef} className={styles.capsuleInputWrapper}>
-      <ComposerMirror ref={mirrorRef} value={painted} tokens={[]} disabled={false} />
+      <ComposerMirror ref={mirrorRef} value={text} tokens={[]} disabled={false} />
       <textarea
         ref={(textarea) => {
           textareaRef.current = textarea;
@@ -44,29 +40,6 @@ const Editor = ({ text, preview = "" }: { text: string; preview?: string }) => {
   );
 };
 
-const settle = () => act(() => new Promise((resolve) => {
-  requestAnimationFrame(() => requestAnimationFrame(resolve));
-}));
-
-// Where the mirror paints its first or last character.
-const characterRect = (mirror: HTMLElement, which: "first" | "last") => {
-  const walker = document.createTreeWalker(mirror, NodeFilter.SHOW_TEXT);
-  const texts: Text[] = [];
-  while (walker.nextNode()) texts.push(walker.currentNode as Text);
-  const text = which === "first" ? texts[0] : texts[texts.length - 1];
-  const offset = which === "first" ? 0 : text.length - 1;
-  const range = document.createRange();
-  range.setStart(text, offset);
-  range.setEnd(text, offset + 1);
-  return range.getBoundingClientRect();
-};
-
-const expectVisible = (rect: DOMRect, clip: HTMLElement) => {
-  const visible = clip.getBoundingClientRect();
-  expect(rect.top).toBeGreaterThanOrEqual(visible.top);
-  expect(rect.bottom).toBeLessThanOrEqual(visible.bottom);
-};
-
 describe("composer editor layout", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
@@ -74,24 +47,21 @@ describe("composer editor layout", () => {
   afterEach(async () => {
     await act(async () => root?.unmount());
     container?.remove();
-    root = undefined;
-    container = undefined;
   });
 
-  const render = async (text: string, preview?: string) => {
-    if (!container) {
-      container = document.body.appendChild(document.createElement("div"));
-      // A flex layout rarely gives the composer a whole-pixel width.
-      container.style.width = "403.3px";
-      root = createRoot(container);
-    }
-    await act(async () => root!.render(<Editor text={text} preview={preview} />));
-    await settle();
+  const render = async (text: string) => {
+    container = document.body.appendChild(document.createElement("div"));
+    // A flex layout rarely gives the composer a whole-pixel width.
+    container.style.width = "403.3px";
+    root = createRoot(container);
+    await act(async () => root!.render(<Editor text={text} />));
+    await act(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
     const textarea = container.querySelector("textarea")!;
     const mirror = container.querySelector<HTMLElement>('[aria-hidden="true"] > div')!;
     return { textarea, mirror, clip: mirror.parentElement! };
   };
-
 
   // A mirror rounded to a whole pixel wraps a line differently once one ends within that
   // fraction of the edge, and the caret then appears in the middle of the painted text.
@@ -115,48 +85,5 @@ describe("composer editor layout", () => {
     const { textarea, clip } = await render(LONG_TEXT);
 
     expect(clip.getBoundingClientRect().height).toBe(textarea.getBoundingClientRect().height);
-  });
-
-  it("grows for preview text the textarea doesn't hold, then gives the room back", async () => {
-    const { textarea } = await render(SHORT_TEXT);
-    const height = textarea.clientHeight;
-
-    await render(SHORT_TEXT, ` ${SHORT_TEXT} ${SHORT_TEXT}`);
-    expect(textarea.value).toBe(SHORT_TEXT);
-    expect(textarea.clientHeight).toBeGreaterThan(height);
-
-    await render(SHORT_TEXT);
-    expect(textarea.clientHeight).toBe(height);
-  });
-
-  it("stops at four rows and still shows the newest preview words", async () => {
-    const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
-
-    expect(textarea.getBoundingClientRect().height).toBe(4 * 22);
-    expectVisible(characterRect(mirror, "last"), clip);
-  });
-
-  it("refits the preview when the composer narrows", async () => {
-    const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${SHORT_TEXT} ${SHORT_TEXT}`);
-    container!.style.width = "200px";
-    await settle();
-    await settle();
-
-    expect(textarea.getBoundingClientRect().height).toBe(4 * 22);
-    expectVisible(characterRect(mirror, "last"), clip);
-  });
-
-  // The textarea can't scroll to words it doesn't hold, so only the mirror was showing them.
-  it("lines the mirror up with the textarea while the user is in it, and only then", async () => {
-    const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
-    await act(async () => textarea.focus());
-    await settle();
-
-    expectVisible(characterRect(mirror, "first"), clip);
-    expect(textarea.style.caretColor).toBe("");
-
-    await act(async () => textarea.blur());
-    await settle();
-    expectVisible(characterRect(mirror, "last"), clip);
   });
 });

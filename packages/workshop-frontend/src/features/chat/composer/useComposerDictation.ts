@@ -60,28 +60,33 @@ const recognitionError = (error: string) => {
 export const appendDictatedText = (text: string, dictated: string) =>
   text + (dictated && text && !/\s$/.test(text) ? " " : "") + dictated;
 
-export type DictationStatus = "idle" | "starting" | "downloading" | "listening" | "stopping";
+export type DictationStatus = "idle" | "starting" | "downloading" | "listening";
+
+/** Words waiting to be added: finalized ones, then the recognizer's latest guess. */
+export type DictatedWords = { final: string; interim: string };
 
 type Session = {
   recognition: Recognition;
   listeners: AbortController;
   started: boolean;
-  // The finalized words and the words on screen when the user pressed Stop.
-  stopped?: { transcript: string; shown: string };
+  // Finalized words from an earlier session, still waiting.
+  earlier: string;
   transcript: string;
-  interim: string;
 };
 
+const nothing: DictatedWords = { final: "", interim: "" };
+
 /**
- * Holds what the user says outside the draft until dictation ends, then hands the words shown to
- * `onTranscript` in one piece, or drops them when the user cancels or the draft changes identity.
+ * Dictation that leaves the draft alone: words wait here until the user takes them into the draft
+ * or discards them. Taking them hands over exactly what is on screen. Recognition that stops for
+ * any other reason (silence, an error, the composer being disabled) keeps only finalized words,
+ * since nobody confirmed the latest guess.
  */
 export const useComposerDictation = ({
   disabled,
   chatKey,
   draftStorageKey,
   seedNonce,
-  onTranscript,
   onReady,
   onError,
 }: {
@@ -89,82 +94,51 @@ export const useComposerDictation = ({
   chatKey: number | null | undefined;
   draftStorageKey: string | undefined;
   seedNonce: number | undefined;
-  onTranscript: (text: string) => void;
   onReady: () => void;
   onError: (message: string) => void;
 }) => {
   const [status, setStatus] = useState<DictationStatus>("idle");
-  const [text, setText] = useState("");
-  // The words the last commit painted, which can trail the session by a result still rendering.
-  // A ref, because callers such as a toast's action hold an older render's closure.
-  const shown = useRef("");
+  const [words, setWords] = useState(nothing);
   const active = useRef<Session | null>(null);
   const RecognitionConstructor = getLocalRecognitionConstructor();
 
-  // Detached listeners can't deliver a late transcript to a draft that has moved on.
+  // Detached listeners can't deliver late results to a draft that has moved on.
   const detach = () => {
     const session = active.current;
     if (!session) return;
     active.current = null;
-    shown.current = "";
     session.listeners.abort();
+    if (session.started) session.recognition.abort();
     setStatus("idle");
-    setText("");
-    return session;
   };
 
-  // abort(), unlike stop(), keeps the browser from finalizing words the caller already has.
+  /** Stops listening, keeping the finalized words. */
+  const pause = () => {
+    detach();
+    setWords(({ final }) => ({ final, interim: "" }));
+  };
+
+  /** Stops listening and drops the words. */
   const discard = () => {
-    const session = detach();
-    if (session?.started) session.recognition.abort();
-    return session;
+    detach();
+    setWords(nothing);
   };
 
-  const keep = (words: string) => {
-    const trimmed = words.trim();
-    if (trimmed) onTranscript(trimmed);
-  };
-
-  /** Ends dictation, keeping the words on screen rather than a newer guess the user hasn't seen. */
-  const finish = () => {
-    const words = shown.current;
-    if (discard()) keep(words);
-  };
-
-  /** Ends dictation, dropping the words it shows. */
-  const cancel = () => {
+  /** Stops listening and hands over the words on screen. */
+  const take = () => {
+    const shown = (words.final + words.interim).trim();
     discard();
+    return shown;
   };
 
-  useLayoutEffect(() => {
-    shown.current = text;
-  }, [text]);
   // Layout effects, so a new chat or draft never renders with the old one's words.
-  useLayoutEffect(() => cancel, [chatKey, draftStorageKey, seedNonce]);
-  // Send and the resource flows finish dictation before they disable it, so whatever disables it
-  // here, such as an agent blocking the composer, is not the user keeping the words: only
-  // finalized ones survive, as when the browser ends on its own.
+  useLayoutEffect(() => discard, [chatKey, draftStorageKey, seedNonce]);
   useLayoutEffect(() => {
-    if (!disabled) return;
-    const session = discard();
-    if (session) keep(session.transcript);
+    if (disabled) pause();
   }, [disabled]);
 
-  const toggle = async () => {
-    if (!RecognitionConstructor || disabled || status === "stopping") return;
-    const current = active.current;
-    if (current) {
-      if (!current.started) {
-        discard();
-        return;
-      }
-      // stop() lets the browser return its last words, which the end event then keeps.
-      setStatus("stopping");
-      current.stopped = { transcript: current.transcript, shown: shown.current };
-      current.recognition.stop();
-      return;
-    }
-
+  const start = async () => {
+    if (!RecognitionConstructor || disabled || active.current) return;
     let recognition: Recognition;
     try {
       recognition = new RecognitionConstructor();
@@ -180,10 +154,17 @@ export const useComposerDictation = ({
     }
     const listeners = new AbortController();
     const { signal } = listeners;
-    const session: Session = { recognition, listeners, started: false, transcript: "", interim: "" };
+    const session: Session = {
+      recognition, listeners, started: false, earlier: words.final, transcript: "",
+    };
     active.current = session;
     recognition.continuous = true;
     recognition.interimResults = true;
+    // Chrome ignores abort() until recognition has started, so a session dropped while it was
+    // starting is aborted again once it has.
+    recognition.addEventListener("start", () => {
+      if (active.current !== session) recognition.abort();
+    }, { once: true });
     recognition.addEventListener("start", () => {
       setStatus((previous) => previous === "starting" ? "listening" : previous);
     }, { signal });
@@ -192,7 +173,7 @@ export const useComposerDictation = ({
       const finalized: string[] = [];
       const interim: string[] = [];
       // Finalized results are cumulative. Append only newly finalized speech, but rebuild the
-      // preview because the browser can revise or remove any interim word. Segments carry their
+      // guess because the browser can revise or remove any interim word. Segments carry their
       // own leading whitespace where the language uses it, so they join as given.
       for (let index = 0; index < results.length; index++) {
         const result = results[index];
@@ -200,22 +181,14 @@ export const useComposerDictation = ({
         else if (index >= resultIndex) finalized.push(result[0].transcript);
       }
       session.transcript += finalized.join("");
-      session.interim = interim.join("");
-      setText((session.transcript + session.interim).trim());
+      const final = appendDictatedText(session.earlier, session.transcript.trim());
+      const guess = interim.join("");
+      setWords({ final, interim: final ? guess.trimEnd() : guess.trim() });
     }, { signal });
-    // The browser may end without finalizing its last guess, and after Stop it can still revise
-    // one that never reaches the screen. So only finalized words survive, unless Stop finalized
-    // nothing more: then Stop keeps the words that were on screen when it was pressed.
-    recognition.addEventListener("end", () => {
-      const ended = detach();
-      if (!ended) return;
-      const { stopped } = ended;
-      keep(stopped && ended.transcript === stopped.transcript ? stopped.shown : ended.transcript);
-    }, { signal });
+    recognition.addEventListener("end", pause, { signal });
     recognition.addEventListener("error", (event) => {
       const { error } = event as Event & { error: string };
-      const failed = detach();
-      if (failed) keep(failed.transcript);
+      pause();
       const message = recognitionError(error);
       if (message) onError(message);
     }, { signal });
@@ -234,7 +207,7 @@ export const useComposerDictation = ({
           if (availability !== "unavailable") break;
         }
         if (availability === "unavailable") {
-          discard();
+          detach();
           onError("Voice typing isn’t available for your language in this browser.");
           return;
         }
@@ -246,7 +219,7 @@ export const useComposerDictation = ({
             { langs: [recognition.lang], processLocally: true },
           );
           if (signal.aborted) return;
-          discard();
+          detach();
           if (installed) onReady();
           else onError(downloadFailed);
           return;
@@ -254,7 +227,7 @@ export const useComposerDictation = ({
       } catch (error) {
         if (signal.aborted) return;
         console.warn("Couldn't prepare on-device speech recognition:", error);
-        discard();
+        detach();
         onError(setupError);
         return;
       }
@@ -265,7 +238,7 @@ export const useComposerDictation = ({
       session.started = true;
     } catch (error) {
       console.warn("Couldn't start speech recognition:", error);
-      discard();
+      detach();
       onError("Couldn’t start voice typing. Try again.");
     }
   };
@@ -273,10 +246,10 @@ export const useComposerDictation = ({
   return {
     supported: Boolean(RecognitionConstructor),
     status,
-    /** The words dictation shows but the draft doesn't hold yet. */
-    text,
-    toggle,
-    finish,
-    cancel,
+    words,
+    start,
+    pause,
+    take,
+    discard,
   };
 };

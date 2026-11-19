@@ -6,8 +6,7 @@ const announcements: Record<DictationStatus, string> = {
   idle: "",
   starting: "Starting voice typing…",
   downloading: "Downloading the voice typing language pack…",
-  listening: "Listening… Press Escape to discard what you said.",
-  stopping: "Finishing voice typing…",
+  listening: "Listening… Stop adds what you said to your message, and Escape discards it.",
 };
 
 export const ComposerDictationButton = ({ status, disabled, onToggle, onCancel }: {
@@ -29,7 +28,6 @@ export const ComposerDictationButton = ({ status, disabled, onToggle, onCancel }
         variant="ghost"
         className="group relative !h-10 !w-10 shrink-0 sm:!h-8 sm:!w-8"
         disabled={disabled}
-        aria-disabled={status === "stopping" || undefined}
         aria-label={label}
         title={label}
         icon={preparing ? (

@@ -45,11 +45,7 @@ export type ComposerMirrorHandle = {
    * the caret. A ResizeObserver entry reports it unrounded.
    */
   syncWidth(textarea: HTMLTextAreaElement, contentWidth: number): void;
-  /**
-   * Scrolls the mirror with the textarea, and `overscroll` pixels further for text it paints past
-   * the textarea's value, which the textarea can't scroll to.
-   */
-  syncScroll(textarea: HTMLTextAreaElement, overscroll?: number): void;
+  syncScroll(textarea: HTMLTextAreaElement): void;
   textOffsetTop(offset: number): number | null;
   tokenAtPoint(clientX: number, clientY: number): { start: number; edge: number } | null;
   /**
@@ -68,9 +64,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   value: string;
   tokens: readonly MirrorToken[];
   disabled: boolean;
-  /** Where dictated words the draft doesn't hold yet begin; they run to the end of `value`. */
-  dictationStart?: number;
-}>(({value, tokens, disabled, dictationStart}, ref) => {
+}>(({value, tokens, disabled}, ref) => {
   const [hoveredToken, setHoveredToken] = useState<number | null>(null);
   const [tooltipToken, setTooltipToken] = useState<number | null>(null);
   const tooltipTokenRef = useRef<number | null>(null);
@@ -78,13 +72,11 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   const hoverOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const node = useRef<HTMLDivElement>(null);
-  const overscrollRef = useRef(0);
 
-  const syncScroll = (textarea: HTMLTextAreaElement, overscroll = 0) => {
-    overscrollRef.current = overscroll;
+  const syncScroll = (textarea: HTMLTextAreaElement) => {
     if (!node.current) return;
     node.current.style.transform =
-      `translate(${-textarea.scrollLeft}px, ${-(textarea.scrollTop + overscroll)}px)`;
+      `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
   };
 
   const syncLayout = (textarea: HTMLTextAreaElement) => {
@@ -99,7 +91,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
     mirror.style.padding = computedStyle.padding;
     mirror.style.border = `${computedStyle.borderWidth} solid transparent`;
     mirror.style.height = `${textarea.clientHeight}px`;
-    syncScroll(textarea, overscrollRef.current);
+    syncScroll(textarea);
   };
 
   const syncWidth = (textarea: HTMLTextAreaElement, contentWidth: number) => {
@@ -200,7 +192,6 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   }, []);
 
   const boundaries = new Set([0, value.length]);
-  if (dictationStart !== undefined) boundaries.add(dictationStart);
   for (const token of tokens) {
     boundaries.add(token.start);
     boundaries.add(token.start + token.length);
@@ -219,14 +210,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
     const text = value.slice(start, end);
     if (!token) {
       segments.push(
-        <span
-          key={start}
-          className={dictationStart !== undefined && start >= dictationStart ? "text-kumo-subtle" : undefined}
-          data-text-start={start}
-          data-text-end={end}
-        >
-          {text}
-        </span>,
+        <span key={start} data-text-start={start} data-text-end={end}>{text}</span>,
       );
       continue;
     }

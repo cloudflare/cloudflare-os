@@ -64,8 +64,6 @@ import { ChatComposer } from "./ChatComposer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollIntoView ??= () => {};
-// jsdom lays nothing out and has no Range rects at all; the composer measures text with them.
-Range.prototype.getBoundingClientRect ??= () => document.body.getBoundingClientRect();
 
 class TestResizeObserver {
   observe() {}
@@ -112,8 +110,9 @@ const typeText = async (textarea: HTMLTextAreaElement, text: string) => {
   });
 };
 
-// The mirror, just before the textarea, paints the draft and any dictated words after it.
-const paintedText = (textarea: HTMLTextAreaElement) => textarea.previousElementSibling?.textContent;
+const pressEscape = (target: Element) => act(async () => target.dispatchEvent(
+  new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+));
 
 const addConnectionOption = () =>
   Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]'))
@@ -160,11 +159,14 @@ describe("ChatComposer", () => {
 
   const voiceButton = (action: "Start" | "Stop") =>
     container?.querySelector<HTMLButtonElement>(`button[aria-label="${action} voice typing"]`);
-  // The mirror paints the words dictation shows but the draft doesn't hold yet.
-  const dictatedText = () =>
-    container?.querySelector('[aria-hidden="true"] .text-kumo-subtle')?.textContent;
+  const strip = () => container?.querySelector<HTMLElement>('[role="group"][aria-label="Voice typing"]');
+  const stripText = () => strip()?.querySelector("p")?.textContent;
+  const stripButton = (label: "Add to message" | "Discard what you said") =>
+    strip()?.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  // The strip dims the guess the recognizer may still revise.
+  const guess = () => strip()?.querySelector("p .text-kumo-subtle")?.textContent;
 
-  it("paints dictated words after the draft and keeps them when dictation stops", async () => {
+  it("shows speech apart from the draft and adds it when the user stops", async () => {
     vi.stubGlobal("webkitSpeechRecognition", TestSpeechRecognition);
     const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
     const textarea = await renderDictationComposer({ onSend });
@@ -173,35 +175,57 @@ describe("ChatComposer", () => {
     const speech = TestSpeechRecognition.current;
     expect(speech.startedLocally).toBe(true);
     expect(speech.interimResults).toBe(true);
+    expect(stripText()).toBe("Listening…");
+
     await act(async () => speech.report(0, { text: "a dash", final: false }));
     expect(textarea.value).toBe("Build");
-    expect(paintedText(textarea)).toBe("Build a dash");
-    expect(dictatedText()).toBe(" a dash");
+    expect(guess()).toBe("a dash");
     expect(document.getElementById(textarea.getAttribute("aria-describedby")!)?.textContent)
-      .toBe("Dictated so far: a dash");
-    // The placeholder gives way to the dictated words, but its words still name the field.
-    expect(textarea.placeholder).toBe("");
-    expect(textarea.getAttribute("aria-label")).toBe("Ask a follow-up…");
-
+      .toBe("a dash");
     const first = { text: "a dashboard", final: true };
     await act(async () => speech.report(0, first, { text: " with fil", final: false }));
-    expect(dictatedText()).toBe(" a dashboard with fil");
+    expect(guess()).toBe(" with fil");
     await act(async () => speech.report(1, first, { text: " with filters", final: false }));
-    expect(paintedText(textarea)).toBe("Build a dashboard with filters");
+    expect(stripText()).toBe("a dashboard with filters");
 
     await act(async () => voiceButton("Stop")!.click());
-    expect(speech.stop).toHaveBeenCalledOnce();
-    await act(async () => {
-      speech.report(1, first, { text: " with filters", final: true });
-      speech.dispatchEvent(new Event("end"));
-    });
+    expect(speech.abort).toHaveBeenCalledOnce();
     expect(textarea.value).toBe("Build a dashboard with filters");
-    expect(dictatedText()).toBeUndefined();
+    expect(strip()).toBeNull();
     expect(voiceButton("Start")).not.toBeNull();
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("leaves the textarea's value and selection to the user while dictating", async () => {
+  it("adds the words with the check, and discards them with the cross or Escape", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await typeText(textarea, "Keep this");
+    for (const discard of [
+      () => act(async () => stripButton("Discard what you said")!.click()),
+      () => pressEscape(textarea),
+      () => pressEscape(voiceButton("Stop")!),
+    ]) {
+      await act(async () => voiceButton("Start")!.click());
+      const speech = TestSpeechRecognition.current;
+      await act(async () => speech.report(
+        0,
+        { text: "spoken words", final: true },
+        { text: " and more", final: false },
+      ));
+      await discard();
+      expect(speech.abort).toHaveBeenCalledOnce();
+      expect(strip()).toBeNull();
+      expect(textarea.value).toBe("Keep this");
+    }
+
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => TestSpeechRecognition.current.report(0, { text: "for later", final: true }));
+    await act(async () => stripButton("Add to message")!.click());
+    expect(textarea.value).toBe("Keep this for later");
+    expect(strip()).toBeNull();
+  });
+
+  it("leaves the draft's value, selection and typing to the user while listening", async () => {
     vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
     const textarea = await renderDictationComposer();
     await typeText(textarea, "Build a dashboard");
@@ -212,193 +236,27 @@ describe("ChatComposer", () => {
     expect(textarea.value).toBe("Build a dashboard");
     expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([0, 5]);
 
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
-        textarea,
-        "Create a dashboard",
-      );
-      textarea.setSelectionRange(6, 6);
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    await typeText(textarea, "Create a dashboard");
     expect(speech.abort).not.toHaveBeenCalled();
-    expect(paintedText(textarea)).toBe("Create a dashboard with filters");
+    expect(stripText()).toBe("with filters");
     await act(async () => voiceButton("Stop")!.click());
-    await act(async () => speech.dispatchEvent(new Event("end")));
     expect(textarea.value).toBe("Create a dashboard with filters");
   });
 
-  it("sends the words on screen and drops results it hasn't painted", async () => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
-    const textarea = await renderDictationComposer({ chatKey: 1, onSend });
-    await act(async () => voiceButton("Start")!.click());
-    const first = TestSpeechRecognition.current;
-    const sentence = { text: "Show me the", final: true };
-    await act(async () => first.report(0, sentence, { text: " forecast", final: false }));
-    expect(textarea.value).toBe("");
-    expect(paintedText(textarea)).toBe("Show me the forecast");
-    expect(container!.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled)
-      .toBe(false);
-    const lateResult = { text: "Late", final: true };
-    await act(async () => {
-      // Recognized, but not yet rendered, when Enter arrives.
-      first.report(1, sentence, { text: " four cats", final: false });
-      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      first.report(0, lateResult);
-    });
-    expect(first.abort).toHaveBeenCalledOnce();
-    expect(onSend).toHaveBeenCalledWith(
-      "Show me the forecast", null, undefined, undefined, undefined,
-    );
-    expect(textarea.value).toBe("");
-
-    await act(async () => voiceButton("Start")!.click());
-    const second = TestSpeechRecognition.current;
-    await act(async () => second.report(0, { text: "Previous chat", final: true }));
-    expect(dictatedText()).toBe("Previous chat");
-    await renderDictationComposer({ chatKey: 2, onSend });
-    await act(async () => second.report(0, lateResult));
-    expect(second.abort).toHaveBeenCalledOnce();
-    expect(textarea.value).toBe("");
-    expect(dictatedText()).toBeUndefined();
-  });
-
-  it("discards dictated words on Escape from the textarea or the mic button", async () => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const textarea = await renderDictationComposer();
-    await typeText(textarea, "Keep this");
-    for (const target of [() => textarea, () => voiceButton("Stop")!]) {
-      await act(async () => voiceButton("Start")!.click());
-      const speech = TestSpeechRecognition.current;
-      await act(async () => speech.report(
-        0,
-        { text: "spoken words", final: true },
-        { text: " and more", final: false },
-      ));
-      expect(paintedText(textarea)).toBe("Keep this spoken words and more");
-      await act(async () => target().dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      ));
-      expect(speech.abort).toHaveBeenCalledOnce();
-      expect(textarea.value).toBe("Keep this");
-      expect(dictatedText()).toBeUndefined();
-      expect(voiceButton("Start")).not.toBeNull();
-    }
-  });
-
-  // Chrome reports a lost local recognizer as "aborted", and can end without finalizing its last
-  // guess; neither is the user keeping the words.
-  it.each(["fails", "ends on its own"])("keeps only finalized words when recognition %s", async (cause) => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const textarea = await renderDictationComposer();
-    await typeText(textarea, "Note:");
-    await act(async () => voiceButton("Start")!.click());
-    const speech = TestSpeechRecognition.current;
-    await act(async () => speech.report(
-      0,
-      { text: "call the bank", final: true },
-      { text: " tomorrow maybe", final: false },
-    ));
-    await act(async () => {
-      if (cause === "fails") speech.fail("aborted");
-      else speech.dispatchEvent(new Event("end"));
-    });
-    expect(textarea.value).toBe("Note: call the bank");
-    expect(testState.addToast).not.toHaveBeenCalled();
-  });
-
-  it("keeps the words on screen at Stop, not a guess revised after it", async () => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const textarea = await renderDictationComposer();
-    await act(async () => voiceButton("Start")!.click());
-    const speech = TestSpeechRecognition.current;
-    const sentence = { text: "Show me the", final: true };
-    await act(async () => speech.report(0, sentence, { text: " forecast", final: false }));
-    await act(async () => voiceButton("Stop")!.click());
-    await act(async () => {
-      speech.report(1, sentence, { text: " four cats", final: false });
-      speech.dispatchEvent(new Event("end"));
-    });
-    expect(textarea.value).toBe("Show me the forecast");
-  });
-
-  it("keeps only finalized words when an agent blocks the composer mid-dictation", async () => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const textarea = await renderDictationComposer({ isAgentActive: true });
-    await act(async () => voiceButton("Start")!.click());
-    const speech = TestSpeechRecognition.current;
-    await act(async () => speech.report(
-      0,
-      { text: "call", final: true },
-      { text: " the bank tomorrow maybe", final: false },
-    ));
-    await renderDictationComposer({ isAgentActive: true, blockedReason: "Approve the request first" });
-    expect(speech.abort).toHaveBeenCalledOnce();
-    expect(textarea.value).toBe("call");
-  });
-
-  it("discards dictation on Escape even with the slash command picker open", async () => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const skill: SlashCommandChoice = {
-      selection: { gatekeeperId: 42, commandId: "deploy" },
-      name: "deploy",
-      description: "Deploy the current project.",
-      providerLabel: "Projects",
-    };
-    const overseer = { listSlashCommands: async () => [skill] } as unknown as RpcStub<Overseer>;
-    const textarea = await renderDictationComposer({ getOverseer: () => overseer });
-    await typeText(textarea, "/dep");
-    await act(async () => vi.waitFor(() => expect(textarea.getAttribute("aria-expanded")).toBe("true")));
-    await act(async () => voiceButton("Start")!.click());
-    const speech = TestSpeechRecognition.current;
-    await act(async () => speech.report(0, { text: "to production", final: false }));
-
-    await act(async () => textarea.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-    ));
-    expect(speech.abort).toHaveBeenCalledOnce();
-    expect(dictatedText()).toBeUndefined();
-    expect(textarea.getAttribute("aria-expanded")).toBe("true");
-  });
-
-  it("joins speech segments with the spacing the recognizer gives them", async () => {
-    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
-    const textarea = await renderDictationComposer();
-    await act(async () => voiceButton("Start")!.click());
-    const speech = TestSpeechRecognition.current;
-    const first = { text: "明日の", final: true };
-    await act(async () => speech.report(0, first));
-    await act(async () => speech.report(1, first, { text: "予定を確認", final: true }));
-    expect(dictatedText()).toBe("明日の予定を確認");
-    await act(async () => voiceButton("Stop")!.click());
-    await act(async () => speech.dispatchEvent(new Event("end")));
-    expect(textarea.value).toBe("明日の予定を確認");
-  });
-
-  it("ends dictation before Add connection so the new resource still lands", async () => {
+  it("lets Add connection finish while listening", async () => {
     vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
     const overseer = { listSlashCommands: async () => [] } as unknown as RpcStub<Overseer>;
     const textarea = await renderDictationComposer({ getOverseer: () => overseer });
     await typeText(textarea, "Summarize");
     await act(async () => voiceButton("Start")!.click());
     const speech = TestSpeechRecognition.current;
-    await act(async () => speech.report(
-      0,
-      { text: "the plan for", final: true },
-      { text: " me", final: false },
-    ));
-
     await act(async () => container!
       .querySelector<HTMLButtonElement>('[aria-label="Add to conversation"]')!.click());
     await act(async () => vi.waitFor(() => expect(addConnectionOption()).toBeDefined()));
     await act(async () => addConnectionOption()!.click());
-    expect(speech.abort).toHaveBeenCalledOnce();
-    expect(textarea.value).toBe("Summarize the plan for me");
     expect(testState.gatekeeperModalProps?.open).toBe(true);
-    expect(voiceButton("Start")!.disabled).toBe(true);
 
-    // A recognizer that ignores abort() must not reach the draft the modal snapshotted.
-    await act(async () => speech.report(0, { text: "the plan for me later", final: true }));
+    await act(async () => speech.report(0, { text: "the plan", final: true }));
     const gatekeeper = {
       getId: async () => 9,
       describe: async () => ({ title: "Project", url: "https://example.com/project" }),
@@ -409,10 +267,108 @@ describe("ChatComposer", () => {
       await testState.gatekeeperModalProps!.onCreated(gatekeeper);
       await new Promise(requestAnimationFrame);
     });
-    expect(textarea.value.startsWith("Summarize the plan for me")).toBe(true);
     expect(textarea.value).toContain("Project");
-    expect(textarea.value).not.toContain("later");
     expect(testState.addToast).not.toHaveBeenCalled();
+    await act(async () => voiceButton("Stop")!.click());
+    expect(textarea.value.endsWith(" the plan")).toBe(true);
+  });
+
+  it("sends the words on screen with the draft, and drops a chat's words on leaving it", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>();
+    const textarea = await renderDictationComposer({ chatKey: 1, onSend });
+    await act(async () => voiceButton("Start")!.click());
+    const first = TestSpeechRecognition.current;
+    const sentence = { text: "Show me the", final: true };
+    await act(async () => first.report(0, sentence, { text: " forecast", final: false }));
+    expect(textarea.value).toBe("");
+    expect(container!.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled)
+      .toBe(false);
+    const lateResult = { text: " Late", final: true };
+    await act(async () => {
+      // Recognized, but not yet rendered, when Enter arrives.
+      first.report(1, sentence, { text: " four cats", final: false });
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      first.report(1, sentence, lateResult);
+    });
+    expect(first.abort).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledWith(
+      "Show me the forecast", null, undefined, undefined, undefined,
+    );
+    expect(textarea.value).toBe("");
+    expect(strip()).toBeNull();
+
+    await act(async () => voiceButton("Start")!.click());
+    const second = TestSpeechRecognition.current;
+    await act(async () => second.report(0, { text: "Previous chat", final: true }));
+    expect(stripText()).toBe("Previous chat");
+    await renderDictationComposer({ chatKey: 2, onSend });
+    await act(async () => second.report(0, lateResult));
+    expect(second.abort).toHaveBeenCalledOnce();
+    expect(strip()).toBeNull();
+    expect(textarea.value).toBe("");
+  });
+
+  // None of these is the user keeping the latest guess, and none of them touches the draft.
+  it.each(["ends on its own", "fails", "is blocked"])(
+    "keeps only finalized words waiting when recognition %s",
+    async (cause) => {
+      vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+      const textarea = await renderDictationComposer();
+      await typeText(textarea, "Note:");
+      await act(async () => voiceButton("Start")!.click());
+      const speech = TestSpeechRecognition.current;
+      await act(async () => speech.report(
+        0,
+        { text: "call the bank", final: true },
+        { text: " tomorrow maybe", final: false },
+      ));
+      if (cause === "is blocked") {
+        await renderDictationComposer({ blockedReason: "Approve the request first" });
+      } else {
+        await act(async () => {
+          // Chrome reports a lost local recognizer as "aborted", which the user never asked for.
+          if (cause === "fails") speech.fail("aborted");
+          else speech.dispatchEvent(new Event("end"));
+        });
+      }
+      expect(speech.abort).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe("Note:");
+      expect(stripText()).toBe("call the bank");
+      expect(voiceButton("Start")).not.toBeNull();
+      expect(testState.addToast).not.toHaveBeenCalled();
+    },
+  );
+
+  it("joins speech segments with the spacing the recognizer gives them", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const textarea = await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    const first = { text: "明日の", final: true };
+    await act(async () => speech.report(0, first));
+    await act(async () => speech.report(1, first, { text: "予定を確認", final: true }));
+    expect(stripText()).toBe("明日の予定を確認");
+    await act(async () => voiceButton("Stop")!.click());
+    expect(textarea.value).toBe("明日の予定を確認");
+  });
+
+  // Chrome ignores abort() and stop() until recognition has started.
+  it("aborts a session the user dropped while the browser was still starting it", async () => {
+    class SlowRecognition extends TestSpeechRecognition {
+      start = vi.fn<() => void>(() => {
+        TestSpeechRecognition.current = this;
+      });
+    }
+    vi.stubGlobal("SpeechRecognition", SlowRecognition);
+    await renderDictationComposer();
+    await act(async () => voiceButton("Start")!.click());
+    await act(async () => voiceButton("Stop")!.click());
+    const speech = TestSpeechRecognition.current;
+    const aborts = speech.abort.mock.calls.length;
+    await act(async () => speech.dispatchEvent(new Event("start")));
+    expect(speech.abort).toHaveBeenCalledTimes(aborts + 1);
+    expect(voiceButton("Start")).not.toBeNull();
   });
 
   it("keeps typing available without speech support or microphone permission", async () => {
@@ -490,10 +446,8 @@ describe("ChatComposer", () => {
     expect(started).toHaveBeenCalledOnce();
     expect(DownloadableRecognition.install).toHaveBeenCalledOnce();
     const speech = TestSpeechRecognition.current;
-    await act(async () => {
-      speech.report(0, { text: "Build a dashboard", final: true });
-      speech.dispatchEvent(new Event("end"));
-    });
+    await act(async () => speech.report(0, { text: "Build a dashboard", final: true }));
+    await act(async () => voiceButton("Stop")!.click());
     expect(textarea.value).toBe("Build a dashboard");
   });
 

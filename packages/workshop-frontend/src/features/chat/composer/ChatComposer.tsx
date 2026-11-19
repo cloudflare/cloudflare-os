@@ -52,6 +52,7 @@ import {
 import { CapturedConsoleLogsPrompt } from "./CapturedConsoleLogsPrompt";
 import ComposerAddMenu from "./ComposerAddMenu";
 import { ComposerDictationButton } from "./ComposerDictationButton";
+import { ComposerDictationStrip } from "./ComposerDictationStrip";
 import { ComposerModelSelector, type SelectedModel } from "./ComposerModelSelector";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { buildComposerSubmission } from "./composerSubmission";
@@ -299,7 +300,6 @@ export const ChatComposer = ({
           onClick: () => {
             configureToastsRef.current.delete(toastId);
             toasts.close(toastId);
-            finishDictation();
             configure();
           },
         }],
@@ -307,42 +307,6 @@ export const ChatComposer = ({
       if (configure) configureToastsRef.current.set(toastId, () => toasts.close(toastId));
     },
   });
-  const isBlocked = !!blockedReason;
-  // A resource flow commits against a snapshot of the draft, which dictated words would make stale.
-  const dictationDisabled = isBlocked || isSending || attachModalOpen || isCreatingResource;
-  const dictation = useComposerDictation({
-    disabled: dictationDisabled,
-    chatKey,
-    draftStorageKey,
-    seedNonce,
-    onTranscript: (text) => {
-      recordDraftEdit();
-      setInputValue((draft) => appendDictatedText(draft, text));
-    },
-    onReady: () => toasts.add({
-      title: "Voice typing is ready",
-      description: "Select the microphone to start.",
-      variant: "success",
-    }),
-    onError: (title) => toasts.add({ title, variant: "error" }),
-  });
-  const dictating = dictation.status !== "idle";
-  const dictatedTextId = useId();
-  // Only the mirror paints dictated words, after the draft. The textarea, and so its selection,
-  // undo history and IME, holds just the draft, which gets the words when dictation ends.
-  const displayedText = appendDictatedText(inputValue, dictation.text);
-
-  // Sending and anything that snapshots the draft end dictation first, keeping the words it shows.
-  // inputValueRef and the token refs catch up only on the next render, so callers continue from
-  // the returned document, and from its caret: one at the end of the draft moves past the words
-  // appended there, as it would past typed ones.
-  const finishDictation = () => {
-    const draftEnd = getDocumentSnapshot().document.text.length;
-    const selection = composerTextareaRef.current?.selectionStart ?? draftEnd;
-    dictation.finish();
-    const document = getDocumentSnapshot().document;
-    return { document, caret: selection >= draftEnd ? document.text.length : selection };
-  };
   const {
     resizeTextarea,
     syncMirrorScroll,
@@ -351,9 +315,8 @@ export const ChatComposer = ({
     textareaRef: composerTextareaRef,
     wrapperRef,
     mirrorRef,
-    text: displayedText,
+    text: inputValue,
     activeTextOffset: activeUrl?.start,
-    preview: dictation.text ? { start: inputValue.length, end: displayedText.length } : undefined,
     minRows,
     maxRows: newChat ? 10 : 4,
   });
@@ -410,6 +373,43 @@ export const ChatComposer = ({
     setOverlayIndex(firstAccountIndex(overlayItemsRef.current));
     overlayNavigatedRef.current = false;
   }, [activeUrl]);
+
+  const isBlocked = !!blockedReason;
+  const dictation = useComposerDictation({
+    disabled: isBlocked || isSending,
+    chatKey,
+    draftStorageKey,
+    seedNonce,
+    onReady: () => toasts.add({
+      title: "Voice typing is ready",
+      description: "Select the microphone to start.",
+      variant: "success",
+    }),
+    onError: (title) => toasts.add({ title, variant: "error" }),
+  });
+  const dictatedText = (dictation.words.final + dictation.words.interim).trim();
+  const showDictation = dictation.status === "listening" || dictatedText !== "";
+  const dictatedTextId = useId();
+  // Puts the words dictation shows after the draft, and returns the document that now holds them,
+  // since inputValueRef and the token refs catch up only on the next render.
+  const addDictation = () => {
+    const words = dictation.take();
+    if (words) {
+      recordDraftEdit();
+      setInputValue((draft) => appendDictatedText(draft, words));
+    }
+    return getDocumentSnapshot().document;
+  };
+  // The user adding the words is about to read or edit them, so put the caret after them.
+  const addDictationAndEdit = () => {
+    addDictation();
+    requestAnimationFrame(() => {
+      const textarea = composerTextareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      moveCaret(textarea.value.length);
+    });
+  };
 
   // A disabled textarea stops firing mouse events, so drop the hover state the token hit-testing
   // below leaves behind; otherwise the cursor outlives `disabled:cursor-not-allowed`.
@@ -529,7 +529,8 @@ export const ChatComposer = ({
 
   const handleSend = async () => {
     if (sendInFlightRef.current || isSending || isBlocked) return;
-    const { document: draft } = finishDictation();
+    // Send includes the words dictation shows, as part of the draft, so a failed send keeps them.
+    const draft = addDictation();
     setSendHiccup(null);
     const attachmentsSnapshot = pendingAttachments;
     const readyAttachments = attachmentsSnapshot
@@ -614,8 +615,8 @@ export const ChatComposer = ({
   };
 
   const handleAttachOpen = () => {
-    const { caret } = finishDictation();
-    openAttachModal(snapCaretOutOfRanges(caret, currentTokenRanges(), "nearest"));
+    const position = composerTextareaRef.current?.selectionStart ?? inputValueRef.current.length;
+    openAttachModal(snapCaretOutOfRanges(position, currentTokenRanges(), "nearest"));
   };
 
   const addMenuCaretRef = useRef(0);
@@ -667,9 +668,6 @@ export const ChatComposer = ({
         textarea.setSelectionRange(snapped, snapped);
       }
     }
-    // While dictating, the URL scanner and slash command picker hold still: a URL's account picker
-    // would snapshot a draft that dictation is about to grow.
-    if (dictating) return;
     syncPickerCaret(cursorPos);
 
     scanForResourceUrl(cursorPos);
@@ -688,12 +686,13 @@ export const ChatComposer = ({
   // Inserted at the caret, like a capsule, so the noun lands in the sentence that needs it.
   const chooseFormat = async (format: OutputFormatOffer) => {
     const logo = await formatIconDataUrl(format.output.icon);
+    const value = inputValueRef.current;
     // The menu takes focus, but the textarea keeps its last selection; falling back to the end is
     // right for the case where it was never focused at all.
-    const { document: draft, caret } = finishDictation();
+    const caret = Math.min(composerTextareaRef.current?.selectionStart ?? value.length, value.length);
     const at = snapCaretOutOfRanges(caret, currentTokenRanges(), "nearest");
     const transition = insertComposerFormat(
-      draft,
+      currentComposerDocument(),
       at,
       { noun: format.output.noun, icon: format.output.icon, logo },
       (logo ? CAPSULE_LOGO_SLOT : "") + format.output.noun,
@@ -742,19 +741,13 @@ export const ChatComposer = ({
   const hasUnreadyAttachment = pendingAttachments.some(
     (attachment) => attachment.uploadState !== "ready",
   );
+  const messageText = appendDictatedText(inputValue, dictatedText);
   const canSend = !isSending && !isAgentActive && !isBlocked &&
-    (displayedText.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
+    (messageText.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
     !hasUnreadyAttachment && !isCreatingResource;
-  const prompt = isBlocked
-    ? blockedReason
-    : isAgentActive
-      ? "Message the agent while it works…"
-      : newChat
-        ? "Start a new conversation…"
-        : "Ask a follow-up…";
   // While the agent works, a plain message steers it (see ChatInterface's handleSend).
   const canSteer = isAgentActive && !isSending && !isStopping && !isBlocked &&
-    displayedText.trim().length > 0 && selectedSlashCommand === null && capsules.length === 0 &&
+    messageText.trim().length > 0 && selectedSlashCommand === null && capsules.length === 0 &&
     formatTokens.length === 0 && pendingAttachments.length === 0 && !isCreatingResource;
   return (
     // isolation: isolate contains z-indexes used inside the composer (the
@@ -826,11 +819,6 @@ export const ChatComposer = ({
                 ? `Slash command /${selectedSlashCommand.choice.name} from ${selectedSlashCommand.choice.providerLabel} is ready to send`
                 : "")}
           </div>
-          {/* The mirror is hidden from assistive technology and the textarea holds only the draft,
-              so this is how a screen reader hears the words Send would include. */}
-          <span id={dictatedTextId} className="sr-only">
-            {dictation.text && `Dictated so far: ${dictation.text}`}
-          </span>
           <div ref={wrapperRef} className={styles.capsuleInputWrapper}>
             {activeUrl && (
               <CapsuleOverlay
@@ -848,10 +836,9 @@ export const ChatComposer = ({
             )}
             <ComposerMirror
               ref={mirrorRef}
-              value={displayedText}
+              value={inputValue}
               tokens={mirrorTokens}
               disabled={isBlocked}
-              dictationStart={dictation.text ? inputValue.length : undefined}
             />
             <textarea
               value={inputValue}
@@ -860,7 +847,7 @@ export const ChatComposer = ({
               aria-expanded={slashCommandPicker.open}
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
               aria-activedescendant={slashCommandPicker.activeDescendant}
-              aria-describedby={dictation.text ? dictatedTextId : undefined}
+              aria-describedby={showDictation ? dictatedTextId : undefined}
               onChange={(e) => {
                 handleInputChange(e.target.value, e.target.selectionStart ?? 0);
                 syncPickerCaret(e.target.selectionStart ?? 0);
@@ -897,10 +884,15 @@ export const ChatComposer = ({
                 syncMirrorScroll(e.currentTarget);
               }}
               disabled={isBlocked}
-              // The placeholder, which names the field, would paint over dictated words in the
-              // mirror; while it gives way to them, the same words name the field instead.
-              placeholder={dictation.text ? undefined : prompt}
-              aria-label={dictation.text ? prompt : undefined}
+              placeholder={
+                isBlocked
+                  ? blockedReason
+                  : isAgentActive
+                    ? "Message the agent while it works…"
+                    : newChat
+                      ? "Start a new conversation…"
+                      : "Ask a follow-up…"
+              }
               autoFocus={autoFocus}
               rows={minRows}
               onPaste={(e) => {
@@ -920,15 +912,14 @@ export const ChatComposer = ({
                 // is not the only key it owns -- Escape cancels a composition and the arrows move
                 // through candidates.
                 if (isImeComposing(e)) return;
-                // The mic announces that Escape discards dictation, even over an open picker.
-                if (dictating && e.key === "Escape") {
-                  e.preventDefault();
-                  dictation.cancel();
-                  return;
-                }
                 if (slashCommandPicker.open && e.key === "Escape") {
                   e.preventDefault();
                   slashCommandPicker.dismiss();
+                  return;
+                }
+                if (showDictation && e.key === "Escape") {
+                  e.preventDefault();
+                  dictation.discard();
                   return;
                 }
                 if (slashCommandPicker.open && e.key === "Enter" && !e.shiftKey) {
@@ -1009,6 +1000,16 @@ export const ChatComposer = ({
             />
           </div>
         </div>
+        {/* Below the draft, where its words will go when they are added. */}
+        {showDictation && (
+          <ComposerDictationStrip
+            textId={dictatedTextId}
+            words={dictation.words}
+            disabled={isBlocked || isSending}
+            onAdd={addDictationAndEdit}
+            onDiscard={dictation.discard}
+          />
+        )}
 
         {/* Footer row: add, voice typing, and options left; model and send right */}
         <div className="flex items-center justify-between gap-1.5 px-3 pb-1.5">
@@ -1028,14 +1029,13 @@ export const ChatComposer = ({
             {dictation.supported && (
               <ComposerDictationButton
                 status={dictation.status}
-                disabled={dictationDisabled}
+                disabled={isBlocked || isSending}
                 onToggle={() => {
-                  // The URL's account picker holds a snapshot of the draft that dictated words
-                  // would make stale.
-                  if (!dictating && activeUrl) dismissUrl();
-                  void dictation.toggle();
+                  if (dictation.status === "listening") addDictationAndEdit();
+                  else if (dictation.status === "idle") void dictation.start();
+                  else dictation.pause();
                 }}
-                onCancel={dictation.cancel}
+                onCancel={dictation.discard}
               />
             )}
             {(canChooseFormat || onToggleThinkingTraces) && <DropdownMenu>
