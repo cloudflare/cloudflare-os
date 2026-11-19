@@ -112,30 +112,32 @@ import {
 ## Schema generation
 
 The `gatekeeper-openapi-schema` bin generates `./http` schemas from an OpenAPI document, with the
-Forge plugin in [`forge/`](forge/). It writes one `.d.ts` per group, with that group's models and
-an `<Group>Api` schema of the operations the client can call. Operations with a non-JSON body or
-2xx response, or with an object-valued query parameter, are left out and listed at the top of
-their file. A model with `readOnly` fields also gets an `<Model>Input` type without them, which
-request bodies use. A query parameter named `name[]`, the bracket convention for arrays, takes an
-array even where the document declares a single value.
+Forge plugin in [`forge/`](forge/). It writes one `index.d.ts`, with the models and an `Api` schema
+of the operations the client can call. Operations with a non-JSON body or 2xx response, or with an
+object-valued query parameter, cannot be in a schema: they are listed at the top of the file, and
+one that `--operations` names fails the run. A model with `readOnly` fields also gets an
+`<Model>Input` type without them, which request bodies use. A query parameter named `name[]`, the
+bracket convention for arrays, takes an array even where the document declares a single value.
 
 ```sh
 gatekeeper-openapi-schema <spec.json or https URL> --out src/generated/openapi \
-  [--group-by tag] [--operations operations.txt] [--omit-header Accept]... [--writable id]... \
-  [--patch openapi-patch.json]
+  [--sha256 <hex>] [--group-by tag] [--operations operations.txt] [--omit-header Accept]... \
+  [--writable id]... [--patch openapi-patch.json]
 ```
 
-`--group-by tag` groups operations by their first tag, for documents without Forge's
-`x-forge-group-name`. `--operations` keeps only the listed operationIds, one per line.
-`--omit-header` drops a header parameter from every operation, for one the client sends itself
-through its `headers` or `fetch` option, such as a versioning `Accept` header. `--writable`
-clears `readOnly` from every property of a name, for a document that marks a field read-only
-although requests send it, such as an `id` that references must name. `--patch` applies a JSON
-Patch (RFC 6902) of `add`, `replace` and `remove` operations to the document first, to correct what
-it gets wrong; each operation may say why in a `reason` member, which is ignored. The output
-directory holds only generated files and is replaced on each run. Commit the output: generating
-needs Forge's native binary and jco, which builds the plugin on first use and caches it under
-`node_modules/.cache`.
+`--sha256` is the document's SHA-256, which a URL needs: a run fails when the document is not the
+one the hash names, so regenerating changes only what its author changed. `--operations` keeps only
+the listed operationIds, one per line, and fails for one the document lacks or a schema cannot
+hold. `--group-by tag` writes one `.d.ts` and one `<Tag>Api` schema per first tag instead, where one
+schema of every operation is too large. `--omit-header` drops a header parameter from every
+operation, for one the client sends itself through its `headers` or `fetch` option, such as a
+versioning `Accept` header. `--writable` clears `readOnly` from every property of a name, for a
+document that marks a field read-only although requests send it, such as an `id` that references
+must name. `--patch` applies a JSON Patch (RFC 6902) of `add`, `replace` and `remove` operations to
+the document first, to correct what it gets wrong; each operation needs a `reason` member saying
+why. The output directory holds only generated files and is replaced on each run. Commit the
+output: generating needs Forge's native binary and jco, which builds the plugin on first use and
+caches it under `node_modules/.cache`.
 
 ## Internal modules
 
