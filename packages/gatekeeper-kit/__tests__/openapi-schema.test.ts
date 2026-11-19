@@ -1,6 +1,7 @@
 /// <reference types="node" />
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,9 +96,10 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       const out = join(dir, "out");
       writeFileSync(join(dir, "patch.json"), JSON.stringify([
         { op: "add", path: "/components/schemas/reactions/properties/heart", value: { type: "integer" },
-          reason: "Tests a reason, which is ignored." },
-        { op: "replace", path: "/components/schemas/issue/properties/labels/items", value: { type: "integer" } },
-        { op: "remove", path: "/components/schemas/simple-user/properties/name" },
+          reason: "The API returns a heart count." },
+        { op: "replace", path: "/components/schemas/issue/properties/labels/items", value: { type: "integer" },
+          reason: "Labels are numeric ids." },
+        { op: "remove", path: "/components/schemas/simple-user/properties/name", reason: "The API never sends it." },
       ]));
       const patched = generate(join(fixture, "spec.json"), out, "--group-by", "tag",
         "--patch", join(dir, "patch.json"));
@@ -107,10 +109,85 @@ describe("gatekeeper-openapi-schema", { timeout: 120_000 }, () => {
       expect(tree["issues.d.ts"]).toContain("labels?: number[];");
       expect(tree["index.d.ts"]).not.toContain("name?:");
 
-      writeFileSync(join(dir, "patch.json"), JSON.stringify([{ op: "remove", path: "/components/schemas/nope" }]));
+      writeFileSync(join(dir, "patch.json"), JSON.stringify([
+        { op: "remove", path: "/components/schemas/nope", reason: "It is not there." },
+      ]));
       const refused = generate(join(fixture, "spec.json"), out, "--patch", join(dir, "patch.json"));
       expect(refused.status).toBe(1);
       expect(refused.stderr).toContain("nothing at /components/schemas/nope to remove");
+
+      writeFileSync(join(dir, "patch.json"), JSON.stringify([
+        { op: "remove", path: "/components/schemas/simple-user/properties/name", reason: " " },
+      ]));
+      const unexplained = generate(join(fixture, "spec.json"), out, "--patch", join(dir, "patch.json"));
+      expect(unexplained.status).toBe(1);
+      expect(unexplained.stderr).toContain("operation 0 needs a reason");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes one schema of every operation unless asked to group by tag", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const out = join(dir, "out");
+      // Forge reads a group from a dot in an operationId, and makes no method of an aliased operation.
+      writeFileSync(join(dir, "patch.json"), JSON.stringify([
+        { op: "replace", path: "/paths/~1users~1{username}/get/operationId", value: "users.get",
+          reason: "Tests an operationId with a dot." },
+        { op: "add", path: "/paths/~1repos~1{owner}~1{repo}~1issues/get/x-forge-aliases",
+          value: [{ "x-fern-sdk-group-name": "tickets", "x-fern-sdk-method-name": "list" }],
+          reason: "Tests an operation with an alias." },
+      ]));
+      writeFileSync(join(dir, "ops.txt"), "users.get\nissues/list\nissues/delete\n");
+      const result = generate(join(fixture, "spec.json"), out, "--patch", join(dir, "patch.json"),
+        "--operations", join(dir, "ops.txt"));
+      expect(result.status, result.stderr).toBe(0);
+      const tree = readTree(out);
+      expect(Object.keys(tree)).toEqual(["index.d.ts"]);
+      expect(tree["index.d.ts"]).toContain("export type Api = {");
+      for (const path of ["/users/{username}", "/repos/{owner}/{repo}/issues", "/repos/{owner}/{repo}/issues/{issue_number}"]) {
+        expect(tree["index.d.ts"]).toContain(`      path: "${path}";`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a listed operation that a schema cannot hold", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const out = join(dir, "out");
+      writeFileSync(join(dir, "ops.txt"), "issues/list\nissues/upload\nusers/avatar\n");
+      const result = generate(join(fixture, "spec.json"), out, "--operations", join(dir, "ops.txt"));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "issues/upload, POST /repos/{owner}/{repo}/issues/{issue_number}/attachments cannot be in a schema: " +
+        "its request body is not JSON (application/octet-stream). Take it out of");
+      expect(result.stderr).toContain("users/avatar, GET /users/{username}/avatar cannot be in a schema");
+      expect(result.stderr).not.toContain("issues/list");
+      expect(readdirSync(dir)).toEqual(["ops.txt"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("checks the document's SHA-256, which a URL needs", () => {
+    const dir = mkdtempSync(join(tmpdir(), "openapi-schema-"));
+    try {
+      const out = join(dir, "out");
+      const spec = join(fixture, "spec.json");
+      const sha256 = createHash("sha256").update(readFileSync(spec)).digest("hex");
+      expect(generate(spec, out, "--sha256", sha256.toUpperCase()).status).toBe(0);
+
+      const changed = generate(spec, out, "--sha256", "0".repeat(64));
+      expect(changed.status).toBe(1);
+      expect(changed.stderr).toContain(`has SHA-256 ${sha256}, not ${"0".repeat(64)}`);
+
+      // Refused before any request is made.
+      const unpinned = generate("https://example.invalid/openapi.json", out);
+      expect(unpinned.status).toBe(1);
+      expect(unpinned.stderr).toContain("a URL needs --sha256");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
