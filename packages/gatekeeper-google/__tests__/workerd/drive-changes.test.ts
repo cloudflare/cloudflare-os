@@ -234,6 +234,8 @@ class DriveProvider {
   readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void | Promise<void>;
+  /** What happens as the next batch of file reads is read, before it is answered. */
+  duringBatch?: () => void | Promise<void>;
   #people = new Map<string, string>([
     ["me@example.com", "perm-A"], ["other@partner.example", "perm-B"],
     ["bob@example.com", "perm-bob"], ["carol@example.com", "perm-carol"],
@@ -405,6 +407,9 @@ class DriveProvider {
     this.requests.push({ call, token });
     if (this.rejected.has(token)) return driveError({ status: 401, reason: "authError" });
     if (url.pathname === "/batch/drive/v3") {
+      let during = this.duringBatch;
+      this.duringBatch = undefined;
+      await during?.();
       return this.#batch(new TextDecoder().decode(await request.arrayBuffer()));
     }
     if (url.pathname === "/drive/v3/about") {
@@ -1548,6 +1553,23 @@ describe("sharing", () => {
     provider.forget();
     expect(await drive.apply(actionId)).toBe(DISCONNECTED);
     expect(provider.requests).toEqual([]);
+  });
+
+  it("posts no comment once its connection was disconnected a minute into the approval", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("comment", "doc-1", "Hi");
+    provider.duringBatch = async () => {
+      await account().disconnectDrive();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCESS_TOKEN_MEMO_MAX_AGE_MS);
+    };
+
+    try {
+      expect(await drive.apply(actionId)).toBe(DISCONNECTED);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(provider.writes).toEqual([]);
+    expect(await drive.attempts()).toEqual({});
   });
 
   it("keeps a change pending when Google stops accepting the approval's token", async () => {

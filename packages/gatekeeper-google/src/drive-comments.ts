@@ -239,6 +239,8 @@ export type CommentHost = {
   writeRefusal(): Promise<string | undefined>;
   /** The attempt markers a handler reads and writes. */
   attempts: Pick<ReturnType<typeof writeAttempts>, "get" | "put" | "delete">;
+  /** As DriveWritesHost.ready: called just before a send is recorded. */
+  ready?(): Promise<void>;
 };
 
 /** A comment as Drive shows it, or `undefined` once it is deleted or not found. */
@@ -1124,4 +1126,5 @@ export const DRIVE_COMMENT_DEFINITIONS = commentDefinitions<DriveWritesHost>(DRI
   docs: host.docs,
   writeRefusal: () => host.writeRefusal(),
   attempts: host.attempts,
+  ...(host.ready ? { ready: () => host.ready!() } : {}),
 }));
