@@ -15,6 +15,10 @@ const testEnv = env as unknown as {
   GoogleGrantRegistry: DurableObjectNamespace<GoogleGrantRegistry>;
 };
 
+type DescribeExports = {
+  GatekeeperUserImpl(options: {props: {userObjectId: string}}): {describe(): Promise<unknown>};
+};
+
 type TestExports = {
   TestConnectCallback(options: {props: {name: string}}): Fetcher<GatekeeperConnectCallback>;
 };
@@ -136,6 +140,10 @@ function accountHandle(id: DurableObjectId) {
     disconnect: () => runInDurableObject(stub(), (instance: UserAccount) => instance.revoke()),
     /** Runs the account's alarm, if one is set. */
     alarm: () => runDurableObjectAlarm(stub()),
+    /** Describes the account, as the Workshop does when it restores or lists it. */
+    describe: () => runInDurableObject(stub(), (_instance: UserAccount, state: DurableObjectState) =>
+      (state.exports as unknown as DescribeExports).GatekeeperUserImpl({props: {userObjectId: id.toString()}})
+        .describe()),
     /** Waits until the account is recorded as holding the grant of the Google account `subject`. */
     holds: (subject: string) => vi.waitFor(async () => expect(await held()).toBe(subject), {timeout: 5000}),
     stored,
@@ -560,6 +568,26 @@ describe("Google grants shared by several connections", () => {
     const adas = await connection(google, "adas", ada);
     await adas.disconnect();
     expect(google.revoked).toEqual(["refresh-adas"]);
+  });
+
+  // The Workshop describes a reconnected account before it lists it as working again.
+  it("moves to the Google account a reconnect signed in as once describing it reads which", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const moved = await connection(google, "moved", ada);
+    const last = await connection(google, "last", ada);
+    google.profileFails = true;
+    await reconnect(google, moved, "moved-again", grace, false);
+    google.profileFails = false;
+    await moved.describe();
+    expect(await moved.stored("grantSubject")).toBe(grace);
+
+    const graces = await connection(google, "graces", grace);
+    await graces.disconnect();
+    expect(google.revoked).toEqual([]);
+    await last.disconnect();
+    expect(google.revoked).toEqual(["refresh-last"]);
   });
 
   it("stops counting for the first Google account as soon as a reconnect is known to sign in as another", async () => {
