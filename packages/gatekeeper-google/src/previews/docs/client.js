@@ -13,7 +13,7 @@
 
 import {
   addControl, dataUrl, flash, foldArrow, ghostLines, leaveOutline, lineIcon, loadOnRefresh, make, motion, outline,
-  outlineList, page, setOutline, setStops, showError, showPage, showStale, status, stepper,
+  outlineList, page, partNavigator, setOutline, setStops, showError, showPage, showStale, status, touch,
 } from './ui/chrome.js';
 import { drawer, headingLevel, newList, showPicture } from './draw.js';
 import { paginate } from './pages.js';
@@ -42,13 +42,8 @@ styleSheet.textContent = `
   .views button:hover { color: var(--ink); }
   .views button[aria-pressed="true"] { background: color-mix(in srgb, var(--link) 16%, transparent); color: var(--ink); }
   @media (max-width: 560px) { #nav > span { display: none; } #nav { padding-left: 3px; } .views button { padding: 3px 8px; } }
-  /* The page navigator, at the foot of the frame as the change navigator is at its head. A page
-     it steps to stops clear of the controls there. */
-  #pager { position: fixed; z-index: 1; right: 14px; bottom: 14px; }
-  #pager .count { color: var(--ink); font-variant-numeric: tabular-nums; }
+  /* A page the page navigator steps to stops clear of the controls at the head of the frame. */
   .sheet { scroll-margin-top: 52px; }
-  /* In a narrow frame the Workshop's card for a change waiting lies across the foot. */
-  @media (max-width: 900px) { #pager.lifted { bottom: 134px; } }
 
   /* A changed paragraph carries a bar in the page's margin, and what changed in it is tinted.
      The document's own colors stay, except where every change is read in place. */
@@ -396,34 +391,14 @@ function compose() {
 // ---------------------------------------------------------------------------------------------
 // The page navigator: steps from sheet to sheet, where the tab is drawn on more than one
 
-// The page the middle of the view is on, and the one being stepped to until it is reached.
-let onPage = 0;
-let aimed;
-const pager = document.body.appendChild(stepper('Page', ['Previous page', 'Next page'], step => {
-  aimed = Math.min(Math.max((aimed ?? onPage) + step, 0), sheets.children.length - 1);
-  sheets.children[aimed].scrollIntoView({ block: 'start', behavior: motion() });
-}));
-pager.id = 'pager';
-pager.hidden = true;
-// The page being read and how many there are, which the group's label says in words.
-const pageCount = pager.insertBefore(make('span', 'count'), pager.querySelector('button'));
-pageCount.ariaHidden = 'true';
+const pager = partNavigator('page');
 
-/** Finds the page being read, and says which ways there is another to step to. */
+/** Finds the page the middle of the view is on. */
 function markPage() {
-  const pages = [...sheets.children];
-  pager.hidden = pages.length < 2 || pages[0].matches('.endless');
-  if (pager.hidden) return;
-  const { scrollTop, clientHeight, scrollHeight } = document.scrollingElement;
-  onPage = Math.max(0, pages.findLastIndex(sheet => sheet.getBoundingClientRect().top <= clientHeight / 2));
-  if (onPage === aimed) aimed = undefined;
-  const [previous, next] = pager.querySelectorAll('button');
-  previous.disabled = onPage === 0;
-  next.disabled = onPage === pages.length - 1 || scrollTop + clientHeight >= scrollHeight - 1;
-  pageCount.textContent = `${onPage + 1} / ${pages.length}`;
-  pager.setAttribute('aria-label', `Page ${onPage + 1} of ${pages.length}`);
+  const pages = sheets.firstElementChild?.matches('.endless') ? [] : [...sheets.children];
+  const { clientHeight } = document.scrollingElement;
+  pager.show(pages, Math.max(0, pages.findLastIndex(sheet => sheet.getBoundingClientRect().top <= clientHeight / 2)));
 }
-addEventListener('scrollend', () => { aimed = undefined; });
 
 // ---------------------------------------------------------------------------------------------
 // Setting the page
@@ -579,6 +554,15 @@ function showPictures() {
 // The outline: the document's tabs and, under the one shown, its headings, as Docs lists them
 // beside the page, with a dot on each heading whose section holds a change.
 
+// What a row's change does: adds or removes, or edits, as a block written over another and a
+// paragraph whose words both come and go do, and one restyled with its words left alone.
+function changeOf({ mark, words, over }) {
+  if (over) return 'changed';
+  if (mark !== 'changed') return mark;
+  const marks = new Set(words.flatMap(word => word.mark ?? []));
+  return marks.size === 1 ? [...marks][0] : 'changed';
+}
+
 let headings = [];
 let entries = [];
 // What has been folded away: a tab by its ID, a heading by its tab, level and text.
@@ -599,13 +583,13 @@ function renderOutline() {
     .filter(heading => !(view === 'inline' && heading.matches('.removed')) && headingText(heading));
   const top = Math.min(...headings.map(heading => Number(heading.ariaLevel)));
   const levels = headings.map(heading => Number(heading.ariaLevel) - top);
-  // Each heading whose section holds a change: the blocks from it to the next heading.
-  const touched = new Set();
+  // What the changes in each heading's section do: the blocks from it to the next heading.
+  const touched = headings.map(() => []);
   let section = -1;
   for (const block of sheets.querySelectorAll('.col > *')) {
     const at = headings.indexOf(block);
     if (at >= 0) section = at;
-    if (block.matches('.added, .removed, .changed, .omit')) touched.add(section);
+    if ('stop' in block.dataset) touched[section]?.push(changeOf(tab.rows[block.dataset.row]));
   }
   // The heading whose headings are folded away, while the ones under it are passed.
   let folder;
@@ -613,23 +597,29 @@ function renderOutline() {
     const level = levels[index];
     const entry = make('button', level ? 'entry' : 'entry top');
     entry.appendChild(make('span', '', headingText(heading)));
-    entry.title = entry.textContent;
+    const name = entry.textContent;
+    const mark = kinds => {
+      const says = touch(entry, kinds);
+      entry.title = says ? `${name} (${says})` : name;
+    };
+    mark(touched[index]);
     // A heading that has just arrived arrives here as it does on the page.
     if (heading.matches('.fresh')) entry.classList.add('fresh');
-    if (touched.has(index)) entry.classList.add('touched');
     entry.addEventListener('click', () => {
       heading.scrollIntoView({ block: 'start', behavior: motion() });
       leaveOutline();
     });
-    const key = `${tabId}\u0000${level}\u0000${entry.textContent}`;
+    const key = `${tabId}\u0000${level}\u0000${name}`;
     const row = make('div', 'row');
     row.style.paddingLeft = `${level * 12}px`;
     row.append(fold(levels[index + 1] > level && key, 'Headings under this one'), entry);
     if (folder && level <= folder.level) folder = undefined;
     row.hidden = !!folder;
     // A change in a section folded away still shows, on the heading it is folded under.
-    if (folder && entry.matches('.touched')) folder.entry.classList.add('touched');
-    else if (!folder && folded.has(key)) folder = { level, entry };
+    if (folder) {
+      folder.kinds.push(...touched[index]);
+      folder.mark(folder.kinds);
+    } else if (folded.has(key)) folder = { level, mark, kinds: [...touched[index]] };
     return entry;
   });
   rail.replaceChildren(thumb, ...entries.map(entry => entry.parentElement));
@@ -643,7 +633,7 @@ function renderOutline() {
     name.append(lineIcon('M6 3h5.5L15 6.5V17H6zM11.5 3v3.5H15M8.5 10.5h4M8.5 13.5h4'), make('span', '', listed.title));
     // A tab still to be added goes by an ID of this form until Google has it.
     const added = listed.id.startsWith('pending-tab-');
-    row.classList.toggle('new', added);
+    touch(name, added ? ['added'] : []);
     name.title = added ? `${listed.title} (new, not yet added)` : listed.title;
     name.setAttribute('aria-pressed', String(on));
     name.addEventListener('click', () => {
@@ -793,7 +783,7 @@ async function load() {
     const drawing = await readDrawing(savedMarkdown).catch(() => BLANK);
     if (current !== generation) return;
     const stale = changes.filter(change => change.stale).length;
-    pager.classList.toggle('lifted', changes.length > 0);
+    pager.lift(changes.length > 0);
     // Nothing of this tab moved, as when a change is made to another: what is drawn stands.
     if (loaded && !page.hidden && tab.drawing === drawing && tab.savedMarkdown === savedMarkdown && tab.markdown === markdown) {
       for (const arrived of document.querySelectorAll('.fresh')) arrived.classList.remove('fresh');

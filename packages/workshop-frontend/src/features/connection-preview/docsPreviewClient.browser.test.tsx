@@ -410,7 +410,7 @@ it('lists the headings in an outline, marks a section that holds a change, and s
   frame!.contentDocument!.getElementById('outline-toggle')!.click()
 
   expect(entries().map(entry => entry.textContent)).toEqual(['Intro', 'Details', 'Last'])
-  expect(entries().map(entry => entry.classList.contains('touched'))).toEqual([false, true, false])
+  expect(entries().map(entry => entry.title)).toEqual(['Intro', 'Details (has pending edits)', 'Last'])
   expect(entries().map(entry => entry.parentElement!.style.paddingLeft)).toEqual(['0px', '12px', '0px'])
 
   entries()[1].click()
@@ -418,6 +418,36 @@ it('lists the headings in an outline, marks a section that holds a change, and s
   // Clear of the controls that float over the top of the page.
   await expect.poll(() => Math.round(details.getBoundingClientRect().top)).toBeLessThan(60)
   expect(outline.hidden).toBe(true)
+})
+
+it('colors the dot on a section by what its changes do, in every copy of the tab', async () => {
+  const savedMarkdown = [
+    '# Grow', 'Kept', '# Shrink', 'Going', '# Edit', 'Old words', '# Mixed', 'Stays', 'Leaving', '# Words', 'One two three', '# Plain', 'Same',
+  ].join('\n\n')
+  const markdown = savedMarkdown.replace('Kept', 'Kept\n\nArrived').replace('\n\nGoing', '').replace('Old words', 'New words')
+    .replace('Stays\n\nLeaving', 'Arriving\n\nStays').replace('One two three', 'One three')
+  const { show } = await draw({ savedMarkdown: `${savedMarkdown}\n`, markdown: `${markdown}\n` })
+  const doc = frame!.contentDocument!
+  doc.getElementById('outline-toggle')!.click()
+  const entries = () => [...doc.querySelectorAll<HTMLElement>('#rail .entry')]
+  // Added alone, removed alone, words both gone and come, paragraphs both, words removed alone.
+  const kinds = ['added', 'removed', 'changed', 'changed', 'removed', undefined]
+
+  expect(entries().map(entry => entry.dataset.touched)).toEqual(kinds)
+  // Color is not all that says it.
+  expect(entries().map(entry => entry.title)).toEqual([
+    'Grow (has pending additions)', 'Shrink (has pending deletions)', 'Edit (has pending edits)',
+    'Mixed (has pending edits)', 'Words (has pending deletions)', 'Plain',
+  ])
+  const dots = entries().map(entry => getComputedStyle(entry, '::after').backgroundColor)
+  expect(new Set(dots.slice(0, 3)).size).toBe(3)
+  expect(dots[3]).toBe(dots[2])
+  expect(dots[4]).toBe(dots[1])
+
+  for (const view of ['Inline', 'As saved']) {
+    show(view)
+    expect(entries().map(entry => entry.dataset.touched)).toEqual(kinds)
+  }
 })
 
 it('folds a heading\'s own headings away from its arrow, and still goes to it from its name', async () => {
@@ -441,7 +471,7 @@ it('folds a heading\'s own headings away from its arrow, and still goes to it fr
   // The outline is drawn again, and the keyboard stays on the arrow that took its place.
   expect(frame!.contentDocument!.activeElement).toBe(arrows()[0])
   // The change under the folded heading shows on it.
-  expect(rows()[0].querySelector('.entry')!.classList.contains('touched')).toBe(true)
+  expect(rows()[0].querySelector<HTMLElement>('.entry')!.dataset.touched).toBe('changed')
   // Folding goes nowhere.
   expect(scrolled()).toBe(before)
 
