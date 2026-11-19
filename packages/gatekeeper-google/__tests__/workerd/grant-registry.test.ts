@@ -595,6 +595,33 @@ describe("Google grants shared by several connections", () => {
     expect(google.revoked).toEqual(["refresh-last"]);
   });
 
+  it("asks the registry of the account it reconnected as, though the one it was listed in before fails", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const google = fakeGoogle();
+    const {ada, grace} = googleAccounts();
+    const moved = await connection(google, "moved", ada);
+    await connection(google, "graces", grace);
+    // Still listed under the first account, as its reconnect could not read which it signed in as.
+    google.profileFails = true;
+    await reconnect(google, moved, "moved-again", grace, false);
+    google.profileFails = false;
+    const formerId = testEnv.GoogleGrantRegistry.idFromName(ada).toString();
+    const failFormer = <M extends "drop" | "remove">(method: M) => {
+      const real = GoogleGrantRegistry.prototype[method] as (this: GoogleGrantRegistry, id: string) => Promise<never>;
+      vi.spyOn(GoogleGrantRegistry.prototype, method).mockImplementation(function (this: GoogleGrantRegistry, id: string) {
+        if ((this as unknown as {ctx: DurableObjectState}).ctx.id.toString() === formerId) {
+          throw new Error("registry unavailable");
+        }
+        return real.call(this, id);
+      } as never);
+    };
+    failFormer("drop");
+    failFormer("remove");
+
+    await moved.disconnect();
+    expect(google.revoked).toEqual([]);
+  });
+
   it("records a reconnect it never listed once describing it reads the account", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const google = fakeGoogle();

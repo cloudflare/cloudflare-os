@@ -1109,14 +1109,22 @@ export class UserAccount extends DurableObject<Env> {
     try {
       let recordedFor = kv.get<string>(GRANT_CREDENTIALS_KEY);
       let recordedSubject = kv.get<string>(GRANT_SUBJECT_KEY);
-      let recorded = await this.#forgetGrant();
-      // The registry asked is the one of the grant held now when the record was made for these
-      // credentials, or names the account they are known to belong to, though listing this
-      // object there failed.
-      if (recorded !== undefined &&
-          (recordedFor === installed || (known !== undefined && recordedSubject === known))) {
-        return { revoke: recorded.last, subject: recordedSubject };
+      // The registry this object is listed in is the one of the grant held now when the record was
+      // made for these credentials, or names the account they are known to belong to, though
+      // listing this object there failed. Only that registry's answer decides.
+      if (recordedSubject !== undefined &&
+          (recordedFor === installed || recordedSubject === known)) {
+        let recorded = await this.#forgetGrant();
+        return { revoke: recorded?.last ?? true, subject: recordedSubject };
       }
+      // Otherwise it is a former listing, as a reconnect that could not read which account it
+      // signed in as leaves, let go of without asking, whatever becomes of that: the grant held
+      // now is found below.
+      await this.#dropGrant().catch(error => {
+        logger.warn("failed to stop holding a Google grant a reconnect replaced", {
+          event: "google.grant.forget.failed", error,
+        });
+      });
       if (known !== undefined) {
         return { revoke: (await this.#grantRegistry(known).remove(this.ctx.id.toString())).last, subject: known };
       }
