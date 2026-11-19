@@ -695,7 +695,7 @@ function CollectionOptionsMenu({
     >
       {canEdit && (
         <DropdownMenu.Item
-          icon={<PencilSimple size={13} className="mr-2" />}
+          icon={<PencilSimple className="size-3.25" />}
           onClick={onEditDetails}
           className={MENU_ITEM}
         >
@@ -704,7 +704,7 @@ function CollectionOptionsMenu({
       )}
       {canEdit && isSynced && supportsGitCollections && (
         <DropdownMenu.Item
-          icon={<Key size={13} className="mr-2" />}
+          icon={<Key className="size-3.25" />}
           onClick={onManageGitTokens}
           className={MENU_ITEM}
         >
@@ -713,7 +713,7 @@ function CollectionOptionsMenu({
       )}
       {canShare && (
         <DropdownMenu.Item
-          icon={<ShareNetwork size={13} className="mr-2" />}
+          icon={<ShareNetwork className="size-3.25" />}
           onClick={onShare}
           className={MENU_ITEM}
         >
@@ -723,7 +723,7 @@ function CollectionOptionsMenu({
       {canDelete && (canEdit || canShare) && <DropdownMenu.Separator />}
       {canDelete && (
         <DropdownMenu.Item
-          icon={<Trash size={13} className="mr-2" />}
+          icon={<Trash className="size-3.25" />}
           onClick={onDelete}
           className={`${MENU_ITEM_DANGER} text-kumo-danger`}
         >
@@ -1446,21 +1446,21 @@ function FolderView({
               }
             >
               <DropdownMenu.Item
-                icon={<FilePlus size={12} className="mr-2" />}
+                icon={<FilePlus className="size-3" />}
                 onClick={() => ctx.startCreate(folder.path, "file")}
                 className={MENU_ITEM}
               >
                 New file
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<FolderPlus size={12} className="mr-2" />}
+                icon={<FolderPlus className="size-3" />}
                 onClick={() => ctx.startCreate(folder.path, "folder")}
                 className={MENU_ITEM}
               >
                 New folder
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<PencilSimple size={12} className="mr-2" />}
+                icon={<PencilSimple className="size-3" />}
                 onClick={() => ctx.startRename(folder.path)}
                 className={MENU_ITEM}
               >
@@ -1468,7 +1468,7 @@ function FolderView({
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item
-                icon={<Trash size={12} className="mr-2" />}
+                icon={<Trash className="size-3" />}
                 variant="danger"
                 onClick={() => ctx.deletePath(folder.path, true)}
                 className={MENU_ITEM_DANGER}
@@ -1572,14 +1572,14 @@ function FileView({
           }
         >
           <DropdownMenu.Item
-            icon={<PencilSimple size={12} className="mr-2" />}
+            icon={<PencilSimple className="size-3" />}
             onClick={() => ctx.startRename(doc.path)}
             className={MENU_ITEM}
           >
             Rename
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            icon={<Trash size={12} className="mr-2" />}
+            icon={<Trash className="size-3" />}
             variant="danger"
             onClick={() => ctx.deletePath(doc.path, false)}
             className={MENU_ITEM_DANGER}
@@ -2144,14 +2144,14 @@ function CollectionEditor({
               }
             >
               <DropdownMenu.Item
-                icon={<FilePlus size={13} className="mr-2" />}
+                icon={<FilePlus className="size-3.25" />}
                 onClick={() => startCreate("", "file")}
                 className={MENU_ITEM}
               >
                 New file
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<FolderPlus size={13} className="mr-2" />}
+                icon={<FolderPlus className="size-3.25" />}
                 onClick={() => startCreate("", "folder")}
                 className={MENU_ITEM}
               >
@@ -2159,14 +2159,14 @@ function CollectionEditor({
               </DropdownMenu.Item>
               <DropdownMenu.Separator />
               <DropdownMenu.Item
-                icon={<UploadSimple size={13} className="mr-2" />}
+                icon={<UploadSimple className="size-3.25" />}
                 onClick={() => fileInputRef.current?.click()}
                 className={MENU_ITEM}
               >
                 Upload files
               </DropdownMenu.Item>
               <DropdownMenu.Item
-                icon={<Folder size={13} className="mr-2" />}
+                icon={<Folder className="size-3.25" />}
                 onClick={() => dirInputRef.current?.click()}
                 className={MENU_ITEM}
               >

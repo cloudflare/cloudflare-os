@@ -326,10 +326,9 @@ export type HierarchyPickerProps = {
    */
   icons?: Record<string, unknown>;
   /**
-   * Shows a search box, named by this text. Without tabs it sits compact beside the breadcrumb and,
-   * while in use, takes the breadcrumb's place and shows this text as its placeholder. With tabs it
-   * sits beside them, showing this text, and the breadcrumb gives way while a search is entered.
-   * Omit it for a picker without search.
+   * Shows a search box, named by this text and showing it as its placeholder, above the breadcrumb
+   * (beside the tabs, when there are any). While a search is entered, the breadcrumb's row says
+   * the list holds search results. Omit it for a picker without search.
    */
   searchPlaceholder?: string;
   disabled?: boolean;

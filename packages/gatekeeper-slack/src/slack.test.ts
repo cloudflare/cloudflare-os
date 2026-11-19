@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SlackApi, SlackApiError, type SlackInstallation, type SlackOAuthGrant } from "./slack-api";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 
 // These tests exercise binding/observer behavior in Node; the production RPC schema is checked
 // separately by the Worker prebuild. The only emulation here is the Workers hosting surface.
@@ -23,7 +24,7 @@ vi.mock("./generated/thread-configurator-ui.txt", () => ({ default: "" }));
 
 const {
   SlackUserImpl, SlackWorkspaceGatekeeperImpl, SlackConversationGatekeeperImpl,
-  SlackThreadGatekeeperImpl, SlackVerifier, UserAccount,
+  SlackThreadGatekeeperImpl, SlackVerifier, UserAccount, GatekeeperVendor,
 } = await import("./slack");
 
 class MemoryKv {
@@ -78,10 +79,10 @@ describe("Slack resource binding identity", () => {
     await user.getGatekeeperClassFor("https://app.slack.com/client/TTWO");
     await user.getGatekeeperClassFor("https://app.slack.com/client/TONE/CONE");
     expect(ctx.exports.SlackWorkspaceGatekeeperImpl).toHaveBeenCalledWith({
-      props: { userObjectId: "account", teamId: "TTWO" },
+      props: { userObjectId: "account", teamId: "TTWO", reportsSubresources: true },
     });
     expect(ctx.exports.SlackConversationGatekeeperImpl).toHaveBeenCalledWith({
-      props: { userObjectId: "account", teamId: "TONE", conversationId: "CONE" },
+      props: { userObjectId: "account", teamId: "TONE", conversationId: "CONE", reportsSubresources: true },
     });
     await expect(user.getGatekeeperClassFor("https://app.slack.com/client/EORG"))
         .rejects.toThrow("not an enterprise");
@@ -193,37 +194,16 @@ describe("Slack org observer isolation", () => {
     expect(observer.hasWorkspaceAccess).toHaveBeenCalledWith("TTWO");
   });
 
-  it("checks tracked and new conversations in that same workspace before disclosure", async () => {
+  it("checks every conversation earlier reads recorded in that same workspace, pending or observed", async () => {
     let ctx = context({ userObjectId: "account", teamId: "TTWO" });
     let binding = new SlackWorkspaceGatekeeperImpl(ctx as never, {} as never);
     ctx.storage.kv.put("trackedConversation:COLD", "observed");
+    ctx.storage.kv.put("trackedConversation:CPENDING", "pending");
     let observer = { hasWorkspaceAccess: vi.fn(async () => true),
-      hasConversationAccess: vi.fn(async () => true) };
-    await binding.addObserver("observer", observer as never);
+      hasConversationAccess: vi.fn(async (id: string) => id === "COLD") };
+    await expect(binding.addObserver("observer", observer as never)).rejects.toThrow("does not have access");
     expect(observer.hasConversationAccess).toHaveBeenCalledWith("COLD", "TTWO");
-    observer.hasConversationAccess.mockResolvedValue(false);
-    let queue = { authorizeObservation: vi.fn(async () => undefined) };
-    await binding.authorizeConversationObservation(queue as never, ["CNEW"], { title: "Read", description: "Test" });
-    expect(observer.hasConversationAccess).toHaveBeenCalledWith("CNEW", "TTWO");
-    expect(queue.authorizeObservation).toHaveBeenCalledWith(expect.objectContaining({
-      excludeObservers: ["observer"],
-    }));
-    expect(ctx.storage.kv.get("trackedConversation:CNEW")).toBe("observed");
-  });
-
-  it("keeps blocked observations pending so retries recheck observer access", async () => {
-    let ctx = context({ userObjectId: "account", teamId: "TONE" });
-    let binding = new SlackWorkspaceGatekeeperImpl(ctx as never, {} as never);
-    let observer = { hasWorkspaceAccess: vi.fn(async () => true),
-      hasConversationAccess: vi.fn(async () => false) };
-    await binding.addObserver("observer", observer as never);
-    let queue = { authorizeObservation: vi.fn(async () => { throw new Error("blocked"); }) };
-    await expect(binding.authorizeConversationObservation(
-        queue as never, ["CNEW"], { title: "Read", description: "Test" })).rejects.toThrow("blocked");
-    expect(ctx.storage.kv.get("trackedConversation:CNEW")).toBe("pending");
-    await expect(binding.authorizeConversationObservation(
-        queue as never, ["CNEW"], { title: "Read", description: "Test" })).rejects.toThrow("blocked");
-    expect(observer.hasConversationAccess).toHaveBeenCalledTimes(2);
+    expect(observer.hasConversationAccess).toHaveBeenCalledWith("CPENDING", "TTWO");
   });
 
   it("passes workspace identity into conversation and thread observer checks", async () => {
@@ -243,5 +223,82 @@ describe("Slack org observer isolation", () => {
     expect(await verifier.hasConversationAccess("CTWO", "TTWO")).toBe(false);
     vi.spyOn(SlackApi.prototype, "listWorkspaces").mockRejectedValue(new SlackApiError("ratelimited", 429));
     await expect(verifier.hasWorkspaceAccess("TONE")).rejects.toMatchObject({ code: "ratelimited" });
+  });
+});
+
+
+describe("Slack resource type grants", () => {
+  const threadPattern = "https://*.slack.com/archives/:conversationId/:messageId";
+
+  it.each([
+    { patterns: [threadPattern], ids: ["thread"] },
+    { patterns: [], ids: [] },
+  ])("describes stable grants independently of the URL grammar: $ids", async ({ patterns, ids }) => {
+    const ctx = { props: { userObjectId: "account" }, exports: { UserAccount: {
+      idFromString: (id: string) => id,
+      get: () => ({
+        getUserId: async () => "user",
+        getInstallation: async () => installation,
+        getGrantedResourceUrlPatterns: async () => patterns,
+      }),
+    } } };
+    vi.spyOn(SlackApi.prototype, "getAccountDescription").mockResolvedValue({
+      uniqueName: "slack-user", avatar: { url: "" },
+    });
+    const user = new SlackUserImpl(ctx as never, {} as never);
+    const description = await user.describe();
+    expect(description.grantedResourceTypeIds).toEqual(ids);
+    expect(description.grantedResourceUrlPatterns).toEqual(patterns);
+    const renamedResources = (await user.getSupportedResources()).map(resource => ({
+      ...resource, urlPattern: `${resource.urlPattern}/new-grammar`,
+    }));
+    expect(getGrantedResourceTypeIds(description, renamedResources)).toEqual(ids);
+  });
+
+  it.each([
+    { options: { resourceTypeIds: ["thread"] }, search: false },
+    { options: { resourceTypeIds: [] }, search: false },
+    { options: { resourceUrlPatterns: [threadPattern] }, search: false },
+    { options: undefined, search: true },
+  ])("requests only the selected OAuth scopes: $options", async ({ options, search }) => {
+    const setCallback = vi.fn(async (_callback: unknown, _nonce: string, _scopes: string[]) => {});
+    const ctx = { exports: { UserAccount: {
+      newUniqueId: () => "account", get: () => ({ setCallback }),
+    } } };
+    const vendor = new GatekeeperVendor(ctx as never, { BASE_URL: "https://slack.test" } as never);
+    await vendor.connectAccount({} as never, options);
+    const scopes = setCallback.mock.calls[0]![2];
+    expect(scopes).toContain("users:read");
+    expect(scopes.includes("search:read")).toBe(search);
+    if (options?.resourceTypeIds?.length === 0) expect(scopes).toEqual(["users:read"]);
+    else expect(scopes).toContain("channels:history");
+  });
+
+  it("recognizes an existing grant by ID or legacy pattern without reconnecting", async () => {
+    const prepareReconnect = vi.fn();
+    const ctx = { props: { userObjectId: "account" }, exports: { UserAccount: {
+      idFromString: (id: string) => id,
+      get: () => ({ getGrantedResourceUrlPatterns: async () => [threadPattern], prepareReconnect }),
+    } } };
+    const user = new SlackUserImpl(ctx as never, {} as never);
+    expect(await user.ensureResources(["thread"])).toEqual({});
+    expect(await user.ensureResources([threadPattern])).toEqual({});
+    expect(await user.ensureResources([])).toEqual({});
+    expect(prepareReconnect).not.toHaveBeenCalled();
+  });
+
+  it("translates a grant upgrade by ID and rejects unknown IDs before reconnecting", async () => {
+    const prepareReconnect = vi.fn(async (_nonce: string, _scopes: string[]) => {});
+    const ctx = { props: { userObjectId: "account" }, exports: { UserAccount: {
+      idFromString: (id: string) => id,
+      get: () => ({ getGrantedResourceUrlPatterns: async () => [],
+        getResourceUrlPatternsForReconnect: async () => [], prepareReconnect }),
+    } } };
+    const user = new SlackUserImpl(ctx as never, { BASE_URL: "https://slack.test" } as never);
+    expect(await user.ensureResources(["thread"])).toHaveProperty("url");
+    expect(prepareReconnect.mock.calls[0]![1]).toContain("channels:history");
+    expect(prepareReconnect.mock.calls[0]![1]).not.toContain("search:read");
+    await expect(user.ensureResources(["unknown"])).rejects.toThrow();
+    expect(prepareReconnect).toHaveBeenCalledOnce();
   });
 });

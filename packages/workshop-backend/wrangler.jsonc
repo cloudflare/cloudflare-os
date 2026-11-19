@@ -85,6 +85,12 @@
       "new_sqlite_classes": [
         "ApiSessionDurableObject"
       ]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": [
+        "AdminAuditDurableObject"
+      ]
     }
   ]
 }

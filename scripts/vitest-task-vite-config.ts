@@ -128,7 +128,7 @@ export type TestCommand = string | { command: string; idleSeconds: number }
 const IDLE_TIMEOUT_SECONDS = 60
 
 /** Wall-clock backstop, for a command that stays chatty while looping forever. */
-const TOTAL_TIMEOUT_SECONDS = 600
+const TOTAL_TIMEOUT_SECONDS = 900
 
 /**
  * Nothing under vitest bounds a wedged run -- its own timeouts are enforced inside the test worker
@@ -165,6 +165,13 @@ export const TESTS_WITH_TIMEOUT_ENV: string[] = [
   'TESTS_WITH_TIMEOUT_IDLE_SECONDS',
   'TESTS_WITH_TIMEOUT_MAX_SECONDS',
 ]
+
+/**
+ * Pins the cases the property suites generate (`property-runs.ts`). Every generated test task
+ * passes and fingerprints it, so a suite that adopts fast-check needs no wiring of its own, and a
+ * different seed is a cache miss rather than a replayed result.
+ */
+const PROPERTY_SEED_ENV = 'FAST_CHECK_SEED'
 
 /**
  * The worker budget `scripts/vp/run.ts` sets (see `scripts/vp/concurrency.ts`). Defined here
@@ -257,7 +264,7 @@ export function vitestTaskWithExclusions(
     cache: {
       input: [{ auto: true }, ...exclusions],
       output: [{ auto: true }, ...exclusions],
-      env: TESTS_WITH_TIMEOUT_ENV,
+      env: [...TESTS_WITH_TIMEOUT_ENV, PROPERTY_SEED_ENV],
       untrackedEnv: pinned ? [] : VITEST_WORKERS_ENV,
     },
   }

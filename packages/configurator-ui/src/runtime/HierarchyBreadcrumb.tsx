@@ -1,7 +1,7 @@
 import { Button } from "@cloudflare/kumo/components/button";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretLeftIcon, CaretRightIcon, DotsThreeIcon } from "@phosphor-icons/react";
-import { useLayoutEffect, useRef, useState, type Ref, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type Ref } from "react";
 import type { ConfiguratorUIHierarchyAncestor } from "../index.ts";
 import { disabledButtonProps } from "./Button.tsx";
 import type { Location } from "./hierarchyNodes.ts";
@@ -11,7 +11,6 @@ type BreadcrumbProps = {
   top: string;
   location: Location;
   disabled: boolean;
-  navRef: RefObject<HTMLElement | null>;
   /** Opens the tab or root (depth 0) or the trail's container at that depth. */
   onGo(depth: number): void;
 };
@@ -22,7 +21,7 @@ const FOLD_AFTER = 3;
 const separator = <CaretRightIcon aria-hidden="true" size={10} className="shrink-0 text-kumo-inactive" />;
 
 /** Where the picker is, from the tab or root down, each step a button that goes back there. */
-export const Breadcrumb = ({ top, location: { trail, detached }, disabled, navRef, onGo }: BreadcrumbProps) => {
+export const Breadcrumb = ({ top, location: { trail, detached }, disabled, onGo }: BreadcrumbProps) => {
   // Unfolded for one trail only, so moving anywhere folds it again.
   const [unfolded, setUnfolded] = useState<readonly ConfiguratorUIHierarchyAncestor[] | null>(null);
   const firstRevealed = useRef<HTMLButtonElement>(null);
@@ -50,7 +49,7 @@ export const Breadcrumb = ({ top, location: { trail, detached }, disabled, navRe
     );
   };
   return (
-    <nav ref={navRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center text-xs">
+    <nav aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center text-xs">
       {/* Keeps the focus of a user who just went up to the top, though it leads nowhere there; out of
           the tab order there. */}
       <Button

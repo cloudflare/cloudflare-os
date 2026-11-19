@@ -13,6 +13,7 @@ import {
   VendorDescription,
   SupportedResource,
   resolveRequestedResource,
+  getResourceTypeId, getGrantedResourceTypeIds,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
@@ -49,7 +50,7 @@ function accountLabel(account: AccountInfo | undefined, accountId: number): stri
 // preferred because it reflects the resources currently available to that account; vendor metadata
 // is the fallback used before an account has been connected. Non-grantable resources require no
 // OAuth scope expansion.
-function requiredResourceUrlPatterns(
+function requiredResourceTypeIds(
   need: ObserverBindingNeed,
   vendor: GatekeeperVendorInfo | undefined,
   account?: AccountInfo,
@@ -58,15 +59,15 @@ function requiredResourceUrlPatterns(
     ? account.supportedResources
     : vendor?.supportedResources
   if (!supportedResources) return []
-  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl)
-  return resolved.ok && resolved.resource.grantable ? [resolved.resource.urlPattern] : []
+  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl, need.resourceTypeId)
+  return resolved.ok && resolved.resource.grantable ? [getResourceTypeId(resolved.resource)] : []
 }
 
 // Older account records may not list which resources were granted. Ask the gatekeeper to check
 // instead of assuming the account has access.
-function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
-  const granted = account.description.grantedResourceUrlPatterns
-  return granted === undefined ? required : required.filter(pattern => !granted.includes(pattern))
+function missingResourceTypeIds(account: AccountInfo, required: string[]): string[] {
+  const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
+  return granted === undefined ? required : required.filter(typeId => !granted.includes(typeId))
 }
 
 interface ObserverConfigModalProps {
@@ -74,6 +75,8 @@ interface ObserverConfigModalProps {
   authenticatedApi: RpcStub<AuthenticatedApi>
   onConfirm: (choices: ObserverAccountChoice[]) => void
   onCancel: () => void
+  // What is being opened: the workspace, or one gadget of it.
+  subject: 'workspace' | 'gadget'
 }
 
 export default function ObserverConfigModal({
@@ -81,6 +84,7 @@ export default function ObserverConfigModal({
   authenticatedApi,
   onConfirm,
   onCancel,
+  subject,
 }: ObserverConfigModalProps) {
   const toasts = useKumoToastManager()
 
@@ -203,7 +207,7 @@ export default function ObserverConfigModal({
       if (vendor?.description.autoProvisionsAccount) {
         await authenticatedApi.provisionAmbientAccount(vendorId)
       } else {
-        const required = requiredResourceUrlPatterns(need, vendor)
+        const required = requiredResourceTypeIds(need, vendor)
         await openConnectWindow(await authenticatedApi.connectAccount(
           vendorId,
           required.length > 0 ? required : undefined,
@@ -233,12 +237,12 @@ export default function ObserverConfigModal({
   }
 
   const handleGrantResourceAccess = async (need: ObserverBindingNeed, account: AccountInfo) => {
-    const required = requiredResourceUrlPatterns(
+    const required = requiredResourceTypeIds(
       need,
       vendorsById.get(need.vendorId),
       account,
     )
-    const missing = missingResourceUrlPatterns(account, required)
+    const missing = missingResourceTypeIds(account, required)
     if (missing.length === 0) return
     setGranting(account.id)
     try {
@@ -255,9 +259,9 @@ export default function ObserverConfigModal({
             ...current,
             description: {
               ...current.description,
-              grantedResourceUrlPatterns: [
+              grantedResourceTypeIds: [
                 ...new Set([
-                  ...(current.description.grantedResourceUrlPatterns ?? []),
+                  ...(getGrantedResourceTypeIds(current.description, current.supportedResources) ?? []),
                   ...missing,
                 ]),
               ],
@@ -283,12 +287,12 @@ export default function ObserverConfigModal({
   }
   const accountSatisfies = (need: ObserverBindingNeed, account: AccountInfo | undefined) => {
     if (!account?.credentialsValid) return false
-    const required = requiredResourceUrlPatterns(
+    const required = requiredResourceTypeIds(
       need,
       vendorsById.get(need.vendorId),
       account,
     )
-    return missingResourceUrlPatterns(account, required).length === 0
+    return missingResourceTypeIds(account, required).length === 0
   }
   const allSatisfied = needs.every(need => accountSatisfies(need, accountFor(need.gatekeeperId)))
 
@@ -315,10 +319,10 @@ export default function ObserverConfigModal({
           </Dialog.Title>
           <Text variant="secondary" size="sm" as="p">
             {isRetry
-              ? 'We couldn’t confirm your access to everything this workspace has read. Depending on ' +
+              ? `We couldn’t confirm your access to everything this ${subject} has read. Depending on ` +
                 'the reason below, re-authenticate an expired account, choose a different one, or ask ' +
-                'the workspace owner to share what your account can’t access.'
-              : 'Before opening this workspace, confirm that your own accounts can access the connected ' +
+                `the ${subject} owner to share what your account can’t access.`
+              : `Before opening this ${subject}, confirm that your own accounts can access the connected ` +
                 'data it uses.'}
           </Text>
         </div>
@@ -336,8 +340,8 @@ export default function ObserverConfigModal({
                 const vendor = matching[0]?.vendor ?? vendorInfo?.description
                 const vendorName = vendor?.displayName || need.vendorId || 'service'
                 const chosen = accountFor(need.gatekeeperId)
-                const required = requiredResourceUrlPatterns(need, vendorInfo, chosen)
-                const missing = chosen ? missingResourceUrlPatterns(chosen, required) : []
+                const required = requiredResourceTypeIds(need, vendorInfo, chosen)
+                const missing = chosen ? missingResourceTypeIds(chosen, required) : []
 
                 return (
                   <div key={need.gatekeeperId} className="rounded-xl border border-kumo-line bg-kumo-base p-4">

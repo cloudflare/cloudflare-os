@@ -86,14 +86,15 @@ export function isTurnPrompt(message: AiChatMessage): boolean {
 
 /**
  * A message that begins an agent turn: the user or a gadget prompted, a callback or nudge arrived,
- * or an accepted connection resumed the agent. Each produces a `user` model message, so cutting
- * here keeps the retained messages from opening mid-turn.
+ * or an accepted connection or approved web fetch resumed the agent. Each produces a `user` model
+ * message, so cutting here keeps the retained messages from opening mid-turn.
  */
 export function startsAgentTurn(message: AiChatMessage): boolean {
   switch (message.type) {
     case "message": return isTurnPrompt(message);
     case "agentCallback": case "agentNudge": return true;
     case "connectionRequest": return message.state === "accepted";
+    case "webFetchRequest": return message.state === "approved";
     default: return false;
   }
 }
@@ -172,14 +173,15 @@ export function chatChangeStatuses(
 }
 
 /**
- * Earliest turn a checkpoint cannot absorb, or undefined if none. A pending connection request
- * carries live accept/deny state that only its own message can answer, so the boundary stays behind
- * it. Provisional gadget creations and binding additions need no such protection: the checkpoint
- * records them, and the registry rows they name are untouched by compaction.
+ * Earliest turn a checkpoint cannot absorb, or undefined if none. A pending connection or web fetch
+ * request carries live decision state that only its own message can answer, so the boundary stays
+ * behind it. Provisional gadget creations and binding additions need no such protection: the
+ * checkpoint records them, and the registry rows they name are untouched by compaction.
  */
 export function findProtectedFromSequence(messages: AiChatMessage[]): number | undefined {
-  let protectedIndex = messages.findIndex(
-      message => message.type === "connectionRequest" && message.state === "pending");
+  let protectedIndex = messages.findIndex(message =>
+      (message.type === "connectionRequest" || message.type === "webFetchRequest") &&
+      message.state === "pending");
   if (protectedIndex < 0) return undefined;
 
   // Protect from the start of the turn that raised it, so the tail keeps the exchange explaining

@@ -139,7 +139,8 @@ describe("choosing", () => {
     await picker.tab("Spaces").click();
     await picker.option("My first space").click();
     await poll(picker.location).toBe("Spaces My first space");
-    expect(await picker.titles()).toEqual([
+    // The location changes before the space's pages load, so wait for them too.
+    await poll(picker.titles).toEqual([
       "All of My first space", "My first space", "Blog", "Engineering", "Onboarding", "Q4 planning",
       "Retro board", "Launch tracker", "Archive",
     ]);
@@ -307,7 +308,7 @@ describe("a connection to two sites", () => {
 
     await picker.frame().getByRole("radio", { name: /Acme/ }).click();
     await poll(() => picker.wholeSite().innerText()).toContain("All of Acme");
-    expect(picker.requests().at(-1)).toEqual({ site: `site:${OTHER}`, section: "recent" });
+    await poll(() => picker.requests().at(-1)).toEqual({ site: `site:${OTHER}`, section: "recent" });
     expect(await picker.chosen()).toEqual([]);
     expect((await picker.state()).ready).not.toBe(true);
   });

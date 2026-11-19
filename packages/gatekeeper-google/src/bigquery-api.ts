@@ -30,6 +30,14 @@ type ListOptions = {
   maxResults?: number;
 };
 
+/**
+ * A query's options as the session passes them: the agent's, with the default dataset resolved to
+ * the project it lives in, which is the data's project and not necessarily the one the job runs in.
+ */
+export type BigQueryJobOptions = Omit<BigQueryQueryOptions, "defaultDataset"> & {
+  defaultDataset?: { projectId: string; datasetId: string };
+};
+
 function listPageLimit(options?: ListOptions): number {
   return Math.max(1, Math.min(LIST_MAX_PAGES, Math.floor(options?.maxPages ?? LIST_MAX_PAGES)));
 }
@@ -49,6 +57,17 @@ type GoogleErrorResponse = {
     errors?: { reason?: string; message?: string }[];
   };
 };
+
+/**
+ * A failed BigQuery REST request, with its HTTP status and the first `reason` Google gave: what
+ * tells a denial (`accessDenied`) apart from the other refusals BigQuery also answers with 403,
+ * such as a rate limit, a quota or a missing scope.
+ */
+export class BigQueryApiError extends Error {
+  constructor(message: string, readonly status: number, readonly reason: string | undefined) {
+    super(message);
+  }
+}
 
 type RestField = {
   name: string;
@@ -272,7 +291,8 @@ async function callRest<T>(
       detail += ` [errors=${rawBody.error.errors.map(
           e => `${e.reason ?? "?"}:${e.message ?? "?"}`).join(" | ")}]`;
     }
-    throw new Error(`BigQuery API error: ${detail}`);
+    throw new BigQueryApiError(
+        `BigQuery API error: ${detail}`, response.status, rawBody.error?.errors?.[0]?.reason);
   }
   if (!isJson) {
     throw new Error(`BigQuery API: expected JSON, got ${contentType}`);
@@ -335,11 +355,11 @@ export class BigQueryApi {
     await callRest<unknown>(url.toString(), { method: "POST" }, this.getAccessToken);
   }
 
-  /** Run a synchronous query via jobs.query. */
+  /** Run a synchronous query via jobs.query, as a job in `billingProject`. */
   async query(
     billingProject: string,
     sql: string,
-    opts: BigQueryQueryOptions = {},
+    opts: BigQueryJobOptions = {},
   ): Promise<BigQueryQueryResult> {
     // Single absolute deadline for the whole query (initial submit + any poll iterations).
     // Each individual server call is capped at the remaining time so total wall-clock stays
@@ -354,9 +374,7 @@ export class BigQueryApi {
       timeoutMs: REQUEST_TIMEOUT_MS,
     };
 
-    if (opts.defaultDataset) {
-      body.defaultDataset = { projectId: billingProject, datasetId: opts.defaultDataset };
-    }
+    if (opts.defaultDataset) body.defaultDataset = opts.defaultDataset;
 
     let parameters = buildQueryParameters(opts.params);
     if (parameters) {
@@ -415,10 +433,11 @@ export class BigQueryApi {
     };
   }
 
+  /** Validate `sql` and estimate its cost as a dry-run job in `billingProject`. */
   async dryRun(
     billingProject: string,
     sql: string,
-    opts: Pick<BigQueryQueryOptions, "defaultDataset" | "params"> = {},
+    opts: Pick<BigQueryJobOptions, "defaultDataset" | "params"> = {},
   ): Promise<BigQueryDryRunResult & {
     statementType?: string;
     ddlOperationPerformed?: string;
@@ -430,12 +449,7 @@ export class BigQueryApi {
       query: sql,
       useLegacySql: false,
     };
-    if (opts.defaultDataset) {
-      queryConfig.defaultDataset = {
-        projectId: billingProject,
-        datasetId: opts.defaultDataset,
-      };
-    }
+    if (opts.defaultDataset) queryConfig.defaultDataset = opts.defaultDataset;
     let parameters = buildQueryParameters(opts.params);
     if (parameters) {
       queryConfig.queryParameters = parameters;

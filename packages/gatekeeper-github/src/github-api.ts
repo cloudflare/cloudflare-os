@@ -89,6 +89,8 @@ export type GitHubPullRequestResponse = {
   draft: boolean;
   merged_at?: string | null;
   mergeable?: boolean | null;
+  /** Why it can or cannot merge, e.g. `clean` or `blocked`; unset until GitHub has computed it. */
+  mergeable_state?: string | null;
   commits: number;
   additions: number;
   deletions: number;
@@ -276,6 +278,100 @@ type GitHubGitBlobResponse = {
   encoding: string;
 };
 
+/** A check run, as the checks API reports it. */
+export type GitHubCheckRunResponse = {
+  id: number;
+  /** The GraphQL node id. */
+  node_id: string;
+  head_sha: string;
+  name: string;
+  html_url: string | null;
+  details_url: string | null;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  output: {
+    title: string | null;
+    summary: string | null;
+    text: string | null;
+    annotations_count: number;
+  };
+  app: { name: string; slug?: string } | null;
+};
+
+export type GitHubCheckAnnotationResponse = {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: string | null;
+  title: string | null;
+  message: string;
+};
+
+/** A GitHub Actions job, as the workflow jobs API reports it. */
+export type GitHubWorkflowJobResponse = {
+  id: number;
+  run_id: number;
+  run_attempt?: number;
+  head_sha: string;
+  name: string;
+  workflow_name?: string | null;
+  status: string;
+  conclusion: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  html_url: string | null;
+  /** The job's check run, `.../check-runs/<id>`. */
+  check_run_url: string;
+  steps?: Array<{ number: number; name: string; status: string; conclusion: string | null }>;
+};
+
+/** A GitHub Actions workflow run, as the workflow runs API reports it. */
+export type GitHubWorkflowRunResponse = {
+  id: number;
+  name?: string | null;
+  event: string;
+  head_branch: string | null;
+  head_sha: string;
+  status: string | null;
+  conclusion: string | null;
+  run_attempt?: number;
+  created_at: string;
+  updated_at: string;
+  run_started_at?: string;
+  html_url: string;
+  actor?: GitHubSimpleUser | null;
+};
+
+/** One entry of a repository's activity log. */
+export type GitHubActivityResponse = {
+  after: string;
+  timestamp: string;
+  activity_type: string;
+};
+
+/** One rule that applies to a branch, from any ruleset. */
+export type GitHubBranchRuleResponse = {
+  type: string;
+  parameters?: { required_status_checks?: Array<{ context: string }> };
+};
+
+/** The required status checks of a branch's classic protection, where the reader may see them. */
+export type GitHubBranchProtectionChecksResponse = {
+  contexts?: string[];
+  checks?: Array<{ context: string }>;
+};
+
+/** A GraphQL error: `path` names the field it nulled, when it concerns one. */
+export type GitHubGraphqlError = { message: string; type?: string; path?: (string | number)[] };
+
+/** A GraphQL response: `data` may be partial when `errors` is set. */
+export type GitHubGraphqlResult<T> = {
+  data: T;
+  errors: GitHubGraphqlError[];
+};
+
 export class GitHubApiError extends Error {
   status: number;
   details?: unknown;
@@ -304,6 +400,11 @@ type RequestOptions = {
   auth?: "bearer" | "basic" | "none";
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
+  /**
+   * Answer a redirect to an https location off the API host with the redirect itself, unfollowed,
+   * as for a download GitHub hands off to its blob storage.
+   */
+  externalRedirect?: true;
   basicAuth?: {
     username: string;
     password: string;
@@ -311,9 +412,11 @@ type RequestOptions = {
 };
 
 /**
- * A repository with its GitHub id, which survives renames and owner transfers. GitHub redirects
- * a renamed repo's `/repos/<owner>/<name>/...` to `/repositories/<id>/...`, while a transferred
- * issue redirects into another repository, so the id tells the two apart.
+ * A repository with its GitHub id, which survives renames and owner transfers and is never reused.
+ * A request beneath `/repos/<owner>/<repo>` is sent beneath `/repositories/<id>` instead (see
+ * requestUrl): the same address GitHub redirects a renamed repository's old path to, and one no
+ * other repository can take over, as a repository created under a deleted or renamed one's freed
+ * name takes over that name.
  */
 export type PinnedRepo = { owner: string; repo: string; id: number };
 
@@ -338,6 +441,8 @@ const DEFAULT_ACCEPT = "application/vnd.github+json";
 const USER_AGENT = "Cloudflare-Gadgets";
 const REQUEST_TIMEOUT_MS = 30_000;
 const GIT_UPLOAD_PACK_TIMEOUT_MS = 120_000;
+/** Also covers streaming the log body, which may run to tens of megabytes. */
+const LOG_DOWNLOAD_TIMEOUT_MS = 120_000;
 
 function encodeBasicAuth(username: string, password: string): string {
   return btoa(`${username}:${password}`);
@@ -364,24 +469,32 @@ const REPO_ROOT_PATH = /^\/repos\/[^/]+\/[^/]+$/;
 const REPO_ID_PATH = /^\/repositories\/\d+$/;
 
 /**
- * The URL to re-issue a redirected request to, built rather than taken from `location`. Without
- * `pin`, only a repository's root is followed, to `/repositories/<id>`: GitHub redirects a renamed
- * or transferred repository there, and at the root the id can only be that same repository's.
- * With it, a redirect is followed only to the same path under the pinned id, since beneath the
- * root a transferred issue redirects into another repository.
+ * Where a request for `path` is sent: with `pin`, a path beneath the pinned repository's name goes
+ * to the same path beneath its id (see PinnedRepo); every other path is sent as given.
+ */
+function requestUrl(path: string, pin: PinnedRepo | undefined): URL {
+  const url = new URL(path, API_BASE_URL);
+  if (!pin) return url;
+  const prefix = `/repos/${encodeURIComponent(pin.owner)}/${encodeURIComponent(pin.repo)}`;
+  const suffix = url.pathname.slice(prefix.length);
+  if (url.pathname.startsWith(prefix) && (suffix === "" || suffix.startsWith("/"))) {
+    url.pathname = `/repositories/${pin.id}${suffix}`;
+  }
+  return url;
+}
+
+/**
+ * The URL to re-issue a redirected request to, built rather than taken from `location`. Only an
+ * unpinned request for a repository's root is followed, to `/repositories/<id>`: GitHub redirects
+ * a renamed or transferred repository there, and at the root the id can only be that same
+ * repository's. A pinned request is addressed by id already, and beneath a repository GitHub
+ * redirects only into another one, as for a transferred issue.
  */
 function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | undefined): URL | undefined {
   const moved = location === null ? null : URL.parse(location);
-  if (moved?.origin !== API_BASE_URL) return undefined;
-  if (!pin) {
-    return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
-      ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
-  }
-  const prefix = `/repos/${encodeURIComponent(pin.owner)}/${encodeURIComponent(pin.repo)}`;
-  const suffix = url.pathname.slice(prefix.length);
-  if (!url.pathname.startsWith(prefix) || !(suffix === "" || suffix.startsWith("/"))) return undefined;
-  const target = new URL(`/repositories/${pin.id}${suffix}${url.search}`, API_BASE_URL);
-  return moved.pathname === target.pathname ? target : undefined;
+  if (pin || moved?.origin !== API_BASE_URL) return undefined;
+  return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
+    ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
 }
 
 async function request<T>(
@@ -391,7 +504,7 @@ async function request<T>(
   getToken?: () => Promise<string>,
   pin?: PinnedRepo,
 ): Promise<RequestResult<T>> {
-  const url = new URL(path, API_BASE_URL);
+  const url = requestUrl(path, pin);
 
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) {
@@ -434,17 +547,27 @@ async function request<T>(
   }
 
   const init: RequestInit = { method, headers, body, redirect: "manual" };
+  // A redirect off the API host to another https origin, such as GitHub's blob storage.
+  const handedOff = (r: Response) => {
+    const location = URL.parse(r.headers.get("location") ?? "");
+    return options.externalRedirect === true && isRedirect(r.status) &&
+      location?.protocol === "https:" && location.origin !== API_BASE_URL;
+  };
   let response = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-  if (isRedirect(response.status)) {
+  if (isRedirect(response.status) && !handedOff(response)) {
     const target = redirectTarget(url, response.headers.get("location"), pin);
     if (target) {
       response = await fetch(target, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     }
-    if (!target || isRedirect(response.status)) {
+    if (!target || (isRedirect(response.status) && !handedOff(response))) {
       // The destination is withheld: it may name a repository the binding's observers cannot read.
       throw new GitHubApiError(response.status,
         `GitHub moved ${url.pathname} out of the bound repository; it was not followed.`);
     }
+  }
+  if (isRedirect(response.status)) {
+    await response.body?.cancel();
+    return { data: undefined as T, headers: response.headers, status: response.status };
   }
 
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
@@ -545,9 +668,9 @@ export async function revokeOAuthToken(
 }
 
 /**
- * GitHub's REST API as one account. Redirects are followed only within `repo`, by its id (see
- * PinnedRepo); without it, only a repository root's redirect to its id is (see redirectTarget),
- * and every other redirect fails with a GitHubApiError.
+ * GitHub's REST API as one account. With `repo`, a request beneath its name is sent by its id (see
+ * PinnedRepo) and no redirect is followed; without it, only a repository root's redirect to its id
+ * is (see redirectTarget). Every other redirect fails with a GitHubApiError.
  */
 export class GitHubApi {
   #getToken: () => Promise<string>;
@@ -1371,6 +1494,29 @@ export class GitHubApi {
     }
   }
 
+  /**
+   * Whether GitHub reports a branch as protected; false for a branch that does not exist. An
+   * unconditional, uncached read, since it decides whether a push may apply without a person. A
+   * renamed branch's old name redirects to the new branch, which is not followed, so it counts
+   * as protected: the branch it names may be.
+   */
+  async isBranchProtected(owner: string, repo: string, branch: string): Promise<boolean> {
+    try {
+      const result = await this.#request<GitHubBranchResponse>(
+        "GET",
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
+          validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+      );
+      return result.data.protected === true;
+    } catch (error) {
+      if (!(error instanceof GitHubApiError)) throw error;
+      if (isRedirect(error.status)) return true;
+      // 409 is GitHub's answer for an empty repository, which has no branches at all.
+      if (error.status === 404 || error.status === 409) return false;
+      throw error;
+    }
+  }
+
   async listTagsConditional(
     owner: string,
     repo: string,
@@ -1513,6 +1659,148 @@ export class GitHubApi {
   }
 
   /**
+   * A GraphQL query. Throws when GitHub answers with errors and no data; with partial data, the
+   * fields that failed are null and `errors` says why.
+   */
+  async graphql<T>(query: string, variables: Record<string, unknown>): Promise<GitHubGraphqlResult<T>> {
+    const { data } = await this.#request<{ data?: T | null; errors?: GitHubGraphqlError[] }>(
+      "POST", "/graphql", { body: { query, variables } });
+    const errors = data.errors ?? [];
+    if (data.data === undefined || data.data === null) {
+      const type = errors[0]?.type;
+      throw new GitHubApiError(type === "NOT_FOUND" ? 404 : type === "FORBIDDEN" ? 403 : 502,
+        `GitHub GraphQL query failed: ${errors.map(error => error.message).join("; ") || "no data"}`, errors);
+    }
+    return { data: data.data, errors };
+  }
+
+  /**
+   * A GraphQL query that reads `repository(owner: $owner, name: $name, followRenames:
+   * $followRenames) { databaseId ... }`, with those variables supplied here. A renamed or
+   * transferred repository is followed only while it is still the pinned one, by id, as REST
+   * redirects are; without a pin, renames are not followed.
+   */
+  async queryRepository<T extends { repository: { databaseId: number | null } | null }>(
+    owner: string, repo: string, query: string, variables: Record<string, unknown>,
+  ): Promise<GitHubGraphqlResult<T>> {
+    const result = await this.graphql<T>(query, {
+      ...variables, owner, name: repo, followRenames: this.#repo !== undefined,
+    });
+    const found = result.data.repository;
+    if (found === null) throw new GitHubApiError(404, `Repository ${owner}/${repo} was not found.`);
+    if (this.#repo !== undefined && found.databaseId !== this.#repo.id) {
+      throw new GitHubApiError(404, `GitHub moved ${owner}/${repo} out of the bound repository; it was not followed.`);
+    }
+    return result;
+  }
+
+  async getCheckRun(owner: string, repo: string, checkRunId: number): Promise<GitHubCheckRunResponse> {
+    return (await this.#request<GitHubCheckRunResponse>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${checkRunId}`)).data;
+  }
+
+  async listCheckRunAnnotations(
+    owner: string, repo: string, checkRunId: number, page: number, perPage: number,
+  ): Promise<GitHubCheckAnnotationResponse[]> {
+    return (await this.#request<GitHubCheckAnnotationResponse[]>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/check-runs/${checkRunId}/annotations`,
+      { query: { page, per_page: perPage } })).data;
+  }
+
+  async getWorkflowJob(owner: string, repo: string, jobId: number): Promise<GitHubWorkflowJobResponse> {
+    return (await this.#request<GitHubWorkflowJobResponse>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}`)).data;
+  }
+
+  /**
+   * Where a job's log can be downloaded from for the next minute: GitHub answers with a redirect
+   * to its blob storage, which is not followed here. Null once the log is gone (404 or 410).
+   */
+  async getWorkflowJobLogLocation(owner: string, repo: string, jobId: number): Promise<string | null> {
+    const result = await this.#request<unknown>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/logs`,
+      { externalRedirect: true, okStatuses: [404, 410] });
+    if (result.status === 404 || result.status === 410) return null;
+    const location = result.headers.get("location");
+    if (!isRedirect(result.status) || location === null) {
+      throw new GitHubApiError(result.status, `GitHub did not hand off the log of job ${jobId} for download.`);
+    }
+    return location;
+  }
+
+  /**
+   * Downloads a log from the location `getWorkflowJobLogLocation()` returned. The location is
+   * signed and off GitHub's API host, so the request carries no `Authorization`: the token must
+   * never reach blob storage.
+   */
+  async downloadJobLog(location: string): Promise<ReadableStream<Uint8Array>> {
+    const response = await fetch(location, {
+      headers: { "User-Agent": USER_AGENT },
+      signal: AbortSignal.timeout(LOG_DOWNLOAD_TIMEOUT_MS),
+    });
+    if (!response.ok || response.body === null) {
+      await response.body?.cancel();
+      throw new GitHubApiError(response.status, `Downloading the log failed: ${response.status} ${response.statusText}`);
+    }
+    return response.body;
+  }
+
+  async listWorkflowRuns(owner: string, repo: string, query: {
+    branch?: string; head_sha?: string; event?: string; status?: string; page: number; per_page: number;
+  }): Promise<GitHubWorkflowRunResponse[]> {
+    return (await this.#request<{ workflow_runs: GitHubWorkflowRunResponse[] }>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs`,
+      { query: { ...query, exclude_pull_requests: true } })).data.workflow_runs;
+  }
+
+  async getWorkflowRun(owner: string, repo: string, runId: number): Promise<GitHubWorkflowRunResponse> {
+    return (await this.#request<GitHubWorkflowRunResponse>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`,
+      { query: { exclude_pull_requests: true } })).data;
+  }
+
+  /** A run's jobs: those of `attempt`, or of its latest attempt. */
+  async listWorkflowRunJobs(
+    owner: string, repo: string, runId: number, attempt: number | undefined, page: number, perPage: number,
+  ): Promise<GitHubWorkflowJobResponse[]> {
+    const run = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}`;
+    return (await this.#request<{ jobs: GitHubWorkflowJobResponse[] }>(
+      "GET", attempt === undefined ? `${run}/jobs` : `${run}/attempts/${attempt}/jobs`,
+      { query: { page, per_page: perPage, filter: attempt === undefined ? "latest" : undefined } })).data.jobs;
+  }
+
+  /**
+   * The latest updates to `branch`, newest first: pushes, force pushes, its creation, merges into
+   * it. Unfiltered by kind, since any of them can make a commit its head.
+   */
+  async listBranchActivity(owner: string, repo: string, branch: string): Promise<GitHubActivityResponse[]> {
+    return (await this.#request<GitHubActivityResponse[]>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/activity`,
+      { query: { ref: `refs/heads/${branch}`, direction: "desc", per_page: 30 } })).data;
+  }
+
+  /** The rules every ruleset applies to `branch`. */
+  async getBranchRules(owner: string, repo: string, branch: string): Promise<GitHubBranchRuleResponse[]> {
+    return (await this.#request<GitHubBranchRuleResponse[]>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules/branches/${
+        validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+      { query: { per_page: 100 } })).data;
+  }
+
+  /**
+   * The required status checks of `branch`'s classic protection, or undefined when it has none or
+   * GitHub does not show them to this account.
+   */
+  async getBranchProtectionChecks(
+    owner: string, repo: string, branch: string,
+  ): Promise<GitHubBranchProtectionChecksResponse | undefined> {
+    return (await this.#request<{ protection?: { required_status_checks?: GitHubBranchProtectionChecksResponse } }>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
+        validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
+    )).data.protection?.required_status_checks;
+  }
+
+  /**
    * POST a git smart-HTTP protocol v2 `upload-pack` request (the git fetch endpoint, on
    * github.com rather than api.github.com) and return the raw `Response`, whose body the caller
    * streams -- see `@gadgets/gatekeeper-kit/git-transport`. Auth is Basic with the `x-access-token` username GitHub
@@ -1585,18 +1873,24 @@ export class GitHubApi {
   }
 }
 
+/** Whether `error` is `withAccountApi`'s report of a confirmed expiry: the owner has to reconnect. */
+export function isConnectionExpired(error: unknown): boolean {
+  return isCredentialsExpired((error as { cause?: unknown } | undefined)?.cause);
+}
+
 export const CREDENTIALS_EXPIRED_MESSAGE =
   "GitHub credentials have expired or been revoked. Please reconnect the account.";
 
 /**
- * Runs `fn` against GitHub as `account`, following redirects only within `repo` (see GitHubApi).
- * GitHub's rejection of the token a request presented is the account's to adjudicate, so a token
- * replaced while the request was in flight fails as retryable rather than marking the account
- * expired. With `replayable`, which only calls safe to run twice may pass, such a failure instead
- * reruns `fn` once with the replacement token.
+ * Runs `fn` against GitHub as `account`, a stub to it or the account itself, addressing `repo` by
+ * its id (see GitHubApi). GitHub's rejection of the token a request presented is the account's to
+ * adjudicate, so a token replaced while the request was in flight fails as retryable rather than
+ * marking the account expired. With `replayable`, which only calls safe to run twice may pass, such
+ * a failure instead reruns `fn` once with the replacement token.
  */
 export async function withAccountApi<T>(
-  account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
+  account: Pick<UserAccount, "getAccessToken" | "reportTokenRejected">,
+  fn: (api: GitHubApi) => Promise<T>,
   options: { replayable?: true; repo?: PinnedRepo } = {},
 ): Promise<T> {
   for (let replays = options.replayable ? 1 : 0; ; replays--) {

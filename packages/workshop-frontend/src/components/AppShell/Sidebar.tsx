@@ -29,6 +29,7 @@ import { type NavApp } from '../../siteConfig'
 import { useSiteConfig } from '../../useSiteConfig'
 import { workspaceMonogram } from '../../workspaceMonogram'
 import { useState, type ReactNode } from 'react'
+import { UnreadSummary } from '../../features/notifications/UnreadSummary'
 import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
 
 const BUILD_OPEN_KEY = 'sidebar:build-open'
@@ -257,7 +258,70 @@ export default function Sidebar({
                 {buildOpen && buildItems}
               </>
             ) : buildItems}
-          </nav>
+            <SidebarItem
+              to="/workspaces"
+              label="Workspaces"
+              icon={<SquaresFour size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+            <SidebarItem
+              to="/blueprints"
+              label="Blueprints"
+              icon={<Blueprint size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+            <SidebarItem
+              to="/outputs"
+              label="Outputs"
+              icon={<Stack size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+            {/* Gatekeeper management apps (e.g. the Context Library), listed dynamically. */}
+            {gatekeeperApps.map((app) => {
+              // Escape the icon URL for safe interpolation into a CSS url("…") string.
+              const maskUrl = app.icon
+                ? `url("${app.icon.url.replace(/[\\"]/g, '\\$&')}")`
+                : undefined
+              return (
+              <SidebarItem
+                key={app.id}
+                to="/gatekeepers/$appId"
+                params={{ appId: app.id }}
+                label={app.title}
+                icon={
+                  maskUrl ? (
+                    // Render the (monochrome) app icon as a CSS mask filled with the row's current
+                    // text color, so it tints like the Phosphor icons — subtle by default, accent
+                    // when active, darker on hover.
+                    <span
+                      aria-hidden
+                      className="h-3.5 w-3.5 bg-current"
+                      style={{
+                        maskImage: maskUrl,
+                        WebkitMaskImage: maskUrl,
+                        maskRepeat: 'no-repeat',
+                        WebkitMaskRepeat: 'no-repeat',
+                        maskPosition: 'center',
+                        WebkitMaskPosition: 'center',
+                        maskSize: 'contain',
+                        WebkitMaskSize: 'contain',
+                      }}
+                    />
+                  ) : (
+                    <BookOpen size={14} weight="regular" />
+                  )
+                }
+                collapsed={collapsed}
+              />
+              )
+            })}
+            <SidebarItem
+              to="/explore"
+              label="Explore"
+              icon={<Compass size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+            <UnreadSummary collapsed={collapsed} />          </nav>
 
           {/* Workspace tools: search. Pinned so it's always reachable. */}
           <SidebarWorkspacesTools collapsed={collapsed} />

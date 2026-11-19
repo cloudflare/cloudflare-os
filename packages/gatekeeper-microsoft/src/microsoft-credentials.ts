@@ -44,11 +44,24 @@ export interface MicrosoftVerifierApi extends GatekeeperUserVerifier {
   /**
    * The observer's tenant, user and address, or null when their connection is unusable or reaches
    * none of the resources. A credential that no longer works answers null, not a stale identity.
+   * For the legacy observer trackers; `verifiedIdentity` is what subresource checks use.
    */
   getIdentity(): Promise<VerifiedIdentity | null>;
   /**
-   * Whether the observer's own account can open each access unit (see sharepoint-observers.ts,
-   * outlook-observers.ts and calendar-observers.ts). Exactly one verdict per unit.
+   * The observer's tenant, user and address, or null when their connection reaches none of the
+   * resources. Throws when their connection can't be used, which says nothing about what they may see.
+   */
+  verifiedIdentity(): Promise<VerifiedIdentity | null>;
+  /**
+   * Whether the observer's own account can see each subresource (subresources.ts), in order,
+   * reusing recent answers (see `UserAccount.checkSubresourceAccess`). Throws for an ID it can't
+   * check, a calendar's events included, or when access can't be determined.
+   */
+  checkSubresourceAccess(subresources: string[]): Promise<boolean[]>;
+  /**
+   * Whether the observer's own account can open each access unit a legacy tracker recorded (see
+   * sharepoint-observers.ts, outlook-observers.ts and calendar-observers.ts). Exactly one verdict
+   * per unit.
    */
   canAccess(units: string[]): Promise<boolean[]>;
 }

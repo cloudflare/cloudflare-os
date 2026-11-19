@@ -73,7 +73,7 @@ export type FakeWebhook = {
   id: number; repo: string; url: string; secret: string; events: string[]; active: boolean;
 };
 
-/** One repository, readable by every account that connects. */
+/** One repository, readable by every account that connects unless hidden from its token. */
 type Repository = Row & { id: number; name: string };
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -93,9 +93,13 @@ export class FakeGitHub {
   readonly revokedTokens: string[] = [];
   /** Each request made, as `METHOD /path`. */
   readonly requests: string[] = [];
+  /** Each request made, as `METHOD /path`, with the token it carried (`token-<code>`), if any. */
+  readonly authorizedRequests: { request: string; token: string | null }[] = [];
   /** Whether accounts may still read the repositories. */
   readable = true;
   readonly #repositories = new Map<string, Repository>();
+  /** The tokens each repository, by name, answers 404 to, as GitHub does a repository one can't see. */
+  readonly #hiddenFrom = new Map<string, Set<string>>();
   #nextId = 100;
 
   /** A repository of `acme`'s, named uniquely so tests sharing this fake don't meet. */
@@ -110,6 +114,19 @@ export class FakeGitHub {
     return repository;
   }
 
+  /** Hide repository `name` from `token`, or show it again: GitHub answers 404 to it for every route. */
+  setVisibleTo(name: string, token: string, visible: boolean): void {
+    const hidden = this.#hiddenFrom.get(name) ?? new Set<string>();
+    if (visible) hidden.delete(token);
+    else hidden.add(token);
+    this.#hiddenFrom.set(name, hidden);
+  }
+
+  /** Each request that carried `token`, as `METHOD /path`. */
+  requestsWith(token: string): string[] {
+    return this.authorizedRequests.filter(entry => entry.token === token).map(entry => entry.request);
+  }
+
   readonly handler: Handler = async (url, method, headers, request) => {
     if (url.origin === "https://github.com" && url.pathname === "/login/oauth/access_token" && method === "POST") {
       const code = new URLSearchParams(await request.text()).get("code");
@@ -117,6 +134,8 @@ export class FakeGitHub {
     }
     if (url.origin !== "https://api.github.com") return null;
     this.requests.push(`${method} ${url.pathname}`);
+    const token = /^Bearer (.+)$/.exec(headers.get("Authorization") ?? "")?.[1] ?? null;
+    this.authorizedRequests.push({ request: `${method} ${url.pathname}`, token });
     if (url.pathname === "/user") return json({ ...this.viewer, name: "Ada" });
     if (url.pathname === `/applications/${CLIENT_ID}/token` && method === "DELETE") {
       this.revokedTokens.push(String((await request.json() as Row).access_token));
@@ -129,6 +148,7 @@ export class FakeGitHub {
       : byName ? this.#repositories.get(byName[1]!) : undefined;
     if (!repository) return byId ? notFound() : null;
     const { name } = repository;
+    if (token !== null && this.#hiddenFrom.get(name)?.has(token)) return notFound();
     const rest = (byId ?? byName)![2] ?? "";
     if (rest === "") return this.#repository(repository, headers);
     if (!this.readable) return notFound();

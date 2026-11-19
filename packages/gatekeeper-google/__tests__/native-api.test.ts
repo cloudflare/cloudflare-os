@@ -211,25 +211,26 @@ describe("native Google content API safety", () => {
     await expect(new GoogleDocsApi(token).getDocument("doc-1")).rejects.toThrow(message);
   });
 
-  it("revision-locks marked writes and returns the created range ID", async () => {
+  it("revision-locks marked writes and returns the range ID and the requests' replies", async () => {
     let requestInit: RequestInit | undefined;
+    const added = { addDocumentTab: { tabProperties: { tabId: "t.new", title: "New", index: 1 } } };
     vi.stubGlobal("fetch", vi.fn(async (
       _input: string | URL | Request, init?: RequestInit,
     ) => {
       requestInit = init;
       return Response.json({
-        replies: [{ createNamedRange: { namedRangeId: "range-1" } }],
+        replies: [{ createNamedRange: { namedRangeId: "range-1" } }, added],
         writeControl: { requiredRevisionId: "revision-2" },
       });
     }));
-    const request = { insertText: { text: "hello", location: { index: 1, tabId: "metrics" } } };
+    const request = { addDocumentTab: { tabProperties: { title: "New" } } };
 
     const result = await new GoogleDocsApi(token).batchUpdate(
       "doc-1", [request], "revision-1",
       { name: "gadgets-write-1", rangeStart: 1, tabId: "metrics" },
     );
 
-    expect(result).toEqual({ revisionId: "revision-2", writeMarkerId: "range-1" });
+    expect(result).toEqual({ revisionId: "revision-2", writeMarkerId: "range-1", replies: [added] });
     expect(JSON.parse(String(requestInit?.body))).toEqual({
       requests: [
         {
@@ -244,7 +245,7 @@ describe("native Google content API safety", () => {
     });
   });
 
-  it("deletes a named range by exact ID without write control", async () => {
+  it("deletes a named range by exact ID in its tab, without write control", async () => {
     let requestedUrl: string | undefined;
     let requestInit: RequestInit | undefined;
     vi.stubGlobal("fetch", vi.fn(async (
@@ -255,13 +256,13 @@ describe("native Google content API safety", () => {
       return Response.json({});
     }));
 
-    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1");
+    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1", "t.2");
 
     expect(requestedUrl).toBe(
       "https://docs.googleapis.com/v1/documents/doc-1:batchUpdate",
     );
     expect(JSON.parse(String(requestInit?.body))).toEqual({
-      requests: [{ deleteNamedRange: { namedRangeId: "range-1" } }],
+      requests: [{ deleteNamedRange: { namedRangeId: "range-1", tabsCriteria: { tabIds: ["t.2"] } } }],
     });
   });
   it("cancels an unknown-length response once streamed bytes exceed the limit", async () => {
@@ -365,6 +366,43 @@ describe("native Google content API safety", () => {
       providerStatus: "FAILED_PRECONDITION",
       message: "Google Sheets get spreadsheet failed [http=400]",
     });
+  });
+
+  // A 403 without reasons says the account can't open the file only when Google's whole error
+  // was read; one cut off says nothing about what Google gave.
+  it("says whether a refusal's error body was read, in the error and in the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: { code: 403, message: "The caller does not have permission" },
+    }, { status: 403 })));
+    const read = await new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+    expect(read).toBeInstanceOf(GoogleApiError);
+    expect(read).toMatchObject({ providerReasons: [], providerErrorRead: true });
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({ providerErrorRead: true });
+
+    warn.mockClear();
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"error": {"code": 403')); },
+      }), { status: 403 })));
+      const failed = new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      const cutOff = await failed;
+      expect(cutOff).toBeInstanceOf(GoogleApiError);
+      expect(cutOff).toMatchObject({ providerReasons: [], providerErrorRead: false });
+      expect(warn.mock.calls[0]?.[0]).not.toHaveProperty("providerErrorRead");
+
+      // A body that parses but never ends is cut off all the same.
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"error": {"code": 403}}')); },
+      }), { status: 403 })));
+      const stalled = new GoogleDocsApi(token).getDocumentMetadata("doc-1").catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await stalled).toMatchObject({ providerReasons: [], providerErrorRead: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ComponentProps, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
@@ -16,6 +16,7 @@ import {
   SidebarSimple,
   ChatsCircle,
   House,
+  UserPlus,
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
@@ -31,6 +32,7 @@ import SiteLogo from './components/SiteLogo'
 
 import {
   GadgetClient,
+  GadgetSnapshotClient,
   AiChatAuthorInfo,
   ConsoleLogSubscriber,
   ConsoleLogEvent,
@@ -41,6 +43,9 @@ import {
   BlueprintOutput,
   WorkpiecesSubscriber,
   NotificationMute,
+  AiChatMetadata,
+  SNAPSHOT_SHARING_ERROR_CODES,
+  getSnapshotSharingErrorCode,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -50,6 +55,7 @@ import GadgetUseView from './GadgetUseView'
 import { gadgetViewParam, gadgetViewStateFromParam } from './gadgetViewParam'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
+import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
 import WorkpiecePicker, {
@@ -67,6 +73,8 @@ import ChatInterface, {
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import ShareModal from './ShareModal'
+import { DeleteGadgetDialog } from './features/gadget-deletion/DeleteGadgetDialog'
+import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
@@ -80,7 +88,7 @@ import { useActionEntries, useActions } from './useActions'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
-import { useWorkspaceOpen } from './useWorkspaceOpen'
+import { observerOpenFailureMessage, useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
@@ -89,7 +97,8 @@ import { formatUsageCost } from './formatUsageCost'
 import { siteConfig } from './siteConfig'
 import { useWorkspaceTheme } from './useWorkspaceTheme'
 import { notifyWorkspacesChanged } from './workspaceListBus'
-
+import { ChatTokenIndex } from './features/chat/agents/chatTokenIndex'
+import { FullscreenExitHint } from './components/FullscreenExitHint'
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
 // ─── console log subscriber ───────────────────────────────────────────────────
@@ -215,13 +224,15 @@ const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
 ]
 
 // Names what the pane is showing. `icon` is for the workspace-level views (Activity); a workpiece
-// passes its summary instead, so a Doc gets a document glyph rather than the gadget hexagon.
+// passes its summary instead, so a Doc gets a document glyph rather than the gadget hexagon. Other
+// props go to its element, so that a gadget's label can open the gadget's menu.
 function PaneLabel({
   icon: LabelIcon,
   workpiece,
   title,
   badge,
-}: {
+  ...props
+}: Omit<ComponentProps<'div'>, 'title'> & {
   icon?: Icon
   workpiece?: WorkpieceSummary
   title: string
@@ -229,8 +240,9 @@ function PaneLabel({
 }) {
   return (
     <div
+      {...props}
       title={title}
-      className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default"
+      className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
     >
       {LabelIcon
         ? <LabelIcon size={14} weight="bold" className="flex-shrink-0" />
@@ -245,6 +257,101 @@ function PaneLabel({
   )
 }
 
+// Breathing room left between the open tab and the edge it was scrolled away from, so a tab that
+// only just fits doesn't look clipped.
+const TAB_REVEAL_MARGIN = 8
+
+// The workpiece tabs in the pane header, shown when the workspace holds more than one. The Outputs
+// rail only shows when the pane is closed, so without these an open output gives no sign that the
+// workspace holds others.
+function PaneWorkpieceTabs({
+  gadgets,
+  activeId,
+  onSelect,
+  onDelete,
+}: {
+  gadgets: WorkpieceSummary[]
+  activeId: WorkpieceId | null
+  onSelect: (id: WorkpieceId) => void
+  // Asks to delete a gadget, from its tab's right-click menu; the caller confirms it.
+  onDelete: (gadget: GadgetSummary) => void
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const activeRef = useRef<HTMLButtonElement>(null)
+
+  // Whatever is open must be fully readable; the rest may sit off-scroll. Once per selection
+  // change isn't enough, because the layout keeps moving afterwards: the pane animates its width,
+  // and a new output's title arrives after its tab first renders. So re-run on the next frame and
+  // on every resize of the strip.
+  //
+  // Scrolls the strip by hand rather than with scrollIntoView, which is free to scroll every
+  // scrollable ancestor, including the page.
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+
+    const reveal = () => {
+      const active = activeRef.current
+      if (!active) return
+      const tab = active.getBoundingClientRect()
+      const view = scroller.getBoundingClientRect()
+      if (tab.right > view.right) {
+        scroller.scrollLeft += tab.right - view.right + TAB_REVEAL_MARGIN
+      } else if (tab.left < view.left) {
+        scroller.scrollLeft -= view.left - tab.left + TAB_REVEAL_MARGIN
+      }
+    }
+
+    reveal()
+    const frame = requestAnimationFrame(reveal)
+    // Catches the pane's width animation, which changes the strip's size for ~200ms after this runs.
+    const observer = new ResizeObserver(reveal)
+    observer.observe(scroller)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [activeId, gadgets])
+
+  return (
+    <div
+      ref={scrollerRef}
+      className="hide-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+    >
+      {gadgets.map(gadget => {
+        const active = gadget.id === activeId
+        const tab = (
+          <button
+            key={gadget.id}
+            ref={active ? activeRef : undefined}
+            type="button"
+            onClick={() => onSelect(gadget.id)}
+            title={gadget.title}
+            aria-current={active ? 'page' : undefined}
+            // The open one gets room for its whole name; the others yield first.
+            className={`inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] transition-colors duration-150 ${
+              active
+                ? 'max-w-[240px] bg-kumo-tint text-kumo-default'
+                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default data-[popup-open]:bg-kumo-tint/50 data-[popup-open]:text-kumo-default'
+            }`}
+          >
+            <WorkpieceGlyph summary={gadget} className="flex-shrink-0" />
+            <span className="truncate">{gadget.title}</span>
+            {gadget.type === 'gadget' && gadget.chatId !== undefined && (
+              <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
+                Draft
+              </span>
+            )}
+          </button>
+        )
+        // A worktree is the chat's own and goes with it.
+        return gadget.type === 'gadget'
+          ? <GadgetContextMenu key={gadget.id} trigger={tab} onDelete={() => onDelete(gadget)} />
+          : tab
+      })}
+    </div>
+  )
+}
 function PaneTab({
   active,
   label,
@@ -389,12 +496,13 @@ export default function GadgetEditor() {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
-  const { chat: chatParam, w: workpieceParam, showChat: showChatParam, view: viewParam } =
-    useSearch({ strict: false }) as { chat?: number; w?: number; showChat?: true; view?: string }
+      const { chat: chatParam, agent: agentParam, w: workpieceParam, showChat: showChatParam, view: viewParam } =
+        useSearch({ strict: false }) as { chat?: number; agent?: number; w?: number; showChat?: true; view?: string }
   const urlChatId = chatParam !== undefined ? chatParam : null
+  const agentChatId = agentParam !== undefined ? agentParam : null
   const urlWorkpieceId = workpieceParam !== undefined ? workpieceParam : null
 
   // ── toasts ─────────────────────────────────────────────────────────────────────
@@ -408,8 +516,14 @@ export default function GadgetEditor() {
   const knownWorkpieceIdsRef = useRef<Set<WorkpieceId> | null>(null)
   // GadgetClient stub for the currently-selected gadget workpiece. Per-gadget operations (UI
   // bundle, RPC connection, bindings, blueprints) go through this stub. Null while the workspace
-  // has no (visible) gadgets.
-  const [gadget, setGadget] = useState<{ id: WorkpieceId; stub: RpcStub<GadgetClient> } | null>(null)
+  // has no (visible) gadgets, and while a use-only collaborator's gadget is being admitted. A
+  // use-only collaborator who may only view a gadget (see Overseer.isViewOnly) instead
+  // holds that static snapshot (see Overseer.getGadgetSnapshot), taken at `refreshedAt`.
+  const [gadget, setGadget] = useState<
+    | { id: WorkpieceId; kind: 'live'; stub: RpcStub<GadgetClient> }
+    | { id: WorkpieceId; kind: 'snapshot'; stub: RpcStub<GadgetSnapshotClient>; refreshedAt: Date }
+    | null
+  >(null)
 
   // ── title editing ────────────────────────────────────────────────────────────
   const [isEditingTitle, setIsEditingTitle] = useState(false)
@@ -424,6 +538,7 @@ export default function GadgetEditor() {
     error,
     connectionLost,
     observerConfig,
+    createObserverConfigCallback,
     retry: retryOpen,
     cancelObserverConfig,
     updateTitle,
@@ -434,7 +549,13 @@ export default function GadgetEditor() {
       if (!isEditingTitleRef.current) setTitleInput(nextMetadata.title)
     },
     onShareKeyConsumed: () => {
-      if (id) navigate({ to: '/workspace/$id', params: { id }, search: {}, replace: true })
+      // Keep the gadget a link to one gadget opens on; drop the rest of the address.
+      if (id) navigate({
+        to: '/workspace/$id',
+        params: { id },
+        search: urlWorkpieceId === null ? {} : { w: urlWorkpieceId },
+        replace: true,
+      })
     },
     onInvalidShareKey: () => {
       toasts.add({ title: 'Invalid or expired share link.', variant: 'error' })
@@ -477,9 +598,14 @@ export default function GadgetEditor() {
   const [activityView, setActivityView] = useState<ActivityView>('history')
   const [activityClosing, setActivityClosing] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
+  // The gadget the share dialog shares, or null when it invites people to the whole workspace.
+  const [sharedGadgetId, setSharedGadgetId] = useState<WorkpieceId | null>(null)
+  const openShareModal = (gadgetId: WorkpieceId | null) => {
+    setSharedGadgetId(gadgetId)
+    setShareModalOpen(true)
+  }
   const [blueprintModalOpen, setBlueprintModalOpen] = useState(false)
   const [blueprintUpdateDialogOpen, setBlueprintUpdateDialogOpen] = useState(false)
-  const [previewMode, _setPreviewMode] = useState(false)
   const [workpieceRailExpanded, setWorkpieceRailExpanded] = useState(getInitialAppRailExpanded)
   // The expanded Outputs rail's width, dragged from its left edge and remembered per browser.
   const [workpieceRailExpandedWidth, setWorkpieceRailExpandedWidth] = useState(
@@ -515,10 +641,6 @@ export default function GadgetEditor() {
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
 
-  // Brief hint banner shown when entering fullscreen, instructing the user how to exit.
-  // We don't use the global Kumo toast manager here because the fullscreen overlay sits above
-  // it in stacking order (and toasts render bottom-right, not top-center).
-  const [showFullscreenHint, setShowFullscreenHint] = useState(false)
   // Element that had focus before entering fullscreen; we restore focus to it on exit so
   // keyboard users aren't stranded.
   const focusBeforeFullscreenRef = useRef<HTMLElement | null>(null)
@@ -537,15 +659,7 @@ export default function GadgetEditor() {
     focusBeforeFullscreenRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null
     setIsGadgetFullscreen(true)
-    setShowFullscreenHint(true)
   }, [])
-
-  // Auto-dismiss the hint a few seconds after entering fullscreen.
-  useEffect(() => {
-    if (!showFullscreenHint) return
-    const t = setTimeout(() => setShowFullscreenHint(false), 4000)
-    return () => clearTimeout(t)
-  }, [showFullscreenHint])
 
   // Move focus into the overlay when entering fullscreen, and back to the prior element on exit.
   useEffect(() => {
@@ -584,7 +698,9 @@ export default function GadgetEditor() {
 
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
-  const [autoApproveReloadTrigger, setAutoApproveReloadTrigger] = useState(0)
+  // Shared by the chat and the Activity rule list, which can each change a rule the other is
+  // reading.
+  const autoApproval = useAutoApprovalChannel()
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
@@ -607,7 +723,9 @@ export default function GadgetEditor() {
   const [chatCount, setChatCount] = useState<number | null>(null)
   const [hasChatZero, setHasChatZero] = useState(false)
   const [_hasBindings, setHasBindings] = useState(false)
-  const [isAgentActive, setIsAgentActive] = useState(false)
+  const [agentActivity, setAgentActivity] = useState<{chatId: number | null; active: boolean}>({
+    chatId: null, active: false,
+  })
   // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
   const [anyChatProposedWorkpieces, setAnyChatProposedWorkpieces] =
     useState<readonly WorkpieceId[]>([])
@@ -657,7 +775,10 @@ export default function GadgetEditor() {
   // an accepted gadget exists, dropping back to the chat list should become possible.
   const pinInitialChatSelection =
     singleInitialChat && !hasCommittedCode && !userNavigatedToList
-  const effectiveSelectedChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
+  // The chat the user works in, which the gadget pane follows: its drafts, the preview, the
+  // console logs. A spawned agent's chat is never it, though one can be shown over it.
+  const workingChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
+  const shownChatId = agentChatId ?? workingChatId
 
   // ── workpiece selection ──────────────────────────────────────────────────────
 
@@ -684,23 +805,25 @@ export default function GadgetEditor() {
 
   const visibleGadgets = useMemo(() => {
     return allGadgets.filter(w =>
-      w.chatId === undefined || w.chatId === effectiveSelectedChatId)
-  }, [allGadgets, effectiveSelectedChatId])
+      w.chatId === undefined || w.chatId === workingChatId)
+  }, [allGadgets, workingChatId])
 
-  // Everything the pane can show for the selected chat: the visible gadgets, then the chat's own
+  // Everything the pane can show for the working chat: the visible gadgets, then the chat's own
   // worktrees (a worktree is chat-scoped for its whole life, exactly as a pending gadget is
-  // until accepted).
+  // until accepted), and those of a spawned agent's chat shown over it, the one kind of
+  // workpiece such a chat can own.
   const visibleWorkpieces: WorkpieceSummary[] = useMemo(() => [
     ...visibleGadgets,
-    ...allWorktrees.filter(w => w.chatId === effectiveSelectedChatId),
-  ], [visibleGadgets, allWorktrees, effectiveSelectedChatId])
+    ...allWorktrees.filter(w => w.chatId === workingChatId),
+    ...agentChatId !== null ? allWorktrees.filter(w => w.chatId === agentChatId) : [],
+  ], [visibleGadgets, allWorktrees, workingChatId, agentChatId])
 
   // Gadgets still pending (created within) the selected chat: their chat content builds up from
   // nothing rather than from a pinned commit (see WorkpieceCodeInterface's pendingGadgetIds).
   const pendingGadgetIds = useMemo(() => new Set(
-    allGadgets.filter(w => w.chatId !== undefined && w.chatId === effectiveSelectedChatId)
+    allGadgets.filter(w => w.chatId !== undefined && w.chatId === workingChatId)
       .map(w => w.id)
-  ), [allGadgets, effectiveSelectedChatId])
+  ), [allGadgets, workingChatId])
 
   // The selected workpiece: explicit URL state wins. Entering the workspace without one opens its
   // Workspace Home; failing that, the one open in this session (only accepted apps are persisted),
@@ -731,7 +854,15 @@ export default function GadgetEditor() {
   // export, blueprints) key off this and render their empty states for a worktree.
   const selectedGadgetSummary =
     selectedWorkpieceSummary?.type === 'gadget' ? selectedWorkpieceSummary : undefined
+  // The chat whose code the pane shows: the selected workpiece's own, if it is chat-scoped (a
+  // draft of the working chat, or a worktree of it or of the agent chat shown over it), else the
+  // working chat. A gadget never belongs to a spawned agent's chat, so neither does the frame.
+  const paneChatId = selectedWorkpieceSummary?.chatId ?? workingChatId
+  const isViewActive = agentActivity.chatId === paneChatId && agentActivity.active
+  const isAgentActive = paneChatId !== null && isViewActive
   const selectedGadgetId = selectedGadgetSummary?.id ?? null
+  const gadgetSaveScope = id !== undefined && selectedGadgetId !== null
+    ? { workspaceId: id, workpieceId: selectedGadgetId } : undefined
   // A gadget still pending in a chat has no committed code for an update to be merged into.
   const canUpdateFromBlueprint = selectedGadgetSummary?.commitId !== undefined
   // An upstream that names no blueprint records that the gadget was built from scratch, so there
@@ -775,11 +906,12 @@ export default function GadgetEditor() {
 
   // The stub for the selected gadget arrives via an effect; during a switch it briefly lags the
   // selection, in which case gadget-dependent views render their empty states for a frame.
-  const selectedGadgetStub =
-    gadget !== null && gadget.id === selectedGadgetId ? gadget.stub : null
-  // Only the selected chat's streaming drives this editor. Everything downstream then narrows it
+  const selectedGadget = gadget !== null && gadget.id === selectedGadgetId ? gadget : null
+  // Editor views hold only a live gadget; a snapshot is rendered by GadgetUseView alone.
+  const selectedGadgetStub = selectedGadget?.kind === 'live' ? selectedGadget.stub : null
+  // Only the pane chat's streaming drives this editor. Everything downstream then narrows it
   // further to the selected workpiece.
-  const streamingActiveFile = streamingActiveFileState?.chatId === effectiveSelectedChatId
+  const streamingActiveFile = streamingActiveFileState?.chatId === paneChatId
     ? streamingActiveFileState.file
     : undefined
   // The file the agent is streaming edits into, when it is in the selected workpiece. (Edits
@@ -834,10 +966,10 @@ export default function GadgetEditor() {
     || (streamingActiveFile != null && !isWorktreeId(streamingActiveFile.workpieceId))
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 
-  // Wait for the workpiece list (and the first selected-gadget stub, which follows it by one
-  // effect pass) before rendering; a workspace with no gadgets renders with `gadget` null.
+  // Use-only shells stay visible during gadget admission so the picker can switch away. Builders
+  // wait for the first selected-gadget stub before rendering the editor.
   const workspaceLoading = !metadata || !overseer || !workpiecesReady ||
-    (selectedGadgetId !== null && gadget === null)
+    (!isUseOnly && selectedGadgetId !== null && gadget === null)
   // layoutModeReady survives a failed reopen and its retry, which show error and loading pages.
   const chatRendered = layoutModeReady && !error && !workspaceLoading
 
@@ -895,18 +1027,20 @@ export default function GadgetEditor() {
   // chat-scoped instance with identical code (the backend applies the same per-gadget rule in
   // getGadgetFacetFetcher).
   const previewChatId =
-    effectiveSelectedChatId !== null && selectedGadgetId !== null &&
+    workingChatId !== null && selectedGadgetId !== null &&
         selectedChatProposedWorkpieces.includes(selectedGadgetId)
-      ? effectiveSelectedChatId
+      ? workingChatId
       : undefined
 
   // ── console log buffering ────────────────────────────────────────────────────
   const consoleLogSubscriberRef = useRef(new ConsoleLogSubscriberImpl())
   const consoleLogBufferRef = useRef<BufferedLogEntry[]>([])
   const [consoleLogCount, setConsoleLogCount] = useState(0)
-  const selectedChatIdRef = useRef(effectiveSelectedChatId)
-  selectedChatIdRef.current = effectiveSelectedChatId
-  consoleLogSubscriberRef.current.selectedChatIdRef = selectedChatIdRef
+  const workingChatIdRef = useRef(workingChatId)
+  workingChatIdRef.current = workingChatId
+  const paneChatIdRef = useRef(paneChatId)
+  paneChatIdRef.current = paneChatId
+  consoleLogSubscriberRef.current.selectedChatIdRef = workingChatIdRef
   consoleLogSubscriberRef.current.logBufferRef = consoleLogBufferRef
   consoleLogSubscriberRef.current.onBufferUpdated = () =>
     setConsoleLogCount(consoleLogBufferRef.current.length)
@@ -914,7 +1048,11 @@ export default function GadgetEditor() {
   useEffect(() => {
     consoleLogBufferRef.current = []
     setConsoleLogCount(0)
-  }, [effectiveSelectedChatId])
+  }, [workingChatId])
+
+  // The gadget's logs are the working chat's, offered to its agent only. They wait while a spawned
+  // agent's chat is shown over it.
+  const shownConsoleLogCount = agentChatId === null ? consoleLogCount : 0
 
   const consumeConsoleLogs = useCallback((): string => {
     const logs = consoleLogBufferRef.current
@@ -933,7 +1071,7 @@ export default function GadgetEditor() {
   const handleClientConsoleLog = useCallback((log: ConsoleLogEvent) => {
     const method = (console as any)[log.level] ?? console.log
     method('client:', ...log.message)
-    if (selectedChatIdRef.current !== null) {
+    if (workingChatIdRef.current !== null) {
       consoleLogBufferRef.current.push({ ...log, source: 'client' as const })
       setConsoleLogCount(consoleLogBufferRef.current.length)
     }
@@ -1013,7 +1151,7 @@ export default function GadgetEditor() {
     for (const app of newlyCreated) known.add(app.id)
 
     const target = newlyCreated.findLast(app =>
-      app.chatId !== undefined && app.chatId === effectiveSelectedChatId)
+      app.chatId !== undefined && app.chatId === workingChatId)
     if (!target) return
 
     setActiveTab('app')
@@ -1024,7 +1162,7 @@ export default function GadgetEditor() {
       search: (prev: Record<string, unknown>) => ({ ...prev, w: target.id }),
       replace: true,
     })
-  }, [workpiecesReady, allGadgets, effectiveSelectedChatId, setWorkspaceVisibility, navigate, id])
+  }, [workpiecesReady, allGadgets, workingChatId, setWorkspaceVisibility, navigate, id])
 
   useEffect(() => {
     const handleResize = () => {
@@ -1059,7 +1197,7 @@ export default function GadgetEditor() {
   const showCodeIfNoUi = useCallback(() => {
     const output = turnOutputRef.current
     if (!output?.wroteFile || output.userSelectedTab) return
-    if (output.chatId !== selectedChatIdRef.current) return
+    if (output.chatId !== paneChatIdRef.current) return
     if (activeTabRef.current !== 'app' || !appShowsNoUiRef.current) return
     output.showedCode = true
     setActiveTab('code')
@@ -1070,9 +1208,13 @@ export default function GadgetEditor() {
     if (showsNoUi) showCodeIfNoUi()
   }, [showCodeIfNoUi])
 
-  const handleAgentActiveChange = useCallback((chatId: number, isActive: boolean) => {
-    if (chatId !== selectedChatIdRef.current) return
-    setIsAgentActive(isActive)
+  const handleAgentActiveChange = useCallback((chatId: number | null, isActive: boolean) => {
+    if (chatId !== paneChatIdRef.current) return
+    setAgentActivity({chatId, active: isActive})
+    if (chatId === null) {
+      turnOutputRef.current = null
+      return
+    }
     if (isActive) {
       turnOutputRef.current = {
         chatId,
@@ -1091,7 +1233,7 @@ export default function GadgetEditor() {
 
   const handleStreamingActiveFileChange = useCallback(
       (chatId: number, file: ActiveFileTarget | null | undefined) => {
-    if (file && chatId === selectedChatIdRef.current) {
+    if (file && chatId === paneChatIdRef.current) {
       let output = turnOutputRef.current
       if (!output || output.chatId !== chatId) {
         output = {chatId, wroteFile: false, showedCode: false, userSelectedTab: false}
@@ -1105,9 +1247,15 @@ export default function GadgetEditor() {
 
   const handleTabSelect = useCallback((tab: RightTab) => {
     let output = turnOutputRef.current
-    if (output?.chatId === selectedChatIdRef.current) output.userSelectedTab = true
+    if (output?.chatId === paneChatIdRef.current) output.userSelectedTab = true
     setActiveTab(tab)
   }, [])
+
+  // A gadget awaiting confirmation of its deletion, tagged with its workspace. The editor stays
+  // mounted when Back or a toast's "Open task" moves it to another workspace, whose gadgets reuse
+  // the same ids, so a confirmation must not follow it there; the reset below drops it.
+  const [gadgetToDelete, setGadgetToDelete] =
+    useState<{ workspaceId: string, gadget: GadgetSummary } | null>(null)
 
   useEffect(() => {
     setChatChanges(undefined)
@@ -1128,6 +1276,7 @@ export default function GadgetEditor() {
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
+    setGadgetToDelete(null)
   }, [id])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
@@ -1146,22 +1295,81 @@ export default function GadgetEditor() {
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
 
-  // Notifications skip the chat on screen: rendered, and not covered by full-screen preview or, on a
-  // phone, by the workspace pane.
+  // Notifications and read receipts apply only to the chat on screen, not one covered by a
+  // full-screen preview or, on a phone, by the workspace pane.
   useEffect(() => {
-    if (!chatRendered || isGadgetFullscreen || effectiveSelectedChatId === null) return
-    const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
+    if (!chatRendered || isGadgetFullscreen || shownChatId === null) return
+    const chat = { workspaceId: id!, chatId: shownChatId }
     return reportVisibleChat(() => showFullEditor && isSinglePaneLayout() ? null : chat)
-  }, [chatRendered, isGadgetFullscreen, effectiveSelectedChatId, id, showFullEditor])
+  }, [chatRendered, isGadgetFullscreen, shownChatId, id, showFullEditor])
+
+  // ── the workspace's chats ────────────────────────────────────────────────────
+  const [chatTokens] = useState(() => new ChatTokenIndex())
+  // Whether each of the workspace's chats is a spawned agent's, once ChatInterface has listed
+  // them. Read through the ref, which is current at once: a gadget opening a spawned agent's chat
+  // can find its token in the same report that first lists the chat, and must then open it as
+  // one. The key only re-runs what depends on the kinds.
+  const spawnedByChatIdRef = useRef<ReadonlyMap<number, boolean> | null>(null)
+  const [chatKindsKey, setChatKindsKey] = useState<string | null>(null)
+  const handleChatListChange = useCallback((chats: readonly AiChatMetadata[]) => {
+    const spawnedByChatId = new Map(chats.map(chat => [chat.id, !!chat.spawnerName] as const))
+    spawnedByChatIdRef.current = spawnedByChatId
+    setChatKindsKey([...spawnedByChatId].map(([chatId, spawned]) => `${chatId}${spawned ? 's' : ''}`)
+      .toSorted().join())
+    chatTokens.update(new Map(chats.flatMap(chat =>
+      chat.chatToken === undefined ? [] : [[chat.chatToken, chat.id] as const])))
+  }, [chatTokens])
+  const isSpawnedChat = (chatId: number) => spawnedByChatIdRef.current?.get(chatId) === true
+  // Forgotten on leaving the workspace, before the next one's ChatInterface reports its own.
+  useEffect(() => () => {
+    spawnedByChatIdRef.current = null
+    setChatKindsKey(null)
+  }, [id])
+
+  // Links name every chat as `chat` (a notification's, say), so once the chats are known, move a
+  // spawned agent's chat to `agent`, over no working chat, and a chat that isn't one back to
+  // `chat`. An `agent` naming no chat is dropped, and so is a working chat deleted under one (the
+  // chat pane leaves only a deleted chat it shows). A chat too new to be listed can't be the
+  // working chat under an agent's, since opening it closes the agent's.
+  useEffect(() => {
+    const spawnedByChatId = spawnedByChatIdRef.current
+    if (spawnedByChatId === null) return
+    let chat = urlChatId
+    let agent = agentChatId
+    if (chat !== null && spawnedByChatId.get(chat) === true) {
+      agent = chat
+      chat = null
+    } else if (agent !== null && spawnedByChatId.get(agent) !== true) {
+      if (spawnedByChatId.has(agent)) chat = agent
+      agent = null
+    } else if (agent !== null && chat !== null && !spawnedByChatId.has(chat)) {
+      chat = null
+    }
+    if (chat === urlChatId && agent === agentChatId) return
+    navigate({
+      to: '/workspace/$id',
+      params: { id: id! },
+      search: (prev: Record<string, unknown>) => ({
+        ...prev, chat: chat ?? undefined, agent: agent ?? undefined,
+      }),
+      replace: true,
+    })
+  }, [chatKindsKey, urlChatId, agentChatId, navigate, id])
 
   // ── navigation helper ────────────────────────────────────────────────────────
+  // A spawned agent's chat opens over the working chat, which the gadget pane goes on showing,
+  // and Back from it returns there. Any other chat, or the list, replaces the working chat.
   const navigateToChat = useCallback(
     (chatId: number | null, options?: { replace?: boolean }) => {
-      setUserNavigatedToList(chatId === null)
+      const overWorkingChat = chatId !== null ? isSpawnedChat(chatId) : agentChatId !== null
+      if (!overWorkingChat) setUserNavigatedToList(chatId === null)
+      const nextWorkingChatId = overWorkingChat ? workingChatId : chatId
+      const nextAgentChatId = overWorkingChat ? chatId : null
       // Draft apps can only be previewed from their creating conversation; worktrees are theirs
       // for life.
       const pendingChatId = selectedWorkpieceSummary?.chatId
-      const leavingPendingApp = pendingChatId !== undefined && chatId !== pendingChatId
+      const leavingPendingApp = pendingChatId !== undefined &&
+        pendingChatId !== nextWorkingChatId && pendingChatId !== nextAgentChatId
       if (leavingPendingApp) {
         setWorkspaceTransitionEnabled(true)
         if (workspaceView?.mode === 'activity') {
@@ -1176,7 +1384,10 @@ export default function GadgetEditor() {
         // Keep committed selections, but clear draft selections outside their branch.
         search: (prev: Record<string, unknown>) => ({
           ...prev,
-          chat: chatId !== null ? chatId : undefined,
+          chat: overWorkingChat
+            ? typeof prev.chat === 'number' ? prev.chat : undefined
+            : chatId ?? undefined,
+          agent: nextAgentChatId ?? undefined,
           w: leavingPendingApp
             ? undefined
             : typeof prev.w === 'number' ? prev.w : undefined,
@@ -1184,8 +1395,43 @@ export default function GadgetEditor() {
         replace: options?.replace,
       })
     },
-    [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode]
+    // oxlint-disable-next-line exhaustive-deps -- isSpawnedChat reads a ref.
+    [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode, agentChatId, workingChatId]
   )
+
+  // ── chats a gadget asks to show (GadgetHost.openAgentChat) ──────────────────
+  // A gadget may navigate the user only while it is what the user sees: the pane is open on the
+  // app tab, or the gadget is full screen. The gadget stays mounted behind the chat list, Activity
+  // and the other tabs, and there `isVisible` alone would still let it.
+  const shownGadget = {
+    workspaceId: id,
+    gadgetId: selectedGadgetId,
+    onScreen: activeTab === 'app' &&
+      (isGadgetFullscreen || (showFullEditor && !paneShowsActivity)),
+  }
+  const shownGadgetRef = useRef(shownGadget)
+  shownGadgetRef.current = shownGadget
+  const showChat = (chatId: number) => {
+    exitGadgetFullscreen()
+    navigateToChat(chatId)
+    if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+  }
+  const showChatRef = useRef(showChat)
+  showChatRef.current = showChat
+  const handleOpenAgentChat = async (chatToken: string, signal: AbortSignal) => {
+    const requestedBy = shownGadgetRef.current
+    if (!requestedBy.onScreen) return
+    const chatId = await chatTokens.find(chatToken, signal)
+    // The wait may outlast the view that asked, so the request stands only if its frame's session
+    // is still open (the editor may even have unmounted, leaving shownGadgetRef as it was) and that
+    // is still the gadget on screen.
+    const shown = shownGadgetRef.current
+    if (chatId === undefined || signal.aborted || !shown.onScreen ||
+        shown.workspaceId !== requestedBy.workspaceId || shown.gadgetId !== requestedBy.gadgetId) {
+      return
+    }
+    showChatRef.current(chatId)
+  }
 
   // ── keep single-chat routing aligned with the current mode ──────────────────
   // Keep the URL aligned with simple mode's implied chat-0 selection.
@@ -1280,18 +1526,116 @@ export default function GadgetEditor() {
   }, [overseer])
 
   // ── selected gadget stub ────────────────────────────────────────────────────────
-  // Open a GadgetClient for the selected workpiece when it is a gadget. getGadget() pipelines on
-  // the overseer stub, so the stub is usable immediately with no extra round trip. (A worktree
-  // has no GadgetClient -- getGadget() would throw -- so `selectedGadgetId` is null for one.)
+  // Open a GadgetClient for the selected workpiece when it is a gadget. (A worktree has no
+  // GadgetClient -- getGadget() would throw -- so `selectedGadgetId` is null for one.) Waits for
+  // metadata, whose role decides how:
+  //
+  // - Opening the workspace verified everyone but use-only collaborators, so getGadget()
+  //   pipelines on the overseer stub, which is usable immediately with no extra round trip.
+  // - A use-only collaborator is verified as each gadget opens, so its account prompts (and
+  //   repairs of failed choices) are routed to the picker, and its UI mounts only once admission
+  //   succeeds: the bundle timeout must not include time spent choosing accounts. A refusal is
+  //   kept per gadget, since failing one leaves the others open. Re-admitting the gadget on screen
+  //   (after a reconnect) leaves its UI mounted until the new stub arrives; anything else that
+  //   holds a stub disposed below is cleared, so no UI can mount on one.
+  // - A use-only collaborator given only a gadget's snapshot opens that static snapshot, which
+  //   verifies nothing, so it can't be refused for their accounts; nothing offers the live gadget.
+  //   One given the gadget itself always opens it live, as above, and never its snapshot.
+  //   While the deployment forbids snapshots, the server refuses one, and the failure says why; the
+  //   server is asked each time, so Try again opens it once an admin allows snapshots again.
+  const [gadgetOpenFailure, setGadgetOpenFailure] =
+    useState<{ id: WorkpieceId; message: string } | null>(null)
+  const [gadgetOpenAttempt, setGadgetOpenAttempt] = useState(0)
+  const metadataLoaded = metadata !== null
   useEffect(() => {
-    if (!overseer || selectedGadgetId === null) {
+    if (!overseer || !metadataLoaded || selectedGadgetId === null) {
       setGadget(null)
       return
     }
-    const stub = overseer.stub.getGadget(selectedGadgetId)
-    setGadget({ id: selectedGadgetId, stub })
-    return () => { stub[Symbol.dispose]() }
-  }, [overseer, selectedGadgetId])
+    if (!isUseOnly) {
+      const stub = overseer.stub.getGadget(selectedGadgetId)
+      setGadget({ id: selectedGadgetId, kind: 'live', stub })
+      return () => {
+        stub[Symbol.dispose]()
+        // The next run sets its stub in the same effect flush, so this never unmounts a builder's
+        // UI; it keeps the admission below from retaining this stub if the role narrows.
+        setGadget(null)
+      }
+    }
+
+    const abort = new AbortController()
+    // Until the gadget reopens, the one on screen stays (as after a reconnect).
+    setGadget(previous => previous?.id === selectedGadgetId ? previous : null)
+    setGadgetOpenFailure(null)
+    const fail = (caught: unknown) => {
+      if (abort.signal.aborted) return
+      setGadget(null)
+      setGadgetOpenFailure({
+        id: selectedGadgetId,
+        message: getSnapshotSharingErrorCode(caught) === SNAPSHOT_SHARING_ERROR_CODES.disabled
+          ? 'Viewing gadget snapshots is turned off on this deployment.'
+          : observerOpenFailureMessage(caught, 'gadget') ?? 'This gadget couldn’t be opened.',
+      })
+    }
+
+    const releases: (() => void)[] = []
+    const openSnapshot = () => {
+      const opening = overseer.stub.getGadgetSnapshot(selectedGadgetId)
+      let stub: RpcStub<GadgetSnapshotClient> | null = null
+      Promise.all([opening, opening.getRefreshedAt()]).then(([opened, refreshedAt]) => {
+        // Kept through a duplicate, which outlives disposing what the open resolved to.
+        if (!abort.signal.aborted) {
+          stub = opened.dup()
+          setGadget({ id: selectedGadgetId, kind: 'snapshot', stub, refreshedAt })
+        }
+        opened[Symbol.dispose]()
+      }, fail)
+      releases.push(() => {
+        opening[Symbol.dispose]()
+        stub?.[Symbol.dispose]()
+      })
+    }
+    const admitLive = () => {
+      const configureObservers = createObserverConfigCallback(abort.signal, 'gadget')
+      const admission = overseer.stub.getGadget(selectedGadgetId, configureObservers)
+      let stub: RpcStub<GadgetClient> | null = null
+      admission.then(
+        opened => {
+          // Kept through a duplicate, which outlives disposing what the admission resolved to.
+          if (!abort.signal.aborted) {
+            stub = opened.dup()
+            setGadget({ id: selectedGadgetId, kind: 'live', stub })
+          }
+          opened[Symbol.dispose]()
+        },
+        fail,
+      )
+      releases.push(() => {
+        admission[Symbol.dispose]()
+        stub?.[Symbol.dispose]()
+        configureObservers[Symbol.dispose]()
+      })
+    }
+
+    // Asked on every open, since a share can change between the gadget and a view of it (a removal,
+    // then a new share) while the collaborator holds the workspace open.
+    overseer.stub.isViewOnly(selectedGadgetId).then(viewOnly => {
+      if (abort.signal.aborted) return
+      if (viewOnly) openSnapshot()
+      else admitLive()
+    }, fail)
+    return () => {
+      abort.abort()
+      for (const release of releases) release()
+    }
+  }, [overseer, metadataLoaded, selectedGadgetId, isUseOnly, createObserverConfigCallback, gadgetOpenAttempt])
+
+  const refreshSnapshot = async () => {
+    if (selectedGadget?.kind !== 'snapshot') return
+    const snapshot = selectedGadget
+    const refreshedAt = await snapshot.stub.refresh()
+    setGadget(current => current === snapshot ? { ...snapshot, refreshedAt } : current)
+  }
 
   // ── follow the agent across gadgets ─────────────────────────────────────────────
   // When the agent starts editing a gadget other than the selected one, switch the picker to it,
@@ -1329,13 +1673,19 @@ export default function GadgetEditor() {
     handleTabSelect(picked?.type === 'worktree' ? 'code' : 'app')
     setWorkspaceVisibility('open', workpieceId)
     const pendingChatId = picked?.chatId
+    // A spawned agent's worktree opens its chat over the working chat, as navigateToChat does.
+    const ownerIsAgent = pendingChatId !== undefined && isSpawnedChat(pendingChatId)
     navigate({
       to: '/workspace/$id',
       params: { id: id! },
       // Selecting a draft also returns to its creating conversation.
       search: (prev: Record<string, unknown>) => ({
         ...prev,
-        chat: pendingChatId ?? (typeof prev.chat === 'number' ? prev.chat : undefined),
+        chat: (ownerIsAgent ? undefined : pendingChatId) ??
+          (typeof prev.chat === 'number' ? prev.chat : undefined),
+        agent: ownerIsAgent ? pendingChatId
+          : pendingChatId === undefined && typeof prev.agent === 'number' ? prev.agent
+          : undefined,
         w: workpieceId,
         ...(view !== undefined ? { view: gadgetViewParam(workpieceId, view) } : {}),
       }),
@@ -1393,7 +1743,26 @@ export default function GadgetEditor() {
       toasts.add({ title: 'Failed to reorder gadgets', variant: 'error' })
     }
   }, [overseer, allGadgets, toasts])
+  // ── gadget deletion ─────────────────────────────────────────────────────────────
+  const requestGadgetDeletion = (target: GadgetSummary) => {
+    if (id) setGadgetToDelete({ workspaceId: id, gadget: target })
+  }
 
+  // The subscription drops the deleted gadget, and the selection falls back past it on its own.
+  const handleDeleteGadget = async (workpieceId: WorkpieceId) => {
+    if (!overseer) return false
+    const target = overseer.stub.getGadget(workpieceId)
+    try {
+      await target.remove()
+      return true
+    } catch (err) {
+      console.error('Failed to delete gadget:', err)
+      toasts.add({ title: 'Failed to delete gadget', variant: 'error' })
+      return false
+    } finally {
+      target[Symbol.dispose]()
+    }
+  }
   // ── console log subscription ──────────────────────────────────────────────────
   useEffect(() => {
     if (!overseer) return
@@ -1493,6 +1862,20 @@ export default function GadgetEditor() {
   const TOPBAR_H = 56   // h-14 (matches home page Header)
   const TABBAR_H = 48   // h-12
 
+  // Account prompts can arrive whenever something is opened: the workspace while it loads, or a
+  // gadget once it has, for a collaborator given individual gadgets.
+  const observerConfigModal = observerConfig && (
+    <ObserverConfigModal
+      needs={observerConfig.needs}
+      authenticatedApi={authenticatedApi}
+      onConfirm={observerConfig.resolve}
+      onCancel={cancelObserverConfig}
+      subject={observerConfig.subject}
+    />
+  )
+  // Gone if it was deleted while shared, which closes its dialog.
+  const sharedGadget = sharedGadgetId === null ? undefined : allGadgets.find(g => g.id === sharedGadgetId)
+
   // ── error / loading states ────────────────────────────────────────────────────
   if (error?.kind === 'open') {
     return (
@@ -1530,14 +1913,7 @@ export default function GadgetEditor() {
           <div className="w-8 h-8 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
           <p className="text-sm text-kumo-subtle">Loading workspace…</p>
         </div>
-        {observerConfig && (
-          <ObserverConfigModal
-            needs={observerConfig.needs}
-            authenticatedApi={authenticatedApi}
-            onConfirm={observerConfig.resolve}
-            onCancel={cancelObserverConfig}
-          />
-        )}
+        {observerConfigModal}
       </div>
     )
   }
@@ -1545,18 +1921,29 @@ export default function GadgetEditor() {
   // ── "use"-role collaborators get the minimal UI: top bar + gadget iframe only ──
   if (isUseOnly) {
     return (
-      <GadgetUseView
-        overseer={overseer.stub}
-        gadget={selectedGadgetStub}
-        selectedGadgetId={selectedGadgetId}
-        gadgets={visibleGadgets}
-        onSelectGadget={handleSelectWorkpiece}
-        viewState={selectedGadgetViewState}
-        onViewStateChange={handleGadgetViewStateChange}
-        metadata={metadata}
-        authenticatedApi={authenticatedApi}
-        currentUserId={userInfo?.id ?? null}
-      />
+      <>
+        <GadgetUseView
+          overseer={overseer.stub}
+          gadget={selectedGadget?.stub ?? null}
+          snapshot={selectedGadget?.kind === 'snapshot'
+            ? { refreshedAt: selectedGadget.refreshedAt, onRefresh: refreshSnapshot }
+            : null}
+          selectedGadgetId={selectedGadgetId}
+          gadgets={visibleGadgets}
+          onSelectGadget={handleSelectWorkpiece}
+          // A lost connection breaks the stub too; reconnecting reopens the gadget.
+          gadgetOpenFailure={!showReconnecting && gadgetOpenFailure?.id === selectedGadgetId
+            ? gadgetOpenFailure.message
+            : null}
+          onRetryGadget={() => setGadgetOpenAttempt(attempt => attempt + 1)}
+          viewState={selectedGadgetViewState}
+          onViewStateChange={handleGadgetViewStateChange}
+          metadata={metadata}
+          authenticatedApi={authenticatedApi}
+          currentUserId={userInfo?.id ?? null}
+        />
+        {observerConfigModal}
+      </>
     )
   }
 
@@ -1572,10 +1959,9 @@ export default function GadgetEditor() {
   const mobilePrimaryActive = showFullEditor && !paneShowsActivity && activeTab === mobilePrimaryTab
   const mobileMoreActive = showFullEditor && !paneShowsActivity && activeTab !== mobilePrimaryTab
 
-  // ── always render the full two-pane edit layout; preview overlays on top ──────
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-kumo-base">
-      {/* ═══ SHARED TOP BAR (visible in both modes) ════════════════════════════ */}
+      {/* ═══ TOP BAR ════════════════════════════════════════════════════════════ */}
       <div
         className="relative flex items-center justify-between px-4 sm:px-6 backdrop-blur-md border-b border-kumo-line flex-shrink-0 gap-3"
         style={{ height: TOPBAR_H, backgroundColor: 'color-mix(in srgb, var(--color-kumo-base) 80%, transparent)' }}
@@ -1676,11 +2062,11 @@ export default function GadgetEditor() {
           {showReconnecting && <ReconnectingChip />}
 
           <WorkshopIconButton
-            onClick={() => setShareModalOpen(true)}
-            title="Share workspace"
-            aria-label="Share workspace"
+            onClick={() => openShareModal(null)}
+            title="Invite to workspace"
+            aria-label="Invite to workspace"
           >
-            <ShareNetwork size={15} />
+            <UserPlus size={15} />
           </WorkshopIconButton>
 
           <DropdownMenu>
@@ -1738,6 +2124,7 @@ export default function GadgetEditor() {
               gadget={selectedGadgetStub}
               gadgetTitle={selectedGadgetSummary?.title ?? 'Gadget'}
               chatId={previewChatId}
+              saveScope={gadgetSaveScope}
             />
           </span>
           <ThemeModeButton />
@@ -1838,8 +2225,8 @@ export default function GadgetEditor() {
             <DropdownMenu.Item onClick={() => setIsEditingTitle(true)} className={MENU_ITEM}>
               Rename workspace
             </DropdownMenu.Item>
-            <DropdownMenu.Item onClick={() => setShareModalOpen(true)} className={MENU_ITEM}>
-              Share workspace
+            <DropdownMenu.Item onClick={() => openShareModal(null)} className={MENU_ITEM}>
+              Invite to workspace
             </DropdownMenu.Item>
             {workspaceMute && workspaceMute.workspaceId === id && (
               <WorkspaceNotificationsMenu
@@ -1853,6 +2240,13 @@ export default function GadgetEditor() {
                 desktop header leaves out its full-screen button. */}
             {selectedWorkpieceSummary?.type !== 'worktree' && (
               <>
+                <DropdownMenu.Item
+                  disabled={selectedGadgetSummary === undefined || selectedGadgetSummary.chatId !== undefined}
+                  onClick={() => { if (selectedGadgetSummary) openShareModal(selectedGadgetSummary.id) }}
+                  className={MENU_ITEM}
+                >
+                  Share gadget
+                </DropdownMenu.Item>
                 <DropdownMenu.Item
                   disabled={!selectedGadgetStub}
                   onClick={() => setBlueprintModalOpen(true)}
@@ -1897,8 +2291,10 @@ export default function GadgetEditor() {
       {/* ═══ BODY ═════════════════════════════════════════════════════════════ */}
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
 
-        {isAgentActive && (
+        {isViewActive && (
           <div
+            role="progressbar"
+            aria-label="Agent working"
             className="absolute left-0 z-10 h-0 max-md:!right-0 max-md:!top-0"
             style={{ top: simpleMode ? 0 : TABBAR_H, right: outputRailWidth }}
           >
@@ -1965,16 +2361,18 @@ export default function GadgetEditor() {
                   workspaceId={id}
                   overseer={overseer.stub}
                   restricted={metadata?.containsRestrictedData === true}
-                  selectedChatId={effectiveSelectedChatId}
+                  selectedChatId={shownChatId}
+                  codeChatId={paneChatId}
+                  returnChatId={agentChatId !== null ? workingChatId : null}
                   onNavigateToChat={navigateToChat}
                   onChatChangesChange={setChatChanges}
                   onLiveRowsChange={setLiveRows}
                   onLiveEditPreviewsChange={setLiveEditPreviews}
                   chatContent={chatContent}
                   onStreamingActiveFileChange={handleStreamingActiveFileChange}
-                  pendingConsoleLogCount={consoleLogCount}
+                  pendingConsoleLogCount={shownConsoleLogCount}
                   consoleLogPreview={
-                    consoleLogCount > 0 ? formatConsoleLogs(consoleLogBufferRef.current) : ''
+                    shownConsoleLogCount > 0 ? formatConsoleLogs(consoleLogBufferRef.current) : ''
                   }
                   consoleLogSeverity={
                     consoleLogBufferRef.current.some(l => l.level === 'error')
@@ -1987,8 +2385,10 @@ export default function GadgetEditor() {
                   onDiscardConsoleLogs={discardConsoleLogs}
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
+                  onChatListChange={handleChatListChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
+                  autoApproval={autoApproval}
+                  onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
@@ -2016,12 +2416,12 @@ export default function GadgetEditor() {
         <div
           className={`relative flex-shrink-0 touch-none overflow-visible bg-kumo-line max-md:hidden ${chatRailOnly ? '' : 'cursor-col-resize'} ${workspaceTransitionClass}`}
           style={{ width: splitLayout ? 1 : 0 }}
-          onPointerDown={chatRailOnly ? undefined : handleResizePointerDown}
-          onPointerMove={handleResizePointerMove}
+          onPointerDown={chatRailOnly ? undefined : handleResizePointerDown}          onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
           onPointerCancel={handleResizePointerUp}
         >
-          <div className="absolute inset-y-0 -left-2 -right-2" />
+          {/* Widened only to the right: the chat pane's scrollbar sits just left of the handle. */}
+          {showFullEditor && <div className="absolute inset-y-0 left-0 -right-3" />}
         </div>
 
         {/* ── RIGHT: App / Code / Connections tabs ───────────────────────────── */}
@@ -2061,8 +2461,7 @@ export default function GadgetEditor() {
                     selectedId={selectedWorkpieceId}
                     onSelect={handleSelectWorkpiece}
                   />
-                </div>
-              )}
+                </div>              )}
             </div>
 
             <div className="flex flex-shrink-0 items-center gap-1.5">
@@ -2092,17 +2491,30 @@ export default function GadgetEditor() {
                   gadget={selectedGadgetStub}
                   gadgetTitle={selectedGadgetSummary?.title ?? 'Gadget'}
                   chatId={previewChatId}
+                  saveScope={gadgetSaveScope}
                 />
+              )}
+
+              {/* A draft belongs to its chat until accepted, and only accepted gadgets can be shared. */}
+              {!paneShowsActivity && selectedGadgetSummary && (
+                <WorkshopIconButton
+                  aria-label="Share gadget"
+                  title={selectedGadgetSummary.chatId === undefined ? 'Share gadget' : 'Accept this draft to share it'}
+                  onClick={() => openShareModal(selectedGadgetSummary.id)}
+                  disabled={selectedGadgetSummary.chatId !== undefined}
+                >
+                  <ShareNetwork size={16} />
+                </WorkshopIconButton>
               )}
 
               {!paneShowsActivity && selectedWorkpieceSummary?.type !== 'worktree' && (
                 <WorkshopIconButton
                   aria-label="Enter full screen"
-                  title={activeTab === 'app' && !previewMode
+                  title={activeTab === 'app'
                     ? 'Full screen'
                     : `Full screen is available in ${formatOf(selectedGadgetSummary?.output).noun} view`}
                   onClick={enterGadgetFullscreen}
-                  disabled={activeTab !== 'app' || previewMode}
+                  disabled={activeTab !== 'app'}
                 >
                   <ArrowsOutSimple size={17} />
                 </WorkshopIconButton>
@@ -2141,8 +2553,7 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
-                  autoApproveReloadTrigger={autoApproveReloadTrigger}
+                  autoApproval={autoApproval}
                 />
               </div>
             )}
@@ -2154,20 +2565,20 @@ export default function GadgetEditor() {
               aria-modal={isGadgetFullscreen ? true : undefined}
               aria-label={isGadgetFullscreen ? 'Gadget full screen' : undefined}
               className={
-                activeTab !== 'app' || previewMode
+                activeTab !== 'app'
                   ? 'hidden'
                   : isGadgetFullscreen
                     ? 'visual-viewport-fixed z-20 bg-kumo-base outline-none'
                     : 'h-full'
               }
             >
-              {selectedGadgetStub && !previewMode ? (
+              {selectedGadgetStub ? (
                 <GadgetUI
                   key={selectedGadgetId}
                   gadget={selectedGadgetStub}
                   height="100%"
                   reloadTrigger={uiReloadTrigger}
-                  isVisible={activeTab === 'app' && !previewMode}
+                  isVisible={activeTab === 'app'}
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
                   onOpenWorkpiece={handleOpenWorkpieceFromGadget}
@@ -2175,21 +2586,12 @@ export default function GadgetEditor() {
                   onViewStateChange={handleGadgetViewStateChange}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                   onNoUiChange={handleNoUiChange}
+                  onOpenAgentChat={handleOpenAgentChat}
                 />
-              ) : !previewMode && (
+              ) : (
                 <NoGadgetPlaceholder height="100%" />
               )}
-              {isGadgetFullscreen && showFullscreenHint && (
-                <div
-                  role="status"
-                  aria-live="polite"
-                  className="pointer-events-none absolute left-1/2 top-4 z-10 -translate-x-1/2 transform"
-                >
-                  <div className="rounded-full border border-kumo-line bg-kumo-base/90 px-4 py-1.5 text-[13px] leading-[18px] text-kumo-default shadow-md backdrop-blur-sm">
-                    Press <kbd className="rounded border border-kumo-line bg-kumo-elevated px-1.5 py-0.5 text-[11px] font-medium">Esc</kbd> to exit full screen
-                  </div>
-                </div>
-              )}
+              {isGadgetFullscreen && <FullscreenExitHint />}
             </div>
 
             <div className={activeTab === 'code' ? 'h-full' : 'hidden'}>
@@ -2201,7 +2603,7 @@ export default function GadgetEditor() {
                   overseer={overseer.stub}
                   summary={selectedWorkpieceSummary}
                   height="100%"
-                  selectedChatId={effectiveSelectedChatId}
+                  selectedChatId={paneChatId}
                   chatChanges={chatChanges}
                   liveRows={liveRows}
                   liveEditPreviews={liveEditPreviews}
@@ -2223,7 +2625,7 @@ export default function GadgetEditor() {
                   key={selectedGadgetId}
                   overseer={overseer.stub}
                   gadget={selectedGadgetStub}
-                  chatId={effectiveSelectedChatId ?? undefined}
+                  chatId={paneChatId ?? undefined}
                   authenticatedApi={authenticatedApi}
                   onConnectionsChange={() => setUiReloadTrigger(t => t + 1)}
                   isVisible={activeTab === 'connections'}
@@ -2256,7 +2658,7 @@ export default function GadgetEditor() {
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
               onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
-              pendingActivityCount={pendingActionCount}
+              onDelete={requestGadgetDeletion}              pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
           </div>
@@ -2284,16 +2686,23 @@ export default function GadgetEditor() {
       )}
 
       {/* Share modal */}
-      {overseer && metadata && (
+      {/* Share modal. Kept mounted while closed, so an invite still in flight reports back when
+          it is reopened; keyed by what it shares, so nothing carries over between targets. */}      {overseer && metadata && (
         <>
-          <ShareModal
-            open={shareModalOpen}
-            onClose={() => setShareModalOpen(false)}
-            overseer={overseer.stub}
-            metadata={metadata}
-            currentUser={userInfo}
-            authenticatedApi={authenticatedApi}
-          />
+          {(sharedGadgetId === null || sharedGadget) && (
+            <ShareModal
+              key={`${metadata.id}:${sharedGadgetId ?? 'workspace'}`}
+              open={shareModalOpen}
+              onClose={() => setShareModalOpen(false)}
+              overseer={overseer.stub}
+              metadata={metadata}
+              target={sharedGadget
+                ? { kind: 'gadget', gadgetId: sharedGadget.id, title: sharedGadget.title }
+                : { kind: 'workspace' }}
+              currentUser={userInfo}
+              authenticatedApi={authenticatedApi}
+            />
+          )}
           {selectedGadgetStub && (
             <BlueprintModal
               open={blueprintModalOpen}
@@ -2312,6 +2721,8 @@ export default function GadgetEditor() {
               }}
               overseer={overseer.stub}
               publicApi={publicApi}
+              authenticatedApi={authenticatedApi}
+              userId={isCurrentUserConfirmed ? currentUser?.id : undefined}
               onClose={() => setBlueprintUpdateDialogOpen(false)}
               onProposed={chatId => {
                 setBlueprintUpdateDialogOpen(false)
@@ -2334,6 +2745,15 @@ export default function GadgetEditor() {
         requireTypedConfirmation="delete workspace"
         onConfirm={handleDeleteConfirm}
       />
+      {gadgetToDelete && gadgetToDelete.workspaceId === id && (
+        <DeleteGadgetDialog
+          key={gadgetToDelete.gadget.id}
+          gadget={gadgetToDelete.gadget}
+          onDelete={handleDeleteGadget}
+          onClosed={() => setGadgetToDelete(null)}
+        />
+      )}
+      {observerConfigModal}
 
     </div>
   )

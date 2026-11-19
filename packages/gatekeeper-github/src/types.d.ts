@@ -149,6 +149,43 @@ export interface GitHubRepo {
   searchPullRequests(query: GitHubPullRequestSearch): Promise<Cursor<GitHubPullRequestSummary>>;
 
   /**
+   * Reports CI on one commit: the check runs (GitHub Actions jobs and other apps' checks) and
+   * commit statuses reported on it, up to 1000 of them with `counts` covering all, and an overall
+   * `state` and `phase`.
+   *
+   * `ref` is as for `getCommit()`, defaulting to the default branch; a branch you have pushed to
+   * reads at the commit you pushed. Poll while `phase` is `"notStarted"` or `"active"`, e.g. every
+   * 30 seconds; stop once it is `"blocked"` (an entry waits for a person: see its `url`) or
+   * `"done"`. A commit nothing has reported on reads `"notStarted"` for its first 10 minutes as a
+   * head when CI is expected (it has workflow files, or its parent had CI), and while a push of
+   * it you made has not reached GitHub; otherwise `"done"` with `state: "none"` (no CI ran on
+   * it). Checks that report later still appear.
+   */
+  getChecks(ref?: string): Promise<GitHubCommitChecks>;
+
+  /**
+   * Opens a check run in this repository. `id` is a `GitHubCheckRunSummary.id`, or the number at
+   * the end of a check run URL (`https://github.com/<owner>/<repo>/runs/<id>`) or of an Actions
+   * job URL (`.../actions/runs/<run>/job/<id>`). Commit statuses cannot be opened.
+   */
+  getCheckRun(id: string): Promise<GitHubCheckRun>;
+
+  /**
+   * Lists GitHub Actions workflow runs in this repository, newest first.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listWorkflowRuns(options?: GitHubWorkflowRunFilter): Promise<Cursor<GitHubWorkflowRunSummary>>;
+
+  /**
+   * Opens a GitHub Actions workflow run in this repository. `id` is a
+   * `GitHubWorkflowRunSummary.id`, or the number in a run URL
+   * (`https://github.com/<owner>/<repo>/actions/runs/<id>`).
+   */
+  getWorkflowRun(id: string): Promise<GitHubWorkflowRun>;
+
+  /**
    * Have `hook.receiveEvent()` called with each event of the kinds in `options.events` (by
    * default, all of them) in this repository:
    * - `issue`: an issue was opened, closed, or reopened;
@@ -303,12 +340,295 @@ export interface GitHubPullRequest extends GitHubIssue {
   merge(options?: GitHubPullRequestMergeOptions): Promise<void>;
 
   /**
+   * Reports CI on one of this pull request's commits, by default its head (counting your queued
+   * pushes), as `GitHubRepo.getChecks()` does, plus which checks the base branch requires before
+   * merging. Poll while `phase` is `"notStarted"` or `"active"`; stop on `"blocked"` or `"done"`.
+   *
+   * `commitId` must be the current head or one of the pull request's commits as
+   * `listCommits()` lists them; only its first 250 commits are listed, and commits a force push
+   * replaced, or merge-queue commits, are not among them. Any other commit is refused.
+   */
+  getChecks(commitId?: string): Promise<GitHubPullRequestChecks>;
+
+  /**
+   * Opens a check run, as `GitHubRepo.getCheckRun()` does, provided it ran on a commit
+   * `getChecks()` accepts; any other check run is refused.
+   */
+  getCheckRun(id: string): Promise<GitHubCheckRun>;
+
+  /**
+   * Lists the GitHub Actions workflow runs of the pull request's head commit, newest first.
+   * Empty while that head is a push you have just made that GitHub has not received yet.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listWorkflowRuns(options?: GitHubPageOptions): Promise<Cursor<GitHubWorkflowRunSummary>>;
+
+  /**
+   * Opens a workflow run, as `GitHubRepo.getWorkflowRun()` does, provided it ran on a commit
+   * `getChecks()` accepts; any other run is refused.
+   */
+  getWorkflowRun(id: string): Promise<GitHubWorkflowRun>;
+
+  /**
    * As `GitHubRepo.subscribe()`, for this pull request alone: its `pullRequest` events, the
    * `comment`s on it and on its diff, and its `review`s (by default, all three). Throws while the
    * pull request's creation is pending.
    */
   subscribe(hook: RpcStub<GitHubEventHook>, options?: GitHubSubscribeOptions): Promise<void>;
 }
+
+/** A GitHub Actions workflow run: one run of one workflow on one commit. */
+export interface GitHubWorkflowRun {
+  /** Returns the run's current state. */
+  getDetails(): Promise<GitHubWorkflowRunDetails>;
+
+  /**
+   * Lists the run's jobs, from its latest attempt by default or from `options.attempt`. Each job
+   * opens with `getCheckRun(job.id)`, e.g. to read its log.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listJobs(options?: { attempt?: number } & GitHubPageOptions): Promise<Cursor<GitHubCheckRunSummary>>;
+}
+
+/** A check run: a GitHub Actions job, or a check reported by another app. */
+export interface GitHubCheckRun {
+  /** Returns the check run's current state and output. */
+  getDetails(): Promise<GitHubCheckRunDetails>;
+
+  /**
+   * Lists the annotations the check run attached to files, such as compiler errors and test
+   * failures.
+   *
+   * Results are streamed through the returned cursor. Call `next()` repeatedly on that
+   * same cursor until it returns `null`.
+   */
+  listAnnotations(options?: GitHubPageOptions): Promise<Cursor<GitHubAnnotation>>;
+
+  /**
+   * Reads a GitHub Actions job's log, one page of numbered lines at a time.
+   *
+   * Without `fromLine`, returns the last `maxLines` lines (default 200, at most 2000): where a
+   * failure usually is. With `fromLine`, returns lines from there on; continue from the last
+   * line's `number + 1` until no lines come back. With `search` (a case-insensitive substring),
+   * only matching lines are returned, the last `maxLines` of them, or those from `fromLine` on.
+   * Colour codes and timestamps are removed, and each step starts with a `▶ <step name>` line.
+   *
+   * The log is readable once the job has finished: until then this returns no lines with
+   * `complete: false`. A very long log keeps only its end: lines before `firstAvailableLine`
+   * are not available. Throws for a check run that is not a GitHub Actions job (`getDetails()`
+   * returns its output and `detailsUrl` instead), and once GitHub has deleted the log after the
+   * repository's retention period.
+   */
+  readLog(options?: GitHubLogOptions): Promise<GitHubLogPage>;
+}
+
+/**
+ * The outcome of a check, a commit status, a step, or a workflow run. `waiting` means held by a
+ * deployment environment, for a reviewer or a wait timer; `actionRequired` means the check asks
+ * a person to act, e.g. to approve a first-time contributor's run; `unknown` is a state this API
+ * does not recognise.
+ */
+export type GitHubCheckState =
+  | "queued" | "inProgress" | "waiting"
+  | "success" | "failure" | "cancelled" | "timedOut" | "actionRequired"
+  | "skipped" | "neutral" | "stale" | "startupFailure" | "unknown";
+
+/**
+ * Whether an item will keep moving on its own:
+ * - `active`: queued, running, or on a timer -- poll again;
+ * - `blocked`: waits for a person, e.g. a deployment reviewer -- see its `url`;
+ * - `done`: finished, and changes only if it is re-run.
+ */
+export type GitHubCiPhase = "active" | "blocked" | "done";
+
+/**
+ * A commit's overall phase: `active` if any entry is, else `blocked` if any entry is, else
+ * `done`. `notStarted` means nothing has reported yet but CI is expected to start soon: poll
+ * again. A phase that would be `done` reads `active` while a GitHub Actions run of the commit
+ * waits on its concurrency group, for up to an hour: such a run has no check runs to list until
+ * it starts.
+ */
+export type GitHubCiRollupPhase = GitHubCiPhase | "notStarted";
+
+/** CI on one commit, returned by `GitHubRepo.getChecks()`. */
+export type GitHubCommitChecks = {
+  commitId: string;
+  /**
+   * GitHub's combined verdict: `pending` while anything is unfinished, `expected` while a
+   * required status has not reported, `none` when nothing has reported. With nothing else
+   * unfinished, `expected` reads `phase: "active"` for 10 minutes after the commit became a head,
+   * then `"blocked"`: a required status that has not reported by then needs someone to act.
+   */
+  state: "success" | "failure" | "pending" | "expected" | "none";
+  phase: GitHubCiRollupPhase;
+  /**
+   * How many entries are in each state. Counts every entry, even past the first 1000; only the
+   * listed ones when GitHub could not count them.
+   */
+  counts: Partial<Record<GitHubCheckState, number>>;
+  /** The check runs and commit statuses, at most 1000 of them. */
+  checks: GitHubCheckEntry[];
+};
+
+/**
+ * CI on one of a pull request's commits, returned by `GitHubPullRequest.getChecks()`. While a
+ * check the base branch requires has not reported, `state` is `expected` (unless something
+ * failed) and a `done` phase reads `active`, for the first 10 minutes after the commit became a
+ * head or, for the head, after the pull request was opened, whichever is later. After that a
+ * required check that has not reported needs someone to act (its workflow's
+ * path filters skip it, or the app that reports it is not installed), so the phase reads
+ * `blocked`: report `missingRequired`.
+ */
+export type GitHubPullRequestChecks = Omit<GitHubCommitChecks, "checks"> & {
+  /** Each entry, with whether the base branch requires it to pass before merging. */
+  checks: (GitHubCheckEntry & { required: boolean })[];
+  /**
+   * Names of checks the base branch requires that have not reported on this commit; the pull
+   * request cannot merge until they do, and while any is named the commit's `state` is
+   * `expected` (or `failure`). Empty when the requirements are not visible to you, and when
+   * some reported checks are not listed -- past 1000, or ones GitHub would not return -- since a
+   * required one may be among them.
+   */
+  missingRequired: string[];
+};
+
+/** One entry of a commit's CI: a check run, or a commit status. */
+export type GitHubCheckEntry = GitHubCheckRunSummary | GitHubStatusSummary;
+
+/** A check run, which opens with `getCheckRun(id)`. */
+export type GitHubCheckRunSummary = {
+  kind: "checkRun";
+  id: string;
+  name: string;
+  state: GitHubCheckState;
+  /**
+   * In `listJobs()` results, a `waiting` job always reads as `blocked`; `getChecks()` and
+   * `getDetails()` tell a wait timer (`active`) from a reviewer (`blocked`).
+   */
+  phase: GitHubCiPhase;
+  /** The app that reported it, e.g. `"GitHub Actions"`. */
+  app: string;
+  /** The workflow run a GitHub Actions job belongs to; open it with `getWorkflowRun(id)`. */
+  workflowRun?: { id: string; name: string };
+  startedAt?: Date;
+  completedAt?: Date;
+  /** The check run's page on github.com. */
+  url: string;
+  /** Where the app shows more detail, if it says. */
+  detailsUrl?: string;
+};
+
+/** A commit status reported by an external service. Data only: it cannot be opened. */
+export type GitHubStatusSummary = {
+  kind: "status";
+  context: string;
+  state: GitHubCheckState;
+  phase: GitHubCiPhase;
+  description?: string;
+  /** Where the service shows more detail, if it says. */
+  targetUrl?: string;
+  updatedAt: Date;
+};
+
+/** Full check run details returned by `GitHubCheckRun.getDetails()`. */
+export type GitHubCheckRunDetails = GitHubCheckRunSummary & {
+  /** The commit the check ran on. */
+  commitId: string;
+  title?: string;
+  summaryMarkdown?: string;
+  textMarkdown?: string;
+  /** How many annotations `listAnnotations()` returns. */
+  annotationCount: number;
+  /** A GitHub Actions job's steps, in order. */
+  steps?: { number: number; name: string; state: GitHubCheckState; phase: GitHubCiPhase }[];
+  /**
+   * Set while a `waiting` job is held by a deployment environment: whether a reviewer must
+   * approve it on github.com, and when its wait timer, if any, runs out.
+   */
+  pendingDeployment?: { environment: string; needsReviewers: boolean; waitTimerEndsAt?: Date };
+};
+
+/** A check run's annotation on a file. */
+export type GitHubAnnotation = {
+  path: string;
+  startLine: number;
+  endLine: number;
+  level: "notice" | "warning" | "failure";
+  title?: string;
+  message: string;
+};
+
+/**
+ * A GitHub Actions workflow run. `phase` treats a `waiting` run as `blocked`: it is held by a
+ * deployment environment, usually for a reviewer.
+ */
+export type GitHubWorkflowRunSummary = {
+  id: string;
+  /** The workflow's name. */
+  name: string;
+  /** What triggered it, e.g. `"push"` or `"pull_request"`. */
+  event: string;
+  branch?: string;
+  commitId: string;
+  state: GitHubCheckState;
+  phase: GitHubCiPhase;
+  /** 1 for the first run, 2 and up for re-runs. */
+  attempt: number;
+  createdAt: Date;
+  updatedAt: Date;
+  url: string;
+};
+
+/** Full workflow run details returned by `GitHubWorkflowRun.getDetails()`. */
+export type GitHubWorkflowRunDetails = GitHubWorkflowRunSummary & {
+  /** When the latest attempt started. */
+  startedAt?: Date;
+  actor: GitHubActor | null;
+};
+
+/** Filters for listing workflow runs. */
+export type GitHubWorkflowRunFilter = GitHubPageOptions & {
+  /**
+   * Only runs whose head branch has this name. Pull requests from forks count too when their
+   * branch has the same name, so for a branch's own history add `event: "push"`.
+   */
+  branch?: string;
+  /** Only runs on this full commit id. */
+  commitId?: string;
+  /** Only runs triggered by this event, e.g. `"push"`. */
+  event?: string;
+  /**
+   * Only runs in this state. `queued` asks GitHub for its `queued` runs only: runs still
+   * `pending` (waiting on a concurrency group) or `requested` read as `queued` too but are not
+   * listed by it; list without `state` to see them.
+   */
+  state?: Exclude<GitHubCheckState, "unknown">;
+};
+
+/** Options for `GitHubCheckRun.readLog()`. */
+export type GitHubLogOptions = {
+  /** The first line to return, counting from 1. */
+  fromLine?: number;
+  /** How many lines to return: default 200, at most 2000. */
+  maxLines?: number;
+  /** Return only lines containing this text, ignoring case. */
+  search?: string;
+};
+
+/** One page of a job's log. */
+export type GitHubLogPage = {
+  lines: { number: number; text: string }[];
+  /** How many lines the log has. */
+  totalLines: number;
+  /** The first line that can be read: 1, unless a very long log kept only its end. */
+  firstAvailableLine: number;
+  /** Whether the job has finished, so the log will not grow. */
+  complete: boolean;
+};
 
 /** Basic information about a GitHub user or bot that appears in issue or review metadata. */
 export type GitHubActor = {
@@ -399,6 +719,14 @@ export type GitHubPullRequestSummary = Omit<GitHubIssueSummary, "commentCount"> 
 export type GitHubPullRequestDetails = GitHubIssueDetails & GitHubPullRequestSummary & {
   /** Whether the pull request can currently be merged. */
   mergeable?: boolean;
+  /**
+   * Why it can or cannot merge: `clean` (it can); `unstable` (it can, but checks are not all
+   * passing); `hasHooks` (it can, with passing checks and pre-receive hooks); `blocked` (required
+   * checks or reviews are missing); `behind` (the base branch must be merged in first); `dirty`
+   * (it conflicts); `draft`; `unknown` (not computed yet: read again shortly; it also stays
+   * `unknown` until commits you pushed to the pull request have reached GitHub).
+   */
+  mergeState: "clean" | "blocked" | "behind" | "dirty" | "unstable" | "hasHooks" | "draft" | "unknown";
   /** Requested reviewers who have not yet submitted a review. */
   requestedReviewers: GitHubActor[];
   /** Number of commits in the pull request. */

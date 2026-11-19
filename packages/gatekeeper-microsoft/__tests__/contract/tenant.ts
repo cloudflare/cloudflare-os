@@ -107,3 +107,14 @@ export async function run(name: string, props: AnyGatekeeperProps, steps: Step[]
 export async function walk<T>(name: string, props: AnyGatekeeperProps, steps: Step[], pages = 10): Promise<T[]> {
   return unwrap<T[][]>(await run(name, props, steps, { pages })).flat();
 }
+
+/**
+ * Which of `labels` the binding's verifyObserverAccess admits to everything the reads through facet
+ * `name` reported (or the last read's alone), as the Workshop asks before showing them those reads.
+ */
+export async function admitted(name: string, props: AnyGatekeeperProps, labels: Label[], reads: "all" | "last" = "all"): Promise<string[]> {
+  const { observations } = await hooks().queueLog(name);
+  const reported = [...new Set((reads === "last" ? observations.slice(-1) : observations).flatMap(observation => observation.subresources ?? []))];
+  const observers = Object.fromEntries(await Promise.all(labels.map(async label => [label, await connect(label)] as const)));
+  return unwrap<string[]>(await hooks().verifyObserverAccess(name, props, observers, reported));
+}

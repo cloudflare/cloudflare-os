@@ -52,7 +52,8 @@
 // =====================================================================================
 //
 // Writes (any method that changes state in Home Assistant) are queued for approval and do not
-// execute against HA until the user approves them. Until then:
+// execute against HA until the user approves them, or an auto-approval rule the user enabled
+// covers them. Until then:
 //
 // - The write method's `Promise<void>` resolves as soon as the action is queued — it does NOT
 //   wait for HA to actually carry out the action.
@@ -322,7 +323,8 @@ export interface HomeAssistantSession extends RpcTarget {
   // ---- Control ------------------------------------------------------------
 
   /** Call any Home Assistant service. Returns no value. The action is queued for approval and
-   * does not actually execute against HA until the user approves it.
+   * does not actually execute against HA until the user approves it (or an auto-approval rule
+   * the user enabled covers it).
    *
    * Arguments are **positional**, not an options object:
    *

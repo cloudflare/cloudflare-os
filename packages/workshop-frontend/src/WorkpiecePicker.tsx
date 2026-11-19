@@ -13,6 +13,7 @@ import type {
 } from '@gadgets/workshop-shared/api'
 import { CountBadge } from './components/CountBadge'
 import { WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
+import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { isImeComposing } from './keyboardEvent'
 import { useGadgetReorder, type GadgetMove } from './gadgetReorder'
 import {
@@ -101,7 +102,8 @@ interface WorkpiecePickerProps {
   // Drag (or Alt+Up/Down) to reorder gadgets within their group. Absent when the viewer can't
   // reorder.
   onMoveGadget?: (move: GadgetMove) => void
-  pendingActivityCount: number
+  // Asks to delete a gadget, from its right-click menu; the caller confirms it.
+  onDelete: (gadget: GadgetSummary) => void  pendingActivityCount: number
   onOpenActivity: () => void
 }
 
@@ -120,7 +122,7 @@ export default function WorkpiecePicker({
   onSelect,
   onRename,
   onMoveGadget,
-  pendingActivityCount,
+  onDelete,  pendingActivityCount,
   onOpenActivity,
 }: WorkpiecePickerProps) {
   const [editing, setEditing] = useState<{ id: WorkpieceId; value: string } | null>(null)
@@ -514,8 +516,76 @@ export default function WorkpiecePicker({
                 <div id={regionId} className="flex flex-col gap-0.5">
                   {group.items.map(renderRow)}
                 </div>
-              )}
+
+          const row = (
+            <div
+              className={`group/workpiece flex items-center rounded-lg text-[13px] leading-[18px] tracking-[-0.25px] transition-colors ${
+                expanded ? 'h-8 gap-1 pl-2 pr-1' : 'h-9 w-9 justify-center self-center'
+              } ${
+                isSelected
+                  ? 'bg-kumo-fill font-medium text-kumo-strong'
+                  : 'text-kumo-default hover:bg-kumo-tint data-[popup-open]:bg-kumo-tint'
+              }`}
+            >
+              <Tooltip content={`${gadget.title}${!expanded && isPending ? ' (Draft)' : ''}${hasHook ? ' · Hooks enabled' : ''}`} asChild>
+                <button
+                  type="button"
+                  onClick={() => onSelect(gadget.id)}
+                  className={`relative flex min-w-0 cursor-pointer items-center text-left ${
+                    expanded ? 'flex-1 gap-2' : 'h-full w-full justify-center'
+                  }`}
+                  aria-current={isSelected ? 'true' : undefined}
+                >
+                  {/* Drawn as whatever the workpiece is -- a page for a Document, a grid for a
+                      Spreadsheet -- falling back to the generic app glyph. */}
+                  <FormatGlyph
+                    output={gadget.output}
+                    size={expanded ? 'md' : 'lg'}
+                    className={`flex-shrink-0 ${isSelected ? 'text-kumo-strong' : 'text-kumo-inactive'}`}
+                    weight={isSelected ? 'fill' : 'regular'}
+                  />
+                  {expanded && (
+                    <span className="min-w-0 flex-1 truncate">{gadget.title}</span>
+                  )}
+                  {isAgentEditing && (
+                    <span className={`${expanded ? '' : 'absolute right-1 top-1'} h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-kumo-brand`} />
+                  )}
+                  {isPending && (
+                    expanded ? (
+                      <span className="flex-shrink-0 rounded-full bg-kumo-base px-1.5 py-0.5 text-[10px] leading-none font-medium text-kumo-subtle">
+                        Draft
+                      </span>
+                    ) : (
+                      <span className="absolute bottom-1 right-1 h-1.5 w-1.5 rounded-full border border-kumo-base bg-kumo-brand" />
+                    )
+                  )}
+                  {hasHook && (
+                    <span
+                      role="img"
+                      aria-label="Hooks enabled"
+                      className={expanded
+                        ? 'flex-shrink-0 text-kumo-inactive'
+                        : 'absolute bottom-0.5 left-0.5 rounded-full border border-kumo-base bg-kumo-base text-kumo-inactive'}
+                    >
+                      <Lightning size={expanded ? 14 : 10} weight="fill" />
+                    </span>
+                  )}
+                </button>
+              </Tooltip>
+              {expanded && (
+                <WorkshopIconButton
+                  onClick={() => setEditing({ id: gadget.id, value: gadget.title })}
+                  className="!h-6 !w-6 flex-shrink-0 opacity-0 transition-opacity duration-150 ease-out group-hover/workpiece:opacity-100 focus-visible:opacity-100"
+                  title="Rename gadget"
+                  aria-label={`Rename ${gadget.title}`}
+                >
+                  <PencilSimple size={13} />
+                </WorkshopIconButton>              )}
             </section>
+          )
+
+          return (
+            <GadgetContextMenu key={gadget.id} trigger={row} onDelete={() => onDelete(gadget)} />
           )
         })}
 

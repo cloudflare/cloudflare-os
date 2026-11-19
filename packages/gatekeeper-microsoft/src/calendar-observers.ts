@@ -1,11 +1,11 @@
 // Observers of a workspace that reads a calendar: who may see what a Calendar binding read. The rule
 // is Exchange's own: a collaborator sees a read only if Outlook already shows them what it revealed.
-// Every read names what it revealed as units:
+// Every read names what it revealed as units, reported as subresource IDs (subresources.ts):
 //
-// - `calendar:<ownerId>:<calendarId>:<level>`: events of one calendar at `freeBusy`, `limited` or
-//   `full` detail, or `private` for a private event shown in detail.
-// - `calendars:<ownerId>`: everything in every calendar someone has (an "all" binding's reads).
-// - `availability:<address>`: someone's free/busy.
+// - one calendar's events at `freeBusy`, `limited` or `full` detail, or `private` for a private
+//   event shown in detail;
+// - everything in every calendar someone has (an "all" binding's reads);
+// - someone's free/busy.
 //
 // A calendar the connected user owns is decided from the owner's side, from its sharing list
 // (`calendarPermissions`), which only the owner can read: the collaborator's role there is the one
@@ -13,15 +13,21 @@
 // passes. Availability is probed as the collaborator, with their own `getSchedule`: if Exchange
 // gives them that person's free/busy, the read showed them nothing more. So no collaborator needs a
 // calendar permission beyond what Outlook already gives them.
+//
+// Units recorded before reads reported subresources stay in the binding's legacy tracker
+// (`calendarObservers`), spelled `calendar:<ownerId>:<calendarId>:<level>`, `calendars:<ownerId>`
+// and `availability:<address>`, which admission still checks.
 
 import { trackedCollectionObservers, type ObserverKv, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
-import type { GraphApi } from "./graph-api";
+import { OBSERVED_UNIT_PREFIX } from "./binding";
+import { isGraphAuthError, type GraphApi } from "./graph-api";
 import { CalendarApi, isCalendarId, type GraphSchedule } from "./calendar-graph";
 import { DETAIL_LEVELS, roleSees, type RevealLevel, type SharingRole } from "./calendar-scope";
 import { DAY_MS } from "./calendar-time";
 import type { MicrosoftVerifierApi, StoredIdentity, VerifiedIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { AccessProbeError } from "./sharepoint-observers";
+import { calendarSubresourceId, isObjectId, isScheduleAddress } from "./subresources";
 
 /** What one read revealed: see the module comment. */
 export type CalendarUnit =
@@ -30,55 +36,41 @@ export type CalendarUnit =
   | { kind: "availability"; address: string };
 
 const SEPARATOR = ":";
-const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ADDRESS = /^[^\s@:<>()",;/]+@[^\s@:<>()",;/]+$/;
 const LEVELS: readonly string[] = [...DETAIL_LEVELS, "private"];
 
-/** A unit as its tracked collection ID. */
-export function encodeCalendarUnit(unit: CalendarUnit): string {
-  switch (unit.kind) {
-    case "calendar": return ["calendar", unit.ownerId.toLowerCase(), unit.calendarId, unit.level].join(SEPARATOR);
-    case "calendars": return ["calendars", unit.ownerId.toLowerCase()].join(SEPARATOR);
-    case "availability": return ["availability", unit.address.toLowerCase()].join(SEPARATOR);
-  }
-}
-
-/** A collection ID back as its unit, or null for one that isn't a calendar unit (or is malformed). */
+/** A unit as the legacy tracker spelled it, or null for one that isn't a calendar unit (or is malformed). */
 export function decodeCalendarUnit(id: string): CalendarUnit | null {
   const [kind, first, second, third, ...rest] = id.split(SEPARATOR);
   if (rest.length > 0 || first === undefined) return null;
   switch (kind) {
     case "calendar":
-      return GUID.test(first) && isCalendarId(second) && third !== undefined && LEVELS.includes(third)
+      return isObjectId(first) && isCalendarId(second) && third !== undefined && LEVELS.includes(third)
         ? { kind, ownerId: first, calendarId: second, level: third as RevealLevel } : null;
-    case "calendars": return GUID.test(first) && second === undefined ? { kind, ownerId: first } : null;
-    case "availability": return ADDRESS.test(first) && second === undefined ? { kind, address: first } : null;
+    case "calendars": return isObjectId(first) && second === undefined ? { kind, ownerId: first } : null;
+    case "availability": return isScheduleAddress(first) && second === undefined ? { kind, address: first } : null;
     default: return null;
   }
 }
 
-/** Whether a collection ID is one the verifier probes with free/busy. */
+/** Whether a legacy tracker's unit is one the verifier probes with free/busy. */
 export function isAvailabilityUnit(id: string): boolean {
   return id.startsWith("availability:");
 }
 
 /**
- * Whether `api`'s user is given each person's free/busy, in order. A unit that isn't availability
- * denies, as does a person whose schedule came back with an error (`parseSchedule` makes "no
- * information" one); a failure of the whole request throws, which the tracker counts against the
- * observer.
+ * Whether `api`'s user is given each person's free/busy, in order. No address (null) denies, as
+ * does a person whose schedule came back with an error (`parseSchedule` makes "no information"
+ * one); a failure of the whole request throws: the check could not be made. A rejected credential
+ * stays Graph's auth error, for the connection's credential source to heal or expire.
  */
-export async function probeAvailability(api: GraphApi, ids: readonly string[]): Promise<boolean[]> {
-  const addresses = ids.map(id => {
-    const unit = decodeCalendarUnit(id);
-    return unit?.kind === "availability" ? unit.address : null;
-  });
+export async function probeAvailability(api: GraphApi, addresses: readonly (string | null)[]): Promise<boolean[]> {
   const wanted = [...new Set(addresses.filter((address): address is string => address !== null))];
   let schedules: GraphSchedule[];
   try {
     const now = Date.now();
     schedules = await new CalendarApi(api, { kind: "me" }).schedules(wanted, now, now + DAY_MS);
   } catch (error) {
+    if (isGraphAuthError(error)) throw error;
     throw new AccessProbeError(error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 502);
   }
   const visible = new Set(schedules.filter(schedule => schedule.error === undefined).map(schedule => schedule.address));
@@ -91,17 +83,31 @@ export type OwnerAcl = {
   roleOf(calendarId: string, observer: VerifiedIdentity): Promise<SharingRole>;
 };
 
+/**
+ * Whether `observer` is shown what a read revealed of one calendar: its owner always is; on the
+ * binding owner's own calendar, whoever its sharing list gives a role that sees that much; on
+ * anyone else's, nobody, since only a calendar's owner can read its sharing list.
+ */
+export async function seesCalendar(
+  unit: Extract<CalendarUnit, { kind: "calendar" }>, observer: VerifiedIdentity, owner: Pick<StoredIdentity, "objectId">, acl: OwnerAcl,
+): Promise<boolean> {
+  const ownerId = unit.ownerId.toLowerCase();
+  if (ownerId === observer.objectId.toLowerCase()) return true;
+  return ownerId === owner.objectId.toLowerCase() && roleSees(await acl.roleOf(unit.calendarId, observer), unit.level);
+}
+
 /** The most distinct calendar units one binding tracks while staying shareable. */
 const MAX_TRACKED_CALENDAR_UNITS = 2000;
 
 /**
- * The binding's observer strategy: a collaborator needs a working connection in the owner's own
- * organization, and then must be shown, by Exchange, everything each read revealed.
+ * The binding's legacy observer strategy, for the units reads recorded before they reported
+ * subresources: a collaborator needs a working connection in the owner's own organization, and
+ * then must be shown, by Exchange, everything those reads revealed.
  */
 export function calendarObservers(kv: ObserverKv, owner: () => Promise<StoredIdentity>, acl: OwnerAcl): ObserverStrategy {
   return trackedCollectionObservers<MicrosoftVerifierApi>({
     kv,
-    collectionPrefix: "observedUnit:",
+    collectionPrefix: OBSERVED_UNIT_PREFIX,
     maxTrackedCollections: MAX_TRACKED_CALENDAR_UNITS,
     verifyBaseline: async verifier => {
       const [observer, me] = await Promise.all([verifier.getIdentity(), owner()]);
@@ -124,7 +130,7 @@ export function calendarObservers(kv: ObserverKv, owner: () => Promise<StoredIde
   });
 }
 
-/** The verdict for each unit: see the module comment. Exported for tests. */
+/** The verdict for each legacy unit: see the module comment. Exported for tests. */
 export async function decide(
   ids: readonly string[], observer: VerifiedIdentity, me: Pick<StoredIdentity, "objectId">, acl: OwnerAcl,
   probe: (ids: string[]) => Promise<boolean[]>,
@@ -141,9 +147,7 @@ export async function decide(
         verdicts[index] = unit.ownerId === self;
         break;
       case "calendar":
-        if (unit.ownerId === self) verdicts[index] = true;
-        // Only the owner can read a calendar's sharing list, so only their own calendars are decided here.
-        else if (unit.ownerId === me.objectId.toLowerCase()) verdicts[index] = roleSees(await acl.roleOf(unit.calendarId, observer), unit.level);
+        verdicts[index] = await seesCalendar(unit, observer, me, acl);
         break;
       case "availability":
         if (ownAddress !== undefined && unit.address === ownAddress) verdicts[index] = true;
@@ -158,11 +162,11 @@ export async function decide(
   return verdicts;
 }
 
-/** Unit constructors for a binding. */
+/** Subresource IDs of what a binding's reads reveal of `ownerId`'s calendars, and of anyone's free/busy. */
 export function calendarUnits(ownerId: string) {
   return {
-    calendar: (calendarId: string, level: RevealLevel) => encodeCalendarUnit({ kind: "calendar", ownerId, calendarId, level }),
-    everything: () => encodeCalendarUnit({ kind: "calendars", ownerId }),
-    availability: (address: string) => encodeCalendarUnit({ kind: "availability", address }),
+    calendar: (calendarId: string, level: RevealLevel) => calendarSubresourceId({ kind: "calendar", ownerId, calendarId, level }),
+    everything: () => calendarSubresourceId({ kind: "calendars", ownerId }),
+    availability: (address: string) => calendarSubresourceId({ kind: "availability", address }),
   };
 }

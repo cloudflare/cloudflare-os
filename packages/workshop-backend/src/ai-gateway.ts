@@ -7,7 +7,8 @@ import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import type { UserAiModelRecord } from "./storage-schema/user-storage.js";
 
-// The model used for quick tasks like title generation when AI Gateway mode is active.
+// The model used for quick tasks like title generation in AI Gateway mode while the user has
+// chosen none, and always on a deployment that applies Cloudflare usage limits.
 //
 // This 70B model is quite fast and cheap and produces pretty good titles. The cost is insignificant
 // compared to the actual coding model so there's not much reason to use a smaller model.
@@ -151,10 +152,10 @@ export class AiGatewayConfig {
   }
 
   /**
-   * Get the AiModelConfig for the quick model (used for title generation).
+   * Get the AiModelConfig for the deployment's own quick model (used for title generation where
+   * the user's choice is not).
    */
   getQuickModelConfig(): AiModelConfig | undefined {
-    // Always use Workers AI here.
     return {
       provider: "cloudflare",
       model: QUICK_MODEL_ID,
@@ -196,9 +197,10 @@ export function allowedModelProvider(name: string): AiModelProvider | undefined 
 /**
  * The models a deployment provides through AI Gateway (`gateway`), each in the mode its admin
  * gave it (see GatewayModelMode): the suggested models of every provider the deployment enables
- * (`providers`), each provider's followed by the models the admin added under it. Listing and
- * resolving a gateway model both go through here, so neither can happen without the admin's
- * modes and settings.
+ * (`providers`), each provider's followed by the models the admin added under it, in the order
+ * the admin gave the providers and their models (AdminConfig.providerOrder and modelOrder).
+ * Listing and resolving a gateway model both go through here, so neither can happen without the
+ * admin's modes, settings and order; and where a model is picked by default, it is the first.
  */
 export class GatewayModels {
   /**
@@ -220,10 +222,13 @@ export class GatewayModels {
   readonly #added: readonly GatewayModel[];
   /** The reasoning level of a model whose settings give none. */
   readonly #defaultReasoning: ReasoningLevel | null;
+  /** Every provider, enabled or not, in listing order. */
+  readonly #providerOrder: AiModelProvider[];
 
   constructor(readonly gateway: AiGatewayConfig,
-              config: Pick<AdminConfig, "modelModes" | "addedProviders" | "addedModels" |
-                  "userModelsEnabled" | "modelSettings" | "defaultReasoning">) {
+              config: Pick<AdminConfig, "modelModes" | "addedProviders" | "providerOrder" |
+                  "addedModels" | "modelOrder" | "userModelsEnabled" | "modelSettings" |
+                  "defaultReasoning">) {
     this.providers = new Set([
       ...gateway.providers,
       ...config.addedProviders.filter(provider => GATEWAY_PROVIDERS.has(provider)),
@@ -231,6 +236,9 @@ export class GatewayModels {
     this.#added = config.addedModels;
     this.userModels = config.userModelsEnabled;
     this.#defaultReasoning = config.defaultReasoning;
+    this.#providerOrder = [...new Set([
+      ...config.providerOrder, ...Object.keys(SUGGESTED_MODELS) as AiModelProvider[],
+    ])];
     let add = (model: GatewayModel, defaultMode: GatewayModelMode, added: boolean) => {
       if (this.#byId.has(model.id)) return;
       // Object.hasOwn, so that an ID like "constructor" does not find an inherited mode.
@@ -245,29 +253,37 @@ export class GatewayModels {
     // not offered.
     let routable = [...this.providers]
         .some(provider => AUTO_ROUTER_PROVIDER_NAMES[provider as AiModelProvider] !== undefined);
-    for (let [provider, catalog] of Object.entries(SUGGESTED_MODELS)) {
+    for (let provider of this.#providerOrder) {
       if (!this.providers.has(provider)) continue;
       if (provider === "cloudflare-auto-router" && !routable) continue;
-      for (let [id, model] of Object.entries(catalog)) {
-        add({ provider: provider as AiModelProvider, id, name: model.name,
+      for (let [id, model] of Object.entries(SUGGESTED_MODELS[provider])) {
+        add({ provider, id, name: model.name,
               ...(model.description && { description: model.description }), ...tokenLimits(model) },
             model.hidden ? "hidden" : "enabled", false);
       }
       if (!ADDABLE_PROVIDERS.has(provider)) continue;
-      this.addableProviders.push(provider as AiModelProvider);
+      this.addableProviders.push(provider);
       for (let model of config.addedModels) {
         // A gateway model is looked up by ID alone, so the catalog wins an ID it lists under any
         // provider, whether or not the gateway enables that one.
         if (model.provider === provider && !isCatalogModel(model.id)) add(model, "enabled", true);
       }
     }
-    this.all = [...this.#byId.values()];
+    // The models a provider's order lists come first, in its order. The sort is stable, so the
+    // rest keep their places after them.
+    let rank = (model: AdminModel) => {
+      let listed = config.modelOrder[model.provider] ?? [];
+      let at = listed.indexOf(model.id);
+      return at === -1 ? listed.length : at;
+    };
+    let providerRank = (model: AdminModel) => this.#providerOrder.indexOf(model.provider);
+    this.all = [...this.#byId.values()]
+        .toSorted((a, b) => providerRank(a) - providerRank(b) || rank(a) - rank(b));
   }
 
-  /** Every provider the gateway serves, enabled or not, in catalog order. */
+  /** Every provider the gateway serves, enabled or not, in listing order. */
   get providerSettings(): AdminGatewayProvider[] {
-    return (Object.keys(SUGGESTED_MODELS) as AiModelProvider[])
-        .filter(provider => GATEWAY_PROVIDERS.has(provider))
+    return this.#providerOrder.filter(provider => GATEWAY_PROVIDERS.has(provider))
         .map(provider => ({
           provider,
           ...(this.providers.has(provider) &&
@@ -317,15 +333,18 @@ export class GatewayModels {
     let model = this.#byId.get(id);
     if (!model) return undefined;
     return gatewayRunConfig(model, model.settings?.reasoning ?? this.#defaultReasoning,
-        model.settings?.compactionInputBudget, this.#autoRouterPool(model));
+        model.settings?.compactionInputBudget,
+        model.provider === "cloudflare-auto-router"
+            ? this.autoRouterPool(model.settings?.allowedModels) : undefined);
   }
 
-  // The Auto Router model's pool: the listed models of enabled providers, or else those providers
-  // whole. It never exceeds the enabled providers, so a listed model drops out once its provider
-  // is turned off. Undefined for every other model.
-  #autoRouterPool(model: AdminModel): AutoRouterPool | undefined {
-    if (model.provider !== "cloudflare-auto-router") return undefined;
-    let listed = model.settings?.allowedModels;
+  /**
+   * The pool an Auto Router model whose admin listed `listed` picks from, or that one with no
+   * list picks from when it is undefined: the listed models of enabled providers, or else those
+   * providers whole. It never exceeds the enabled providers, so a listed model drops out once its
+   * provider is turned off.
+   */
+  autoRouterPool(listed: string[] | undefined): AutoRouterPool {
     if (listed === undefined) return { providers: this.addableProviders };
     return { models: listed.filter(name => this.enablesProviderOf(name)) };
   }

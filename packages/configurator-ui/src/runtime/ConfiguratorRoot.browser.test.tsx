@@ -429,6 +429,16 @@ describe("Autocomplete", () => {
     await expect.element(input()).toHaveValue("F1");
   });
 
+  it("shows a value the module sets into a blank field, but not over what the user typed", async () => {
+    const { session } = await mount(autocompleteSpec(folders));
+    await act(() => session.store.setValues({ folderId: "projects" }));
+    await expect.element(input()).toHaveValue("projects");
+
+    await userEvent.fill(input(), "pro");
+    await act(() => session.store.setValues({ folderId: "proposals" }));
+    await expect.element(input()).toHaveValue("pro");
+  });
+
   it("keeps focus and stays closed when a pick renders the field twice", async () => {
     const loadOptions = vi.fn(folders);
     await mount(inspectingSpec(loadOptions));

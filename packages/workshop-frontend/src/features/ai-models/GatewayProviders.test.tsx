@@ -26,7 +26,8 @@ const INTRO =
   'The providers whose models this deployment can offer through its AI Gateway. The ones listed ' +
   'in CF_AI_GATEWAY_PROVIDERS are always on; the others can be turned on here. Provider keys or ' +
   'credits are stored in the gateway, where this page cannot see them, so use Test to find out ' +
-  'whether a provider answers.'
+  'whether a provider answers. The model pickers list the providers in this order, and a new ' +
+  'user or chat gets the first enabled model.'
 const LOCKED_NOTE = 'Set by CF_AI_GATEWAY_PROVIDERS'
 const TOKEN_WARNING =
   'Needs CF_AI_GATEWAY_API_TOKEN: requests to this provider fail until the deployment sets it.'
@@ -71,6 +72,13 @@ const testButton = (label: string) => {
   return element
 }
 
+const move = (label: string, direction: 'up' | 'down') => {
+  const element = row(label).querySelector<HTMLButtonElement>(
+    `button[aria-label="Move ${label} ${direction}"]`)
+  if (!element) throw new Error(`No Move ${direction} button for ${label}`)
+  return element
+}
+
 const status = (label: string) => {
   const regions = row(label).querySelectorAll<HTMLElement>('[role="status"]')
   if (regions.length !== 1) throw new Error(`${regions.length} status regions for ${label}`)
@@ -102,6 +110,7 @@ describe('GatewayProviders', () => {
 
   const render = async (shown: Shown = {}) => {
     const onEnabledChange = vi.fn<(provider: AiModelProvider, enabled: boolean) => void>()
+    const onOrderChange = vi.fn<(providers: AiModelProvider[]) => void>()
     const onTest = vi.fn<(provider: AiModelProvider) => Promise<GatewayModelTest>>(
       async () => PASSED)
     const container = document.createElement('div')
@@ -113,10 +122,11 @@ describe('GatewayProviders', () => {
         providers={providers}
         busy={busy}
         onEnabledChange={onEnabledChange}
+        onOrderChange={onOrderChange}
         onTest={onTest}
       />))
     await show(shown)
-    return { onEnabledChange, onTest, show }
+    return { onEnabledChange, onOrderChange, onTest, show }
   }
 
   it('says what the list is and what Test is for', async () => {
@@ -132,6 +142,37 @@ describe('GatewayProviders', () => {
     expect(rows().map((item) => item.querySelector('p')?.textContent)).toEqual(names)
     expect(rows().map((item) => item.querySelector('[role="switch"]')?.getAttribute('aria-label')))
       .toEqual(names)
+  })
+
+  describe('the order', () => {
+    it.each([
+      ['up', ['anthropic', 'cloudflare', 'openai', 'google']],
+      ['down', ['cloudflare', 'openai', 'anthropic', 'google']],
+    ] as const)('moves a provider %s, handing on every provider in the new order', async (direction, order) => {
+      const { onOrderChange } = await render()
+
+      await click(move('Anthropic', direction))
+
+      expect(onOrderChange).toHaveBeenCalledExactlyOnceWith(order)
+    })
+
+    it('cannot move the first provider up or the last one down', async () => {
+      await render()
+
+      expect(move('Cloudflare Workers AI', 'up').disabled).toBe(true)
+      expect(move('Cloudflare Workers AI', 'down').disabled).toBe(false)
+      expect(move('Google', 'up').disabled).toBe(false)
+      expect(move('Google', 'down').disabled).toBe(true)
+    })
+
+    it('locks every move while a write is in flight', async () => {
+      await render({ busy: true })
+
+      for (const label of ['Cloudflare Workers AI', 'Anthropic', 'OpenAI', 'Google']) {
+        expect(move(label, 'up').disabled).toBe(true)
+        expect(move(label, 'down').disabled).toBe(true)
+      }
+    })
   })
 
   describe('the switch', () => {

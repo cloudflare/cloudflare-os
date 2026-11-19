@@ -36,6 +36,7 @@ import {
 import { ScheduleDriver, toScheduleSummary } from "./schedule-driver.js";
 import type { ScheduleSpec } from "./schedule-types.js";
 import type { ManagementListOptions, ManagementSchedulePage } from "./management.js";
+import type { ScheduleManagementApi as ScheduleManagementApiShape } from "./management-types.js";
 import type {
   CalendarRule,
   NormalizedCalendarRule,
@@ -413,8 +414,9 @@ export class SchedulerGatekeeper
   }
 }
 
+/** The account's {@link ScheduleManagementApiShape}, over its driver. */
 @validateRpc()
-export class ScheduleManagementApi extends RpcTarget {
+export class ScheduleManagementApi extends RpcTarget implements ScheduleManagementApiShape {
   constructor(private readonly driver: Pick<ScheduleDriver, "listAccount">) {
     super();
   }

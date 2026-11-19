@@ -15,7 +15,9 @@ import type { CloudflareObservabilityFilter } from "../../src/types";
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 const TEST_NOW = new Date("2026-08-14T12:00:00Z");
 
-type Observation = { title: string; description: string };
+type Observation = { title: string; description: string; subresources?: string[] };
+
+const ACCOUNT_SUBRESOURCE = `account/${ACCOUNT_ID}`;
 
 class TestApprovalQueue extends RpcTarget {
   readonly observations: Observation[] = [];
@@ -73,12 +75,12 @@ function stubProvider() {
   return fetchSpy;
 }
 
-function newSession(workerName?: string) {
+function newSession() {
   const queue = new TestApprovalQueue();
-  const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID, workerName);
+  const api = new CloudflareObservabilityApi(async () => "token", ACCOUNT_ID);
   const session = new CloudflareObservabilitySessionImpl(
     api, new RpcStub(queue) as unknown as RpcStub<ApprovalQueue>,
-    workerName ? `Worker ${workerName}` : `Cloudflare account ${ACCOUNT_ID}`,
+    `Cloudflare account ${ACCOUNT_ID}`, ACCOUNT_SUBRESOURCE,
   );
   return { queue, session };
 }
@@ -106,7 +108,7 @@ describe("observation authorization", () => {
     ["calculate", session => session.calculate({ calculations: [{ operator: "count" }] })],
   ];
 
-  it.each(reads)("%s records exactly one observation", async (_name, read) => {
+  it.each(reads)("%s records exactly one observation, reporting the binding", async (_name, read) => {
     stubProvider();
     const { queue, session } = newSession();
 
@@ -115,6 +117,7 @@ describe("observation authorization", () => {
     expect(queue.observations).toHaveLength(1);
     expect(queue.observations[0]!.title).toBeTruthy();
     expect(queue.observations[0]!.description).toContain(ACCOUNT_ID);
+    expect(queue.observations[0]!.subresources).toEqual([ACCOUNT_SUBRESOURCE]);
   });
 
   it("records the observation even when the read returned nothing", async () => {
@@ -126,6 +129,8 @@ describe("observation authorization", () => {
 
     expect(queue.observations).toHaveLength(1);
     expect(queue.observations[0]!.description).toContain("returned 0 events");
+    // An empty answer still says something about the account, so it is checked like any other.
+    expect(queue.observations[0]!.subresources).toEqual([ACCOUNT_SUBRESOURCE]);
   });
 
   it("does not record an observation when the read failed", async () => {

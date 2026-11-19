@@ -4,7 +4,7 @@
 // Everything a workspace persists in its Overseer is declared in this one file, so that a change
 // to the stored shape of a workspace shows up as a change here. Declare new collections,
 // singletons, and record types here even when the code operating on them lives in another module
-// (git-store.ts, git-cache.ts, sharing.ts, agent.ts, ...). The exception is types that are also
+// (git-cache.ts, sharing.ts, agent.ts, ...). The exception is types that are also
 // part of the wire API (e.g. BlueprintMetadata): those are defined in workshop-shared and stored
 // as-is. Where old records still hold something the wire type has since dropped, the stored
 // shape is declared here as a `Stored*` type extending it (or a `Legacy*` type, for a shape no
@@ -54,6 +54,14 @@ export type GatekeeperRecord = {
 
   /** Records how this gatekeeper was originally created, enabling blueprint metadata derivation. */
   creationSpec?: GatekeeperCreationSpec;
+
+  /**
+   * Who created the connection: the member whose session made it, or the initiator of the agent
+   * turn that created its resource. Absent on an ambient capsule, which no person creates, and on
+   * a record whose creator was not recorded: one written before creators were recorded, or a
+   * resource created in a turn that has no record.
+   */
+  createdBy?: AiChatAuthorInfo;
 
   /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
@@ -190,7 +198,7 @@ export type GadgetRecord = {
 
   /**
    * The gadget's head commit (40-hex oid) in the workspace's git object store -- its committed
-   * mainline code (see git-store.ts and the `gitObjects` collection). This field is the gadget's
+   * mainline code (see git-cache.ts and the `gitObjects` collection). This field is the gadget's
    * "ref": the store itself has no ref layer. It advances only in mergeChanges(), which requires
    * the accepting chat to have already merged this commit (accepts are fast-forward only), and is
    * surfaced to clients as WorkpieceSummary.commitId.
@@ -271,14 +279,8 @@ export type WorktreeRecord = {
   chatId: number;
 
   /**
-   * The gatekeeper (connection) the base commit was known from at creation time, when there was
-   * one -- purely informational (pull routing uses the per-oid `gitObjectMetadata` sources, not
-   * this). Absent for a worktree created from a purely local commit (e.g. gadget history).
-   */
-  sourceGatekeeperId?: WorkpieceId;
-
-  /**
-   * The commit the worktree was created at. Immutable.
+   * The commit the worktree was created at. Immutable. (Unrelated to a chat pin's
+   * `baseCommit`; see `pinBase`.)
    */
   baseCommit: string;
 
@@ -293,10 +295,14 @@ export type WorktreeRecord = {
    * The accepted commit (initially baseCommit): the worktree's content as of the chat's last
    * accept, and the worktree analog of a gadget's head. An unpinned worktree reads as this
    * commit's tree; the epoch's first modification -- a write, or a commit() -- pins the worktree
-   * in the chat at exactly this commit (so a chat pin, when present, always has
-   * `baseCommit === pinBase`), and the epoch's OT rows compose on it. Advanced only by epoch
-   * resets, to the accept's auto-commit of the dirty overlay (never by explicit commits --
-   * moving it mid-epoch would double-apply the still-live rows on replay). Published as
+   * in the chat at exactly this commit, and the epoch's OT rows compose on it. An agent step can
+   * then re-root the pin at a hidden commit holding the step's result (see
+   * WorktreeTurnAccess.reRoot in agent.ts), after which later rows compose on that commit
+   * instead. Either way the chat pin's `mergedCommit` is this commit, the one the chat's changes
+   * are reviewed against; its `baseCommit` (not this record's `baseCommit`, the creation commit)
+   * equals it until a re-root. Advanced only by epoch resets, to the accept's auto-commit of the
+   * chat's content, which parents on this commit (never by explicit commits or re-roots --
+   * either would accept the chat's changes without review). Published as
    * WorktreeSummary.pinBase: the commit the UI reads an unpinned worktree from, and the base a
    * client's pin declaration must name.
    */
@@ -336,13 +342,59 @@ export type WorkpieceRecord = GadgetRecord | WorktreeRecord;
 // Git object store
 
 /**
- * One git loose object: `data` is the zlib-deflated object exactly as git would store it under
- * `.git/objects/xx/yyyy...`, and `oid` is its 40-hex SHA-1 name. Content-addressed, hence
- * immutable and idempotent to rewrite.
+ * One object of the workspace git store, in one of two forms. Content-addressed by `oid` (the
+ * 40-hex SHA-1 of the whole object, as git names it) in both, hence immutable and idempotent to
+ * rewrite. Tell the forms apart with `isChunkedBlobRecord()` (git-chunked-blob.ts).
  */
-export interface GitObjectRecord {
+export type GitObjectRecord = GitInlineObjectRecord | GitChunkedBlobRecord;
+
+/**
+ * Any object, stored whole: `data` is the zlib-deflated loose object exactly as git would store
+ * it under `.git/objects/xx/yyyy...`. Every object of up to CHUNK_MAX_SIZE (1 MiB) is written in
+ * this form, and so were all objects before chunking existed, up to 8 MB.
+ */
+export interface GitInlineObjectRecord {
   oid: string;
   data: Uint8Array;
+}
+
+/**
+ * A blob over CHUNK_MAX_SIZE, stored as an index of chunks (see git-chunked-blob.ts). Each chunk
+ * is an ordinary inline blob row of the same collection; the concatenation of the chunks'
+ * payloads, in order, is this blob's payload. `oid` is the SHA-1 of the whole blob (never of the
+ * chunk list), so the chunking is invisible outside the store. Chunks are written before the
+ * index row, so an index row's presence implies its chunks'. Only blobs are ever chunked, so this
+ * form has no `type`.
+ *
+ * An index entry serializes to about 70 bytes, so at the 256 KiB average chunk size an 8 MiB
+ * index row would describe a blob of over 25 GB, beyond a Durable Object's whole storage: one
+ * level of index always suffices.
+ */
+export interface GitChunkedBlobRecord {
+  oid: string;
+  /** Total payload byte length. */
+  size: number;
+  /** Total number of `\n` bytes in the payload. */
+  newlines: number;
+  /** In payload order; non-empty; offsets strictly increasing, the first 0. */
+  chunks: GitBlobChunk[];
+}
+
+/**
+ * One entry of a chunked blob's index. The chunk's own size and newline count are derived from
+ * the next entry's `offset` and `line` (or the record's `size` and `newlines`, for the last), so
+ * neither is stored.
+ */
+export interface GitBlobChunk {
+  /** The chunk's blob oid. */
+  oid: string;
+  /** Byte offset in the whole payload of the chunk's first byte. */
+  offset: number;
+  /**
+   * The number of `\n` bytes in all preceding chunks: equivalently, the 0-based number of the
+   * line containing this chunk's first byte.
+   */
+  line: number;
 }
 
 /**
@@ -355,7 +407,7 @@ export interface GitObjectMetadataRecord {
 
   /**
    * The object's type. Always known at write time: *measured* from hash-verified bytes
-   * (put/consumePack, including oversize rejections), or *asserted* by the referencing context
+   * (put/consumePack), or *asserted* by the referencing context
    * that introduced the oid (a tree entry's mode, a commit's tree/parent headers, an
    * advertisement) -- which is how it can exist for objects never fetched. The two grades are
    * distinguished by `size`: measured writers always record both together, so `size !==
@@ -368,12 +420,12 @@ export interface GitObjectMetadataRecord {
   type: GitObjectType;
 
   /**
-   * The payload byte size. Recorded ONLY from bytes actually measured: a stored put(), or a
-   * put()/pack entry rejected for exceeding MAX_GIT_OBJECT_SIZE (the content was in hand, so
-   * the measurement is proof-grade and lets later reads fail fast). Never inferred from an
-   * object's *absence* -- an omitted blob's size is unknowable, and an absence-based record
-   * would durably trust gatekeeper behavior as if it were a measurement. Doubles as `type`'s
-   * evidentiary grade (see its doc).
+   * The payload byte size. Recorded ONLY from bytes actually measured: a stored put() or pack
+   * entry. (Rows from before every size was stored may also carry the size of an object that
+   * was measured but declined for its size; such an object is pulled like any other.) Never
+   * inferred from an object's *absence* -- an omitted blob's size is unknowable, and an
+   * absence-based record would durably trust gatekeeper behavior as if it were a measurement.
+   * Doubles as `type`'s evidentiary grade (see its doc).
    */
   size?: number;
 
@@ -435,6 +487,14 @@ export type GatekeeperCaller = {
   gadgetId?: WorkpieceId;
 };
 
+/**
+ * A stored action description. Records written before the wire type required `autoApprovable` may
+ * lack it, and so may a creation card from a stale GatekeeperVendor.createResource(), whose reply
+ * is not validated; readers treat absence as `false`.
+ */
+export type StoredActionDescription =
+    Omit<ActionDescription, "autoApprovable"> & {autoApprovable?: boolean};
+
 export type ActionRecord = {
   id: number,
   gatekeeperId: WorkpieceId;
@@ -464,7 +524,7 @@ export type ActionRecord = {
    * creation queued by createExternalResource, which applies via Gatekeeper.applyCreation().
    */
   action: number | "create";
-  description: ActionDescription;
+  description: StoredActionDescription;
   /**
    * Set on the requests the agent's requestScheduleChange tool queues (under the
    * SCHEDULE_CHANGE_GATEKEEPER_ID sentinel): which hook, and what the owner is asked to do to it.
@@ -622,9 +682,29 @@ export type StoredChatMetadata = AiChatMetadata & {hasProposedChanges?: boolean}
  */
 type StoredChangesMessage = Extract<AiChatMessage, {type: "changes"}> & {update?: Uint8Array};
 
-/** A stored chat message: the wire type, except that "changes" messages may be legacy ones. */
+/**
+ * A stored chat message: the wire type plus server-only fields, which are removed before the
+ * message is sent to clients. "changes" messages may also be legacy ones (see
+ * StoredChangesMessage).
+ */
 export type StoredChatMessage =
-    Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage;
+    (Exclude<AiChatMessage, {type: "changes"}> | StoredChangesMessage) & {
+      /**
+       * For unread counts: how many visible messages (text or attachments; see
+       * `isCountableChatMessage()` in overseer.ts) the chat has up to and including this record,
+       * counting only from when unread tracking began. Every new record gets this, visible or not,
+       * so any read position can be turned into a count of visible messages by looking up a single
+       * record. Absent on records written before unread tracking existed.
+       */
+      visibleThroughSequence?: number;
+    };
+
+/** Human messages and slash commands count as participation; automated activity does not. */
+export function isChatParticipation(message: StoredChatMessage): boolean {
+  return message.author.type === "user" &&
+    (message.type === "slashCommand" ||
+      (message.type === "message" && message.generatedBySlashCommandSequence === undefined));
+}
 
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
@@ -843,7 +923,7 @@ export type ActiveAgentRecord = {
   initiator: AiChatAuthorInfo;
   /** Whether this turn was initiated by a gadget callback (vs. a chat message). */
   callbackInitiated: boolean;
-  /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
+  /** Resume attempts since the turn last persisted a step, bounded across DO resets. */
   resumeAttempts?: number;
 };
 
@@ -1070,7 +1150,7 @@ type ChatDraftUpdateRecord = {
 /**
  * One incremental update in the workspace-wide Yjs code log (the `code` and `snapshots`
  * collections). Formerly the public `CodeUpdate` wire type; the git-storage transition removed it
- * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-store.ts),
+ * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-cache.ts),
  * leaving it as the internal record type of the retired log, whose one remaining reader is the
  * git-storage migration's replay (overseer-git-migration.ts).
  */
@@ -1119,6 +1199,29 @@ export type ShareLinkRecord = {
   role?: CollaboratorRole;
 
   /**
+   * The one gadget a "use" link grants (see PermissionEdge.gadgetId), unless it grants several
+   * (see `gadgetIds`). A "use" link names one or the other.
+   */
+  gadgetId?: WorkpieceId;
+
+  /**
+   * The gadgets a "use" link to several gadgets grants: what a link to every gadget, made before
+   * gadgets were shared individually, was frozen to by the schema version 7 migration (see
+   * migrateToFrozenGadgetGrants() in overseer-migrations.ts). No such link is created anymore.
+   */
+  gadgetIds?: WorkpieceId[];
+
+  /** Set on a "use" link that grants only a view of its gadget (see CollaboratorGrant). */
+  mode?: "view";
+
+  /**
+   * Set on its creator's default link for what it grants (see Overseer.createShareLink). Each
+   * creator has at most one non-revoked default link per grant; links created before default
+   * links existed have none.
+   */
+  default?: true;
+
+  /**
    * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
    * permission graph keeps its `shareKey` edges intact (no dangling references) and access could
    * be restored in the future. A revoked link contributes nothing to the permission graph and its
@@ -1143,11 +1246,15 @@ export type ShareKeyAliasRecord = {
 export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
 
 /**
- * Storage record describing a non-owner collaborator who has configured their gatekeeper accounts
- * and passed all `addObserver` checks -- i.e. is actually set up to observe data the Gadget has
- * read. This is distinct from the sharing table (which records the owner's *intent* that a user
- * have access): opening requires BOTH a reachable role in the sharing graph AND a complete
- * observer record. See observers-implementation-plan.md §3.
+ * Storage record of a non-owner collaborator's observer identity and the gatekeeper accounts they
+ * chose for it. Their first admission -- to the workspace, for a "build" collaborator, or to one
+ * gadget -- reserves it with no choices before registering its observerId with any gatekeeper, so
+ * concurrent admissions share the id and forward exclusion can always resolve it; each admission
+ * then publishes the choices it verified. The record outlives a failed admission and is deleted
+ * only when the collaborator loses access. This is distinct from the sharing table (which records
+ * the owner's *intent* that a user have access): opening requires BOTH reachable access in the
+ * sharing graph AND passing verification for what is opened, which this record only remembers
+ * choices for. See observers-implementation-plan.md §3.
  */
 export type ObserverRecord = {
   /** The sharing-table key for this user (their profile.id). Primary key of the collection. */
@@ -1162,10 +1269,11 @@ export type ObserverRecord = {
   observerId: string;
 
   /**
-   * The account the user chose to satisfy each in-scope gatekeeper binding, remembered so they are
-   * not asked again. Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a
-   * ConnectedAccountRecord in THIS user's own User DO. An entry records only that choice -- it
-   * asserts nothing about whether the gatekeeper still admits them, which every open re-checks.
+   * The account the user chose to satisfy each in-scope gatekeeper binding, published once an
+   * admission verified it and remembered so they are not asked again; empty on a reservation.
+   * Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a ConnectedAccountRecord
+   * in THIS user's own User DO. An entry records only that choice -- it asserts nothing about
+   * whether the gatekeeper still admits them, which every open re-checks.
    */
   accountChoices: { [gatekeeperId: number]: number };
 };
@@ -1206,11 +1314,16 @@ const OBSERVER_CONTEXT_TAGS = {workspace: "w", chat: "c", gadget: "g"} as const;
 
 /**
  * `listKeys()` prefix selecting the actions `byObserverRequirement` keys through `gatekeeperId` on
- * every context of type `contexts`.
+ * `context`, or on every context of that type when given only a type.
  */
 export function observerRequirementPrefix(
-    gatekeeperId: WorkpieceId, contexts: ObserverContext["type"]): string {
-  return `${keyString(gatekeeperId)}:${OBSERVER_CONTEXT_TAGS[contexts]}`;
+    gatekeeperId: WorkpieceId, context: ObserverContext | ObserverContext["type"]): string {
+  if (typeof context === "string") {
+    return `${keyString(gatekeeperId)}:${OBSERVER_CONTEXT_TAGS[context]}`;
+  }
+  let id = context.type === "chat" ? keyString(context.chatId)
+      : context.type === "gadget" ? keyString(context.gadgetId) : "";
+  return `${observerRequirementPrefix(gatekeeperId, context.type)}${id}:`;
 }
 
 /**
@@ -1221,9 +1334,7 @@ export function observerRequirementPrefix(
  */
 export function observerRequirementKey(
     gatekeeperId: WorkpieceId, context: ObserverContext, subresource: string): string {
-  let id = context.type === "chat" ? keyString(context.chatId)
-      : context.type === "gadget" ? keyString(context.gadgetId) : "";
-  return `${observerRequirementPrefix(gatekeeperId, context.type)}${id}:${subresource}`;
+  return `${observerRequirementPrefix(gatekeeperId, context)}${subresource}`;
 }
 
 /** The subresource an observerRequirementKey() names: everything after its second colon. */
@@ -1300,6 +1411,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     singletons: {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
+      // Set when the workspace starts being deleted. From then on it can't be opened. Its storage is
+      // wiped only after every user who had it listed has confirmed removing it, along with their
+      // unread state and queued notifications for it (see pendingUserUpdates).
+      deleting: false,
 
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
@@ -1331,6 +1446,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       an `upstream` once it is permanent.
       //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
       //       config no longer carries `env`.
+      //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
+      //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
+      //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1387,9 +1505,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       // True if any past observation was authorized that had the `containsRestrictedData` flag
       // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
-      // `AdminConfig.restrictedWebFetchHosts`, and every action pends for manual approval
-      // (autoApprovalRule never fires); the approver checks the action text for restricted data.
-      // The key on disk predates the flag's rename.
+      // `AdminConfig.restrictedWebFetchHosts` or a URL a user approves (where
+      // `AdminConfig.restrictedWebFetchApprovals` allows it), and every action pends for manual
+      // approval (autoApprovalRule never fires); the approver checks the action text for restricted
+      // data. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
@@ -1401,9 +1520,64 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // project-specific part of the agent's system prompt, so nobody without that prompt can
       // probe a shared prompt cache for it (see runAgentPass).
       promptCacheSalt: <string | undefined>undefined,
+
+      // When the workspace was initialised; unset for one initialised before this was recorded,
+      // until the directory feed backfills it from the owner's record (OverseerImpl.syncDirectory).
+      createdAt: <Date | undefined>undefined,
+
+      // The revision of the title the deployment directory is sent, bumped with every title
+      // write and at initialisation. Time-based (at least the epoch ms of the bump), so a
+      // workspace reinitialised under the same id outranks what its earlier life reported.
+      titleRev: 0,
+
+      // The highest titleRev the directory has acknowledged; -1 until it acknowledges one, and
+      // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
+      directoryRev: -1,
     },
 
     collections: {
+      // Changes to a user's access to this workspace that still need to be sent to that user's
+      // User DO: a new role (e.g. downgraded to use-only), or removal (`role: null`), which also
+      // clears their unread state and queued notifications for this workspace. When the workspace
+      // is deleted, every user gets a removal. Retried from the alarm until each User DO confirms.
+      // Before each attempt, the user's current access is checked again (via `profileId`), so an
+      // outdated entry is updated or dropped. Deletion entries have no `profileId`.
+      pendingUserUpdates: collection<{
+        /** The recipient's User DO ID. */
+        userId: string;
+        profileId?: string;
+        role: CollaboratorRole | null;
+      }>()({primaryKey: "userId"}),
+      // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
+      // reached enrolled owners/build collaborators, or a one-off approval recipient.
+      // Written in the same transaction as the change itself, so the update isn't
+      // lost if the DO restarts; the alarm retries it. There's at most one row per chat: later
+      // changes merge into it. The row is deleted once every recipient has accepted the update (or
+      // been skipped for lacking access). See docs/user-unread-state.md.
+      dirtyChats: collection<ChatFanoutStart & {
+        chatId: number;
+        /**
+         * Everyone has received the latest changes except `failedRecipients`, so only they need
+         * another attempt.
+         */
+        retryOnly?: true;
+        /**
+         * Recipients whose last attempt failed, each with the earliest change they still haven't
+         * received, or newly enrolled users awaiting their initial snapshot. A fully successful
+         * delivery deletes the row.
+         */
+        failedRecipients?: (ChatFanoutStart & {userId: string})[];
+      }>()({primaryKey: "chatId"}),
+      // Notifications ("task completed" or "permission requested") to send to a user. They're
+      // delivered to the user's User DO along with the chat's next unread update (see dirtyChats).
+      // Each refers to the timeline position where its event happened, rather than copying any
+      // message content. `userId` is the recipient's User DO ID. `id` is a stable notification ID,
+      // reused if recovery records the same outcome again, so the user isn't notified twice.
+      chatNotifications: collection<{
+        id: string;
+        chatId: number; sequence: number; userId: string;
+        kind: "taskCompleted" | "permissionRequested";
+      }>()({primaryKey: record => `${chatKey(record.chatId, record.sequence)}:${record.userId}:${record.kind}`}),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage
@@ -1423,11 +1597,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // The workspace's git object store: real git loose objects (blobs, trees, commits) keyed
-      // by 40-hex SHA-1 oid. Mainline gadget code lives here as commits, with each
+      // by 40-hex SHA-1 oid, except that a blob over 1 MiB is stored as an index of chunks, each
+      // chunk itself an ordinary blob row (see GitObjectRecord). Mainline gadget code lives here as commits, with each
       // GadgetRecord.commitId pointing at its head (superseding the `code`/`snapshots` Yjs log).
       // There is deliberately no ref layer: gadget/blueprint records and chats' pinned commits
       // are the refs, and all gadgets' histories share this one content-addressed store. See
-      // git-store.ts.
+      // git-cache.ts.
       gitObjects: collection<GitObjectRecord>()({
         primaryKey: "oid",
       }),
@@ -1473,6 +1648,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
             return record.bindingName ?? null;
           }
         }
+      }),
+
+      // Facets holding static gadget snapshots (see Overseer.getGadgetSnapshot), recorded before
+      // each is cloned. A snapshot lives no longer than the instance that made it, whose sessions
+      // are its only users, so the next instance deletes every one still recorded.
+      gadgetSnapshots: collection<{facetName: string; gadgetId: WorkpieceId}>()({
+        primaryKey: "facetName",
       }),
 
       gatekeepers: collection<GatekeeperRecord>()({
@@ -1634,7 +1816,31 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "chatId"
       }),
 
-      nextChatSequences: collection<{chatId: number, nextSequence: number}>()({
+      nextChatSequences: collection<{
+        chatId: number;
+        nextSequence: number;
+        /**
+         * Users permanently enrolled for updates after opening, creating, participating in, or
+         * setting a preference for this chat. Profile IDs, resolved to User DOs at dispatch.
+         * Initialized empty for new chats; absent on legacy chats, which retain workspace fanout.
+         */
+        notificationParticipants?: string[];
+        /**
+         * Number of visible messages written to the chat since unread tracking began; older history
+         * isn't counted. Equal to the `visibleThroughSequence` of the chat's latest record.
+         */
+        visibleThroughSequence?: number;
+        /**
+         * Sequence of the chat's latest visible message (since unread tracking began), so its
+         * preview can be read directly without searching back through internal activity.
+         */
+        latestVisibleMessageSequence?: number;
+        /**
+         * Sequence of the first record written after unread tracking began. Earlier records have no
+         * `visibleThroughSequence`; they count as read, and their notifications are never sent.
+         */
+        trackingStartSequence?: number;
+      }>()({
         primaryKey: "chatId"
       }),
 
@@ -1693,9 +1899,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         },
       }),
 
-      // Non-owner collaborators who have configured their gatekeeper accounts and passed all
-      // `addObserver` checks. See `ObserverRecord`. The secondary index lets the forward-exclusion
-      // path (`authorizeObservation`) map an opaque observerId back to a profileId.
+      // Non-owner collaborators' observer identities, reserved at their first admission and kept,
+      // with the account choices admissions verified, until they lose access. See
+      // `ObserverRecord`. The secondary index lets the forward-exclusion path
+      // (`authorizeObservation`) map an opaque observerId back to a profileId.
       observers: collection<ObserverRecord>()({
         primaryKey: "profileId",
         uniqueIndexes: {
@@ -1707,6 +1914,26 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     }
   });
 }
+
+/**
+ * Where a chat's pending unread update starts: the earliest change that recipients haven't received
+ * yet (see `dirtyChats`). It decides which notifications go with the update. For a user who has no
+ * read state for the chat yet, it also sets their starting read position: everything before it
+ * counts as read.
+ */
+export type ChatFanoutStart = {
+  /**
+   * Sequence of the earliest new message or notification in the pending update. Absent if only the
+   * chat's details (e.g. its title) changed.
+   */
+  firstMessageSequence?: number;
+  /** The `visibleThroughSequence` of the earliest new visible message in the pending update, if any. */
+  firstVisibleSequence?: number;
+  /** Human authors whose private participation latch must be set before this batch is ACKed. User DO IDs. */
+  participatingUsers?: string[];
+  /** First enrollment skips earlier alerts while retaining the chat's numbered unread history. */
+  notificationBaseline?: number;
+};
 
 /** The Overseer's typed storage. See makeOverseerStorage. */
 export type OverseerStorage = ReturnType<typeof makeOverseerStorage>;

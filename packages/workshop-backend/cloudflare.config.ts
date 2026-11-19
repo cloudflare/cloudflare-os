@@ -80,4 +80,6 @@ export const migrations: DurableObjectMigration[] = [
   { tag: "v3", new_sqlite_classes: ["UserDirectoryDurableObject"] },
   // One object per API WebSocket, so an isolate eviction does not drop the socket (server.ts).
   { tag: "v4", new_sqlite_classes: ["ApiSessionDurableObject"] },
+  // The deployment-wide admin audit log (admin-audit.ts).
+  { tag: "v5", new_sqlite_classes: ["AdminAuditDurableObject"] },
 ];

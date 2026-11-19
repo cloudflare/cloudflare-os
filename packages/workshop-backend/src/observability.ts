@@ -37,7 +37,7 @@ export type WorkshopObservabilityFields = {
   oidCount: number;
   oidPrefix: string;
   operation: string;
-  outcome: "ok" | "error" | "usage_limit" | "no_email" | "signups_disabled";
+  outcome: "ok" | "error" | "stopped" | "usage_limit" | "no_email" | "signups_disabled";
   path: string;
   pauseEnd: "turn" | "left" | "revert" | "deleted";
   recordedType: string;

@@ -16,10 +16,9 @@ import type { ActionSubmitter, JournalEntry } from "@gadgets/gatekeeper-kit/acti
 import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
-import { isProvisional, OutsideBindingError } from "./binding";
+import { authorizeRead, isProvisional, OutsideBindingError, type ReadAuthority } from "./binding";
 import type { GraphApi } from "./graph-api";
 import { organizationDomains } from "./directory";
-import type { StoredIdentity } from "./microsoft-credentials";
 import { VENDOR_ID } from "./microsoft-env";
 import { obsContext } from "./observability";
 import { type CalendarAction, type CalendarActions, type CalendarRef, type EventTarget, type EventWrite, type InviteNote } from "./calendar-actions";
@@ -42,7 +41,7 @@ const logger = obsContext.createLogger({ component: "gatekeeper.microsoft.calend
 
 // How long settings, the calendar list and the organization's domains are reused. A calendar that
 // left the user's list, or was unshared, keeps admitting its events for up to CALENDARS_TTL_MS: the
-// same window a removed share keeps counting for observers (ACL_TTL_MS in calendar-gatekeeper.ts).
+// same window a removed share keeps counting for observers (CALENDAR_ACL_TTL_MS in microsoft.ts).
 const SETTINGS_TTL_MS = 60 * 60 * 1000;
 const CALENDARS_TTL_MS = 2 * 60 * 1000;
 const ORGANIZATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -68,12 +67,11 @@ const MAX_MESSAGE_CHARS = 10_000;
 const SHOW_AS_VALUES: readonly ShowAs[] = ["free", "tentative", "busy", "oof", "workingElsewhere"];
 const SENSITIVITY_VALUES = ["normal", "personal", "private", "confidential"] as const;
 
-/** What the facet gives every session. */
-export type CalendarSessionHost = {
+/** What the facet gives every session: whose binding it is (see ReadAuthority) and the rest. */
+export type CalendarSessionHost = ReadAuthority & {
   scope: CalendarScope;
   /** What the binding may do: its own level, never more than the deployment and grant allow. */
   access: CalendarAccessLevel;
-  owner(): Promise<StoredIdentity>;
   read<T>(op: (api: GraphApi) => Promise<T>): Promise<T>;
   cached<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T>;
   pending(): JournalEntry<CalendarAction>[];
@@ -168,9 +166,9 @@ export class CalendarContext implements Disposable {
     return await this.host.cached("orgDomains", ORGANIZATION_TTL_MS, () => this.host.read(organizationDomains));
   }
 
-  async observe(title: string, description: string, revealed: readonly string[]): Promise<void> {
-    await this.gate.authorize({ title, description },
-      revealed.length > 0 ? { kind: "collections", ids: [...new Set(revealed)] } : { kind: "baseline" });
+  /** Authorizes a read through `gate` (a cursor's lease, or the session's own): see authorizeRead. */
+  async observe(title: string, description: string, revealed: readonly string[], gate = this.gate): Promise<void> {
+    await authorizeRead(gate, this.host, { title, description }, revealed);
   }
 
   overlay(): CalendarOverlay {
@@ -663,12 +661,10 @@ export class CalendarReaderImpl extends RpcTarget implements CalendarReader {
           // A listing reveals when the calendar is free, so even an empty one names the calendar.
           if (shown.length > 0 || items.length === 0) units.add(await ctx.calendarUnit(calendar, ctx.revealed(shown.map(row => row.event), views.get(calendar.id)!)));
         }
-        await walk.authorize({
-          title: "Listed calendar events",
-          description: items.length === 0
-            ? `Listed events in ${where} from ${when}${terminal ? "; there were no more" : ""}.`
-            : `Listed ${items.length} event${items.length === 1 ? "" : "s"} in ${where} from ${when}: ${describeEvents(items)}.`,
-        }, { kind: "collections", ids: [...units] });
+        await ctx.observe("Listed calendar events", items.length === 0
+          ? `Listed events in ${where} from ${when}${terminal ? "; there were no more" : ""}.`
+          : `Listed ${items.length} event${items.length === 1 ? "" : "s"} in ${where} from ${when}: ${describeEvents(items)}.`,
+        [...units], walk);
       },
     });
   }

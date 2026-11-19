@@ -7,6 +7,7 @@ import {
   assertModelAccess, closeLocalEvalRuntimes, evalNetworkInterceptor, resolveModelAccess,
   runtimesStillRunning,
 } from "./target.js";
+import { closeViewBrowser } from "./view-host.js";
 
 const gitCommit = resolveEvalCommit();
 const modelAccess = resolveModelAccess();
@@ -53,7 +54,7 @@ export function defineTaskEval(task: EvalTask): void {
     // Fail closed: a Workshop that would not stop may still run model-authored code through this
     // process's fetch, so unrestricted network access is not restored while one may be alive.
     afterAll(async () => {
-      await closeLocalEvalRuntimes();
+      await Promise.all([closeLocalEvalRuntimes(), closeViewBrowser()]);
       if (runtimesStillRunning() === 0) network.uninstall();
     });
     for (const { model } of models) {

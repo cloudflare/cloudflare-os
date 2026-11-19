@@ -127,6 +127,11 @@ export type BigQueryQueryOptions = {
  * the underlying tables referenced by views, so querying a view may be rejected if the view reads
  * tables outside this binding's scope.
  *
+ * Query jobs run in, and are billed to, the scoped project, unless the connection names another
+ * project of the user's own to run them in (needed when the data is a dataset shared from a project
+ * the user cannot create jobs in). Which project runs the job never changes which tables a query
+ * may read.
+ *
  * BigQuery uses Google Standard SQL by default. Legacy SQL is not supported.
  */
 export interface BigQuerySession {

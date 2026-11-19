@@ -102,7 +102,12 @@ export function decodeDocId(docId: string): {collectionId: string; path: string}
 // Stored data model
 // ---------------------------------------------------------------------------
 
-/** Collection visibility within a sharing domain. */
+/**
+ * Collection visibility within a sharing domain, which says who can read a collection: `private`,
+ * its members (see ContextApi.shareContextCollection()), or every account in the domain when its
+ * `everyoneCanView` is set (see ContextApi.setContextCollectionEveryoneCanView()); or `public`,
+ * everyone, which only deployment admins may create or edit.
+ */
 export type ContextCollectionVisibility = "public" | "private";
 export const DEFAULT_GIT_BRANCH = "main";
 
@@ -364,6 +369,12 @@ export interface ContextApi extends RpcTarget {
   /** Gates creating/editing public collections and offering Git-backed collections. */
   getViewerInfo(): Promise<{ isAdmin: boolean; supportsGitCollections: boolean }>;
 
+  /**
+   * Creates a collection this account owns. `description` is what agents read to decide whether it
+   * is relevant; `icon` is an emoji. `source` is `"web"` (the default: its documents are written
+   * through this API) or `"git"`, a Git repository reached with a token from
+   * createContextCollectionGitToken(), where getViewerInfo() says the deployment supports it.
+   */
   createContextCollection(
     title: string, description: string, visibility: ContextCollectionVisibility, icon?: string,
     source?: ContextCollectionContent["source"],
@@ -383,7 +394,17 @@ export interface ContextApi extends RpcTarget {
   putContextDocument(collectionId: string, path: string, doc: {
     description: string; body: string; contentType?: string;
   }): Promise<void>;
-  /** Creates a skill, rejecting the operation if its directory is already occupied. */
+  /**
+   * Creates a skill, rejecting the operation if its directory is already occupied. `path` is the
+   * skill's manifest, a file named SKILL.md in a new directory: `my-skill/SKILL.md`, or
+   * `tools/my-skill/SKILL.md` in an existing directory that is not inside another skill.
+   *
+   * `doc.body` is the manifest's text. It starts with YAML frontmatter between two `---` lines,
+   * holding `name` (at most 64 characters of lowercase letters, digits and single hyphens:
+   * `my-skill`) and `description` (1 to 1024 characters: what the skill does and when to use it);
+   * the instructions follow it. `doc.description` describes the document in listings, as for any
+   * document. Supporting files go in the skill's directory, written with putContextDocument().
+   */
   createContextSkill(collectionId: string, path: string, doc: {
     description: string; body: string; contentType?: string;
   }): Promise<void>;

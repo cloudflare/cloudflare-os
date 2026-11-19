@@ -226,6 +226,52 @@ describe("Chat response mapping", () => {
     expect(chatMessageInfoFromRaw(message).formattedText).toBe("");
   });
 
+  // A reply that quotes says what it answers only in the quote, which neither text form carries.
+  it("maps the message a reply quotes from Chat's snapshot of it", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      createTime: "2024-01-02T03:04:05Z",
+      text: "Yes, Thursday works",
+      quotedMessageMetadata: {
+        name: "spaces/AAAA/messages/AAA",
+        quoteType: "REPLY",
+        quotedMessageSnapshot: { sender: "Ada Lovelace", text: "Can we ship on Thursday?" },
+      },
+    });
+    expect(info.text).toBe("Yes, Thursday works");
+    expect(info.formattedText).toBe("Yes, Thursday works");
+    expect(info.quotedMessage).toEqual({
+      id: "spaces/AAAA/messages/AAA", senderName: "Ada Lovelace", text: "Can we ship on Thursday?",
+    });
+  });
+
+  it("marks a forwarded message, whose own text may be empty", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      createTime: "2024-01-02T03:04:05Z",
+      quotedMessageMetadata: {
+        name: "spaces/OTHER/messages/CCC",
+        quoteType: "FORWARD",
+        quotedMessageSnapshot: { sender: "Grace Hopper", text: "The build is green" },
+      },
+    });
+    expect(info.text).toBe("");
+    expect(info.quotedMessage).toEqual({
+      id: "spaces/OTHER/messages/CCC", senderName: "Grace Hopper", text: "The build is green", forwarded: true,
+    });
+  });
+
+  it("keeps a quote Chat returns without a snapshot, and reports none without a quoted name", () => {
+    const message = { name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hi" };
+    expect(chatMessageInfoFromRaw({
+      ...message, quotedMessageMetadata: { name: "spaces/AAAA/messages/AAA" },
+    }).quotedMessage).toEqual({ id: "spaces/AAAA/messages/AAA" });
+    expect(chatMessageInfoFromRaw({
+      ...message, quotedMessageMetadata: { quotedMessageSnapshot: { text: "orphan" } },
+    })).not.toHaveProperty("quotedMessage");
+    expect(chatMessageInfoFromRaw(message)).not.toHaveProperty("quotedMessage");
+  });
+
   // Alert and bot messages put their details and links in cards, which neither text form carries.
   it("maps a Chat app's cardsV2 next to its unchanged text", () => {
     const info = chatMessageInfoFromRaw({
@@ -257,7 +303,10 @@ describe("Chat response mapping", () => {
                       text: "More",
                       onClick: {
                         overflowMenu: {
-                          items: [{ text: "Dashboard", onClick: { openLink: { url: "https://example.com/dash" } } }],
+                          items: [
+                            { text: "Dashboard", onClick: { openLink: { url: "https://example.com/dash" } } },
+                            { text: "Retired", disabled: true, onClick: { openLink: { url: "https://example.com/retired" } } },
+                          ],
                         },
                       },
                     },
@@ -324,6 +373,47 @@ describe("Chat response mapping", () => {
     ]);
   });
 
+  // An app's "View incident" or "Open runbook" button sits under the message, outside any card.
+  it("maps the links of the buttons under a message, dropping actions, non-web links and disabled buttons", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      sender: { name: "users/app", displayName: "Alerts", type: "BOT" },
+      createTime: "2024-01-02T03:04:05Z",
+      text: "Deploy finished",
+      accessoryWidgets: [
+        {
+          buttonList: {
+            buttons: [
+              { text: "View deploy", onClick: { openLink: { url: "https://example.com/deploy/1" } } },
+              { text: "Roll back", onClick: { action: { function: "rollback" } } },
+              { text: "Approve", disabled: true, onClick: { openLink: { url: "https://example.com/approve" } } },
+              { text: "Script", onClick: { openLink: { url: "javascript:alert(1)" } } },
+              { altText: "Logs", icon: { materialIcon: { name: "list" } }, onClick: { openLink: { url: "http://example.com/logs" } } },
+            ],
+          },
+        },
+        "not a widget",
+        { columns: { columnItems: [{ widgets: [{ buttonList: { buttons: [
+          { text: "Nested", onClick: { openLink: { url: "https://example.com/nested" } } },
+        ] } }] }] } },
+      ] as unknown[],
+    });
+    expect(info.buttons).toEqual([
+      { label: "View deploy", url: "https://example.com/deploy/1" },
+      { label: "Logs", url: "http://example.com/logs" },
+    ]);
+    expect(info.cards).toEqual([]);
+    expect(info.text).toBe("Deploy finished");
+  });
+
+  it("gives a message without accessory widgets, or with malformed ones, no buttons", () => {
+    const message = { name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hello" };
+    expect(chatMessageInfoFromRaw(message).buttons).toEqual([]);
+    expect(chatMessageInfoFromRaw({
+      ...message, accessoryWidgets: "not a list" as unknown as unknown[],
+    }).buttons).toEqual([]);
+  });
+
   it("gives an ordinary message no cards", () => {
     expect(chatMessageInfoFromRaw({
       name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hello",
@@ -383,7 +473,10 @@ describe("Chat response mapping", () => {
           sections: [{
             widgets: [
               { grid: { title: "Hosts", items: [{ title: "host-1", subtitle: "up" }] } },
-              { chipList: { chips: [{ label: "Docs", onClick: { openLink: { url: "https://example.com/docs" } } }] } },
+              { chipList: { chips: [
+                { label: "Docs", onClick: { openLink: { url: "https://example.com/docs" } } },
+                { label: "Archive", disabled: true, onClick: { openLink: { url: "https://example.com/archive" } } },
+              ] } },
               { columns: { columnItems: [{ widgets: [
                 { textParagraph: { text: "left" } },
                 { columns: { columnItems: [{ widgets: [{ textParagraph: { text: "too deep" } }] }] } },

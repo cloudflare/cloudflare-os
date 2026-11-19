@@ -3,7 +3,8 @@
  * references, names and the rest.
  *
  * Nothing here evaluates a formula. It finds the functions a formula calls, so that those reaching
- * outside the spreadsheet are refused, writes references the way Google stores them once entered,
+ * outside the spreadsheet are refused and a batch whose formulas call only functions known to stay
+ * within it may apply without asking. It writes references the way Google stores them once entered,
  * so the approver and a simulated read see the text Google keeps, and rewrites them as Google does
  * when rows, columns or sheets change, telling whether the cells a reference covers changed.
  */
@@ -416,20 +417,64 @@ export const ARGUMENT_ONLY_FUNCTIONS: ReadonlySet<string> = new Set([
 const CONSTANTS: ReadonlySet<string> = new Set(["TRUE", "FALSE"]);
 
 /**
+ * Built-in functions a formula a user may let apply without asking can call: those that compute
+ * only from what the spreadsheet holds. It leaves out every function that reaches outside it, such
+ * as those in `REFUSED_FUNCTIONS`, `GOOGLEFINANCE` or `GOOGLETRANSLATE`, and `HYPERLINK`, whose
+ * link carries whatever the formula puts in it to the site a click opens. It leaves out `LET` and
+ * `LAMBDA` too, since a name either binds can take a listed function's name and stand for one of
+ * the spreadsheet's named functions.
+ */
+export const SPREADSHEET_ONLY_FUNCTIONS: ReadonlySet<string> = new Set(
+  [...ARGUMENT_ONLY_FUNCTIONS, ...STRUCTURE_SENSITIVE_FUNCTIONS]
+    .filter(name => !["HYPERLINK", "LET", "LAMBDA"].includes(name)));
+
+/**
+ * `name` with its ASCII letters in upper case and every other character kept. Unicode case mapping
+ * would turn names Google does not read as built-ins, such as `ſum`, `ıf` or `ﬁlter`, into listed
+ * ones, while such a call can only reach one of the spreadsheet's named functions.
+ */
+function asciiUpperCase(name: string): string {
+  return name.replace(/[a-z]+/g, letters => letters.toUpperCase());
+}
+
+/**
+ * Whether every function `formula` calls is one of `SPREADSHEET_ONLY_FUNCTIONS`, by its whole name,
+ * ignoring the case of ASCII letters only. A call to any other name does not qualify: it may be one
+ * of the spreadsheet's named functions, whose definition the formula does not show and which can
+ * wrap a fetch. Nor does a name other than `TRUE` or `FALSE` that is not called, such as a named
+ * range, since a named function can be passed by name as a value, nor a call on the result of a
+ * parenthesized expression or of another call, which can be such a value. Nor does
+ * apostrophe-quoted text that prefixes no reference, which would hide the rest of the formula from
+ * this check.
+ */
+export function callsOnlySpreadsheetFunctions(formula: string): boolean {
+  let tokens = tokenize(formula);
+  return tokens.every((token, i) => {
+    if (token.kind === "quoted") return false;
+    // A run of whitespace is one token, so the token after it is the next of substance.
+    let next = tokens[i + 1]?.kind === "space" ? tokens[i + 2] : tokens[i + 1];
+    if (token.kind === "other" && token.text === ")") return next?.text !== "(";
+    if (token.kind !== "name") return true;
+    let name = asciiUpperCase(token.text);
+    return next?.text === "(" ? SPREADSHEET_ONLY_FUNCTIONS.has(name) : CONSTANTS.has(name);
+  });
+}
+
+/**
  * Whether a structural change could alter what `formula` computes in ways its references do not
- * show: it calls one of `STRUCTURE_SENSITIVE_FUNCTIONS` (in any case, in a name or any of its
- * dot-separated parts), calls a function not in `ARGUMENT_ONLY_FUNCTIONS`, such as one of the
- * spreadsheet's named functions, or uses a name that is neither a function call nor `TRUE` or
- * `FALSE`, such as a named range or a `LET` or `LAMBDA` name, whose cells its text does not show.
- * So does a `:` outside a reference, as in `A1 : A3` or `B1:INDEX(...)`: the range it makes can
- * grow or shrink while each of its ends only moves.
+ * show: it calls one of `STRUCTURE_SENSITIVE_FUNCTIONS` (ignoring the case of ASCII letters, in a
+ * name or any of its dot-separated parts), calls a function not in `ARGUMENT_ONLY_FUNCTIONS`, such
+ * as one of the spreadsheet's named functions, or uses a name that is neither a function call nor
+ * `TRUE` or `FALSE`, such as a named range or a `LET` or `LAMBDA` name, whose cells its text does
+ * not show. So does a `:` outside a reference, as in `A1 : A3` or `B1:INDEX(...)`: the range it
+ * makes can grow or shrink while each of its ends only moves.
  */
 export function structureSensitive(formula: string): boolean {
   let tokens = tokenize(formula);
   return tokens.some((token, i) => {
     if (token.kind === "other" && token.text === ":") return true;
     if (token.kind !== "name") return false;
-    let name = token.text.toUpperCase();
+    let name = asciiUpperCase(token.text);
     if (name.split(".").some(part => STRUCTURE_SENSITIVE_FUNCTIONS.has(part))) return true;
     // A run of whitespace is one token, so the token after it is the next of substance.
     let next = tokens[i + 1]?.kind === "space" ? tokens[i + 2] : tokens[i + 1];

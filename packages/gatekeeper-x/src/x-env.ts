@@ -74,6 +74,11 @@ export type ResourceKind = "account" | "post" | "list" | "profile";
 export type XGatekeeperImplProps = {
   /** The `UserAccount` Durable Object holding the connection. */
   userObjectId: string;
+  /**
+   * Immutable proof this binding was minted after descriptions and action previews stopped carrying
+   * provider-private post and List details. Its absence marks legacy state.
+   */
+  redactsActionPreviews?: true;
 } & (
   | { resourceKind: "account" }
   | { resourceKind: "post"; postId: string }
@@ -97,6 +102,7 @@ export const PROFILE_TABS = [
  */
 export const RESOURCES: Record<ResourceKind, SupportedResource> = {
   post: {
+    id: "post",
     urlPattern: `https://${HOST}/*/status/:postId{/*}?`,
     title: "X Post",
     description: "Read one post and its conversation, and reply, like, repost, bookmark, or hide " +
@@ -104,18 +110,21 @@ export const RESOURCES: Record<ResourceKind, SupportedResource> = {
     grantable: true,
   },
   list: {
+    id: "list",
     urlPattern: `https://${HOST}/i/lists/:listId{/*}?`,
     title: "X List",
     description: "Read one List's posts and members, and manage its members if you own it.",
     grantable: true,
   },
   profile: {
+    id: "profile",
     urlPattern: `https://${HOST}/:username([A-Za-z0-9_]{1,15}){/(${PROFILE_TABS.join("|")})}?`,
     title: "X Profile",
     description: "Read one user's public profile and posts. Read-only.",
     grantable: true,
   },
   account: {
+    id: "account",
     urlPattern: "https://*",
     title: "X Account",
     description: "Whole-account access: your timelines, mentions, search, bookmarks and likes, " +

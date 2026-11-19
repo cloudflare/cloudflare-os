@@ -4,7 +4,7 @@
   "type": "module",
   "main": "./src/slack.ts",
   "scripts": {
-    "test:run": "vitest run",
+    "test:run": "vp run -F @gadgets/slack-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts",
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated"
@@ -17,9 +17,11 @@
     "capnweb-validate": "catalog:"
   },
   "devDependencies": {
-    "vitest": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/scripts": "workspace:*",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
+    "vitest": "catalog:",
     "wrangler": "catalog:"
   }
 }

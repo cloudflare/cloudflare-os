@@ -2,7 +2,7 @@
 // (stored when deflating doesn't help), UTF-8 names, one disk, no Zip64. Every package it writes is
 // far below the 4 GiB a classic archive can hold, and `zip.ts` reads exactly this subset back.
 
-import { concat, crc32 } from "./zip";
+import { concat, crc32 } from "@gadgets/office-content/zip";
 
 /** One file in the archive. */
 export interface ZipWriteEntry {

@@ -15,12 +15,19 @@ import type { Pager } from "./cursor";
 
 export class SharedApprovalQueue {
   #stub: RpcStub<ApprovalQueue>;
+  #subresources: readonly string[] | undefined;
   // Nothing owns the stub until the first capability is constructed; the session itself is just
   // the first of those. Starting at one would leave the count permanently above zero.
   #references = 0;
 
-  constructor(stub: RpcStub<ApprovalQueue>) {
+  /**
+   * `subresources`, when given, replace each observation's own dependencies: the binding is
+   * private to the connected account, so checking individual resources adds no sharing authority.
+   * Without them, an observation reports only its own.
+   */
+  constructor(stub: RpcStub<ApprovalQueue>, subresources?: readonly string[]) {
     this.#stub = stub;
+    this.#subresources = subresources;
   }
 
   retain(): () => void {
@@ -34,7 +41,11 @@ export class SharedApprovalQueue {
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
-    return this.#stub.authorizeObservation(description);
+    if (this.#subresources === undefined) return this.#stub.authorizeObservation(description);
+    return this.#stub.authorizeObservation({
+      ...description,
+      subresources: [...this.#subresources],
+    });
   }
 
   submitAction(actionId: number, description: ActionDescription): Promise<void> {

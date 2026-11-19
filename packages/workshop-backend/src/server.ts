@@ -1,10 +1,11 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, WorkspacePlacement, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, WorkspaceCopyReport } from '@gadgets/workshop-shared/api';
+import { PublicApi, WorkspacePlacement, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, WorkspaceCopyReport, type UnreadStateSubscriber, AdminVia } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
+import type { UnreadStateScope } from "@gadgets/workshop-shared/api";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
-import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
+import { isDeploymentAdmin, isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { getUsageInfo } from "./ai-gateway-billing/limits/usage-checker.js";
 import { listConnectedAccounts, selectAccount } from "./ai-gateway-billing/cloudflare/connection-service.js";
@@ -23,6 +24,7 @@ import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord 
 import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
+import { AdminAuditDurableObject } from "./admin-audit.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { DurableObject, RpcStub as NativeRpcStub, RpcTarget as NativeRpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
@@ -75,6 +77,9 @@ export { AdminSettings };
 // Re-export the deployment-wide user directory Durable Object.
 export { UserDirectoryDurableObject };
 
+// Re-export the deployment-wide admin audit log Durable Object.
+export { AdminAuditDurableObject };
+
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl };
 
@@ -99,6 +104,12 @@ type Env = Cloudflare.Env & {
   FLAGS?: Flagship;
 }
 
+// The User-Agent `cf-os api` (packages/api-cli) sends: `cf-os-api/<version>`.
+const CF_OS_CLI_USER_AGENT = /^cf-os-api\//;
+
+const CLI_ADMINS_ONLY =
+    "On this deployment the cf-os CLI is limited to deployment admins (anything goes on a local dev server).";
+
 // =======================================================================================
 
 @validateRpc()
@@ -106,17 +117,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ApiContext, private env: Env,
       userId: DurableObjectId,
       private abortSession: (reason: Error) => void,
+      private via: AdminVia,
       private accessSession?: { jwt: string; expiresAt: number }) {
     super();
 
     this.#userId = userId;
     this.overseers = this.ctx.exports.OverseerDurableObject;
-    this.adminSettings = this.ctx.exports.AdminSettings;
     this.users = this.ctx.exports.UserDurableObject;
   }
 
   private overseers: DurableObjectNamespace<OverseerDurableObject>;
-  private adminSettings: DurableObjectNamespace<AdminSettings>;
   private users: DurableObjectNamespace<UserDurableObject>;
 
   #userId: DurableObjectId;
@@ -142,7 +152,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   #isAdmin(): boolean {
-    return isAdminName(this.env, this.#userId.name);
+    let name = this.#userId.name;
+    return !!name && isDeploymentAdmin(this.env, name);
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
@@ -217,6 +228,31 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null): Promise<void> {
     return this.#user.setWorkspaceNotificationMute(workspaceId, mute);
+  }
+
+  getUnreadThreads() {
+    return retryOnDoReset(() => this.#user.getUnreadThreads());
+  }
+
+  getWorkspaceUnreadState(workspaceId: string) {
+    return retryOnDoReset(() => this.#user.getWorkspaceUnreadState(workspaceId));
+  }
+
+  getUnreadSummary() {
+    return retryOnDoReset(() => this.#user.getUnreadSummary());
+  }
+
+  subscribeToUnreadState(scope: UnreadStateScope,
+      subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToUnreadState(scope, subscriber);
+  }
+
+  markWorkspaceRead(workspaceId: string): Promise<void> {
+    return retryOnDoReset(() => this.#user.markWorkspaceRead(workspaceId));
+  }
+
+  markAllRead(): Promise<void> {
+    return retryOnDoReset(() => this.#user.markAllRead());
   }
 
   getPreferredModel(): Promise<string | null> {
@@ -550,17 +586,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.listGatekeeperVendors(filter));
   }
 
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart> {
-    return this.#user.connectAccount(vendorId, resourceUrlPatterns);
+  connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart> {
+    return this.#user.connectAccount(vendorId, resourceTypeIds);
   }
 
   completeConnectHandoff(ticket: string, nonce: string): Promise<void> {
     return this.#user.completeConnectHandoff(ticket, nonce);
   }
 
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
+  ensureAccountResources(accountId: number, resourceTypeIds: string[])
       : Promise<ConnectFlowStart | null> {
-    return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
+    return this.#user.ensureAccountResources(accountId, resourceTypeIds);
   }
 
   listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]> {
@@ -587,12 +623,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   startResourceConfigurator(
       accountId: number,
-      resourceUrlPattern: string) {
-    return this.#user.startResourceConfigurator(accountId, resourceUrlPattern);
+      resourceTypeId: string) {
+    return this.#user.startResourceConfigurator(accountId, resourceTypeId);
   }
 
-  startCreationConfigurator(accountId: number, resourceUrlPattern: string) {
-    return this.#user.startCreationConfigurator(accountId, resourceUrlPattern);
+  startCreationConfigurator(accountId: number, resourceTypeId: string, purpose?: "create" | "save") {
+    return this.#user.startCreationConfigurator(accountId, resourceTypeId, purpose);
+  }
+
+  saveFile(accountId: number, resourceTypeId: string, destination: string, name: string,
+      contentType: string, file: ReadableStream<Uint8Array>) {
+    return this.#user.saveFile(accountId, resourceTypeId, destination, name, contentType, file);
   }
 
   async dismissSharedWorkspace(workspaceId: string): Promise<void> {
@@ -848,7 +889,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let adminUserId = this.#userId.name!;
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
     //     system doesn't know this.
-    return new AdminApiImpl(this.adminSettings.getByName(""), adminUserId);
+    return new AdminApiImpl(this.ctx, this.env, adminUserId, this.via);
   }
 }
 
@@ -890,14 +931,29 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ApiContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessSession?: ApiAccessSession) {
+      private accessSession?: ApiAccessSession,
+      private cliAdminsOnly: boolean,
+      private via: AdminVia) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
 
-  async ping(): Promise<void> {}
+  // With `cliAdminsOnly` (`cf-os api` on a deployment, see the /api route), refuses the call unless
+  // it signs in as a deployment admin, `user`. Every method calls it, the sign-ins once they know who
+  // signs in, except the steps that only lead to a session token, which `authenticate` redeems.
+  #limitCli(user?: DurableObjectId): void {
+    let name = user?.name;
+    if (this.cliAdminsOnly && !(name && isDeploymentAdmin(this.env, name))) {
+      throw new Error(CLI_ADMINS_ONLY);
+    }
+  }
+
+  async ping(): Promise<void> {
+    this.#limitCli();
+  }
 
   async getServerConfig(): Promise<ServerConfig> {
+    this.#limitCli();
     return getServerConfig(this.env);
   }
 
@@ -953,12 +1009,13 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
     let userId = this.users.idFromName(split[0]);
     await this.users.get(userId).authenticate(split[1]);
+    this.#limitCli(userId);
     recordAnalytics(this.ctx, this.env, {
       event_name: "user_authenticated",
       user_id: userId.toString(),
       source: "session_token",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession, this.via);
   }
 
   async authenticateFromCfAccess(): Promise<AuthenticatedApi> {
@@ -968,6 +1025,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
     let email = this.accessSession.email;
     let userId = this.users.idFromName(email);
+    this.#limitCli(userId);
     let signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
     let accountCreated =
         await this.users.get(userId).authenticateFromCfAccess(email, signupsEnabled);
@@ -983,7 +1041,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       user_id: userId.toString(),
       source: "cf_access",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession,
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession, this.via,
         { jwt: this.accessSession.jwt, expiresAt: (this.accessSession.payload.exp ?? 0) * 1000 });
   }
 
@@ -1012,6 +1070,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   async createAccount(username: string, displayName: string, passwordHash: Uint8Array)
       : Promise<string | null> {
+    this.#limitCli();
     if (this.env.CF_ACCESS_AUD) {
       throw new Error("This deployment requires Cloudflare Access authentication.");
     }
@@ -1040,6 +1099,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async getBlueprint(id: string): Promise<BlueprintPublicInfo | null> {
+    this.#limitCli();
     let kvRecord = await readBlueprintKvRecord(this.env, id);
     if (!kvRecord) return null;
 
@@ -1047,6 +1107,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 
   async downloadBlueprint(id: string): Promise<ReadableStream<Uint8Array>> {
+    this.#limitCli();
     let kvRecord = await readBlueprintKvRecord(this.env, id);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
@@ -1303,8 +1364,19 @@ export default {
         return openApiSessionObject(req, ctx.exports.ApiSessionDurableObject, accessSession);
       }
 
+      // `cf-os api` names itself in its User-Agent, and on a deployment (any WORKSHOP_ENVIRONMENT
+      // but "development" or "test") it may act only as a deployment admin (PublicApiImpl's
+      // #limitCli). A speed bump against casual use, not a boundary: a client can send any
+      // User-Agent, and the API's own checks authorize. For the same reason the User-Agent only
+      // labels admin audit records (AdminVia).
+      let local = env.WORKSHOP_ENVIRONMENT === "development" || env.WORKSHOP_ENVIRONMENT === "test";
+      let cli = CF_OS_CLI_USER_AGENT.test(req.headers.get("User-Agent") ?? "");
+
+      let { abortSession, abortSignal } = abortSessionCallback();
       return await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSessionCallback().abortSession, accessSession));
+          new PublicApiImpl(ctx, env, abortSession, accessSession,
+              !local && cli, cli ? "cli" : "api"),
+          { abortSignal });
     }
 
     return new Response("Not Found", {status: 404});

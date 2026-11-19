@@ -123,6 +123,7 @@ export default defineConfig({
           'packages/workshop-backend/**/*.ts',
           'packages/router/**/*.ts',
           'packages/gatekeeper-*/src/**/*.ts',
+          'packages/pdf-renderer/src/**/*.ts',
           'packages/workshop-shared/**/*.ts',
           'packages/typed-storage/**/*.ts',
         ],
@@ -149,11 +150,16 @@ export default defineConfig({
       {
         // `type-bundle.ts` strips exactly these imports before concatenating the imported
         // declarations into the same agent bundle, so they do resolve for the agent.
-        files: ['packages/gatekeeper-google/src/{docs,drive,sheets,slides}-types.d.ts'],
+        files: ['packages/gatekeeper-google/src/{docs,drive,drive-read,sheets,slides}-types.d.ts'],
         rules: {
           'gadgets/self-contained-agent-types': [
             'error',
-            { allow: ['./docs-read-types', './sheets-read-types', './slides-read-types'] },
+            {
+              allow: [
+                './comment-types', './docs-read-types', './docs-types', './drive-read-types',
+                './sheets-read-types', './sheets-types', './slides-read-types', './slides-types',
+              ],
+            },
           ],
         },
       },
@@ -176,17 +182,19 @@ export default defineConfig({
         },
       },
       {
-        files: ['scripts/**/*.ts'],
+        // Node programs: the repo's scripts, and the `cf-os api` CLI (packages/api-cli), which Node
+        // runs from its TypeScript sources.
+        files: ['scripts/**/*.ts', 'packages/api-cli/**/*.ts'],
         env: {
           node: true,
           es2024: true,
         },
       },
       {
-        // `scripts/` tests run under `node --test`, not vitest, so they must not pick up the
-        // vitest override above (which would supply vitest globals and drop `env: node`). Ordered
-        // last so it wins over that entry.
-        files: ['scripts/**/*.test.ts'],
+        // `scripts/` and `packages/api-cli` tests run under `node --test`, not vitest, so they must
+        // not pick up the vitest override above (which would supply vitest globals and drop
+        // `env: node`). Ordered last so it wins over that entry.
+        files: ['scripts/**/*.test.ts', 'packages/api-cli/**/*.test.ts'],
         plugins: ['typescript', 'unicorn', 'oxc', 'import'],
         env: {
           node: true,

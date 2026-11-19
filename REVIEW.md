@@ -37,7 +37,48 @@ through logs and errors, then everything else.
   deliberately env-var driven in `auth/config.ts` and must **not** move into `AdminConfig`, so a
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
-  `readAdminConfig(env)`. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+  `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
+  in two places: where a view is minted, for `inspectWorkspace()` and `inspectUser()` alike, so
+  that a KV mirror still holding a higher access level never mints a view at it, and the audit
+  log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The admin-settings conventions
+  are in `packages/workshop-backend/AGENTS.md`.
+- `OverseerDurableObject.openForAdmin()` stays reachable only over the Durable Object binding, never
+  through a capability a user holds, and refuses an uninitialised workspace without writing.
+  `UserDurableObject.openForAdmin()` is held to the same, for an account never created. Both views
+  run every method through `adminViewCall()` (`admin-view.ts`), and neither appends a record
+  itself. `adminViewCall()` checks the view again once it has read the deployment's setting and
+  once the call has read its answer, with nothing awaited before its record is sent, and records
+  the call in the deployment-wide log before anything it read leaves the server, so that a call
+  whose record cannot be written returns nothing. An `AdminWorkspaceView` never reaches a
+  connection (an admin's reads of trees and history never pull). An `AdminUserView` reads only
+  the account's own store, writes nothing to it, and returns no token, hash, API key, API URL or
+  header value. No view method returns what the `"metadata"` level withholds (see
+  docs/admin-access.md). Flag a path that returns a workspace's or an account's data to an admin
+  without these, a method that returns content, or a `withhold*` helper applied conditionally.
+- That an `AdminUserView` never calls a gatekeeper is a type, so check the diff, not a call graph:
+  `AdminUserViewImpl` reaches the account only through `AdminUserViewHost`, whose `UserStoreReads`
+  leaves out the collections that hold gatekeeper stubs and whose `connectedAccounts()` yields
+  records without `account`. Flag a change that widens either type, casts around them, gives the
+  view the Durable Object itself, builds an answer by spreading a stored record, or exports the
+  view's class or constructs it anywhere but in its `open()`: `openAdminUserView()` is the one way
+  to a view, and it records the open first. The rule excepts three stored values, which the view
+  returns whole because each is an API value that holds no credential: `describe()`'s profile, a
+  shared workspace's owner and a workspace's notification mute. It builds everything else field by
+  field, and names neither a connected account's description nor a blueprint's id.
+- `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
+  config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
+  prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
+- A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
+  `#mutateAdminConfig()`, or records explicitly before any other write.
+- Text a user or workspace member controls (display names, titles) enters the directory or the
+  audit log only bounded: clamped to `MAX_DIRECTORY_TEXT_LENGTH`, or cut by `cutAdminAuditText()`.
+  Flag a new copy of such text into either store without a bound.
+- `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local instance
+  (`WORKSHOP_ENVIRONMENT` `development` or `test`, set only by `pnpm dev-server` and the integration
+  harness) the Workshop lets such a session act only as a deployment admin. That is a speed bump
+  against casual use: a client can send any User-Agent, so never rely on it for authorization; the
+  API's own checks are the boundary. Flag code that grants anything by User-Agent, and any
+  deployment config that sets `WORKSHOP_ENVIRONMENT`.
 - In `packages/mcp-shared/`, `tools.ts` is the trust boundary: nothing outside it may read a tool's
   annotations, a tool is an observation only when the server declares `readOnlyHint: true`, and
   auto-applying a write additionally requires a `vetted` endpoint. Every SDK OAuth operation must be
@@ -52,7 +93,16 @@ Correctness is not enough. Pressure-test the agent-facing API
 (`packages/gatekeeper-*/src/*types.d.ts`): does the shape make sense, does it cover the most common
 user stories, what would you do differently? Check that the seams (resource granularities, bindings,
 sessions) partition authority along the lines users actually grant. The checklist is "Reviewing a
-gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`.
+gatekeeper" in `.agents/skills/write-gatekeeper/SKILL.md`. Check every action's `autoApprovable`
+verdict against that skill's "Action kinds and auto-approval" policy.
+
+For **new gatekeepers**, enforce that checklist's "Observer protocol" items, including a read-only
+`getHistoricalSubresources()` returning `[]`. The current `Gatekeeper` interface enforces none of
+them, so code that type-checks can still violate them. For **existing migrations**,
+preserve old enforcement until every affected read reports complete requirements and a shipped
+kernel importer has committed the complete historical requirements exported through
+`getHistoricalSubresources()` to the observer ledger. The current kernel does not consume this
+export yet; do not apply the new-gatekeeper empty-history/no-op rule to existing data.
 
 ## Logging, errors and secrets
 

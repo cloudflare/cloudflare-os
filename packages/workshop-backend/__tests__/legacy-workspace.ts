@@ -15,7 +15,8 @@ import { applyCodeChange, type CodeContent } from "@gadgets/workshop-shared/code
 import { makeMockStorage } from "./mock-storage";
 import { makeOverseerStorage, type GadgetRecord, type OverseerStorage }
   from "../src/storage-schema/overseer-storage";
-import { GitStore } from "../src/git-store";
+import type { WorkspaceGitCache } from "../src/git-cache";
+import { makeLocalGitCache } from "./local-git-cache";
 import type { GitMigrationHost } from "../src/storage-schema/overseer-git-migration";
 
 export const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
@@ -34,7 +35,7 @@ export const MINUTE = 60_000;
  */
 export class LegacyWorkspace {
   readonly storage: OverseerStorage;
-  readonly gitStore: GitStore;
+  readonly gitCache: WorkspaceGitCache;
 
   #doc = new Y.Doc();
   #version = 0;
@@ -43,7 +44,7 @@ export class LegacyWorkspace {
 
   constructor(storage: OverseerStorage = makeOverseerStorage(makeMockStorage())) {
     this.storage = storage;
-    this.gitStore = new GitStore(storage.gitObjects);
+    this.gitCache = makeLocalGitCache(storage);
     // Legacy workspaces always wrote an (often empty) version 1 at initialization.
     this.edit(T0, () => {});
   }
@@ -117,7 +118,7 @@ export class LegacyWorkspace {
   host(defaultGadgetId?: number): GitMigrationHost {
     return {
       storage: this.storage,
-      gitStore: this.gitStore,
+      gitCache: this.gitCache,
       ownerIdentity: OWNER,
       defaultGadgetId,
       createDefaultGadget: () => {
@@ -164,7 +165,7 @@ export class LegacyWorkspace {
     let conversion = this.conversionMessage(chatId);
     let content: CodeContent = new Map();
     for (let pin of conversion.pins ?? []) {
-      content.set(pin.gadgetId, await this.gitStore.readCommitFiles(pin.baseCommit));
+      content.set(pin.gadgetId, this.gitCache.readCommitFiles(pin.baseCommit));
     }
     return conversion.change !== undefined ? applyCodeChange(content, conversion.change) : content;
   }
@@ -207,7 +208,7 @@ export function readDocFiles(doc: Y.Doc, rootName: string): Map<string, string> 
  * update log rather than against the migration's own doc.
  */
 export async function expectHeadsMatchDoc(
-    storage: Pick<OverseerStorage, "gadgets">, gitStore: GitStore, doc: Y.Doc,
+    storage: Pick<OverseerStorage, "gadgets">, gitCache: WorkspaceGitCache, doc: Y.Doc,
     defaultGadgetId?: WorkpieceId): Promise<void> {
   for (let record of storage.gadgets.list()) {
     let gadget = record as GadgetRecord;  // legacy workspaces hold only gadgets
@@ -217,6 +218,6 @@ export async function expectHeadsMatchDoc(
     }
     let root = gadget.id === defaultGadgetId ? "" : `${gadget.id}`;
     expect(gadget.commitId).toBeDefined();
-    expect(await gitStore.readCommitFiles(gadget.commitId!)).toEqual(readDocFiles(doc, root));
+    expect(gitCache.readCommitFiles(gadget.commitId!)).toEqual(readDocFiles(doc, root));
   }
 }

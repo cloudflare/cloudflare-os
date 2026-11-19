@@ -14,13 +14,14 @@
     "@gadgets/integration-tests": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
-    "vitest-evals": "0.17.0",
+    "vitest-evals": "0.18.1",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@types/node": "^26.1.0",
     "chess.js": "1.4.0",
+    "playwright": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

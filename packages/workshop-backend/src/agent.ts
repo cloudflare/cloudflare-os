@@ -1,25 +1,28 @@
 import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AgentScheduleInfo, AgentWorkspaceInfo, AgentWorkspaceOutputs, CollaboratorRole, ScheduleChangeKind, ScheduleManualRunResult, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { validatePlacement, workspaceUrl } from "./workspace-placements.js";
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
-  type FileContent, type CodeContent, type CodeChange,
+  validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
+import { snapshotChatEmbeds } from './chat-embeds';
+import type { ChatEmbeds } from '@gadgets/workshop-shared/api';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
 import {
-  Type, getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
+  getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
 } from "@earendil-works/pi-ai";
 import type {
-  AssistantMessage, ImageContent, Message, SystemMessage, TSchema, TextContent, ToolCall,
+  AssistantMessage, ImageContent, Message, SystemMessage, TextContent, ToolCall,
   ToolResultMessage, Usage,
 } from "@earendil-works/pi-ai";
+import { Type, type TSchema } from "typebox";
 import {
   runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool,
 } from "@earendil-works/pi-agent-core";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
-import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
+import { createTwoFilesPatch, OMIT_HEADERS } from "diff";
 import { webFetch as webFetchImpl, WebFetchEnv, formatWebFetchResult } from "./web-fetch";
 import {
   findCatalogChanges, formatAlwaysAvailableResourcesPrompt, formatCatalogChange,
@@ -31,7 +34,8 @@ import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { CachedRequest, ModelHandle } from "./ai-models";
-import { blobOid } from "./git-store";
+import { blobOid } from "./git-codec";
+import { assertNoNul } from "./git-cache";
 import { WORKSPACE_BINDING_NAME } from "./workspace-binding";
 import { WORKSPACE_HOME_CLIENT_JS, WORKSPACE_HOME_SERVER_JS } from "@gadgets/workshop-shared/workspace-home";
 import type {
@@ -48,6 +52,8 @@ import {
   requestAnthropicCompaction, supportsAnthropicCompaction, withAnthropicCompactionBlock,
 } from "./anthropic-compaction";
 import { formatGrep, type GrepScan } from "./grep";
+import type { BlobReader } from "./git-chunked-blob";
+import { readFileWindow, type LineSource } from "./line-window";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -70,7 +76,9 @@ export function agentCodeChangeShape(change: CodeChange) {
  * produce more decides for itself how to stay under it in a way the model can read -- readFile
  * returns a window of whole lines with a continuation note, grep drops whole matches and says how
  * many, webFetch cuts its body and says so in the frontmatter -- rather than any tool's output
- * being spliced blindly. Tools not listed are small by construction.
+ * being spliced blindly. Tools not listed are small by construction. The same limit bounds what the
+ * user puts in front of the model: a text attachment is inlined, and a user change's diff shown,
+ * only within it; past it the file is named instead, for readFile to window.
  */
 export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
 
@@ -107,8 +115,9 @@ export interface AgentStepChange {
 export interface WorktreeTurnAccess {
   /**
    * The base commit the worktree's overlay composes on: the chat pin's base while the worktree
-   * is pinned in this session, else its accepted commit (WorktreeRecord.pinBase) -- the same
-   * commit the first write will pin at. Undefined when the id is not a live worktree.
+   * is pinned in this session (its accepted commit, WorktreeRecord.pinBase, unless a re-root
+   * moved it; see reRoot), else its accepted commit -- the same commit the first write will pin
+   * at. Undefined when the id is not a live worktree.
    */
   getBaseCommit(worktreeId: WorkpieceId): string | undefined;
 
@@ -133,7 +142,7 @@ export interface WorktreeTurnAccess {
    * Read a file exactly as the file tools do: session content first, else the pinned base
    * (faulting the text into the session content, so later edits apply against it). Returns
    * undefined for an absent (or removed) path; throws the descriptive symlink/submodule errors
-   * and UnreadableContentError for oversized/binary content.
+   * and UnreadableContentError for binary content.
    */
   readFile(worktreeId: WorkpieceId, path: string): Promise<string | undefined>;
 
@@ -153,6 +162,29 @@ export interface WorktreeTurnAccess {
    * barrier drops the advancement, leaving only harmless dangling commit objects.
    */
   appendCommit(worktreeId: WorkpieceId, commit: string, previousHead: string): void;
+
+  /**
+   * Buffer a re-root of the worktree's chat pin at `commit`, which must be a commit in the
+   * workspace's Git store whose tree is the worktree's whole content: what the turn holds now
+   * (getBaseCommit plus the overlay and removals), plus whatever the caller changed, and not
+   * getBaseCommit itself, since replay tells a re-root from a re-establishment of the pin by its
+   * commit (a commit whose parent is getBaseCommit, even with the same tree, is fine). It absorbs
+   * the step's earlier buffered changes to the worktree, which that tree already holds: they
+   * leave the step's buffer, the overlay and removals empty, and the base becomes `commit`, so
+   * later changes in the step compose on it. What the model knew of the worktree's files is
+   * forgotten. Several re-roots in one step chain; the barrier declares only the last, as the
+   * pin's new `baseCommit` with the worktree's accepted commit kept as its `mergedCommit` (see
+   * commitAgentStep in overseer.ts). Like a change, it is lost if the step dies before its
+   * barrier.
+   */
+  reRoot(worktreeId: WorkpieceId, commit: string): void;
+
+  /**
+   * A count of the changes to the worktree's content in this turn, advanced by every change
+   * (appendChange, and the file tools' edits) and re-root: a caller that reads the content
+   * across awaits compares it before and after to tell whether the content moved meanwhile.
+   */
+  getRevision(worktreeId: WorkpieceId): number;
 }
 
 /**
@@ -316,6 +348,9 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   overseer.ts?
  */
 export interface AgentHooks {
+  /** In-process output-file pinning against the running turn; never exposed to the agent or UI. */
+  getWorktreeFileOid(chatId: number, id: WorkpieceId, path: string,
+      turn: WorktreeTurnAccess): Promise<string | undefined>;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -347,6 +382,12 @@ export interface AgentHooks {
    * model re-runs the step against unmodified content. Returns whether a "changes" message was
    * written (change-ID numbering counts messages).
    *
+   * `reRoots` are the step's re-roots of worktree pins (see WorktreeTurnAccess.reRoot), at most
+   * one per worktree, and `changes` hold none of the edits they absorbed. The step's message
+   * declares each as a pin, and since that changes content without changes, the step records
+   * its changes in the message alone, with no rows, and bumps the chat's generation
+   * destructively, so clients rebuild from the log.
+   *
    * Rows and messages broadcast from inside the transaction, as every append always has: the
    * transaction protects server-side storage, not what subscribers saw before a rollback (a
    * mid-barrier exception is itself a bug; see the design note on materializeChatChanges'
@@ -367,6 +408,7 @@ export interface AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        reRoots?: {worktreeId: WorkpieceId, baseCommit: string}[],
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -398,9 +440,9 @@ export interface AgentHooks {
 
   /**
    * Read a commit's full file map from the workspace's git object store. Commits are immutable,
-   * so results are cacheable by oid (and the store's parse cache makes repeats cheap).
+   * so results are cacheable by oid.
    */
-  readCommitFiles(oid: string): Promise<Map<string, string>>;
+  readCommitFiles(oid: string): Map<string, string>;
 
   /**
    * The paths of the files whose entry differs between two commits' trees, added and removed
@@ -439,15 +481,15 @@ export interface AgentHooks {
                blueprint?: {output?: BlueprintOutput}): {id: WorkpieceId, title: string};
 
   /**
-   * Create a new worktree workpiece rooted at the given commit id (a full oid, resolved against
-   * the workspace's local git knowledge -- never a remote lookup), provisional to and permanently
-   * private to the given chat. Performs the initial pull when the commit is known only from a
-   * gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
+   * Create a new worktree workpiece, empty when commitId is omitted, otherwise rooted at the
+   * given commit id (a full oid, resolved against the workspace's local git knowledge -- never a
+   * remote lookup), provisional to and permanently private to the given chat. Performs the initial
+   * pull when the commit is known only from a gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
    * (`createdWorktrees`); a step that dies before its barrier leaves an unstamped record that
    * reconciliation reaps. The new worktree is unpinned: it reads as its base commit until the
    * first modification pins it. Returns the base commit alongside the id.
    */
-  createWorktree(title: string, chatId: number, commitId: string)
+  createWorktree(title: string, chatId: number, commitId?: string)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}>;
 
   /**
@@ -551,17 +593,20 @@ export interface AgentHooks {
    * the path -- never a whole tree -- the lazy base resolver behind worktree session content and
    * the way every unpinned read is served, gadget or worktree. Returns undefined for an absent
    * path; throws descriptive, agent-visible errors for a symlink or submodule path (naming the
-   * target), oversized or binary content, and pull failures.
+   * target), binary content, and pull failures.
    */
   readFileAtCommit(commit: string, path: string): Promise<string | undefined>;
 
   /**
-   * readFileAtCommit that also reports the blob's oid: the file's content address, which an
-   * unpinned read stamps (AiToolCall.observedOid, and the agent's filesRead) so a later edit can
-   * ask whether the committed file is still byte-identical (fileOidAtCommit).
+   * Open one file of a commit's tree by path for reading in pieces, whatever its size, along with
+   * its blob's oid: the file's content address, which an unpinned read stamps
+   * (AiToolCall.observedOid, and the agent's filesRead) so a later edit can ask whether the
+   * committed file is still byte-identical (fileOidAtCommit). The same path rules and errors as
+   * readFileAtCommit, but no content rules: the blob is never decoded here. In-process only; the
+   * reader is not an RPC type.
    */
-  readFileAtCommitWithOid(commit: string, path: string)
-      : Promise<{text: string, oid: string} | undefined>;
+  openFileAtCommit(commit: string, path: string)
+      : Promise<{oid: string, reader: BlobReader} | undefined>;
 
   /**
    * The blob oid of the regular file at `path` in a commit's tree, or undefined for an absent
@@ -577,6 +622,13 @@ export interface AgentHooks {
   readBlobText(oid: string, path: string): Promise<string>;
 
   /**
+   * Open a blob by oid for reading in pieces, whatever its size, never reading it whole: how a
+   * read of a byte-backed file, and replay of a stamped read, render just their window.
+   * In-process only; the reader is not an RPC type.
+   */
+  openBlob(oid: string): Promise<BlobReader>;
+
+  /**
    * Throws the same descriptive errors readFileAtCommit does when `path` names a symlink or
    * submodule in the commit's tree -- the write side of the tree-entry modes rules. Absent
    * paths (new files) and regular files pass, including ones whose content is unreadable
@@ -585,13 +637,13 @@ export interface AgentHooks {
   assertWorktreePathWritable(commit: string, path: string): Promise<void>;
 
   /**
-   * The grep tool's scan: the searchable files under `path` in a workpiece's overlay-over-base
-   * view, with missing base blobs pulled in one batch (see scanWorkpieceForGrep). `base` is the
-   * commit the workpiece's untouched files are read from, or undefined for a gadget with no
-   * committed code.
+   * The grep tool's scan: the lines matching `pattern` in the searchable files under `path` in
+   * a workpiece's overlay-over-base view, with missing base blobs pulled in one batch (see
+   * scanWorkpieceForGrep). `base` is the commit the workpiece's untouched files are read from,
+   * or undefined for a gadget with no committed code.
    */
   grepWorkpiece(turn: WorktreeTurnAccess, workpieceId: WorkpieceId, base: string | undefined,
-                path?: string): Promise<GrepScan>;
+                pattern: RegExp, path?: string): Promise<GrepScan>;
 
   /**
    * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in chat `chatId`'s
@@ -629,13 +681,15 @@ export interface AgentHooks {
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
    * WorktreeTurnAccess): the overseer registers it for the duration of the execution so the
-   * chat's worktree env bindings can resolve against the running turn.
+   * chat's worktree env bindings can resolve against the running turn. `stopSignal` is the
+   * turn's: when the user stops the turn, the execution's gatekeeper sessions end, though its
+   * code may run on.
    */
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
                    onOutputText?: (delta: string) => void,
-                   worktreeTurn?: WorktreeTurnAccess): Promise<string>;
+                   worktreeTurn?: WorktreeTurnAccess, stopSignal?: AbortSignal): Promise<string>;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
@@ -664,10 +718,11 @@ export interface AgentHooks {
   /**
    * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
    * to Workers AI, and the hosts it may reach in a workspace that has observed restricted data.
-   * Throws if that workspace may reach none. Exposed as a narrow interface (rather than handing
-   * over the whole `env`) so the dependency surface stays explicit.
+   * Where that workspace refuses `url` but the admin lets users approve it, records a
+   * "webFetchRequest" instead, and the turn should end. Throws if the workspace may reach nothing.
    */
-  getWebFetchEnv(): Promise<WebFetchEnv>;
+  authorizeWebFetch(chatId: number, url: string)
+      : Promise<{env: WebFetchEnv} | {approvalMessage: string}>;
 
   /**
    * Deployment-wide, admin-authored instructions to append to the agent's system prompt. Returns
@@ -696,7 +751,7 @@ export interface AgentHooks {
   /**
    * Record a pending connection request for the given chat. `message` is the tool output text; when
    * `requested` is true a request was created (captured and spliced into the chat as a
-   * "connectionRequest" message by the agent loop, see consumeCapturedConnectionRequests) and the
+   * "connectionRequest" message by the agent loop, see consumeCapturedDecisionRequests) and the
    * turn should end so the agent waits for the user. When `requested` is false the request was
    * rejected (e.g. it wouldn't resolve to a connectable resource); `message` explains what to fix
    * and the agent should be allowed to retry within the same turn.
@@ -709,10 +764,10 @@ export interface AgentHooks {
   }): Promise<{ requested: boolean; message: string }>;
 
   /**
-   * Drain connection requests captured during the current step so they can be appended to the chat
-   * (analogous to consumeCapturedActions).
+   * Drain the connection and web fetch requests captured during the current step so they can be
+   * appended to the chat (analogous to consumeCapturedActions).
    */
-  consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[];
+  consumeCapturedDecisionRequests(chatId: number): AiChatMessageBody[];
 
   /**
    * Mint a gatekeeper simulating a new resource of a creatable type, and queue the creation for
@@ -793,11 +848,61 @@ Workspaces themselves can be managed too. \`listWorkspaces\` lists the user's wo
 
 Schedules (hooks that wake a Gadget, such as those registered through the Scheduled Tasks binding) can be inspected with \`listSchedules\`: whether each is enabled, the gadget it wakes, its next run, and how its last run went, including the error when it failed. After registering a schedule, call \`listSchedules\` to confirm it exists and to tell the user it is waiting to be enabled. To enable, disable or delete a schedule, use \`requestScheduleChange\`: it only asks the workspace owner, and nothing changes until they approve. To test an enabled schedule, or to rerun one whose last run failed once you have fixed the cause, use \`runScheduleNow\`.
 
+# Live views in your answers
+
+Reference any worktree file with a Markdown link:
+\`[Download CSV](worktree://OUTPUTS/results.csv)\`. Clicking downloads the original file.
+To display an image inline instead, use Markdown:
+\`![Mandelbrot set](worktree://OUTPUTS/mandelbrot.png)\`.
+Use the actual worktree binding name and a relative path (percent-encode special characters).
+The host snapshots the current file when you emit either reference: later edits or deletion do
+not change the file in this reply. A later reply can reference the path for a new snapshot.
+No attachment tool, OID lookup or Gadget is needed. Use an existing suitable worktree, or
+create an empty one with \`createWorktree\` (omit \`commitId\`) for generated files. The upload
+worktree identified in attachment notes is for attachments; use a separate worktree for generated
+files and working notes. For container outputs, mount that worktree, write the file inside it,
+and wait for the command to return its
+files before referencing them. Ignored files and files outside mounts stay in the container.
+Do not put image bytes or base64 in your reply.
+The same URLs work in literal \`<img src="worktree://BINDING/path">\` tags in \`<inline-html>\`
+for custom layouts; construct the file references in the markup, not dynamically in a script.
+
+You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
+
+\`\`\`
+Spending on food rose 18% in October, mostly eating out.
+
+<inline-html>
+<title>Food spending by week</title>
+<h3>Food spending by week</h3>
+<div id="weeks"></div>
+<script type="module">
+  const limit = 120;
+  const weeks = [[1, 96], [2, 132], [3, 88], [4, 141]];
+  const list = document.getElementById("weeks");
+  for (const [week, total] of weeks) {
+    const bar = list.appendChild(document.createElement("button"));
+    bar.textContent = \`Week \${week}: \${total} of \${limit}\`;
+    bar.onclick = () => agent.send(\`Show me week \${week} in detail.\`);
+  }
+</script>
+</inline-html>
+\`\`\`
+
+* Put the opening and closing tags on lines of their own, with no indent, outside code fences. The \`<title>\` names the view but is not shown. The body is the whole view, and it sits in your answer with no border or padding around it, so draw any heading or box yourself. A block with nothing but a title shows an error.
+* Put any \`<style>\` first and code in \`<script type="module">\` last, after the markup, so the view takes shape while you write it. Module scripts run once the block closes, and see all of its markup and the global \`agent\`.
+* A view shows only what you write into it: it has no \`env\` and no network. To show data from Gadgets, connections or the web, read it with \`executeCode\` first, then write the values into the view's code. No \`fetch()\`, and no remote scripts, styles, fonts or images. Draw charts with inline SVG or the DOM.
+* The view's code runs again each time the view scrolls into sight, and for each person viewing the chat.
+* \`agent.send(message)\` asks the user to send you \`message\`, e.g. after they click a bar. The Workshop shows the message under the view and sends it as the user's own chat message only when they click Send. Write it in the user's words, as in the example.
+* For colours, use the CSS variables \`--color-kumo-base\`, \`--color-kumo-elevated\`, \`--color-kumo-line\`, \`--text-color-kumo-default\`, \`--text-color-kumo-subtle\`, \`--color-kumo-brand\`, \`--color-kumo-success\`, \`--color-kumo-warning\` and \`--color-kumo-danger\`, so the view reads well in light and dark themes. The page background is transparent, and text already has the chat's font, size and colour.
+* The frame takes the height of its content, up to 720px. Do not use \`vh\` units or percentage heights on the page, and make the view work at phone width.
+* A view keeps no state. Something that must remember things between visits belongs in a Gadget.
+
 # Writing Gadgets
 
 Gadgets execute on a restricted and heavily-sandboxed variant of Cloudflare Workers.
 
-A Gadget is defined by two main files, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
+A Gadget is defined by two entry points, client.js and server.js. Create them with writeFile if the Gadget doesn't have them yet. A new Gadget has no files unless it came from a blueprint.
 
 server.js defines the Gadget's server-side logic, in the form of a Cloudflare Durable Object class. The class must be exported under the name \`Gadget\`. Unlike with normal Durable Objects on Cloudflare, there is no need to export a separate fetch handler; the Gadgets platform automatically takes care of routing requests to the Gadget. The Gadget has access to private storage via the regular Durable Objects KV and SQLite storage APIs. A simple server.js might look like:
 
@@ -811,11 +916,27 @@ export class Gadget extends DurableObject {
 }
 \`\`\`
 
-client.js is JavaScript that runs inside the browser to render a client-side user interface. This script runs inside a sandboxed iframe. It can display UI by manipulating the DOM. The client context is initialized with a special global variable called \`gadget\`, which is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
+client.js is JavaScript that runs inside the browser to render a client-side user interface. It runs as an ES module inside a sandboxed iframe, and can display UI by manipulating the DOM. client.js must have a default export with a \`main(gadget)\` method, which the Workshop calls once client.js has loaded. Its \`gadget\` argument is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
 
 \`\`\`
-let greeting = await gadget.greet("World");
-document.body.appendChild(document.createTextNode(greeting));
+export default {
+  async main(gadget) {
+    let greeting = await gadget.greet("World");
+    document.body.appendChild(document.createTextNode(greeting));
+  },
+};
+\`\`\`
+
+\`gadget\` is not a global variable: pass it to whatever code needs to call the server.
+
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`, an RPC stub for whatever is running the UI:
+
+\`\`\`ts
+interface GadgetHost {
+  // Shows the user the chat of an agent spawned with an agent spawner's spawnAgent().
+  // chatToken comes from SpawnedAgent.getChatToken().
+  openAgentChat(chatToken: string): Promise<void>;
+}
 \`\`\`
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
@@ -852,11 +973,23 @@ Note that the iframe sandbox on the client side prohibits modal popup boxes like
 
 To let the viewer save a file the gadget holds (bytes a binding returned, such as base64 from a download method), build a Blob in client.js and click an <a download> link on its object URL from a button the viewer pressed. The sandbox allows downloads; it does not allow navigating the page to the file.
 
+## Splitting code into multiple files
+
+client.js and server.js may import other .js files in the Gadget. Each file has a size limit, so split a large UI into several files.
+
+* A relative import names the exact file, extension included (\`./ui/list.js\`, not \`./ui/list\`), resolves against the importing file, and cannot reach outside the Gadget. Only .js files can be imported.
+* Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm) other than "capnweb", or URLs other than \`data:\` URLs.
+* Client code cannot use \`import()\`; import modules statically. Do not build URLs from \`import.meta.url\`.
+* Everything client.js reaches through imports is sent to anyone who can use the Gadget, including people who can use it but not edit it. Keep secrets and server-only logic in modules that only server.js imports.
+* Import problems in the UI are reported in the Gadget console.
+
 ## Server -> Client callbacks and subscriptions
 
 Note that Cap'n Web is a bidirectional object capability protocol, meaning, among other things, you can pass a function over RPC, in the params or results of another function. This actually passes the function "by reference": the receiving end actually receives an RPC stub, which can be used to call back over RPC to the original function. This, of course, causes the function to become async, even if the original was synchronous.
 
-Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes (perhaps due to activity of a different client). This technique should be used when implementing multiplayer collaboration.
+Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes.
+
+Use subscriptions for views of mutable server data, including single-user Gadgets: you may update that data with \`executeCode\` while the user is viewing it. A one-time read only displays the initial state. Subscribe with an initial snapshot, and notify subscribers after saving each mutation, so the view updates without a page reload. Closing and reopening a Gadget pane preserves its iframe and does not rerun client.js.
 
 When implementing such a subscription, it is important to call \`.dup()\` on the callback stub, in order to obtain a long-lived stub. Otherwise, the stub received as a parameter is implicitly disposed at the end of the function. You should also use \`onRpcBroken\` to monitor for client disconnects, like:
 
@@ -873,25 +1006,42 @@ async subscribe(callback) {
 And on the client:
 
 \`\`\`
+import { RpcTarget } from "capnweb";
+
 class Callback extends RpcTarget {
+  constructor(gadget) {
+    super();
+    this.gadget = gadget;
+  }
+
   update(state) {
     // update the UI
   }
 
   [Symbol.dispose]() {
     // Connection lost. Resubscribe using new connection.
-    gadget.subscribe(this);
+    this.gadget.subscribe(this);
   }
 }
 
-gadget.subscribe(new Callback());
+export default {
+  main(gadget) {
+    gadget.subscribe(new Callback(gadget));
+  },
+};
 \`\`\`
 
-The top-level \`gadget\` stub survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
+The \`gadget\` stub passed to \`main()\` survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
 
-DO NOT import \`RpcTarget\` in client.js. It is already imported.
+In client code, import \`RpcTarget\` and \`RpcStub\` from "capnweb".
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
+
+## Legacy client.js
+
+Older Gadgets may have a legacy client.js: one with no default export, whose top-level code builds the UI directly. The Workshop still runs these, as a single module with \`gadget\`, \`RpcTarget\` and \`RpcStub\` as global variables, and a browser-mode export waits for its top-level \`await\`. A legacy client.js cannot import anything, including another file of the Gadget or "capnweb": imports require the default export with \`main()\`.
+
+A small change to a legacy client.js can keep its style. To split one into files, or when rewriting much of it, convert it: move its top-level code into \`export default { async main(gadget) { ... } }\`, import \`RpcTarget\` and \`RpcStub\` from "capnweb", and pass \`gadget\` to the code that needs it. Do not add a default export without converting the rest, because the globals no longer exist once client.js has one. Write every new client.js with \`main()\`.
 
 ## Design Tips
 
@@ -905,15 +1055,19 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 
 Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
 
-During a browser-mode export, client.js is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client.js.
+During a browser-mode export, the Workshop defines a global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client code.
 
-The Workshop waits for client.js, including any top-level \`await\`, to finish before capturing a browser-mode export. Use top-level \`await\` when the initial UI must load data or otherwise complete asynchronous rendering before capture. For example:
+The Workshop waits for \`main()\` to finish, including the promise it returns, before capturing a browser-mode export. Make \`main()\` async and await what the initial UI needs when it must load data or otherwise complete asynchronous rendering before capture. For example:
 
 \`\`\`
-let report = await gadget.getReport();
-let exportFormat = globalThis.gadgetExportFormatId;
-document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
-document.body.append(renderReport(report));
+export default {
+  async main(gadget) {
+    let report = await gadget.getReport();
+    let exportFormat = globalThis.gadgetExportFormatId;
+    document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
+    document.body.append(renderReport(report));
+  },
+};
 \`\`\`
 
 To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Each format may also contain an optional \`fileName\`, including its extension, such as \`"my-report.pdf"\`. When omitted, the downloaded file name defaults to the Gadget title plus \`fileExtension\`. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
@@ -1092,6 +1246,7 @@ export function formatMissingBlueprintBindings(
     switch (binding.type) {
       case "gatekeeper":
         details = `external resource via the "${binding.gatekeeperName}" gatekeeper; ` +
+            (binding.resourceTypeId ? `resource type ID ${JSON.stringify(binding.resourceTypeId)}; ` : ``) +
             `resource URL pattern ${JSON.stringify(binding.typeUrlPattern)}` +
             (binding.resourceUrl
                 ? `; the blueprint author suggests ${JSON.stringify(binding.resourceUrl)}`
@@ -1312,9 +1467,9 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too. Use byte-aware binding operations for binary files.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are available at the workspace paths shown in their attachment notes. Use byte-aware binding operations for binary files.
 
-For a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first.
+A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
@@ -1404,9 +1559,9 @@ Call this before building a new gadget. If one elsewhere already does what the u
 `.trim();
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
-Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
+Create a worktree: an empty file tree, or one rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
 
-\`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
+Omit \`commitId\` to start empty, for example for generated images, scripts, or other working files. Reuse a suitable existing worktree when available. Otherwise \`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
 
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
 `.trim();
@@ -1514,17 +1669,17 @@ ${EXECUTE_CODE_SELF_PARAM}
 `.trim();
 
 let LIST_CONNECTABLE_RESOURCES_TOOL_DESCRIPTION = `
-List the resource types a gatekeeper vendor offers, so you can construct a resourceUrl for requestConnection. The system prompt lists which vendors exist; call this to learn a specific vendor's resource URL patterns before requesting a connection.
+List a gatekeeper vendor's separate Existing resources and New resources. Use an Existing resource's resourceTypeId with requestConnection to connect something already present; use a New resource's resourceTypeId with createExternalResource to create something. A vendor may offer either or both. The system prompt lists which vendors exist; call this to discover their resource types.
 `.trim();
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
-Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: pass vendorId and the resourceTypeId from listConnectableResources, plus resourceUrl when you can infer it to prefill the picker. The stable ID selects the type even if its URL pattern changes. When resourceTypeId is omitted, selection falls back to the supplied URL, a whole-instance option, or a sole type; an ambiguous request is rejected with guidance and no card is shown. Fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
 
 For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
-Create a new external resource (e.g. a new document), for resource types listConnectableResources marks creatable; requestConnection is for resources that already exist. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation.
+Create a new external resource (e.g. a new document), from the New resources section of listConnectableResources; requestConnection is only for the separately listed Existing resources. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation.
 `.trim();
 
 // =======================================================================================
@@ -1586,46 +1741,6 @@ function findEditPos(content: string, textToReplace: string): number {
 // tools and history replay so the two can never drift.
 function jsonToolResultText(value: unknown): string {
   return JSON.stringify(value);
-}
-
-/** The line window a readFile call asked for (see AiToolCall's readFile input). */
-export type ReadFileWindow = {startLine?: number, lineCount?: number};
-
-/**
- * Renders a readFile result as the exact text the model sees, for both the live tool and history
- * replay. A read with no window returns the file verbatim when it fits MAX_TOOL_RESULT_CHARS;
- * otherwise, and for any windowed read, the result is the selected lines, a blank line, and
- * `[lines A-B of N; next startLine: B+1]` (without the continuation when B is the last line).
- * `lineCount` is an upper bound: a window ends where the next whole line would push the result
- * past the cap, so the note always says where to continue. Lines are never cut, so a single line
- * longer than the cap is the one result that exceeds it. Lines are 1-based; a final newline does
- * not start a line. The tool schema already requires positive integers. Exported for tests.
- */
-export function readFileWindow(text: string, {startLine, lineCount}: ReadFileWindow): string {
-  if (startLine === undefined && lineCount === undefined &&
-      text.length <= MAX_TOOL_RESULT_CHARS) {
-    return text;
-  }
-  let lines = text.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  let first = startLine ?? 1;
-  if (first > lines.length) {
-    throw new Error(`startLine ${first} is past the end of the file, which has ` +
-        `${lines.length} line${lines.length === 1 ? "" : "s"}.`);
-  }
-  let note = (last: number) => `[lines ${first}-${last} of ${lines.length}` +
-      (last < lines.length ? `; next startLine: ${last + 1}]` : "]");
-  // Whole lines, at least one, while they fit under the cap with the longest note this file can
-  // produce.
-  let limit = lineCount === undefined ? lines.length : Math.min(lines.length, first - 1 + lineCount);
-  let budget = MAX_TOOL_RESULT_CHARS - note(lines.length - 1).length - 2;
-  let last = first;
-  let chars = lines[first - 1].length;
-  while (last < limit && chars + 1 + lines[last].length <= budget) {
-    chars += 1 + lines[last].length;
-    ++last;
-  }
-  return `${lines.slice(first - 1, last).join("\n")}\n\n${note(last)}`;
 }
 
 /**
@@ -1822,10 +1937,11 @@ async function runAgentPass(
   // The base commit a worktree's untouched paths resolve against -- a worktree's session
   // content holds only touched/read files, and a path absent from it is read lazily from this
   // commit (hooks.readFileAtCommit): the chat pin's base while the worktree is pinned in this
-  // session, else its accepted commit, the commit the first modification will pin it at (the
-  // same commit either way; see WorktreeRecord.pinBase). Undefined for anything that is not a
-  // worktree. The pinned case must win: during replay of a closed epoch the pin's base is that
-  // epoch's, while the record already holds a later accept's.
+  // session, else its accepted commit, the commit the first modification will pin it at. (The
+  // two are the same commit unless a re-root moved the pin; see WorktreeRecord.pinBase.)
+  // Undefined for anything that is not a worktree. The pinned case must win: after a re-root,
+  // and during replay of a closed epoch, whose pin's base is that epoch's while the record
+  // already holds a later accept's.
   let worktreeBase = (id: WorkpieceId): string | undefined =>
       worktreePinBases.get(id) ?? hooks.getWorktreePinBase(id);
 
@@ -1882,13 +1998,16 @@ async function runAgentPass(
   // Lazily reads a worktree file's base text into the session content, so later edits (and
   // replayed changes) apply against it exactly as if the base tree had been materialized.
   // Returns undefined for a path absent from the base; throws readFileAtCommit's descriptive
-  // errors (symlink/submodule/oversized/binary/pull failure). No-ops for anything that is not a
+  // errors (symlink/submodule/binary/pull failure). No-ops for anything that is not a
   // worktree.
   let faultWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
       : Promise<string | undefined> => {
     let base = worktreeBase(worktreeId);
     if (base === undefined) return undefined;
     let text = await hooks.readFileAtCommit(base, filename);
+    // A re-root by a concurrent call of the same execution can move the base during the read,
+    // whose text is then the old base's: read the new one instead.
+    if (worktreeBase(worktreeId) !== base) return await faultWorktreeBase(worktreeId, filename);
     if (text === undefined) return undefined;
     sessionContent = new Map(sessionContent);
     let files = new Map(sessionContent.get(worktreeId));
@@ -1913,24 +2032,39 @@ async function runAgentPass(
       : hooks.readBlobText(value.oid, filename);
   };
 
-  // A file as readFile shows it, or undefined if it does not exist. An unpinned workpiece with
-  // committed code is read live at its base -- a gadget's head (fixed for the turn; see
-  // observeHead) or a worktree's accepted commit -- by path, never by materializing the tree,
-  // and stamped with the blob's oid: replay reproduces the text from it, and editFile compares
-  // it against the file at the head it pins. Pinned workpieces -- and gadgets with no committed
-  // code, whose files exist only in the chat's change stream -- read from the session content,
-  // unstamped: it is never stale within an epoch. Worktree session content is lazy: a path not
-  // yet touched or read resolves against the pinned base commit (with descriptive errors for
-  // symlinks, submodules, and oversized or binary content). A removed path stays removed
-  // (readWorktreeBase).
+  // A file as readFile shows it -- the source its window renders from -- or undefined if it does
+  // not exist. An unpinned workpiece with committed code is read live at its base -- a gadget's
+  // head (fixed for the turn; see observeHead) or a worktree's accepted commit -- by path, never
+  // by materializing the tree, from its blob, which only the window is read from, and stamped
+  // with the blob's oid: replay reproduces the window from it, and editFile compares it against
+  // the file at the head it pins. Pinned workpieces -- and gadgets with no committed code, whose
+  // files exist only in the chat's change stream -- read from the session content, unstamped: it
+  // is never stale within an epoch (a byte-backed file is read from its blob, as unpinned reads
+  // are). Worktree session content is lazy: a path not yet touched resolves against the pinned
+  // base commit, read from its blob and stamped like an unpinned read; only an edit decodes it
+  // whole into the session text (readWorktreeBase). A removed path stays removed.
   let readToolFile = async (id: WorkpieceId, filename: string)
-      : Promise<{text: string, oid?: string} | undefined> => {
+      : Promise<{source: LineSource, oid?: string} | undefined> => {
     if (!pinnedGadgets.has(id)) {
       let base = observeHead(id) ?? hooks.getWorktreePinBase(id);
-      if (base !== undefined) return await hooks.readFileAtCommitWithOid(base, filename);
+      if (base !== undefined) {
+        let file = await hooks.openFileAtCommit(base, filename);
+        return file && {source: {kind: "blob", reader: file.reader}, oid: file.oid};
+      }
     }
-    let text = await readSessionText(id, filename) ?? await readWorktreeBase(id, filename);
-    return text === undefined ? undefined : {text};
+    let value = sessionContent.get(id)?.get(filename);
+    if (value !== undefined && typeof value !== "string") {
+      return {source: {kind: "blob", reader: await hooks.openBlob(value.oid)}};
+    }
+    if (value === undefined) {
+      // A pinned worktree's untouched path, read from its pin base by blob, never faulted into
+      // the session: only an edit needs the whole text (readWorktreeBase).
+      let base = worktreeBase(id);
+      if (base === undefined || worktreeRemovedPaths.get(id)?.has(filename)) return undefined;
+      let file = await hooks.openFileAtCommit(base, filename);
+      return file && {source: {kind: "blob", reader: file.reader}, oid: file.oid};
+    }
+    return {source: {kind: "text", text: value}};
   };
 
   // Seeds the base texts a change's worktree edits need before it applies to the session
@@ -1992,12 +2126,15 @@ async function runAgentPass(
   // the map) is "not already removed", and for a complete entry is "present in the map". (A
   // `set` of a base path a sparse entry hasn't loaded renders as an addition, since the previous
   // text isn't at hand; the shipped clients emit `set` only for new or re-created files, so this
-  // is cosmetic and left alone.)
+  // is cosmetic and left alone.) The observation is one tool result, so its diffs share
+  // MAX_TOOL_RESULT_CHARS; a file whose diff doesn't fit is named instead, and the model's
+  // knowledge of it dropped, so editFile makes it read the file first.
   let applyReplayedChange = (change: CodeChange, includeDiff: boolean): string | undefined => {
     let before = sessionContent;
     sessionContent = applyCodeChange(sessionContent, change);
 
     let diffParts: string[] = [];
+    let diffBudget = MAX_TOOL_RESULT_CHARS;
     for (let [key, entries] of includeDiff ? Object.entries(change) : []) {
       let id = Number(key);
       let envName = chatNameFor(id);
@@ -2024,9 +2161,14 @@ async function runAgentPass(
         }
         let diff = formatUnifiedDiff(
             filename, oldContent ?? "", newContent ?? "", oldContent !== undefined, true);
-        if (diff) {
-          fileDiffParts.push(diff);
+        if (!diff) continue;
+        if (diff.length > diffBudget) {
+          filesRead.get(id)?.delete(filename);
+          fileDiffParts.push(`${filename}: changed; the diff is too large to show, so read the file`);
+          continue;
         }
+        diffBudget -= diff.length;
+        fileDiffParts.push(diff);
       }
 
       if (fileDiffParts.length > 0) {
@@ -2189,14 +2331,14 @@ async function runAgentPass(
   // accept commits that edited content, so the entry is restamped from it like a
   // session-tracking one -- else the next epoch's gate would refuse the edit as stale content
   // the model in fact saw. A stamped path the session removed is dropped the same way.
-  let resetSessionEpoch = async () => {
+  let resetSessionEpoch = () => {
     for (let [workpieceId, files] of filesRead) {
       let content = sessionContent.get(workpieceId);
       let removed = worktreeRemovedPaths.get(workpieceId);
       for (let [filename, stamp] of files) {
         let text = content?.get(filename);
         if (typeof text === "string") {
-          files.set(filename, await blobOid(text));
+          files.set(filename, blobOid(text));
         } else if (stamp === undefined || removed?.has(filename)) {
           files.delete(filename);
         }
@@ -2209,6 +2351,19 @@ async function runAgentPass(
     pendingReplayEdits = [];
   };
 
+  // Roots a worktree's session state at `base`, live (WorktreeTurnAccess.reRoot) and in replay
+  // alike: its entry restarts empty, removals with it, and what the model knew of its files is
+  // forgotten wholesale -- comparing the old and new texts would mean reading two repository
+  // trees, and the model's reads of the old base (stamped or not) no longer describe it.
+  let reRootWorktreeSession = (worktreeId: WorkpieceId, base: string) => {
+    worktreePinBases.set(worktreeId, base);
+    pinnedGadgets.add(worktreeId);
+    sessionContent = new Map(sessionContent);
+    sessionContent.set(worktreeId, new Map());
+    worktreeRemovedPaths.delete(worktreeId);
+    filesRead.delete(worktreeId);
+  };
+
   // Establishes a pin's base tree in the session content during replay and marks the gadget
   // pinned. Idempotent: commits are immutable, so re-establishing the same base is harmless --
   // which is what lets ensureReplayContentForWrite below establish a base *early*.
@@ -2217,12 +2372,19 @@ async function runAgentPass(
   // session content restarts at the new base, and what the model knows of a file whose text
   // that changed is dropped, so editFile requires a re-read rather than match against text the
   // model saw before. Returns the names of those files, sorted, for telling the model.
-  let applyReplayedPin = async (pin: ChatGadgetPin): Promise<string[]> => {
+  let applyReplayedPin = async (pin: ChatGadgetPinRecord): Promise<string[]> => {
     if (hooks.isWorktree(pin.gadgetId)) {
       // A worktree's base is a whole repository tree, so it is never materialized: the entry
-      // holds only touched/read files, resolved lazily against the pinned base (accumulated
-      // content is kept on re-establishment -- it is all base-derived or change-applied, so
-      // re-faulting would reproduce it).
+      // holds only touched/read files, resolved lazily against the pinned base. Re-establishing
+      // the base the content is rooted at keeps the entry -- it is all base-derived or
+      // change-applied, so re-faulting would reproduce it. A declaration at another commit is
+      // a re-root (see WorktreeTurnAccess.reRoot), whose base the content was not rooted at: the
+      // pinned base, or for a first pin, the accepted commit it keeps as `mergedCommit`.
+      let rootedAt = worktreePinBases.get(pin.gadgetId) ?? pin.mergedCommit ?? pin.baseCommit;
+      if (rootedAt !== pin.baseCommit) {
+        reRootWorktreeSession(pin.gadgetId, pin.baseCommit);
+        return [];
+      }
       worktreePinBases.set(pin.gadgetId, pin.baseCommit);
       if (!sessionContent.has(pin.gadgetId)) {
         sessionContent = new Map(sessionContent);
@@ -2231,7 +2393,7 @@ async function runAgentPass(
       pinnedGadgets.add(pin.gadgetId);
       return [];
     }
-    let files = await hooks.readCommitFiles(pin.baseCommit);
+    let files = hooks.readCommitFiles(pin.baseCommit);
     let known = filesRead.get(pin.gadgetId);
     let forgotten: string[] = [];
     if (pinnedGadgets.has(pin.gadgetId) && known !== undefined) {
@@ -2276,7 +2438,7 @@ async function runAgentPass(
     if (pinnedGadgets.has(workpieceId)) return;
     if (unpinnedBase(workpieceId) === undefined) return;  // no committed code
 
-    let upcoming: ChatGadgetPin | "reverted" | "flushed-unpinned" | undefined;
+    let upcoming: ChatGadgetPinRecord | "reverted" | "flushed-unpinned" | undefined;
     for (let msg of chatMessages) {
       if (msg.sequence <= sequence) continue;
       if (msg.type === "merge" && msg.epochBoundary) break;
@@ -2295,7 +2457,11 @@ async function runAgentPass(
     if (upcoming === undefined || upcoming === "reverted" || upcoming === "flushed-unpinned") {
       return;
     }
-    await applyReplayedPin(upcoming);
+    // A worktree's upcoming declaration can be a re-root by a later execution of the step (one
+    // pinned live by a commit() before this read), whereas the read saw the accepted commit,
+    // which the re-root keeps as `mergedCommit`. Establish that; the declaration re-roots.
+    await applyReplayedPin(hooks.isWorktree(workpieceId) && upcoming.mergedCommit !== undefined
+        ? {gadgetId: workpieceId, baseCommit: upcoming.mergedCommit} : upcoming);
   };
 
   // Whether a tool call in the assistant message at `index` saw content the user later reverted.
@@ -2482,11 +2648,22 @@ async function runAgentPass(
                     data: data.toBase64(),
                     mimeType: attachment.mimeType,
                   }];
-                } else if (text !== undefined) {
+                } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
                   return [{
                     type: "text",
                     text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
                         text,
+                  }];
+                } else if (text !== undefined) {
+                  // Inlined, it would be resent on every turn, and could alone exceed the model's
+                  // window, which compaction cannot fix.
+                  return [{
+                    type: "text",
+                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
+                        "bytes, too large to inline. " + (workspaceLocation
+                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                              "workspace file.]"
+                            : "It is not in the workspace yet, so its contents are unavailable.]"),
                   }];
                 } else if (attachment.mimeType === PDF_MIME_TYPE &&
                            modelApiSupportsPdfAttachments(handle.model.api)) {
@@ -2586,8 +2763,9 @@ async function runAgentPass(
                     };
                   } else if (toolCall.observedOid !== undefined ||
                              toolCall.observedCommit !== undefined) {
-                    // The read was served from committed code (the workpiece was unpinned; see
-                    // the live tool): reproduce exactly the text the model saw, from the blob
+                    // The read was served from committed code (the workpiece was unpinned, or
+                    // it was a pinned worktree's untouched path; see the live tool): reproduce
+                    // exactly the text the model saw, from the blob
                     // the read stamped -- whatever the commit holds now. Deliberately no
                     // staleness check: the model's context must not change from one turn to
                     // the next on account of other chats' accepts (that breaks prompt caching
@@ -2603,7 +2781,8 @@ async function runAgentPass(
                       throw new Error("File missing from its observed commit.");
                     }
                     toolOutput = {text: readFileWindow(
-                        await hooks.readBlobText(oid, toolCall.input.filename), toolCall.input)};
+                        {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
                     markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
@@ -2624,19 +2803,28 @@ async function runAgentPass(
                     const edits = pendingReplayEdits.filter(edit => edit.workpieceId === workpieceId &&
                       edit.filename === toolCall.input.filename);
                     const lastWrite = edits.findLastIndex(edit => edit.toolName === "writeFile");
-                    // A whole-file write supersedes even an unreadable binary base. Do not
-                    // read that obsolete base before replaying the successful replacement.
-                    let value: string | null = lastWrite >= 0 ? null
-                      : await readSessionText(workpieceId, toolCall.input.filename) ??
-                        await faultWorktreeBase(workpieceId, toolCall.input.filename) ?? null;
-                    for (let edit of edits.slice(Math.max(0, lastWrite))) {
-                      value = applyPendingEditToText(value, edit);
-                    }
-                    if (value === null) {
-                      throw new Error("File does not exist.");
+                    const stored = sessionContent.get(workpieceId)?.get(toolCall.input.filename);
+                    let source: LineSource;
+                    if (edits.length === 0 && stored !== undefined && typeof stored !== "string") {
+                      // A byte-backed file, which the live read rendered from its blob.
+                      source = {kind: "blob", reader: await hooks.openBlob(stored.oid)};
+                    } else {
+                      // A whole-file write supersedes even an unreadable binary base. Do not
+                      // read that obsolete base before replaying the successful replacement.
+                      let value: string | null = lastWrite >= 0 ? null
+                        : await readSessionText(workpieceId, toolCall.input.filename) ??
+                          await faultWorktreeBase(workpieceId, toolCall.input.filename) ?? null;
+                      for (let edit of edits.slice(Math.max(0, lastWrite))) {
+                        value = applyPendingEditToText(value, edit);
+                      }
+                      if (value === null) {
+                        throw new Error("File does not exist.");
+                      }
+                      source = {kind: "text", text: value};
                     }
 
-                    toolOutput = {text: readFileWindow(value, toolCall.input)};
+                    toolOutput = {text: readFileWindow(source, toolCall.input,
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
                     markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
@@ -2906,7 +3094,7 @@ async function runAgentPass(
         // or pins, so the rest of the reset is a no-op either way (pre-conversion writes marked
         // files read, but with no session content to stamp them from they drop, as they must:
         // the converted content is not what those writes produced).
-        if (msg.conversionBoundary) await resetSessionEpoch();
+        if (msg.conversionBoundary) resetSessionEpoch();
 
         // A blueprint that the user applied is described to the model (see
         // formatBlueprintProposal). Its message has no change, only the pin at the merge
@@ -3004,7 +3192,7 @@ async function runAgentPass(
         // content restarts empty, later pins re-seed lazily, and the model's file knowledge
         // becomes knowledge of committed code (see resetSessionEpoch).
         if (msg.epochBoundary) {
-          await resetSessionEpoch();
+          resetSessionEpoch();
           // Merges from before worktrees pinned on modification re-pinned every worktree at
           // the boundary and recorded it here (see AiChatMessageBody.worktreePins); those
           // pins re-establish immediately so the epochs they root fold as written.
@@ -3126,6 +3314,18 @@ async function runAgentPass(
         break;
       }
 
+      case "webFetchRequest":
+        // A pending request says nothing new: the tool result told the agent it is waiting.
+        if (msg.state !== "pending") {
+          modelMessages.push({role: "user", timestamp: msgTimestamp, content:
+              msg.state === "approved"
+                ? `The user approved fetching ${msg.url} until their next message. Call ` +
+                  `webFetch with exactly this URL.`
+                : `The user denied fetching ${msg.url}. Wait for the user to tell you how to ` +
+                  `proceed.`});
+        }
+        break;
+
       case "catalogChange":
         replayCatalogChange(msg.sequence, msg.resources, msgTimestamp);
         break;
@@ -3155,8 +3355,30 @@ async function runAgentPass(
   // together -- and the resumed model re-runs it cleanly. Turn-owned and passed explicitly
   // where needed (the barrier now; executeCodeMode once worktree writes join it). `bytes` is
   // the buffered changes' summed codeChangeSerializedSize, checked against MAX_CODE_CHANGE_SIZE
-  // at each write call (see appendAgentEdit).
-  let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
+  // at each write call (see appendAgentEdit). `reRoots` maps each worktree re-rooted this step
+  // to the commit of its last re-root (see WorktreeTurnAccess.reRoot), which absorbed the
+  // worktree's changes buffered before it.
+  let stepBuffer = {
+    changes: [] as AgentStepChange[], bytes: 0, reRoots: new Map<WorkpieceId, string>(),
+  };
+
+  // Each workpiece's count of content changes this turn (see WorktreeTurnAccess.getRevision).
+  let revisions = new Map<WorkpieceId, number>();
+  let bumpRevision = (id: WorkpieceId) => revisions.set(id, (revisions.get(id) ?? 0) + 1);
+
+  // Whether an executeCode call this step changed files: buffered changes, or re-rooted a
+  // worktree. Replay re-runs no executeCode, so a file tool later in the step would replay
+  // against content without those changes; the file tools refuse to run instead (see
+  // assertNoExecutedChanges). Nothing is lost, since every tool call of a step is made before
+  // any of them runs, so such a call was made without seeing the execution's result anyway.
+  let executedCodeChangedFiles = false;
+  let assertNoExecutedChanges = () => {
+    if (executedCodeChangedFiles) {
+      throw new Error("An executeCode call earlier in this step changed files, which take " +
+          "effect when the step ends. End this response and call this tool again in your next " +
+          "step.");
+    }
+  };
 
   // (A crashed predecessor leaves no stranded state to recover here: each step's rows, pins,
   // creation/binding stamps and messages are committed in one barrier transaction, so replay of
@@ -3177,12 +3399,12 @@ async function runAgentPass(
   let toolErrorText = (error: unknown) =>
       error instanceof Error ? error.message : String(error);
 
-  // Set to true once the agent has successfully created a connection request this turn. Used by
-  // finishTurn to end the turn (the agent must wait for the user to accept/deny). A
+  // Set to true once the agent has successfully created a connection or web fetch request this
+  // turn. Used by finishTurn to end the turn (the agent must wait for the user to decide). A
   // *rejected* requestConnection call leaves this false so the agent can fix the request and retry
-  // without the turn ending (which would strand it, since there'd be no card to accept/deny and
-  // thus no resume).
-  let connectionRequested = false;
+  // without the turn ending (which would strand it, since there'd be no card to decide and thus
+  // no resume).
+  let decisionRequested = false;
 
   // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
   // barrier persists the action before the loop ends and waits for approval to resume it.
@@ -3226,6 +3448,8 @@ async function runAgentPass(
       });
       throw error;
     }
+    // Text that won't read back from Git is a model mistake the tool error lets it correct.
+    for (let [path, file] of Object.values(change).flat()) assertNoNul(path, file);
     // Bound the step's total: the barrier writes the buffer as exactly one "changes" message,
     // which must fit in one storage record, or the step's edits would be lost. Composition never
     // exceeds the sum of its inputs' sizes, so the summed size bounds the message's change.
@@ -3239,16 +3463,22 @@ async function runAgentPass(
       throw new Error(stepBuffer.changes.length === 0 && oneFile
           ? "This write is too large to make in one step. Write the file in smaller parts, " +
             "for example by splitting it into several files, or by writing part of it and then " +
-            "adding the rest with edits."
+            "adding the rest with edits. To write content this large to a worktree file in one " +
+            "go, use the worktree binding's writeBytes() in executeCode, which takes content of " +
+            "any size. A file written that way cannot be changed with editFile until the change " +
+            "is accepted, only replaced whole, so write its final content."
           : "Too many code changes in one step. End this response; the changes made so far " +
             "are being saved, and you can continue the work in your next step.");
     }
-    // Apply first: an inapplicable change must throw before anything buffers.
+    // Validate and apply first: a change the barrier's content check would refuse (text with a
+    // lone surrogate, say) must throw before anything buffers, as a tool error the model can
+    // correct, not fail the whole step at the barrier.
     let newContent = sessionContent;
     if (pin !== undefined) {
       newContent = new Map(newContent);
       newContent.set(workpieceId, pin.baseFiles);
     }
+    validateCodeChangeContent(change, newContent);
     newContent = applyCodeChange(newContent, change);
     stepBuffer.changes.push({
       change,
@@ -3259,6 +3489,7 @@ async function runAgentPass(
     sessionContent = newContent;
     pinWorktreeInSession(workpieceId);
     noteWorktreeRemovals(change);
+    bumpRevision(workpieceId);
   };
 
   // commit() head advancements buffered this step (see WorktreeTurnAccess.appendCommit),
@@ -3290,6 +3521,19 @@ async function runAgentPass(
       pendingWorktreeCommits.push({worktreeId: id, commit, previousHead});
       pinWorktreeInSession(id);
     },
+    reRoot: (id, commit) => {
+      // Replay tells a re-root from a re-establishment of the pin by its commit (see
+      // applyReplayedPin).
+      if (commit === worktreeBase(id)) throw new Error("A re-root must move the worktree's base.");
+      // Every buffered change touches exactly one workpiece (see appendAgentEdit's callers).
+      stepBuffer.changes = stepBuffer.changes.filter(entry => !(id in entry.change));
+      stepBuffer.bytes = stepBuffer.changes.reduce(
+          (sum, {change}) => sum + codeChangeSerializedSize(change), 0);
+      stepBuffer.reRoots.set(id, commit);
+      reRootWorktreeSession(id, commit);
+      bumpRevision(id);
+    },
+    getRevision: id => revisions.get(id) ?? 0,
   };
 
   let emitStreamEvent = (event: AiChatStreamEvent) => {
@@ -3368,7 +3612,7 @@ async function runAgentPass(
         let files: string[];
         let unpinnedHead = !pinnedGadgets.has(info.id) ? observeHead(info.id) : undefined;
         if (unpinnedHead !== undefined) {
-          files = [...(await hooks.readCommitFiles(unpinnedHead)).keys()];
+          files = [...hooks.readCommitFiles(unpinnedHead).keys()];
         } else {
           files = [...(sessionContent.get(info.id)?.keys() ?? [])];
         }
@@ -3433,7 +3677,7 @@ async function runAgentPass(
     let standardFormats = await hooks.describeStandardFormats();
 
     // Build connectable-vendors section. We only list vendor names here; the agent fetches a
-    // vendor's resource URL patterns on demand via listConnectableResources.
+    // vendor's resource types on demand via listConnectableResources.
     let connectableVendors = await hooks.listConnectableVendors();
     let systemPromptConnections: string;
     if (connectableVendors.length == 0) {
@@ -3442,7 +3686,7 @@ async function runAgentPass(
       systemPromptConnections =
           `\n\nIf you need access to an external resource that isn't already a binding, you can ask ` +
           `the user to connect one with the requestConnection tool (pre-configure it as much as you ` +
-          `can; use listConnectableResources to learn a vendor's resource URL patterns first). The ` +
+          `can; use listConnectableResources to learn a vendor's resource type IDs first). The ` +
           `user accepts or denies in the chat. If they accept, you'll be resumed and the resource ` +
           `becomes available as a binding in your env; if they deny, your turn ends and you wait ` +
           `for the user's next message.\n` +
@@ -3535,6 +3779,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, filename, startLine, lineCount}) => {
         try {
+          assertNoExecutedChanges();
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           let window = {startLine, lineCount};
@@ -3543,7 +3788,7 @@ async function runAgentPass(
           if (file === undefined) {
             throw new Error("File does not exist.");
           }
-          let shown = readFileWindow(file.text, window);
+          let shown = readFileWindow(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
           markFileRead(resolved.workpieceId, filename, file.oid);
           return toolResult(shown, file.oid === undefined ? {} : {observedOid: file.oid});
         } catch (error) {
@@ -3569,6 +3814,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, pattern, path}) => {
         try {
+          assertNoExecutedChanges();
           let {workpieceId} =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           let re = new RegExp(pattern);
@@ -3578,10 +3824,10 @@ async function runAgentPass(
           let base = pinnedGadgets.has(workpieceId)
               ? worktreeBase(workpieceId)
               : observeHead(workpieceId) ?? hooks.getWorktreePinBase(workpieceId);
-          let scan = await hooks.grepWorkpiece(worktreeTurnAccess, workpieceId, base, path);
+          let scan = await hooks.grepWorkpiece(worktreeTurnAccess, workpieceId, base, re, path);
           // Recorded as shown: replay reads this text back, and a broad match over several
           // large files could otherwise exceed a storage record.
-          let output = formatGrep(scan, re, MAX_TOOL_RESULT_CHARS);
+          let output = formatGrep(scan, MAX_TOOL_RESULT_CHARS);
           return toolResult(output, {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
@@ -3601,6 +3847,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, filename, content: newContent}) => {
         try {
+          assertNoExecutedChanges();
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           assertMayModifyWorkpiece(resolved.workpieceId);
@@ -3627,7 +3874,7 @@ async function runAgentPass(
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = hooks.getGadgetHead(resolved.workpieceId);
             if (head !== undefined) {
-              pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
+              pin = {baseCommit: head, baseFiles: hooks.readCommitFiles(head)};
             }
           }
 
@@ -3672,6 +3919,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {workpiece, filename, textToReplace, replacement}) => {
         try {
+          assertNoExecutedChanges();
           let resolved =
               hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId);
           assertMayModifyWorkpiece(resolved.workpieceId);
@@ -3704,7 +3952,7 @@ async function runAgentPass(
                     "Re-read the file and try again.");
               }
               if (!hooks.isWorktree(resolved.workpieceId)) {
-                pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
+                pin = {baseCommit: head, baseFiles: hooks.readCommitFiles(head)};
               }
             }
           }
@@ -3722,7 +3970,11 @@ async function runAgentPass(
           if (before === undefined) {
             throw new Error("File does not exist.");
           }
-          if (typeof before !== "string") throw new Error("Binary content requires byte operations.");
+          if (typeof before !== "string") {
+            throw new Error("This file's content was set as raw bytes (by writeBytes() or an " +
+                "upload), so editFile cannot change it until the change is accepted. Replace it " +
+                "whole with writeFile, or with writeBytes() in executeCode.");
+          }
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
@@ -3766,7 +4018,13 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {url, raw}) => {
         try {
-          let result = await webFetchImpl(await hooks.getWebFetchEnv(), {url, raw});
+          let authorized = await hooks.authorizeWebFetch(chatId, url);
+          if ("approvalMessage" in authorized) {
+            decisionRequested = true;
+            return toolResult(authorized.approvalMessage,
+                {output: authorized.approvalMessage} as Partial<AiToolCall>);
+          }
+          let result = await webFetchImpl(authorized.env, {url, raw});
           // Cut the body, not the formatted result, so the frontmatter's `truncated` stays true
           // to the text and the recorded output is what the model saw. The header counts against
           // the cap too, so the formatted whole fits. Don't end on half of a surrogate pair: a
@@ -4024,11 +4282,12 @@ async function runAgentPass(
               "refer to it (their `workpiece` parameter). Must be a JavaScript identifier not " +
               "already in use; style: ALL_CAPS_WITH_UNDERSCORES.",
         }),
-        commitId: Type.String({
+        commitId: Type.Optional(Type.String({
           description:
-              "The git commit to root the worktree at: its full 40-hex SHA-1, exactly as " +
-              "returned by the API that provided it. Abbreviated ids are not accepted.",
-        }),
+              "Omit to create an empty worktree. Otherwise the git commit to root it at: its " +
+              "full 40-hex SHA-1, exactly as returned by the API that provided it. " +
+              "Abbreviated ids are not accepted.",
+        })),
       }),
       execute: async (toolCallId, {title, bindingName, commitId}) => {
         try {
@@ -4449,19 +4708,27 @@ async function runAgentPass(
           // executing it in one step never worked; the error is retryable and tells the model
           // to split them. (Deliberately coarse: no per-gadget touched-set -- worktrees keep
           // the same rule.)
-          if (stepBuffer.changes.length > 0) {
+          if (stepBuffer.changes.length > 0 || stepBuffer.reRoots.size > 0) {
             throw new Error("This step already made code changes, which take effect when the " +
                 "step ends. End this response and call executeCode again in your next step.");
           }
 
-          let output = await hooks.executeCodeMode(
-              chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
-              delta => emitStreamEvent({
-                type: "toolOutputDelta",
-                toolCallId,
-                delta,
-              }),
-              worktreeTurnAccess);
+          let output: string;
+          try {
+            output = await hooks.executeCodeMode(
+                chatId, code, initiator, author.id, Object.fromEntries(chatBindings),
+                delta => emitStreamEvent({
+                  type: "toolOutputDelta",
+                  toolCallId,
+                  delta,
+                }),
+                worktreeTurnAccess, abortSignal);
+          } finally {
+            // The buffer was empty when the execution started (above), so whatever it holds
+            // now is the execution's.
+            executedCodeChangedFiles =
+                stepBuffer.changes.length > 0 || stepBuffer.reRoots.size > 0;
+          }
           return toolResult(`${output}`, {output: `${output}`} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {
@@ -4501,6 +4768,9 @@ async function runAgentPass(
           description: "Vendor id, as listed in the system prompt (e.g. 'github'), or " +
               `'${AGENT_SPAWNER_CONNECTION_ID}' for an agent spawner.`,
         }),
+        resourceTypeId: Type.Optional(Type.String({
+          description: "Stable type ID from listConnectableResources; selects the type independently of its URL pattern.",
+        })),
         resourceUrl: Type.Optional(Type.String({
           description:
               "The specific resource URL, if known (matching a pattern from " +
@@ -4539,9 +4809,9 @@ async function runAgentPass(
 
           let result = await hooks.requestConnection(chatId, input);
           // Only end the turn if a request was actually created; a rejected request must let the
-          // agent retry within the same turn (see the connectionRequested flag / finishTurn).
+          // agent retry within the same turn (see the decisionRequested flag / finishTurn).
           if (result.requested) {
-            connectionRequested = true;
+            decisionRequested = true;
             // The name is claimed in the chat's scope from request time (released only by
             // denial), so nothing else in this step can take it.
             claimedNames.add(input.bindingName);
@@ -4562,12 +4832,18 @@ async function runAgentPass(
         vendorId: Type.String({
           description: "Vendor id, as listed in the system prompt (e.g. 'google').",
         }),
-        resourceUrlPattern: Type.String({
-          description: "urlPattern of a creatable resource type, from listConnectableResources.",
+        resourceTypeId: Type.String({
+          description: "Stable ID of a creatable resource type, from listConnectableResources.",
         }),
         title: Type.String({
           description: "Title of the new resource, e.g. the document's title.",
         }),
+        configuration: Type.Optional(Type.String({
+          description: "For a New resource listed with a configuration, one to suggest, as the " +
+              "listing describes it (e.g. a folder's URL, for where to create it). Name only what " +
+              "exists already: a resource whose creation is pending has no URL. The approver " +
+              "sees it pre-selected and may choose otherwise.",
+        })),
         bindingName: Type.String({
           description:
               "Name under which the new resource appears in your env. Must be a JavaScript " +
@@ -4624,6 +4900,15 @@ async function runAgentPass(
   // model request is allowed to start.
   let capturedActionsForStep: ReturnType<AgentHooks["consumeCapturedActions"]>;
 
+  let answerText = "";
+  let embeds: ChatEmbeds = {};
+  const snapshotEmbeds = (text: string, streaming: boolean) => snapshotChatEmbeds(
+      text, embeds, async (binding, path) => {
+        const entry = chatBindings.get(binding);
+        return entry?.type === "workpiece"
+            ? hooks.getWorktreeFileOid(chatId, entry.id, path, worktreeTurnAccess) : undefined;
+      }, streaming);
+
   // The awaited event sink driving both the client stream fan-out and the persistence barrier.
   let emit = async (event: AgentEvent): Promise<void> => {
     switch (event.type) {
@@ -4631,9 +4916,15 @@ async function runAgentPass(
         // Live streaming fan-out to connected clients.
         let ev = event.assistantMessageEvent;
         switch (ev.type) {
-          case "text_delta":
-            emitStreamEvent({type: "textDelta", delta: ev.delta});
+          case "text_delta": {
+            answerText += ev.delta;
+            // Only syntax that can complete a file reference can add a pin. Ordinary prose
+            // must not reparse the accumulated answer; the final pass also handles EOF.
+            const newEmbeds = /[)\]>\r\n]/.test(ev.delta)
+                ? await snapshotEmbeds(answerText, true) : undefined;
+            emitStreamEvent({type: "textDelta", delta: ev.delta, embeds: newEmbeds});
             break;
+          }
           case "thinking_delta":
             emitStreamEvent({type: "reasoningDelta", delta: ev.delta});
             break;
@@ -4671,6 +4962,15 @@ async function runAgentPass(
             }
             break;
         }
+        break;
+      }
+
+      case "message_end": {
+        const message = event.message;
+        if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") break;
+        const finalEmbeds = await snapshotEmbeds(message.content.filter(block => block.type === "text")
+            .map(block => block.text).join(""), false);
+        if (finalEmbeds) emitStreamEvent({type: "textDelta", delta: "", embeds: finalEmbeds});
         break;
       }
 
@@ -4718,6 +5018,7 @@ async function runAgentPass(
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
           };
+          if (Object.keys(embeds).length) msg.embeds = embeds;
           let reasoning = message.content
               .flatMap(block =>
                   block.type === "thinking" && !block.redacted ? [block.thinking] : [])
@@ -4779,9 +5080,9 @@ async function runAgentPass(
           }
         }
 
-        // Append any connection requests the agent made this step, after the assistant message
-        // that contains the requestConnection tool call (so ordering reads correctly).
-        for (let cr of hooks.consumeCapturedConnectionRequests(chatId)) {
+        // Append any connection and web fetch requests the agent made this step, after the
+        // assistant message that contains the tool call (so ordering reads correctly).
+        for (let cr of hooks.consumeCapturedDecisionRequests(chatId)) {
           msgs.push(cr);
         }
 
@@ -4792,8 +5093,12 @@ async function runAgentPass(
         // the effects would be wrong.
         await persistStep(async () => {
           let stepChanges = stepBuffer.changes;
+          let reRoots = [...stepBuffer.reRoots].map(
+              ([worktreeId, baseCommit]) => ({worktreeId, baseCommit}));
           stepBuffer.changes = [];
           stepBuffer.bytes = 0;
+          stepBuffer.reRoots.clear();
+          executedCodeChangedFiles = false;
           let createdGadgets = pendingCreatedGadgets;
           pendingCreatedGadgets = [];
           let createdWorktrees = pendingCreatedWorktrees;
@@ -4806,13 +5111,15 @@ async function runAgentPass(
           pendingBlueprintMerges = [];
           if (await hooks.commitAgentStep(chatId, author, msgs,
               {changes: stepChanges, createdGadgets, createdWorktrees, addedBindings,
-               worktreeCommits, blueprintMerges},
+               worktreeCommits, blueprintMerges, reRoots},
               message.usage, handle.lastResponse?.aiGatewayLogId, handle.aiGatewayLogRoute)) {
             ++nextChangeId;
           }
         });
 
         // Reset per-step streaming state.
+        answerText = "";
+        embeds = {};
         toolCallNotes.clear();
         executeCodeStreamManager.clear();
         break;
@@ -4965,12 +5272,12 @@ async function runAgentPass(
           // Cancelled during tool execution: turn_end will persist the completed turn before
           // this decision ends the loop; don't start another (doomed) model request.
           abortSignal.aborted ||
-          // End the turn once the agent has successfully requested a connection: it must wait
-          // for the user to respond, not keep reasoning in the meantime. (Accept resumes it on a
-          // fresh turn; deny just leaves the turn ended.) A rejected requestConnection (e.g.
-          // unresolvable resource) leaves this false so the agent can fix the request and retry
-          // in the same turn.
-          connectionRequested ||
+          // End the turn once the agent has successfully requested a connection or a web fetch:
+          // it must wait for the user to respond, not keep reasoning in the meantime. (Approval
+          // resumes it on a fresh turn; deny just leaves the turn ended.) A rejected
+          // requestConnection (e.g. unresolvable resource) leaves this false so the agent can fix
+          // the request and retry in the same turn.
+          decisionRequested ||
           // Wait for approval before continuing against state that may not reflect the action.
           awaitingActionDecision) {
         return {action: "end"};
@@ -5016,6 +5323,10 @@ async function runAgentPass(
  * Renders one file's before/after as a git-style unified diff (headers only, `a/`\/`b/`
  * prefixes, `/dev/null` for a missing side). Shared by the replay path's user-change
  * observations and the Worktree binding's diff().
+ *
+ * The `---`/`+++` headers are written here, not by jsdiff, to keep the path verbatim: jsdiff
+ * (like git) C-quotes a path containing non-ASCII, `"` or `\`, which an agent reading the diff
+ * would then have to unescape before reusing the path.
  */
 export function formatUnifiedDiff(
     filename: string,
@@ -5023,17 +5334,13 @@ export function formatUnifiedDiff(
     newContent: string,
     oldExists: boolean,
     newExists: boolean): string | undefined {
-  return createTwoFilesPatch(
-      oldExists ? `a/${filename}` : "/dev/null",
-      newExists ? `b/${filename}` : "/dev/null",
-      oldContent,
-      newContent,
-      undefined,
-      undefined,
-      {
-        context: 3,
-        headerOptions: FILE_HEADERS_ONLY,
-      }).trimEnd();
+  let hunks = createTwoFilesPatch("", "", oldContent, newContent, undefined, undefined,
+                                  { context: 3, headerOptions: OMIT_HEADERS });
+  return [
+    `--- ${oldExists ? `a/${filename}` : "/dev/null"}`,
+    `+++ ${newExists ? `b/${filename}` : "/dev/null"}`,
+    hunks,
+  ].join("\n").trimEnd();
 }
 
 // =======================================================================================

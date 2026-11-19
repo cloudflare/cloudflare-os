@@ -1,6 +1,7 @@
 // Which actions a user may let apply without a person, as the real `GitHubGatekeeperImpl` submits
 // them: every action carries its kind, every one may auto-apply once the user enables that kind
-// except a merge and an approving review, and each binding advertises only the kinds it can carry.
+// except a merge, an approving review, a push to the default or a protected branch and an issue
+// assigned to an app, and each binding advertises only the kinds it can carry.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { env } from "cloudflare:test";
@@ -55,12 +56,13 @@ const review = (decision: "comment" | "approve" | "requestChanges"): GitHubActio
   ...base(), type: "postReview", pullId: "7", provisionalReviewId: `~review${nextApprovalId}`,
   review: { revision: { baseSha: "a".repeat(40), headSha: "b".repeat(40) }, decision, bodyMarkdown: "Summary" },
 });
-const push = (force: boolean): GitHubActionData => ({
+const push = (force: boolean, gatedBranch?: boolean): GitHubActionData => ({
   ...base(), type: "push", branch: "feature", expectedOldSha: "a".repeat(40), newSha: "b".repeat(40), force,
+  ...(gatedBranch === undefined ? {} : { gatedBranch }),
 });
 
 describe("auto-approval", () => {
-  it("lets every action but a merge apply once its kind is enabled, closing, reopening and force-pushing included", async () => {
+  it("lets every action but a merge apply once its kind is enabled, closing, reopening and feature-branch force pushes included", async () => {
     const submitted = await gatekeeper().submit([
       { ...base(), type: "createIssue", provisionalId: "~1", options: { title: "Bug" } },
       { ...base(), type: "createPullRequest", provisionalId: "~2", options: { title: "Fix", head: "feature", base: "main" } },
@@ -72,8 +74,8 @@ describe("auto-approval", () => {
       { ...entity(), type: "changeState", state: "open", previousState: "closed" },
       { ...entity(), type: "postComment", bodyMarkdown: "Hi", provisionalCommentId: "~comment1" },
       { ...base(), type: "replyToDiffComment", pullId: "7", commentId: "9", bodyMarkdown: "Done", provisionalCommentId: "~comment2" },
-      push(false),
-      push(true),
+      push(false, false),
+      push(true, false),
       { ...base(), type: "mergePullRequest", pullId: "7", expectedHeadSha: "b".repeat(40), headBranch: "feature" },
     ]);
     expect(submitted).toEqual([
@@ -91,6 +93,37 @@ describe("auto-approval", () => {
       // Its own kind: enabling ordinary pushes does not let history be rewritten.
       ["github.forcePush", true],
       ["github.mergePullRequest", false],
+    ]);
+  });
+
+  it("keeps a push or force push to the default or a protected branch manual under the kinds that let other pushes apply", async () => {
+    expect(await gatekeeper().submit([push(false, true), push(true, true)])).toEqual([
+      ["github.push", false],
+      ["github.forcePush", false],
+    ]);
+  });
+
+  it("keeps a push record without a gate flag manual", async () => {
+    expect(await gatekeeper().submit([push(false), push(true)])).toEqual([
+      ["github.push", false],
+      ["github.forcePush", false],
+    ]);
+  });
+
+  it("keeps an issue assigned to an app manual under the kind that lets other issues be created", async () => {
+    const createIssue = (assignees: string[]): GitHubActionData => ({
+      ...base(), type: "createIssue", provisionalId: `~issue${nextApprovalId}`, options: { title: "Bug", assignees },
+    });
+    expect(await gatekeeper().submit([
+      createIssue(["octocat"]),
+      createIssue(["octocat", "copilot-swe-agent[bot]"]),
+      createIssue(["Copilot"]),
+      createIssue(["some-agent[BOT]"]),
+    ])).toEqual([
+      ["github.createIssue", true],
+      ["github.createIssue", false],
+      ["github.createIssue", false],
+      ["github.createIssue", false],
     ]);
   });
 

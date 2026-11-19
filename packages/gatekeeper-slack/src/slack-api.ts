@@ -300,6 +300,14 @@ const AUTH_ERROR_CODES = new Set([
   "invalid_auth", "not_authed", "token_expired", "token_revoked", "account_inactive",
 ]);
 
+// The ACCESS_ERROR_CODES that answer whether the token's user can see the resource. A missing
+// scope or a disallowed token type says nothing about that, so a subresource access check throws
+// on them rather than reading them as a denial.
+const DENIAL_ERROR_CODES: Record<string, true> = {
+  channel_not_found: true, not_in_channel: true, no_permission: true, access_denied: true,
+  team_access_not_granted: true,
+};
+
 /** An error from a Slack API call, carrying the raw error code for callers that must branch on it. */
 export class SlackApiError extends Error {
   /** The Slack `error` code (e.g. `channel_not_found`), or undefined for a bare HTTP failure. */
@@ -323,6 +331,14 @@ export class SlackApiError extends Error {
   /** True when the token has expired or been revoked. */
   get isAuthError(): boolean {
     return this.code !== undefined && AUTH_ERROR_CODES.has(this.code);
+  }
+
+  /**
+   * True when Slack answered that the token's user cannot see the requested resource, as opposed
+   * to a refusal that leaves their access undetermined (an expired token, a missing scope).
+   */
+  get isDenial(): boolean {
+    return this.code !== undefined && Object.hasOwn(DENIAL_ERROR_CODES, this.code);
   }
 }
 
