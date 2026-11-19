@@ -14,8 +14,8 @@
  *   (`elevated`) sits a little down into its card, nearer the canvas than the card.
  * - Emphasis: fills, outlines, hovers and selections lean towards the text colour, by the same
  *   amount in both: black at 4% in light is white at 4% in dark, as `contrast/8` already is.
- * - Inversion: what is drawn in `contrast` (the viewer's own messages, the primary button, the
- *   mascot, a workspace's folder) is the page's opposite, so it flips.
+ * - Inversion: what is drawn in `contrast` (the viewer's own messages, the mascot, a workspace's
+ *   folder) or `primary` (the primary button) is the page's opposite, so it flips.
  *
  * Status colours keep Kumo's dark pairs, which are tuned for dark surfaces. The brand does not
  * change.
@@ -44,9 +44,12 @@
      On the card the two look the same, in both themes. */
   --color-kumo-tint: light-dark(oklch(97% 0 0), oklch(25.9% 0 0));
 
-  /* What is drawn in the page's opposite (the viewer's own messages, the primary button, the
-     mascot): in light a near black that is softer than Kumo's, which is all but black. */
+  /* What is drawn in the page's opposite (the viewer's own messages, the mascot): in light a near
+     black that is softer than Kumo's, which is all but black. */
   --color-kumo-contrast: light-dark(#222, oklch(98.5% 0 0));
+  /* The primary button, and a menu opening out of one: Kumo's near black, deeper than the rest of
+     what is in contrast, so the one action a surface asks for stands out. Flipped in dark with it. */
+  --color-primary: light-dark(oklch(8.5% 0 0), oklch(98.5% 0 0));
   /* The connection island is the window's own, as a phone's is: in light all black, and flipped
      in dark with the rest of what is in contrast. */
   --color-island: light-dark(#000, oklch(98.5% 0 0));

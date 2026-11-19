@@ -25,7 +25,7 @@ export type ButtonProps = BaseButtonProps &
 const VARIANT = {
   secondary: 'bg-kumo-base text-kumo-default ring-1 ring-kumo-line not-data-disabled:hover:bg-kumo-tint',
   ghost: 'bg-transparent text-kumo-default not-data-disabled:hover:bg-kumo-tint',
-  primary: 'bg-kumo-contrast text-kumo-inverse not-data-disabled:hover:opacity-85',
+  primary: 'bg-(--color-primary) text-kumo-inverse not-data-disabled:hover:opacity-85',
   danger: 'bg-kumo-base text-kumo-danger ring-1 ring-kumo-line not-data-disabled:hover:bg-kumo-tint',
 } as const
 

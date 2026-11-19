@@ -198,7 +198,7 @@
 /* A primary trigger is in the page's opposite, which a menu is not: the surface starts out in the
    trigger's colour and takes its own as it grows, by when the trigger's copy has faded from it. */
 .dropdown-menu[data-variant='primary'] .dropdown-menu-surface {
-  background-color: color-mix(in oklch, var(--color-kumo-base) calc(clamp(0, var(--menu-size) / 0.5, 1) * 100%), var(--color-kumo-contrast));
+  background-color: color-mix(in oklch, var(--color-kumo-base) calc(clamp(0, var(--menu-size) / 0.5, 1) * 100%), var(--color-primary));
 }
 
 /* A raised menu lifts off what it covers by a faint shadow, which grows in with the surface, as
