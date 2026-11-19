@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Tooltip } from '@cloudflare/kumo'
 import { ArrowsInSimple, ArrowsOutSimple } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -92,6 +92,25 @@ export const ShareSnapshotPreview = ({
     wasFullscreenRef.current = fullscreen
   }, [fullscreen])
 
+  // A translated ancestor, as the share dialog is to centre itself, confines `position: fixed` to
+  // itself, so the overlay would cover only the dialog. Untranslated inline and `!important`, which
+  // outranks the dialog's own `!` utilities, and before paint, so the overlay never shows confined.
+  useLayoutEffect(() => {
+    if (!fullscreen) return
+    const untranslated: { element: HTMLElement, value: string, priority: string }[] = []
+    for (let element = overlayRef.current?.parentElement; element; element = element.parentElement) {
+      if (getComputedStyle(element).translate === 'none') continue
+      const { style } = element
+      untranslated.push({
+        element, value: style.getPropertyValue('translate'), priority: style.getPropertyPriority('translate'),
+      })
+      style.setProperty('translate', 'none', 'important')
+    }
+    return () => {
+      for (const { element, value, priority } of untranslated) element.style.setProperty('translate', value, priority)
+    }
+  }, [fullscreen])
+
   // As a recipient's refresh does (see GadgetEditor's refreshSnapshot).
   const refresh = async () => {
     if (!ready) return
@@ -123,8 +142,7 @@ export const ShareSnapshotPreview = ({
       </div>
       {/* Full screen is the editor's: this element turns into a viewport overlay, so the iframe
           and what was done in it carry over. No `#fullscreen` hash, which the editor would act
-          on. The dialog must not be translated meanwhile, or the overlay would cover only the
-          dialog (see `dialog-hosts-fullscreen`). */}
+          on. */}
       <div
         ref={overlayRef}
         tabIndex={fullscreen ? -1 : undefined}

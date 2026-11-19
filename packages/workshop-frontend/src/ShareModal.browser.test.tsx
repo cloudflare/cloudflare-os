@@ -158,7 +158,7 @@ it('moves focus into the snapshot page and back to its card', async () => {
   await expect.element(card).toHaveFocus()
 })
 
-it('keeps focus inside the full-screen preview, off the dialog it covers', async () => {
+it('covers the window with the full-screen preview, keeps focus inside it, and puts the dialog back', async () => {
   const viewLink: ShareLinkInfo = {
     linkId: 'link-view', created: new Date(), createdBy: OWNER, role: 'use', gadgetId: 0, mode: 'view',
   }
@@ -169,11 +169,16 @@ it('keeps focus inside the full-screen preview, off the dialog it covers', async
     getExportFormats: async () => [],
     [Symbol.dispose]: () => {},
   }
+  // A desktop window, where the dialog is centred by a translate that would confine the overlay.
+  previousViewport = { width: window.innerWidth, height: window.innerHeight }
+  await page.viewport(1280, 800)
   renderModal(viewLink, true, {}, [], { kind: 'gadget', gadgetId: 0, title: 'Packing list' }, snapshot)
   await userEvent.click(page.getByRole('button', { name: /Viewers can see a snapshot/ }))
   await userEvent.click(page.getByRole('button', { name: 'Enter full screen' }))
   const overlay = page.getByRole('dialog', { name: 'Snapshot full screen' })
   await expect.element(overlay).toHaveFocus()
+  const box = overlay.element().getBoundingClientRect()
+  expect([box.left, box.top, box.width, box.height]).toEqual([0, 0, 1280, 800])
 
   for (let i = 0; i < 4; i++) {
     await userEvent.keyboard('{Tab}')
@@ -182,6 +187,8 @@ it('keeps focus inside the full-screen preview, off the dialog it covers', async
   await userEvent.click(page.getByRole('button', { name: 'Exit full screen' }))
   await expect.element(page.getByRole('button', { name: 'Enter full screen' })).toHaveFocus()
   await expect.element(page.getByRole('button', { name: 'Ask agent to fix' })).toBeVisible()
+  const dialogBox = page.getByRole('dialog', { name: 'Snapshot' }).element().getBoundingClientRect()
+  expect(dialogBox.left + dialogBox.width / 2).toBe(640)
 })
 
 const isOnTop = (element: Element) => {
