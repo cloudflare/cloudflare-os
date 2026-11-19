@@ -66,6 +66,7 @@ type Session = {
   recognition: Recognition;
   listeners: AbortController;
   started: boolean;
+  stopRequested: boolean;
   transcript: string;
   interim: string;
 };
@@ -154,6 +155,7 @@ export const useComposerDictation = ({
       }
       // stop() lets the browser return its last words, which the end event then keeps.
       setStatus("stopping");
+      current.stopRequested = true;
       current.recognition.stop();
       return;
     }
@@ -173,7 +175,9 @@ export const useComposerDictation = ({
     }
     const listeners = new AbortController();
     const { signal } = listeners;
-    const session: Session = { recognition, listeners, started: false, transcript: "", interim: "" };
+    const session: Session = {
+      recognition, listeners, started: false, stopRequested: false, transcript: "", interim: "",
+    };
     active.current = session;
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -196,11 +200,11 @@ export const useComposerDictation = ({
       session.interim = interim.join("");
       setText((session.transcript + session.interim).trim());
     }, { signal });
-    // Ending on its own, after stop(), the browser has finalized what it heard. An error can cut
-    // it off mid-guess, so only finalized words survive one.
+    // The browser may end without finalizing its last guess. Stop is the user keeping the words on
+    // screen; otherwise, as after an error, only finalized words survive.
     recognition.addEventListener("end", () => {
       const ended = detach();
-      if (ended) keep(ended.transcript + ended.interim);
+      if (ended) keep(ended.transcript + (ended.stopRequested ? ended.interim : ""));
     }, { signal });
     recognition.addEventListener("error", (event) => {
       const { error } = event as Event & { error: string };

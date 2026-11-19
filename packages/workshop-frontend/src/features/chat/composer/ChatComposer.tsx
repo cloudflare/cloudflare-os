@@ -2,6 +2,7 @@ import { getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useState,
   useEffect,
+  useId,
   useRef,
   useMemo,
   useCallback,
@@ -326,6 +327,7 @@ export const ChatComposer = ({
     onError: (title) => toasts.add({ title, variant: "error" }),
   });
   const dictating = dictation.status !== "idle";
+  const dictatedTextId = useId();
   // Only the mirror paints dictated words, after the draft. The textarea, and so its selection,
   // undo history and IME, holds just the draft, which gets the words when dictation ends.
   const displayedText = appendDictatedText(inputValue, dictation.text);
@@ -665,8 +667,8 @@ export const ChatComposer = ({
         textarea.setSelectionRange(snapped, snapped);
       }
     }
-    // While dictating, a URL's account picker would snapshot a draft that dictation is about to
-    // grow, and Escape belongs to dictation rather than the slash command picker.
+    // While dictating, the URL scanner and slash command picker hold still: a URL's account picker
+    // would snapshot a draft that dictation is about to grow.
     if (dictating) return;
     syncPickerCaret(cursorPos);
 
@@ -817,6 +819,11 @@ export const ChatComposer = ({
                 ? `Slash command /${selectedSlashCommand.choice.name} from ${selectedSlashCommand.choice.providerLabel} is ready to send`
                 : "")}
           </div>
+          {/* The mirror is hidden from assistive technology and the textarea holds only the draft,
+              so this is how a screen reader hears the words Send would include. */}
+          <span id={dictatedTextId} className="sr-only">
+            {dictation.text && `Dictated so far: ${dictation.text}`}
+          </span>
           <div ref={wrapperRef} className={styles.capsuleInputWrapper}>
             {activeUrl && (
               <CapsuleOverlay
@@ -846,6 +853,7 @@ export const ChatComposer = ({
               aria-expanded={slashCommandPicker.open}
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
               aria-activedescendant={slashCommandPicker.activeDescendant}
+              aria-describedby={dictation.text ? dictatedTextId : undefined}
               onChange={(e) => {
                 handleInputChange(e.target.value, e.target.selectionStart ?? 0);
                 syncPickerCaret(e.target.selectionStart ?? 0);
@@ -913,14 +921,15 @@ export const ChatComposer = ({
                 // is not the only key it owns -- Escape cancels a composition and the arrows move
                 // through candidates.
                 if (isImeComposing(e)) return;
-                if (slashCommandPicker.open && e.key === "Escape") {
-                  e.preventDefault();
-                  slashCommandPicker.dismiss();
-                  return;
-                }
+                // The mic announces that Escape discards dictation, even over an open picker.
                 if (dictating && e.key === "Escape") {
                   e.preventDefault();
                   dictation.cancel();
+                  return;
+                }
+                if (slashCommandPicker.open && e.key === "Escape") {
+                  e.preventDefault();
+                  slashCommandPicker.dismiss();
                   return;
                 }
                 if (slashCommandPicker.open && e.key === "Enter" && !e.shiftKey) {

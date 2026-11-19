@@ -177,6 +177,8 @@ describe("ChatComposer", () => {
     expect(textarea.value).toBe("Build");
     expect(paintedText(textarea)).toBe("Build a dash");
     expect(dictatedText()).toBe(" a dash");
+    expect(document.getElementById(textarea.getAttribute("aria-describedby")!)?.textContent)
+      .toBe("Dictated so far: a dash");
 
     const first = { text: "a dashboard", final: true };
     await act(async () => speech.report(0, first, { text: " with fil", final: false }));
@@ -281,7 +283,9 @@ describe("ChatComposer", () => {
     }
   });
 
-  it("keeps only finalized words when recognition fails", async () => {
+  // Chrome reports a lost local recognizer as "aborted", and can end without finalizing its last
+  // guess; neither is the user keeping the words.
+  it.each(["fails", "ends on its own"])("keeps only finalized words when recognition %s", async (cause) => {
     vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
     const textarea = await renderDictationComposer();
     await typeText(textarea, "Note:");
@@ -292,10 +296,36 @@ describe("ChatComposer", () => {
       { text: "call the bank", final: true },
       { text: " tomorrow maybe", final: false },
     ));
-    // Chrome reports a lost local recognizer as "aborted", which the user never asked for.
-    await act(async () => speech.fail("aborted"));
+    await act(async () => {
+      if (cause === "fails") speech.fail("aborted");
+      else speech.dispatchEvent(new Event("end"));
+    });
     expect(textarea.value).toBe("Note: call the bank");
     expect(testState.addToast).not.toHaveBeenCalled();
+  });
+
+  it("discards dictation on Escape even with the slash command picker open", async () => {
+    vi.stubGlobal("SpeechRecognition", TestSpeechRecognition);
+    const skill: SlashCommandChoice = {
+      selection: { gatekeeperId: 42, commandId: "deploy" },
+      name: "deploy",
+      description: "Deploy the current project.",
+      providerLabel: "Projects",
+    };
+    const overseer = { listSlashCommands: async () => [skill] } as unknown as RpcStub<Overseer>;
+    const textarea = await renderDictationComposer({ getOverseer: () => overseer });
+    await typeText(textarea, "/dep");
+    await act(async () => vi.waitFor(() => expect(textarea.getAttribute("aria-expanded")).toBe("true")));
+    await act(async () => voiceButton("Start")!.click());
+    const speech = TestSpeechRecognition.current;
+    await act(async () => speech.report(0, { text: "to production", final: false }));
+
+    await act(async () => textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ));
+    expect(speech.abort).toHaveBeenCalledOnce();
+    expect(dictatedText()).toBeUndefined();
+    expect(textarea.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("joins speech segments with the spacing the recognizer gives them", async () => {

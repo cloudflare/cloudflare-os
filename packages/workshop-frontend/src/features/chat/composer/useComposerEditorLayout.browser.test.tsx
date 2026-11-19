@@ -119,15 +119,27 @@ describe("composer editor layout", () => {
 
     await render(SHORT_TEXT);
     expect(textarea.clientHeight).toBe(height);
-    expect(textarea.style.paddingBottom).toBe("0px");
   });
 
-  it("scrolls to the newest preview words once the textarea stops growing", async () => {
+  it("stops at four rows and still shows the newest preview words", async () => {
     const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${LONG_TEXT}`.trimEnd());
     const lastCharacter = lastCharacterRect(mirror);
     const visible = clip.getBoundingClientRect();
 
-    expect(textarea.scrollTop).toBeGreaterThan(0);
+    expect(textarea.getBoundingClientRect().height).toBe(4 * 22);
+    expect(lastCharacter.top).toBeGreaterThanOrEqual(visible.top);
+    expect(lastCharacter.bottom).toBeLessThanOrEqual(visible.bottom);
+  });
+
+  it("refits the preview when the composer narrows", async () => {
+    const { textarea, mirror, clip } = await render(SHORT_TEXT, ` ${SHORT_TEXT} ${SHORT_TEXT}`);
+    container!.style.width = "200px";
+    await settle();
+    await settle();
+    const lastCharacter = lastCharacterRect(mirror);
+    const visible = clip.getBoundingClientRect();
+
+    expect(textarea.getBoundingClientRect().height).toBe(4 * 22);
     expect(lastCharacter.top).toBeGreaterThanOrEqual(visible.top);
     expect(lastCharacter.bottom).toBeLessThanOrEqual(visible.bottom);
   });

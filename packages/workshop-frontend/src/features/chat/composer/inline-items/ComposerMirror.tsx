@@ -45,7 +45,11 @@ export type ComposerMirrorHandle = {
    * the caret. A ResizeObserver entry reports it unrounded.
    */
   syncWidth(textarea: HTMLTextAreaElement, contentWidth: number): void;
-  syncScroll(textarea: HTMLTextAreaElement): void;
+  /**
+   * Scrolls the mirror with the textarea, and `overscroll` pixels further for text it paints past
+   * the textarea's value, which the textarea can't scroll to.
+   */
+  syncScroll(textarea: HTMLTextAreaElement, overscroll?: number): void;
   textOffsetTop(offset: number): number | null;
   tokenAtPoint(clientX: number, clientY: number): { start: number; edge: number } | null;
   /**
@@ -74,11 +78,13 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
   const hoverOpenTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const node = useRef<HTMLDivElement>(null);
+  const overscrollRef = useRef(0);
 
-  const syncScroll = (textarea: HTMLTextAreaElement) => {
+  const syncScroll = (textarea: HTMLTextAreaElement, overscroll = 0) => {
+    overscrollRef.current = overscroll;
     if (!node.current) return;
     node.current.style.transform =
-      `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+      `translate(${-textarea.scrollLeft}px, ${-(textarea.scrollTop + overscroll)}px)`;
   };
 
   const syncLayout = (textarea: HTMLTextAreaElement) => {
@@ -93,7 +99,7 @@ export const ComposerMirror = memo(forwardRef<ComposerMirrorHandle, {
     mirror.style.padding = computedStyle.padding;
     mirror.style.border = `${computedStyle.borderWidth} solid transparent`;
     mirror.style.height = `${textarea.clientHeight}px`;
-    syncScroll(textarea);
+    syncScroll(textarea, overscrollRef.current);
   };
 
   const syncWidth = (textarea: HTMLTextAreaElement, contentWidth: number) => {
