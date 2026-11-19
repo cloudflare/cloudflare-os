@@ -47,8 +47,17 @@ export type PathParams<P extends string> =
     ? { readonly [K in Name | keyof PathParams<Rest>]: string | number }
     : {};
 
-type PathField<P extends string> =
-  keyof PathParams<P> extends never ? { readonly path?: never } : { readonly path: PathParams<P> };
+/** The paths at prefix `P`, or below it. */
+type Under<P extends string> = P extends `${string}/` ? `${P}${string}` : P | `${P}/${string}`;
+
+/** The parameters of path `P` that the prefixes `Scope` fix: those of each prefix `P` is under. */
+type FixedIn<P extends string, Scope extends string> =
+  Scope extends unknown ? P extends Under<Scope> ? keyof PathParams<Scope> : never : never;
+
+type PathField<P extends string, Scope extends string> =
+  Exclude<keyof PathParams<P>, FixedIn<P, Scope>> extends never
+    ? { readonly path?: never }
+    : { readonly path: Omit<PathParams<P>, FixedIn<P, Scope>> };
 
 type Field<O, K extends "query" | "headers" | "body"> =
   K extends keyof O
@@ -58,30 +67,62 @@ type Field<O, K extends "query" | "headers" | "body"> =
     : { readonly [_ in K]: O[K] }
     : { readonly [_ in K]?: never };
 
-/** The second argument of a call to operation `O`. */
-export type OperationInit<O extends Operation> =
-  PathField<O["path"]> & Field<O, "query"> & Field<O, "headers"> & Field<O, "body">;
+/**
+ * The second argument of a call to operation `O`. Its `path` leaves out the parameters of the
+ * prefixes `Scope` that the operation's path is under, which a client made by {@link scopeTo}
+ * fills itself.
+ */
+export type OperationInit<O extends Operation, Scope extends string = never> =
+  PathField<O["path"], Scope> & Field<O, "query"> & Field<O, "headers"> & Field<O, "body">;
 
-type InitArgs<O extends Operation> =
-  {} extends OperationInit<O> ? [init?: OperationInit<O>] : [init: OperationInit<O>];
+type InitArgs<O extends Operation, Scope extends string> =
+  {} extends OperationInit<O, Scope> ? [init?: OperationInit<O, Scope>] : [init: OperationInit<O, Scope>];
 
 type OperationAt<Ops extends Operation, P> = Extract<Ops, { readonly path: P }>;
 
 /**
  * A client for schema `S`, with one method per HTTP method `S` declares. Each takes an operation's
  * path, written as in the schema, and its {@link OperationInit}, and resolves to its `response`.
+ * `Scope` is the path prefixes whose parameters the client fills itself; see {@link scopeTo}.
  */
-export type Client<S extends Schema> = {
+export type Client<S extends Schema, Scope extends string = never> = {
   readonly [M in keyof S as S[M] extends readonly Operation[] ? M : never]:
     S[M] extends readonly (infer Ops extends Operation)[]
-      ? <P extends Ops["path"]>(path: P, ...init: InitArgs<OperationAt<Ops, P>>)
+      ? <P extends Ops["path"]>(path: P, ...init: InitArgs<OperationAt<Ops, P>, Scope>)
           => Promise<OperationAt<Ops, P>["response"]>
       : never;
 };
 
+/** Every path of schema `S`. */
+type PathOf<S extends Schema> =
+  { [M in keyof S]: S[M] extends readonly (infer Ops extends Operation)[] ? Ops["path"] : never }[keyof S];
+
+/** Path `P` and each of its leading runs of whole segments: `/a/{b}` gives `/a` and `/a/{b}`. */
+type Leading<P extends string, Before extends string = ""> =
+  P extends `/${infer Segment}/${infer Rest}`
+    ? `${Before}/${Segment}` | Leading<`/${Rest}`, `${Before}/${Segment}`>
+    : `${Before}${P}`;
+
+/** Schema `S` without the operations outside prefixes `P`, and without a method left with none. */
+type Within<S extends Schema, P extends string> = {
+  readonly [M in keyof S as S[M] extends readonly { readonly path: infer Path }[]
+    ? Extract<Path, Under<P>> extends never ? never : M
+    : never]:
+      S[M] extends readonly (infer Ops)[] ? readonly Extract<Ops, { readonly path: Under<P> }>[] : never;
+};
+
+/**
+ * What {@link scopeTo} returns for a client of schema `S` and prefixes `P`: a client for the
+ * operations at or below those prefixes, which fills the prefixes' path parameters itself.
+ * `Scope` is the prefixes of the client it was made from, if that one was scoped too.
+ * @example A field holding one organization's client is `ScopedClient<Api, "/orgs/{org}">`.
+ */
+export type ScopedClient<S extends Schema, P extends Leading<PathOf<S>>, Scope extends string = never> =
+  Client<Within<S, P>, Scope | P>;
+
 /** Settings for {@link createOpenAPIClient}. */
 export type OpenAPIClientOptions = {
-  /** Prefix every operation path is appended to, e.g. `https://api.example.com/v2`. */
+  /** Prefix every operation path is appended to, e.g. `https://api.example.com/v2`, with no query or fragment. */
   baseUrl: string;
   /**
    * Headers sent with every request, such as `Authorization`. The client calls this before each
@@ -108,9 +149,10 @@ const METHODS: readonly Method[] = ["get", "post", "put", "delete", "patch"];
  * Creates a typed client for schema `S`, which the caller names explicitly.
  *
  * The client encodes each path placeholder with `pathSegment`, which refuses an empty, `.` or `..`
- * value. It leaves out query values that are `undefined`, sends each element of a query array as
- * its own `name=value` pair, and sends a body as JSON. It never
- * follows a redirect, so headers never reach another origin. Any non-2xx reply, including a 3xx,
+ * value, and refuses a path that does not start with `/` or that has a `.` or `..` segment or
+ * whitespace, any of which the URL parser could turn into another route or origin. It leaves out
+ * query values that are `undefined`, sends each element of a query array as its own `name=value`
+ * pair, and sends a body as JSON. It never follows a redirect, so headers never reach another origin. Any non-2xx reply, including a 3xx,
  * throws `HttpError` with its status, and the client cancels the body unread. A 2xx body is read up
  * to `maxResponseBytes` and parsed as JSON. An empty body resolves to `undefined`.
  * @param options Base URL, shared headers, transport, and response size limit.
@@ -139,6 +181,69 @@ export function createOpenAPIClient<const S extends Schema>(options: OpenAPIClie
     client[method] = (path, init) => send(options, method, path, init ?? {});
   }
   return client as Client<S>;
+}
+
+/**
+ * Narrows a client to the operations at or below the given path prefixes, and fixes each prefix's
+ * path parameters. Use it for what a connection is bound to, such as one organization or project,
+ * so that code holding the result can neither name another one nor call outside the prefixes.
+ *
+ * A prefix is the start of a schema path up to the end of a segment, written as in the schema, and
+ * comes with a value for each of its parameters. The result's calls leave those parameters out of
+ * paths under that prefix; a parameter of the same name in a path under another prefix is the
+ * caller's to pass. The types are a convenience and the checks made on each call are the boundary:
+ * the result throws for a path outside every prefix, and for a call that passes another value for
+ * a fixed parameter. It reads `scope` once, when it is made. Scoping the result again narrows it
+ * further.
+ *
+ * This covers paths only. Where an operation takes the organization or project in its query or
+ * body, pass the fixed value there in the gatekeeper's own code.
+ * @param client The client to narrow.
+ * @param scope The path prefixes to keep, each with a value for each of its path parameters.
+ * @returns The narrowed client.
+ * @throws If a prefix's parameter has no value, or one `pathSegment` refuses.
+ *
+ * @example
+ * ```ts
+ * const project = scopeTo(api, { "/orgs/{org}/projects/{project}": { org, project } });
+ * const issue = await project.get("/orgs/{org}/projects/{project}/issues/{id}", { path: { id } });
+ * ```
+ */
+export function scopeTo<S extends Schema, Scope extends string, const P extends Leading<PathOf<S>>>(
+  client: Client<S, Scope>,
+  scope: { readonly [K in P]: PathParams<K> },
+): ScopedClient<S, P, Scope> {
+  const prefixes = Object.entries<Readonly<Record<string, unknown>>>(scope).map(([prefix, values]) => {
+    const fixed: Record<string, string | number> = {};
+    for (const [, name] of prefix.matchAll(/\{([^{}]+)\}/g)) {
+      const value = values[name];
+      if (typeof value !== "string" && typeof value !== "number") {
+        throw new Error(`Path parameter "${name}" of the prefix "${prefix}" needs a value.`);
+      }
+      pathSegment(String(value));
+      fixed[name] = value;
+    }
+    return { prefix, below: prefix.endsWith("/") ? prefix : `${prefix}/`, fixed };
+  });
+  const inner = client as Partial<Record<Method, (path: string, init?: AnyInit) => Promise<unknown>>>;
+  const scoped: typeof inner = {};
+  for (const method of METHODS) {
+    scoped[method] = async (template, init = {}) => {
+      const under = prefixes.filter(({ prefix, below }) => template === prefix || template.startsWith(below));
+      if (under.length === 0) throw new Error(`The operation path "${template}" is outside this client's scope.`);
+      const path = { ...init.path };
+      for (const { fixed } of under) {
+        for (const [name, value] of Object.entries(fixed)) {
+          if (Object.hasOwn(path, name) && String(path[name]) !== String(value)) {
+            throw new Error(`Path parameter "${name}" is fixed for this client.`);
+          }
+          path[name] = value;
+        }
+      }
+      return await inner[method]!(template, { ...init, path });
+    };
+  }
+  return scoped as ScopedClient<S, P, Scope>;
 }
 
 async function send(
