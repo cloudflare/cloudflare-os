@@ -22,6 +22,8 @@ import { table as real } from "../generated/commands.ts";
 const GENERATED = join(import.meta.dirname, "__fixtures__", "generated");
 const EXPECTED_COMMANDS = join(GENERATED, "commands.ts");
 const API_SCHEMA_FIXTURE = join(import.meta.dirname, "..", "..", "api-schema", "__tests__", "__fixtures__", "schema.json");
+/** The real API's schema, generated in the same run as the real table (`real`). */
+const REAL_SCHEMA = join(import.meta.dirname, "..", "..", "api-schema", "generated", "workshop-api.schema.json");
 
 /** Agent declarations for the files `generate` renders beside the table. */
 const AGENT: AgentTypes = { declarations: "export interface A {}\n", fragments: { A: "export interface A {}\n" } };
@@ -174,6 +176,13 @@ test("write-workspace's own help says what each action does, and what refuses th
   for (const refusal of ["notAdmin", "writesOff"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
 });
 
+test("request-content-access's own help says another admin approves it, and what refuses it", () => {
+  const { doc, args } = real.nodes.AdminApi!.commands["request-content-access"]!;
+  assert.deepEqual(args.map(({ name }) => name), ["workspaceId", "reason"]);
+  assert.ok(doc.includes("an admin other than its requester approves it"));
+  for (const refusal of ["contentOff", "workspaceNotFound", "workspaceUnlisted", "requestPending", "tooManyRequests"]) {
+    assert.ok(doc.includes(`\`${refusal}\``), refusal);
+  }
 });
 
 test("ending a grant an approval gave is an ordinary command: a workspace, a grant and a reason", () => {
@@ -184,6 +193,58 @@ test("ending a grant an approval gave is an ordinary command: a workspace, a gra
     { name: "reason", flag: undefined, encoding: "string" },
   ]);
   for (const refusal of ["notAdmin", "workspaceNotFound", "notFound"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+});
+
+test("grants and content reads are commands where their methods are, and AdminApi leaves none out", () => {
+  const commands = (node: string, named: RegExp) => Object.keys(real.nodes[node]!.commands).filter((command) => named.test(command));
+  // A workspace's owner gives, lists, renews and ends its grants; the account-wide grant is the signed-in user's.
+  assert.deepEqual(commands("Overseer", /admin-(access|grants)$/),
+    ["grant-admin-access", "list-admin-grants", "renew-admin-access", "revoke-admin-access"]);
+  assert.deepEqual(commands("AuthenticatedApi", /account-admin-/),
+    ["get-account-admin-grant", "grant-account-admin-access", "revoke-account-admin-access"]);
+  // The admins' content access requests and the end of an approval's grant.
+  assert.deepEqual(commands("AdminApi", /grant|content-access/), [
+    "approve-content-access", "deny-content-access", "end-workspace-grant", "get-content-access-request",
+    "list-content-access-requests", "request-content-access",
+  ]);
+  // The five content reads on an admin's view of a workspace.
+  assert.deepEqual(commands("AdminWorkspaceView", /^read-|^get-chat$/),
+    ["get-chat", "read-chat-attachment", "read-file", "read-file-at-commit", "read-pending-file"]);
+
+  // Every other method of these services is a command too: the table leaves out what its constants name, nothing more.
+  const schema = JSON.parse(readFileSync(REAL_SCHEMA, "utf8")) as Schema;
+  const leftOut = (service: string) => schema.services[service]!.methods.map((method) => method.name)
+    .filter((method) => !(kebab(method) in real.nodes[service]!.commands)).toSorted();
+  assert.deepEqual(leftOut("AdminApi"), []);
+  assert.deepEqual(leftOut("AuthenticatedApi"), ROOT_CREDENTIAL_METHODS);
+  assert.deepEqual(leftOut("Overseer"), []);
+  assert.deepEqual(leftOut("AdminWorkspaceView"), []);
+});
+
+test("an attachment read is a stream, a file read a value holding one", () => {
+  const view = real.nodes.AdminWorkspaceView!.commands;
+  assert.deepEqual(view["read-chat-attachment"]!.returns, { kind: "stream" });
+  // A file's answer says in JSON whether it is text, absent, unreadable or a stream of bytes, so it is a value marked for --out.
+  const content = 'AdminFileContent = { byteLength: number; content: ReadableStream; kind: "stream" } | { kind: "absent" } | ' +
+    '{ kind: "text"; text: string } | { kind: "unreadable"; message: string }';
+  for (const name of ["read-file", "read-file-at-commit", "read-pending-file"]) {
+    assert.deepEqual(view[name]!.returns, { kind: "value", type: content, stream: true }, name);
+  }
+  // A chat's page holds no stream: an image in it comes as its reference.
+  assert.equal("stream" in view["get-chat"]!.returns, false);
+});
+
+test("what a content read may be given, but need not, is an option", () => {
+  const args = (node: string, command: string) => real.nodes[node]!.commands[command]!.args
+    .map(({ name, flag, encoding }) => ({ name, flag, encoding }));
+  assert.deepEqual(args("AdminWorkspaceView", "get-chat"), [
+    { name: "chatId", flag: undefined, encoding: "number" },
+    { name: "beforeSequence", flag: "before-sequence", encoding: "number" },
+  ]);
+  // The level a view is opened at: one JSON object.
+  assert.deepEqual(args("AdminApi", "inspect-workspace").at(-1), { name: "options", flag: "options", encoding: "json" });
+  assert.equal(real.shapes.AdminViewAccess!.kind, "union");
+  assert.equal(typeText(real.shapes.AdminViewAccess!), '"content" | "metadata"');
 });
 
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {
