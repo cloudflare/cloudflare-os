@@ -2,27 +2,29 @@ import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { ADMIN_AGENT_LEND_SECONDS } from "@gadgets/workshop-shared/admin-agent";
 import {
-  ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, OPEN_WORKSPACE_ERROR_CODES, type AdminApi,
-  type Overseer,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, createAdminAccessError, getAdminAccessErrorCode,
+  OPEN_WORKSPACE_ERROR_CODES, type AdminApi, type Overseer,
 } from "@gadgets/workshop-shared/api";
 import type { Harness } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { connect, waitFor, type ConnectedAccount } from "../src/rpc-client.js";
 import {
-  ACCOUNT_REMOVED, addAdminConnection, adminAccounts, adminApiOf, agentTurn, auditCount,
-  auditRecords, buildGadget, collaboratorIds, connectionVendors, DEPLOYMENT_URL, gadgetIds, GRACE,
-  HAS_CONNECTION, HAS_READ, HEIDI, isRestricted, newMember, newUser, newWorkspace,
-  observationTitles, openAs, opening, OWNER, provisionAdminAccount, reconnect, signedInAgain,
-  startAdminHarness, turnModels, VENDOR, withAdmins, type AdminConnection, type Suite,
-  type SuiteUser,
+  ACCOUNT_REMOVED, addAdminConnection, adminAccounts, adminActions, adminApiOf, agentTurn,
+  approveContent, auditCount, auditRecords, buildGadget, collaboratorIds, connectionVendors,
+  DEPLOYMENT_URL, gadgetIds, GRACE, HAS_CONNECTION, HAS_READ, HEIDI, isRestricted, listed,
+  newMember, newUser, newWorkspace, observationTitles, openAs, opening, OWNER, pendingActions,
+  provisionAdminAccount, reconnect, removeMember, requestsFiled, settle, signedInAgain,
+  startAdminHarness, TAGS, turnModels, VENDOR, withAdmins, writesMade, type AdminConnection,
+  type Suite, type SuiteUser,
 } from "./admin-gatekeeper-harness.js";
 
 // Who is offered the admin gatekeeper, where its connection goes, what an agent reads through
-// it and how each read is recorded, and who is admitted to a workspace that has it.
+// it and how each read is recorded, who is admitted to a workspace that has it, and who may
+// approve what it files.
 //
-// The vendor's mode and the audit log are deployment-wide, so this file owns its harness and its
-// cases run in order: the first two leave the vendor's mode "optional" and the owner with an
-// account, which the rest use.
+// The vendor's mode, the audit log and the content requests are deployment-wide, so this file
+// owns its harness and its cases run in order: the first two leave the vendor's mode "optional"
+// and the owner with an account, which the rest use.
 const models = turnModels();
 const network = new NetworkInterceptor({ handlers: [models.handler] });
 const scope = new DisposableStack();
@@ -32,6 +34,8 @@ let owner: SuiteUser;
 let grace: SuiteUser;
 let heidi: SuiteUser;
 let admin: RpcStub<AdminApi>;
+let graceAdmin: RpcStub<AdminApi>;
+let heidiAdmin: RpcStub<AdminApi>;
 // The owner's account of the vendor, added in the second case.
 let ownerAccount: ConnectedAccount;
 
@@ -43,6 +47,10 @@ beforeAll(async () => {
   grace = await newUser(suite, GRACE);
   heidi = await newUser(suite, HEIDI);
   admin = await adminApiOf(suite, owner);
+  // Content can be read wherever a grant is live.
+  await admin.setAdminWorkspaceAccess("content");
+  graceAdmin = await adminApiOf(suite, grace);
+  heidiAdmin = await adminApiOf(suite, heidi);
 });
 
 afterAll(async () => {
@@ -55,7 +63,9 @@ afterAll(async () => {
   }
 });
 
+const { contentNotRequested, grantRequired } = ADMIN_ACCESS_ERROR_CODES;
 const { workspaceAccessDenied } = OPEN_WORKSPACE_ERROR_CODES;
+const { secondAdminRequired } = ADMIN_GRANT_ERROR_CODES;
 const ADMINS_ONLY = "Only deployment admins can add this gatekeeper.";
 
 /** The ids of the vendors a listing names. */
@@ -187,7 +197,7 @@ it("records an agent's view calls as made through the gatekeeper, for the owner,
   expect(records.map(record => record.method)).toEqual(["listChats", "describe", "inspectWorkspace"]);
   for (const record of records) {
     expect(record).toMatchObject({
-      kind: "workspace", admin: OWNER, via: "gatekeeper",
+      kind: "workspace", admin: OWNER, via: "gatekeeper", exposed: "metadata",
       agent: { workspaceId: triage.id, chatId: turn.chatId },
     });
   }
@@ -204,6 +214,59 @@ it("records an agent's view calls as made through the gatekeeper, for the owner,
   const { expiresAt } = results.view!.value as { expiresAt: string };
   expect(new Date(expiresAt).getTime())
       .toBeLessThanOrEqual(ended + (ADMIN_AGENT_LEND_SECONDS + 1) * 1000);
+});
+
+/** An agent's code that reads a chat through a view of `workspaceId` opened for `access`. */
+const chatThroughBinding = (workspaceId: string, chatId: number, access: "content" | "metadata") =>
+  `async () => {
+    const view = await env.ADMIN.inspectWorkspace(
+        ${JSON.stringify(workspaceId)}, "Reading a chat", { access: "${access}" });
+    return (await view.getChat(${chatId})).messages.length;
+  }`;
+
+/** The same read by the admin's own call: how many messages, or the code it is refused with. */
+async function chatByHand(workspaceId: string, chatId: number, access: "content" | "metadata") {
+  using view = await admin.inspectWorkspace(workspaceId, "Reading a chat", { access });
+  return view.getChat(chatId).then(chat => chat.messages.length, getAdminAccessErrorCode);
+}
+
+/** The audit log's records of chats read in `workspace`, newest first. */
+const chatReads = (workspace: string) => auditRecords(admin, { workspace, method: "getChat" });
+
+it("reads content exactly where the workspace's own check allows it", async () => {
+  const subject = await newMember(suite, "granter");
+  const granted = await newWorkspace(suite, subject, "Granted");
+  const closed = await newWorkspace(suite, subject, "Not granted");
+  const grantedChat = await granted.ws.newChat("hello", null);
+  const closedChat = await closed.ws.newChat("hello", null);
+  const grant = await granted.ws.grantAdminAccess();
+  const triage = await newWorkspace(suite, owner, "Triage content");
+  const connection = await addAdminConnection(triage.ws, ownerAccount.id);
+
+  const turn = await agentTurn(owner, triage.ws, `
+    await attempt("granted", ${chatThroughBinding(granted.id, grantedChat, "content")});
+    await attempt("closed", ${chatThroughBinding(closed.id, closedChat, "content")});
+    await attempt("metadata", ${chatThroughBinding(granted.id, grantedChat, "metadata")});`,
+      { connection });
+  expect(await turn.results()).toEqual({
+    granted: { value: 1 },
+    closed: { error: createAdminAccessError(grantRequired).message },
+    metadata: { error: createAdminAccessError(contentNotRequested).message },
+  });
+
+  const origin = { via: "gatekeeper", admin: OWNER, agent: { workspaceId: triage.id, chatId: turn.chatId } };
+  expect(await chatReads(granted.id)).toEqual([
+    expect.objectContaining({ ...origin, requested: "metadata", refused: contentNotRequested }),
+    expect.objectContaining({ ...origin, exposed: "content", grantId: grant.id }),
+  ]);
+  expect(await chatReads(closed.id)).toEqual([
+    expect.objectContaining({ ...origin, requested: "content", refused: grantRequired }),
+  ]);
+
+  // The gatekeeper changes neither answer: the admin's own calls end the same way.
+  expect(await chatByHand(granted.id, grantedChat, "content")).toBe(1);
+  expect(await chatByHand(closed.id, closedChat, "content")).toBe(grantRequired);
+  expect(await chatByHand(granted.id, grantedChat, "metadata")).toBe(contentNotRequested);
 });
 
 it("admits only its owner and deployment admins to a workspace that has the connection", async () => {
@@ -275,6 +338,10 @@ it("admits only its owner and deployment admins to a workspace that has the conn
   const records = await auditCount(harness);
   await expect(direct(graceWs, session => session.listUsers()))
       .rejects.toThrow("Only this workspace's owner can open the admin connection directly");
+  // Nor does it queue an action, which would then be recorded as the owner's with nobody behind it.
+  await expect(direct(graceWs, session => session.requestContentAccess("a-workspace", "A reason")))
+      .rejects.toThrow("Only this workspace's owner can open the admin connection directly");
+  expect(await adminActions(ws)).toEqual([]);
   expect(await auditCount(harness)).toBe(records);
   expect(await isRestricted(ws)).toBe(false);
   expect(await observationTitles(ws)).toEqual([]);
@@ -334,32 +401,174 @@ it("admits only its owner and deployment admins to a workspace that has the conn
   expect(await collaboratorIds(ws)).toEqual(expect.arrayContaining([early.name, viewer.name]));
 });
 
+/** An agent's code that files a request for the content of `workspaceId`. */
+const ask = (workspaceId: string) => `await attempt("request", () =>
+  env.ADMIN.requestContentAccess(${JSON.stringify(workspaceId)}, "A user asked for help"));`;
+
+/** A gadget whose one method files a content request through its admin binding. */
+const ASKING_GADGET = `import { DurableObject } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async ask(workspaceId) {
+    await this.env.ADMIN.requestContentAccess(workspaceId, "A gadget asked");
+    return "filed";
+  }
+}`;
+
+it("keeps a content request filed through the connection from being approved by anyone who " +
+    "is in its workspace, or who approved its filing", async () => {
+  const wanted = await newMember(suite, "wanted");
+  const [first, second, third, restarted] = [
+    await newWorkspace(suite, wanted, "Wanted, first"),
+    await newWorkspace(suite, wanted, "Wanted, second"),
+    await newWorkspace(suite, wanted, "Wanted, third"),
+    await newWorkspace(suite, wanted, "Wanted, restarted"),
+  ];
+  for (const { id } of [first, second, third, restarted]) await listed(admin, wanted.name, id);
+  const triage = await newWorkspace(suite, owner, "Triage requests");
+  let { ws } = triage;
+  const connection = await addAdminConnection(ws, ownerAccount.id);
+  expect(await ws.addCollaborator(GRACE, "workspace")).not.toBeNull();
+  using graceWs = await openAs(
+      suite, grace, triage.id, { accountId: (await provisionAdminAccount(grace)).id });
+
+  /** Runs a turn that asks for content of `workspaceId`: its card, pending. */
+  const askForContent = async (workspaceId: string) => {
+    const turn = await agentTurn(owner, ws, ask(workspaceId), { connection });
+    await settle(ws);
+    expect(turn.paused()).toBe(true);
+    const [card] = await pendingActions(ws, 1);
+    expect(card!.description.actionKind?.tag).toBe(TAGS.contentAccessRequest);
+    // Nothing is filed until a person approves the card.
+    expect(await requestsFiled(admin, workspaceId, triage.id)).toEqual([]);
+    return { turn, card: card! };
+  };
+
+  // Approved by a member: neither the owner, whose Admin API filed it, nor that member may
+  // approve the request. An admin from outside the workspace does.
+  const byGrace = await askForContent(first.id);
+  await graceWs.approveAction(byGrace.card.id);
+  expect(await byGrace.turn.resumed()).toEqual({ request: { value: null } });
+  const [request] = await requestsFiled(admin, first.id, triage.id);
+  expect(request).toMatchObject({
+    state: "pending", requestedBy: OWNER, via: "gatekeeper",
+    agent: { workspaceId: triage.id, chatId: byGrace.turn.chatId },
+  });
+  expect(await approveContent(admin, request!.id)).toBe(secondAdminRequired);
+  expect(await approveContent(graceAdmin, request!.id)).toBe(secondAdminRequired);
+  // The grant is the admins': the workspace gave it when the request was approved.
+  expect(await approveContent(heidiAdmin, request!.id)).toMatchObject({
+    id: request!.id, state: "approved", resolvedBy: HEIDI, grantId: expect.any(String),
+  });
+  using view = await admin.inspectWorkspace(first.id, "Checking the grant");
+  expect((await view.describe()).grants).toEqual([
+    expect.objectContaining({ source: "admins", requestedBy: OWNER, requestId: request!.id }),
+  ]);
+
+  // Approved by the owner: a member who decided nothing is refused all the same.
+  const byOwner = await askForContent(second.id);
+  await ws.approveAction(byOwner.card.id);
+  await byOwner.turn.resumed();
+  const [again] = await requestsFiled(admin, second.id, triage.id);
+  expect(await approveContent(admin, again!.id)).toBe(secondAdminRequired);
+  expect(await approveContent(graceAdmin, again!.id)).toBe(secondAdminRequired);
+  expect(await approveContent(heidiAdmin, again!.id)).toMatchObject({ resolvedBy: HEIDI });
+
+  // A write is a kind of its own, which waits for a person: once a member approves it, it runs as
+  // the owner's, with no other admin deciding.
+  const restart = await agentTurn(owner, ws, `await attempt("write", () =>
+    env.ADMIN.writeWorkspace(${JSON.stringify(restarted.id)}, "restartWorkspace", {},
+        "A user asked for help"));`, { connection });
+  await settle(ws);
+  expect(restart.paused()).toBe(true);
+  const [write] = await pendingActions(ws, 1);
+  expect(write!.description.actionKind?.tag).toBe(TAGS.workspaceWriteRequest);
+  expect(await writesMade(admin, restarted.id, triage.id)).toEqual([]);
+  await graceWs.approveAction(write!.id);
+  expect(await restart.resumed()).toEqual({ write: { value: null } });
+  expect((await adminActions(ws)).at(-1)).toMatchObject({
+    state: "approved", resolvedBy: { type: "user", id: GRACE },
+    description: { actionKind: { tag: TAGS.workspaceWriteRequest } },
+  });
+  expect(await writesMade(admin, restarted.id, triage.id)).toEqual([expect.objectContaining({
+    method: "restartWorkspace", admin: OWNER, via: "gatekeeper",
+  })]);
+
+  // A member who has left is an outsider again, but only for a request filed after she left:
+  // merged gadget code that asks for content waits for a person, who is then counted among those
+  // who may not approve.
+  ws = await removeMember(suite, owner, ws, GRACE);
+  const { gadget } = await buildGadget(
+      owner, ws, { name: "ASKER", server: ASKING_GADGET, bindings: { ADMIN: connection.id } });
+  using facet = await gadget.connectToGadget() as RpcStub<{ ask(id: string): string }>;
+  const asked = facet.ask(third.id);
+  await settle(ws);
+  const [held] = await pendingActions(ws, 1);
+  expect(held!.description.actionKind?.tag).toBe(TAGS.contentAccessRequest);
+  expect(await requestsFiled(admin, third.id, triage.id)).toEqual([]);
+  await ws.approveAction(held!.id);
+  expect(await asked).toBe("filed");
+  const [late] = await requestsFiled(admin, third.id, triage.id);
+  expect(late).toMatchObject({ requestedBy: OWNER, via: "gatekeeper" });
+  expect(late!.agent).toEqual({ workspaceId: triage.id });
+  expect(await approveContent(admin, late!.id)).toBe(secondAdminRequired);
+  expect(await approveContent(graceAdmin, late!.id)).toMatchObject({ resolvedBy: GRACE });
+});
+
 /** What an RPC stub answers for a method its target does not have. */
 const notImplemented = (method: string) =>
   ({ error: `The RPC receiver does not implement the method "${method}".` });
 
 it("refuses the methods an agent is not given, and changes nothing", async () => {
-  // Each call below is one the Admin API would carry out for the owner: a name to set and a
-  // switch to flip. So what is unchanged afterwards is unchanged because the call went nowhere.
-  const { siteName, signupsEnabled } = await admin.getSettings();
+  const subject = await newMember(suite, "kept");
+  const theirs = await newWorkspace(suite, subject, "Kept as it is");
+  await listed(admin, subject.name, theirs.id);
+  /** The live grants of the user's workspace, as an admin's view lists them. */
+  const grants = async () => {
+    using view = await admin.inspectWorkspace(theirs.id, "Checking the grant");
+    return (await view.describe()).grants.map(({ id, source }) => ({ id, source }));
+  };
+
+  // Each call below is one the Admin API would carry out for the owner: a name to set, an
+  // admins' grant to end, and a pending request another admin filed, which the owner may
+  // approve. So what is unchanged afterwards is unchanged because the call went nowhere.
+  const granting = await admin.requestContentAccess(theirs.id, "Asked by hand");
+  expect(await approveContent(heidiAdmin, granting.id)).toMatchObject({ resolvedBy: HEIDI });
+  const [grant, ...others] = await grants();
+  expect(grant).toMatchObject({ source: "admins" });
+  expect(others).toEqual([]);
+  const request = await graceAdmin.requestContentAccess(theirs.id, "Asked by hand");
+  const { siteName } = await admin.getSettings();
   const triage = await newWorkspace(suite, owner, "Triage omitted");
   const connection = await addAdminConnection(triage.ws, ownerAccount.id);
 
   // Called, not looked up: every name on a stub is callable, so only the call's end tells.
   const turn = await agentTurn(owner, triage.ws, `
     await attempt("setSiteName", () => env.ADMIN.setSiteName("Renamed by an agent"));
-    await attempt("setSignupsEnabled", () => env.ADMIN.setSignupsEnabled(${!signupsEnabled}));
-    await attempt("getUpdateStatus", () => env.ADMIN.getUpdateStatus());`, { connection });
+    await attempt("approveContentAccess", () => env.ADMIN.approveContentAccess(
+        ${JSON.stringify(request.id)}));
+    await attempt("getUpdateStatus", () => env.ADMIN.getUpdateStatus());
+    await attempt("endWorkspaceGrant", () => env.ADMIN.endWorkspaceGrant(
+        ${JSON.stringify(theirs.id)}, ${JSON.stringify(grant!.id)}, "Ended by an agent"));`,
+      { connection });
   expect(await turn.results()).toEqual({
     setSiteName: notImplemented("setSiteName"),
-    setSignupsEnabled: notImplemented("setSignupsEnabled"),
+    approveContentAccess: notImplemented("approveContentAccess"),
     getUpdateStatus: notImplemented("getUpdateStatus"),
+    endWorkspaceGrant: notImplemented("endWorkspaceGrant"),
   });
 
-  expect(await admin.getSettings()).toMatchObject({ siteName, signupsEnabled });
+  expect((await admin.getSettings()).siteName).toBe(siteName);
+  expect((await admin.getContentAccessRequest(request.id)).state).toBe("pending");
+  expect(await grants()).toEqual([grant]);
   // A call that is refused observes nothing, so it marks nothing.
   expect(await observationTitles(triage.ws)).toEqual([]);
   expect(await isRestricted(triage.ws)).toBe(false);
+
+  // The same grant and the same request, from the admin's own hand, are carried out.
+  await admin.endWorkspaceGrant(theirs.id, grant!.id, "Ended by hand");
+  expect(await grants()).toEqual([]);
+  expect(await admin.approveContentAccess(request.id))
+      .toMatchObject({ id: request.id, state: "approved", resolvedBy: OWNER });
 });
 
 it("refuses every call while the vendor is turned off, and answers again through the same " +

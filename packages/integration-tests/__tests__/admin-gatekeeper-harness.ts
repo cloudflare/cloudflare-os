@@ -4,11 +4,13 @@
 
 import { fileURLToPath, URL } from "node:url";
 import type { RpcStub } from "capnweb";
-import { ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
+import { ADMIN_AGENT_ACTIONS, ADMIN_GATEKEEPER_VENDOR_ID } from "@gadgets/workshop-shared/admin-agent";
 import {
-  getOpenWorkspaceErrorCode, type AdminApi, type AdminAuditRecord, type AiChatAuthorInfo,
-  type AiModelConfig, type AuthenticatedApi, type CapsuleSpecifier, type GadgetClient,
-  type GatekeeperClient, type Overseer, type WorkpieceId,
+  getAdminAccessErrorCode, getAdminGrantErrorCode, getOpenWorkspaceErrorCode,
+  type ActionLogEntry, type AdminApi, type AdminAuditRecord, type AdminContentRequest,
+  type AdminWriteRecord, type AiChatAuthorInfo, type AiModelConfig,
+  type AuthenticatedApi, type CapsuleSpecifier, type GadgetClient, type GatekeeperClient,
+  type Overseer, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { loadAllChatHistory } from "../src/agent-session.js";
@@ -37,6 +39,11 @@ export const GRACE = "grace";
 /** A third admin, who stays outside them. */
 export const HEIDI = "heidi";
 
+/** The tag of each of the gatekeeper's action kinds, by its name. */
+export const TAGS = Object.fromEntries(Object.entries(ADMIN_AGENT_ACTIONS)
+    .map(([name, action]) => [name, action.kind.tag])) as
+    { [K in keyof typeof ADMIN_AGENT_ACTIONS]: typeof ADMIN_AGENT_ACTIONS[K]["kind"]["tag"] };
+
 const ADMIN_GATEKEEPER_DIR = fileURLToPath(new URL("../../gatekeeper-admin/", import.meta.url));
 
 /** The real admin gatekeeper, booted from its prebuilt validated tree. */
@@ -49,9 +56,15 @@ export function adminGatekeeper(): GatekeeperSpec {
   };
 }
 
-/** A Workshop patch whose deployment has `admins` as its admins. */
+/**
+ * A Workshop patch whose deployment has `admins` as its admins, lets them read content where a
+ * grant is live, and takes writes to workspaces.
+ */
 export const withAdmins = (admins: string[] = [OWNER, GRACE, HEIDI]) => (config: WorkerConfig) => {
-  config.vars = { ...config.vars, ADMINS: admins };
+  config.vars = {
+    ...config.vars, ADMINS: admins, ADMIN_WORKSPACE_ACCESS_MAX: "content",
+    ADMIN_WORKSPACE_WRITES: "on",
+  };
 };
 
 /** The Workshop and the admin gatekeeper, with gadget execution: every suite runs agent code. */
@@ -335,10 +348,40 @@ export async function agentTurn(
   };
 }
 
+/** An action of the workspace's log. */
+export type ActionEntry = ActionLogEntry & { type: "action" };
+
+/** The workspace's actions of the admin gatekeeper, oldest first. */
+export async function adminActions(ws: RpcStub<Overseer>, filter?: "pending")
+    : Promise<ActionEntry[]> {
+  const { entries } = await ws.listActions(filter ? { filter } : { filter: "action" });
+  return entries.filter((entry): entry is ActionEntry =>
+    entry.type === "action" &&
+        Object.values(TAGS).includes(entry.description.actionKind?.tag as never))
+      .toSorted((a, b) => a.id - b.id);
+}
+
+/** Waits until the workspace has `count` pending actions of the admin gatekeeper. */
+export function pendingActions(ws: RpcStub<Overseer>, count: number): Promise<ActionEntry[]> {
+  return waitFor(`${count} pending admin action(s)`, async () => {
+    const pending = await adminActions(ws, "pending");
+    return pending.length === count ? pending : null;
+  });
+}
+
 /** The titles of the workspace's observations, newest first. */
 export async function observationTitles(ws: RpcStub<Overseer>): Promise<string[]> {
   return (await ws.listActions({ filter: "observation" })).entries
       .map(entry => entry.description.title);
+}
+
+/**
+ * Time for the workspace to have applied an action it would apply unasked: the drain runs after
+ * the submit returns. A case that asserts an action was NOT applied waits this long first.
+ */
+export async function settle(ws: RpcStub<Overseer>): Promise<void> {
+  await ws.listActions();
+  await new Promise(resolve => setTimeout(resolve, 400));
 }
 
 /** The audit log's records, newest first, as `admin` lists them. */
@@ -417,6 +460,54 @@ export async function collaboratorIds(ws: RpcStub<Overseer>): Promise<string[]> 
 }
 
 /**
+ * `api`'s admin's approval of the content access request `requestId`: the request as the approval
+ * left it, or the code the approval is refused with.
+ */
+export async function approveContent(api: RpcStub<AdminApi>, requestId: string)
+    : Promise<AdminContentRequest | string> {
+  try {
+    return await api.approveContentAccess(requestId);
+  } catch (error) {
+    const code = getAdminGrantErrorCode(error) ?? getAdminAccessErrorCode(error);
+    if (code === undefined) throw error;
+    return code;
+  }
+}
+
+/** Waits until the admins' directory lists the workspace: content is requested only for one. */
+export async function listed(admin: RpcStub<AdminApi>, owner: string, workspaceId: string)
+    : Promise<void> {
+  await waitFor("the workspace to be listed", async () =>
+    (await admin.listWorkspaces({ owner })).workspaces
+        .some(workspace => workspace.id === workspaceId) || null);
+}
+
+/**
+ * The content access requests filed for `workspaceId` through the admin connection of `origin`,
+ * oldest first.
+ */
+export async function requestsFiled(
+    admin: RpcStub<AdminApi>, workspaceId: string, origin: string)
+    : Promise<AdminContentRequest[]> {
+  return (await admin.listContentAccessRequests())
+      .filter(request => request.workspaceId === workspaceId &&
+          request.agent?.workspaceId === origin)
+      .toSorted((a, b) => a.requestedAt.getTime() - b.requestedAt.getTime());
+}
+
+/**
+ * The writes made to `workspaceId` through the admin connection of `origin`, oldest first, as
+ * the audit log records them.
+ */
+export async function writesMade(
+    admin: RpcStub<AdminApi>, workspaceId: string, origin: string)
+    : Promise<AdminWriteRecord[]> {
+  const records = await auditRecords(admin, { kind: "write", workspace: workspaceId });
+  return records.flatMap(record =>
+    record.kind === "write" && record.agent?.workspaceId === origin ? [record] : []).toReversed();
+}
+
+/**
  * A merged gadget of `ws` whose server is `server`, bound to each of `bindings` under its name.
  * Its files are written by the agent of `user`, a member of the workspace, and accepted, as a
  * gadget is built. A permanent binding also seeds the env of every chat started afterwards.
@@ -456,4 +547,20 @@ export async function gadgetIds(ws: RpcStub<Overseer>): Promise<WorkpieceId[]> {
   await workpieces.loaded;
   return [...workpieces.summaries.values()]
       .flatMap(summary => summary.type === "gadget" ? [summary.id] : []);
+}
+
+/**
+ * Removes `profileId` from the workspace as its owner. Removing a collaborator restarts the
+ * workspace, which breaks every session on it, `ws` included: resolves to the owner's workspace,
+ * opened again.
+ */
+export async function removeMember(
+    suite: Suite, owner: SuiteUser, ws: RpcStub<Overseer>, profileId: string)
+    : Promise<RpcStub<Overseer>> {
+  const { id } = await ws.getMetadata();
+  let restarted = false;
+  ws.onRpcBroken(() => { restarted = true; });
+  await ws.removeCollaborator(profileId, []);
+  await waitFor("the workspace restart", async () => restarted || null);
+  return suite.scope.use(await (await reconnect(suite, owner)).openWorkspace(id));
 }
