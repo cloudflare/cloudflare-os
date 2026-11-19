@@ -116,9 +116,12 @@ export async function exchangeAuthCode(
   params.set("redirect_uri", redirectUri);
   params.set("grant_type", "authorization_code");
 
-  let response = await fetch(
+  // No token is sent with a request that obtains one. The exchange and the refresh share a URL,
+  // so each is named here.
+  let response = await fetchWithAuthRetry(
       "https://oauth2.googleapis.com/token",
-      {method: "POST", body: params, ...(signal ? { signal } : {})});
+      {method: "POST", body: params, ...(signal ? { signal } : {})},
+      { getAccessToken: null, operation: "token.exchange" });
 
   let contentType = response.headers.get("Content-Type");
   let isJson = contentType && contentType.startsWith("application/json");
@@ -162,7 +165,7 @@ export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | Refresh
 export async function getAccessToken(
     refreshToken: string, clientId: string, clientSecret: string, signal?: AbortSignal)
     : Promise<AccessTokenResult> {
-  const response = await fetch('https://oauth2.googleapis.com/token', {
+  const response = await fetchWithAuthRetry('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -174,7 +177,7 @@ export async function getAccessToken(
       grant_type: 'refresh_token',
     }),
     ...(signal ? { signal } : {}),
-  });
+  }, { getAccessToken: null, operation: "token.refresh" });
 
   if (!response.ok) {
     let contentType = response.headers.get("Content-Type");
@@ -226,7 +229,7 @@ export async function getGoogleAccountProfile(accessToken: string | AccessTokenP
   const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
-  }, typeof accessToken === "string" ? async () => accessToken : accessToken);
+  }, { getAccessToken: typeof accessToken === "string" ? async () => accessToken : accessToken });
 
   if (!response.ok) {
     await response.body?.cancel();
@@ -261,13 +264,11 @@ export async function getGoogleAccountDescription(accessToken: string)
  * unverified address.
  */
 export async function getGoogleVerifiedEmail(accessToken: string): Promise<string | null> {
-  const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+  // Asked once, with the token just obtained: a sign-in is not held up by retries.
+  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-    },
-  });
+    headers: { 'Accept': 'application/json' },
+  }, { getAccessToken: async () => accessToken, retries: 1 });
 
   if (!response.ok) {
     response.body?.cancel();
@@ -287,14 +288,14 @@ export async function revokeGoogleToken(
   const body = new URLSearchParams();
   body.append('token', refreshToken);
 
-  const response = await fetch('https://oauth2.googleapis.com/revoke', {
+  const response = await fetchWithAuthRetry('https://oauth2.googleapis.com/revoke', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
     },
     body: body.toString(),
     ...(signal ? { signal } : {}),
-  });
+  }, { getAccessToken: null });
 
   let contentType = response.headers.get("Content-Type");
   let isJson = contentType && contentType.startsWith("application/json");
@@ -2531,7 +2532,7 @@ export class GmailApi {
   // once on a 401 with a force-refreshed token, and retries transient failures (429 / 5xx) with
   // backoff on GETs only. Callers must not set the Authorization header themselves.
   private authedFetch(url: string, init?: RequestInit): Promise<Response> {
-    return fetchWithAuthRetry(url, init ?? {}, this.getAccessToken);
+    return fetchWithAuthRetry(url, init ?? {}, { getAccessToken: this.getAccessToken });
   }
 
   // ─────────────────────────────────────────────────────────────────

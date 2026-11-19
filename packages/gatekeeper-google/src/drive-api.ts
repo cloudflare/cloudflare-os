@@ -407,12 +407,15 @@ async function putUploadChunk(
   let ask = false;
   for (let failures = 0; failures < UPLOAD_ATTEMPTS;) {
     let range = ask || !bytes.length ? "*" : `${start}-${start + bytes.length - 1}`;
-    let response = await fetch(session, {
+    // A session's URL is its own credential and one Drive made, so its requests carry no token
+    // and are named here: asking what the session holds sends no bytes, and has a name of its own.
+    let response = await fetchWithAuthRetry(session, {
       // Drive asks for more with a 308, which is not a redirect to follow.
       method: "PUT", headers: { "Content-Range": `bytes ${range}/${total ?? "*"}` }, redirect: "manual",
       body: ask ? undefined : bytes,
       signal: AbortSignal.timeout(total === undefined ? UPLOAD_CHUNK_TIMEOUT_MS : UPLOAD_TIMEOUT_MS),
-    }).catch(() => undefined);
+    }, { getAccessToken: null, operation: ask ? "upload.getStatus" : "upload.send" })
+      .catch(() => undefined);
     if (response?.ok) {
       // The file is made by now, so a body that fails to arrive is asked for again, not given up.
       let made = await readBoundedText(response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large")
@@ -1261,7 +1264,7 @@ export class DriveApi {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ id, name, mimeType: FOLDER_MIME_TYPE, parents: [parentId] }),
-    }, this.getAccessToken, { idempotent: true });
+    }, { getAccessToken: this.getAccessToken, idempotent: true });
     if (response.status !== 409 && !response.ok) throw await driveError(response);
     await response.body?.cancel();
     return response.ok;
@@ -1277,7 +1280,7 @@ export class DriveApi {
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
       { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" },
-      this.getAccessToken);
+      { getAccessToken: this.getAccessToken });
     if (!response.ok) throw await driveError(response);
     await response.body?.cancel();
   }
@@ -1370,7 +1373,7 @@ export class DriveApi {
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
-      this.getAccessToken, timeoutMs === undefined ? {} : { timeoutMs });
+      { getAccessToken: this.getAccessToken, timeoutMs });
     if (!response.ok) throw await driveError(response);
     return response;
   }
@@ -1469,7 +1472,7 @@ export class DriveApi {
         method: typeof target === "string" ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": contentType },
         body: JSON.stringify(typeof target === "string" ? {} : { ...target, mimeType }),
-      }, this.getAccessToken, { idempotent: true, timeoutMs: UPLOAD_CHUNK_TIMEOUT_MS });
+      }, { getAccessToken: this.getAccessToken, idempotent: true, timeoutMs: UPLOAD_CHUNK_TIMEOUT_MS });
       if (!opened.ok) throw await driveError(opened);
       let location = opened.headers.get("Location");
       if (!location?.startsWith(`${DRIVE_UPLOAD_BASE}/`)) throw new Error("Google Drive did not open an upload session");
@@ -1501,7 +1504,11 @@ export class DriveApi {
     } catch (error) {
       // Stops the file being produced, and the session, which is awaited so that it is sent at all.
       void file.cancel(error).catch(() => {});
-      if (session) await fetch(session, { method: "DELETE", signal: AbortSignal.timeout(5_000) }).catch(() => {});
+      if (session) {
+        await fetchWithAuthRetry(
+          session, { method: "DELETE", signal: AbortSignal.timeout(5_000) },
+          { getAccessToken: null, operation: "upload.cancel" }).catch(() => {});
+      }
       throw error;
     }
   }
@@ -1532,7 +1539,7 @@ export class DriveApi {
           appProperties: copy.appProperties,
         }),
       },
-      this.getAccessToken);
+      { getAccessToken: this.getAccessToken });
     if (!response.ok) throw await driveError(response);
     let text = await readBoundedText(
       response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
@@ -1909,7 +1916,7 @@ export class DriveApi {
           "Content-Type": `multipart/mixed; boundary=${boundary}`,
         },
         body,
-      }, getToken, { operation: "files.get.batch", idempotent: true });
+      }, { getAccessToken: getToken, operation: "files.get.batch", idempotent: true });
       if (!response.ok) throw await driveError(response);
 
       let placed = await parseBatchAccessParts(response, fileIds.length);
@@ -1958,7 +1965,7 @@ export class DriveApi {
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       },
-      this.getAccessToken, { timeoutMs: WRITE_TIMEOUT_MS });
+      { getAccessToken: this.getAccessToken, timeoutMs: WRITE_TIMEOUT_MS });
     if (!response.ok) throw await driveError(response);
     if (response.status === 204) return undefined;
     let text = await readBoundedText(
@@ -1970,7 +1977,7 @@ export class DriveApi {
     let response = await fetchWithAuthRetry(
       `${DRIVE_API_BASE}${path}?${params}`,
       { headers: { Accept: "application/json" } },
-      this.getAccessToken);
+      { getAccessToken: this.getAccessToken });
     if (!response.ok) throw await driveError(response);
     let text = await readBoundedText(
       response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");

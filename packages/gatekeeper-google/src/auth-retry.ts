@@ -50,6 +50,12 @@ export type AccessTokenProvider = (opts?: AccessTokenRequest) => Promise<string>
 
 export type FetchWithAuthRetryOptions = {
   /**
+   * Mints the request's Bearer token. `null` for a request that carries none: one that obtains or
+   * revokes a token, or whose URL is its own credential. Such a request is sent as given, with no
+   * `Authorization` header added and nothing replayed with another token.
+   */
+  getAccessToken: AccessTokenProvider | null;
+  /**
    * Total attempts for transient failures, including the first. Defaults to 3. The one-shot 401
    * refresh does not consume this budget, so the worst case is `retries + 1` requests.
    */
@@ -97,19 +103,32 @@ function backoffDelayMs(attempt: number, retryAfter: string | null): number {
   return Math.random() * capped;
 }
 
+// Whether a status is its request's success: one below 400 is, as a rule. The requests that
+// follow no redirect differ, a thumbnail's download and an upload's chunk and status requests:
+// one answered with a redirect has failed, but for the 308 with which Drive asks for more of an
+// upload. And Drive answers the cancel of an upload session with a 499 once it has cancelled it.
+function succeeded(operation: string, status: number): boolean {
+  switch (operation) {
+    case "thumbnail.download": return status < 300;
+    case "upload.send": case "upload.getStatus": return status < 300 || status === 308;
+    case "upload.cancel": return status < 400 || status === 499;
+    default: return status < 400;
+  }
+}
+
 // Counts one request: `answer` is the status it was answered with, or why it threw. Nothing here
 // may throw, since a metric cannot fail the request it counts.
 function recordAttempt(
-  url: string, operation: string, startedAt: number, answer: number | "timeout" | "network",
+  url: string | URL, operation: string, startedAt: number, answer: number | "timeout" | "network",
 ): void {
   try {
     let call = {
-      source: GOOGLE_API_SOURCE, service: googleService(url), operation,
+      source: GOOGLE_API_SOURCE, service: googleService(url.toString()), operation,
       durationMs: Date.now() - startedAt,
     };
     if (typeof answer !== "number") {
       recordCall({ ...call, outcome: "error", reason: answer });
-    } else if (answer < 400) {
+    } else if (succeeded(operation, answer)) {
       recordCall({ ...call, outcome: "success", httpStatus: answer });
     } else if (answer === 429) {
       recordCall({ ...call, outcome: "refused", reason: "rate", httpStatus: answer });
@@ -122,17 +141,18 @@ function recordAttempt(
 }
 
 /**
- * Perform an authenticated fetch, injecting a Bearer token and applying both retry concerns
- * described at the top of this file. The `Authorization` header is set from the (possibly
- * refreshed) token on every attempt, so callers must NOT set it themselves; any other headers in
- * `init.headers` are preserved.
+ * Perform a fetch to Google, injecting a Bearer token and applying both retry concerns described
+ * at the top of this file, and count each attempt. The `Authorization` header is set from the
+ * (possibly refreshed) token on every attempt, so callers must NOT set it themselves; any other
+ * headers in `init.headers` are preserved. A request with no token provider gets no header and
+ * no replay with another token.
  */
 export async function fetchWithAuthRetry(
-  url: string,
+  url: string | URL,
   init: RequestInit,
-  getAccessToken: AccessTokenProvider,
-  opts: FetchWithAuthRetryOptions = {},
+  opts: FetchWithAuthRetryOptions,
 ): Promise<Response> {
+  let { getAccessToken } = opts;
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
   let idempotent = method === "GET" || opts.idempotent === true;
@@ -147,7 +167,7 @@ export async function fetchWithAuthRetry(
   // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;
   let reloaded = false;
-  let token = await getAccessToken();
+  let token = getAccessToken ? await getAccessToken() : undefined;
   let attempt = 0;
 
   while (true) {
@@ -160,7 +180,7 @@ export async function fetchWithAuthRetry(
     let signal = signals.length > 0 ? AbortSignal.any(signals) : undefined;
 
     let headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${token}`);
+    if (token !== undefined) headers.set("Authorization", `Bearer ${token}`);
 
     let response: Response;
     // An attempt begun once its caller's signal has aborted is never sent.
@@ -194,7 +214,7 @@ export async function fetchWithAuthRetry(
     // Every answer is counted, one that is then retried with another token included.
     recordAttempt(url, operation, startedAt, response.status);
 
-    if (response.status === 401 && !refreshed && replayable) {
+    if (getAccessToken && response.status === 401 && !refreshed && replayable) {
       // Deliberately does not touch `attempt`: the refresh is one-shot, so it can add at most one
       // request to the budget rather than doubling it.
       refreshed = true;
@@ -209,7 +229,7 @@ export async function fetchWithAuthRetry(
       }
     }
 
-    if (response.status === 403 && !reloaded && replayable) {
+    if (getAccessToken && response.status === 403 && !reloaded && replayable) {
       // Also one-shot, and it replays only on a token that really changed: an unchanged one means
       // the grant itself is insufficient, and re-sending it would just 403 again.
       reloaded = true;

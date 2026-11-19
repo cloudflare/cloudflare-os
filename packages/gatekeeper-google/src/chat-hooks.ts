@@ -367,7 +367,7 @@ class WorkspaceEventsApi {
   ): Promise<T> {
     const response = await fetchWithAuthRetry(`${EVENTS_API_BASE}${path}`, {
       ...init, headers: { "Content-Type": "application/json" },
-    }, this.getAccessToken, counted === undefined ? {} : { operation: counted });
+    }, { getAccessToken: this.getAccessToken, operation: counted });
     if (!response.ok) await chatApiFailure(operation, response);
     return response.json<T>();
   }

@@ -240,7 +240,7 @@ export class GoogleSheetsApi {
 
   async #request<T>(url: URL, operation: string, init: RequestInit = {}): Promise<T> {
     let response = await fetchWithAuthRetry(
-      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      url.toString(), init, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     return readGoogleJson<T>(response, {
       provider: "Google Sheets", operation, maxBytes: MAX_RESPONSE_BYTES,
@@ -355,7 +355,7 @@ export class GoogleSheetsApi {
         }),
       },
       // A read, however it is sent.
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
     let result = await readGoogleJson<{ sheets?: RestGridSheet[] }>(response, {
       provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES,
@@ -415,7 +415,7 @@ export class GoogleSheetsApi {
         }),
       },
       // A read, however it is sent.
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
     let result = await readGoogleJson<{
       valueRanges?: { valueRange?: RestValueRange; dataFilters?: { gridRange?: RestGridRange }[] }[];
@@ -502,7 +502,7 @@ export class GoogleSheetsApi {
         }),
       },
       // A read, however it is sent.
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
     let result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
       provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
@@ -525,7 +525,7 @@ export class GoogleSheetsApi {
       `${API_BASE}/${encodeURIComponent(spreadsheetId)}/developerMetadata/${metadataId}`);
     url.searchParams.set("fields", "metadataValue");
     let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      url.toString(), {}, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     if (response.status === 404) {
       await response.body?.cancel();
@@ -549,7 +549,7 @@ export class GoogleSheetsApi {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requests }),
       },
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     if (response.ok) {
       await response.body?.cancel();

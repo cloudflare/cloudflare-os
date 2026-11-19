@@ -1,6 +1,8 @@
 // GatekeeperUser.saveFile() against a Drive that answers as Google's does: what is sent, and what
 // is refused before anything is.
 
+import { env } from "cloudflare:workers";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS, type BlobSlot, type DoubleSlot } from "@gadgets/observability/metrics";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
 import { officeLabel, type OfficeKind } from "../src/office-conversion";
@@ -198,6 +200,48 @@ describe("saveFile", () => {
     let file = new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } });
     await expect(save(FOLDER_URL, { file })).rejects.toThrow("no Drive storage left");
     expect(cancelled).toBe(true);
+  });
+
+  it("counts each request of an upload under its own name, by its answer", async () => {
+    let ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+    let points: AnalyticsEngineDataPoint[] = [];
+    ambient.METRICS = { writeDataPoint: point => { points.push(point!); } };
+    ambient.SUBSERVICE_METRICS = "true";
+    let column = (point: AnalyticsEngineDataPoint, slot: BlobSlot | DoubleSlot) =>
+      (slot.startsWith("blob") ? point.blobs! : point.doubles!)[Number(slot.replace(/\D+/, "")) - 1];
+    // The points of the upload itself, less the reads made before it, each as its service,
+    // operation, outcome, reason and HTTP status.
+    let counted = () => points.splice(0).map(point => [
+      SUBSERVICE_V1_SLOTS.service, SUBSERVICE_V1_SLOTS.operation, COMMON_SLOTS.outcome,
+      SUBSERVICE_V1_SLOTS.reason, SUBSERVICE_V1_SLOTS.httpStatus,
+    ].map(slot => column(point, slot))).filter(([, operation]) => /resumable|^upload\./.test(String(operation)));
+    try {
+      // A new file whose last chunk's reply is lost: the session is asked, and has the file.
+      let answers: (() => Response)[] = [() => { throw new Error("connection reset"); }, () => saved("new-1", GOOGLE_DOC_MIME_TYPE)];
+      stubDrive({ "PUT session": () => answers.shift()!() });
+      await save(FOLDER_URL);
+      expect(counted()).toEqual([
+        ["google-drive", "files.create.resumable", "success", "", 200],
+        ["google-drive", "upload.send", "error", "network", 0],
+        ["google-drive", "upload.getStatus", "success", "", 200],
+      ]);
+
+      // A saved file's new content, which the session refuses: the session is abandoned.
+      stubDrive({
+        "GET /drive/v3/files/doc-1": Response.json({ id: "doc-1", name: "Plan", mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false, appProperties: { gadgetsSaved: "1" } }),
+        "PUT session": new Response(null, { status: 404 }), "DELETE session": new Response(null, { status: 499 }),
+      });
+      await expect(save(DOC_URL)).rejects.toThrow("ended the upload before the file was sent");
+      expect(counted()).toEqual([
+        ["google-drive", "files.patch.resumable", "success", "", 200],
+        ["google-drive", "upload.send", "error", "http", 404],
+        // Drive's answer to a session it has cancelled is a 499, which is the cancel's success.
+        ["google-drive", "upload.cancel", "success", "", 499],
+      ]);
+    } finally {
+      delete ambient.METRICS;
+      delete ambient.SUBSERVICE_METRICS;
+    }
   });
 
   it("asks the session what it holds after a lost reply, and makes no second file", async () => {

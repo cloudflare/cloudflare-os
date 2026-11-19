@@ -281,7 +281,7 @@ export class GoogleDocsApi {
     operation: string,
   ): Promise<T> {
     let response = await fetchWithAuthRetry(
-      url, init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      url, init, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     return readGoogleJson<T>(response, {
       provider: "Google Docs", operation, maxBytes: MAX_RESPONSE_BYTES,

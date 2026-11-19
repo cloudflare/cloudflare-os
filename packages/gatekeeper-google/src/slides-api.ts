@@ -286,7 +286,7 @@ export class GoogleSlidesApi {
 
   async #send<T>(url: URL, init: RequestInit, operation: string, maxBytes: number): Promise<T> {
     let response = await fetchWithAuthRetry(
-      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      url.toString(), init, { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
   }
@@ -374,9 +374,9 @@ export class GoogleSlidesApi {
       { "thumbnailProperties.mimeType": "PNG", "thumbnailProperties.thumbnailSize": size },
       "get thumbnail", MAX_THUMBNAIL_RESPONSE_BYTES);
     // No credentials: the URL itself is the authority. A redirect could leave Google's host.
-    let image = await fetch(thumbnailContentUrl(contentUrl), {
+    let image = await fetchWithAuthRetry(thumbnailContentUrl(contentUrl), {
       redirect: "manual", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
+    }, { getAccessToken: null, retries: 1, operation: "thumbnail.download" });
     if (!image.ok) {
       await image.body?.cancel();
       throw new Error(`Google Slides thumbnail download failed [http=${image.status}]`);
@@ -405,7 +405,7 @@ export class GoogleSlidesApi {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requests, writeControl: { requiredRevisionId } }),
       },
-      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      { getAccessToken: this.getAccessToken, timeoutMs: REQUEST_TIMEOUT_MS },
     );
     if (response.ok) {
       await response.body?.cancel();

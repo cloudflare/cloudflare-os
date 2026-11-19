@@ -269,7 +269,7 @@ async function callRest<T>(
   let response = await fetchWithAuthRetry(url, {
     ...init,
     headers,
-  }, getAccessToken, { timeoutMs: REQUEST_ABORT_TIMEOUT_MS, retries: 1 });
+  }, { getAccessToken, timeoutMs: REQUEST_ABORT_TIMEOUT_MS, retries: 1 });
 
   let contentType = response.headers.get("Content-Type") ?? "";
   let isJson = contentType.includes("application/json");

@@ -235,7 +235,7 @@ export class GoogleCalendarApi {
     let response = await fetchWithAuthRetry(`${CALENDAR_API_BASE}${path}`, {
       ...init,
       headers,
-    }, this.getAccessToken);
+    }, { getAccessToken: this.getAccessToken });
 
     if (!response.ok) {
       let text = await response.text();

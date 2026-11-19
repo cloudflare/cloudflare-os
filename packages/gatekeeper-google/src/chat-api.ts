@@ -678,8 +678,7 @@ export class ChatApi {
     const response = await fetchWithAuthRetry(
       `${CHAT_API_BASE}${path}`,
       { ...rest, headers },
-      this.getAccessToken,
-      idempotent === undefined ? {} : { idempotent },
+      { getAccessToken: this.getAccessToken, idempotent },
     );
     if (!response.ok) await chatApiFailure(operation, response);
     if (response.status === 204) return undefined as T;
@@ -869,7 +868,7 @@ export class ChatApi {
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
     const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:searchDirectoryPeople?${params}`,
-      { headers: { Accept: "application/json" } }, this.getAccessToken);
+      { headers: { Accept: "application/json" } }, { getAccessToken: this.getAccessToken });
     const body = await readGoogleJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(response, {
       provider: "Google People", operation: "people.searchDirectoryPeople", maxBytes: 256 * 1024,
     });
@@ -1072,7 +1071,7 @@ export class ChatApi {
     const params = new URLSearchParams({ personFields: "names", sources: "READ_SOURCE_TYPE_PROFILE" });
     for (const resource of byResource.keys()) params.append("resourceNames", resource);
     const response = await fetchWithAuthRetry(`${PEOPLE_API_BASE}/people:batchGet?${params}`,
-      { headers: { Accept: "application/json" } }, this.getAccessToken);
+      { headers: { Accept: "application/json" } }, { getAccessToken: this.getAccessToken });
     if (!response.ok) {
       await response.body?.cancel();
       return names;
@@ -1147,7 +1146,7 @@ export class ChatApi {
       `${CHAT_API_BASE}/media/${resourceName.split("/").map(encodeURIComponent).join("/")}` +
         "?alt=media",
       {},
-      this.getAccessToken);
+      { getAccessToken: this.getAccessToken });
     if (!response.ok) await chatApiFailure("media.download", response);
     const declared = Number(response.headers.get("Content-Length") ?? "");
     if (Number.isFinite(declared) && declared > MAX_CHAT_DOWNLOAD_BYTES) {
