@@ -387,13 +387,21 @@ export default function CodeDiffEditor({
     const originalView = originalViewRef.current
     if (!modified || !originalView) return
 
-    let syncing = false
+    // Where this sync last put each side. A side's scroll event for that position is the sync's
+    // own write coming back, which arrives after the write and must not be sent on: a side that
+    // could not go as far, because the Find panel shortens only the chat side or offscreen heights
+    // are still estimates, would otherwise drag the other side back with it.
+    const placed = new Map<HTMLElement, number>()
+    const follow = (from: EditorView, to: EditorView) => {
+      const before = to.scrollDOM.scrollTop
+      to.scrollDOM.scrollTop = from.scrollDOM.scrollTop
+      if (to.scrollDOM.scrollTop !== before) placed.set(to.scrollDOM, to.scrollDOM.scrollTop)
+    }
     const syncScroll = (from: EditorView, to: EditorView) => {
       const handler = () => {
-        if (syncing) return
-        syncing = true
-        to.scrollDOM.scrollTop = from.scrollDOM.scrollTop
-        syncing = false
+        const echo = placed.get(from.scrollDOM) === from.scrollDOM.scrollTop
+        placed.delete(from.scrollDOM)
+        if (!echo) follow(from, to)
       }
       from.scrollDOM.addEventListener('scroll', handler)
       return () => from.scrollDOM.removeEventListener('scroll', handler)
@@ -401,11 +409,17 @@ export default function CodeDiffEditor({
 
     const detachModified = syncScroll(modified, originalView)
     const detachOriginal = syncScroll(originalView, modified)
-    originalView.scrollDOM.scrollTop = modified.scrollDOM.scrollTop
+    follow(modified, originalView)
+    // A side whose estimated heights are measured grows without scrolling, so the original side,
+    // stopped short of the chat side, catches up then.
+    const resizeObserver = new ResizeObserver(() => follow(modified, originalView))
+    resizeObserver.observe(modified.contentDOM)
+    resizeObserver.observe(originalView.contentDOM)
 
     return () => {
       detachModified()
       detachOriginal()
+      resizeObserver.disconnect()
     }
   }, [splitDiff, viewsToken])
 

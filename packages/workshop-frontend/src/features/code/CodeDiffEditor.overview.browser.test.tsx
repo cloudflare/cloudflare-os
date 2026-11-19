@@ -183,6 +183,33 @@ describe.each(['stacked', 'split'] as const)('the overview strip (%s)', layout =
   })
 })
 
+const frames = (count: number) => new Promise<void>(resolve => {
+  const step = (left: number) => left ? requestAnimationFrame(() => step(left - 1)) : resolve()
+  step(count)
+})
+
+it('keeps a jump in split view that the original side cannot follow all the way', async () => {
+  // The Find panel shortens the chat side alone, so it scrolls further than the original side,
+  // which stops short of a jump to the end; as an offscreen height estimate does on a slow load.
+  const original = lines(400)
+  mount('split', original.join('\n'), [...original, 'const appended = true'].join('\n'))
+  await vi.waitFor(() => expect(marks('add')).toHaveLength(1))
+  act(() => { openSearchPanel(EditorView.findFromDOM(chatScroller())!) })
+  await vi.waitFor(() => {
+    const panel = host!.querySelector('.cm-search')
+    expect(panel).not.toBeNull()
+    expect(strip().getBoundingClientRect().bottom)
+      .toBeLessThanOrEqual(panel!.getBoundingClientRect().top + 0.5)
+  })
+
+  await userEvent.click(marks('add')[0])
+  await vi.waitFor(() => expect(inView(changedLine('const appended = true'))).toBe(true))
+  // The original side's scroll, stopped short, must not take the chat side back with it.
+  await frames(5)
+  const chat = chatScroller()
+  expect(chat.scrollTop).toBeCloseTo(chat.scrollHeight - chat.clientHeight, 0)
+})
+
 it('hides the strip when the whole file fits', async () => {
   mount('stacked', lines(5).join('\n'), [...lines(4), 'changed'].join('\n'))
   await vi.waitFor(() => expect(host!.querySelector('.gadgets-diff-line-add')).not.toBeNull())
