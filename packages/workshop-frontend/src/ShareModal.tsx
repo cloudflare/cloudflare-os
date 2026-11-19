@@ -330,12 +330,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const canInvite = !ownerInvitesOnly || isOwner
   const canUseShareLinks = !ownerInvitesOnly
   const directoryQuery = addUsername.trim()
-  // What the composer and the custom-link composer give, in a gadget's dialog: only "use" while
-  // the deployment forbids views, whatever was picked before.
-  const [pickedInviteAccess, setInviteAccess] = useState<GadgetAccess>('use')
-  const [pickedNewLinkAccess, setNewLinkAccess] = useState<GadgetAccess>('use')
-  const inviteAccess: GadgetAccess = snapshotSharingEnabled ? pickedInviteAccess : 'use'
-  const newLinkAccess: GadgetAccess = snapshotSharingEnabled ? pickedNewLinkAccess : 'use'
+  // What the composer and the custom-link composer give, in a gadget's dialog. A "Can view" picked
+  // before the deployment forbade views is kept, and sends nothing until "Can use" is picked, so
+  // a change of policy never turns a view share into a live one.
+  const [inviteAccess, setInviteAccess] = useState<GadgetAccess>('use')
+  const [newLinkAccess, setNewLinkAccess] = useState<GadgetAccess>('use')
+  const inviteAccessForbidden = inviteAccess === 'view' && !snapshotSharingEnabled
+  const newLinkAccessForbidden = newLinkAccess === 'view' && !snapshotSharingEnabled
   // Everyone who already holds what this dialog grants -- the caller, the owner (absent from
   // listCollaborators() when the caller is a collaborator), and collaborators with the workspace or
   // with this gadget -- plus everyone already staged. Anyone else can still be given it, such as a
@@ -388,7 +389,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const inviteCount = pendingRecipients.length
   // Nothing is sent while the field holds text that cannot be staged yet (its search is still
   // pending), so the button waits too: Enter already does, and a click would silently drop the name.
-  const canSubmitInvite = inviteCount > 0 && (directoryQuery === '' || typedRecipient !== null)
+  const canSubmitInvite = inviteCount > 0 && (directoryQuery === '' || typedRecipient !== null) &&
+    !inviteAccessForbidden
   const [adding, setAdding] = useState(false)
   const [newLinkNote, setNewLinkNote] = useState('')
   const [requirements, setRequirements] = useState<ObserverBindingNeed[] | null>(null)
@@ -619,7 +621,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   // Anyone besides the viewer who can open what the plain (secret-free) URL leads to.
   const othersHaveAccess = !isOwner || collaborators.some(({ profile, access }) =>
     profile.id !== currentUser?.id &&
-    (access.role === 'build' || (gadgetId !== undefined && access.gadgetIds.includes(gadgetId))))
+    (access.role === 'build' || (gadgetId !== undefined && access.gadgetIds.includes(gadgetId) &&
+      (snapshotSharingEnabled || !holdsOnlyView(access, gadgetId)))))
   const sortedShareLinks = useMemo(
     () => [...shareLinks].toSorted((a, b) => b.created.getTime() - a.created.getTime()),
     [shareLinks],
@@ -714,9 +717,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const accessUrl = destinationUrl(metadata.id, gadgetId)
 
   // The footer's link: the viewer's own link while it's on, else the plain URL, which opens only
-  // for people who already have access.
+  // for people who already have access. A view link mints no new URL while views are forbidden: a
+  // recipient could join through it but open nothing.
+  const footerCopiesMyLink = myDefaultLink !== undefined && canUseShareLinks &&
+    (snapshotSharingEnabled || myDefaultLink.mode !== 'view')
   const copyDialogLink = async () => {
-    if (myDefaultLink && canUseShareLinks) {
+    if (footerCopiesMyLink) {
       await handleCopyShareLink(myDefaultLink)
     } else if (await copyToClipboard(accessUrl)) {
       toasts.add({ title: 'Link copied to clipboard.', variant: 'success' })
@@ -724,7 +730,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
       toasts.add({ title: 'Could not copy the workspace link.', variant: 'error' })
     }
   }
-  const footerCopiesMyLink = myDefaultLink !== undefined && canUseShareLinks
 
   const showLandedRow = (kind: 'person' | 'shareLink', ids: string[]) => {
     if (landedTimerRef.current !== null) window.clearTimeout(landedTimerRef.current)
@@ -797,7 +802,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   // but none removed, since a call already issued cannot be cancelled.
   const handleInvite = async (extra: StagedRecipient | null = null) => {
     const recipients = extra ? withRecipient(staged, extra) : staged
-    if (recipients.length === 0 || addingRef.current) return
+    if (recipients.length === 0 || addingRef.current || inviteAccessForbidden) return
     if (extra) stageRecipient(extra)
 
     addingRef.current = true
@@ -858,7 +863,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   }
 
   const handleCreateShareLink = async () => {
-    if (creatingLinkRef.current) return
+    if (creatingLinkRef.current || newLinkAccessForbidden) return
     creatingLinkRef.current = true
     setCreatingLink(true)
     try {
@@ -1380,7 +1385,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 className="h-9 min-w-0 grow basis-32 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
-            {gadgetId !== undefined && snapshotSharingEnabled && (
+            {gadgetId !== undefined && (snapshotSharingEnabled || inviteAccess === 'view') && (
               <DropdownMenu>
                 <DropdownMenu.Trigger
                   render={(
@@ -1499,6 +1504,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                   {recipientLabel(recipient)}: {recipient.error}
                 </span>
               ))}
+            </p>
+          )}
+          {inviteAccessForbidden && (
+            <p role="alert" className="mt-1.5 px-1 text-[12px] leading-4 text-kumo-danger">
+              View-only sharing is turned off on this deployment. Choose Can use to give live access.
             </p>
           )}
 
@@ -1666,7 +1676,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                       disabled={creatingLink}
                     />
-                    {gadgetId !== undefined && snapshotSharingEnabled && (
+                    {gadgetId !== undefined && (snapshotSharingEnabled || newLinkAccess === 'view') && (
                       <DropdownMenu>
                         <DropdownMenu.Trigger
                           render={(
@@ -1687,7 +1697,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                         </DropdownMenu.Content>
                       </DropdownMenu>
                     )}
-                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink}>
+                    <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink || newLinkAccessForbidden}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
                     <WorkshopIconButton aria-label="Cancel creating link" onClick={() => setShowLinkComposer(false)}>
@@ -1702,6 +1712,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
               >
                 <Link size={14} /> Create a custom share link
               </button>
+            )}
+            {showLinkComposer && newLinkAccessForbidden && (
+              <p role="alert" className="mt-1.5 px-1 text-[12px] leading-4 text-kumo-danger">
+                View-only sharing is turned off on this deployment. Choose Can use to give live access.
+              </p>
             )}
           </div>
           )}
@@ -1814,7 +1829,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                                 className="!h-7 !w-7"
                                 onClick={() => handleCopyShareLink(sk)}
                                 aria-label={`Copy ${name}`}
-                                disabled={confirmationBusy || copyingLinkId === sk.linkId}
+                                disabled={confirmationBusy || copyingLinkId === sk.linkId ||
+                                  (!snapshotSharingEnabled && sk.mode === 'view')}
                               >
                                 {copiedLinkId === sk.linkId ? <Check size={13} weight="bold" /> : <Copy size={13} />}
                               </WorkshopIconButton>

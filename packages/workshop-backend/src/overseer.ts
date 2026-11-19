@@ -3,7 +3,8 @@ import type { ChatTimelineHead, GadgetSnapshotClient } from "@gadgets/workshop-s
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH, SNAPSHOT_SHARING_ERROR_CODES,
+  createAdminAccessError, createSnapshotSharingError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
@@ -5553,12 +5554,13 @@ class OverseerImpl implements AgentHooks {
   // this one leaves behind.
 
   // Throw unless the deployment allows sharing gadgets to view only (see
-  // AdminConfig.snapshotSharingEnabled). Every view grant made and every snapshot opened or
-  // refreshed checks it, so turning it off suspends the view grants already made, untouched.
+  // AdminConfig.snapshotSharingEnabled). Opening or refreshing a snapshot checks it, as does
+  // making a view grant or minting a view link's key through the Overseer API, so turning it off
+  // suspends the view grants already made, untouched. A view link's existing keys still redeem,
+  // into view grants as dormant as those.
   async requireSnapshotSharing(): Promise<void> {
     if (!(await readAdminConfig(this.env)).snapshotSharingEnabled) {
-      throw new Error(
-          "Sharing gadget snapshots is disabled on this deployment by an administrator.");
+      throw createSnapshotSharingError(SNAPSHOT_SHARING_ERROR_CODES.disabled);
     }
   }
 
@@ -14368,8 +14370,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
-    return (await this.impl.getSharingManager())
-        .newShareLinkKey({ caller: this.#sharingCaller(), linkId });
+    return (await this.impl.getSharingManager()).newShareLinkKey({
+      caller: this.#sharingCaller(), linkId,
+      requireViewSharing: () => this.impl.requireSnapshotSharing(),
+    });
   }
 
   async listShareLinks(): Promise<ShareLinkInfo[]> {

@@ -4,15 +4,16 @@
 import { act, useEffect, type ComponentProps, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type {
-  AiChatMetadata,
-  WorkspaceMetadata,
-  GadgetSummary,
-  WorkpieceId,
-  WorkpieceSummary,
-  WorkpiecesSubscriber,
+import {
+  SNAPSHOT_SHARING_ERROR_CODES,
+  createSnapshotSharingError,
+  type AiChatMetadata,
+  type WorkspaceMetadata,
+  type GadgetSummary,
+  type WorkpieceId,
+  type WorkpieceSummary,
+  type WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
-import type * as ServerConfigModule from './ServerConfigContext'
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
 // chat into view (the one a blueprint update was proposed in, the one a notification opens, or
@@ -55,8 +56,6 @@ const mocks = vi.hoisted(() => {
     onOpenAgentChat: null as null | ((chatToken: string, signal: AbortSignal) => Promise<void>),
     // Reports the workspace's chats to the editor, as the chat pane does when its list changes.
     reportChats: null as null | ((chats: readonly AiChatMetadata[]) => void),
-    // Whether the deployment allows view-only sharing (ServerConfig.snapshotSharingEnabled).
-    snapshotSharingEnabled: true,
     // The workpieces the workspace's subscription delivers.
     workpieces: [] as WorkpieceSummary[],
     // What the chat pane, the code view, Connections and the gadget's UI were last rendered with.
@@ -145,10 +144,6 @@ vi.mock('./AuthContext', () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: mocks.authenticatedApi }),
 }))
 vi.mock('./RpcContext', () => ({ useConnectionLost: () => false, useRpcStub: () => ({}) }))
-vi.mock('./ServerConfigContext', async importOriginal => ({
-  ...await importOriginal<typeof ServerConfigModule>(),
-  useServerConfig: () => ({ snapshotSharingEnabled: mocks.snapshotSharingEnabled }),
-}))
 vi.mock('./useWorkspaceOpen', () => ({
   useWorkspaceOpen: () => mocks.workspace,
   observerOpenFailureMessage: () => null,
@@ -704,6 +699,8 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
   let snapshots: { gadgetId: WorkpieceId; resolve: () => void; client: SnapshotClient }[]
   // The gadgets the collaborator may only view (Overseer.isViewOnly).
   let viewOnly: ReadonlySet<WorkpieceId>
+  // What getGadgetSnapshot() rejects with, as the server refuses while it forbids snapshots.
+  let snapshotRefusal: Error | null
   type SnapshotClient = Client & Disposable & { refresh: () => Promise<Date> }
   const shownClient = () => mocks.useView?.gadget as Client | null | undefined
 
@@ -731,6 +728,11 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
         },
         isViewOnly: async (gadgetId?: WorkpieceId) => viewOnly.has(gadgetId!),
         getGadgetSnapshot: (gadgetId?: WorkpieceId) => {
+          if (snapshotRefusal) {
+            return Object.assign(Promise.reject(snapshotRefusal), disposable, {
+              getRefreshedAt: async () => new Date(1000),
+            })
+          }
           const { promise, resolve } = Promise.withResolvers<unknown>()
           const client: SnapshotClient = {
             gadgetId: gadgetId!,
@@ -749,6 +751,7 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     admissions = []
     snapshots = []
     viewOnly = new Set()
+    snapshotRefusal = null
     mocks.useView = null
     mocks.observerModal = null
     workspace.metadata = { ...original.metadata, role: 'use' } as WorkspaceMetadata
@@ -861,18 +864,20 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     expect(admissions).toHaveLength(0)
   })
 
-  it('says a view-only gadget can’t open while the deployment forbids snapshots, asking nothing', async () => {
-    mocks.snapshotSharingEnabled = false
-    try {
-      viewOnly = new Set([GADGET.id])
-      mocks.search = { w: GADGET.id }
-      await openEditor('desktop')
-      expect(mocks.useView?.gadgetOpenFailure).toBe('Viewing gadget snapshots is turned off on this deployment.')
-      expect(snapshots).toHaveLength(0)
-      expect(admissions).toHaveLength(0)
-    } finally {
-      mocks.snapshotSharingEnabled = true
-    }
+  it('says why a view-only gadget the deployment forbids snapshots of failed, opening it on Try again once allowed', async () => {
+    viewOnly = new Set([GADGET.id])
+    snapshotRefusal = createSnapshotSharingError(SNAPSHOT_SHARING_ERROR_CODES.disabled)
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    expect(mocks.useView?.gadgetOpenFailure).toBe('Viewing gadget snapshots is turned off on this deployment.')
+    expect(admissions).toHaveLength(0)
+
+    snapshotRefusal = null
+    await act(async () => mocks.useView!.onRetryGadget())
+    expect(mocks.useView?.gadgetOpenFailure).toBeNull()
+    await act(async () => snapshots[0].resolve())
+    expect(shownClient()).toBe(snapshots[0].client)
+    expect(admissions).toHaveLength(0)
   })
 })
 

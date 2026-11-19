@@ -4,8 +4,8 @@
 // without observer verification; a viewer granted the gadget live gets no snapshot, only the live
 // gadget through verification. Writes stay on their own side of the copy, a refresh takes a new
 // one, and a copy is deleted with its session, its gadget, or the instance. While the deployment
-// forbids snapshot sharing, nobody opens or refreshes a snapshot or makes a view grant, and the view
-// grants already made open again once it is allowed.
+// forbids snapshot sharing, nobody opens or refreshes a snapshot, makes a view grant or mints a view
+// link's key, and the view grants already made open again once it is allowed.
 //
 // Runs real gadget code, loaded from a real commit, inside a real OverseerDurableObject; a forged
 // UseOverseerInterface (openFakeOverseer) delegates to it, and gatekeeper facets and User DOs are
@@ -14,7 +14,10 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import type { GadgetSnapshotClient, Overseer, PermissionEdge } from "@gadgets/workshop-shared/api";
+import {
+  SNAPSHOT_SHARING_ERROR_CODES, getSnapshotSharingErrorCode,
+  type GadgetSnapshotClient, type Overseer, type PermissionEdge,
+} from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import { DEFAULT_ADMIN_CONFIG } from "../src/storage-schema/admin-settings-storage.js";
 import type { GatekeeperRecord } from "../src/storage-schema/overseer-storage.js";
@@ -324,10 +327,14 @@ describe("gadget snapshots", () => {
     using owner = await openOwner(impl);
     using snapshot = await viewer.getGadgetSnapshot(GADGET_ID);
     let takenAt = await snapshot.getRefreshedAt();
+    let view = { gadgetId: GADGET_ID, mode: "view" } as const;
+    let viewLink = await owner.createShareLink(view);
+    let useLink = await owner.createShareLink({ gadgetId: GADGET_ID });
 
     allowSnapshotSharing(impl, false);
     let refused = "Sharing gadget snapshots is disabled on this deployment by an administrator.";
-    await expect(viewer.getGadgetSnapshot(GADGET_ID)).rejects.toThrow(refused);
+    let refusal = await viewer.getGadgetSnapshot(GADGET_ID).catch((error: unknown) => error);
+    expect(getSnapshotSharingErrorCode(refusal)).toBe(SNAPSHOT_SHARING_ERROR_CODES.disabled);
     await expect(owner.getGadgetSnapshot(GADGET_ID)).rejects.toThrow(refused);
     // An open snapshot keeps the copy it took, and takes no new one.
     await expect(snapshot.refresh()).rejects.toThrow(refused);
@@ -335,13 +342,17 @@ describe("gadget snapshots", () => {
     expect(snapshotNames(impl)).toHaveLength(1);
 
     // No view grant is made, nor is anyone narrowed to one: refused before anything is severed.
-    let view = { gadgetId: GADGET_ID, mode: "view" } as const;
+    // A view link mints no key a new recipient could redeem, while a live link still does.
     let grants = impl.storage.collaborators.get(VIEWER);
+    let keys = Array.from(impl.storage.shareKeys.list());
     await expect(owner.addCollaborator("someone", view)).rejects.toThrow(refused);
     await expect(owner.createShareLink(view)).rejects.toThrow(refused);
+    await expect(owner.newShareLinkKey(viewLink.linkId)).rejects.toThrow(refused);
     await expect(owner.removeCollaborator(VIEWER, [], GADGET_ID, true)).rejects.toThrow(refused);
     expect(impl.storage.collaborators.get(VIEWER)).toEqual(grants);
-    expect(Array.from(impl.storage.shareKeys.list())).toEqual([]);
+    expect(Array.from(impl.storage.shareKeys.list())).toEqual(keys);
+    await owner.newShareLinkKey(useLink.linkId);
+    expect(Array.from(impl.storage.shareKeys.list())).toHaveLength(keys.length + 1);
 
     // The view grant is kept, and opens what the gadget now holds once allowed again.
     expect(await viewer.isViewOnly(GADGET_ID)).toBe(true);

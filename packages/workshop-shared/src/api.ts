@@ -634,6 +634,24 @@ export const createGatekeeperError = gatekeeperErrors.create;
 /** Reads the machine-readable code from a gatekeeper refusal. */
 export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
 
+/** Stable error codes attached to the refusals made while the deployment forbids sharing gadgets
+ * to view only (see ServerConfig.snapshotSharingEnabled). */
+export const SNAPSHOT_SHARING_ERROR_CODES = {
+  disabled: "SNAPSHOT_SHARING_DISABLED",
+} as const;
+
+const snapshotSharingErrors = codedErrorFamily({
+  [SNAPSHOT_SHARING_ERROR_CODES.disabled]:
+      "Sharing gadget snapshots is disabled on this deployment by an administrator.",
+});
+
+/** Creates a refusal made while the deployment forbids sharing gadgets to view only. */
+export const createSnapshotSharingError = snapshotSharingErrors.create;
+
+/** Reads the machine-readable code from a refusal made while the deployment forbids sharing
+ * gadgets to view only. */
+export const getSnapshotSharingErrorCode = snapshotSharingErrors.getCode;
+
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and
  * AdminApi.inspectUser(), and of AdminWorkspaceView and AdminUserView calls.
@@ -2153,9 +2171,10 @@ export interface AdminApi {
 
   /**
    * Allow or forbid sharing gadgets to view only, as static snapshots (see
-   * Overseer.getGadgetSnapshot()). While forbidden, view grants can't be made and no snapshot can
-   * be opened or refreshed, the owner's preview included; existing view grants are kept, and open
-   * again once it is allowed.
+   * Overseer.getGadgetSnapshot()). While forbidden, view grants can't be made, fresh keys can't be
+   * minted for view links, and no snapshot can be opened or refreshed, the owner's preview
+   * included; existing view grants are kept, and open again once it is allowed. Each refusal
+   * carries SNAPSHOT_SHARING_ERROR_CODES.disabled.
    */
   setSnapshotSharingEnabled(enabled: boolean): Promise<void>;
 
@@ -5203,6 +5222,8 @@ export interface Overseer extends RpcTarget {
   /**
    * Mint a fresh secret for an existing link so the user can copy a new URL without creating a
    * whole new link. The old secrets remain valid, and revoking the link revokes them all together.
+   * Throws for a view link while the deployment forbids snapshot sharing (see
+   * ServerConfig.snapshotSharingEnabled).
    */
   newShareLinkKey(linkId: string): Promise<{ key: string }>;
 
@@ -7689,7 +7710,8 @@ export interface GadgetSnapshotClient extends RpcTarget, Pick<GadgetClient,
    * Replace the snapshot with a new copy of the gadget's current state and code, discarding
    * anything written to the old copy, and return when the new copy was taken. Stubs returned by
    * earlier connectToGadget() calls stop working; connect again. Throws, keeping the old copy,
-   * once the caller may no longer open the snapshot (see Overseer.getGadgetSnapshot()).
+   * once the caller may no longer open the snapshot (see Overseer.getGadgetSnapshot()), and while
+   * the deployment forbids snapshot sharing (see ServerConfig.snapshotSharingEnabled).
    */
   refresh(): Promise<Date>;
 }
