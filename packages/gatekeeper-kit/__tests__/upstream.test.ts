@@ -957,9 +957,9 @@ describe("what fetch is handed", () => {
     await untimed.request(request, {});
 
     expect(fetch.mock.calls).toEqual([
-      [THREAD, { method: "POST", headers, body: "payload", cf: { cacheTtl: 5 } }],
-      [url, {}],
-      [request, {}],
+      [THREAD, { method: "POST", headers, body: "payload", cf: { cacheTtl: 5 }, redirect: "manual" }],
+      [url, { redirect: "manual" }],
+      [request, { redirect: "manual" }],
     ]);
     expect(initOf(fetch).headers).toBe(headers);
     expect(fetch.mock.calls[1][0]).toBe(url);
@@ -967,24 +967,28 @@ describe("what fetch is handed", () => {
     expect(calls()[0]).toEqual(["vendor-mail", "threads.send", "success", "", 200]);
   });
 
-  it("gets a signal where there is a timeout, and nothing else it was not given", async () => {
+  it("gets a signal where there is a timeout, a redirect mode, and nothing else it was not given", async () => {
     const fetch = answering(200);
     await upstream.request(THREAD);
-    expect(Object.keys(initOf(fetch))).toEqual(["signal"]);
+    expect(Object.keys(initOf(fetch))).toEqual(["signal", "redirect"]);
     expect(initOf(fetch).signal).toBeInstanceOf(AbortSignal);
   });
 
-  it("gets a redirect mode only where the request or the upstream declares one", async () => {
-    const fetch = answering(200, 200, 200, 200);
+  it("gets the request's redirect mode, else the upstream's, else manual", async () => {
+    const fetch = answering(200, 200, 200, 200, 200, 200);
     const manual = untimed.with({ redirect: "manual" });
+    const following = untimed.with({ redirect: "follow" });
 
     await untimed.request(THREAD);
-    await untimed.request(THREAD, { redirect: "manual" });
+    await untimed.request(THREAD, { redirect: "follow" });
     await manual.request(THREAD);
     await manual.request(THREAD, { redirect: "follow" });
+    await following.request(THREAD);
+    await following.request(THREAD, { redirect: "manual" });
 
     expect(fetch.mock.calls.map(([, init]) => init)).toEqual([
-      {}, { redirect: "manual" }, { redirect: "manual" }, { redirect: "follow" },
+      { redirect: "manual" }, { redirect: "follow" }, { redirect: "manual" }, { redirect: "follow" },
+      { redirect: "follow" }, { redirect: "manual" },
     ]);
   });
 
@@ -1015,7 +1019,7 @@ describe("what fetch is handed", () => {
       { accept: "text/plain", authorization: "Bearer token-1", "x-api": "2" },
       { accept: "text/plain", authorization: "Bearer token-2", "x-api": "2" },
     ]);
-    expect(Object.keys(initOf(fetch))).toEqual(["headers"]);
+    expect(Object.keys(initOf(fetch))).toEqual(["headers", "redirect"]);
   });
 
   it("gets the headers of `authorize` set over a Request's own", async () => {
@@ -1091,7 +1095,8 @@ describe("counting", () => {
 
   it("counts an answer below 400 a success where redirects are followed", async () => {
     answering(200, 302, 399, 400, 404, 500);
-    for (let sent = 0; sent < 6; sent++) await upstream.request(THREAD, { method: "POST" });
+    const following = upstream.with({ redirect: "follow" });
+    for (let sent = 0; sent < 6; sent++) await following.request(THREAD, { method: "POST" });
     expect(outcomes()).toEqual([
       ["success", "", 200], ["success", "", 302], ["success", "", 399],
       ["error", "http", 400], ["error", "http", 404], ["error", "http", 500],
@@ -1102,8 +1107,9 @@ describe("counting", () => {
     answering(299, 302, 308, 299, 302, 302);
     const manual = upstream.with({ redirect: "manual" });
 
-    await upstream.request(THREAD, { redirect: "manual" });
-    await upstream.request(THREAD, { redirect: "manual" });
+    // An upstream that declares no mode follows no redirects.
+    await upstream.request(THREAD);
+    await upstream.request(THREAD);
     await manual.request(THREAD);
     await manual.request(THREAD);
     await manual.request(THREAD);
@@ -1116,18 +1122,16 @@ describe("counting", () => {
     ]);
   });
 
-  it("counts by the redirect mode of a Request where neither the request nor the upstream declares one", async () => {
+  it("hands a Request input the request's or the upstream's redirect mode, whatever its own", async () => {
     const fetch = answering(302, 302, 302);
-    const unfollowed = { redirect: "manual" };
 
-    await untimed.request(new Request(THREAD, unfollowed));
-    await untimed.request(new Request(THREAD, unfollowed), { redirect: "follow" });
-    await untimed.with({ redirect: "follow" }).request(new Request(THREAD, unfollowed));
+    await untimed.request(new Request(THREAD, { redirect: "follow" }));
+    await untimed.request(new Request(THREAD), { redirect: "follow" });
+    await untimed.with({ redirect: "follow" }).request(new Request(THREAD, { redirect: "manual" }));
 
-    expect(outcomes()).toEqual([["error", "http", 302], ["success", "", 302], ["success", "", 302]]);
-    // The mode of the Request is its own to hand over: `fetch` is handed none for it.
     expect(fetch.mock.calls.map(([, init]) => init))
-        .toEqual([{}, { redirect: "follow" }, { redirect: "follow" }]);
+        .toEqual([{ redirect: "manual" }, { redirect: "follow" }, { redirect: "follow" }]);
+    expect(outcomes()).toEqual([["error", "http", 302], ["success", "", 302], ["success", "", 302]]);
   });
 
   it("counts by the gatekeeper's `succeeded`, asked with the status and the operation", async () => {
@@ -1924,7 +1928,7 @@ describe("fetcher", () => {
 
     // A write that nothing marks is sent once, under the upstream's own names and timeout.
     expect(fetch.mock.calls.map(([, sent]) => Object.keys(sent ?? {})))
-        .toEqual(rows(2, ["method", "body", "signal"]));
+        .toEqual(rows(2, ["method", "body", "signal", "redirect"]));
     for (const hook of Object.values(hooks)) expect(hook).not.toHaveBeenCalled();
     expect(calls()).toEqual([
       ["vendor", "threads.create", "error", "http", 503],

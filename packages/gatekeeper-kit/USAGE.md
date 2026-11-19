@@ -478,7 +478,9 @@ When a provider does not fit, step down one rung at a time:
 `defineUpstream` in `./upstream` is the one client a gatekeeper sends its provider calls through.
 Each attempt has a timeout, 30 seconds by default. A request that is safe to send twice (a GET or
 HEAD, or one marked `idempotent`) is sent again after a 429, 502, 503 or 504, a network failure or
-a timeout. Every attempt is written as one point of the
+a timeout. No redirect is followed unless the upstream or a request says `redirect: "follow"`:
+a followed redirect carries every header but `Authorization` to another origin. Every attempt is
+written as one point of the
 [subservice metrics](../observability/README.md#subservice-calls). `Upstream`'s JSDoc holds the
 exact rules. The module keeps its running tally in `AsyncLocalStorage`, so a Worker that imports it
 needs the `nodejs_als` (or `nodejs_compat`) compatibility flag.

@@ -105,11 +105,16 @@ export type UpstreamOptions = {
   timeoutMs?: number | null;
   /** The retry policy, or `null` to send every request once. Default: see `RetryPolicy`. */
   retry?: RetryPolicy | null;
-  /** The redirect mode handed to `fetch`. Default `"follow"`, which is handed over unset. */
+  /**
+   * The redirect mode handed to `fetch`. Default `"manual"`: a redirect is answered to the
+   * caller and not followed, because a redirect followed to another origin drops `Authorization`
+   * and carries every other header with it, a cookie or an API key included. `"follow"` is for a
+   * provider whose redirects the gatekeeper has checked are safe to follow.
+   */
   redirect?: "follow" | "manual";
   /**
-   * Whether `status` is the success of the request named `operation`. Default: below 400 for a
-   * request that follows redirects, and below 300 for one whose redirect mode is `"manual"`. One
+   * Whether `status` is the success of the request named `operation`. Default: below 300 for a
+   * request whose redirect mode is `"manual"`, and below 400 for one that follows redirects. One
    * that throws is read as the default.
    */
   succeeded?: (status: number, operation: string) => boolean;
@@ -143,9 +148,9 @@ export type UpstreamRequestInit = RequestInit & {
    */
   retry?: RetryPolicy | null;
   /**
-   * This request's redirect mode, `"follow"` or `"manual"`, in place of the upstream's. It has
-   * the type `fetch` gives it, so that a `RequestInit` is a request's init, and any other mode is
-   * handed to `fetch` as given.
+   * This request's redirect mode, `"follow"` or `"manual"`, in place of the upstream's, which is
+   * `"manual"` unless it says otherwise. It has the type `fetch` gives it, so that a `RequestInit`
+   * is a request's init, and any other mode is handed to `fetch` as given.
    */
   redirect?: RequestInit["redirect"];
   /**
@@ -195,12 +200,13 @@ export type UpstreamRequestInit = RequestInit & {
  * - **What is sent.** The input goes to `fetch` as given. The init is the caller's without the
  *   options of `UpstreamRequestInit`, with `headers` replaced by a `Headers` only where
  *   `authorize` is given, `signal` set where there is a timeout or a caller's signal, and
- *   `redirect` set where the request or the upstream declares one.
+ *   `redirect` always set: the request's mode, else the upstream's, else `"manual"`, whatever
+ *   the mode of a `Request` input.
  * - **Counting.** Each attempt is one point (`recordCall`) with the milliseconds from its send
  *   to its answer or throw. An answered attempt is a `success` when `succeeded` says so, else
  *   `refused` with the reason `rate` for a 429, else an `error` with the reason `http`, each with
  *   its status, unless the request's `answer` says otherwise. The redirect mode that decides the
- *   default of `succeeded` is the request's, else the upstream's, else that of a `Request` input.
+ *   default of `succeeded` is the one handed to `fetch`.
  *   An attempt that threw is an `error` with the reason `timeout` when the timeout fired or the
  *   caller's signal aborted with a `TimeoutError`, and with the reason `network` otherwise,
  *   unless the upstream's `thrown` says otherwise. It is not counted when the caller's signal had
@@ -456,9 +462,9 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
     const idempotent = method === "GET" || method === "HEAD" || marked === true;
     const timeoutMs = timeoutOf(ownTimeoutMs, upstreamTimeoutMs);
     const retry = retryOf(ownRetry, upstreamRetry);
-    const redirect = rest.redirect ?? options.redirect;
-    // A `Request` that follows no redirects is answered its 3xx, whoever declared the mode.
-    const manual = (redirect ?? request?.redirect) === "manual";
+    // No redirect is followed unless the request or the upstream says so.
+    const redirect = rest.redirect ?? options.redirect ?? "manual";
+    const manual = redirect === "manual";
     const caller = rest.signal ?? request?.signal ?? undefined;
     const resendable = canResend(rest.body) && !request?.body;
     const call = { source, service: serviceOf(ownService, url), operation };
@@ -477,7 +483,7 @@ export function defineUpstream(options: UpstreamOptions): Upstream {
       // A fresh timeout for each attempt, so that a retry has the whole of it.
       const timeout = timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs);
       if (timeout) sent.signal = caller ? AbortSignal.any([timeout, caller]) : timeout;
-      if (redirect !== undefined) sent.redirect = redirect;
+      sent.redirect = redirect;
 
       // An attempt begun once its caller's signal has aborted is failed by `fetch` unsent.
       const unsent = caller?.aborted === true;
