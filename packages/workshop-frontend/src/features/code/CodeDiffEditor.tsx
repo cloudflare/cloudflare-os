@@ -392,10 +392,15 @@ export default function CodeDiffEditor({
     // could not go as far, because the Find panel shortens only the chat side or offscreen heights
     // are still estimates, would otherwise drag the other side back with it.
     const placed = new Map<HTMLElement, number>()
+    // Each side's position as the sync last handled it: one at another has scrolled since, and its
+    // event, still to come, decides which side leads.
+    const handled = new Map<HTMLElement, number>()
     const follow = (from: EditorView, to: EditorView) => {
       const before = to.scrollDOM.scrollTop
       to.scrollDOM.scrollTop = from.scrollDOM.scrollTop
       if (to.scrollDOM.scrollTop !== before) placed.set(to.scrollDOM, to.scrollDOM.scrollTop)
+      handled.set(from.scrollDOM, from.scrollDOM.scrollTop)
+      handled.set(to.scrollDOM, to.scrollDOM.scrollTop)
     }
     // The side last scrolled other than by this sync, which the other follows.
     let leader = modified
@@ -403,7 +408,10 @@ export default function CodeDiffEditor({
       const handler = () => {
         const echo = placed.get(from.scrollDOM) === from.scrollDOM.scrollTop
         placed.delete(from.scrollDOM)
-        if (echo) return
+        if (echo) {
+          handled.set(from.scrollDOM, from.scrollDOM.scrollTop)
+          return
+        }
         leader = from
         follow(from, to)
       }
@@ -416,8 +424,11 @@ export default function CodeDiffEditor({
     follow(modified, originalView)
     // A side stopped short can reach further, without scrolling, once its estimated heights are
     // measured or its viewport shrinks, so it catches up with the leader then.
-    const resizeObserver = new ResizeObserver(() =>
-      follow(leader, leader === modified ? originalView : modified))
+    const resizeObserver = new ResizeObserver(() => {
+      const follower = leader === modified ? originalView : modified
+      if (follower.scrollDOM.scrollTop !== handled.get(follower.scrollDOM)) return
+      follow(leader, follower)
+    })
     for (const view of [modified, originalView]) {
       resizeObserver.observe(view.contentDOM)
       resizeObserver.observe(view.scrollDOM)

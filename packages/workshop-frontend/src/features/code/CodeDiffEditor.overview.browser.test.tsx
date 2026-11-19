@@ -242,6 +242,27 @@ it('lines the original side up again once its viewport lets it reach further', a
   await vi.waitFor(() => expect(originalSide.scrollTop).toBeCloseTo(chat.scrollTop, 0))
 })
 
+it('keeps a scroll the chat side made in the frame its editor resized', async () => {
+  mount('split', ORIGINAL.join('\n'), MODIFIED.join('\n'))
+  await vi.waitFor(() => expect(strip().hidden).toBe(false))
+  const scrollers = [...host!.querySelectorAll<HTMLElement>('.cm-scroller')]
+  const [originalSide, chat] = [scrollers[0], scrollers[scrollers.length - 1]]
+  originalSide.scrollTop = 700
+  await vi.waitFor(() => expect(chat.scrollTop).toBe(700))
+
+  // CodeMirror moves the chat side in its measuring frame, before that scroll's event, and the
+  // editor grows in the same frame.
+  const box = host!.querySelector<HTMLElement>('[style*="height: 500px"]')!
+  await new Promise<void>(resolve => requestAnimationFrame(() => {
+    chat.scrollTop = 3000
+    box.style.height = '600px'
+    resolve()
+  }))
+  await frames(5)
+  expect(chat.scrollTop).toBe(3000)
+  expect(originalSide.scrollTop).toBe(3000)
+})
+
 it('hides the strip when the whole file fits', async () => {
   mount('stacked', lines(5).join('\n'), [...lines(4), 'changed'].join('\n'))
   await vi.waitFor(() => expect(host!.querySelector('.gadgets-diff-line-add')).not.toBeNull())
