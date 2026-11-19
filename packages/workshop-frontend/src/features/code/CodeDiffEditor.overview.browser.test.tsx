@@ -1,8 +1,8 @@
 /* eslint-disable react/react-in-jsx-scope */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { userEvent } from 'vitest/browser'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { page, userEvent } from 'vitest/browser'
 import { EditorView } from '@codemirror/view'
 import { openSearchPanel } from '@codemirror/search'
 import CodeDiffEditor from './CodeDiffEditor'
@@ -12,6 +12,12 @@ import '../../styles.css'
 // The overview strip needs real layout: its marks are placed from CodeMirror's height map,
 // so these tests check that pressing each mark scrolls its change into view, with deletion
 // zones (stacked) and blank zones (split) taking their on-screen space.
+
+// A desktop window, wide enough for split view: in the default narrow page, clicking the chat
+// side's strip scrolls the page sideways, and CodeMirror stops measuring the original side, which
+// is then off screen, as no split view ever is.
+beforeAll(() => page.viewport(1600, 1000))
+afterAll(() => page.viewport(414, 896))
 
 let root: Root | undefined
 let host: HTMLDivElement | undefined
@@ -191,9 +197,10 @@ const frames = (count: number) => new Promise<void>(resolve => {
 it('keeps a jump in split view that the original side cannot follow all the way', async () => {
   // The Find panel shortens the chat side alone, so it scrolls further than the original side,
   // which stops short of a jump to the end; as an offscreen height estimate does on a slow load.
+  // A change near the end, not on the last line, whose mark the panel cannot cover.
   const original = lines(400)
-  mount('split', original.join('\n'), [...original, 'const appended = true'].join('\n'))
-  await vi.waitFor(() => expect(marks('add')).toHaveLength(1))
+  mount('split', original.join('\n'), original.with(394, 'const line395 = 395 + changed').join('\n'))
+  await vi.waitFor(() => expect(marks('modified')).toHaveLength(1))
   act(() => { openSearchPanel(EditorView.findFromDOM(chatScroller())!) })
   await vi.waitFor(() => {
     const panel = host!.querySelector('.cm-search')
@@ -202,12 +209,36 @@ it('keeps a jump in split view that the original side cannot follow all the way'
       .toBeLessThanOrEqual(panel!.getBoundingClientRect().top + 0.5)
   })
 
-  await userEvent.click(marks('add')[0])
-  await vi.waitFor(() => expect(inView(changedLine('const appended = true'))).toBe(true))
+  // Centring it would scroll past the end, so the chat side goes as far as it can.
+  await userEvent.click(marks('modified')[0])
+  await vi.waitFor(() => expect(inView(changedLine('const line395 = 395 + changed'))).toBe(true))
   // The original side's scroll, stopped short, must not take the chat side back with it.
   await frames(5)
   const chat = chatScroller()
   expect(chat.scrollTop).toBeCloseTo(chat.scrollHeight - chat.clientHeight, 0)
+})
+
+it('lines the original side up again once its viewport lets it reach further', async () => {
+  const original = lines(400).join('\n')
+  const modified = lines(400).with(394, 'const line395 = 395 + changed').join('\n')
+  mount('split', original, modified)
+  await vi.waitFor(() => expect(marks('modified')).toHaveLength(1))
+  act(() => { openSearchPanel(EditorView.findFromDOM(chatScroller())!) })
+  await vi.waitFor(() => expect(host!.querySelector('.cm-search')).not.toBeNull())
+  await userEvent.click(marks('modified')[0])
+  await vi.waitFor(() => expect(inView(changedLine('const line395 = 395 + changed'))).toBe(true))
+  await frames(5)
+  const scrollers = [...host!.querySelectorAll<HTMLElement>('.cm-scroller')]
+  const [originalSide, chat] = [scrollers[0], scrollers[scrollers.length - 1]]
+  expect(originalSide.scrollTop).toBeLessThan(chat.scrollTop)
+
+  // A shorter editor gives the original side the room it lacked, though nothing scrolls.
+  act(() => root!.render(
+    <ThemeProvider>
+      <CodeDiffEditor filename="file.ts" original={original} text={modified} height={400} />
+    </ThemeProvider>,
+  ))
+  await vi.waitFor(() => expect(originalSide.scrollTop).toBeCloseTo(chat.scrollTop, 0))
 })
 
 it('hides the strip when the whole file fits', async () => {

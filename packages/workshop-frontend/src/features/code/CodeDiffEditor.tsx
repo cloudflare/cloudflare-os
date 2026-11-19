@@ -397,11 +397,15 @@ export default function CodeDiffEditor({
       to.scrollDOM.scrollTop = from.scrollDOM.scrollTop
       if (to.scrollDOM.scrollTop !== before) placed.set(to.scrollDOM, to.scrollDOM.scrollTop)
     }
+    // The side last scrolled other than by this sync, which the other follows.
+    let leader = modified
     const syncScroll = (from: EditorView, to: EditorView) => {
       const handler = () => {
         const echo = placed.get(from.scrollDOM) === from.scrollDOM.scrollTop
         placed.delete(from.scrollDOM)
-        if (!echo) follow(from, to)
+        if (echo) return
+        leader = from
+        follow(from, to)
       }
       from.scrollDOM.addEventListener('scroll', handler)
       return () => from.scrollDOM.removeEventListener('scroll', handler)
@@ -410,11 +414,14 @@ export default function CodeDiffEditor({
     const detachModified = syncScroll(modified, originalView)
     const detachOriginal = syncScroll(originalView, modified)
     follow(modified, originalView)
-    // A side whose estimated heights are measured grows without scrolling, so the original side,
-    // stopped short of the chat side, catches up then.
-    const resizeObserver = new ResizeObserver(() => follow(modified, originalView))
-    resizeObserver.observe(modified.contentDOM)
-    resizeObserver.observe(originalView.contentDOM)
+    // A side stopped short can reach further, without scrolling, once its estimated heights are
+    // measured or its viewport shrinks, so it catches up with the leader then.
+    const resizeObserver = new ResizeObserver(() =>
+      follow(leader, leader === modified ? originalView : modified))
+    for (const view of [modified, originalView]) {
+      resizeObserver.observe(view.contentDOM)
+      resizeObserver.observe(view.scrollDOM)
+    }
 
     return () => {
       detachModified()
