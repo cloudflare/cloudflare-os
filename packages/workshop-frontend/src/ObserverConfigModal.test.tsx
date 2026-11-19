@@ -177,6 +177,7 @@ describe('ObserverConfigModal account selection', () => {
           authenticatedApi={options.api ?? fakeApi(accountEntries)}
           onConfirm={options.onConfirm ?? (() => {})}
           onCancel={() => {}}
+          subject="workspace"
         />,
       )
       await Promise.resolve()

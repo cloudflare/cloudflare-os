@@ -71,6 +71,11 @@ type WorkspaceBackendState = {
    * do one missing a scope.
    */
   refusals: Map<string, string>;
+  /**
+   * Observer tokens Docs, Sheets and Slides refuse with 403 and an error body that breaks off
+   * partway, as one cut off by the read timeout would.
+   */
+  stalled: Set<string>;
   /** Each file lookup an observer token made, as `<token> <host> <fileId>`. */
   lookups: string[];
 };
@@ -153,7 +158,8 @@ const FILES: Record<string, FileNode> = {
  * Drive, Docs, Sheets and Slides as far as these reads and checks use them. Every lookup answers
  * the owner, and answers an observer only for the files `access` grants its token (Drive with
  * 404, the others with 403), failing with 500 for a token in `failing` and, in Docs, Sheets and
- * Slides, with a reasoned 403 for a token in `refusals`. Drive says of each file it shows whether
+ * Slides, with a reasoned 403 for a token in `refusals` and a 403 whose body breaks off for one in
+ * `stalled`. Drive says of each file it shows whether
  * the account may comment on it, which is not a token in `viewers` and anyone else, and whether
  * it may share it, which is not a token in `cannotShare` and anyone else. No file has comments,
  * every file is shared with its owner alone, and `about` answers the owner's identity. A token's
@@ -162,7 +168,7 @@ const FILES: Record<string, FileNode> = {
 function workspaceBackend(): WorkspaceBackend {
   const state: WorkspaceBackendState = {
     access: new Map(), viewers: new Set(), cannotShare: new Set(), failing: new Set(),
-    refusals: new Map(), lookups: [],
+    refusals: new Map(), stalled: new Set(), lookups: [],
   };
   const visible = (token: string, id: string): FileNode | undefined => {
     const node = token === OWNER_TOKEN || state.access.get(token)?.includes(id) ? FILES[id] : undefined;
@@ -198,6 +204,14 @@ function workspaceBackend(): WorkspaceBackend {
       return json({error: {code: 403, status: "PERMISSION_DENIED", message: "Refused", details: [
         {"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason, domain: "googleapis.com"},
       ]}}, 403);
+    }
+    if (state.stalled.has(token) && url.hostname !== "www.googleapis.com") {
+      return new Response(new ReadableStream({
+        pull(controller) {
+          controller.enqueue(new TextEncoder().encode('{"error": {"code": 403'));
+          controller.error(new Error("connection reset"));
+        },
+      }), {status: 403, headers: {"Content-Type": "application/json"}});
     }
     const node = visible(token, id);
     if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/drive/v3/files/")) {
@@ -583,6 +597,17 @@ describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
     await expect(doc.verify(observers, [`docs/document/${DOC}`])).rejects.toThrow(/http=403/);
 
     backend.state.refusals.clear();
+    expect(await doc.verify(observers, [`docs/document/${DOC}`])).toEqual({allowedObserverIds: ["reader"]});
+  });
+
+  it("throws when Docs refuses with an error it could not finish reading, and asks again next time", async () => {
+    const backend = workspaceBackend();
+    const doc = workspaceHarness(backend, "doc", {documentId: DOC});
+    const observers = [{id: "reader", userObjectId: await doc.observer("reader-token", [DOC])}];
+    backend.state.stalled.add("reader-token");
+    await expect(doc.verify(observers, [`docs/document/${DOC}`])).rejects.toThrow(/http=403/);
+
+    backend.state.stalled.clear();
     expect(await doc.verify(observers, [`docs/document/${DOC}`])).toEqual({allowedObserverIds: ["reader"]});
   });
 

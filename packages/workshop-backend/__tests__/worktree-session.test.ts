@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
@@ -283,6 +283,46 @@ describe("listFiles", () => {
     const commit = await session.commit("text after raw read");
     await turn.barrier();
     expect(impl.gitCache.readCommitFiles(commit)).toEqual(new Map([["a.txt", text + "edited\n"]]));
+  }));
+
+  it("resolves host image metadata over pending edits without making a commit", () => withImpl(async impl => {
+    addChat(impl, 1);
+    const base = await commitFiles(impl, {"a.txt": "hello😀\n"});
+    const {session, turn, id} = await createWorktreeSession(impl, 1, base);
+    const original = await impl.getWorktreeFileOid(1, id, "a.txt", turn.access);
+    expect(original).toEqual(await impl.gitCache.fileOidAtCommit(base, "a.txt"));
+    await session.writeFile("a.txt", "edited😀\n");
+    const edited = await impl.getWorktreeFileOid(1, id, "a.txt", turn.access);
+    expect(edited).toBe(impl.gitCache.writeBlob(new TextEncoder().encode("edited😀\n")).oid);
+    expect(edited).not.toBe(original);
+    const bytes = Uint8Array.of(0, 255, 17);
+    await session.writeBytes("picture.png", bytes);
+    await session.deleteFile("a.txt");
+    expect(await impl.getWorktreeFileOid(1, id, "a.txt", turn.access)).toBeUndefined();
+    expect(await impl.getWorktreeFileOid(1, id, "picture.png", turn.access))
+        .toBe(impl.gitCache.writeBlob(bytes).oid);
+    expect(impl.gitCache.readBlob(original!)).toEqual(new TextEncoder().encode("hello😀\n"));
+    expect(impl.storage.gadgets.get(id).headCommit).toBe(base);
+    addChat(impl, 2);
+    impl.storage.chatContext.put({chatId: 2, bindings: {OTHER: id}});
+    await expect(impl.getWorktreeFileOid(2, id, "picture.png", turn.access)).rejects.toThrow(/No worktree in this chat/);
+  }));
+
+  it("pins lazy base blobs without reading them or refolding history across read-only steps", () => withImpl(async impl => {
+    addChat(impl, 1);
+    const base = await commitFiles(impl, {"a.txt": "one", "b.txt": "two"});
+    const {session, turn, id} = await createWorktreeSession(impl, 1, base);
+    const read = vi.spyOn(impl.gitCache, "fileBytesAtCommit").mockRejectedValue(new Error("Blob must stay lazy"));
+    const fold = vi.spyOn(impl, "worktreeTouchedPaths");
+    expect(await impl.getWorktreeFileOid(1, id, "a.txt", turn.access)).toBe(await impl.gitCache.fileOidAtCommit(base, "a.txt"));
+    impl.addChatMessages(1, AGENT, [{type: "message", message: "Read-only step"}]);
+    expect(await impl.getWorktreeFileOid(1, id, "b.txt", turn.access)).toBe(await impl.gitCache.fileOidAtCommit(base, "b.txt"));
+    expect(fold).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    await session.deleteFile("a.txt");
+    await turn.barrier();
+    expect(await impl.getWorktreeFileOid(1, id, "a.txt", turn.access)).toBeUndefined();
+    expect(fold).not.toHaveBeenCalled();
   }));
 
   it("resolves byte identities without copying the Git object or adding permission records", () => withImpl(async impl => {

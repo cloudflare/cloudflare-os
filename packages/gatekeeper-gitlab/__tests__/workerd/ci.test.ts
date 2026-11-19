@@ -1019,11 +1019,10 @@ describe("what CI reads disclose to observers", () => {
       expect((await hooks().queueLog(name)).subresources.at(-1)).toEqual([MAINTAINER]);
     });
 
-  it("shares a binding with up to 50 collaborators", async () => {
+  it("shares a binding with more collaborators than a read could once check", async () => {
     const names = Array.from({ length: 51 }, (_, i) => `member${i}`);
     const { props, name } = await setup(gateFake(), Object.fromEntries(names.map(member => [member, 20])));
-    for (const member of names.slice(0, 50)) await observer(name, props, member);
-    await expect(observer(name, props, names[50]!)).rejects.toThrow(/already answers for 50 collaborators/);
+    for (const member of names) await observer(name, props, member);
   }, 10_000);
 
   describe("after CI data an earlier version marked", () => {

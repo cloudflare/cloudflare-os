@@ -29,8 +29,8 @@ caller is an admin. The admin check runs once, when the capability is minted, fo
 method except inspection, which checks again, of a workspace (see [Inspection](#inspection)) and of
 a user's account (see [User inspection](#user-inspection)) alike.
 
-- **Settings**: the setters (signups, user search, site name and logo, instructions,
-  resource and gatekeeper availability, models, update checks, ...), plus
+- **Settings**: the setters (signups, user search, view-only gadget sharing, site name and logo,
+  instructions, resource and gatekeeper availability, models, update checks, ...), plus
   `setAdminWorkspaceAccess()` and `setAdminAuditRetentionDays()`. Every setter is audited.
 - **The directory**: `listUsers()` and `listWorkspaces()`.
 - **Inspection**: `inspectWorkspace(workspaceId, reason, { lifetimeSeconds })`, which returns an
